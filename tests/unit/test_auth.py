@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from slack_cli_agent.auth.policy import AccessExtension, AccessPolicy, OWNER_EFFORT_MIN
+from slack_cli_agent.auth.policy import OWNER_EFFORT_MIN, AccessExtension, AccessPolicy
 from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.auth.tools import ToolPolicy
 from slack_cli_agent.config.channel import ChannelRegistry

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from slack_cli_agent.config.profile import EngineSpec, Profile
+from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.preflight.check import CheckResult, PreflightCheck, PreflightContext
 from slack_cli_agent.preflight.checks import (
     EngineBinaryCheck,

@@ -114,7 +114,7 @@ class ProposalAnalyzer:
         if not response.ok:
             return Outcome.unknown(response.failure_reason or "분석 실행에 실패했다")
 
-        match = re.search(r"\{.*\}", response.body, re.S)
+        match = re.search(r"\{.*\}", response.body, re.DOTALL)
         if not match:
             return Outcome.unknown("제안 형식이 맞지 않다")
         try:

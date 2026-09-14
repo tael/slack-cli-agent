@@ -11,8 +11,6 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
-import pytest
-
 from slack_cli_agent.auth.policy import OWNER_EFFORT_MIN
 from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.profile import Profile

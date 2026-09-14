@@ -90,7 +90,7 @@ class RuntimeSettings:
     # 조직 고유값이라 코드에 두지 않는다 — 기본값은 빈 목록이다.
     dropped_line_heads: tuple[str, ...] = ()
 
-    def override(self, values: Mapping[str, Any]) -> "RuntimeSettings":
+    def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """프로필이 지정한 항목만 덮어쓴다. 모르는 키는 무시한다.
 
         집합 항목은 형식을 맞춰 넣는다. JSON 에는 집합 형식이 없어 목록으로

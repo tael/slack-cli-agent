@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import ClassVar, TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
     from ..config.profile import Profile
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 class PreflightContext:
     """점검 하나가 보는 입력. 프로필 하나면 모든 점검이 충분하다."""
 
-    profile: "Profile"
+    profile: Profile
 
 
 @dataclass(frozen=True)

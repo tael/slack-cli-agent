@@ -11,8 +11,6 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-import pytest
-
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ports import HandleOutcome

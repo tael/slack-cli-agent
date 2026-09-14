@@ -130,7 +130,7 @@ class Worker:
         """
         try:
             return self._handler.handle(context)
-        except Exception as exc:  # noqa: BLE001 - 처리기 예외를 실패로 흡수한다
+        except Exception as exc:
             log.exception("처리기 예외로 작업 실패: channel=%s ts=%s", context.channel, context.ts)
             return HandleOutcome(ok=False, failure=str(exc))
 

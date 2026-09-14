@@ -15,15 +15,18 @@ from typing import Any
 
 import pytest
 
-from slack_cli_agent.review.base import MessageLookupPort, PermalinkPort, PublisherPort, TranscriptPort
-from slack_cli_agent.slack.publisher import MessagePublisher
+from slack_cli_agent.review.base import (
+    MessageLookupPort,
+    PermalinkPort,
+    PublisherPort,
+    TranscriptPort,
+)
 from slack_cli_agent.slack.review_ports import (
     ReviewPublisher,
     SlackMessageLookup,
     SlackPermalinks,
     ThreadTranscriptPort,
 )
-from slack_cli_agent.slack.transcript import TranscriptBuilder
 
 
 class FakeSlackClient:

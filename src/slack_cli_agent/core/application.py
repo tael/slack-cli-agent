@@ -24,7 +24,6 @@ import logging
 import time
 import uuid
 from collections.abc import Callable, Sequence
-from pathlib import Path
 from typing import Any
 
 from ..admin.channel_commands import (
@@ -39,7 +38,11 @@ from ..admin.channel_commands import (
 from ..admin.command import AdminContext
 from ..admin.commands import ChannelListCommand, EngineStatusCommand, HelpCommand
 from ..admin.engine_commands import EngineApproveCommand, EngineDenyCommand
-from ..admin.learning_commands import LearningApplyCommand, LearningRevertCommand, LearningShowCommand
+from ..admin.learning_commands import (
+    LearningApplyCommand,
+    LearningRevertCommand,
+    LearningShowCommand,
+)
 from ..admin.router import AdminRouter
 from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
@@ -49,11 +52,17 @@ from ..config.settings import RuntimeSettings
 from ..engine.base import Engine, EngineRequest, EngineResponse
 from ..engine.claude import ClaudeEngine
 from ..engine.codex import CodexEngine
-from ..engine.registry import EngineRegistry
-from ..engine.transcript import ClaudeTranscriptReader
 from ..engine.environment import create_environment_policy
-from ..engine.runner import DirectInvoker, EngineInvoker, EngineRunner, FallbackEngine, FallbackInvoker
+from ..engine.registry import EngineRegistry
+from ..engine.runner import (
+    DirectInvoker,
+    EngineInvoker,
+    EngineRunner,
+    FallbackEngine,
+    FallbackInvoker,
+)
 from ..engine.switcher import EngineSwitcher
+from ..engine.transcript import ClaudeTranscriptReader
 from ..guard.base import OutputGuard
 from ..guard.dropline import ConfiguredLineDropGuard
 from ..guard.mentions import AddresseeGuard, PlainMentionGuard
@@ -62,7 +71,9 @@ from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard
 from ..jobs.heartbeat import WorkerHeartbeat
 from ..jobs.queue import SqliteJobQueue
+from ..observability.app_snapshot import ApplicationSnapshotSource
 from ..observability.audit import AuditLog
+from ..observability.notices import NoticeCatalog
 from ..observability.slow_report import (
     ElapsedDiagnostician,
     SessionContextCalculator,
@@ -71,27 +82,24 @@ from ..observability.slow_report import (
     TimeBreakdownCalculator,
     UsageRowBuilder,
 )
-from ..observability.notices import NoticeCatalog
+from ..observability.state_snapshot import StateSnapshotBuilder, StateSnapshotWriter
 from ..plugin.base import BotPlugin
 from ..plugin.loader import PluginLoader
 from ..prompt.composer import SystemPromptComposer
-from ..slack.roster import RosterBuilder
-from .lifecycle import InflightCounter
-from .periodic import PeriodicRunner
 from ..prompt.knowledge import KnowledgeLoader
 from ..prompt.library import PromptLibrary
 from ..prompt.sections import (
-    CompositionContext,
     AskerSection,
     AuthoritySection,
     ChannelModeSection,
+    CompositionContext,
     KnowledgeSection,
-    RosterSection,
     OwnerNoteSection,
     PersonaSection,
     PresentPeopleSection,
     PromptSection,
     ReviewFormatSection,
+    RosterSection,
     SensitiveGuardSection,
     SilenceRuleSection,
     SlackFormatSection,
@@ -101,6 +109,8 @@ from ..prompt.sections import (
 from ..reliability.catchup import CatchupService
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
+from ..reliability.watchjobs import WatchJob, WatchJobQueue
+from ..reliability.watchrunner import WatchJobChecker, watch_check_prompt
 from ..render.blocks import BlockBuilder
 from ..render.markdown import MarkdownConverter
 from ..render.splitter import ContentSplitter
@@ -120,13 +130,9 @@ from ..slack.gate import ResponseGate
 from ..slack.gateway import SlackGateway
 from ..slack.history import HistoryReader
 from ..slack.history_port import SlackHistoryPort
+from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption
 from ..slack.listener import EventListener
 from ..slack.names import DisplayNameResolver
-from ..observability.app_snapshot import ApplicationSnapshotSource
-from ..observability.state_snapshot import StateSnapshotBuilder, StateSnapshotWriter
-from ..reliability.watchjobs import WatchJob, WatchJobQueue
-from ..reliability.watchrunner import WatchJobChecker, watch_check_prompt
-from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption
 from ..slack.participants import ThreadParticipants
 from ..slack.publisher import MessagePublisher
 from ..slack.reactions import (
@@ -141,10 +147,13 @@ from ..slack.review_ports import (
     SlackPermalinks,
     ThreadTranscriptPort,
 )
+from ..slack.roster import RosterBuilder
 from ..slack.transcript import TranscriptBuilder
 from ..storage.database import Database
 from .context import RequestContext
 from .ingress import IngressService
+from .lifecycle import InflightCounter
+from .periodic import PeriodicRunner
 from .pipeline import RequestPipeline
 from .worker import Worker
 
@@ -235,7 +244,7 @@ class Application:
     # -- 기본 부품 -------------------------------------------------
 
     @classmethod
-    def from_profile(cls, profile: Profile, client: Any | None = None, **kwargs: Any) -> "Application":
+    def from_profile(cls, profile: Profile, client: Any | None = None, **kwargs: Any) -> Application:
         """슬랙 client 를 여기서 만든다. 시험은 이 경로를 쓰지 않는다."""
         if client is None:
             from slack_sdk import WebClient  # 지연 import — 조립 시험이 SDK 를 끌어오지 않는다

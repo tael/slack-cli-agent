@@ -15,8 +15,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-import pytest
-
 from slack_cli_agent.engine.base import EngineResponse
 from slack_cli_agent.review.base import ReviewTarget, ReviewTask, as_table, cell, model_effort_cell
 from slack_cli_agent.review.ledger import ReviewLedger
@@ -210,7 +208,7 @@ class Test예외발생:
                 raise RuntimeError("조회 중단")
 
         rig = make_rig(database)
-        rig.task._message_lookup = BrokenMessageLookup()  # noqa: SLF001 (시험 전용 교체)
+        rig.task._message_lookup = BrokenMessageLookup()
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
         assert rig.ledger.find("fake_kind", "C1", "1.1") is None
         assert len(rig.publisher.posts) == 1

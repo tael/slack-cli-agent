@@ -30,7 +30,7 @@ class EngineSpec:
     home_dir: Path | None = None
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "EngineSpec":
+    def from_dict(cls, data: Mapping[str, Any]) -> EngineSpec:
         for key in ("type", "binary", "model"):
             if not data.get(key):
                 raise ConfigError(f"엔진 설정에 {key} 가 없다")
@@ -79,7 +79,7 @@ class Profile:
         return self.data_dir / "roster.md"
 
     @classmethod
-    def load(cls, name: str, search_paths: Sequence[Path]) -> "Profile":
+    def load(cls, name: str, search_paths: Sequence[Path]) -> Profile:
         """`<name>.json` 을 검색 경로 순서대로 찾는다. 먼저 찾은 것을 쓴다."""
         for base in search_paths:
             candidate = base / f"{name}.json"
@@ -89,7 +89,7 @@ class Profile:
         raise ConfigError(f"프로필 {name} 을 찾지 못했다. 검색 경로: {searched}")
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "Profile":
+    def from_dict(cls, data: Mapping[str, Any]) -> Profile:
         name = data.get("name")
         if not name:
             raise ConfigError("프로필에 name 이 없다")

@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from slack_cli_agent.slack.participants import ThreadParticipants
 
 
