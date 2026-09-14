@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from identity_support import fake_identity
 
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -435,7 +436,7 @@ def gate() -> ResponseGate:
 class TestEventListener:
     def test_app_mention은_항상_컨텍스트를_만든다(self, gate: ResponseGate) -> None:
         registry = ChannelRegistry(Path("/nonexistent.json"))
-        listener = EventListener(FakeWebClient(), registry, gate, bot_user_id="U_BOT")
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
         event = {"channel": "C1", "user": "U1", "ts": "1.0", "text": "<@U_BOT> 안녕"}
         ctx = listener.from_app_mention(event)
         assert isinstance(ctx, RequestContext)
@@ -444,7 +445,7 @@ class TestEventListener:
 
     def test_DM_메시지는_바로_컨텍스트가_된다(self, gate: ResponseGate) -> None:
         registry = ChannelRegistry(Path("/nonexistent.json"))
-        listener = EventListener(FakeWebClient(), registry, gate, bot_user_id="U_BOT")
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
         event = {"channel": "D1", "user": "U1", "ts": "1.0", "text": "안녕",
                  "channel_type": "im"}
         ctx = listener.from_message(event)
@@ -453,7 +454,7 @@ class TestEventListener:
 
     def test_봇_자신의_메시지는_거른다(self, gate: ResponseGate) -> None:
         registry = ChannelRegistry(Path("/nonexistent.json"))
-        listener = EventListener(FakeWebClient(), registry, gate, bot_user_id="U_BOT")
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
         event = {"channel": "D1", "user": "U_BOT", "ts": "1.0", "text": "안녕",
                  "channel_type": "im", "bot_id": "B1"}
         assert listener.from_message(event) is None
@@ -462,7 +463,7 @@ class TestEventListener:
         self, gate: ResponseGate
     ) -> None:
         registry = ChannelRegistry(Path("/nonexistent.json"))
-        listener = EventListener(FakeWebClient(), registry, gate, bot_user_id="U_BOT")
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
         event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
                  "text": "<@U_BOT> 다시 봐줘"}
         assert listener.from_message(event) is None
@@ -471,7 +472,7 @@ class TestEventListener:
         self, gate: ResponseGate
     ) -> None:
         registry = ChannelRegistry(Path("/nonexistent.json"))  # 빈 레지스트리
-        listener = EventListener(FakeWebClient(), registry, gate, bot_user_id="U_BOT")
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
         event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
                  "text": "고마워"}
         assert listener.from_message(event) is None
@@ -488,7 +489,7 @@ class TestEventListener:
         client.set_replies_response({
             "messages": [{"user": "U_BOT", "text": "지금 반영할까요?"}]
         })
-        listener = EventListener(client, registry, gate, bot_user_id="U_BOT")
+        listener = EventListener(client, registry, gate, identity=fake_identity())
         event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
                  "text": "네"}
         ctx = listener.from_message(event)
@@ -503,16 +504,50 @@ class TestEventListener:
         registry = ChannelRegistry(channels_file)
         client = FakeWebClient()
         client.set_replies_response({"messages": [{"user": "U1", "text": "아무 말"}]})
-        listener = EventListener(client, registry, gate, bot_user_id="U_BOT")
+        listener = EventListener(client, registry, gate, identity=fake_identity())
         event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
                  "text": "고마워"}
         assert listener.from_message(event) is None
+
+    def test_다른_봇만_말한_스레드는_이봇이_낀_것이_아니다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        """`bot_id` 가 있다는 것만으로 이 봇으로 보면 다른 봇이 답한 스레드에 끼어든다."""
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_unaddressed": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        client = FakeWebClient()
+        client.set_replies_response({
+            "messages": [{"bot_id": "B_OTHER", "text": "지금 반영할까요?"}]
+        })
+        listener = EventListener(client, registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
+                 "text": "네"}
+        assert listener.from_message(event) is None
+
+    def test_이봇의_bot_id_로_말한_스레드는_낀_것이다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        """봇이 올린 메시지에는 `user` 대신 `bot_id` 가 담긴다. 그 경로도 판정돼야 한다."""
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_unaddressed": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        client = FakeWebClient()
+        client.set_replies_response({
+            "messages": [{"bot_id": "B_BOT", "text": "지금 반영할까요?"}]
+        })
+        listener = EventListener(client, registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
+                 "text": "네"}
+        ctx = listener.from_message(event)
+        assert ctx is not None
+        assert ctx.unaddressed is True
 
     def test_리액션은_대상_이모지와_봇_자신의_답변일_때만_받는다(
         self, gate: ResponseGate
     ) -> None:
         registry = ChannelRegistry(Path("/nonexistent.json"))
-        listener = EventListener(FakeWebClient(), registry, gate, bot_user_id="U_BOT")
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
         allowed = frozenset({POSTMORTEM_EMOJI, FORMAT_REVIEW_EMOJI})
         good = {"reaction": POSTMORTEM_EMOJI, "item": {"type": "message", "channel": "C1", "ts": "1.0"},
                 "item_user": "U_BOT", "user": "U1"}
@@ -552,12 +587,32 @@ class TestTranscriptBuilder:
         builder = TranscriptBuilder(
             client, settings, notices,
             name_resolver=lambda uid: {"U1": "김철수"}.get(uid, ""),
-            bot_user_id="U_BOT", bot_display_name="테스트봇",
+            identity=fake_identity(), bot_display_name="테스트봇",
         )
         body = builder.thread_transcript("C1", "1700000000.000001", before_ts=None)
         assert "김철수" in body
         assert "테스트봇" in body
         assert "안녕하세요" in body
+
+    def test_다른_봇의_말은_이봇의_이름으로_적히지_않는다(
+        self, settings: RuntimeSettings, notices: NoticeCatalog
+    ) -> None:
+        """화자 표시만 어긋나는 것이 아니다. 되짚기가 같은 판정을 쓴다."""
+        client = FakeWebClient()
+        client.set_replies_response({
+            "messages": [
+                {"ts": "1700000000.000001", "bot_id": "B_OTHER",
+                 "bot_profile": {"name": "잠만보"}, "text": "다른 봇의 답"},
+            ]
+        })
+        builder = TranscriptBuilder(
+            client, settings, notices, name_resolver=lambda uid: "",
+            identity=fake_identity(), bot_display_name="테스트봇",
+        )
+        body = builder.thread_transcript("C1", "1700000000.000001", before_ts=None)
+        assert "다른 봇의 답" in body
+        assert "테스트봇" not in body
+        assert "잠만보" in body
 
     def test_공지문은_기록에서_제외한다(
         self, settings: RuntimeSettings, notices: NoticeCatalog
@@ -570,7 +625,7 @@ class TestTranscriptBuilder:
         })
         builder = TranscriptBuilder(
             client, settings, notices, name_resolver=lambda uid: "김철수",
-            bot_user_id="U_BOT",
+            identity=fake_identity(),
         )
         body = builder.thread_transcript("C1", "1700000000.000001", before_ts=None)
         assert body == ""
@@ -579,7 +634,7 @@ class TestTranscriptBuilder:
         self, settings: RuntimeSettings, notices: NoticeCatalog
     ) -> None:
         builder = TranscriptBuilder(
-            FakeWebClient(), settings, notices, name_resolver=lambda uid: ""
+            FakeWebClient(), settings, notices, name_resolver=lambda uid: "", identity=fake_identity()
         )
         assert builder.with_history("", "지금 말") == "지금 말"
 
@@ -587,7 +642,7 @@ class TestTranscriptBuilder:
         self, settings: RuntimeSettings, notices: NoticeCatalog
     ) -> None:
         builder = TranscriptBuilder(
-            FakeWebClient(), settings, notices, name_resolver=lambda uid: ""
+            FakeWebClient(), settings, notices, name_resolver=lambda uid: "", identity=fake_identity()
         )
         out = builder.with_history("[10:00 김철수]\n안녕", "지금 말")
         assert "지난 대화" in out

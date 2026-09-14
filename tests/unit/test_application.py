@@ -821,6 +821,42 @@ class Test자기메시지판정:
         app.close()
 
 
+class Test신원판정연결:
+    """같은 판정을 여러 부품이 각자 들고 있으면 조립이 일부에만 값을 준다.
+
+    실제로 그랬다. `TranscriptBuilder` 는 `bot_id` 도 `bot_user_id` 도 못 받았고
+    `EventListener` 는 `bot_user_id` 만 받았다. 둘 다 생성자 기본값이 빈
+    문자열이라 조용히 예전 판정으로 돌아갔고, 부품 시험은 전부 통과했다.
+    """
+
+    def test_대화록_복원이_조립의_신원을_쓴다(self, app: Application) -> None:
+        """다른 봇의 말이 이 봇의 말로 대화록에 적히면 화자 표시가 어긋난다."""
+        assert app._transcript_builder()._identity is app.identity
+        app.close()
+
+    def test_이벤트_수신이_조립의_신원을_쓴다(self, app: Application) -> None:
+        """다른 봇만 있는 스레드를 이 봇이 이미 참여한 것으로 보면 끼어든다."""
+        listener = app.ingress()._listener
+        assert listener._identity is app.identity
+        app.close()
+
+    def test_봇자신의_판정도_같은_신원을_쓴다(self, app: Application) -> None:
+        """판정 근거가 부품마다 다르면 같은 메시지에 서로 다른 답이 나온다."""
+        client = app._client
+        client.auth_test = lambda **kwargs: {  # type: ignore[method-assign]
+            "ok": True, "user_id": "U_ME", "bot_id": "B_ME",
+        }
+        assert app._is_self_message({"bot_id": "B_OTHER"}) is False
+        assert app.identity.is_self({"bot_id": "B_OTHER"}) is False
+        assert app._is_self_message({"bot_id": "B_ME"}) is True
+        app.close()
+
+    def test_같은_신원_객체를_되풀이_쓴다(self, app: Application) -> None:
+        """부품마다 새로 만들면 조회가 그 수만큼 일어나고 실패가 갈린다."""
+        assert app.identity is app.identity
+        app.close()
+
+
 class Test연결감시연결:
     """소켓 오류를 세는 것과 그 값을 보고 판정하는 것은 다르다.
 
