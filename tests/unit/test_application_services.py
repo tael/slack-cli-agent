@@ -56,17 +56,35 @@ def runner_factory_names() -> list[str]:
     return names
 
 
+RUNNER_ARGS: dict[str, Any] = {
+    "job_purge_runner": lambda app: (),
+    "watch_runner": lambda app: (),
+    "state_snapshot_runner": lambda app: (),
+    "roster_refresher": lambda app: (),
+    "attachment_cleanup_runner": lambda app: (),
+    "health_runner": lambda app: (lambda 사유: None,),
+    "catchup_retry_runner": lambda app: (app.worker(),),
+}
+
+
 class Test모든실행기가어딘가에서기동된다:
     def test_소스에서_실행기_팩토리를_찾는다(self) -> None:
         """대조의 근거가 실제로 잡히는지 먼저 본다. 빈 목록이면 뒤의 시험이 공전한다."""
         assert len(runner_factory_names()) >= 5
 
+    def test_모든_팩토리의_호출법을_이_시험이_안다(self, app: Application) -> None:
+        """인자가 필요한 팩토리는 여기 적어 둔다. 새 팩토리가 생기면 먼저 여기서 걸린다."""
+        미상 = [이름 for 이름 in runner_factory_names() if 이름 not in RUNNER_ARGS]
+        assert 미상 == [], f"호출법을 모르는 실행기 팩토리: {미상}"
+
     def test_정의된_실행기가_전부_어느_묶음엔가_들어_있다(self, app: Application) -> None:
-        묶음 = (*app.ingress_services(lambda 사유: None).runner_names, *app.worker_services().runner_names)
+        묶음 = (
+            *app.ingress_services(lambda 사유: None).runner_names,
+            *app.worker_services(app.worker()).runner_names,
+        )
         누락: list[str] = []
         for 이름 in runner_factory_names():
-            팩토리 = getattr(app, 이름)
-            러너 = 팩토리(lambda 사유: None) if 이름 == "health_runner" else 팩토리()
+            러너 = getattr(app, 이름)(*RUNNER_ARGS[이름](app))
             if 러너.name not in 묶음:
                 누락.append(f"{이름} (러너 이름 {러너.name})")
         assert 누락 == [], f"어느 프로세스에서도 안 띄우는 실행기: {누락}"
@@ -80,12 +98,17 @@ class Test묶음구성:
             "attachment_cleanup",
         }
 
-    def test_워커_묶음은_상태기록과_감시와_정리를_띄운다(self, app: Application) -> None:
-        assert set(app.worker_services().runner_names) == {"state_snapshot", "watch_jobs", "job_purge"}
+    def test_워커_묶음은_상태기록과_감시와_정리와_되짚기재시도를_띄운다(self, app: Application) -> None:
+        assert set(app.worker_services(app.worker()).runner_names) == {
+            "state_snapshot",
+            "watch_jobs",
+            "job_purge",
+            "catchup_retry",
+        }
 
     def test_명부_갱신은_접수에만_있다(self, app: Application) -> None:
         """워커는 여럿 뜰 수 있어 거기서 갱신하면 같은 파일을 동시에 쓴다."""
-        assert "roster" not in app.worker_services().runner_names
+        assert "roster" not in app.worker_services(app.worker()).runner_names
 
     def test_같은_객체를_돌려준다(self, app: Application) -> None:
         """묶음이 매번 새 실행기를 만들면 기동한 것과 정지 요청을 받는 것이 달라진다."""
@@ -95,7 +118,7 @@ class Test묶음구성:
 
 class Test묶음이실제로기동한다:
     def test_with_로_열면_전부_돌고_나오면_멈춘다(self, app: Application, monkeypatch: Any) -> None:
-        with app.worker_services() as 묶음:
+        with app.worker_services(app.worker()) as 묶음:
             assert all(러너.is_running() for 러너 in 묶음.runners)
         for 러너 in 묶음.runners:
             러너.join(timeout=2.0)
@@ -126,3 +149,36 @@ class Test첨부정리:
 
     def test_정리_실행기가_접수_묶음에_들어_있다(self, app: Application) -> None:
         assert "attachment_cleanup" in app.ingress_services(lambda 사유: None).runner_names
+
+
+class Test되짚기재시도:
+    """마치지 못한 되짚기를 다시 보는 실행기가 실제로 도는가.
+
+    `CatchupService.retry_pending()` 은 호출처가 없으면 한 번도 실행되지 않는다.
+    그러면 슬랙이 채널 기록을 빈 목록으로 준 구간의 요청은 영영 안 잡힌다.
+    """
+
+    def test_실행기가_워커의_재시도를_부른다(self, app: Application) -> None:
+        불린다: list[bool] = []
+        워커 = app.worker()
+        워커.retry_catchup = lambda: 불린다.append(True) or []  # type: ignore[method-assign]
+        app.catchup_retry_runner(워커)._task()
+        assert 불린다 == [True]
+
+    def test_오래_막힌_채널은_소유자에게_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        """알리지 않으면 되짚기가 몇 시간째 안 되는 것을 아무도 모른다."""
+        from slack_cli_agent.reliability.catchup import RetryStatus
+
+        워커 = app.worker()
+        워커.retry_catchup = lambda: [RetryStatus(channel="C9", stuck_sec=7200.0, alert=True)]  # type: ignore[method-assign]
+        app.catchup_retry_runner(워커)._task()
+        보낸것 = [kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"]
+        assert any("C9" in str(kwargs) for kwargs in 보낸것), 보낸것
+
+    def test_막히지_않았으면_안_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        from slack_cli_agent.reliability.catchup import RetryStatus
+
+        워커 = app.worker()
+        워커.retry_catchup = lambda: [RetryStatus(channel="C1", stuck_sec=1.0, alert=False)]  # type: ignore[method-assign]
+        app.catchup_retry_runner(워커)._task()
+        assert [이름 for 이름, _ in client.calls if 이름 == "chat_postMessage"] == []
