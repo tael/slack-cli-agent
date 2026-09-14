@@ -23,7 +23,7 @@ from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..config.channel import ChannelRegistry
 from ..engine.base import Engine, EngineRequest, EngineResponse, Usage
-from ..engine.runner import EngineRunner
+from ..engine.runner import EngineInvoker
 from ..guard.base import GuardContext
 from ..guard.pipeline import GuardPipeline
 from ..guard.watch import WatchPromiseGuard
@@ -60,7 +60,10 @@ class RequestPipeline:
         prompt_composer: SystemPromptComposer,
         session_manager: SessionManager,
         engine: Engine,
-        engine_runner: EngineRunner,
+        # 엔진 실행 한 걸음. 실행기를 직접 받지 않는다 — 폴백이 설정돼
+        # 있어도 `EngineRunner.run()` 을 직접 부르면 `FallbackEngine.run()`
+        # 이 안 불려 한도 소진 때 전환과 상태 기록이 건너뛰어진다.
+        invoker: EngineInvoker,
         guard_pipeline: GuardPipeline,
         publisher: MessagePublisher,
         audit: AuditLog,
@@ -92,7 +95,7 @@ class RequestPipeline:
         self._composer = prompt_composer
         self._sessions = session_manager
         self._engine = engine
-        self._runner = engine_runner
+        self._invoker = invoker
         self._guards = guard_pipeline
         self._publisher = publisher
         self._audit = audit
@@ -206,7 +209,7 @@ class RequestPipeline:
             workdir=workdir,
             trust_level=principal.trust,
         )
-        response = self._runner.run(self._engine, request)
+        response = self._invoker.invoke(request)
 
         if not response.ok and self._sessions.should_retry_with_new_session(
             response.failure_reason or ""
@@ -214,7 +217,7 @@ class RequestPipeline:
             decision = self._sessions.reset(key, engine=self._engine.name)
             prompt = self._build_prompt(ctx, scope, decision)
             request = replace(request, session_id=decision.session_id, resume=False, prompt=prompt)
-            response = self._runner.run(self._engine, request)
+            response = self._invoker.invoke(request)
 
         elapsed = self._now() - start
         # 성공·실패·침묵 어느 경로로 갈라지기 전에 한 번만 부른다. 분기마다
@@ -342,7 +345,7 @@ class RequestPipeline:
         if not addendum:
             return body, None
 
-        rerun = self._runner.run(self._engine, replace(
+        rerun = self._invoker.invoke(replace(
             request,
             prompt=late_addendum_prompt(addendum),
             resume=True,
@@ -392,7 +395,7 @@ class RequestPipeline:
         rerun_request = replace(
             request, prompt=result.rerun.rewrite_prompt, resume=True, session_id=decision.session_id,
         )
-        rerun_response = self._runner.run(self._engine, rerun_request)
+        rerun_response = self._invoker.invoke(rerun_request)
         if not rerun_response.ok:
             # 다시 쓰기 자체가 실패했다. 앞서 가드를 거친 본문을 그대로 쓴다.
             return result.body, _watch_desc_of(result)

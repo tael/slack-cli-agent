@@ -20,6 +20,7 @@ from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.pipeline import RequestPipeline
 from slack_cli_agent.core.ports import HandleOutcome
 from slack_cli_agent.engine.base import Engine, EngineRequest, EngineResponse, Usage
+from slack_cli_agent.engine.runner import DirectInvoker
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard, RerunRequest
 from slack_cli_agent.guard.pipeline import GuardPipeline
 from slack_cli_agent.guard.watch import WatchPromiseGuard
@@ -306,7 +307,7 @@ def build_pipeline(
         prompt_composer=comp,
         session_manager=session_manager,
         engine=engine,
-        engine_runner=runner,
+        invoker=DirectInvoker(runner, engine),
         guard_pipeline=guard_pipeline,
         publisher=pub,
         audit=audit_log,
@@ -1049,3 +1050,43 @@ class Test감시등록:
         pipeline.handle(make_ctx())
 
         assert "[[WATCH:" not in deps["publisher"].posted[-1]["text"]
+
+
+class Test엔진호출경로:
+    """파이프라인이 실행기를 직접 부르지 않는가.
+
+    `EngineRunner.run(engine, request)` 를 직접 부르면 폴백이 설정돼 있어도
+    `FallbackEngine.run()` 이 안 불린다. 한도 소진 때 대체 엔진 전환과 상태
+    기록이 통째로 건너뛰어진다. 파이프라인은 실행 부품 하나만 봐야 한다.
+    """
+
+    def test_요청이_주입한_호출부품을_거친다(self, tmp_path: Path) -> None:
+        받은요청: list[Any] = []
+
+        class 호출부품:
+            def invoke(self, request):
+                받은요청.append(request)
+                return EngineResponse(
+                    ok=True, body="답", session_id="s1", model_actual=None,
+                    elapsed=0.1, turns=1, usage=None, raw={},
+                )
+
+        pipeline, _parts = build_pipeline(
+            tmp_path=tmp_path,
+            responses=[EngineResponse(
+                ok=True, body="쓰이지 않는다", session_id="s0", model_actual=None,
+                elapsed=0.1, turns=1, usage=None, raw={},
+            )],
+        )
+        pipeline._invoker = 호출부품()
+        pipeline.handle(make_ctx())
+        assert len(받은요청) == 1
+
+    def test_다시쓰기도_같은_부품을_거친다(self, tmp_path: Path) -> None:
+        """재호출만 실행기를 직접 부르면 그 경로에서 전환이 안 일어난다."""
+        import inspect
+
+        from slack_cli_agent.core import pipeline as 파이프라인모듈
+
+        본문 = inspect.getsource(파이프라인모듈.RequestPipeline)
+        assert "self._runner.run(" not in 본문

@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -74,6 +75,41 @@ class EngineRunner:
             cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
             env=dict(env) if env is not None else None,
         )
+
+
+class EngineInvoker(ABC):
+    """엔진을 한 번 실행하는 부품. 호출부는 폴백 여부를 모른다.
+
+    `EngineRunner.run(engine, request)` 를 호출부가 직접 부르면, 폴백이
+    설정돼 있어도 `FallbackEngine.run()` 이 안 불린다. 그 클래스의 전환 판정과
+    상태 기록이 통째로 건너뛰어져, 한도가 소진돼도 대체 엔진으로 안 넘어간다.
+    어느 쪽을 쓸지는 조립이 정하고, 호출부는 이 계약만 본다.
+    """
+
+    @abstractmethod
+    def invoke(self, request: EngineRequest) -> EngineResponse:
+        """요청 하나를 실행한다."""
+
+
+class DirectInvoker(EngineInvoker):
+    """폴백이 없을 때. 실행기로 그 엔진을 그대로 돌린다."""
+
+    def __init__(self, runner: EngineRunner, engine: Engine) -> None:
+        self._runner = runner
+        self._engine = engine
+
+    def invoke(self, request: EngineRequest) -> EngineResponse:
+        return self._runner.run(self._engine, request)
+
+
+class FallbackInvoker(EngineInvoker):
+    """폴백이 있을 때. 전환 판정을 포함한 `FallbackEngine.run()` 을 부른다."""
+
+    def __init__(self, engine: "FallbackEngine") -> None:
+        self._engine = engine
+
+    def invoke(self, request: EngineRequest) -> EngineResponse:
+        return self._engine.run(request)
 
 
 class FallbackEngine(Engine):
