@@ -156,6 +156,7 @@ from .ingress import IngressService
 from .lifecycle import InflightCounter
 from .periodic import PeriodicRunner
 from .pipeline import RequestPipeline
+from .services import ServiceGroup
 from .worker import Worker
 
 log = logging.getLogger(__name__)
@@ -235,6 +236,7 @@ class Application:
         # 연결 점검기와 그 주기 실행기. 점검기는 끊김 시작 시각을 안에
         # 들고 있어, 회차마다 새로 만들면 복구 판정이 나오지 않는다.
         self._health_runner: PeriodicRunner | None = None
+        self._attachments: AttachmentStore | None = None
         # 엔진 실행 부품. 엔진을 만들 때 함께 정한다 — 폴백이 설정돼
         # 있는지는 그 시점에만 드러나고, 나중에 종류로 되짚으면 조립이
         # 무엇을 만들었는지가 코드에서 사라진다.
@@ -700,11 +702,7 @@ class Application:
                 dedup=DeduplicationTracker(),
                 queue=self.queue(),
                 reactions=self.reactions(),
-                attachments=AttachmentStore(
-                    attach_dir=self._profile.attach_dir,
-                    token_provider=self._token_provider,
-                    downloader=self._download,
-                ),
+                attachments=self.attachments(),
                 admin_router=self._admin_router(),
                 admin_context_builder=self._admin_context,
                 reply=self._reply,
@@ -913,6 +911,48 @@ class Application:
                 name="health",
             )
         return self._health_runner
+
+    def attachments(self) -> AttachmentStore:
+        """첨부 저장소. 한 번 만들어 계속 쓴다.
+
+        접수와 정리 실행기가 다른 객체를 보면 저장하는 디렉터리와 지우는
+        디렉터리가 갈릴 수 있고, 익명으로 만들면 정리 실행기가 그것을 참조할
+        방법이 없다.
+        """
+        if self._attachments is None:
+            self._attachments = AttachmentStore(
+                attach_dir=self._profile.attach_dir,
+                token_provider=self._token_provider,
+                downloader=self._download,
+            )
+        return self._attachments
+
+    def attachment_cleanup_runner(self) -> PeriodicRunner:
+        """오래된 첨부를 주기적으로 지운다. 안 띄우면 받은 파일이 계속 남는다."""
+        return PeriodicRunner(
+            self.attachments().cleanup,
+            self._settings.attachment_cleanup_interval_sec,
+            name="attachment_cleanup",
+        )
+
+    def ingress_services(self, restart: Callable[[str], None]) -> ServiceGroup:
+        """접수 프로세스가 띄우는 주기 실행기 묶음.
+
+        연결 점검은 소켓 연결이 이 프로세스에만 있으므로 여기서 안 띄우면
+        어디서도 안 돈다. 명부 갱신도 접수가 맡는다 — 워커는 여럿 뜰 수 있어
+        거기서 돌리면 같은 파일을 여러 프로세스가 동시에 쓴다.
+        """
+        return ServiceGroup(
+            [self.health_runner(restart), self.roster_refresher(), self.attachment_cleanup_runner()],
+            name="ingress",
+        )
+
+    def worker_services(self) -> ServiceGroup:
+        """워커 프로세스가 띄우는 주기 실행기 묶음."""
+        return ServiceGroup(
+            [self.state_snapshot_runner(), self.watch_runner(), self.job_purge_runner()],
+            name="worker",
+        )
 
     def self_restarter(self, exit_process: Callable[[int], None] | None = None) -> SelfRestarter:
         """기본 재기동 동작. 소유자에게 사유를 알리고 스스로 나간다.
