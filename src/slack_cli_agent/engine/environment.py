@@ -96,10 +96,58 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         }
 
 
-_POLICY_CLASSES: dict[str, type[EngineEnvironmentPolicy]] = {
-    "codex": CodexEnvironmentPolicy,
-    "claude": ClaudeEnvironmentPolicy,
-}
+class EngineEnvironmentPolicyRegistry:
+    """엔진 이름별 환경 변수 정책 클래스 등록소.
+
+    ``engine/registry.py`` 의 ``EngineRegistry`` 와 같은 방식이다. 이 저장소는
+    특정 조직에 묶이지 않는 범용 유틸리티를 지향하는데, 정책 클래스를 이
+    모듈에 dict 리터럴로 고정해 두면 쓰는 쪽이 자기 엔진의 정책을 못 붙인다.
+    ``register()`` 로 열어 둔다.
+    """
+
+    def __init__(self) -> None:
+        self._classes: dict[str, type[EngineEnvironmentPolicy]] = {}
+
+    def register(self, name: str, policy_class: type[EngineEnvironmentPolicy]) -> None:
+        """엔진 이름에 정책 클래스를 등록한다. 이미 있는 이름이면 덮어쓴다."""
+        self._classes[name] = policy_class
+
+    def unregister(self, name: str) -> None:
+        """등록을 지운다. 없는 이름이면 조용히 넘어간다.
+
+        시험이 등록한 정책이 다음 시험에 남지 않도록 정리할 때 쓴다. 전역
+        가변 상태(모듈 레벨 ``registry``)를 쓰는 시험은 반드시 ``finally``
+        에서 이 메서드로 되돌려야 한다.
+        """
+        self._classes.pop(name, None)
+
+    def create(
+        self, name: str, profile_name: str, home_dir: Path | None,
+    ) -> EngineEnvironmentPolicy:
+        """엔진 이름으로 알맞은 정책을 만든다."""
+        cls = self._classes.get(name)
+        if cls is None:
+            known = ", ".join(sorted(self._classes)) or "없음"
+            raise ConfigError(f"엔진 {name} 의 환경 변수 정책이 없다. 등록된 엔진: {known}")
+        return cls(profile_name=profile_name, home_dir=home_dir)
+
+    def known_names(self) -> list[str]:
+        """지금 등록된 엔진 이름을 정렬해 돌려준다."""
+        return sorted(self._classes)
+
+
+def _build_default_registry() -> EngineEnvironmentPolicyRegistry:
+    """내장 엔진(codex·claude)만 등록된 새 레지스트리를 만든다."""
+    default_registry = EngineEnvironmentPolicyRegistry()
+    default_registry.register("codex", CodexEnvironmentPolicy)
+    default_registry.register("claude", ClaudeEnvironmentPolicy)
+    return default_registry
+
+
+#: 이 모듈의 기본 등록소. ``create_environment_policy()`` 가 이 인스턴스를
+#: 쓴다. 새 엔진을 붙이려면 ``registry.register(name, policy_class)`` 를
+#: 부른다 — dict 리터럴을 고치는 대신 이 API 로 확장한다.
+registry = _build_default_registry()
 
 
 def create_environment_policy(
@@ -107,10 +155,7 @@ def create_environment_policy(
 ) -> EngineEnvironmentPolicy:
     """엔진 이름으로 알맞은 정책을 만든다.
 
-    ``engine/registry.py`` 의 이름 기반 등록소와 같은 방식이다.
+    기존 호출부(``core/application.py``)의 시그니처를 그대로 유지한다.
+    이름 조회는 모듈 전역 ``registry`` 에 위임한다.
     """
-    cls = _POLICY_CLASSES.get(engine_name)
-    if cls is None:
-        known = ", ".join(sorted(_POLICY_CLASSES)) or "없음"
-        raise ConfigError(f"엔진 {engine_name} 의 환경 변수 정책이 없다. 등록된 엔진: {known}")
-    return cls(profile_name=profile_name, home_dir=home_dir)
+    return registry.create(engine_name, profile_name=profile_name, home_dir=home_dir)
