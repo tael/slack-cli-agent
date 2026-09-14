@@ -468,6 +468,8 @@ class Application:
             self._notices,
             self._names,
             self._settings,
+            identity=self.identity,
+            bot_display_name=self._profile.display_name,
             owner_user_id=self._profile.owner_user_id,
         )
 
