@@ -11,7 +11,12 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from slack_cli_agent.engine.transcript import ClaudeTranscriptReader, TranscriptEvent
+from slack_cli_agent.engine.transcript import (
+    ClaudeTranscriptReader,
+    SessionTranscriptReader,
+    TranscriptEvent,
+    TranscriptReaderRegistry,
+)
 
 
 def _write_jsonl(path: Path, lines: list[dict]) -> None:
@@ -173,3 +178,73 @@ class TestClaudeTranscriptReader입력토큰:
             },
         ])
         assert reader.read("s1")[0].input_tokens is None
+
+
+class Test기록리더선택:
+    """엔진마다 세션 기록 형식이 다르다. 어느 리더를 쓸지 엔진 이름으로 고른다.
+
+    원본은 `claude_transcript()`(bot.py:3076)에서 codex 프로필이면 바로 None 을
+    돌려준다. 주석에 근거가 적혀 있다 — "없는 파일을 찾아 헤매다 빈 표를 내는
+    것보다 낫다". 우리는 그 판정을 안 옮겨, codex 프로필에서도 Claude 기록
+    경로를 뒤지고 있었다.
+    """
+
+    def test_claude_는_claude_리더를_준다(self, tmp_path: Path) -> None:
+        reader = TranscriptReaderRegistry().create("claude", tmp_path)
+        assert isinstance(reader, ClaudeTranscriptReader)
+
+    def test_codex_는_claude_기록이_있어도_안_읽는다(self, tmp_path: Path) -> None:
+        """codex 는 같은 형식의 기록을 안 남긴다. 그 경로를 찾지 않는다.
+
+        "찾지 않는다" 는 결과가 빈 목록인 것만으로는 안 드러난다 — Claude
+        리더도 파일이 없으면 빈 목록이다. 기록이 실제로 있는 상태를 만들어
+        대조한다.
+        """
+        workdir = tmp_path / "work"
+        home = tmp_path / "home"
+        registry = TranscriptReaderRegistry()
+
+        claude = registry.create("claude", workdir, home=home)
+        assert isinstance(claude, ClaudeTranscriptReader)
+        path = claude.transcript_path("S1")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({
+                "timestamp": "2026-09-14T10:00:00Z",
+                "message": {"content": [{"type": "text", "text": "답"}]},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        # 대조군 — 같은 자리를 Claude 리더는 읽는다
+        assert claude.read("S1") != []
+
+        assert registry.create("codex", workdir, home=home).read("S1") == []
+
+    def test_모르는_엔진도_빈_기록을_준다(self, tmp_path: Path) -> None:
+        """예외를 내지 않는다. 구간 분해가 실패해도 이미 끝난 요청 처리를 망기면 안 된다."""
+        reader = TranscriptReaderRegistry().create("남의엔진", tmp_path)
+        assert reader.read("어떤세션") == []
+
+    def test_등록을_열어_둔다(self, tmp_path: Path) -> None:
+        class 남의리더(SessionTranscriptReader):
+            def __init__(self, workdir: Path, home: Path | None = None) -> None:
+                self.workdir = workdir
+
+            def read(self, session_id: str) -> list[TranscriptEvent]:
+                return []
+
+        registry = TranscriptReaderRegistry()
+        registry.register("남의엔진", 남의리더)
+        assert isinstance(registry.create("남의엔진", tmp_path), 남의리더)
+
+    def test_등록소끼리_서로_영향이_없다(self, tmp_path: Path) -> None:
+        class 남의리더(SessionTranscriptReader):
+            def __init__(self, workdir: Path, home: Path | None = None) -> None:
+                self.workdir = workdir
+
+            def read(self, session_id: str) -> list[TranscriptEvent]:
+                return []
+
+        first = TranscriptReaderRegistry()
+        first.register("남의엔진", 남의리더)
+        assert not isinstance(TranscriptReaderRegistry().create("남의엔진", tmp_path), 남의리더)
