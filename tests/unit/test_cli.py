@@ -6,17 +6,16 @@
 
 from __future__ import annotations
 
-import argparse
 import io
-import signal
 import json
+import signal
 from pathlib import Path
 
 import pytest
 
+from slack_cli_agent.cli import IngressCommand, SlackCliAgent, WorkerCommand
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.lifecycle import InflightCounter
-from slack_cli_agent.cli import IngressCommand, PreflightCommand, SlackCliAgent, WorkerCommand
 from slack_cli_agent.storage.database import Database
 
 MINIMAL_PROFILE = {
@@ -227,16 +226,16 @@ class FakeApplication:
         # 종료 대기 상한을 여기서 가져간다. 실제 Application 과 같은 계약이다.
         self.settings = RuntimeSettings()
 
-    def state_snapshot_runner(self) -> "FakeRefresher":
+    def state_snapshot_runner(self) -> FakeRefresher:
         return self.snapshot_runner
 
-    def watch_runner(self) -> "FakeRefresher":
+    def watch_runner(self) -> FakeRefresher:
         return self.watch_runner_
 
-    def job_purge_runner(self) -> "FakeRefresher":
+    def job_purge_runner(self) -> FakeRefresher:
         return self.purge_runner_
 
-    def health_runner(self, restart: object) -> "FakeRefresher":
+    def health_runner(self, restart: object) -> FakeRefresher:
         self.health_restart = restart
         return self.health_runner_
 
@@ -247,7 +246,7 @@ class FakeApplication:
     def mark_shutting_down(self) -> None:
         self.shutdown_marks += 1
 
-    def roster_refresher(self) -> "FakeRefresher":
+    def roster_refresher(self) -> FakeRefresher:
         return self._roster_refresher
 
     def connection_watch(self) -> object:
@@ -561,7 +560,7 @@ class TestWorkerCommand종료신호:
     워커가 정체 판정 시각까지 그 작업을 못 집는다.
     """
 
-    def _run(self, tmp_path: Path, worker: "FakeWorker", registered: list) -> int:
+    def _run(self, tmp_path: Path, worker: FakeWorker, registered: list) -> int:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=worker)
@@ -699,7 +698,7 @@ class TestIngress연결점검주기:
     """
 
     @staticmethod
-    def _기동한다(tmp_path: Path, app: "FakeApplication", token: bool = True) -> int:
+    def _기동한다(tmp_path: Path, app: FakeApplication, token: bool = True) -> int:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         cli = SlackCliAgent([IngressCommand(application_factory=lambda profile: app)])

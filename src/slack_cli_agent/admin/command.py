@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import ClassVar, TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from ..auth.principal import Principal, TrustLevel
 
@@ -26,8 +26,8 @@ class AdminContext:
     principal: Principal
     channel: str
     thread_ts: str
-    channels: "ChannelRegistry"
-    profile: "Profile"
+    channels: ChannelRegistry
+    profile: Profile
     text: str = ""
     """받은 본문 그대로. 라우터가 채운다.
 

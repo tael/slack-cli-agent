@@ -29,7 +29,7 @@ class EngineRegistry:
             raise ConfigError(f"{cls.__name__} 에 name 이 없다")
         self._classes[cls.name] = cls
 
-    def create(self, name: str, profile: "Profile", settings: "RuntimeSettings") -> Engine:
+    def create(self, name: str, profile: Profile, settings: RuntimeSettings) -> Engine:
         cls = self._classes.get(name)
         if cls is None:
             known = ", ".join(sorted(self._classes)) or "없음"

@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +18,13 @@ from slack_cli_agent.auth.policy import EFFORT_LEVELS, OWNER_EFFORT_MIN
 from slack_cli_agent.config.channel import CHAT_DEFAULT
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
-from slack_cli_agent.observability.slow_report import SessionContextCalculator
-from slack_cli_agent.engine.base import Engine, EngineRequest, EngineResponse, TrustLevel, UsageLimit
+from slack_cli_agent.engine.base import (
+    Engine,
+    EngineRequest,
+    EngineResponse,
+    TrustLevel,
+    UsageLimit,
+)
 from slack_cli_agent.engine.runner import EngineRunner, FallbackEngine
 from slack_cli_agent.engine.switcher import EngineSwitcher
 from slack_cli_agent.guard.watch import (
@@ -30,8 +34,7 @@ from slack_cli_agent.guard.watch import (
     WATCH_RE,
     WATCH_STILL_TAG,
 )
-from slack_cli_agent.render.blocks import SPLIT_MARKER, BlockBuilder
-from slack_cli_agent.render.splitter import ATOMIC_HEADS
+from slack_cli_agent.observability.slow_report import SessionContextCalculator
 from slack_cli_agent.reliability.catchup import (
     CATCHUP_ALERT_AFTER_SEC,
     CATCHUP_MAX_THREADS_PER_CHANNEL,
@@ -39,6 +42,8 @@ from slack_cli_agent.reliability.catchup import (
     DONE_EMOJI,
 )
 from slack_cli_agent.reliability.health import SOCKET_ERROR_WINDOW_SEC
+from slack_cli_agent.render.blocks import SPLIT_MARKER, BlockBuilder
+from slack_cli_agent.render.splitter import ATOMIC_HEADS
 from slack_cli_agent.review.base import REVIEW_SPLIT
 from slack_cli_agent.slack.attachments import AttachmentStore
 from slack_cli_agent.slack.gate import ASKED_BACK, REACTION_MAX_LEN, ResponseGate

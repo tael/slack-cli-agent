@@ -33,10 +33,9 @@ class TestInflightCounter:
 
     def test_work_컨텍스트는_예외가_나도_감소한다(self):
         counter = InflightCounter()
-        with pytest.raises(ValueError):
-            with counter.work():
-                assert counter.count == 1
-                raise ValueError("작업 중 예외")
+        with pytest.raises(ValueError), counter.work():
+            assert counter.count == 1
+            raise ValueError("작업 중 예외")
         assert counter.count == 0
 
 

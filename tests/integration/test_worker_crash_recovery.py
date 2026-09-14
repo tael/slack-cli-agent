@@ -41,7 +41,7 @@ def _ctx(ts: str, channel: str = "C_TEST") -> RequestContext:
 
 
 def _spawn_worker(action: str, db_path: Path, worker_id: str, status_path: Path) -> subprocess.Popen:
-    return subprocess.Popen(  # noqa: S603 - 시험이 통제하는 인자만 넘긴다
+    return subprocess.Popen(
         [sys.executable, str(_SCRIPT), action, str(db_path), worker_id, str(status_path)],
     )
 

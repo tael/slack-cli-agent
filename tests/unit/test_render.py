@@ -11,12 +11,11 @@ AST 추출 후 실행). 손으로 짐작한 값이 아니다.
 
 from __future__ import annotations
 
-
 import pytest
 
 from slack_cli_agent.config.settings import RuntimeSettings
+from slack_cli_agent.render.blocks import BlockBuilder
 from slack_cli_agent.render.markdown import MarkdownConverter
-from slack_cli_agent.render.blocks import BlockBuilder, SPLIT_MARKER
 from slack_cli_agent.render.splitter import ContentSplitter
 from slack_cli_agent.render.verifier import SplitVerifier
 

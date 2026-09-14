@@ -26,7 +26,7 @@ class Test신뢰등급정의는하나다:
         assert 엔진 is 권한계층
 
     def test_엔진모듈에별도정의가없다(self) -> None:
-        import slack_cli_agent.engine.base as base
+        from slack_cli_agent.engine import base
 
         assert "class TrustLevel" not in __import__("inspect").getsource(base)
 

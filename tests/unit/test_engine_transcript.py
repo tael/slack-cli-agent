@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from slack_cli_agent.engine.transcript import ClaudeTranscriptReader, TranscriptEvent
@@ -53,8 +53,8 @@ class TestClaudeTranscriptReader읽기:
             },
         ])
         events = reader.read("s1")
-        ts0 = datetime(2026, 9, 1, 0, 0, 0, tzinfo=timezone.utc).timestamp()
-        ts1 = datetime(2026, 9, 1, 0, 0, 5, tzinfo=timezone.utc).timestamp()
+        ts0 = datetime(2026, 9, 1, 0, 0, 0, tzinfo=UTC).timestamp()
+        ts1 = datetime(2026, 9, 1, 0, 0, 5, tzinfo=UTC).timestamp()
         assert events == [
             TranscriptEvent(ts=ts0, role="assistant", kind="tool_use",
                              brief="Bash ls -la", output_tokens=10),

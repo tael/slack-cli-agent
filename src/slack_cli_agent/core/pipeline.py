@@ -29,18 +29,17 @@ from ..guard.pipeline import GuardPipeline
 from ..guard.watch import WatchPromiseGuard
 from ..observability.audit import AuditLog
 from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter, tail_output
-from ..reliability.watchjobs import WatchJobPort
 from ..prompt.composer import SystemPromptComposer
 from ..prompt.sections import SILENT_MARK, CompositionContext
-from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
+from ..reliability.watchjobs import WatchJobPort
 from ..session.manager import SessionDecision, SessionManager
 from ..session.ports import SessionKey, SessionScope
+from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
 from ..slack.publisher import MessagePublisher
 from ..slack.reactions import ReactionMarker
 from ..slack.transcript import TranscriptBuilder
 from .context import RequestContext
 from .ports import HandleOutcome
-
 
 log = logging.getLogger(__name__)
 
@@ -79,10 +78,10 @@ class RequestPipeline:
         participants: Callable[[str, str], tuple[tuple[str, str], ...]] | None = None,
         # 발송 직전 스레드 재확인. 안 주면 그 확인을 아예 안 한다 — 슬랙
         # 조회가 한 번 더 나가므로 조립 코드에서 선택한다.
-        late_addendum: "LateAddendumChecker | None" = None,
+        late_addendum: LateAddendumChecker | None = None,
         # 재확인이 흡수한 말을 대기줄이 또 돌리지 않게 적어 두는 자리.
         # 두 경로가 같은 기록을 봐야 하므로 밖에서 하나를 만들어 공유한다.
-        consumption: "ThreadConsumption | None" = None,
+        consumption: ThreadConsumption | None = None,
         # 지켜보겠다는 약속을 등록할 감시 큐. 안 주면 등록을 안 한다 —
         # 가드가 태그를 뽑아내도 그 값을 넣을 곳이 없으면 아무도 다시 확인하지
         # 않는다. 원본 `register_watch_job()` 호출 위치에 대응한다.

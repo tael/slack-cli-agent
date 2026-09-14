@@ -50,7 +50,7 @@ class Usage:
     cache_read_tokens: int = 0
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any] | None) -> "Usage":
+    def from_mapping(cls, data: Mapping[str, Any] | None) -> Usage:
         if not isinstance(data, Mapping):
             return cls()
         return cls(
@@ -90,12 +90,12 @@ class Engine(ABC):
 
     name: ClassVar[str] = ""
 
-    def __init__(self, profile: "Profile", settings: "RuntimeSettings") -> None:
+    def __init__(self, profile: Profile, settings: RuntimeSettings) -> None:
         self.profile = profile
         self.settings = settings
 
     @property
-    def spec(self) -> "EngineSpec":
+    def spec(self) -> EngineSpec:
         """이 엔진 이름에 해당하는 프로필 블록.
 
         1차·2차 어느 쪽에 배정됐는지는 프로필의 type 값으로 가린다. 엔진

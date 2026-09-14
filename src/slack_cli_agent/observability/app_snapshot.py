@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Protocol
+from typing import Protocol
 
 from slack_cli_agent.core.lifecycle import InflightCounter
 

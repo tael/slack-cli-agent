@@ -21,10 +21,10 @@ from slack_cli_agent.engine.base import Usage
 from slack_cli_agent.engine.transcript import SessionTranscriptReader, TranscriptEvent
 from slack_cli_agent.observability.slow_report import (
     ElapsedDiagnostician,
-    SlowReportFormatter,
-    SlowRequestMeta,
     SessionContext,
     SessionContextCalculator,
+    SlowReportFormatter,
+    SlowRequestMeta,
     SlowRequestReporter,
     TimeBreakdown,
     TimeBreakdownCalculator,
@@ -513,7 +513,7 @@ class TestUsageRowBuilder세션행:
     행이 없는 편이 낫다.
     """
 
-    def _builder(self, used: int | None, limit: int | None) -> "UsageRowBuilder":
+    def _builder(self, used: int | None, limit: int | None) -> UsageRowBuilder:
         class 고정계산기:
             def compute(self, session_id: str, model: str | None = None) -> SessionContext:
                 return SessionContext(used=used, limit=limit)

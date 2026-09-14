@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 from pathlib import Path
 
@@ -69,12 +68,11 @@ class TestTransaction:
         db = Database(tmp_path / "state.db")
         db.migrate()
 
-        with pytest.raises(RuntimeError):
-            with db.transaction() as conn:
-                conn.execute(
-                    "INSERT INTO audit (at, kind, payload) VALUES (1, 'k', '{}')"
-                )
-                raise RuntimeError("중단")
+        with pytest.raises(RuntimeError), db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO audit (at, kind, payload) VALUES (1, 'k', '{}')"
+            )
+            raise RuntimeError("중단")
 
         assert db.connect().execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 0
 
