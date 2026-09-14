@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -90,6 +91,10 @@ class ProposalStore:
 
     def __init__(self, proposal_dir: Path) -> None:
         self._dir = proposal_dir
+        # 이 인스턴스가 쥔 잠금을 가리는 표식. 남이 쥔 잠금을 풀지 않기 위한
+        # 것이라 프로세스마다 달라야 하고, 같은 프로세스 안에서는 한 번에
+        # 하나만 잠그므로 인스턴스 하나에 하나면 충분하다.
+        self._token = uuid.uuid4().hex
 
     def latest(self) -> Outcome[LearningProposal]:
         """가장 최근 날짜의 제안. 파일이 없으면 부재, 파싱 실패면 판정 불가."""
@@ -130,6 +135,22 @@ class ProposalStore:
         self._write_json(path, payload)
         return path
 
+    def mark_done(self, day: str) -> Path:
+        """그날 배치를 끝냈다는 표식. 다음 주기가 이 날짜를 다시 집을지 본다.
+
+        `.applied` 와 구분한다 — 반영할 내용이 없는 날과 응답 기록이 아예
+        없는 날에도 배치는 끝난 것이고, 그것을 미완료로 두면 주기마다 같은
+        날짜를 다시 집는다. 반대로 제안 파일 존재로 판정하면 저장 뒤 반영이
+        실패한 날이 영영 다시 안 돈다.
+        """
+        self._dir.mkdir(parents=True, exist_ok=True)
+        path = self._dir / f"{day}.done"
+        self._write_json(path, {"done_at": datetime.now(UTC).isoformat()})
+        return path
+
+    def is_done(self, day: str) -> bool:
+        return (self._dir / f"{day}.done").exists()
+
     @staticmethod
     def _write_json(path: Path, payload: Mapping[str, object]) -> None:
         tmp = path.with_name(path.name + ".tmp")
@@ -146,38 +167,89 @@ class ProposalStore:
         오래된 잠금(``stale_after`` 보다 오래된 것)은 죽은 프로세스가 풀지
         못하고 남긴 것으로 보고 다시 가져온다. ``now`` 는 호출부의 시계를
         그대로 받는다 — 이 메서드가 실제 시계를 재지 않는다.
+
+        ``O_EXCL`` 은 생성만 보호한다. 오래된 잠금을 지우고 다시 만드는
+        경로는 그 사이에 다른 워커가 만든 잠금을 덮어쓸 수 있어, 둘 다
+        잠금을 얻었다고 보고 같은 날 배치를 두 번 돌린다. 그래서 회수를
+        ``rename`` 으로 집고 집은 것이 정말 오래된 것인지 다시 확인한다.
         """
         self._dir.mkdir(parents=True, exist_ok=True)
         path = self._lock_path(day)
         if self._try_create_lock(path):
             return True
+        if not self._reclaim_stale(path, now=now, stale_after=stale_after):
+            return False
+        return self._try_create_lock(path)
+
+    def _reclaim_stale(self, path: Path, *, now: datetime, stale_after: timedelta) -> bool:
+        """오래된 잠금을 치웠으면 True. 치울 것이 없거나 신선하면 False.
+
+        ``rename`` 은 원자적이라 동시에 시도한 여러 워커 중 하나만 성공한다.
+        판정과 집기 사이에 앞 잠금이 풀리고 다른 워커가 새 잠금을 만들었을 수
+        있으므로, 집은 것이 판정할 때 본 그 잠금인지 소유자로 대조한다.
+        """
+        owner = self._read_lock_owner(path)
+        if not self._is_stale(path, now=now, stale_after=stale_after):
+            return False
+        claimed = path.with_name(f"{path.name}.stale-{self._token}")
+        try:
+            os.rename(path, claimed)
+        except OSError:
+            return False
+        return self._confirm_claim(path, claimed, owner)
+
+    @staticmethod
+    def _confirm_claim(path: Path, claimed: Path, owner: str | None) -> bool:
+        """집은 것이 집으려던 그 잠금이면 지우고 True. 아니면 되돌리고 False."""
+        if ProposalStore._read_lock_owner(claimed) != owner:
+            os.replace(claimed, path)
+            return False
+        try:
+            claimed.unlink()
+        except OSError:
+            return False
+        return True
+
+    @staticmethod
+    def _read_lock_owner(path: Path) -> str | None:
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+
+    @staticmethod
+    def _is_stale(path: Path, *, now: datetime, stale_after: timedelta) -> bool:
         try:
             mtime = datetime.fromtimestamp(path.stat().st_mtime, UTC)
         except OSError:
             return False
-        if now - mtime < stale_after:
-            return False
-        try:
-            path.unlink()
-        except OSError:
-            return False
-        return self._try_create_lock(path)
+        return now - mtime >= stale_after
 
     def release_lock(self, day: str) -> None:
-        """잠금을 푼다. 이미 없으면 조용히 넘어간다."""
+        """내가 쥔 잠금만 푼다. 남의 잠금이면 그대로 둔다.
+
+        잠금 파일에 적힌 소유자가 나와 다르면 앞 잠금이 이미 풀리고 다른
+        워커가 새로 쥔 것이다. 그것을 지우면 그 워커가 도는 중에 또 한
+        프로세스가 같은 날 배치를 시작한다.
+        """
+        path = self._lock_path(day)
         try:
-            self._lock_path(day).unlink()
-        except FileNotFoundError:
-            pass
+            if path.read_text(encoding="utf-8").strip() != self._token:
+                return
+            path.unlink()
+        except OSError:
+            return
 
     def _lock_path(self, day: str) -> Path:
         return self._dir / f"{day}.lock"
 
-    @staticmethod
-    def _try_create_lock(path: Path) -> bool:
+    def _try_create_lock(self, path: Path) -> bool:
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             return False
-        os.close(fd)
+        try:
+            os.write(fd, self._token.encode())
+        finally:
+            os.close(fd)
         return True

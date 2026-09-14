@@ -76,14 +76,17 @@ class FakeAnalyzer:
 class Recorder:
     """notify 로 넘어온 문자열을 받아 둔다."""
 
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, result: bool = True) -> None:
         self.calls: list[str] = []
         self._fail = fail
+        # 발송기가 예외를 내지 않고 실패를 값으로 알리는 경우를 만든다.
+        self._result = result
 
-    def __call__(self, text: str) -> None:
+    def __call__(self, text: str) -> bool:
         if self._fail:
             raise RuntimeError("슬랙 chat.postMessage 실패")
         self.calls.append(text)
+        return self._result
 
 
 def make_clock(moment: datetime) -> object:
@@ -99,9 +102,10 @@ def make_batch(
     analyzer_fail: str | None = None,
     notify: Recorder | None = None,
     clock: object | None = None,
+    applier: object | None = None,
 ) -> tuple[LearningBatch, ProposalStore, Recorder]:
     store = ProposalStore(tmp_path / "proposals")
-    applier = LearningApplier(tmp_path / "knowledge", "테스트봇")
+    applier = applier if applier is not None else LearningApplier(tmp_path / "knowledge", "테스트봇")
     renderer = ProposalRenderer()
     builder = ProposalBuilder(FakeAnalyzer(analyzer_result, fail_reason=analyzer_fail))
     rec = notify if notify is not None else Recorder()
@@ -111,7 +115,7 @@ def make_batch(
         reactions=reactions or FakeReactions(),
         builder=builder,
         store=store,
-        applier=applier,
+        applier=applier,  # type: ignore[arg-type]  # 대역을 끼울 수 있게 둔다
         renderer=renderer,
         notify=rec,
         clock=fixed_clock,  # type: ignore[arg-type]
@@ -277,6 +281,94 @@ class TestProposalStoreLock:
         soon = now + timedelta(hours=1)
         assert store.acquire_lock(DAY, now=soon, stale_after=timedelta(hours=6)) is False
 
+    def test_완료_표식은_잠금과_별개다(self, tmp_path: Path) -> None:
+        store = ProposalStore(tmp_path)
+        assert store.is_done(DAY) is False
+        store.mark_done(DAY)
+        assert store.is_done(DAY) is True
+
+    def test_남이_쥔_잠금은_풀지_않는다(self, tmp_path: Path) -> None:
+        """워커가 여럿일 때 먼저 끝난 쪽이 남의 잠금을 지우면 배치가 두 번 돈다."""
+        holder = ProposalStore(tmp_path)
+        other = ProposalStore(tmp_path)
+        now = datetime(2026, 9, 14, 10, 0, tzinfo=UTC)
+        assert holder.acquire_lock(DAY, now=now) is True
+
+        other.release_lock(DAY)
+
+        assert (tmp_path / f"{DAY}.lock").exists()
+        assert other.acquire_lock(DAY, now=now) is False
+
+    def test_집고_보니_다른_잠금이면_되돌리고_포기한다(self, tmp_path: Path) -> None:
+        """오래된 것으로 보고 집는 사이 다른 워커가 새 잠금을 만들 수 있다.
+
+        되돌리지 않으면 그 워커의 잠금을 빼앗아 같은 날 배치가 두 번 돈다.
+        """
+        store = ProposalStore(tmp_path)
+        lock_path = tmp_path / f"{DAY}.lock"
+        claimed = tmp_path / f"{DAY}.lock.stale-시험"
+        claimed.write_text("새워커", encoding="utf-8")
+
+        confirmed = store._confirm_claim(lock_path, claimed, "죽은워커")
+
+        assert confirmed is False
+        assert lock_path.read_text(encoding="utf-8") == "새워커"
+        assert not claimed.exists()
+
+    def test_집은_것이_집으려던_잠금이면_치운다(self, tmp_path: Path) -> None:
+        store = ProposalStore(tmp_path)
+        lock_path = tmp_path / f"{DAY}.lock"
+        claimed = tmp_path / f"{DAY}.lock.stale-시험"
+        claimed.write_text("죽은워커", encoding="utf-8")
+
+        assert store._confirm_claim(lock_path, claimed, "죽은워커") is True
+        assert not claimed.exists()
+        assert not lock_path.exists()
+
+
+class FailingApplier:
+    """지식 파일 쓰기가 실패하는 상황을 만든다."""
+
+    def apply(self, proposal: object) -> Mapping[str, int]:
+        raise OSError("지식 파일을 쓸 수 없다")
+
+
+class Test알림상태:
+    def test_발송기가_실패를_값으로_알리면_notified_False(self, tmp_path: Path) -> None:
+        """조립의 발송기는 실패를 예외가 아니라 보류 저장으로 처리한다.
+
+        예외만 보면 즉시 발송 실패가 보고에서 성공으로 읽힌다.
+        """
+        batch, _store, rec = make_batch(tmp_path, notify=Recorder(result=False))
+        report = batch.run(DAY)
+        assert report.ran is True
+        assert report.notified is False
+        assert rec.calls != []
+
+
+class Test완료표식:
+    """다음 틱이 그날을 다시 돌릴지 판정하는 근거다.
+
+    제안 파일 존재로 판정하면 저장 뒤 반영이 실패한 날이 영영 다시 안 돈다.
+    """
+
+    def test_정상_흐름은_완료로_표시한다(self, tmp_path: Path) -> None:
+        batch, store, _ = make_batch(tmp_path)
+        batch.run(DAY)
+        assert store.is_done(DAY) is True
+
+    def test_응답_기록이_없어도_완료로_표시한다(self, tmp_path: Path) -> None:
+        """표시하지 않으면 기록이 없던 날을 주기마다 다시 집는다."""
+        batch, store, _ = make_batch(tmp_path, archives=FakeArchives({}))
+        report = batch.run(DAY)
+        assert report.ran is False
+        assert store.is_done(DAY) is True
+
+    def test_반영이_실패하면_완료로_표시하지_않는다(self, tmp_path: Path) -> None:
+        batch, store, _ = make_batch(tmp_path, applier=FailingApplier())
+        with pytest.raises(OSError):
+            batch.run(DAY)
+        assert store.is_done(DAY) is False
 
 if __name__ == "__main__":
     pytest.main([__file__])

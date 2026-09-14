@@ -21,6 +21,7 @@ import pytest
 
 from slack_cli_agent.auth.policy import AccessExtension
 from slack_cli_agent.config.profile import Profile
+from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.application import Application
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ingress import IngressService
@@ -1129,31 +1130,55 @@ class Test학습배치:
     def test_소유자에게_알린다(self, app: Application) -> None:
         assert app.learning_batch()._notify == app._notify_owner
 
+    def test_발송_실패는_False_로_돌려준다(self, app: Application) -> None:
+        """보류에 저장하는 것과 사람에게 닿은 것은 다르다. 같은 값으로 내면
+        즉시 발송 실패가 보고에서 성공으로 읽힌다."""
+        def 실패(*args: object, **kwargs: object) -> str:
+            raise RuntimeError("슬랙 발송 실패")
+
+        app.publisher().post = 실패  # type: ignore[method-assign]
+        assert app._notify_owner("본문") is False
+        saved = json.loads(app.pending_report()._path.read_text(encoding="utf-8"))
+        assert saved["text"] == "본문"
+
+    def test_발송_성공은_True_로_돌려준다(self, app: Application) -> None:
+        assert app._notify_owner("본문") is True
+
     def test_실행기_이름은_learning_batch(self, app: Application) -> None:
         assert app.learning_batch_runner().name == "learning_batch"
 
-    def test_제안_파일이_있으면_그날은_끝난_것으로_본다(self, app: Application) -> None:
+    def test_완료_표식이_있어야_그날을_끝난_것으로_본다(self, app: Application) -> None:
+        """제안 파일 존재로 판정하면 저장 뒤 반영이 실패한 날이 영영 다시 안 돈다."""
         proposals = app.profile.paths.proposals
         proposals.mkdir(parents=True, exist_ok=True)
         (proposals / "2026-09-14.json").write_text("{}", encoding="utf-8")
+        assert app._learning_day_done("2026-09-14") is False
+
+        (proposals / "2026-09-14.done").write_text("{}", encoding="utf-8")
         assert app._learning_day_done("2026-09-14") is True
-        assert app._learning_day_done("2026-09-13") is False
 
     def test_돌릴_날이_없으면_배치를_부르지_않는다(
         self, tmp_path: Path, client: FakeSlackClient
     ) -> None:
         """판정이 없는데 돌면 같은 날 제안을 하루에도 여러 번 다시 만든다."""
-        application = Application(write_profile(tmp_path, settings={"learning_run_hour": 25}), client)
+        application = Application(write_profile(tmp_path, settings={"learning_run_hour": 23}), client)
         batch = RecordingBatch()
         application._learning_batch = batch  # type: ignore[assignment]  # 호출 여부만 본다
         proposals = application.profile.paths.proposals
         proposals.mkdir(parents=True, exist_ok=True)
         for moment in (datetime.now(KST), datetime.now(KST) - timedelta(days=1)):
-            (proposals / f"{moment.strftime('%Y-%m-%d')}.json").write_text("{}", encoding="utf-8")
+            (proposals / f"{moment.strftime('%Y-%m-%d')}.done").write_text("{}", encoding="utf-8")
 
         application._learning_batch_tick()
 
         assert batch.days == []
+
+    def test_기준_시각_설정이_범위_밖이면_기본값으로_돌린다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """0-23 밖이면 그 값으로는 하루도 안 돈다. 설정 오타로 배치가 멎는다."""
+        application = Application(write_profile(tmp_path, settings={"learning_run_hour": 25}), client)
+        assert application.learning_schedule()._run_hour == RuntimeSettings().learning_run_hour
 
     def test_돌릴_날이_있으면_그날로_배치를_부른다(
         self, tmp_path: Path, client: FakeSlackClient

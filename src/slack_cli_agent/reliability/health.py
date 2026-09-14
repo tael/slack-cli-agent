@@ -163,7 +163,9 @@ class SelfRestarter:
     def __init__(
         self,
         *,
-        notify: Callable[[str], None] | None = None,
+        # 돌려주는 값은 보지 않는다. 발송 성공 여부를 쓰는 호출부가 있어
+        # 반환형을 object 로 둔다 — 그 값을 여기서 판정하지 않는다.
+        notify: Callable[[str], object] | None = None,
         inflight_count: Callable[[], int] | None = None,
         grace_sec: float = 60.0,
         sleep: Callable[[float], None] = time.sleep,
