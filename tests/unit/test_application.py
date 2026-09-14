@@ -752,15 +752,66 @@ class Test자기메시지판정:
         assert app._is_self_message({"user": "U_HUMAN", "text": "사람 말"}) is False
         app.close()
 
-    def test_신원조회가_실패하면_bot_id_유무로_본다(self, app: Application, client: FakeSlackClient) -> None:
-        """판정 근거가 없을 때는 원본과 같이 예전 방식으로 돌아간다."""
+    @staticmethod
+    def _조회가실패한다(client: FakeSlackClient) -> None:
         def boom(**kwargs: Any) -> dict:
+            client.calls.append(("auth_test", kwargs))
             raise RuntimeError("조회 실패")
 
         client.auth_test = boom  # type: ignore[method-assign]
-        assert app._is_self_message({"bot_id": "B_ANY"}) is True
+
+    def test_신원을_모르면_어떤_봇의_말도_이봇의_말로_보지_않는다(
+        self, app: Application, client: FakeSlackClient
+    ) -> None:
+        """판정 근거가 없을 때 `bot_id` 유무로 보면 다른 봇의 답이 이 봇의 답이 된다.
+
+        원본 `bot.py` 는 이 경우 `bool(msg.get("bot_id"))` 로 돌아가는데, 그것이
+        바로 2026-09-02 에 사고를 낸 예전 방식이다. 조회가 한 번 실패한 직후
+        되짚기가 돌면 같은 오판이 그대로 재현된다.
+
+        오판의 두 방향 중 방어가 있는 쪽으로 기운다. 이 봇의 답을 남의 것으로
+        보면 되짚기가 재등록을 시도하지만 jobs 표의 `(channel, message_ts)`
+        유일 제약이 그 중복을 막는다. 반대 방향은 막는 것이 없어 미응답 멘션이
+        복구 대상에서 빠진 채 그대로 유실된다.
+        """
+        self._조회가실패한다(client)
+        assert app._is_self_message({"bot_id": "B_ANY"}) is False
         assert app._is_self_message({"user": "U_HUMAN"}) is False
         app.close()
+
+    def test_신원조회_실패를_영구히_캐시하지_않는다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        """한 번 실패했다고 그 결과를 계속 쓰면 일시 장애가 영구 오판이 된다."""
+        시각 = [0.0]
+        실패중 = [True]
+
+        def auth_test(**kwargs: Any) -> dict:
+            client.calls.append(("auth_test", kwargs))
+            if 실패중[0]:
+                raise RuntimeError("조회 실패")
+            return {"ok": True, "user_id": "U_ME", "bot_id": "B_ME"}
+
+        client.auth_test = auth_test  # type: ignore[method-assign]
+        application = Application(profile, client, clock=lambda: 시각[0])
+        assert application._is_self_message({"bot_id": "B_ME"}) is False
+
+        실패중[0] = False
+        시각[0] = 999.0
+        assert application._is_self_message({"bot_id": "B_ME"}) is True
+        assert application._is_self_message({"bot_id": "B_OTHER"}) is False
+        application.close()
+
+    def test_실패_직후에는_재조회하지_않는다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        """판정마다 재조회하면 장애가 이어지는 동안 요청 수만큼 API 호출이 늘어난다."""
+        self._조회가실패한다(client)
+        application = Application(profile, client, clock=lambda: 0.0)
+        for _ in range(3):
+            application._is_self_message({"bot_id": "B_ANY"})
+        assert [name for name, _ in client.calls].count("auth_test") == 1
+        application.close()
 
     def test_신원조회는_한번만_한다(self, app: Application, client: FakeSlackClient) -> None:
         """판정마다 조회하면 요청 수만큼 API 호출이 늘어난다."""
@@ -935,3 +986,16 @@ class Test폴백엔진연결:
     def test_같은_부품을_되풀이_쓴다(self, app: Application) -> None:
         assert app.engine_invoker is app.engine_invoker
         app.close()
+
+    def test_점검_리액션_경로도_같은_부품을_쓴다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """부검·디버그 추적·서식 점검이 실행기를 직접 부르면 그 경로에서 전환이 없다.
+
+        소유자가 점검 리액션을 달았을 때 1차 엔진이 한도에 걸려도, 전환 상태가
+        기록되지 않고 계속 1차 엔진만 불린다.
+        """
+        application = Application(self._폴백있는프로필(tmp_path), client)
+        caller = application._review_engine()
+        assert caller._invoker is application.engine_invoker
+        application.close()
