@@ -1,0 +1,26 @@
+{
+  "name": "example",
+  "display_name": "예시봇",
+  "primary_engine": {
+    "type": "claude",
+    "binary": "~/.local/bin/claude",
+    "model": "claude-sonnet-5",
+    "model_owner": "claude-opus-5"
+  },
+  "fallback_engine": {
+    "type": "codex",
+    "binary": "codex",
+    "model": "gpt-5.6-sol",
+    "options": {"sandbox": "read-only"}
+  },
+  "state_dir": "~/.example-bot",
+  "work_root": "~/Projects",
+  "launch_label": "local.example-bot",
+  "owner_user_id": "U00000000",
+  "troubleshoot_channel": "C00000000",
+  "plugins": [],
+  "settings": {
+    "request_timeout_sec": 900,
+    "max_concurrent": 10
+  }
+}
