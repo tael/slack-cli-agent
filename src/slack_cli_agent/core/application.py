@@ -100,7 +100,7 @@ from ..prompt.sections import (
 )
 from ..reliability.catchup import CatchupService
 from ..reliability.dedup import DeduplicationTracker
-from ..reliability.health import HealthMonitor, SocketErrorWatch
+from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
 from ..render.blocks import BlockBuilder
 from ..render.markdown import MarkdownConverter
 from ..render.splitter import ContentSplitter
@@ -215,9 +215,16 @@ class Application:
         self._publisher: MessagePublisher | None = None
         self._review_tasks: dict[str, ReviewTask] | None = None
         self._bot_user_id_cache: str | None = None
+        # 이 봇 자신의 `bot_id`. 같은 채널에서 함께 답하는 다른 슬랙 봇의
+        # 말과 이 봇의 말을 구분하는 근거다. 사용자 ID 와 다른 값이고,
+        # 봇이 올린 메시지에는 `user` 대신 이 값이 담긴다.
+        self._bot_id_cache: str | None = None
         self._roster_builder: RosterBuilder | None = None
         self._roster_refresher: PeriodicRunner | None = None
         self._connection_watch: SocketErrorWatch | None = None
+        # 연결 점검기와 그 주기 실행기. 점검기는 끊김 시작 시각을 안에
+        # 들고 있어, 회차마다 새로 만들면 복구 판정이 나오지 않는다.
+        self._health_runner: PeriodicRunner | None = None
         self._watch_jobs: WatchJobQueue | None = None
         self._closed = False
 
@@ -839,6 +846,39 @@ class Application:
             settings=self._settings,
         )
 
+    def health_runner(self, restart: Callable[[str], None]) -> PeriodicRunner:
+        """연결 점검을 주기적으로 실행한다. 안 띄우면 판정 자체가 안 돈다.
+
+        소켓 오류를 세는 핸들러를 로거에 붙이는 것과, 그 값이 상한을 넘었는지
+        보는 것은 다른 일이다. 이 실행기가 없으면 오류가 아무리 쌓여도 재기동이
+        발화하지 않는다.
+
+        점검기를 한 번 만들어 계속 쓴다. 회차마다 새로 만들면 `_down_since` 가
+        매번 비어 있어 끊겼다 돌아온 것을 복구로 판정하지 못한다.
+        """
+        if self._health_runner is None:
+            monitor = self.health_monitor(restart)
+            self._health_runner = PeriodicRunner(
+                monitor.check,
+                self._settings.health_interval_sec,
+                name="health",
+            )
+        return self._health_runner
+
+    def self_restarter(self, exit_process: Callable[[int], None] | None = None) -> SelfRestarter:
+        """기본 재기동 동작. 소유자에게 사유를 알리고 스스로 나간다.
+
+        소유자 개인 대화가 설정돼 있을 때만 알린다. 없으면 알릴 곳이 없으므로
+        사유는 로그에만 남기고 종료만 한다.
+        """
+        return SelfRestarter(
+            notify=self._notify_owner if self._profile.owner_dm else None,
+            inflight_count=lambda: self.inflight.count,
+            grace_sec=self._settings.shutdown_grace_sec,
+            exit_process=exit_process,
+            on_shutdown_start=self.mark_shutting_down,
+        )
+
     def _slack_reachable(self) -> bool:
         try:
             self._client.auth_test()
@@ -859,16 +899,45 @@ class Application:
         실패하면 그 부품만 빈 값을 갖게 돼 판정이 부품마다 달라진다.
         실패도 캐시한다 — 실패한 조회를 요청마다 되풀이하지 않는다.
         """
-        if self._bot_user_id_cache is None:
-            try:
-                self._bot_user_id_cache = str((self._client.auth_test() or {}).get("user_id") or "")
-            except Exception:
-                log.warning("봇 사용자 ID 를 조회하지 못했다")
-                self._bot_user_id_cache = ""
-        return self._bot_user_id_cache
+        self._load_identity()
+        return self._bot_user_id_cache or ""
+
+    def _bot_id(self) -> str:
+        """이 봇 자신의 `bot_id`. 조회가 실패하면 빈 문자열이다."""
+        self._load_identity()
+        return self._bot_id_cache or ""
+
+    def _load_identity(self) -> None:
+        """`auth_test` 를 한 번만 불러 사용자 ID 와 `bot_id` 를 함께 채운다.
+
+        둘을 따로 조회하면 같은 API 를 두 번 부르고, 그중 한 번이 실패하면
+        판정 근거가 부품마다 달라진다.
+        """
+        if self._bot_user_id_cache is not None:
+            return
+        try:
+            info = self._client.auth_test() or {}
+        except Exception:
+            log.warning("봇 신원을 조회하지 못했다")
+            info = {}
+        self._bot_user_id_cache = str(info.get("user_id") or "")
+        self._bot_id_cache = str(info.get("bot_id") or "")
 
     def _is_self_message(self, msg: Any) -> bool:
-        return bool(msg.get("bot_id")) or msg.get("user") == self._bot_user_id()
+        """이 봇이 올린 말인지 판정한다. 원본 `bot.py` 의 `is_self()` 와 같다.
+
+        `bot_id` 가 있다는 것만으로 이 봇의 말로 보면 안 된다. 같은 채널에서
+        함께 답하는 다른 봇의 말까지 이 봇의 답으로 세어지고, 되짚기가 실제
+        미응답 멘션을 복구 대상에서 뺀다.
+        """
+        bot_id = self._bot_id()
+        if bot_id and msg.get("bot_id"):
+            return bool(msg.get("bot_id") == bot_id)
+        user_id = self._bot_user_id()
+        if user_id and msg.get("user"):
+            return bool(msg.get("user") == user_id)
+        # 자기 신원을 아직 못 받았다. 판정 근거가 없어 예전 방식으로 본다.
+        return bool(msg.get("bot_id"))
 
     def close(self) -> None:
         """DB 연결을 닫는다. 두 번 불러도 문제가 없다."""

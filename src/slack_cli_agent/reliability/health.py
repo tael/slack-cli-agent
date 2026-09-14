@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections import deque
 from collections.abc import Callable
@@ -16,6 +17,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..config.settings import RuntimeSettings
+
+log = logging.getLogger(__name__)
 
 # 재연결·오류를 세는 창. 원본 SOCKET_ERROR_WINDOW_SEC.
 SOCKET_ERROR_WINDOW_SEC = 180
@@ -148,3 +151,86 @@ class HealthMonitor:
             return HealthEvent(kind=HealthEventKind.RESTARTED, reason=reason)
 
         return HealthEvent(kind=HealthEventKind.OK)
+
+
+class SelfRestarter:
+    """스스로 프로세스를 끝낸다. 감독 프로세스가 다시 띄운다.
+
+    `HealthMonitor` 가 재기동이 필요하다고 판정했을 때 부르는 콜백의 기본
+    구현이다. 원본 `bot.py` 의 `self_restart()` 에 대응한다.
+
+    소켓이 죽은 채로 프로세스가 살아 있으면 슬랙 이벤트가 하나도 안 들어온다.
+    사람이 알아채고 재시작해 줄 때까지 봇이 조용히 멎어 있는 것과 같아, 사람을
+    기다리지 않고 스스로 나간다.
+
+    종료 코드는 1 이다. 0 으로 나가면 감독 프로세스가 정상 종료로 보고 다시
+    띄우지 않는다 — 그러면 재기동이 아니라 그냥 정지다.
+    """
+
+    def __init__(
+        self,
+        *,
+        notify: Callable[[str], None] | None = None,
+        inflight_count: Callable[[], int] | None = None,
+        grace_sec: float = 60.0,
+        sleep: Callable[[float], None] = time.sleep,
+        exit_process: Callable[[int], None] | None = None,
+        on_shutdown_start: Callable[[], None] | None = None,
+    ) -> None:
+        self._notify = notify
+        self._inflight_count = inflight_count
+        self._grace_sec = grace_sec
+        self._sleep = sleep
+        # 기본 종료는 `os._exit` 다. `sys.exit` 는 예외를 올리는 것이라
+        # 감시 스레드 안에서 부르면 그 스레드만 끝나고 프로세스는 그대로
+        # 산다 — 소켓이 죽은 채로 남는다.
+        self._exit = exit_process if exit_process is not None else _hard_exit
+        self._on_shutdown_start = on_shutdown_start
+
+    def __call__(self, reason: str) -> None:
+        log.error("스스로 재기동한다 : %s", reason)
+        self._announce(reason)
+        if self._on_shutdown_start is not None:
+            try:
+                self._on_shutdown_start()
+            except Exception as exc:
+                log.warning("종료 표시 실패 : %s", exc)
+        self._drain()
+        self._exit(1)
+
+    def _announce(self, reason: str) -> None:
+        """나가기 전에 사유를 알린다. 실패해도 종료는 그대로 진행한다.
+
+        알릴 곳이 닿지 않는다고 소켓이 끊긴 프로세스를 그대로 두면, 알림이
+        없는 것이 아니라 봇 자체가 멎은 채로 남는다.
+        """
+        if self._notify is None:
+            return
+        try:
+            self._notify(f"자동 재기동\n\n- 사유 : {reason}\n\n슬랙 API 는 닿는데 소켓만 끊겨 다시 띄웁니다.")
+        except Exception as exc:
+            log.warning("재기동 사유 알림 실패 : %s", exc)
+
+    def _drain(self) -> None:
+        """처리 중인 요청이 끝나기를 기다린다. 상한을 넘으면 그대로 나간다.
+
+        기다리지 않고 나가면 그 요청은 답 없이 사라진다. 반대로 무한정
+        기다리면 소켓이 끊긴 채로 계속 살아 있게 된다.
+        """
+        if self._inflight_count is None:
+            return
+        waited = 0.0
+        step = 0.5
+        while waited < self._grace_sec:
+            try:
+                remaining = self._inflight_count()
+            except Exception:
+                return
+            if remaining <= 0:
+                return
+            self._sleep(step)
+            waited += step
+
+
+def _hard_exit(code: int) -> None:
+    os._exit(code)

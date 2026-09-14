@@ -218,6 +218,10 @@ class FakeApplication:
         self._roster_refresher = FakeRefresher()
         self.snapshot_runner = FakeRefresher()
         self.watch_runner_ = FakeRefresher()
+        self.health_runner_ = FakeRefresher()
+        # 접수 프로세스가 재기동 동작을 무엇으로 넘겼는지 기록한다.
+        self.health_restart: object | None = None
+        self.restarter_calls = 0
         self.shutdown_marks = 0
         # 종료 대기 상한을 여기서 가져간다. 실제 Application 과 같은 계약이다.
         self.settings = RuntimeSettings()
@@ -227,6 +231,14 @@ class FakeApplication:
 
     def watch_runner(self) -> "FakeRefresher":
         return self.watch_runner_
+
+    def health_runner(self, restart: object) -> "FakeRefresher":
+        self.health_restart = restart
+        return self.health_runner_
+
+    def self_restarter(self) -> object:
+        self.restarter_calls += 1
+        return lambda reason: None
 
     def mark_shutting_down(self) -> None:
         self.shutdown_marks += 1
@@ -341,6 +353,15 @@ class FakeWorker:
         self.catch_up_calls: list[list[str]] = []
         self.shutdown_calls = 0
         self._stop_after_run_once = stop_after_run_once
+        # run_forever 가 받은 중단 판정 함수. 조립이 종료 신호를 실제로
+        # 넘겼는지 본다.
+        self.stop_checks: list[object] = []
+
+    def run_forever(self, should_stop) -> None:
+        self.stop_checks.append(should_stop)
+        self.calls.append("run_forever")
+        while not should_stop():
+            self.run_once()
 
     def reclaim(self) -> None:
         self.reclaim_calls += 1
@@ -451,7 +472,8 @@ class TestIngressCommand:
 
 
 class TestWorkerCommand:
-    def test_reclaim_먼저_부르고_run_once를_부른다(self, tmp_path: Path) -> None:
+    def test_reclaim_먼저_부르고_처리를_시작한다(self, tmp_path: Path) -> None:
+        """붙잡힌 채 남은 작업을 되돌리기 전에 새 작업을 집으면 안 된다."""
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker(stop_after_run_once=1)
@@ -462,7 +484,7 @@ class TestWorkerCommand:
             ["worker", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
         )
         assert code == 0
-        assert worker.calls[:2] == ["reclaim", "run_once"]
+        assert worker.calls[:2] == ["reclaim", "run_forever"]
 
     def test_once_주면_run_once가_한번만_불린다(self, tmp_path: Path) -> None:
         profiles = tmp_path / "profiles"
@@ -662,3 +684,90 @@ class TestWorkerCommand감시확인:
             stdout=io.StringIO(),
         )
         assert app.watch_runner_.stop_calls == 1
+
+
+class TestIngress연결점검주기:
+    """접수 프로세스가 연결 점검을 주기적으로 실행하는가.
+
+    오류를 세는 핸들러를 붙이는 것과 그 값이 상한을 넘었는지 보는 것은 다른
+    일이다. 점검 주기가 안 돌면 소켓 오류가 아무리 발생해도 재기동이
+    발화하지 않는다.
+    """
+
+    @staticmethod
+    def _기동한다(tmp_path: Path, app: "FakeApplication", token: bool = True) -> int:
+        profiles = tmp_path / "profiles"
+        write_profile(profiles, tmp_path / "state")
+        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile: app)])
+        argv = ["ingress", "--profile", "example", "--profile-dir", str(profiles)]
+        if token:
+            argv += ["--app-token", "xapp-토큰"]
+        return cli.run(argv, stdout=io.StringIO())
+
+    def test_기동하면_점검_주기실행기를_시작한다(self, tmp_path: Path) -> None:
+        app = FakeApplication()
+        self._기동한다(tmp_path, app)
+        assert app.health_runner_.start_calls == 1
+
+    def test_끝날때_점검_주기실행기를_멈춘다(self, tmp_path: Path) -> None:
+        """안 멈추면 종료 절차가 끝난 뒤에도 그 스레드가 슬랙 API 를 계속 부른다."""
+        app = FakeApplication()
+        self._기동한다(tmp_path, app)
+        assert app.health_runner_.stop_calls == 1
+
+    def test_재기동_동작을_함께_넘긴다(self, tmp_path: Path) -> None:
+        """넘기지 않으면 판정만 나오고 아무 일도 일어나지 않는다."""
+        app = FakeApplication()
+        self._기동한다(tmp_path, app)
+        assert app.restarter_calls == 1
+        assert callable(app.health_restart)
+
+    def test_토큰이_없으면_시작하지_않는다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SLACK_APP_TOKEN", raising=False)
+        app = FakeApplication()
+        assert self._기동한다(tmp_path, app, token=False) == 2
+        assert app.health_runner_.start_calls == 0
+
+
+class TestWorker빈큐대기:
+    """워커 명령이 빈 큐를 쉬지 않고 조회하지 않는가.
+
+    `run_once()` 를 그대로 되풀이하면 큐가 비어 있어도 SQLite 조회가 계속
+    일어난다. 대기를 포함한 반복은 워커가 맡으므로, 조립은 그 경로를 써야
+    한다 — 여기서 직접 반복하면 대기가 빠진다.
+    """
+
+    @staticmethod
+    def _돌린다(tmp_path: Path, worker: FakeWorker, once: bool = False) -> int:
+        profiles = tmp_path / "profiles"
+        write_profile(profiles, tmp_path / "state")
+        app = FakeApplication(worker=worker)
+        cli = SlackCliAgent([
+            WorkerCommand(
+                application_factory=lambda profile: app,
+                signal_register=lambda signum, handler: None,
+            )
+        ])
+        argv = ["worker", "--profile", "example", "--profile-dir", str(profiles)]
+        if once:
+            argv.append("--once")
+        return cli.run(argv, stdout=io.StringIO())
+
+    def test_반복은_워커에_맡긴다(self, tmp_path: Path) -> None:
+        worker = FakeWorker(stop_after_run_once=2)
+        self._돌린다(tmp_path, worker)
+        assert "run_forever" in worker.calls
+
+    def test_종료신호를_중단_판정으로_넘긴다(self, tmp_path: Path) -> None:
+        """안 넘기면 종료 신호를 받아도 반복이 안 끝난다."""
+        worker = FakeWorker(stop_after_run_once=2)
+        self._돌린다(tmp_path, worker)
+        assert worker.stop_checks and callable(worker.stop_checks[0])
+
+    def test_once_면_한_번만_처리한다(self, tmp_path: Path) -> None:
+        worker = FakeWorker()
+        self._돌린다(tmp_path, worker, once=True)
+        assert worker.run_once_calls == 1
+        assert "run_forever" not in worker.calls
