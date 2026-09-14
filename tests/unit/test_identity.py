@@ -111,3 +111,38 @@ class Test신원미확정:
         시각[0] = 9999.0
         identity.is_self({"bot_id": "B_ME"})
         assert client.calls == 1
+
+
+class Test이봇을부른말인가:
+    """멘션 판정이 세 곳에 따로 있었고 방식이 갈렸다.
+
+    슬랙은 표시 이름을 붙여 `<@U123|이름>` 형태로 보내기도 한다. 본문에서 멘션
+    표기를 지우는 쪽과 참여자를 세는 쪽은 그 형태를 정규식으로 받는데, 소켓
+    이벤트 판정과 되짚기는 `<@U123>` 문자열 포함만 봤다. 그래서 슬랙이 그
+    형태로 보내면 되짚기가 부른 말을 못 찾아 그 요청이 유실된다.
+    """
+
+    def test_기본_형태를_잡는다(self) -> None:
+        identity = SlackBotIdentity(FakeAuthClient({"user_id": "U_BOT", "bot_id": "B_BOT"}))
+        assert identity.is_mentioned("<@U_BOT> 질문입니다")
+
+    def test_표시_이름이_붙은_형태도_잡는다(self) -> None:
+        identity = SlackBotIdentity(FakeAuthClient({"user_id": "U_BOT", "bot_id": "B_BOT"}))
+        assert identity.is_mentioned("<@U_BOT|마메치> 질문입니다")
+
+    def test_문장_중간에_있어도_잡는다(self) -> None:
+        identity = SlackBotIdentity(FakeAuthClient({"user_id": "U_BOT", "bot_id": "B_BOT"}))
+        assert identity.is_mentioned("이건 <@U_BOT> 한테 묻는 건데")
+
+    def test_다른_사람을_부른_것은_아니다(self) -> None:
+        identity = SlackBotIdentity(FakeAuthClient({"user_id": "U_BOT", "bot_id": "B_BOT"}))
+        assert not identity.is_mentioned("<@U_OTHER> 질문입니다")
+
+    def test_ID_가_다른_ID_의_앞부분이어도_잡지_않는다(self) -> None:
+        """문자열 포함으로 보면 `<@U_BOT2>` 안의 `U_BOT` 에 걸린다."""
+        identity = SlackBotIdentity(FakeAuthClient({"user_id": "U_BOT", "bot_id": "B_BOT"}))
+        assert not identity.is_mentioned("<@U_BOT2> 질문입니다")
+
+    def test_신원을_모르면_부른_것으로_보지_않는다(self) -> None:
+        identity = SlackBotIdentity(FakeAuthClient({}))
+        assert not identity.is_mentioned("<@U_BOT> 질문입니다")

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
@@ -46,6 +47,10 @@ class BotIdentity(ABC):
     @abstractmethod
     def is_self(self, msg: Mapping[str, Any]) -> bool:
         """그 메시지를 이 봇이 올렸는가."""
+
+    @abstractmethod
+    def is_mentioned(self, text: str) -> bool:
+        """그 본문이 이 봇을 부르는가."""
 
 
 class SlackBotIdentity(BotIdentity):
@@ -105,6 +110,21 @@ class SlackBotIdentity(BotIdentity):
         if self._user_id and msg.get("user"):
             return bool(msg.get("user") == self._user_id)
         return False
+
+    def is_mentioned(self, text: str) -> bool:
+        """그 본문이 이 봇을 부르는가.
+
+        슬랙은 표시 이름을 붙여 `<@U123|이름>` 형태로 보내기도 한다. 문자열
+        포함으로 보면 그 형태를 못 잡고, 반대로 `<@U_BOT2>` 안의 `U_BOT` 에
+        걸리기도 한다. 두 경우 모두 되짚기가 부른 말을 잘못 판정한다.
+
+        신원을 아직 못 받았으면 False 다. `is_self` 와 같은 이유로 방어가 있는
+        쪽으로 기운다.
+        """
+        user_id = self.user_id
+        if not user_id:
+            return False
+        return bool(re.search(rf"<@{re.escape(user_id)}(?:\|[^>]*)?>", text))
 
     def _has_identity(self) -> bool:
         """조회를 유발하지 않고 지금 값만 본다.

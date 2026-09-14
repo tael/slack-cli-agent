@@ -152,6 +152,10 @@ class TestStateSetup:
         application = Application(profile, client)
         application.ingress()
         application.worker()
+        # 판정을 여러 번 유발한다. 조립만으로는 조회가 일어나지 않는다 —
+        # 신원은 처음 판정할 때 한 번 받는다.
+        application.identity.is_self({"bot_id": "B_X"})
+        application.identity.is_mentioned("<@U_X> 질문")
         assert [name for name, _ in client.calls].count("auth_test") == 1
 
     def test_settings_는_프로필_설정으로_덮인다(self, tmp_path: Path, client: FakeSlackClient) -> None:

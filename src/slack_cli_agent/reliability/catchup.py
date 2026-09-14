@@ -24,6 +24,7 @@ from ..core.context import RequestContext
 from ..core.result import Outcome
 from ..observability.notices import NoticeCatalog
 from ..slack.gate import ResponseGate
+from ..slack.identity import BotIdentity
 from ..slack.message_kind import MessageKind
 from .ports import HistoryReader
 
@@ -142,8 +143,7 @@ class CatchupService:
         gate: ResponseGate,
         notices: NoticeCatalog,
         settings: RuntimeSettings,
-        bot_user_id: str,
-        is_self: Callable[[Mapping[str, Any]], bool],
+        identity: BotIdentity,
         message_text: Callable[[Mapping[str, Any]], str] = lambda m: m.get("text") or "",
         now: Callable[[], float] = time.time,
         started_at: float | None = None,
@@ -152,8 +152,8 @@ class CatchupService:
         self._gate = gate
         self._notices = notices
         self._settings = settings
-        self._bot_user_id = bot_user_id
-        self._is_self = is_self
+        # 이 봇의 신원. 자기 말 판정과 부름 판정의 근거가 하나다.
+        self._identity = identity
         self._message_text = message_text
         self._now = now
         self._started_at = started_at if started_at is not None else now()
@@ -179,7 +179,6 @@ class CatchupService:
             # 없다고 단정하지 않고 확인 실패로 올린다.
             return Outcome.unknown("기록을 여러 번 읽어도 비어 판정 불가")
 
-        mention = f"<@{self._bot_user_id}>"
         candidates: list[tuple[Mapping[str, Any], str]] = []  # (부른 메시지, 그 스레드)
 
         for msg in hist:
@@ -202,13 +201,13 @@ class CatchupService:
                 thread = [msg]
 
             asked: list[Mapping[str, Any]] = []
-            bot_in_thread = any(self._is_self(x) for x in thread)
+            bot_in_thread = any(self._identity.is_self(x) for x in thread)
             # 각 사람 말 직전에 이 봇이 되물었는지 훑어둔다
             asked_before: dict[Any, bool] = {}
             pending_ask = False
             for x in thread:
                 if x.get("bot_id"):
-                    if self._is_self(x):
+                    if self._identity.is_self(x):
                         pending_ask = self._gate.asked_back(self._message_text(x))
                 else:
                     asked_before[x.get("ts")] = pending_ask
@@ -217,7 +216,7 @@ class CatchupService:
                     continue
                 text = m.get("text") or ""
                 # 이 봇을 부른 말이거나, 이 봇이 낀 스레드에서 답을 기다리는 말이다
-                called = mention in text
+                called = self._identity.is_mentioned(text)
                 bot_asked = asked_before.get(m.get("ts"), False)
                 if not called and not (
                     bot_in_thread and self._gate.worth_answering(text, bot_asked)
@@ -236,7 +235,7 @@ class CatchupService:
                 asked.append(m)
 
             for m in unanswered(
-                thread, asked, is_self=self._is_self, is_notice=self._notices.is_notice
+                thread, asked, is_self=self._identity.is_self, is_notice=self._notices.is_notice
             ):
                 candidates.append((m, thread_ts))
 
