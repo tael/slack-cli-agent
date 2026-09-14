@@ -672,3 +672,42 @@ class Test엔진환경격리:
         runner = EngineRunner(RuntimeSettings(), subprocess_runner=fake_run)
         runner.run(RecordingEngine(claude_profile(tmp_path), SETTINGS), request())
         assert seen["env"] is None
+
+
+class Test엔진호출부품:
+    """엔진 한 번 실행을 감싸는 부품.
+
+    파이프라인은 폴백이 설정돼 있는지 몰라야 한다. `EngineRunner.run()` 을
+    직접 부르면 `FallbackEngine` 을 감싸 둬도 그 `run()` 이 안 불려, 한도
+    소진 때 대체 엔진 전환과 상태 기록이 일어나지 않는다.
+    """
+
+    def test_직접실행은_실행기를_거친다(self) -> None:
+        from slack_cli_agent.engine.runner import DirectInvoker
+
+        부른것: list[tuple[object, object]] = []
+
+        class 실행기대역:
+            def run(self, engine, request, timeout_sec=None):
+                부른것.append((engine, request))
+                return "응답"
+
+        engine = object()
+        request = object()
+        assert DirectInvoker(실행기대역(), engine).invoke(request) == "응답"
+        assert 부른것 == [(engine, request)]
+
+    def test_폴백실행은_엔진자신의_run_을_부른다(self) -> None:
+        """실행기를 거치면 전환 판정이 건너뛰어진다."""
+        from slack_cli_agent.engine.runner import FallbackInvoker
+
+        부른것: list[object] = []
+
+        class 폴백대역:
+            def run(self, request):
+                부른것.append(request)
+                return "전환된 응답"
+
+        request = object()
+        assert FallbackInvoker(폴백대역()).invoke(request) == "전환된 응답"
+        assert 부른것 == [request]
