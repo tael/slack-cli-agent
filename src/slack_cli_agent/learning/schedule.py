@@ -27,6 +27,8 @@ class DailyBatchSchedule:
         run_hour: int,
         is_done: Callable[[str], bool],
     ) -> None:
+        if not 0 <= run_hour <= 23:
+            raise ValueError(f"기준 시각은 0-23 이어야 한다 : {run_hour}")
         self._clock = clock
         self._run_hour = run_hour
         self._is_done = is_done
