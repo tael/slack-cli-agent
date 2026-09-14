@@ -216,3 +216,68 @@ class Test보내지못한보고:
         """접수에서 생긴 보류를 워커가, 워커에서 생긴 것을 접수가 못 보내면 그 사이 프로세스가 꺼진다."""
         assert "pending_report" in app.ingress_services(lambda 사유: None).runner_names
         assert "pending_report" in app.worker_services(app.worker()).runner_names
+
+
+class Test복구직후되짚기:
+    """슬랙에 닿지 않던 동안 들어온 요청은 소켓 이벤트로 다시 오지 않는다.
+
+    돌아왔을 때 되짚지 않으면 그 시간의 요청은 어느 경로에서도 처리되지 않는다.
+    끊겼던 시간이 기본 창보다 길면 그만큼 넓게 본다.
+    """
+
+    @staticmethod
+    def 워커를_바꾼다(app: Application, 닿는다: list[bool]) -> tuple[Any, list[tuple[list[str], float | None]]]:
+        기록: list[tuple[list[str], float | None]] = []
+        워커 = app.worker()
+        워커.retry_catchup = list  # type: ignore[method-assign]
+        워커.catch_up = lambda channels, window_sec=None: 기록.append((channels, window_sec))  # type: ignore[method-assign,return-value]
+        app._slack_reachable = lambda: 닿는다[0]  # type: ignore[method-assign]
+        return 워커, 기록
+
+    def test_계속_닿으면_되짚지_않는다(self, app: Application) -> None:
+        워커, 기록 = self.워커를_바꾼다(app, [True])
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        러너._task()
+        assert 기록 == []
+
+    def test_돌아온_회차에_되짚는다(self, app: Application) -> None:
+        닿는다 = [True]
+        워커, 기록 = self.워커를_바꾼다(app, 닿는다)
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        닿는다[0] = True
+        러너._task()
+        assert len(기록) == 1
+
+    def test_끊긴_시간이_길면_창을_넓힌다(self, profile: Profile, client: FakeSlackClient) -> None:
+        시각 = [1000.0]
+        app = Application(profile, client, clock=lambda: 시각[0])
+        닿는다 = [True]
+        워커, 기록 = self.워커를_바꾼다(app, 닿는다)
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        시각[0] += 20000.0
+        닿는다[0] = True
+        러너._task()
+        # 끊긴 시간에 여유를 더한 값이 기본 창보다 크면 그쪽을 쓴다
+        assert 기록[0][1] == 20000.0 + 600
+
+    def test_창은_최대값을_넘지_않는다(self, profile: Profile, client: FakeSlackClient) -> None:
+        """무한정 넓히면 한 회차가 채널 전체의 며칠치 기록을 읽는다."""
+        시각 = [1000.0]
+        app = Application(profile, client, clock=lambda: 시각[0])
+        닿는다 = [True]
+        워커, 기록 = self.워커를_바꾼다(app, 닿는다)
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        시각[0] += 10_000_000.0
+        닿는다[0] = True
+        러너._task()
+        assert 기록[0][1] == app.settings.catchup_max_window_sec

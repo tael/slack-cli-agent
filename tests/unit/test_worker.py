@@ -566,3 +566,24 @@ class Test마치지못한되짚기를다시본다:
         worker, _queue, _client = make_worker(database=database, catchup=catchup)
 
         assert worker.retry_catchup() == [막힌것]
+
+
+class Test되짚기창을받는다:
+    """끊겼던 시간이 기본 창보다 길면 그만큼 넓게 봐야 그 구간이 잡힌다."""
+
+    def test_창을_주면_그대로_쓴다(self, database) -> None:
+        catchup = FakeCatchup(CatchupReport(missed=[], skipped=[], unchecked_channels=[]))
+        worker, _queue, _client = make_worker(database=database, catchup=catchup)
+
+        worker.catch_up(["C1"], window_sec=9999.0)
+
+        assert catchup.calls == [(["C1"], 9999.0)]
+
+    def test_안_주면_설정값을_쓴다(self, database) -> None:
+        catchup = FakeCatchup(CatchupReport(missed=[], skipped=[], unchecked_channels=[]))
+        settings = RuntimeSettings(heartbeat_interval_sec=0.01, catchup_window_sec=777.0)
+        worker, _queue, _client = make_worker(database=database, catchup=catchup, settings=settings)
+
+        worker.catch_up(["C1"])
+
+        assert catchup.calls == [(["C1"], 777.0)]
