@@ -196,9 +196,14 @@ class Worker:
                 self._enqueue_new(status.missed)
         return statuses
 
-    def catch_up(self, channels: list[str]) -> CatchupReport:
-        """놓친 요청을 찾아 큐에 넣는다. 이미 대기·실행 중인 대표건은 거른다."""
-        report = self._catchup.sweep(channels, self._settings.catchup_window_sec)
+    def catch_up(self, channels: list[str], window_sec: float | None = None) -> CatchupReport:
+        """놓친 요청을 찾아 큐에 넣는다. 이미 대기·실행 중인 대표건은 거른다.
+
+        창을 받는 이유는 끊겼던 시간이 기본 창보다 길 수 있어서다. 그때 기본
+        창으로 보면 끊긴 구간의 앞부분이 그대로 남는다.
+        """
+        window = window_sec if window_sec is not None else self._settings.catchup_window_sec
+        report = self._catchup.sweep(channels, window)
         accepted = self._enqueue_new(report.missed)
 
         # 걸러진 대표건도 연결 대상이다. 거른 것은 "이미 처리 예정" 이라는
