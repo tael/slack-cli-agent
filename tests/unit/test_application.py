@@ -1039,3 +1039,50 @@ class Test폴백엔진연결:
         caller = application._review_engine()
         assert caller._invoker is application.engine_invoker
         application.close()
+
+
+class Test플러그인엔진등록:
+    """플러그인이 더한 엔진이 실제로 조립에 들어가는가.
+
+    계약만 만들고 조립이 그것을 안 부르면 그 엔진은 어느 실행 경로에서도
+    안 쓰인다. 이 저장소에서 반복해서 난 결함이 그 형태다.
+    """
+
+    @staticmethod
+    def 엔진을더하는플러그인() -> BotPlugin:
+        from slack_cli_agent.engine.base import Engine
+
+        class 남의엔진(Engine):
+            name = "mine"
+
+            def build_command(self, request: Any) -> list[str]:
+                return ["true"]
+
+            def parse(self, raw: str) -> Any:
+                raise NotImplementedError
+
+        class 엔진플러그인(BotPlugin):
+            name = "engine-plugin"
+
+            def engines(self) -> Sequence[type[Engine]]:
+                return (남의엔진,)
+
+        return 엔진플러그인()
+
+    def test_플러그인이_더한_엔진을_쓸_수_있다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        profile = write_profile(tmp_path)
+        application = Application(profile, client, plugins=[self.엔진을더하는플러그인()])
+        assert "mine" in application.engine_registry.available()
+
+    def test_플러그인이_없으면_기본_엔진만_있다(self, profile: Profile, client: FakeSlackClient) -> None:
+        assert Application(profile, client).engine_registry.available() == ["claude", "codex"]
+
+    def test_주입한_레지스트리에도_더한다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        """레지스트리를 밖에서 넣은 경우에만 플러그인 엔진이 빠지면 그 사실이 안 드러난다."""
+        from slack_cli_agent.engine.registry import EngineRegistry
+
+        profile = write_profile(tmp_path)
+        application = Application(
+            profile, client, plugins=[self.엔진을더하는플러그인()], engine_registry=EngineRegistry()
+        )
+        assert application.engine_registry.available() == ["mine"]

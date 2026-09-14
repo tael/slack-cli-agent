@@ -201,3 +201,19 @@ class TestPluginLoaderConstructionFailure:
         result = PluginLoader(strict=False).load(["fake_plugin_boom"])
         assert result.ok is False
         assert "설정 오류" in result.failures[0].reason
+
+
+class TestBotPlugin엔진등록:
+    """플러그인이 자기 엔진을 더할 수 있는가.
+
+    접근 정책·관리 명령·프롬프트 절·출력 가드·사전 점검은 전부 플러그인이
+    더할 수 있는데 엔진만 빠져 있었다. 이 저장소는 특정 조직에 묶이지 않는
+    범용 유틸리티를 지향하므로, 엔진 종류가 코드에 고정되면 쓰는 쪽이 자기
+    엔진을 못 붙인다.
+    """
+
+    def test_기본은_빈_튜플이다(self) -> None:
+        class 아무것도안더하는플러그인(BotPlugin):
+            name = "plain"
+
+        assert 아무것도안더하는플러그인().engines() == ()
