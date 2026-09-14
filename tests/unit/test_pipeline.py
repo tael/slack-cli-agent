@@ -21,6 +21,7 @@ from slack_cli_agent.engine.runner import DirectInvoker
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard, RerunRequest
 from slack_cli_agent.guard.pipeline import GuardPipeline
 from slack_cli_agent.guard.watch import WatchPromiseGuard
+from slack_cli_agent.prompt.sections import SILENT_MARK
 from slack_cli_agent.session.manager import SessionManager
 from slack_cli_agent.session.ports import SessionKey, SessionRecord
 
@@ -264,6 +265,7 @@ def build_pipeline(
     late_addendum: Any = None,
     consumption: Any = None,
     watch_queue: Any = None,
+    response_archive: Any = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -296,6 +298,8 @@ def build_pipeline(
         extra_kwargs["consumption"] = consumption
     if watch_queue is not None:
         extra_kwargs["watch_queue"] = watch_queue
+    if response_archive is not None:
+        extra_kwargs["response_archive"] = response_archive
 
     pipeline = RequestPipeline(
         access_policy=access,
@@ -1086,3 +1090,88 @@ class Test엔진호출경로:
 
         본문 = inspect.getsource(파이프라인모듈.RequestPipeline)
         assert "self._runner.run(" not in 본문
+
+
+# ---------------------------------------------------------------------------
+# 응답 기록
+
+
+class FakeResponseArchive:
+    """기록 호출을 모은다. 원한다면 기록 시도 자체를 실패시킨다."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._fail = fail
+
+    def record(self, **fields: Any) -> Path:
+        self.calls.append(fields)
+        if self._fail:
+            raise OSError("기록 디렉터리에 쓸 수 없다")
+        return Path("/tmp/archive.md")
+
+
+def test_올린_응답을_채널_이름으로_기록한다():
+    """학습 배치가 이 기록을 읽는다. 안 남기면 그날 배울 자료가 없다."""
+    archive = FakeResponseArchive()
+    pipeline, _ = build_pipeline(
+        responses=[ok_response("최종 답변")],
+        channels={"C1": ChannelConfig(channel_id="C1", name="잡담")},
+        response_archive=archive,
+    )
+
+    outcome = pipeline.handle(make_ctx(text="질문입니다"))
+
+    assert outcome.ok
+    assert len(archive.calls) == 1
+    call = archive.calls[0]
+    assert call["channel_slug"] == "잡담"
+    assert call["user"] == "U1"
+    assert call["thread_ts"] == "1700000001.000100"
+    assert call["question"] == "질문입니다"
+    assert call["body"] == "최종 답변"
+    assert call["ok"] is True
+    assert call["turns"] == 1
+
+
+def test_채널_설정이_없으면_채널_ID_로_기록한다():
+    archive = FakeResponseArchive()
+    pipeline, _ = build_pipeline(responses=[ok_response()], response_archive=archive)
+
+    pipeline.handle(make_ctx())
+
+    assert archive.calls[0]["channel_slug"] == "C1"
+
+
+def test_기록에_실패해도_응답은_그대로_나간다():
+    """기록은 이미 끝난 요청의 부가 자료다. 그것 때문에 답을 버리지 않는다."""
+    archive = FakeResponseArchive(fail=True)
+    publisher = FakePublisher()
+    pipeline, _ = build_pipeline(
+        responses=[ok_response()], publisher=publisher, response_archive=archive
+    )
+
+    outcome = pipeline.handle(make_ctx())
+
+    assert outcome.ok
+    assert len(publisher.posted) == 1
+
+
+def test_침묵한_요청은_기록하지_않는다():
+    """올린 응답이 없다. 빈 본문을 남기면 배치가 그것을 자료로 읽는다."""
+    archive = FakeResponseArchive()
+    pipeline, _ = build_pipeline(
+        responses=[ok_response(SILENT_MARK)], response_archive=archive
+    )
+
+    pipeline.handle(make_ctx())
+
+    assert archive.calls == []
+
+
+def test_엔진이_실패하면_기록하지_않는다():
+    archive = FakeResponseArchive()
+    pipeline, _ = build_pipeline(responses=[fail_response()], response_archive=archive)
+
+    pipeline.handle(make_ctx())
+
+    assert archive.calls == []

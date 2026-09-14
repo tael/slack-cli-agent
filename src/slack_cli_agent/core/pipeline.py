@@ -28,6 +28,7 @@ from ..guard.base import GuardContext
 from ..guard.pipeline import GuardPipeline
 from ..guard.watch import WatchPromiseGuard
 from ..observability.audit import AuditLog
+from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter, tail_output
 from ..prompt.composer import SystemPromptComposer
 from ..prompt.sections import SILENT_MARK, CompositionContext
@@ -86,6 +87,10 @@ class RequestPipeline:
         # 가드가 태그를 뽑아내도 그 값을 넣을 곳이 없으면 아무도 다시 확인하지
         # 않는다. 원본 `register_watch_job()` 호출 위치에 대응한다.
         watch_queue: WatchJobPort | None = None,
+        # 올린 응답을 채널별 날짜 파일로 남기는 곳. 안 주면 안 남긴다 —
+        # 학습 배치가 읽는 자료가 이것뿐이라, 여기서 빠지면 그 배치는 매일
+        # "응답 기록이 없다" 로 끝난다. 원본 `archive_response()` 자리다.
+        response_archive: ResponseArchive | None = None,
         now: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -109,6 +114,7 @@ class RequestPipeline:
         self._late_addendum = late_addendum
         self._consumption = consumption
         self._watch_queue = watch_queue
+        self._response_archive = response_archive
         self._now = now
         self._monotonic = monotonic
 
@@ -249,6 +255,7 @@ class RequestPipeline:
         body, watch_desc = self._apply_guards(body, ctx, principal, request, decision, previous_body)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich) or ""
+        self._archive_response(ctx, channel_slug, body, response)
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage)
         if watch_desc and self._register_watch(ctx, principal, watch_desc):
@@ -258,6 +265,30 @@ class RequestPipeline:
         else:
             self._mark_done(ctx)
         return HandleOutcome(ok=True, posted_ts=posted_ts)
+
+    def _archive_response(
+        self, ctx: RequestContext, channel_slug: str, body: str, response: EngineResponse
+    ) -> None:
+        """올린 응답 본문을 그대로 남긴다. 학습 배치가 이 기록을 근거로 쓴다.
+
+        예외를 밖으로 내지 않는다. 이미 발송까지 끝난 요청이고, 부가 기록이
+        실패했다고 성공한 응답을 실패로 뒤집으면 안 된다.
+        """
+        if self._response_archive is None:
+            return
+        try:
+            self._response_archive.record(
+                channel_slug=channel_slug,
+                user=ctx.user,
+                thread_ts=ctx.thread_ts,
+                question=ctx.text,
+                body=body,
+                ok=True,
+                elapsed_sec=response.elapsed,
+                turns=response.turns,
+            )
+        except Exception:
+            log.exception("응답 기록에 실패했다")
 
     # -- 조립 도움 -------------------------------------------------------
 

@@ -31,6 +31,11 @@ class StatePaths:
         return self.root / "persona"
 
     @property
+    def responses(self) -> Path:
+        """봇이 낸 응답을 채널별 날짜 파일로 남기는 곳. 원본 RESPONSE_DIR."""
+        return self.root / "responses"
+
+    @property
     def proposals(self) -> Path:
         """학습 제안 파일이 날짜별로 쌓이는 곳. 원본 PROPOSAL_DIR."""
         return self.root / "proposals"
