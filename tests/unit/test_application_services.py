@@ -64,6 +64,7 @@ RUNNER_ARGS: dict[str, Any] = {
     "attachment_cleanup_runner": lambda app: (),
     "health_runner": lambda app: (lambda 사유: None,),
     "catchup_retry_runner": lambda app: (app.worker(),),
+    "pending_report_runner": lambda app: (),
 }
 
 
@@ -96,6 +97,7 @@ class Test묶음구성:
             "health",
             "roster",
             "attachment_cleanup",
+            "pending_report",
         }
 
     def test_워커_묶음은_상태기록과_감시와_정리와_되짚기재시도를_띄운다(self, app: Application) -> None:
@@ -104,6 +106,7 @@ class Test묶음구성:
             "watch_jobs",
             "job_purge",
             "catchup_retry",
+            "pending_report",
         }
 
     def test_명부_갱신은_접수에만_있다(self, app: Application) -> None:
@@ -182,3 +185,34 @@ class Test되짚기재시도:
         워커.retry_catchup = lambda: [RetryStatus(channel="C1", stuck_sec=1.0, alert=False)]  # type: ignore[method-assign]
         app.catchup_retry_runner(워커)._task()
         assert [이름 for 이름, _ in client.calls if 이름 == "chat_postMessage"] == []
+
+
+class Test보내지못한보고:
+    """발송이 실패한 보고가 남았다가 다시 나가는가.
+
+    재기동 사유를 알리는 그 순간은 소켓이 불안정한 시점이라 발송이 실패하기
+    쉽다. 로그만 남기고 끝내면 운영자는 장애가 났다는 사실 자체를 못 받는다.
+    """
+
+    def test_발송이_실패하면_남긴다(self, app: Application, monkeypatch: Any) -> None:
+        def 실패(*args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("슬랙에 못 닿는다")
+
+        monkeypatch.setattr(app.publisher(), "post", 실패)
+        app._notify_owner("재기동 사유")
+        assert "재기동 사유" in app.pending_report()._path.read_text(encoding="utf-8")
+
+    def test_발송에_성공하면_안_남긴다(self, app: Application) -> None:
+        app._notify_owner("정상 보고")
+        assert not app.pending_report()._path.exists()
+
+    def test_실행기가_남은_보고를_다시_보낸다(self, app: Application, client: FakeSlackClient) -> None:
+        app.pending_report().save("밀린 보고")
+        app.pending_report_runner()._task()
+        assert not app.pending_report()._path.exists()
+        assert any("밀린 보고" in str(kwargs) for 이름, kwargs in client.calls if 이름 == "chat_postMessage")
+
+    def test_실행기가_양쪽_묶음에_들어_있다(self, app: Application) -> None:
+        """접수에서 생긴 보류를 워커가, 워커에서 생긴 것을 접수가 못 보내면 그 사이 프로세스가 꺼진다."""
+        assert "pending_report" in app.ingress_services(lambda 사유: None).runner_names
+        assert "pending_report" in app.worker_services(app.worker()).runner_names

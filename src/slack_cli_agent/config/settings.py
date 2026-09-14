@@ -80,6 +80,8 @@ class RuntimeSettings:
     attachment_cleanup_interval_sec: float = 3600
     # 마치지 못한 되짚기를 다시 보는 간격. 원본은 건강 점검 주기에 얹어 돌렸다.
     catchup_retry_interval_sec: float = 30
+    # 보내지 못한 보고를 다시 보내는 간격. 원본은 건강 점검 주기에 얹어 돌렸다.
+    pending_report_flush_interval_sec: float = 30
 
     # 추측한 값으로 퍼센트를 만들지 않는다. 비워 둔다
     context_limit: Mapping[str, int] = field(default_factory=dict)
