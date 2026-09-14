@@ -20,6 +20,7 @@ import pytest
 from slack_cli_agent.auth.policy import AccessExtension
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.core.application import Application
+from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ingress import IngressService
 from slack_cli_agent.core.pipeline import RequestPipeline
 from slack_cli_agent.core.worker import Worker
@@ -826,4 +827,60 @@ class Test연결감시연결:
         """상태 파일만 보는 쪽이 멎은 프로세스와 재기동 중인 것을 구분해야 한다."""
         app.self_restarter(exit_process=lambda code: None)("소켓 오류 9건")
         assert app._shutting_down is True
+        app.close()
+
+
+class Test실패건재등록상한연결:
+    """접수와 워커가 재시도 상한을 실제로 받는가.
+
+    모듈에 상한을 받는 자리를 만든 것과 조립이 그 값을 넘기는 것은 다르다.
+    안 넘기면 계속 실패하는 요청이 재전달마다 되살아난다.
+    """
+
+    def test_접수가_설정된_상한을_받는다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        profile = write_profile(tmp_path, settings={"job_max_attempts": 5})
+        application = Application(profile, client)
+        assert application.ingress()._job_max_attempts == 5
+        application.close()
+
+
+class Test끝난작업정리연결:
+    """끝난 작업을 지우는 경로가 있는가.
+
+    `purge_finished()` 는 있지만 부르는 곳이 없으면 jobs 표가 계속 커진다.
+    지우는 기준 시각은 되짚기 창보다 커야 한다 — 그보다 짧게 잡으면 되짚기가
+    이미 답한 메시지를 미응답으로 보고 다시 등록해 같은 답이 두 번 나간다.
+    """
+
+    def test_정리_주기실행기를_만든다(self, app: Application) -> None:
+        runner = app.job_purge_runner()
+        assert runner.thread is None
+        app.close()
+
+    def test_한_회차가_실제로_지운다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        app = Application(write_profile(tmp_path, settings={"job_retention_sec": 0}), client)
+        queue = app.queue()
+        queue.enqueue(RequestContext(channel="C1", user="U1", ts="1.0", thread_ts="1.0", text="x"))
+        job = queue.claim_next("w")
+        assert job is not None
+        queue.complete(job.id, ok=True)
+        app.job_purge_runner()._task()
+        assert queue.counts() == {}
+        app.close()
+
+    def test_최근에_끝난것은_안_지운다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        profile = write_profile(tmp_path, settings={"job_retention_sec": 86400})
+        application = Application(profile, client)
+        queue = application.queue()
+        queue.enqueue(RequestContext(channel="C1", user="U1", ts="1.0", thread_ts="1.0", text="x"))
+        job = queue.claim_next("w")
+        assert job is not None
+        queue.complete(job.id, ok=True)
+        application.job_purge_runner()._task()
+        assert queue.counts() != {}
+        application.close()
+
+    def test_보관기간은_되짚기_최대창보다_길다(self, app: Application) -> None:
+        """짧으면 이미 답한 메시지를 되짚기가 미응답으로 보고 다시 등록한다."""
+        assert app.settings.job_retention_sec > app.settings.catchup_max_window_sec
         app.close()

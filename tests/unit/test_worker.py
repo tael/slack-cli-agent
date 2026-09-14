@@ -469,3 +469,53 @@ class Test빈큐대기:
         worker.run_forever(lambda: 멈춤.pop(0))
         # 두 건 다 집혔다. 첫 건의 예외가 반복을 끝내지 않았다.
         assert queue.claim_next("other") is None
+
+
+class Test되짚기가_실패건을_되살린다:
+    """실패로 끝난 건을 되짚기가 다시 등록하는가.
+
+    실패한 행이 `(channel, message_ts)` 를 계속 차지하면, 되짚기가 미응답
+    멘션을 찾아내도 등록이 조용히 무시된다. 그 요청은 답을 못 받은 채로
+    영영 남는다.
+    """
+
+    def test_실패한_대표건은_다시_등록된다(self, database) -> None:
+        worker, queue, _client = make_worker(database=database)
+        queue.enqueue(ctx("1.1", "T1"))
+        job = queue.claim_next("w")
+        assert job is not None
+        queue.complete(job.id, ok=False, failure="엔진 오류")
+
+        report = CatchupReport(missed=[ctx("1.1", "T1")], skipped=[], unchecked_channels=[])
+        worker._catchup = FakeCatchup(report)
+        accepted = worker.catch_up(["C1"])
+
+        assert [c.ts for c in accepted.missed] == ["1.1"]
+        assert [j.context.ts for j in queue.pending()] == ["1.1"]
+
+    def test_시도상한을_넘긴건은_되살리지_않는다(self, database) -> None:
+        """계속 실패하는 요청을 되짚기가 매번 되살리면 끝나지 않는다."""
+        settings = RuntimeSettings(heartbeat_interval_sec=0.01, job_max_attempts=1)
+        worker, queue, _client = make_worker(database=database, settings=settings)
+        queue.enqueue(ctx("1.1", "T1"))
+        job = queue.claim_next("w")
+        assert job is not None
+        queue.complete(job.id, ok=False, failure="엔진 오류")
+
+        report = CatchupReport(missed=[ctx("1.1", "T1")], skipped=[], unchecked_channels=[])
+        worker._catchup = FakeCatchup(report)
+        accepted = worker.catch_up(["C1"])
+
+        assert accepted.missed == []
+        assert queue.pending() == []
+
+    def test_완료된건은_되살리지_않는다(self, database) -> None:
+        worker, queue, _client = make_worker(database=database)
+        queue.enqueue(ctx("1.1", "T1"))
+        job = queue.claim_next("w")
+        assert job is not None
+        queue.complete(job.id, ok=True)
+
+        report = CatchupReport(missed=[ctx("1.1", "T1")], skipped=[], unchecked_channels=[])
+        worker._catchup = FakeCatchup(report)
+        assert worker.catch_up(["C1"]).missed == []
