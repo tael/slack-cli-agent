@@ -309,12 +309,49 @@ class WorkerCommand(ProfileAwareCommand):
         return 0
 
 
+class LearnCommand(ProfileAwareCommand):
+    """하루치 학습 배치를 한 번 돌린다. 원본 `run-learn.sh` 에 대응한다.
+
+    워커 주기 실행기가 부르는 것과 같은 배치를 부른다. 손으로 돌리는 쪽이
+    다른 코드를 쓰면 두 경로의 동작이 갈린다.
+    """
+
+    name: ClassVar[str] = "learn"
+    help: ClassVar[str] = "하루치 응답 기록을 분석해 학습 제안을 만들고 반영한다"
+
+    def __init__(self, application_factory: ApplicationFactory | None = None) -> None:
+        self._factory = application_factory or _default_application
+
+    def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--day",
+            default=None,
+            help="분석할 날짜(YYYY-MM-DD). 안 주면 오늘을 돌린다",
+        )
+
+    def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
+        app = self._factory(profile)
+        try:
+            report = app.learning_batch().run(args.day)
+        finally:
+            app.close()
+        if not report.ran:
+            print(f"{report.day} 학습 배치를 돌리지 않았다 : {report.reason}", file=stdout)
+            return 1
+        where = ", ".join(f"{k} {v}건" for k, v in report.applied.items()) or "없음"
+        print(f"{report.day} 학습 배치를 마쳤다. 반영 : {where}", file=stdout)
+        if not report.notified:
+            print("소유자에게 알리지 못했다. 반영은 끝났다.", file=stdout)
+        return 0
+
+
 DEFAULT_COMMANDS: tuple[CliCommand, ...] = (
     PreflightCommand(),
     MigrateCommand(),
     ChannelsCommand(),
     IngressCommand(),
     WorkerCommand(),
+    LearnCommand(),
 )
 
 

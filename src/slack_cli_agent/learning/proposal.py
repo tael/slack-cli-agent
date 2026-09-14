@@ -17,10 +17,12 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ..core.result import Outcome
+
+_DEFAULT_STALE_AFTER = timedelta(hours=6)
 
 
 def _str_tuple(value: object) -> tuple[str, ...]:
@@ -133,3 +135,49 @@ class ProposalStore:
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, path)
+
+    def acquire_lock(
+        self, day: str, *, now: datetime, stale_after: timedelta = _DEFAULT_STALE_AFTER,
+    ) -> bool:
+        """그날 배치 잠금을 가져오면 True, 이미 다른 쪽이 쥐고 있으면 False.
+
+        워커 여럿이 같은 날짜를 동시에 돌리는 것을 막는다. 잠금 파일을
+        ``O_CREAT|O_EXCL`` 로 만든다 — 이미 있으면 원자적으로 실패한다.
+        오래된 잠금(``stale_after`` 보다 오래된 것)은 죽은 프로세스가 풀지
+        못하고 남긴 것으로 보고 다시 가져온다. ``now`` 는 호출부의 시계를
+        그대로 받는다 — 이 메서드가 실제 시계를 재지 않는다.
+        """
+        self._dir.mkdir(parents=True, exist_ok=True)
+        path = self._lock_path(day)
+        if self._try_create_lock(path):
+            return True
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+        except OSError:
+            return False
+        if now - mtime < stale_after:
+            return False
+        try:
+            path.unlink()
+        except OSError:
+            return False
+        return self._try_create_lock(path)
+
+    def release_lock(self, day: str) -> None:
+        """잠금을 푼다. 이미 없으면 조용히 넘어간다."""
+        try:
+            self._lock_path(day).unlink()
+        except FileNotFoundError:
+            pass
+
+    def _lock_path(self, day: str) -> Path:
+        return self._dir / f"{day}.lock"
+
+    @staticmethod
+    def _try_create_lock(path: Path) -> bool:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return False
+        os.close(fd)
+        return True

@@ -75,6 +75,13 @@ from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard
 from ..jobs.heartbeat import WorkerHeartbeat
 from ..jobs.queue import SqliteJobQueue
+from ..learning.analyzer import ProposalAnalyzer, ProposalBuilder
+from ..learning.apply import LearningApplier
+from ..learning.batch import LearningBatch
+from ..learning.proposal import ProposalStore
+from ..learning.reactions import ReactionCollector
+from ..learning.render import ProposalRenderer
+from ..learning.schedule import DailyBatchSchedule
 from ..observability.app_snapshot import ApplicationSnapshotSource
 from ..observability.audit import AuditLog
 from ..observability.notices import NoticeCatalog
@@ -254,6 +261,7 @@ class Application:
         self._health_runner: PeriodicRunner | None = None
         self._attachments: AttachmentStore | None = None
         self._response_archive: ResponseArchive | None = None
+        self._learning_batch: LearningBatch | None = None
         self._catchup_service: CatchupService | None = None
         self._pending_report: PendingReportStore | None = None
         self._outage_tracker: OutageTracker | None = None
@@ -544,6 +552,90 @@ class Application:
                 self._profile.paths.responses, clock=lambda: datetime.now(KST),
             )
         return self._response_archive
+
+    def learning_batch(self) -> LearningBatch:
+        """하루치 응답 기록을 분석해 제안을 만들고 반영까지 하는 배치.
+
+        원본은 `learn.py` 라는 별도 스크립트였고 launchd 가 불렀다. 엔진이
+        codex 면 원본은 이 배치를 아예 안 돌렸는데, 그 사유는 분석 호출이
+        Claude CLI 출력 형식에 맞춰져 있었기 때문이다. 여기서는 엔진 실행이
+        `EngineRunner` 뒤에 있어 그 차이가 이미 흡수되므로 엔진을 안 가린다.
+        """
+        if self._learning_batch is None:
+            paths = self._profile.paths
+            archive = self.response_archive()
+            analyzer = ProposalAnalyzer(
+                self.engine,
+                self.engine_runner,
+                model=self._settings.learning_model,
+                effort=self._settings.learning_effort,
+                workdir=self._profile.work_root,
+                bot_name=self._profile.display_name,
+            )
+            self._learning_batch = LearningBatch(
+                archives=archive,
+                reactions=ReactionCollector(
+                    archive,
+                    threads=self._history_port(),
+                    thread_timestamps=archive.thread_timestamps,
+                    channel_id_of=self._channel_id_of,
+                    limit=self._settings.learning_thread_reply_limit,
+                ),
+                builder=ProposalBuilder(analyzer),
+                store=ProposalStore(paths.proposals),
+                applier=LearningApplier(paths.knowledge, self._profile.display_name),
+                renderer=ProposalRenderer(),
+                notify=self._notify_owner,
+                clock=lambda: datetime.now(KST),
+            )
+        return self._learning_batch
+
+    def _channel_id_of(self, channel_name: str) -> str | None:
+        """채널 이름으로 슬랙 채널 ID 를 찾는다. 모르면 None.
+
+        기록 디렉터리 이름이 채널 이름이라 되찾아야 한다. 소유자 개인 대화는
+        채널 목록에 없으므로 프로필에서 가져온다 — 원본도 그렇게 했다.
+        """
+        for channel_id, config in self._channels.all().items():
+            if config.name == channel_name:
+                return channel_id
+        if channel_name == "dm":
+            return self._profile.owner_dm or None
+        return None
+
+    def _learning_day_done(self, day: str) -> bool:
+        """그날 제안 파일이 이미 있으면 끝난 것으로 본다."""
+        return (self._profile.paths.proposals / f"{day}.json").exists()
+
+    def learning_schedule(self) -> DailyBatchSchedule:
+        return DailyBatchSchedule(
+            clock=lambda: datetime.now(KST),
+            run_hour=self._settings.learning_run_hour,
+            is_done=self._learning_day_done,
+        )
+
+    def _learning_batch_tick(self) -> None:
+        """돌릴 날이 있을 때만 배치를 부른다. 판정은 일정이 한다."""
+        day = self.learning_schedule().due_day()
+        if day is None:
+            return
+        report = self.learning_batch().run(day)
+        if not report.ran:
+            log.info("%s 학습 배치를 건너뛰었다 : %s", day, report.reason)
+            return
+        log.info("%s 학습 배치를 마쳤다. 반영 %s, 알림 %s", day, dict(report.applied), report.notified)
+
+    def learning_batch_runner(self) -> PeriodicRunner:
+        """학습 배치를 돌릴 때가 됐는지 주기로 판정한다.
+
+        간격이 짧아도 실제로 도는 것은 하루 한 번이다 — 틱마다 하는 일은
+        파일 하나를 확인하는 것뿐이고, 날짜 판정은 `learning/schedule.py` 가 한다.
+        """
+        return PeriodicRunner(
+            self._learning_batch_tick,
+            self._settings.learning_batch_interval_sec,
+            name="learning_batch",
+        )
 
     def job_purge_runner(self) -> PeriodicRunner:
         """끝난 작업을 주기적으로 지운다. 안 띄우면 jobs 표가 계속 커진다.
@@ -1132,6 +1224,7 @@ class Application:
                 self.job_purge_runner(),
                 self.catchup_retry_runner(worker),
                 self.pending_report_runner(),
+                self.learning_batch_runner(),
             ],
             name="worker",
         )
