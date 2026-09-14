@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from slack_cli_agent.reliability.pending_report import PendingReportStore
+
 
 class TestPendingReportStore:
     def test_저장할_보고가_없으면_flush는_아무_일도_하지_않는다(self, tmp_path: Path) -> None:
@@ -124,3 +126,54 @@ class TestPendingReportStore:
         store.flush()
 
         assert 받은_문구 == []
+
+
+class Test두프로세스가동시에보내지않는다:
+    """접수와 워커가 같은 파일을 본다. 둘이 같은 보고를 각각 보내면 중복 DM 이 간다.
+
+    또 한쪽이 보내는 사이 새로 저장된 보고를 다른 쪽이 지우면 그 보고가 사라진다.
+    """
+
+    def test_먼저_집은_쪽만_보낸다(self, tmp_path: Path) -> None:
+        """한쪽이 발송하는 사이에 다른 쪽이 같은 파일을 보면 같은 보고를 두 번 보낸다.
+
+        발송 중에 상대가 flush 를 시작하는 상황을 그대로 만든다.
+        """
+        path = tmp_path / "pending.json"
+        보낸것: list[str] = []
+
+        def 보내는_사이에_상대도_본다(text: str) -> None:
+            보낸것.append(text)
+            PendingReportStore(path=path, sender=보낸것.append).flush()
+
+        PendingReportStore(path=path, sender=lambda _t: None).save("장애 보고")
+        PendingReportStore(path=path, sender=보내는_사이에_상대도_본다).flush()
+
+        assert 보낸것 == ["장애 보고"]
+
+    def test_보내는_사이_저장된_보고는_남는다(self, tmp_path: Path) -> None:
+        """집어 간 뒤에 저장된 것을 그 발송이 지우면 안 된다."""
+        path = tmp_path / "pending.json"
+        store = PendingReportStore(path=path, sender=lambda text: store.save("발송 중에 생긴 보고"))
+        store.save("먼저 있던 보고")
+
+        store.flush()
+
+        assert path.exists()
+        assert "발송 중에 생긴 보고" in path.read_text(encoding="utf-8")
+
+    def test_발송에_실패하면_되돌려_다음_기회를_남긴다(self, tmp_path: Path) -> None:
+        path = tmp_path / "pending.json"
+
+        def 실패(text: str) -> None:
+            raise RuntimeError("슬랙에 못 닿는다")
+
+        store = PendingReportStore(path=path, sender=실패)
+        store.save("장애 보고")
+
+        store.flush()
+
+        assert path.exists()
+        보낸것: list[str] = []
+        PendingReportStore(path=path, sender=보낸것.append).flush()
+        assert 보낸것 == ["장애 보고"]

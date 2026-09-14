@@ -71,32 +71,60 @@ class PendingReportStore:
     def flush(self) -> None:
         """남겨둔 보고가 있으면 다시 보낸다.
 
-        발송에 성공했을 때만 파일을 지운다. 저장할 것이 없으면 그대로
-        끝난다 — 재기동마다 매번 부르는 자리라 없는 것이 정상 상태다.
+        먼저 파일 이름을 바꿔 집어 간다. `rename` 은 원자적이라 두 프로세스가
+        동시에 봐도 한쪽만 성공한다. 접수와 워커가 같은 파일을 보므로 이것이
+        없으면 같은 보고가 두 번 발송된다.
+
+        집어 간 뒤에 새로 저장되는 보고는 원래 경로에 쓰인다. 그래서 발송 중에
+        생긴 보고를 이 발송이 지우지 않는다.
+
+        발송에 실패하면 되돌려 놓는다. 실패했는데 버리면 그 보고가 다음
+        기회에도 못 나가고 그대로 사라진다.
         """
-        if not self._path.exists():
+        claimed = self._path.with_suffix(self._path.suffix + ".sending")
+        try:
+            self._path.rename(claimed)
+        except OSError:
+            # 없거나 이미 다른 쪽이 집어 갔다. 둘 다 여기서 끝내는 것이 맞다.
             return
 
         try:
-            raw = self._path.read_text()
-            data = json.loads(raw)
+            data = json.loads(claimed.read_text())
         except (OSError, json.JSONDecodeError) as exc:
             # 재기동 도중 쓰다 만 파일일 수 있다. 다시 시도할 근거(text)가
-            # 없으니 지우지도 못하고 보내지도 못한다 — 있는 그대로 로그만
-            # 남기고 다음 기회를 기다린다.
+            # 없으니 되돌려 두고 로그만 남긴다.
             log.error("남겨둔 보고를 읽지 못했다 : %s", exc)
+            self._restore(claimed)
             return
 
         text = data.get("text", "")
         try:
             self._sender(text)
-        except Exception as exc:  # noqa: BLE001 — 발송 실패 원인이 슬랙 SDK 예외부터 네트워크 오류까지 다양해 한 자리에서 좁혀 잡을 수 없다. 실패하면 파일을 지우지 않고 다음 기회로 넘긴다
+        except Exception as exc:  # noqa: BLE001 — 발송 실패 원인이 슬랙 SDK 예외부터 네트워크 오류까지 다양해 한 자리에서 좁혀 잡을 수 없다. 실패하면 되돌려 다음 기회로 넘긴다
             log.error("남겨둔 보고를 보내지 못했다 : %s", exc)
+            self._restore(claimed)
             return
 
         try:
-            self._path.unlink()
+            claimed.unlink()
         except OSError as exc:
             log.warning("보낸 보고 파일을 지우지 못했다 : %s", exc)
         else:
             log.info("남겨둔 보고를 보냈다.")
+
+    def _restore(self, claimed: Path) -> None:
+        """집어 간 것을 원래 자리로 되돌린다.
+
+        그 사이 새 보고가 저장됐으면 그것이 더 최근이므로 되돌리지 않고 버린다.
+        단일 슬롯이라 남길 것은 가장 최근 하나다.
+        """
+        if self._path.exists():
+            try:
+                claimed.unlink()
+            except OSError:
+                pass
+            return
+        try:
+            claimed.rename(self._path)
+        except OSError as exc:
+            log.error("보고를 되돌리지 못했다 : %s", exc)
