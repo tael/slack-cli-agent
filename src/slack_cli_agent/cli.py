@@ -10,6 +10,7 @@ otherwise block subcommands (like preflight) that don't need it.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import sys
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Protocol, TextIO, runtime_checkable
 
 from .config.channel import ChannelRegistry
+from .config.paths import StatePaths
 from .config.profile import Profile
 from .core.errors import AgentError
 from .core.lifecycle import GracefulShutdown, SignalRegister
@@ -167,6 +169,99 @@ class ChannelsCommand(ProfileAwareCommand):
             return 0
         for channel_id, config in channels.items():
             print(f"{channel_id} : {config.name} (모드 {config.mode})", file=stdout)
+        return 0
+
+
+def _profile_skeleton(name: str, state_dir: Path) -> dict[str, Any]:
+    return {
+        "name": name,
+        "display_name": name,
+        "primary_engine": {
+            "type": "claude",
+            "binary": "~/.local/bin/claude",
+            "model": "",
+        },
+        "state_dir": str(state_dir),
+        "owner_user_id": "",
+        "troubleshoot_channel": "",
+        "plugins": [],
+    }
+
+
+class InitCommand(CliCommand):
+    """First-run scaffolding: a profile skeleton plus the state directory layout.
+
+    Never overwrites an existing file or directory's contents — running this
+    again after hand edits, or after a package upgrade, must be a no-op on
+    anything already there.
+    """
+
+    name: ClassVar[str] = "init"
+    help: ClassVar[str] = "프로필 뼈대와 상태 디렉터리 구조를 만든다"
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--name", required=True, help="봇 이름. 프로필 파일 이름과 상태 디렉터리 기본값에 쓰인다")
+        parser.add_argument(
+            "--profile-dir",
+            default=None,
+            help="프로필 파일(<이름>.json)을 만들 디렉터리. 기본은 현재 디렉터리",
+        )
+        parser.add_argument(
+            "--state-dir",
+            default=None,
+            help="상태 디렉터리 경로. 기본은 ~/.<이름>",
+        )
+
+    def execute(self, args: argparse.Namespace, stdout: TextIO) -> int:
+        name = args.name
+        profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd()
+        state_dir = (
+            Path(args.state_dir).expanduser() if args.state_dir else StatePaths.for_bot(name).root
+        )
+
+        created: list[str] = []
+        skipped: list[str] = []
+
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        profile_path = profile_dir / f"{name}.json"
+        if profile_path.exists():
+            skipped.append(f"프로필 파일 : {profile_path}")
+        else:
+            skeleton = json.dumps(_profile_skeleton(name, state_dir), ensure_ascii=False, indent=2)
+            profile_path.write_text(skeleton + "\n", encoding="utf-8")
+            created.append(f"프로필 파일 : {profile_path}")
+
+        paths = StatePaths(state_dir)
+        for label, path in (
+            ("상태 디렉터리", paths.root),
+            ("프롬프트 디렉터리", paths.prompts),
+            ("페르소나 디렉터리", paths.persona),
+            ("축적 지식 디렉터리", paths.knowledge),
+            ("엔진 디렉터리", paths.engine_dir),
+        ):
+            if path.is_dir():
+                skipped.append(f"{label} : {path}")
+            else:
+                path.mkdir(parents=True, exist_ok=True)
+                created.append(f"{label} : {path}")
+
+        print("만든 것", file=stdout)
+        for line in created:
+            print(f"- {line}", file=stdout)
+        if not created:
+            print("- 없음. 전부 이미 있었다", file=stdout)
+
+        print("건너뛰었다 (이미 있어서 그대로 두었다)", file=stdout)
+        for line in skipped:
+            print(f"- {line}", file=stdout)
+        if not skipped:
+            print("- 없음", file=stdout)
+
+        print(file=stdout)
+        print("다음에 채워야 할 값", file=stdout)
+        print(f"- {profile_path} 의 owner_user_id, troubleshoot_channel, primary_engine", file=stdout)
+        print("- 환경변수 SLACK_BOT_TOKEN, SLACK_APP_TOKEN", file=stdout)
+        print(f"- {paths.prompts} 아래 조직 고유 프롬프트. 없으면 패키지 기본 프롬프트를 쓴다", file=stdout)
         return 0
 
 
@@ -388,6 +483,7 @@ class WebCommand(CliCommand):
 
 
 DEFAULT_COMMANDS: tuple[CliCommand, ...] = (
+    InitCommand(),
     PreflightCommand(),
     MigrateCommand(),
     ChannelsCommand(),

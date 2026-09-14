@@ -43,7 +43,8 @@ class CodexEngine(Engine):
         if request.effort:
             cmd += ["-c", f"model_reasoning_effort={self._toml_string(request.effort)}"]
         if not request.resume and request.system_prompt:
-            cmd += ["-c", f"developer_instructions={self._toml_string(request.system_prompt)}"]
+            instructions = request.system_prompt + self.readable_paths_note(request.readable_dirs)
+            cmd += ["-c", f"developer_instructions={self._toml_string(instructions)}"]
 
         if request.resume:
             # resume doesn't accept --sandbox or -C; achieve the same effect via config keys instead.

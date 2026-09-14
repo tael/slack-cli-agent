@@ -24,6 +24,9 @@ where = ["src"]
 # UI file and `slack-cli-agent web` would serve nothing.
 [tool.setuptools.package-data]
 "slack_cli_agent.web" = ["assets/*.html"]
+# Default prompts so a freshly installed bot can boot before an operator has
+# written any org-specific prompt files under the state directory.
+"slack_cli_agent.assets" = ["prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
