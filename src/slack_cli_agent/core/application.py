@@ -209,6 +209,12 @@ class Application:
         self._database.migrate()
 
         self._registry = engine_registry or self._default_registry()
+        # 플러그인이 더한 엔진을 등록한다. 여기서 안 부르면 그 엔진은 어느
+        # 실행 경로에서도 안 쓰인다. 밖에서 레지스트리를 넣은 경우에도 등록한다 —
+        # 플러그인을 함께 준 쪽이 그 엔진을 쓰려는 것이다.
+        for plugin in self._plugins:
+            for engine_class in plugin.engines():
+                self._registry.register(engine_class)
 
         self._channels = ChannelRegistry(profile.paths.channels)
         self._names = DisplayNameResolver(client)
@@ -277,6 +283,11 @@ class Application:
         registry.register(ClaudeEngine)
         registry.register(CodexEngine)
         return registry
+
+    @property
+    def engine_registry(self) -> EngineRegistry:
+        """등록된 엔진 목록. 플러그인이 더한 것도 들어 있다."""
+        return self._registry
 
     @property
     def profile(self) -> Profile:

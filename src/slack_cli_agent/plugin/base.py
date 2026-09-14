@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from ..admin.command import AdminCommand
     from ..auth.policy import AccessExtension
+    from ..engine.base import Engine
     from ..guard.base import OutputGuard
     from ..preflight.check import PreflightCheck
     from ..prompt.sections import PromptSection
@@ -38,4 +39,12 @@ class BotPlugin(ABC):
         return ()
 
     def preflight_checks(self) -> Sequence[PreflightCheck]:
+        return ()
+
+    def engines(self) -> Sequence[type[Engine]]:
+        """이 플러그인이 더하는 엔진 종류.
+
+        엔진 종류가 코드에 고정되면 쓰는 쪽이 자기 엔진을 못 붙인다. 접근
+        정책·관리 명령과 같은 자리에 둔다.
+        """
         return ()
