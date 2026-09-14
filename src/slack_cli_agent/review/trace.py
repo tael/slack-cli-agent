@@ -1,12 +1,5 @@
-"""디버그 추적 — 답변 하나가 무엇을 입력받아 어떻게 판단해 무엇을 냈는지만 보여준다.
-
-원본 bot.py 의 `_run_debug_trace()` 를 옮겼다. 부검과
-달리 무엇이 잘못됐는지 판단하지 않는다.
-
-원본은 요청자 이름을 문자열로 박아 뒀다 — 이 봇을 실제로 운영하는 조직의
-고유값이라 새 코드베이스에 그대로 옮기면 조직 종속 코드가 된다. 대신
-`owner_display_name` 생성자 인자로 받는다.
-"""
+# Unlike a postmortem, this doesn't judge whether anything went wrong --
+# it just shows what the answer took in and how it decided.
 
 from __future__ import annotations
 
@@ -17,7 +10,6 @@ from slack_cli_agent.review.base import ReviewTarget, ReviewTask
 
 
 class DebugTraceTask(ReviewTask):
-    """리액션 "brain" 으로 시작하는 디버그 추적."""
 
     log_name: ClassVar[str] = "debug_trace"
     emoji: ClassVar[str] = "brain"

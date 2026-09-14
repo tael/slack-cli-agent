@@ -1,16 +1,17 @@
-"""Codex CLI 어댑터.
+"""Codex CLI adapter.
 
-Claude 와 세 가지가 다르다.
+Three differences from Claude:
 
-- 시스템 지침 : Codex 는 ``developer_instructions`` 를 스레드를 열 때만
-  받는다. 재개 턴에 새 값을 줘도 최초 값이 이긴다(2026-09-11 확인). 그래서
-  최초 턴에만 시스템 프롬프트를 싣고, directives_for_turn() 이 턴마다
-  바뀌는 것만 본문 앞에 붙이도록 남겨 둔다.
-- 세션 : Codex CLI 가 thread_id 를 발급한다. session_id_from() 이 그것을
-  돌려준다. new_session_id() 가 만드는 값은 그 전까지 쓰는 자리 표시자일
-  뿐이다.
-- 경로 : ``--add-dir`` 에 해당하는 인자가 없다. readable_paths_note() 로
-  문장을 만들어 시스템 지침에 붙인다.
+- System prompt: Codex only accepts developer_instructions when
+  opening a thread. A new value on a resumed turn is ignored — the
+  first value wins (confirmed 2026-09-11). So the system prompt is
+  only sent on the first turn, and directives_for_turn() carries only
+  what changes per turn.
+- Session: the Codex CLI mints its own thread_id, returned by
+  session_id_from(). new_session_id() only produces a placeholder used
+  until then.
+- Paths: there's no --add-dir equivalent. readable_paths_note() builds
+  a sentence appended to the system instructions instead.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ class CodexEngine(Engine):
             cmd.append("resume")
         cmd += ["--json", "--skip-git-repo-check"]
         if self.spec.options.get("network"):
-            # 읽기 전용 샌드박스는 통신도 막는다. 여는 것은 프로필이 정한다.
+            # The read-only sandbox blocks network too; the profile decides whether to open it.
             cmd += ["-c", "sandbox_workspace_write.network_access=true"]
         if request.model:
             cmd += ["-m", request.model]
@@ -45,7 +46,7 @@ class CodexEngine(Engine):
             cmd += ["-c", f"developer_instructions={self._toml_string(request.system_prompt)}"]
 
         if request.resume:
-            # resume 에는 --sandbox 와 -C 인자가 없다. 설정값으로 같은 효과를 낸다.
+            # resume doesn't accept --sandbox or -C; achieve the same effect via config keys instead.
             cmd += ["-c", f"sandbox_mode={self._toml_string(sandbox)}",
                    request.session_id, request.prompt]
         else:
@@ -53,9 +54,9 @@ class CodexEngine(Engine):
         return cmd
 
     def new_session_id(self) -> str:
-        # 실제 스레드 ID 는 CLI 가 첫 실행에서 발급한다. 이 값은 그 전까지 쓰는
-        # 자리 표시자일 뿐이라 재개 시점에는 session_id_from() 이 돌려준 실제
-        # 값으로 갈아 끼워야 한다.
+        # The real thread ID is minted by the CLI on first run. This is
+        # only a placeholder until then — on resume it must be
+        # replaced with the real value from session_id_from().
         return str(uuid.uuid4())
 
     def session_id_from(self, response: EngineResponse) -> str | None:
@@ -108,7 +109,7 @@ class CodexEngine(Engine):
         )
 
     def detect_usage_limit(self, response: EngineResponse) -> UsageLimit | None:
-        # Codex 는 구독 주간 한도라는 개념이 없다. 원본에도 이 판정이 없다.
+        # Codex has no subscription weekly-limit concept; the original doesn't check for it either.
         return None
 
     @staticmethod
@@ -140,6 +141,6 @@ class CodexEngine(Engine):
 
     @staticmethod
     def _toml_string(value: str) -> str:
-        """``-c key=value`` 의 value 는 TOML 로 해석된다. JSON 문자열 표기가
-        TOML 기본 문자열과 같은 이스케이프를 쓰므로 그대로 쓴다."""
+        """``-c key=value``'s value parses as TOML; JSON string escaping
+        matches TOML's basic string escaping, so it's safe to reuse."""
         return json.dumps(value, ensure_ascii=False)

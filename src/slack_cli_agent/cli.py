@@ -1,17 +1,10 @@
-"""단일 진입점 CLI.
+"""Single entry point CLI.
 
-원본 저장소는 봇 하나를 다루는 데도 셸 스크립트가 여러 개였다(`restart.sh`,
-`apply.sh`, `run.sh` 등). 이 패키지는 프로필이 여럿(여러 봇)일 수 있게
-재구성했으므로, 사람이 손으로 부르는 진입점도 셸이 아니라 하나의 파이썬 CLI로
-모은다. 하위 명령은 클래스로 만들고 공통 계약은 `CliCommand` 가 정한다 —
-`if name == ...` 분기 나열을 쓰지 않는다.
-
-프로세스를 실제로 띄우는 하위 명령(ingress/worker 기동, 원본의 `run.sh`,
-`restart.sh` 뒷부분)은 application factory 를 주입받는 구조로 되어 있다.
-`core.application` 모듈은 슬랙 SDK 를 끌어오므로, 그 모듈의 import 는
-기본 팩토리 함수 안으로 미뤄 둔다 — 그래야 이 모듈을 불러오는 것만으로
-슬랙 SDK 가 딸려 들어오지 않고, preflight 같은 다른 하위 명령이 그것 때문에
-막히는 일이 없다.
+Subcommands are classes sharing the `CliCommand` contract instead of an
+if/elif dispatch. Commands that spawn long-running processes take an
+application factory; the default factory imports `core.application` lazily
+so importing this module alone doesn't pull in the Slack SDK, which would
+otherwise block subcommands (like preflight) that don't need it.
 """
 
 from __future__ import annotations
@@ -42,26 +35,23 @@ from .storage.database import Database
 
 
 class CliCommand(ABC):
-    """하위 명령 하나의 계약."""
-
     name: ClassVar[str]
     help: ClassVar[str] = ""
 
     @abstractmethod
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
-        """이 명령이 받는 인자를 등록한다."""
+        pass
 
     @abstractmethod
     def execute(self, args: argparse.Namespace, stdout: TextIO) -> int:
-        """명령을 실행한다. 종료 코드를 돌려준다."""
+        pass
 
 
 class ProfileAwareCommand(CliCommand):
-    """프로필을 읽어야 하는 하위 명령의 공통 부분.
+    """Shared `--profile`/`--profile-dir` handling.
 
-    `--profile`, `--profile-dir` 는 모든 하위 명령이 똑같이 받는다. 프로필을
-    찾지 못하면 무엇을 하든 이어갈 수 없으므로, 여기서 한 번만 처리해
-    구체 명령은 이미 로드된 `Profile` 만 받는다.
+    Handled once here so concrete commands only ever deal with an
+    already-loaded `Profile`.
     """
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
@@ -76,7 +66,7 @@ class ProfileAwareCommand(CliCommand):
 
     @abstractmethod
     def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
-        """이 명령만의 인자. 없으면 빈 구현으로 둔다."""
+        """Command-specific arguments; leave the body empty if there are none."""
 
     def execute(self, args: argparse.Namespace, stdout: TextIO) -> int:
         search_dirs = [Path(p) for p in (args.profile_dir or [Path.cwd()])]
@@ -85,15 +75,14 @@ class ProfileAwareCommand(CliCommand):
 
     @abstractmethod
     def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
-        """프로필을 이미 읽은 상태에서 이어갈 부분."""
+        pass
 
 
 class PreflightCommand(ProfileAwareCommand):
-    """기동 전 점검을 실행한다. 원본 `restart.sh` 앞머리 + `check.py` 를 합친 것.
+    """Runs pre-boot checks.
 
-    구문 검사·단위 시험 실행(원본 `restart.sh` 가 하던 것)은 여기 없다.
-    `pytest` 를 이 프로세스 밖에서 따로 실행하는 것이 자연스럽고, 이 명령은
-    "지금 이 프로필로 기동해도 되는가" 만 본다.
+    Syntax checks and unit tests run outside this process via `pytest`;
+    this only answers whether the profile can boot right now.
     """
 
     name: ClassVar[str] = "preflight"
@@ -119,8 +108,7 @@ class PreflightCommand(ProfileAwareCommand):
             EngineBinaryCheck(),
             McpServerCheck(),
             PromptFileCheck(required_names=args.required_prompt),
-            # 채널 설정 중 소유자 요청에 적용되지 않는 항목을 알린다.
-            # fatal=False 라 기동을 막지 않는다 — 설정 오독만 막는 것이 목적이다.
+            # fatal=False: only meant to prevent a misread config, not to block boot.
             OwnerSettingsInertCheck(),
         )
         runner = PreflightRunner(checks)
@@ -140,10 +128,7 @@ class PreflightCommand(ProfileAwareCommand):
 
 
 class MigrateCommand(ProfileAwareCommand):
-    """DB 스키마를 마이그레이션한다. 원본은 봇이 기동할 때마다 알아서 했다.
-
-    이 명령은 기동과 분리해, 기동 전에 미리 적용했는지 확인할 수 있게 한다.
-    """
+    """Applies DB schema migrations, decoupled from boot so they can be applied ahead of time."""
 
     name: ClassVar[str] = "migrate"
     help: ClassVar[str] = "DB 마이그레이션을 실행한다"
@@ -166,7 +151,6 @@ class MigrateCommand(ProfileAwareCommand):
 
 
 class ChannelsCommand(ProfileAwareCommand):
-    """등록된 채널 목록을 본다. 원본은 채널 목록을 보려면 파일을 직접 열어야 했다."""
 
     name: ClassVar[str] = "channels"
     help: ClassVar[str] = "등록된 채널 목록을 본다"
@@ -186,23 +170,17 @@ class ChannelsCommand(ProfileAwareCommand):
 
 
 ApplicationFactory = Callable[[Profile], Any]
-"""프로필을 받아 애플리케이션 객체를 돌려주는 함수의 타입.
-
-애플리케이션 객체가 갖춰야 하는 계약은 `IngressCommand`, `WorkerCommand` 가
-쓰는 메서드(`ingress()`, `gateway()`, `worker(worker_id=...)`, `channel_ids()`,
-`close()`)뿐이다. 그 구현이 무엇인지는 이 파일이 알 필요가 없다.
-"""
+"""Produces an application object exposing `ingress()`, `gateway()`,
+`worker(worker_id=...)`, `channel_ids()`, and `close()`."""
 
 
 def _default_application(profile: Profile) -> Any:
-    from .core.application import Application  # 지연 import. 슬랙 SDK 는 여기서만 끌려온다
+    from .core.application import Application  # lazy import; the Slack SDK only gets pulled in here
 
     return Application.from_profile(profile)
 
 
 class IngressCommand(ProfileAwareCommand):
-    """슬랙 이벤트 접수 프로세스를 띄운다. 원본 `run.sh`/`restart.sh` 뒷부분에 해당한다."""
-
     name: ClassVar[str] = "ingress"
     help: ClassVar[str] = "슬랙 이벤트 접수 프로세스를 띄운다"
 
@@ -229,11 +207,11 @@ class IngressCommand(ProfileAwareCommand):
         try:
             gateway = app.gateway()
             app.ingress().register(gateway)
-            # 연결 감시는 기동 전에 켠다. 소켓 연결은 이 프로세스에만 있으므로
-            # 여기서 안 켜면 어디서도 안 켜지고, 소켓이 끊겨도 아무 기록이 안 남는다.
+            # Must be enabled before start: the socket connection only exists in
+            # this process, so a drop would otherwise go unnoticed.
             app.connection_watch()
-            # 주기 실행기는 묶음으로 띄운다. 여기서 하나씩 손으로 시작하면
-            # 새 실행기를 추가할 때 이 위치를 같이 안 고쳐 그 동작이 실행되지 않는다.
+            # Periodic runners start as a bundle, so adding a new one can't be
+            # forgotten at a call site that starts them one by one.
             with app.ingress_services(app.self_restarter()):
                 gateway.start(token)
         finally:
@@ -242,8 +220,6 @@ class IngressCommand(ProfileAwareCommand):
 
 
 class WorkerCommand(ProfileAwareCommand):
-    """작업 큐를 소비하는 워커 프로세스를 띄운다. 원본 `run.sh`/`restart.sh` 뒷부분에 해당한다."""
-
     name: ClassVar[str] = "worker"
     help: ClassVar[str] = "작업 큐를 소비하는 워커 프로세스를 띄운다"
 
@@ -253,8 +229,7 @@ class WorkerCommand(ProfileAwareCommand):
         signal_register: SignalRegister = signal.signal,
     ) -> None:
         self._factory = application_factory or _default_application
-        # 신호 등록을 주입받는다. `signal.signal` 을 그대로 부르면 단위
-        # 시험이 실제 프로세스의 신호 처리기를 바꾼다.
+        # Injected so tests don't install a handler on the real process's signals.
         self._signal_register = signal_register
 
     def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
@@ -271,35 +246,35 @@ class WorkerCommand(ProfileAwareCommand):
     def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
         app = self._factory(profile)
         worker = app.worker(worker_id=args.worker_id)
-        # 종료 신호를 받으면 처리 중인 요청이 끝날 때까지 기다린다. 등록하지
-        # 않으면 SIGTERM 이 프로세스를 그 자리에서 끝내고, 집어 둔 작업이
-        # 큐에 잡힌 채 남아 다음 워커가 정체 판정 시각까지 못 집는다.
+        # Waits for in-flight work on shutdown; without this, SIGTERM kills the
+        # process mid-request and the job stays stuck in the queue until the
+        # next worker's stall timeout.
         shutdown = GracefulShutdown(
             worker.inflight,
             app.settings.shutdown_grace_sec,
             signal_register=self._signal_register,
-            # 종료 중이라는 사실을 상태 기록에 남긴다. 없으면 상태 파일만
-            # 보는 쪽이 멈춘 프로세스와 종료 중인 프로세스를 구분하지 못한다.
+            # Recorded so a state-file reader can tell a shutting-down process
+            # from a dead one.
             on_shutdown_start=lambda inflight: app.mark_shutting_down(),
         )
         shutdown.register()
         try:
-            # 주기 실행기는 묶음으로 띄운다. 상태 기록 갱신, 감시 확인, 끝난
-            # 작업 정리가 여기 들어 있다. 하나씩 손으로 시작하던 때에 실제로
-            # 추가한 실행기를 이 위치에서 빠뜨린 적이 있다.
+            # Periodic runners (state updates, watch checks, finished-job
+            # cleanup) start as a bundle, since adding one by hand here has
+            # been forgotten before.
             with app.worker_services(worker):
                 worker.reclaim()
-                # 되짚기는 기본으로 한다. 재기동 중에 들어온 멘션은 소켓
-                # 이벤트로 다시 오지 않으므로, 플래그를 줘야만 되짚으면 그것을
-                # 빠뜨린 순간 그 요청들이 유실된다.
+                # Catch-up defaults to on: a mention that arrives during a
+                # restart doesn't replay as a socket event, so skipping this
+                # silently drops it.
                 if args.catch_up:
                     worker.catch_up(app.channel_ids())
                 try:
                     if args.once:
                         worker.run_once()
                     else:
-                        # 반복은 워커가 맡는다. 여기서 run_once 를 되풀이하면 큐가
-                        # 비었을 때의 대기가 빠져 SQLite 조회가 쉬지 않고 일어난다.
+                        # The worker owns the retry loop; looping run_once()
+                        # here would busy-poll SQLite when the queue is empty.
                         worker.run_forever(lambda: shutdown.is_shutting_down)
                 except KeyboardInterrupt:
                     pass
@@ -310,11 +285,8 @@ class WorkerCommand(ProfileAwareCommand):
 
 
 class LearnCommand(ProfileAwareCommand):
-    """하루치 학습 배치를 한 번 실행한다. 원본 `run-learn.sh` 에 대응한다.
-
-    워커 주기 실행기가 부르는 것과 같은 배치를 부른다. 손으로 실행하는 쪽이
-    다른 코드를 쓰면 두 경로의 동작이 갈린다.
-    """
+    """Runs the same batch the worker's periodic runner uses, so a manual
+    run can't diverge from the scheduled one."""
 
     name: ClassVar[str] = "learn"
     help: ClassVar[str] = "하루치 응답 기록을 분석해 학습 제안을 만들고 반영한다"
@@ -356,8 +328,6 @@ DEFAULT_COMMANDS: tuple[CliCommand, ...] = (
 
 
 class SlackCliAgent:
-    """하위 명령을 모아 하나의 argparse 진입점으로 만든다."""
-
     def __init__(self, commands: Sequence[CliCommand] | None = None) -> None:
         self._commands = {c.name: c for c in (commands or DEFAULT_COMMANDS)}
 

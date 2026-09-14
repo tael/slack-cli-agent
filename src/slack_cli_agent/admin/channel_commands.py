@@ -1,17 +1,13 @@
-"""채널 설정을 바꾸는 관리 명령.
+"""Admin commands that change channel settings.
 
-원본 `handle_admin`(01-source-analysis.md 18절, bot.py:3836-3960) 중 채널
-단위 설정을 쓰는 것만 모은다. 쓰기는 전부 `ChannelRegistry.update`/`remove`
-를 거친다 — 직접 JSON 을 만지면 플러그인이 쓰는 알 수 없는 키가 지워진다.
+Writes always go through `ChannelRegistry.update`/`remove` rather than
+touching the JSON directly, since a raw write would drop unknown keys used
+by plugins.
 
-원본의 "코치 모드" 는 `mode="agent_coach"` 와 함께 `mention_only=True` 를
-켠다. 이 코어에는 `mention_only` 필드가 없고 그 반대 뜻으로 이미 있는
-`answer_unaddressed`(기본값 False, "이름을 불러야 답한다") 가 대응한다
-(`slack/listener.py` 참고). 그래서 여기서는 `answer_unaddressed=False` 를
-명시한다 — 채널에 이미 True 로 저장돼 있던 경우까지 되돌리기 위해서다.
-
-원본에는 조직 제품명을 그대로 딴 별칭이 하나 더 있다. 그것은 여기 넣지
-않는다. "코치 모드"/"코치모드" 만 받는다.
+Coach mode maps to `mode="agent_coach"` plus `answer_unaddressed=False`
+(this core has no separate `mention_only` field, just the inverse
+`answer_unaddressed`, "reply only when named"). It's set explicitly so a
+channel with `answer_unaddressed=True` already stored gets reverted too.
 """
 
 from __future__ import annotations
@@ -23,8 +19,6 @@ from .command import AdminCommand, AdminContext, AdminResult
 
 
 class _ChatLevelCommand(AdminCommand):
-    """말수를 바꾸는 명령의 공통 동작. 별칭과 값만 하위 클래스가 정한다."""
-
     _aliases: ClassVar[tuple[str, ...]] = ()
     _level: ClassVar[str] = ""
     _notice_key: ClassVar[NoticeKey]
@@ -41,8 +35,6 @@ class _ChatLevelCommand(AdminCommand):
 
 
 class ChatActiveCommand(_ChatLevelCommand):
-    """말수를 늘린다. 원본 별칭 네 가지를 그대로 받는다."""
-
     name: ClassVar[str] = "chat_active"
     _aliases = ("말수 많게", "적극 모드", "말 많이", "수다 모드")
     _level = "active"
@@ -50,8 +42,6 @@ class ChatActiveCommand(_ChatLevelCommand):
 
 
 class ChatNormalCommand(_ChatLevelCommand):
-    """말수를 기본으로 되돌린다."""
-
     name: ClassVar[str] = "chat_normal"
     _aliases = ("말수 보통", "기본 말수")
     _level = "normal"
@@ -59,8 +49,6 @@ class ChatNormalCommand(_ChatLevelCommand):
 
 
 class ChatQuietCommand(_ChatLevelCommand):
-    """말수를 줄인다."""
-
     name: ClassVar[str] = "chat_quiet"
     _aliases = ("말수 적게", "조용 모드", "조용히")
     _level = "quiet"
@@ -68,8 +56,6 @@ class ChatQuietCommand(_ChatLevelCommand):
 
 
 class CoachModeCommand(AdminCommand):
-    """코치 모드. 멘션 전용 + 짧은 맥락으로 전환한다."""
-
     name: ClassVar[str] = "coach_mode"
 
     def __init__(self, notices: NoticeCatalog) -> None:
@@ -87,8 +73,6 @@ class CoachModeCommand(AdminCommand):
 
 
 class ApiModeCommand(AdminCommand):
-    """지정된 응답 형식(연동 문의 대응)으로 전환한다."""
-
     name: ClassVar[str] = "api_mode"
 
     def __init__(self, notices: NoticeCatalog) -> None:
@@ -103,8 +87,6 @@ class ApiModeCommand(AdminCommand):
 
 
 class DefaultModeCommand(AdminCommand):
-    """기본 응답 형식으로 되돌린다."""
-
     name: ClassVar[str] = "default_mode"
 
     def __init__(self, notices: NoticeCatalog) -> None:
@@ -119,8 +101,6 @@ class DefaultModeCommand(AdminCommand):
 
 
 class ChannelUnregisterCommand(AdminCommand):
-    """채널을 응답 목록에서 뺀다. 등록 안 된 채널이면 그 사실을 답한다."""
-
     name: ClassVar[str] = "channel_unregister"
 
     def __init__(self, notices: NoticeCatalog) -> None:

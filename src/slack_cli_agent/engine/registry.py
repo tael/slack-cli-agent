@@ -1,11 +1,11 @@
-"""엔진 등록소.
+"""Engine registry.
 
-엔진 모듈이 자기를 등록한다. 어댑터 본체(호출부)는 Engine 만 안다. 세 번째
-엔진을 추가하는 것은 모듈 하나를 만들고 이 등록소에 한 줄 등록하는 것으로
-끝난다.
+Each engine module registers itself; callers only know about Engine.
+Adding a third engine means writing one module and one register()
+call here.
 
-등록을 import 시점 부수 효과로 만들지 않는다. 조립하는 자리(Application)가
-명시적으로 register() 를 부른다.
+Registration isn't an import-time side effect. The assembly layer
+(Application) calls register() explicitly.
 """
 
 from __future__ import annotations

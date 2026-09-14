@@ -1,18 +1,7 @@
-"""서식 점검 — 슬랙 렌더링만 본다. 내용이 맞았는지는 판단하지 않는다.
-
-원본 bot.py 의 `_run_format_review()` 를 옮겼다.
-
-`usage_rows()`(토큰·세션 사용량 행)는 옮기지 않았다. 그 값은 세션 맥락 조회
-(`observability/progress.py` 소관)에 의존하는데, 그 모듈은 이 작업과 동시에
-다른 담당이 만들고 있어 이 패키지가 건드릴 수 없는 자원이다. 있으면 좋은
-부가 정보이지 서식 점검 자체의 정확성에는 영향이 없어 없이 둔다.
-
-원본은 교정 명령을 `f"python3 {POST_RICH} --profile {PROFILE.name} " f"--channel {channel} --update {ts} ..."`
-로 조립했다. `POST_RICH` 경로와 프로필 이름은 조립 코드(운영 설정) 값이라 이
-패키지가 알 이유가 없어, 조립이 끝난 명령 접두어(`post_rich_command`, 예:
-"python3 /path/post_rich.py --profile example")를 생성자 인자로 받아
-`--channel --update` 만 여기서 덧붙인다.
-"""
+# `post_rich_command` is passed in pre-assembled (e.g. "python3
+# /path/post_rich.py --profile example") since the script path and profile
+# name are deployment config this package has no business knowing --
+# only "--channel --update" gets appended here.
 
 from __future__ import annotations
 
@@ -23,7 +12,6 @@ from slack_cli_agent.review.base import ReviewTarget, ReviewTask, as_table, mode
 
 
 class FormatReviewTask(ReviewTask):
-    """리액션 "pencil2" 로 시작하는 서식 점검."""
 
     log_name: ClassVar[str] = "format_review"
     emoji: ClassVar[str] = "pencil2"

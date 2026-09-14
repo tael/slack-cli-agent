@@ -1,25 +1,4 @@
-"""시스템 프롬프트 조각.
-
-원본 build_system_prompt 는 12단계 분기를 한 함수에 담고 있었다. 각 단계를
-PromptSection 하나로 만들면 순서가 등록 목록으로 드러나고, 플러그인이 자기
-조각을 끼워 넣을 수 있다.
-
-조립 순서는 원본과 같다(01-source-analysis.md 4절 "시스템 프롬프트 조립
-순서") —
-
-    1. 페르소나 + 도메인            PersonaSection
-    2. 채널 지식                    KnowledgeSection
-    3. 채널 모드 프롬프트            ChannelModeSection
-    4. OWNER_NOTE / NON_OWNER_NOTE  OwnerNoteSection
-    5. SLACK_FORMAT 자리표 치환      SlackFormatSection
-    6. POSTMORTEM/DEBUG_TRACE/FORMAT_REVIEW_NOTE   ReviewFormatSection
-    7. 화자 안내                    AskerSection
-    8. TRUSTED_NOTE                 TrustedSection
-    9. SENSITIVE_GUARD              SensitiveGuardSection
-    10. FULL_AUTHORITY_NOTE / MECHANISM_NOTE        AuthoritySection
-    11. WATCH_NOTE                  WatchSection
-    12. silence_rule                SilenceRuleSection
-"""
+"""System prompt sections, composed in registration order by SystemPromptComposer."""
 
 from __future__ import annotations
 
@@ -39,10 +18,10 @@ SILENT_MARK = "[침묵]"
 
 @dataclass(frozen=True)
 class CompositionContext:
-    """조립 한 번의 입력.
+    """Input to a single composition run.
 
-    library 와 knowledge 는 SystemPromptComposer.compose 가 채운다. 호출부가
-    직접 채울 필요는 없다.
+    `library` and `knowledge` are filled in by SystemPromptComposer.compose;
+    callers don't need to set them.
     """
 
     principal: Principal
@@ -62,9 +41,7 @@ class CompositionContext:
     silent_mark: str = SILENT_MARK
     library: PromptLibrary | None = None
     knowledge: KnowledgeLoader | None = None
-    # 이 대화에 함께 있는 사람 목록. (표시 이름, 멘션 표기) 쌍이다.
-    # 목록을 만드는 것(발화자·멘션 추적)은 이 패키지의 책임이 아니다 —
-    # 호출부가 이미 모아 채워 넘긴다. PresentPeopleSection 이 쓴다.
+    # (display name, mention) pairs; caller collects these, we just render them (PresentPeopleSection).
     people: tuple[tuple[str, str], ...] = ()
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -74,7 +51,6 @@ class CompositionContext:
 
     @property
     def full_authority(self) -> bool:
-        """원본의 full_authority. 소유자의 DM 에서만 참이다."""
         return self.is_owner and self.principal.is_direct_message
 
     @property
@@ -83,7 +59,6 @@ class CompositionContext:
 
     @property
     def aside(self) -> bool:
-        """부검·디버그 추적·서식 점검. 평소 대화가 아니다."""
         return self.postmortem or self.debug_trace or self.format_review
 
     def _library_or_raise(self) -> PromptLibrary:
@@ -98,8 +73,6 @@ class CompositionContext:
 
 
 class PromptSection(ABC):
-    """시스템 프롬프트 조각 하나의 추상."""
-
     @abstractmethod
     def applies_to(self, ctx: CompositionContext) -> bool: ...
 
@@ -108,7 +81,7 @@ class PromptSection(ABC):
 
 
 class PersonaSection(PromptSection):
-    """페르소나와, 도메인 자리(작업 디렉터리)일 때 사내 도메인 사실."""
+    """Persona, plus internal domain facts when running in a project working directory."""
 
     def applies_to(self, ctx: CompositionContext) -> bool:
         return True
@@ -119,8 +92,6 @@ class PersonaSection(PromptSection):
 
 
 class KnowledgeSection(PromptSection):
-    """공통 지식(조건 적재)과 채널별 지식."""
-
     def applies_to(self, ctx: CompositionContext) -> bool:
         return True
 
@@ -130,16 +101,12 @@ class KnowledgeSection(PromptSection):
 
 
 class RosterSection(PromptSection):
-    """계정 핸들과 사람 이름을 잇는 명부 파일이 있으면 그 경로를 알린다.
+    """Points at the roster file (built by `slack.roster.RosterBuilder`) instead of inlining it.
 
-    `slack.roster.RosterBuilder` 가 만드는 파일이다. 원본이 이 표를 파일로
-    남긴 이유는 매 요청에 싣지 않기 위해서였다(사람 수백 명이면 표 하나가
-    가볍지 않다) — 그 판단을 그대로 잇는다. `KnowledgeSection` 이 조건에
-    안 맞아 싣지 않은 지식 파일을 이름과 경로만 남기는 것과 같은 방식이다.
-
-    파일이 없으면 아무것도 내지 않는다. 아직 한 번도 갱신되지 않았거나
-    조회 실패가 계속돼 만들어진 적이 없는 상태다 — 그 자리를 안내문으로
-    채우면 파일이 있는 것처럼 보인다.
+    Kept out of the prompt body because a roster of hundreds of people is too
+    heavy to send on every request. Renders nothing if the file doesn't exist
+    yet (e.g. it hasn't been built or lookups keep failing) rather than
+    printing a note that implies the file is there.
     """
 
     def __init__(self, roster_path: Path) -> None:
@@ -160,11 +127,11 @@ class RosterSection(PromptSection):
 
 
 class ChannelModeSection(PromptSection):
-    """채널의 mode 가 고르는 프롬프트 파일.
+    """Prompt file selected by the channel's mode.
 
-    구조를 밝혀도 되는 자리(full_authority·mechanism_open)에서는
-    NEVER_DISCLOSE 자리표를 지우지 않고 남겨 둔다 — AuthoritySection 뒤에
-    Composer 가 지운다. 그래야 안내 순서가 원본과 같다.
+    Leaves the NEVER_DISCLOSE placeholder in place even when disclosure is
+    allowed; the Composer strips it later, after AuthoritySection has run,
+    to keep the note ordering consistent.
     """
 
     def __init__(self, mode_prompts: dict[str, str], default_prompt: str) -> None:
@@ -181,8 +148,6 @@ class ChannelModeSection(PromptSection):
 
 
 class OwnerNoteSection(PromptSection):
-    """소유자 요청이면 OWNER_NOTE, 아니면 NON_OWNER_NOTE."""
-
     def applies_to(self, ctx: CompositionContext) -> bool:
         return True
 
@@ -193,11 +158,11 @@ class OwnerNoteSection(PromptSection):
 
 
 class SlackFormatSection(PromptSection):
-    """리치·평문 서식 규약.
+    """Rich vs. plain-text formatting rules.
 
-    본문에 박힌 <<SLACK_FORMAT>> 자리표를 이 조각의 출력으로 채운다. 다른
-    조각처럼 그대로 이어붙이지 않는다 — Composer 가 이 조각의 출력을 따로
-    떼어 최종 치환 값으로 쓴다.
+    Unlike other sections, this one isn't appended in place — the Composer
+    pulls its output separately and uses it to fill the <<SLACK_FORMAT>>
+    placeholder embedded elsewhere in the prompt.
     """
 
     PLACEHOLDER = "<<SLACK_FORMAT>>"
@@ -211,8 +176,6 @@ class SlackFormatSection(PromptSection):
 
 
 class ReviewFormatSection(PromptSection):
-    """부검·디버그 추적·서식 점검 중 하나일 때만 붙는다."""
-
     def applies_to(self, ctx: CompositionContext) -> bool:
         return ctx.postmortem or ctx.debug_trace or ctx.format_review
 
@@ -226,8 +189,7 @@ class ReviewFormatSection(PromptSection):
 
 
 class AskerSection(PromptSection):
-    """누가 물었는지 알린다. 화자를 모르면 다른 사람의 조회 결과를 그 사람
-    것으로 잘못 답하는 사고가 난다."""
+    """States who's asking — without this, lookups for one person get answered as if they were about another."""
 
     def applies_to(self, ctx: CompositionContext) -> bool:
         return True
@@ -270,8 +232,6 @@ class AskerSection(PromptSection):
 
 
 class TrustedSection(PromptSection):
-    """신뢰 자리(소유자의 DM, 또는 채널이 신뢰를 준 사용자)에서만 붙는다."""
-
     def applies_to(self, ctx: CompositionContext) -> bool:
         return ctx.full_authority or ctx.principal.trust is TrustLevel.TRUSTED
 
@@ -280,8 +240,6 @@ class TrustedSection(PromptSection):
 
 
 class SensitiveGuardSection(PromptSection):
-    """소유자가 아닌 요청에만 붙는다. 채널과 무관하다."""
-
     def applies_to(self, ctx: CompositionContext) -> bool:
         return not ctx.is_owner
 
@@ -290,10 +248,10 @@ class SensitiveGuardSection(PromptSection):
 
 
 class AuthoritySection(PromptSection):
-    """최고권한(소유자의 DM) 또는 구조 공개(채널 설정)일 때 붙는다.
+    """Applies when full authority (owner DM) or mechanism disclosure is allowed.
 
-    둘 중 하나가 참이면 ChannelModeSection·OwnerNoteSection 이 남겨 둔
-    NEVER_DISCLOSE 자리표를 Composer 가 지운다.
+    Either condition also makes the Composer strip the NEVER_DISCLOSE
+    placeholder left behind by ChannelModeSection and OwnerNoteSection.
     """
 
     FULL_PLACEHOLDER = "<<NEVER_DISCLOSE>>"
@@ -309,8 +267,7 @@ class AuthoritySection(PromptSection):
 
 
 class WatchSection(PromptSection):
-    """부검·디버그·서식 점검 자리가 아닐 때만 붙는다. 그 자리는 되짚기만
-    하고 고치지 않으니 지켜볼 것도 없다."""
+    """Skipped during postmortem/debug/format-review — those only look back, nothing to watch for."""
 
     def applies_to(self, ctx: CompositionContext) -> bool:
         return not ctx.aside
@@ -320,14 +277,9 @@ class WatchSection(PromptSection):
 
 
 class PresentPeopleSection(PromptSection):
-    """대화에 함께 있는 사람을 알린다.
+    """Lists who's present in the conversation: whoever has spoken, plus anyone mentioned (a mention notifies them and the thread is open, so treat them as present too).
 
-    원본 `present_note()` 이식. 말한 사람과 멘션으로 불려 들어온 사람이
-    대상이다 — 멘션은 알림이 가고 스레드가 열려 있으므로 그 자리에
-    있는 것으로 본다.
-
-    둘뿐이면 굳이 적지 않는다. 셋 이상일 때만 누군가를 없는 사람처럼
-    말할 여지가 생긴다.
+    Skipped for just two people — that's where someone could get talked about as if absent.
     """
 
     def applies_to(self, ctx: CompositionContext) -> bool:
@@ -352,8 +304,6 @@ class PresentPeopleSection(PromptSection):
 
 
 class SilenceRuleSection(PromptSection):
-    """부르지 않은 말에 나설지 정하는 지침. 채널 말수 설정을 따른다."""
-
     _INTRO = (
         "\n\n이 말은 지목해 부른 것이 아니다. 스레드에서 오간 말이다.\n"
         "답하기 전에 다음 두 가지를 먼저 점검한다.\n"

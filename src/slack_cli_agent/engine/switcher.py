@@ -1,10 +1,13 @@
-"""엔진 전환 상태 기계.
+"""Engine switch state machine.
 
-``engine_state.json`` 을 파일로 둔다. 사람이 직접 열어 확인하고 되돌리는
-경우가 있어 DB 가 아니라 파일로 관리한다(경로는 StatePaths.engine_state).
+engine_state.json is a plain file, not a database — a human sometimes
+opens it directly to check or roll back state (path:
+StatePaths.engine_state).
 
-전환은 즉시 하고, 사람이 승인하기 전에는 한도 안내만 답한다. 실행기를 바꾸는
-것은 답하는 방식을 바꾸는 일이라 사람이 정한다 — 2026-09-11 원본 결정 그대로.
+Switching happens immediately; the bot only replies with a limit
+notice until a human approves it. Changing which engine answers is a
+decision about how answers get made, so a human makes it — same as
+the original's 2026-09-11 decision.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from typing import Any
 
 
 class EngineSwitcher:
-    # 기본 실행기가 돌아왔는지 다시 떠보는 주기. 원본 ENGINE_PROBE_SEC 과 같다.
+    # How often to re-probe whether the primary has recovered. Same as the original ENGINE_PROBE_SEC.
     DEFAULT_PROBE_INTERVAL_SEC = 600.0
 
     def __init__(self, state_path: Path,
@@ -52,7 +55,7 @@ class EngineSwitcher:
 
     def begin_switch(self, detail: str, *, engine_name: str = "",
                      probe_ok: bool = False, probe_detail: str = "") -> dict[str, Any]:
-        """전환은 즉시 한다. 사람이 승인하기 전에는 한도 안내만 답한다."""
+        """Switches immediately; the bot only replies with a limit notice until approved."""
         state = {
             "engine": engine_name,
             "reason": "usage_limit",
@@ -77,7 +80,7 @@ class EngineSwitcher:
         self.save(state)
 
     def recover(self) -> None:
-        """기본 실행기가 돌아왔다. 상태를 지워 다음 요청부터 1차로 돌린다."""
+        """Primary has recovered — clears state so the next request goes back to primary."""
         self.clear()
 
     def should_probe(self, now: float) -> bool:
@@ -95,7 +98,7 @@ class EngineSwitcher:
         self.save(state)
 
     def limit_reply(self) -> str:
-        """승인 전이거나 거부 상태일 때 사람에게 내는 말."""
+        """What to tell a human while approval is pending or denied."""
         detail = (self.load().get("detail") or "").strip()
         body = "구독 사용 한도에 걸려 지금은 답할 수 없어요."
         if detail:

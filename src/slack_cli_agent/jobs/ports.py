@@ -1,8 +1,5 @@
-"""작업 큐의 계약.
-
-구현이 아니라 여기가 계약이다. 호출부는 이 Protocol 에만 의존한다. SQLite 고유
-동작은 구현의 수단이고, 지켜야 할 것은 아래 docstring 이 정한다. 계약이 지켜지는
-지는 tests/unit/test_jobs.py 가 검증한다.
+"""Job queue contract. Callers depend only on this Protocol, not on any
+particular implementation. Verified by tests/unit/test_jobs.py.
 """
 
 from __future__ import annotations
@@ -31,7 +28,7 @@ class Job:
 
 @dataclass(frozen=True)
 class ReclaimResult:
-    """정체 작업 처리 결과. 호출부가 리액션 표식을 되돌리는 데 쓴다."""
+    """Outcome of reclaiming stale jobs; callers use it to undo reaction marks."""
 
     requeued: list[RequestContext]
     failed: list[RequestContext]
@@ -44,48 +41,45 @@ class ReclaimResult:
 @runtime_checkable
 class JobQueue(Protocol):
     def enqueue(self, ctx: RequestContext, max_attempts: int = 0) -> bool:
-        """등록하면 True, 같은 채널·메시지가 이미 있으면 False.
+        """True if newly inserted, False if this channel/message already has a job.
 
-        중복 방어가 여기 있다. 프로세스 수명과 무관하게 유지된다.
-
-        실패로 끝난 같은 건은 예외다 — 대기로 되돌리고 True 를 돌려준다.
-        그 차단을 그대로 두면 되짚기가 미응답 멘션을 찾아내도 재등록이
-        무시돼 그 요청이 영영 처리되지 않는다. `max_attempts` 가 0 보다
-        크면 그만큼 시도한 건은 되실행하지 않는다.
+        A previously failed job for the same key is the exception: it gets
+        reopened to queued and returns True, so a retried mention isn't
+        silently dropped. `max_attempts`, when positive, caps how many failed
+        attempts get reopened this way.
         """
 
     def claim_next(self, worker_id: str) -> Job | None:
-        """실행 중인 작업이 없는 스레드에서 가장 오래된 대기 작업을 잡는다.
+        """Claim the oldest queued job on a thread with no job running.
 
-        계약 —
-        - 같은 `thread_ts` 의 작업은 동시에 나오지 않는다. 선행 작업이 완료나
-          실패로 끝나야 다음이 나온다
-        - 여러 워커가 동시에 불러도 같은 작업을 두 번 내주지 않는다
-        - 잡은 작업은 RUNNING 이 되고 attempts 가 1 증가한다
-        - 대기 작업이 없으면 None
+        Contract:
+        - never two jobs running on the same thread_ts at once
+        - never hands the same job to two concurrent workers
+        - claimed job becomes RUNNING with attempts incremented by 1
+        - None if nothing is queued
         """
 
     def heartbeat(self, job_id: int) -> None:
-        """실행 중임을 갱신한다. 갱신이 멈추면 정체 작업으로 처리된다."""
+        """Mark the job as still alive. Stale heartbeats get reclaimed."""
 
     def complete(self, job_id: int, ok: bool, failure: str = "") -> None:
-        """실행을 끝낸다. 그 스레드의 다음 작업이 나올 수 있게 된다."""
+        """Finish the job, unblocking the next one queued on its thread."""
 
     def requeue(self, job_id: int) -> None:
-        """실행을 취소하고 대기로 되돌린다. 종료 중 남은 작업에 쓴다."""
+        """Cancel a running job back to queued, e.g. on shutdown."""
 
     def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult:
-        """갱신이 `deadline` 이전에 멈춘 실행 중 작업을 처리한다.
+        """Handle running jobs whose heartbeat is older than `deadline`.
 
-        `max_attempts` 미만이면 대기로 되돌리고, 이상이면 실패로 둔다.
-        조회와 상태 전이가 한 트랜잭션이어야 한다.
+        Requeues if under max_attempts, otherwise marks failed. The lookup and
+        the state transition must happen in one transaction.
         """
 
     def pending(self, limit: int = 50) -> list[Job]:
-        """대기 작업 목록. 등록 순서대로."""
+        """Queued jobs, oldest first."""
 
     def counts(self) -> dict[str, int]:
-        """상태별 건수. 상태 조회 명령이 쓴다."""
+        """Job count per status."""
 
     def purge_finished(self, before: float) -> int:
-        """끝난 지 오래된 작업을 지운다. 지운 건수를 돌려준다."""
+        """Delete old finished jobs, returning how many were removed."""

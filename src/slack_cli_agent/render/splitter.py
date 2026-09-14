@@ -1,12 +1,4 @@
-"""메시지 상한에 맞춘 안전 분할.
-
-원본 bot.py 의 chunk, md_chunks, fit_chunk,
-split_for_blocks, merge_tiny 를 그대로 옮겼다 (이식 분류 — 함수 본문은
-수정하지 않는다).
-
-상한값은 `RuntimeSettings` 에서 받는다 — `slack_chunk`(평문 채널 한 덩어리
-상한, 3500자), `markdown_block_limit`(리치 채널 markdown 블록 상한, 12000자).
-"""
+"""Splits message text to fit Slack's length limits."""
 
 from __future__ import annotations
 
@@ -16,19 +8,16 @@ from slack_cli_agent.config.settings import RuntimeSettings
 
 from .blocks import SPLIT_MARKER, BlockBuilder
 
-# 표·코드블록·인용은 한 줄만 떨어져 나가도 렌더가 무너지는 덩어리 유형이다.
+# Tables, code blocks, and quotes render broken if split mid-block, even by one line.
 ATOMIC_HEADS = ("|", "```", ">")
 
 
 class ContentSplitter:
-    """텍스트를 슬랙 상한에 맞춰 안전하게 나눈다."""
-
     def __init__(self, settings: RuntimeSettings, block_builder: BlockBuilder) -> None:
         self._settings = settings
         self._blocks = block_builder
 
     def chunk(self, text: str, size: int | None = None) -> list[str]:
-        """슬랙 메시지 길이에 맞춰 자른다. 줄 경계를 우선한다."""
         if size is None:
             size = self._settings.slack_chunk
         if len(text) <= size:
@@ -48,7 +37,6 @@ class ContentSplitter:
         return parts
 
     def line_kind(self, line: str) -> str:
-        """줄 하나가 어떤 덩어리에 속하는지 가른다."""
         stripped = line.strip()
         if stripped.startswith("|"):
             return "table"
@@ -57,19 +45,13 @@ class ContentSplitter:
         if re.match(r"[-*+]\s|\d+[.)]\s", stripped):
             return "list"
         if re.match(r"\s+", line) and stripped:
-            return "list"          # 들여쓴 줄은 앞 항목의 이어짐이다
+            return "list"  # indented lines continue the preceding list item
         if not stripped:
             return "blank"
         return "text"
 
     def md_chunks(self, text: str) -> list[str]:
-        """마크다운을 중간에서 자르면 안 되는 덩어리 단위로 끊는다.
-
-        표, 코드블록, 인용, 목록은 한 줄만 떨어져 나가도 렌더가 무너진다.
-        표는 열 이름 행을 잃고, 코드블록은 펜스 짝이 깨지고,
-        목록은 번호가 되돌아가거나 들여쓰기가 풀린다.
-        빈 줄이 없는 답변에서도 경계를 잡아야 하므로 문단이 아니라 줄을 본다.
-        """
+        # Split by line, not paragraph, so blocks with no blank-line separators still get boundaries.
         chunks: list[str] = []
         buf: list[str] = []
         in_fence, mode = False, None
@@ -97,7 +79,7 @@ class ContentSplitter:
 
             kind = self.line_kind(line)
             if kind == "blank":
-                # 빈 줄은 목록 안에서는 항목 사이 여백일 수 있어 덩어리를 끊지 않는다.
+                # Blank lines don't close a block since they may just be spacing between list items.
                 buf.append(line)
                 continue
             if mode and kind != mode:
@@ -111,12 +93,8 @@ class ContentSplitter:
         return [c for c in chunks if c.strip() or c == ""]
 
     def fit_chunk(self, chunk: str, limit: int) -> list[str]:
-        """덩어리 하나가 상한을 넘으면 형식을 지키며 쪼갠다.
-
-        표는 조각마다 열 이름 행과 구분선을 다시 달아 준다.
-        이게 없으면 둘째 조각이 표로 인식되지 않고 파이프가 글자로 노출된다.
-        코드블록은 조각마다 펜스를 닫고 다시 연다.
-        """
+        # Tables get their header + separator row repeated in each piece, or later
+        # pieces render as literal pipe characters instead of a table.
         if len(chunk) <= limit:
             return [chunk]
         lines = chunk.split("\n")
@@ -172,13 +150,9 @@ class ContentSplitter:
         return [chunk[i:i + limit] for i in range(0, len(chunk), limit)]
 
     def split_for_blocks(self, text: str, limit: int | None = None) -> list[str]:
-        """답변을 메시지 단위로 나눈다.
-
-        답변이 스스로 표시한 경계를 먼저 따른다. 쓴 쪽이 의미 단위를 안다.
-        다만 표와 코드블록 안에 찍힌 마커는 무시한다.
-        거기서 끊으면 열 이름 행이 없는 조각이 생겨 표가 파이프 글자로 노출된다.
-        마커가 없거나 조각이 상한을 넘으면 형식을 지키며 기계적으로 더 쪼갠다.
-        """
+        # Prefer split markers the source text already placed (it knows the intended
+        # boundaries), but ignore any that land inside a table or code block, since
+        # splitting there produces a headerless fragment that renders as raw pipes.
         if limit is None:
             limit = self._settings.markdown_block_limit
         text = self._blocks.clean_markers(text)
@@ -190,13 +164,13 @@ class ContentSplitter:
             if not buf:
                 return
             if final:
-                # 마지막 방출에서는 헤딩을 되실행하지 않는다. 되돌린 꼬리가 갈 곳이 없다.
+                # No later chunk to push a trailing heading into, so keep it as-is.
                 parts.append("\n".join(buf).strip("\n"))
                 forced.append(by_marker)
                 buf.clear()
                 return
-            # 조각이 헤딩으로 끝나면 읽는 사람은 내용 없는 제목만 본다.
-            # 그 헤딩은 뒤따르는 내용과 함께 다음 조각으로 넘긴다.
+            # A chunk ending in a bare heading reads as a title with no content,
+            # so carry the heading over to the next chunk along with what follows it.
             trailing: list[str] = []
             while buf and (not buf[-1].strip() or buf[-1].strip().startswith("#")):
                 trailing.insert(0, buf.pop())
@@ -208,7 +182,7 @@ class ContentSplitter:
             buf.clear()
             buf.extend(x for x in trailing if x.strip())
 
-        room = int(limit * 0.92)   # 꽉 채우면 앞뒤 문장이 붙을 자리가 없다
+        room = int(limit * 0.92)  # leave headroom so adjoining text has room to attach
         for block in self.md_chunks(text):
             if block.lstrip().startswith(("|", "```")):
                 segments = [block.replace(SPLIT_MARKER, "").rstrip()]
@@ -230,11 +204,8 @@ class ContentSplitter:
     def merge_tiny(
         self, parts: list[str], forced: list[bool], limit: int, floor: int = 500
     ) -> list[str]:
-        """혼자 나가면 어색한 짧은 조각을 앞 조각에 붙인다.
-
-        답변이 마커로 일부러 끊은 자리는 건드리지 않는다.
-        표를 쪼개고 남은 몇 줄이 단독 메시지로 나가는 경우만 다시 붙인다.
-        """
+        # Merges small leftover fragments (e.g. the last few rows of a split table)
+        # into the previous chunk, but leaves explicit marker splits alone.
         out: list[str] = []
         for part, by_marker in zip(parts, forced):
             joinable = out and not by_marker and (len(part) < floor or len(out[-1]) < floor)

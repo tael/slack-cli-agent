@@ -1,10 +1,10 @@
-"""Claude Code CLI 어댑터.
+"""Claude Code CLI adapter.
 
-경로는 --add-dir 로 넘긴다. 세션 ID 는 우리가 발급해 --session-id 로
-넘기고, 이어가는 턴은 --resume 으로 같은 값을 다시 넘긴다. 시스템 프롬프트는
---append-system-prompt 로 매 턴 다시 준다 — Claude 는 시스템 프롬프트가
-턴마다 갱신되는 엔진이라 directives_for_turn() 을 쓸 필요가 없다(기본값
-그대로 빈 문자열).
+Paths go through --add-dir. We mint the session ID and pass it via
+--session-id; continuing turns pass the same value via --resume. The
+system prompt is resent every turn via --append-system-prompt — Claude
+refreshes it each turn, so directives_for_turn() isn't needed here (it
+keeps the default empty string).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any
 
 from .base import Engine, EngineRequest, EngineResponse, Usage, UsageLimit
 
-# 원본 bot.py usage_limit_message() 의 힌트 목록을 그대로 옮긴다.
+# Same hint list as the original bot.py's usage_limit_message().
 _USAGE_LIMIT_HINTS = (
     "weekly limit", "usage limit", "rate limit",
     "hit your limit", "limit · resets", "limit reached",
@@ -27,19 +27,20 @@ class ClaudeEngine(Engine):
     name = "claude"
 
     def build_command(self, request: EngineRequest) -> list[str]:
-        # --max-budget-usd 를 넣지 않는다. 구독 OAuth 토큰(sk-ant-oat)은 그
-        # 인자를 주면 정상 요청까지 끊긴다 — 구독은 seat allowance 를 쓰지
-        # 사용액 기반 예산이 아니다. API 키 과금 경로가 아니므로 예산 상한
-        # 자체가 성립하지 않는다.
+        # Don't pass --max-budget-usd. A subscription OAuth token
+        # (sk-ant-oat) rejects even normal requests if given that flag
+        # — subscriptions spend a seat allowance, not a usage-based
+        # budget, so a dollar cap doesn't apply on this billing path.
         cmd: list[str] = [
             str(self.spec.binary),
             "-p",
             "--output-format", "json",
             "--permission-mode", "dontAsk",
-            # --allowedTools 화이트리스트가 settings 의 allow 규칙보다 우선한다
-            # (실측 확인). 읽기 전용 권한 모델은 여기 목록으로 강제된다 —
-            # request.allowed_tools 에 Bash/Edit/Write/NotebookEdit 를 넣지
-            # 않는 것이 호출부(이 모듈 밖)의 책임이다.
+            # --allowedTools overrides settings.json's allow rules
+            # (confirmed by testing). The read-only permission model is
+            # enforced by this list — it's the caller's job (outside
+            # this module) to keep Bash/Edit/Write/NotebookEdit out of
+            # request.allowed_tools.
             "--allowedTools", ",".join(request.allowed_tools),
             "--model", request.model,
             "--effort", request.effort,
@@ -49,8 +50,8 @@ class ClaudeEngine(Engine):
         cmd += ["--append-system-prompt", request.system_prompt]
         cmd += (["--resume", request.session_id] if request.resume
                 else ["--session-id", request.session_id])
-        # 프롬프트는 반드시 -- 뒤에 둔다. 하이픈으로 시작하는 사용자 입력이
-        # 옵션으로 해석되는 것을 막는다. 원본 bot.py build_command() 와 같다.
+        # Keep the prompt after --. Otherwise user input starting
+        # with a hyphen would be parsed as a flag.
         cmd += ["--", request.prompt]
         return cmd
 
@@ -130,11 +131,12 @@ class ClaudeEngine(Engine):
 
     @staticmethod
     def _limit_from_text(stdout: str) -> UsageLimit | None:
-        """원본 usage_limit_message() 의 판정을 그대로 옮긴다.
+        """Same detection as the original's usage_limit_message().
 
-        subtype 은 success 인데 api_error_status 가 429 고 실제 사유가
-        result 문구에만 있는 경우가 있다. 종료 코드만 보면 못 잡는다.
-        2026-09-11 실측.
+        Sometimes subtype is "success" and the exit code is 0, but
+        api_error_status is 429 and the actual reason only shows up in
+        the result text — exit code alone misses it (observed
+        2026-09-11).
         """
         try:
             payload = json.loads(stdout or "")

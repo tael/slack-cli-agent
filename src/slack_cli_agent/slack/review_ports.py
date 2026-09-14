@@ -1,13 +1,15 @@
-"""review/base.py 의 Protocol 을 만족하는 실물 슬랙 어댑터.
+"""Real Slack adapters satisfying the Protocols in review/base.py.
 
-`ReviewTask` 는 `MessageLookupPort`/`TranscriptPort`/`PermalinkPort`/`PublisherPort`
-를 Protocol 로만 받는다. 그런데 이 계약을 그대로 만족하는 실물 어댑터가 없어서
-조립 계층이 점검(부검·디버그 추적·서식 점검)을 연결하지 못했다. 이 파일이 그
-어댑터 네 개다. 전부 생성자 주입이고 슬랙 client 를 직접 만들지 않는다.
+ReviewTask only takes MessageLookupPort/TranscriptPort/PermalinkPort/
+PublisherPort as Protocols; no concrete adapter existed, so wiring
+couldn't connect postmortems, debug traces, or format review to
+anything. These four classes are that adapter — all constructor-
+injected, none creates its own Slack client.
 
-각 어댑터는 `TranscriptBuilder.thread_transcript`, `MessagePublisher.post` 의
-시그니처가 `review/base.py` 의 Protocol 과 다른 지점(인자 개수, `None` 허용
-여부)을 흡수하는 역할도 겸한다.
+Each adapter also absorbs the places where
+TranscriptBuilder.thread_transcript and MessagePublisher.post differ
+from the Protocol signature here (argument count, whether None is
+accepted).
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class SlackMessageLookup:
-    """MessageLookupPort 구현. 지목한 메시지 원문 하나를 조회한다."""
+    """MessageLookupPort implementation."""
 
     def __init__(self, client: Any) -> None:
         self._client = client
@@ -33,7 +35,7 @@ class SlackMessageLookup:
             resp = self._client.conversations_history(
                 channel=channel, latest=ts, oldest=ts, inclusive=True, limit=1
             )
-        except Exception as exc:  # noqa: BLE001 — 조회 실패를 삼키지 않고 기록한다
+        except Exception as exc:  # noqa: BLE001 - log the failure instead of swallowing it silently
             logger.warning("메시지 조회 실패: channel=%s ts=%s error=%s", channel, ts, exc)
             return None
 
@@ -42,16 +44,16 @@ class SlackMessageLookup:
 
 
 class ThreadTranscriptPort:
-    """TranscriptPort 구현. TranscriptBuilder 의 시그니처 차이를 흡수한다."""
+    """TranscriptPort implementation, absorbing TranscriptBuilder's signature differences."""
 
     def __init__(self, builder: TranscriptBuilder) -> None:
         self._builder = builder
 
     def transcript(self, channel: str, thread_ts: str) -> str:
         try:
-            # 점검은 스레드 전부를 본다 — before_ts 는 항상 None 이다.
+            # Reviews look at the whole thread, so before_ts is always None.
             return self._builder.thread_transcript(channel, thread_ts, None)
-        except Exception as exc:  # noqa: BLE001 — 대화록을 못 읽었다고 점검 전체를 멈추지 않는다
+        except Exception as exc:  # noqa: BLE001 - an unreadable transcript shouldn't stop the review
             logger.warning(
                 "대화록 조회 실패: channel=%s thread_ts=%s error=%s", channel, thread_ts, exc
             )
@@ -59,7 +61,7 @@ class ThreadTranscriptPort:
 
 
 class SlackPermalinks:
-    """PermalinkPort 구현."""
+    """PermalinkPort implementation."""
 
     def __init__(self, client: Any) -> None:
         self._client = client
@@ -67,7 +69,7 @@ class SlackPermalinks:
     def permalink(self, channel: str, ts: str) -> str:
         try:
             resp = self._client.chat_getPermalink(channel=channel, message_ts=ts)
-        except Exception as exc:  # noqa: BLE001 — 링크는 부가 정보다. 없어도 점검 결과는 낸다
+        except Exception as exc:  # noqa: BLE001 - the link is optional; the review still produces a result without it
             logger.warning("영구 링크 조회 실패: channel=%s ts=%s error=%s", channel, ts, exc)
             return ""
 
@@ -75,7 +77,7 @@ class SlackPermalinks:
 
 
 class ReviewPublisher:
-    """PublisherPort 구현. MessagePublisher 의 thread_ts 가 None 일 수 있는 차이를 흡수한다."""
+    """PublisherPort implementation, absorbing MessagePublisher's optional thread_ts."""
 
     def __init__(self, publisher: MessagePublisher) -> None:
         self._publisher = publisher

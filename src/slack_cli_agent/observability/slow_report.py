@@ -1,15 +1,4 @@
-"""느린 요청 소요 시간 구간별 분해와 트러블슈팅 채널 보고.
-
-원본 bot.py 의 `time_breakdown()`(3227행 근처), `diagnose_elapsed()`(3142행),
-`report_slow()`(3467행 근처)를 재구성했다. 계산(`TimeBreakdownCalculator`)과
-발신(`SlowRequestReporter`)을 분리했다 — 구간 분해는 세션 기록만 있으면
-슬랙 없이 시험할 수 있어야 하고, 발신은 `slack.publisher.MessagePublisher`
-계열에 맡긴다.
-
-엔진 세션 기록의 형식 의존은 `engine.transcript.SessionTranscriptReader` 가
-가둔다. 이 모듈은 그 계약이 돌려준 `TranscriptEvent` 목록만 본다 — 엔진이
-바뀌어도 이 모듈은 손댈 필요가 없다.
-"""
+"""Time breakdown for slow requests and reporting to the troubleshooting channel."""
 
 from __future__ import annotations
 
@@ -29,13 +18,9 @@ from ..review.base import as_table
 
 log = logging.getLogger(__name__)
 
-# 보고에 적는 시각의 기준. 원본 bot.py 의 KST 와 같다.
-
 
 @dataclass(frozen=True)
 class GapDetail:
-    """assistant 턴 하나의 구간 상세. 상위 구간 표에 쓴다."""
-
     duration_sec: float
     start_ts: float
     end_ts: float
@@ -44,13 +29,11 @@ class GapDetail:
     think_sec: float
     wait_sec: float
     retry_orphan_tokens: int | None = None
-    """이 구간이 재시도로 판정됐으면 끊긴 시도가 남긴 토큰 수. 아니면 None."""
+    """Tokens left behind by an aborted attempt, if this gap turned out to be a retry."""
 
 
 @dataclass(frozen=True)
 class TimeBreakdown:
-    """시간 분해 계산 결과. 값 객체이고 슬랙을 모른다."""
-
     start_ts: float
     end_ts: float
     tool_sec: float
@@ -58,35 +41,26 @@ class TimeBreakdown:
     wait_sec: float
     top_gaps: Sequence[GapDetail] = ()
     retry_sec: float = 0.0
-    """끊겼다 다시 부른 요청이 버린 시간 합계. 재시도가 없으면 0.0."""
     retries: Mapping[float, int] = field(default_factory=dict)
-    """{다시 부른 시각 : 끊긴 시도가 남긴 토큰 수}. `detect_retries()` 결과다."""
+    """Retry timestamp -> tokens left behind by the aborted attempt. See detect_retries()."""
 
     @property
     def total_span(self) -> float:
-        # 0 으로 나누는 사고를 막는 하한. 원본과 같다.
-        return max(self.end_ts - self.start_ts, 0.001)
+        return max(self.end_ts - self.start_ts, 0.001)  # floor to avoid division by zero
 
 
 def detect_retries(events: Sequence[TranscriptEvent]) -> dict[float, int]:
-    """세션 기록의 캐시 사용량으로 끊겼다 다시 부른 요청을 찾아낸다.
-
-    스트림이 중간에 끊기고 같은 요청을 다시 부르면, 끊긴 시도가 이미 만들어
-    둔 캐시를 다음 시도가 읽기만 한다. 그래서 다시 부른 요청은 캐시 기록이
-    0인데 캐시 읽기는 직전 요청의 (읽기 + 기록) 합보다 커진다. 그 차이가
-    끊긴 시도가 남긴 몫이다. 이 두 조건이 함께 성립하는 요청을 재시도로 본다.
-
-    실패 이벤트 자체는 어디에도 남지 않아 사용량으로 역산하는 수밖에 없다.
-    원본 bot.py `detect_retries()`(3196행)와 같은 규칙이다.
-
-    {끝난 시각 : 끊긴 시도가 남긴 토큰 수} 를 돌려준다.
+    """Infer retried requests from cache usage: a retry reads the cache the aborted
+    attempt already wrote, so cache_creation is 0 while cache_read exceeds the prior
+    request's read+creation total. There's no direct failure event to key off of, so
+    this is reconstructed from usage numbers alone.
     """
     seen: set[str | None] = set()
     reqs: list[tuple[float, int, int]] = []
     for event in events:
         if event.role != "assistant" or event.cache_read_tokens is None or event.request_id in seen:
             continue
-        # 한 요청이 블록마다 같은 사용량을 여러 줄로 남긴다. 첫 줄만 센다.
+        # A request can log the same usage on multiple lines; only the first counts.
         seen.add(event.request_id)
         reqs.append((event.ts, event.cache_creation_tokens or 0, event.cache_read_tokens))
 
@@ -99,17 +73,15 @@ def detect_retries(events: Sequence[TranscriptEvent]) -> dict[float, int]:
 
 
 class TimeBreakdownCalculator:
-    """세션 기록에서 도구 실행·사고·단순 대기·재시도 구간을 가른다.
+    """Splits a session's elapsed time into tool execution, thinking, plain wait, and retry.
 
-    구분 방법 — tool_use 바로 뒤에 오는 tool_result 까지의 간격은 도구
-    실행이다. 그 밖의 assistant 턴 간격은, 그 턴이 낸 출력 토큰 수를
-    `assumed_tokens_per_sec` 로 나눠 "토큰 생성으로 설명되는 시간"의 상한을
-    어림하고 그것을 사고 시간으로, 넘는 나머지를 단순 대기로 본다. 토큰
-    수를 모르는 구간은 전부 단순 대기다. 근사치이지 실측이 아니다.
-
-    다만 `detect_retries()` 가 재시도로 판정한 구간의 단순 대기는 별도로
-    잡는다. 이 시간은 사고도 네트워크 지연도 아니고 끊긴 시도를 다시
-    부르느라 버린 시간이라, 원인을 effort 나 대기로 돌리면 안 되기 때문이다.
+    A gap right after tool_use ending in tool_result is tool execution. For other
+    assistant-turn gaps, output_tokens / assumed_tokens_per_sec estimates the upper
+    bound of time explained by token generation (thinking); the remainder is plain
+    wait. Gaps with unknown token counts are all plain wait — this is an approximation,
+    not a measurement. Wait time inside a gap detect_retries() flags as a retry is
+    booked separately, since it's neither thinking nor network latency but time lost
+    re-issuing an aborted request.
     """
 
     def __init__(
@@ -125,13 +97,12 @@ class TimeBreakdownCalculator:
     def compute(self, session_id: str, since_ts: float | None = None) -> TimeBreakdown | None:
         try:
             events = self._reader.read(session_id)
-        except Exception as exc:  # noqa: BLE001 — 계산 실패가 요청 처리를 망치면 안 된다
+        except Exception as exc:  # noqa: BLE001 — a calc failure must not break request handling
             log.warning("시간 분해용 세션 기록을 읽지 못했다 %s : %s", session_id[:8], exc)
             return None
 
         if since_ts is not None:
-            # 이전 요청들의 이벤트를 끊어낸다. 세션이 이어질수록 파일에
-            # 이벤트가 쌓이므로, 이번 요청 시작 이전 것은 전부 무관한 과거다.
+            # Session files accumulate events across requests; drop everything before this request started.
             events = [event for event in events if event.ts >= since_ts]
         if len(events) < 2:
             return None
@@ -185,17 +156,12 @@ class TimeBreakdownCalculator:
 
 @dataclass(frozen=True)
 class ElapsedDiagnosis:
-    """소요시간이 실제 작업인지 공백인지를 가른 결과."""
-
     diagnosis: str
     elapsed_desc: str
 
 
 class ElapsedDiagnostician:
-    """벽시계 소요와 monotonic 소요의 차이로 공백(잠자기·연결 끊김)을 가른다.
-
-    원본 bot.py `diagnose_elapsed()`(3142행)와 같다.
-    """
+    """Detects sleep/disconnect gaps from the difference between wall-clock and monotonic elapsed time."""
 
     def __init__(self, sleep_gap_suspect_sec: float) -> None:
         self._sleep_gap_suspect_sec = sleep_gap_suspect_sec
@@ -220,36 +186,28 @@ class ElapsedDiagnostician:
 
 @dataclass(frozen=True)
 class SlowRequestMeta:
-    """느린 요청 보고 한 건에 필요한 값. 원본 meta dict 에 해당한다."""
-
     elapsed_wall: float
     mono_elapsed: float | None
-    started: float | None  # 이번 요청 시작 시각(since_ts). 없으면 세션 전체로 넓게 잡는다
+    started: float | None  # this request's start (since_ts); falls back to the whole session if unset
     model: str
     model_actual: str | None
     effort: str
     num_turns: int | None
-    reason: str | None  # "timeout" 등
+    reason: str | None  # e.g. "timeout"
     session_id: str
     resume: bool
     channel: str
     channel_name: str
     text: str
     usage: Usage | None = None
-    """이번 요청 한 건이 쓴 토큰. `UsageRowBuilder` 가 표 행으로 바꾼다."""
     stdout_tail: str | None = None
     stderr_tail: str | None = None
-    """엔진이 비정상 종료했을 때 남긴 표준 출력·오류 꼬리. `tail_output()` 으로
-    잘라 담는다. 없으면(정상 종료 등) None 이고, 보고에서 그 블록을 아예 뺀다."""
+    """Tail of stdout/stderr from an abnormal engine exit, via tail_output(). None on
+    normal exit, in which case the report omits that block."""
 
 
 def tail_output(buf: str | bytes | None, limit: int = 800) -> str:
-    """엔진 출력에서 마지막 `limit` 글자만 남긴다. 없으면 빈 문자열이다.
-
-    원본 bot.py `tail_output()`(1491행)과 같다. `EngineResponse.raw` 에 담긴
-    표준 출력·오류(`stdout`/`stderr` 키)를 `SlowRequestMeta.stdout_tail`/
-    `stderr_tail` 로 옮길 때 이 함수를 쓴다.
-    """
+    """Keep only the last `limit` characters of engine output; empty string if there's none."""
     if not buf:
         return ""
     text = buf.decode("utf-8", "replace") if isinstance(buf, bytes) else buf
@@ -257,10 +215,6 @@ def tail_output(buf: str | bytes | None, limit: int = 800) -> str:
 
 
 def _fmt_tokens(count: int) -> str:
-    """토큰 수를 읽기 쉬운 단위로 줄인다. 1000 미만은 그대로 센다.
-
-    원본 bot.py `fmt_tokens()`(3345행 근처)와 같다.
-    """
     if count >= 1_000_000:
         return f"{count / 1_000_000:.1f}M"
     if count >= 1_000:
@@ -270,11 +224,8 @@ def _fmt_tokens(count: int) -> str:
 
 @dataclass(frozen=True)
 class SessionContext:
-    """그 세션이 지금 쓰는 컨텍스트 크기와 한도.
-
-    둘 다 없을 수 있다. 사용량은 세션 기록이 없거나 usage 가 한 번도 안
-    남았을 때 None 이고, 한도는 `RuntimeSettings.context_limit` 표에 그
-    모델이 없을 때 None 이다.
+    """Current context usage and limit for a session. Either can be None: `used` when the
+    session has no usage recorded yet, `limit` when the model isn't in the context-limit table.
     """
 
     used: int | None
@@ -282,14 +233,8 @@ class SessionContext:
 
 
 class SessionContextCalculator:
-    """세션 기록의 마지막 assistant 턴 usage 로 컨텍스트 사용량을 계산한다.
-
-    원본 bot.py `session_context()`(3384행)와 같다. 마지막 턴의 입력·캐시
-    기록·캐시 읽기·출력을 더한 값이 다음 턴이 이어받는 크기이고, 그것이 지금
-    상태에 가장 가깝다.
-
-    세션 기록 형식 의존은 `SessionTranscriptReader` 가 가둔다 — 구간 분해가
-    쓰는 파서를 그대로 재사용한다.
+    """Estimates context usage from the last assistant turn's usage — input + cache
+    creation + cache read + output is the size the next turn inherits.
     """
 
     def __init__(self, transcript_reader: SessionTranscriptReader, context_limit: Mapping[str, int]) -> None:
@@ -308,8 +253,8 @@ class SessionContextCalculator:
                 event.cache_read_tokens,
                 event.output_tokens,
             )
-            # usage 가 아예 없는 턴은 건너뛴다. 0 으로 채워 더하면 마지막
-            # 턴이 usage 없는 턴일 때 사용량이 0 으로 보고된다.
+            # Skip turns with no usage at all; treating them as 0 would report usage
+            # as 0 whenever the last turn happens to lack usage.
             if all(count is None for count in counts):
                 continue
             used = sum(count or 0 for count in counts)
@@ -317,12 +262,8 @@ class SessionContextCalculator:
 
 
 class UsageRowBuilder:
-    """토큰 사용량 행을 만든다. 소유자 전용 채널이 아니면 아무것도 내지 않는다.
-
-    원본 bot.py `usage_rows()`(3420행)와 같은 계약이다. 토큰 사용 현황은
-    민감정보라, 보고를 올리는 채널(트러블슈팅 채널)이 소유자 전용 채널
-    집합에 있을 때만 낸다. 이 판정을 코드로 못 박아, 지침으로만 두면 다른
-    채널로 보고를 옮겼을 때 조용히 새는 것을 막는다.
+    """Builds token usage rows, but only for owner-only channels — token usage is
+    sensitive, so this is enforced in code rather than left to convention.
     """
 
     def __init__(
@@ -344,8 +285,7 @@ class UsageRowBuilder:
         if troubleshoot_channel not in self._owner_only_channels:
             return []
         rows = [self._token_row(usage)]
-        # 계산기를 안 주면 세션 행을 아예 안 낸다. 세션 기록 경로가 없는
-        # 조립 코드에서 0 이나 추정값을 내는 것보다 행이 없는 편이 정확하다.
+        # Without a calculator, omit the session row entirely rather than guess at 0.
         if self._session_context is not None:
             rows.append(self._session_row(session_id, model))
         return rows
@@ -368,8 +308,7 @@ class UsageRowBuilder:
         if context.limit:
             ratio = 100 * context.used / context.limit
             return ("세션", f"{_fmt_tokens(context.used)}/{_fmt_tokens(context.limit)} ({ratio:.0f}퍼센트)")
-        # 한도를 모르면 비율을 내지 않는다. 추측한 한도로 만든 퍼센트는
-        # 컨텍스트 소진 임박 판정을 틀리게 한다.
+        # Without a known limit, don't compute a ratio — a guessed limit would misjudge how close to exhaustion.
         return ("세션", (
             f"{_fmt_tokens(context.used)} 사용, 한도 미상 "
             f"({model or '?'} 의 맥락 한도를 확인하지 못했습니다)"
@@ -377,12 +316,6 @@ class UsageRowBuilder:
 
 
 class SlowReportFormatter:
-    """진단·구간 분해 계산 결과를 슬랙에 올릴 요약·상세 문자열로 만든다.
-
-    표 조립은 `review.base.as_table` 을 그대로 쓴다 — 이 패키지 안에 표
-    생성 로직을 또 두지 않는다.
-    """
-
     def __init__(self, assumed_tokens_per_sec: float, now: Callable[[], float] = time.time) -> None:
         self._assumed_tokens_per_sec = assumed_tokens_per_sec
         self._now = now
@@ -413,12 +346,7 @@ class SlowReportFormatter:
         return summary, detail
 
     def _occurred_at(self, meta: SlowRequestMeta) -> str:
-        """요청이 일어난 시각. 원본 `report_slow()` rows 첫 항목이다.
-
-        요청 시작 시각이 있으면 그것을 쓴다. 원본은 보고를 만드는 시각을
-        적었는데, 그 값은 이미 경과한 소요만큼 실제 발생 시점보다 뒤다.
-        시작 시각이 없는 경우에만 보고 시각으로 되돌린다.
-        """
+        # Prefer the request's actual start time; the report time is offset later by the elapsed duration.
         ts = meta.started if meta.started is not None else self._now()
         return datetime.fromtimestamp(ts, KST).strftime("%H:%M:%S") + " KST"
 
@@ -495,8 +423,8 @@ class SlowReportFormatter:
             ]
 
         lines += ["", "*원인*", ""]
-        # 재시도가 잡히면 그 시간을 먼저 짚는다. 사고나 대기로 설명하면
-        # effort 를 낮추라는 엉뚱한 처방으로 이어진다.
+        # Lead with retry time when present — attributing it to thinking/wait instead
+        # would wrongly suggest lowering effort as the fix.
         if retry_pct > 30:
             lines.append(
                 f"- 시간 대부분이 끊겼다 다시 부르느라 버린 시간입니다. {breakdown.retry_sec:.1f}초, "
@@ -525,12 +453,6 @@ class SlowReportFormatter:
 
     @staticmethod
     def _tail_lines(meta: SlowRequestMeta) -> list[str]:
-        """표준 오류·출력 꼬리 블록. 값이 없는 쪽은 아예 안 낸다.
-
-        원본 bot.py `report_slow()` 끝부분(3601행 근처)과 같다. 필드에는
-        `tail_output()` 으로 이미 800자까지 잘라 담아 두므로, 여기서는
-        표시용으로 마지막 600자만 더 좁힌다.
-        """
         lines: list[str] = []
         for label, tail in (("표준 오류", meta.stderr_tail), ("표준 출력", meta.stdout_tail)):
             if tail:
@@ -546,17 +468,13 @@ class SlowReportFormatter:
 
 
 class SlowReportPublisher(Protocol):
-    """`slack.publisher.MessagePublisher` 가 만족하는 좁은 계약."""
-
     def post(self, channel: str, thread_ts: Any, text: str, rich: bool) -> str | None: ...
 
 
 class SlowRequestReporter:
-    """느린 요청 하나를 트러블슈팅 채널에 새 스레드로 연다.
-
-    원본 `report_slow()` 에 해당한다. 계산(`TimeBreakdownCalculator`)과
-    발신(`SlowReportPublisher` 계열)을 조립만 하고, 실패는 무엇이든 삼킨다 —
-    보고가 실패해도 이미 끝난 요청 처리 자체를 망치면 안 된다.
+    """Opens a new thread in the troubleshooting channel for one slow request.
+    Any failure here is swallowed — a reporting failure must not undo an
+    already-completed request.
     """
 
     def __init__(
@@ -579,7 +497,6 @@ class SlowRequestReporter:
         self._usage_row_builder = usage_row_builder or UsageRowBuilder(settings.owner_only_channels)
 
     def maybe_report(self, meta: SlowRequestMeta) -> str | None:
-        """기준값을 넘고 보고 채널이 있으면 보고한다. 그 밖엔 조용히 넘어간다."""
         if meta.elapsed_wall < self._settings.slow_report_sec:
             return None
         if not self._troubleshoot_channel:
@@ -587,7 +504,7 @@ class SlowRequestReporter:
 
         try:
             return self._report(meta)
-        except Exception as exc:  # noqa: BLE001 — 보고 실패가 요청 처리 결과를 덮으면 안 된다
+        except Exception as exc:  # noqa: BLE001 — a reporting failure must not clobber the request result
             log.error("느린 요청 보고 실패 : %s", exc)
             return None
 
