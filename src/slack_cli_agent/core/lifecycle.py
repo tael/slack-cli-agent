@@ -17,6 +17,14 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from signal import Handlers
+from types import FrameType
+from typing import Any
+
+# signal.signal() 의 실제 시그니처를 그대로 옮긴 별칭이다. 시험이 주입하는
+# 가짜 등록 함수도, 기본값인 signal.signal 자체도 이 형과 맞아야 한다.
+SignalHandler = Callable[[int, FrameType | None], Any] | int | Handlers | None
+SignalRegister = Callable[[int | signal_module.Signals, SignalHandler], SignalHandler]
 
 
 class InflightCounter:
@@ -68,7 +76,7 @@ class GracefulShutdown:
         inflight: InflightCounter,
         grace_sec: float,
         *,
-        signal_register: Callable[[int, Callable], None] = signal_module.signal,
+        signal_register: SignalRegister = signal_module.signal,
         sleep_fn: Callable[[float], None] = time.sleep,
         poll_interval_sec: float = 0.5,
         on_shutdown_start: Callable[[int], None] | None = None,

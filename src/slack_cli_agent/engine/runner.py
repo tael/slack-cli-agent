@@ -14,7 +14,8 @@ import os
 import subprocess
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from ..config.settings import RuntimeSettings
@@ -70,10 +71,14 @@ class EngineRunner:
         return engine.parse(completed.stdout, completed.stderr, completed.returncode)
 
     @staticmethod
-    def _default_runner(cmd: list[str], cwd: str, timeout: float, env: Mapping[str, str] | None = None):
+    def _default_runner(
+        cmd: list[str], cwd: str, timeout: float, env: Mapping[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        # returncode 는 engine.parse() 가 직접 해석한다 — 여기서 예외로 바꾸면
+        # 실패 종료 코드를 실패 응답으로 담아내는 경로가 끊긴다.
         return subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-            env=dict(env) if env is not None else None,
+            env=dict(env) if env is not None else None, check=False,
         )
 
 
@@ -163,7 +168,7 @@ class FallbackEngine(Engine):
     def directives_for_turn(self, request: EngineRequest) -> str:
         return self._active.directives_for_turn(request)
 
-    def readable_paths_note(self, paths):
+    def readable_paths_note(self, paths: Sequence[Path]) -> str:
         return self._active.readable_paths_note(paths)
 
     # -- 실제 진입점.

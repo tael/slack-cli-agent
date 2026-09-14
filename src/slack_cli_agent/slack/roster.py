@@ -140,8 +140,10 @@ class RosterBuilder:
         lines = [
             "# 계정 핸들과 사람 이름",
             "",
-            f"{generated_at} KST 기준 {len(entries)}명"
-            f" (재직 {active_count}, 퇴사 {len(entries) - active_count})",
+            (
+                f"{generated_at} KST 기준 {len(entries)}명"
+                f" (재직 {active_count}, 퇴사 {len(entries) - active_count})"
+            ),
             "",
             "사내 데이터는 사람을 계정 핸들로 남긴다. 그 핸들이 누구인지 여기서 찾는다.",
             "",

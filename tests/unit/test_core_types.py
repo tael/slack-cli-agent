@@ -9,8 +9,8 @@ from slack_cli_agent.core.result import Outcome
 
 
 def ctx(**over) -> RequestContext:
-    base = dict(channel="C1", user="U1", ts="1.000001",
-                thread_ts="1.000001", text="본문")
+    base = {"channel": "C1", "user": "U1", "ts": "1.000001",
+            "thread_ts": "1.000001", "text": "본문"}
     return RequestContext(**{**base, **over})
 
 

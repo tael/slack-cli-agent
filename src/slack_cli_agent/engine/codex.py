@@ -86,7 +86,7 @@ class CodexEngine(Engine):
             )
         try:
             thread_id, text, usage_data, tool_errors = self._parse_jsonl(stdout)
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, TypeError):
             return EngineResponse(
                 ok=False, body="Codex 응답 형식을 읽지 못했습니다.", session_id=None,
                 model_actual=None, elapsed=0.0, turns=None, usage=None,
@@ -112,7 +112,7 @@ class CodexEngine(Engine):
         return None
 
     @staticmethod
-    def _parse_jsonl(output: str) -> tuple[str | None, str, dict, list[str]]:
+    def _parse_jsonl(output: str) -> tuple[str | None, str, dict[str, Any], list[str]]:
         thread_id: str | None = None
         text = ""
         usage: dict[str, Any] = {}
@@ -122,7 +122,7 @@ class CodexEngine(Engine):
                 continue
             event = json.loads(line)
             if not isinstance(event, dict):
-                raise ValueError("JSONL 이벤트가 객체가 아니다")
+                raise TypeError("JSONL 이벤트가 객체가 아니다")
             kind = event.get("type")
             if kind == "thread.started":
                 thread_id = event.get("thread_id")

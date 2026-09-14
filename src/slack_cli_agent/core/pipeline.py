@@ -115,7 +115,7 @@ class RequestPipeline:
     def handle(self, ctx: RequestContext) -> HandleOutcome:
         try:
             return self._handle(ctx)
-        except Exception as exc:  # 예외를 밖으로 내지 않는다
+        except Exception as exc:  # 예외를 밖으로 내지 않는다  # noqa: BLE001 — 요청 처리기 예외를 밖으로 내지 않는다 — 워커 루프가 이 한 건 실패로 멎으면 안 된다
             failure = str(exc) or exc.__class__.__name__
             self._mark_failed(ctx)
             self._record_best_effort(ctx, failure)
@@ -311,7 +311,7 @@ class RequestPipeline:
             return ()
         try:
             return self._participants(ctx.channel, ctx.thread_ts)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — 참가자 조회 실패로 답변 자체를 막지 않는다 — 프롬프트에 그 대목만 빠진다
             log.warning("함께 있는 사람을 세지 못했다 : %s", exc)
             return ()
 
@@ -338,7 +338,7 @@ class RequestPipeline:
             addendum, addendum_ts = self._late_addendum.check(
                 ctx.channel, ctx.thread_ts, ctx.ts, scope
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — 발송 전 재확인 실패로 이미 만든 답을 버리지 않는다 — 그대로 올리고 대기줄에 맡긴다
             log.warning("발송 전 스레드 재확인 실패 : %s", exc)
             return body, None
         if not addendum:
@@ -418,7 +418,7 @@ class RequestPipeline:
                 ctx.channel, ctx.thread_ts, description,
                 msg_ts=ctx.ts, trust=principal.trust,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — 감시 등록 실패를 요청 실패로 적지 않는다 — 답은 이미 나갔고 재시도하면 같은 답이 중복 발송된다
             log.warning("감시 등록 실패 : %s", exc)
             return False
         log.info("감시 등록 : %s", description[:80])
@@ -475,8 +475,8 @@ class RequestPipeline:
                 ok=False,
                 failure=failure,
             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 — 감사 기록 실패가 원래 처리 실패를 덮어쓰면 안 된다
+            log.warning("최소 감사 기록 실패 : %s", exc)
 
     @staticmethod
     def _first_reaction_sec(ctx: RequestContext) -> float | None:

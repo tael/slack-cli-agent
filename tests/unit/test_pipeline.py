@@ -321,8 +321,8 @@ def build_pipeline(
 
 
 def make_ctx(**overrides: Any) -> RequestContext:
-    base = dict(channel="C1", user="U1", ts="1700000001.000100",
-                thread_ts="1700000001.000100", text="안녕")
+    base = {"channel": "C1", "user": "U1", "ts": "1700000001.000100",
+            "thread_ts": "1700000001.000100", "text": "안녕"}
     base.update(overrides)
     return RequestContext(**base)
 
@@ -404,7 +404,7 @@ class Test엔진실패:
 class Test예외처리:
     def test_어느_단계에서_예외가_나도_밖으로_안_나간다(self, tmp_path: Path) -> None:
         """실제로 예외를 내는 대역(FakeComposer 대신 _Explodes)을 세워 관측한다."""
-        pipeline, deps = build_pipeline(
+        pipeline, _deps = build_pipeline(
             responses=[ok_response()], composer=_Explodes(), tmp_path=tmp_path,
         )
         outcome = pipeline.handle(make_ctx())
@@ -604,7 +604,7 @@ class Test멘션표:
                 captured.append(ctx)
                 return GuardResult(body=body, changed=False)
 
-        pipeline, deps = build_pipeline(
+        pipeline, _deps = build_pipeline(
             responses=[ok_response(body="원본")],
             guards=[_CapturesCtx()],
             mention_table=lambda: {"길동": "U1"},
@@ -624,7 +624,7 @@ class Test멘션표:
                 captured.append(ctx)
                 return GuardResult(body=body, changed=False)
 
-        pipeline, deps = build_pipeline(
+        pipeline, _deps = build_pipeline(
             responses=[ok_response(body="원본")],
             guards=[_CapturesCtx()],
             tmp_path=tmp_path,
@@ -650,7 +650,7 @@ class Test멘션표:
                     rerun=RerunRequest(reason="다시 써야 한다", rewrite_prompt="다시 써라", guard_name=self.name),
                 )
 
-        pipeline, deps = build_pipeline(
+        pipeline, _deps = build_pipeline(
             responses=[ok_response(body="원본"), ok_response(body="다시 쓴 답")],
             guards=[_CapturesAndReruns()],
             mention_table=lambda: {"길동": "U1"},

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -49,18 +50,18 @@ def claude_profile(tmp_path: Path, **extra: Any) -> Profile:
 
 
 def request(**overrides: Any) -> EngineRequest:
-    base = dict(
-        prompt="안녕",
-        system_prompt="시스템 지침",
-        session_id="11111111-1111-1111-1111-111111111111",
-        resume=False,
-        model="claude-sonnet-5",
-        effort="medium",
-        workdir=Path("/tmp/work"),
-        readable_dirs=(Path("/tmp/a"), Path("/tmp/b")),
-        allowed_tools=("Read", "Grep"),
-        trust_level=TrustLevel.GENERAL,
-    )
+    base = {
+        "prompt": "안녕",
+        "system_prompt": "시스템 지침",
+        "session_id": "11111111-1111-1111-1111-111111111111",
+        "resume": False,
+        "model": "claude-sonnet-5",
+        "effort": "medium",
+        "workdir": Path("/tmp/work"),
+        "readable_dirs": (Path("/tmp/a"), Path("/tmp/b")),
+        "allowed_tools": ("Read", "Grep"),
+        "trust_level": TrustLevel.GENERAL,
+    }
     base.update(overrides)
     return EngineRequest(**base)
 
@@ -99,7 +100,7 @@ class TestUsage:
 class TestEngineRequestResponse:
     def test_요청은_불변이다(self) -> None:
         req = request()
-        with pytest.raises(Exception):
+        with pytest.raises(dataclasses.FrozenInstanceError):
             req.prompt = "다른 말"  # type: ignore[misc]
 
     def test_응답은_불변이고_기본값을_가진다(self) -> None:
@@ -467,7 +468,7 @@ class TestEngineSwitcher:
     def test_주기가_지나지_않으면_다시_떠보지_않는다(self, tmp_path: Path) -> None:
         switcher = EngineSwitcher(tmp_path / "engine_state.json", probe_interval_sec=600)
         switcher.begin_switch("detail", engine_name="codex")
-        assert switcher.should_probe(time_now := switcher.load()["last_probe_at"] + 10) is False
+        assert switcher.should_probe(switcher.load()["last_probe_at"] + 10) is False
 
     def test_주기가_지나면_다시_떠본다(self, tmp_path: Path) -> None:
         switcher = EngineSwitcher(tmp_path / "engine_state.json", probe_interval_sec=600)
@@ -579,7 +580,7 @@ class TestFallbackEngine:
     def test_평소에는_1차_엔진으로_돈다(self, tmp_path: Path) -> None:
         ok_response = EngineResponse(ok=True, body="1차 응답", session_id="s1",
                                      model_actual=None, elapsed=0, turns=None, usage=None)
-        fallback, primary, secondary, switcher = self._fallback(
+        fallback, _primary, secondary, switcher = self._fallback(
             tmp_path, primary_response=ok_response)
         resp = fallback.run(request())
         assert resp.body == "1차 응답"
@@ -593,7 +594,7 @@ class TestFallbackEngine:
         )
         probe_response = EngineResponse(ok=True, body="OK", session_id=None,
                                         model_actual=None, elapsed=0, turns=None, usage=None)
-        fallback, primary, secondary, switcher = self._fallback(
+        fallback, _primary, _secondary, switcher = self._fallback(
             tmp_path, primary_response=limit_response, secondary_response=probe_response)
         resp = fallback.run(request())
         assert resp.body == "한도 소진"
@@ -612,7 +613,7 @@ class TestFallbackEngine:
     def test_승인되면_2차_엔진으로_돈다(self, tmp_path: Path) -> None:
         secondary_ok = EngineResponse(ok=True, body="코덱스 답변", session_id="th-1",
                                       model_actual=None, elapsed=0, turns=None, usage=None)
-        fallback, primary, secondary, switcher = self._fallback(
+        fallback, _primary, secondary, switcher = self._fallback(
             tmp_path, secondary_response=secondary_ok)
         switcher.begin_switch("weekly limit", engine_name="codex")
         switcher.approve()
@@ -626,7 +627,7 @@ class TestFallbackEngine:
     def test_주기가_지나_1차가_돌아왔으면_상태를_지운다(self, tmp_path: Path) -> None:
         recovered = EngineResponse(ok=True, body="다시 됩니다", session_id="s2",
                                    model_actual=None, elapsed=0, turns=None, usage=None)
-        fallback, primary, secondary, switcher = self._fallback(
+        fallback, _primary, _secondary, switcher = self._fallback(
             tmp_path, primary_response=recovered)
         switcher.begin_switch("weekly limit", engine_name="codex")
         switcher.mark_probed(switcher.load()["switched_at"] - 700)

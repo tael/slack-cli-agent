@@ -317,7 +317,7 @@ class TestCatchUpDedup:
 
     def test_대표건이_처리되면_묻힌_건도_같은_표식을_받는다(self, database) -> None:
         handler = FakeHandler(outcome=HandleOutcome(ok=True))
-        worker, queue, client = make_worker(database=database, handler=handler)
+        worker, _queue, client = make_worker(database=database, handler=handler)
         rep = ctx("1.2", "T1")
         skip = ctx("1.1", "T1")
         report = CatchupReport(missed=[rep], skipped=[skip], unchecked_channels=[])

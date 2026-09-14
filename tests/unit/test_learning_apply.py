@@ -14,13 +14,13 @@ from slack_cli_agent.learning.proposal import LearningProposal
 
 
 def make_proposal(**overrides) -> LearningProposal:
-    base = dict(
-        day="2026-09-14",
-        writing_style=("문장을 짧게 써라",),
-        channel_knowledge={"공지": ("9월 회의는 매주 화요일이다",)},
-        corrections=("재고 조회는 /stock 이다",),
-        note="",
-    )
+    base = {
+        "day": "2026-09-14",
+        "writing_style": ("문장을 짧게 써라",),
+        "channel_knowledge": {"공지": ("9월 회의는 매주 화요일이다",)},
+        "corrections": ("재고 조회는 /stock 이다",),
+        "note": "",
+    }
     base.update(overrides)
     return LearningProposal(**base)
 

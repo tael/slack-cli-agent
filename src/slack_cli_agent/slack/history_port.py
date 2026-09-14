@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from slack_cli_agent.core.errors import HistoryUnavailable
 from slack_cli_agent.slack.history import HistoryReader as RealHistoryReader
@@ -34,9 +34,13 @@ class SlackHistoryPort:
         """
         oldest_str = self._reader.slack_ts(oldest)
         try:
-            return self._reader.read_history(channel, oldest_str, limit)
+            result = self._reader.read_history(channel, oldest_str, limit)
         except HistoryUnavailable:
             return None
+        # list[dict] 는 list[Mapping] 의 하위형이 아니다 — list 는 원소 형에
+        # 불변(invariant)이다. 원소는 실제로 dict 라 Mapping 을 만족하므로
+        # 이 자리에서만 그 사실을 명시한다.
+        return cast("list[Mapping[str, Any]]", result)
 
     def read_thread(
         self, channel: str, thread_ts: str, limit: int
@@ -53,5 +57,5 @@ class SlackHistoryPort:
                 channel=channel, ts=thread_ts, limit=limit
             )
             return res.get("messages") or []
-        except Exception:
+        except Exception:  # noqa: BLE001 — 스레드 하나를 못 읽었다고 되짚기 전체를 판정 불가로 만들지 않는다
             return []

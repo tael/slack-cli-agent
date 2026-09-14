@@ -82,9 +82,7 @@ class ResponseGate:
         if len(t) <= REACTION_MAX_LEN and REACTION_ONLY.match(t):
             return False
         # 맺음 인사는 부탁이라는 말이 들어가도 답을 기다리는 말이 아니다
-        if re.search(r"(?:잘|앞으로|많이)\s*부탁", t) and not re.search(r"[?？]", t):
-            return False
-        return True
+        return not (re.search(r"(?:잘|앞으로|많이)\s*부탁", t) and not re.search(r"[?？]", t))
 
     def asked_back(self, text: str) -> bool:
         """봇이 답을 기다리는 말을 남겼는지 본다.

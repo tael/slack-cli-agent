@@ -44,13 +44,13 @@ class ReactionMarker:
     def add(self, channel: str, ts: str, name: str) -> None:
         try:
             self._client.reactions_add(channel=channel, timestamp=ts, name=name)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — 표식은 부가 정보다. 모듈 docstring 대로 조용히 넘긴다
             pass
 
     def remove(self, channel: str, ts: str, name: str) -> None:
         try:
             self._client.reactions_remove(channel=channel, timestamp=ts, name=name)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — 표식은 부가 정보다. 모듈 docstring 대로 조용히 넘긴다
             pass
 
     def mark_processing(self, channel: str, ts: str) -> None:

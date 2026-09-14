@@ -330,7 +330,8 @@ class Application:
     def engine_invoker(self) -> EngineInvoker:
         """엔진 실행 한 걸음. 호출부는 폴백 여부를 모른다."""
         if self._invoker is None:
-            self.engine
+            # engine 프로퍼티가 부수효과로 self._invoker 를 채운다.
+            _ = self.engine
         assert self._invoker is not None
         return self._invoker
 
@@ -929,7 +930,7 @@ class Application:
         try:
             self._client.auth_test()
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 — 슬랙 연결 확인 실패를 판정에 그대로 반영한다 — 어떤 예외든 연결 불가로 본다
             return False
 
     # -- 보조 -----------------------------------------------------
@@ -963,7 +964,7 @@ class Application:
             return
         try:
             info = self._client.auth_test() or {}
-        except Exception:
+        except Exception:  # noqa: BLE001 — 신원 조회 실패를 판정 근거로 남기고 빈 값으로 넘어간다 — 여기서 죽으면 이후 처리 전체가 막힌다
             log.warning("봇 신원을 조회하지 못했다")
             info = {}
         self._bot_user_id_cache = str(info.get("user_id") or "")

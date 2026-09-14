@@ -26,7 +26,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..auth.principal import Principal, TrustLevel
 
@@ -66,7 +66,7 @@ class CompositionContext:
     # 목록을 만드는 것(발화자·멘션 추적)은 이 패키지의 책임이 아니다 —
     # 호출부가 이미 모아 채워 넘긴다. PresentPeopleSection 이 쓴다.
     people: tuple[tuple[str, str], ...] = ()
-    extra: dict = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_owner(self) -> bool:

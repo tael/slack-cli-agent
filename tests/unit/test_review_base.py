@@ -160,7 +160,7 @@ class Test정상흐름:
         assert parent_thread is None
         assert "head" in parent_text and "요약" in parent_text
         assert parent_rich is True
-        detail_channel, detail_thread, detail_text, _ = rig.publisher.posts[1]
+        _detail_channel, detail_thread, detail_text, _ = rig.publisher.posts[1]
         assert detail_thread == "parent.1"
         assert detail_text == "상세내용"
 

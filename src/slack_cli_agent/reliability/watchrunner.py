@@ -17,8 +17,12 @@ import logging
 import time
 from collections.abc import Callable
 
+from ..config.channel import ChannelRegistry
+from ..config.settings import RuntimeSettings
 from ..engine.base import EngineResponse
 from ..guard.watch import WATCH_DONE_TAG, WATCH_MARK_EMOJI, WATCH_STILL_TAG
+from ..slack.publisher import MessagePublisher
+from ..slack.reactions import ReactionMarker
 from .watchjobs import WatchJob, WatchJobPort
 
 log = logging.getLogger(__name__)
@@ -47,10 +51,10 @@ class WatchJobChecker:
         *,
         queue: WatchJobPort,
         run_check: Callable[[WatchJob], EngineResponse],
-        publisher,
-        channels,
-        settings,
-        reactions=None,
+        publisher: MessagePublisher,
+        channels: ChannelRegistry,
+        settings: RuntimeSettings,
+        reactions: ReactionMarker | None = None,
         notify_owner: Callable[[str], None] | None = None,
         now: Callable[[], float] = time.time,
     ) -> None:
@@ -81,7 +85,7 @@ class WatchJobChecker:
     def _check_one(self, job: WatchJob, now: float) -> None:
         try:
             response = self._run_check(job)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — 감시 확인 중 예외로 워커 전체가 멎으면 안 된다 — 이 작업만 다음 회차로 넘긴다
             log.error("감시 확인 중 오류 : %s", exc)
             self._queue.mark_checked(job.id, now)
             return
@@ -100,7 +104,7 @@ class WatchJobChecker:
         rich = bool(config and config.rich)
         try:
             self._publisher.post(job.channel, job.thread_ts, body, rich)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — 완료 보고 발송 실패가 완료 표시 자체를 막으면 안 된다 — 안 막으면 다음 회차에 같은 보고를 또 게시한다
             log.error("감시 완료 보고 발송 실패 : %s", exc)
 
         if self._reactions is not None and job.msg_ts:

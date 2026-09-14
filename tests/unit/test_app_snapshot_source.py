@@ -36,14 +36,14 @@ class FakeWatchJobs:
 
 
 def make_source(**overrides):
-    kwargs = dict(
-        inflight=InflightCounter(),
-        queue=FakeQueue(3),
-        socket_watch=FakeSocketWatch(),
-        watch_jobs=FakeWatchJobs(),
-        is_shutting_down=lambda: False,
-        started_at=500.0,
-    )
+    kwargs = {
+        "inflight": InflightCounter(),
+        "queue": FakeQueue(3),
+        "socket_watch": FakeSocketWatch(),
+        "watch_jobs": FakeWatchJobs(),
+        "is_shutting_down": lambda: False,
+        "started_at": 500.0,
+    }
     kwargs.update(overrides)
     return ApplicationSnapshotSource(**kwargs)
 
