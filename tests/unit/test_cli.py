@@ -13,10 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from slack_cli_agent.cli import IngressCommand, SlackCliAgent, WorkerCommand
+from slack_cli_agent.cli import IngressCommand, LearnCommand, SlackCliAgent, WorkerCommand
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.lifecycle import InflightCounter
 from slack_cli_agent.core.services import ServiceGroup
+from slack_cli_agent.learning.batch import BatchReport
 from slack_cli_agent.storage.database import Database
 
 MINIMAL_PROFILE = {
@@ -875,3 +876,77 @@ class Test주기실행기를묶음으로띄운다:
             stdout=io.StringIO(),
         )
         assert app.worker_services_calls == 1
+
+
+class FakeLearningBatch:
+    def __init__(self, report: object) -> None:
+        self.days: list[str | None] = []
+        self._report = report
+
+    def run(self, day: str | None = None) -> object:
+        self.days.append(day)
+        return self._report
+
+
+class FakeLearningApplication:
+    """LearnCommand 가 기대하는 계약만 흉내 낸 이중체."""
+
+    def __init__(self, batch: FakeLearningBatch) -> None:
+        self._batch = batch
+        self.close_calls = 0
+
+    def learning_batch(self) -> FakeLearningBatch:
+        return self._batch
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class TestLearnCommand:
+    """원본 `learn.py` 를 손으로 돌리던 경로에 대응한다.
+
+    워커 주기 실행기와 같은 배치를 부른다. 손으로 부르는 쪽이 다른 코드를
+    쓰면 그 둘의 동작이 갈린다.
+    """
+
+    def _run(self, tmp_path: Path, report: object, extra: list[str] | None = None):
+        profiles = tmp_path / "profiles"
+        write_profile(profiles, tmp_path / "state")
+        batch = FakeLearningBatch(report)
+        app = FakeLearningApplication(batch)
+        command = LearnCommand(application_factory=lambda profile: app)
+        out = io.StringIO()
+        code = SlackCliAgent([command]).run(
+            ["learn", "--profile", "example", "--profile-dir", str(profiles), *(extra or [])],
+            stdout=out,
+        )
+        return code, batch, app, out.getvalue()
+
+    def test_날짜를_안_주면_배치가_정한다(self, tmp_path: Path) -> None:
+        report = BatchReport(day="2026-09-14", ran=True, reason="", proposal=None)
+        code, batch, app, _ = self._run(tmp_path, report)
+        assert code == 0
+        assert batch.days == [None]
+        assert app.close_calls == 1
+
+    def test_날짜를_주면_그날을_돌린다(self, tmp_path: Path) -> None:
+        report = BatchReport(day="2026-09-01", ran=True, reason="", proposal=None)
+        _, batch, _, _ = self._run(tmp_path, report, ["--day", "2026-09-01"])
+        assert batch.days == ["2026-09-01"]
+
+    def test_돌지_않았으면_사유를_출력하고_1을_돌려준다(self, tmp_path: Path) -> None:
+        """조용히 0 을 돌려주면 launchd 기록만 보고는 돈 줄로 읽는다."""
+        report = BatchReport(day="2026-09-14", ran=False, reason="응답 기록이 없다", proposal=None)
+        code, _, _, text = self._run(tmp_path, report)
+        assert code == 1
+        assert "응답 기록이 없다" in text
+
+    def test_알림을_못_보냈으면_그_사실을_출력한다(self, tmp_path: Path) -> None:
+        report = BatchReport(
+            day="2026-09-14", ran=True, reason="", proposal=None,
+            applied={"잡담": 2}, notified=False,
+        )
+        code, _, _, text = self._run(tmp_path, report)
+        assert code == 0
+        assert "잡담 2" in text
+        assert "알리지 못했다" in text
