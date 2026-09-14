@@ -298,3 +298,28 @@ class Test예외_처리:
         router = make_router(profiles=FakeProfiles({"mametchi": {}}), metrics={"mametchi": BoomMetrics()})  # type: ignore[dict-item]
         res = router.handle("GET", "/api/state/mametchi", {}, None)
         assert res.status == 500
+
+
+class Test빈_본문_저장:
+    """빈 프롬프트는 그 봇을 다음 기동에서 죽인다. 사용자 입력 오류이므로
+    500 이 아니라 400 으로 알리고 화면이 그 사유를 보여줄 수 있어야 한다."""
+
+    def test_파일_편집기가_거부하면_400과_사유를_낸다(self) -> None:
+        class 거부하는편집기:
+            def names(self) -> list[str]:
+                return ["persona"]
+
+            def read(self, name: str) -> str:
+                return "본문"
+
+            def write(self, name: str, text: str) -> None:
+                raise ValueError("빈 본문은 저장하지 않는다")
+
+        router = make_router(
+            profiles=FakeProfiles({"mametchi": {"name": "mametchi"}}),
+            prompts={"mametchi": 거부하는편집기()},  # type: ignore[dict-item]  # 계약만 만족하면 된다
+        )
+        res = router.handle("PUT", "/api/prompt/mametchi/persona", {}, {"text": "   "})
+
+        assert res.status == 400
+        assert "빈 본문은 저장하지 않는다" in str(res.body)

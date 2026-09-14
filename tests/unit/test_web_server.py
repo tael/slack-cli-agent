@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 import pytest
 
-from slack_cli_agent.web.api import ApiResponse, ApiRouter
+from slack_cli_agent.web.api import ApiRouter
 from slack_cli_agent.web.server import WebServer
 
 
@@ -154,7 +154,7 @@ class TestAPI_위임:
     def test_JSON이_아닌_PUT_본문은_400이다(self, server: WebServer) -> None:
         conn = HTTPConnection("127.0.0.1", server.port, timeout=5)
         try:
-            payload = "이것은 JSON 이 아니다".encode("utf-8")
+            payload = "이것은 JSON 이 아니다".encode()
             conn.request(
                 "PUT",
                 "/api/profile/mametchi",

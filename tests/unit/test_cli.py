@@ -13,7 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from slack_cli_agent.cli import IngressCommand, LearnCommand, SlackCliAgent, WorkerCommand
+from slack_cli_agent.cli import (
+    IngressCommand,
+    LearnCommand,
+    ServerLike,
+    SlackCliAgent,
+    WebCommand,
+    WorkerCommand,
+)
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.lifecycle import InflightCounter
 from slack_cli_agent.core.services import ServiceGroup
@@ -950,3 +957,82 @@ class TestLearnCommand:
         assert code == 0
         assert "잡담 2" in text
         assert "알리지 못했다" in text
+
+
+class FakeWebServer:
+    def __init__(self) -> None:
+        self.started = 0
+        self.stopped = 0
+
+    @property
+    def port(self) -> int:
+        return 8787
+
+    def start(self) -> None:
+        self.started += 1
+
+    def serve_forever(self) -> None:
+        raise KeyboardInterrupt
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+
+class Test웹서버계약:
+    """대역이 실물과 어긋나면 시험은 통과하고 실행은 죽는다.
+
+    실제로 그렇게 났다 — 대역에만 있던 serve_forever 를 명령이 불렀고,
+    시험 전부가 통과한 채로 서버가 기동 직후 예외로 끝났다.
+    """
+
+    def test_실물_서버가_명령이_부르는_계약을_만족한다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.web.server import WebServer
+
+        server = WebServer(port=0, router=None)  # type: ignore[arg-type]  # 계약만 본다
+        assert isinstance(server, ServerLike)
+
+    def test_대역도_같은_계약을_만족한다(self) -> None:
+        assert isinstance(FakeWebServer(), ServerLike)
+
+
+class TestWebCommand:
+    """설정 콘솔을 띄우는 명령. 다른 명령과 달리 프로필 하나를 요구하지 않는다.
+
+    서버 하나가 프로필 전부를 본다. 봇마다 서버를 띄우면 화면을 열 때마다
+    어느 포트가 어느 봇인지 사람이 외워야 한다.
+    """
+
+    def _run(self, tmp_path: Path, server: FakeWebServer, extra: list[str] | None = None) -> int:
+        profiles = tmp_path / "profiles"
+        write_profile(profiles, tmp_path / "state")
+        command = WebCommand(console_factory=lambda dirs, port: server)
+        out = io.StringIO()
+        return SlackCliAgent([command]).run(
+            ["web", "--profile-dir", str(profiles), *(extra or [])], stdout=out
+        )
+
+    def test_서버를_띄우고_끝나면_멈춘다(self, tmp_path: Path) -> None:
+        server = FakeWebServer()
+        assert self._run(tmp_path, server) == 0
+        assert server.started == 1
+        assert server.stopped == 1
+
+    def test_프로필_이름을_요구하지_않는다(self, tmp_path: Path) -> None:
+        """한 서버가 프로필 전부를 본다. 화면에서 봇을 고른다."""
+        parser = SlackCliAgent([WebCommand()]).build_parser()
+        args = parser.parse_args(["web"])
+        assert not hasattr(args, "profile") or args.profile is None
+
+    def test_포트를_지정할_수_있다(self, tmp_path: Path) -> None:
+        received: list[int] = []
+
+        def factory(dirs: object, port: int) -> FakeWebServer:
+            received.append(port)
+            return FakeWebServer()
+
+        profiles = tmp_path / "profiles"
+        write_profile(profiles, tmp_path / "state")
+        SlackCliAgent([WebCommand(console_factory=factory)]).run(
+            ["web", "--profile-dir", str(profiles), "--port", "9001"], stdout=io.StringIO()
+        )
+        assert received == [9001]

@@ -197,7 +197,12 @@ class ApiRouter:
         text = body.get("text")
         if not isinstance(text, str):
             return _BAD_BODY
-        factory(bot).write(name, text)
+        try:
+            factory(bot).write(name, text)
+        except ValueError as exc:
+            # Rejecting empty content is a user input error, not a server fault;
+            # the page shows this list next to the field.
+            return ApiResponse(400, {"errors": [str(exc)]})
         return ApiResponse(200, {"ok": True})
 
     def _get_state(self, bot: str, query: Mapping[str, str]) -> ApiResponse:

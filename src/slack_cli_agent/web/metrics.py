@@ -1,0 +1,583 @@
+"""Web console metrics collection, backed by the new store (SQLite + StatePaths).
+
+The original dashboard (mametchi-slack-bot/dashboard/metrics.py) read four
+separate sources: audit.jsonl, sessions.db, postmortems.json, channels.json.
+Here those collapse into state.db (audit/sessions/reviews tables) plus
+ChannelRegistry, so this queries the DB directly instead of re-parsing files.
+
+The new audit "request" payload doesn't carry the user id, question/answer
+text, cost, turn count, or tool names that the original had. Metrics that
+depend on those are left as None (or grouped under not_applicable) rather
+than filled with 0 or an estimate.
+"""
+
+from __future__ import annotations
+
+import collections
+import json
+import subprocess
+import time
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from ..auth.policy import DEFAULT_EFFORT
+from ..config.channel import ChannelConfig, ChannelRegistry
+from ..config.profile import Profile
+from ..config.settings import RuntimeSettings
+from ..core.channel_kind import is_direct_message_channel
+from ..jobs.ports import JobStatus
+from ..observability.audit import REQUEST_KIND
+from ..storage.database import Database
+
+KST = timezone(timedelta(hours=9))
+
+# Snapshot is written every 5s; three missed cycles means the writer is gone.
+SNAPSHOT_STALE_SEC = 20
+SLOW_SEC = 300
+
+CCUSAGE_BIN = "/opt/homebrew/bin/ccusage"
+CCUSAGE_TIMEOUT_SEC = 20
+
+_NO_USER_ID = "감사 기록에 사용자 식별자가 없다"
+_NO_INCIDENT_KIND = "감사 기록에 사고 유형 구분이 없다"
+
+NOT_APPLICABLE_REASONS: dict[str, str] = {
+    "usage.by_user": _NO_USER_ID,
+    "usage.cost_total_usd": "감사 기록에 비용 필드가 없다",
+    "usage.turns_median": "감사 기록에 턴 수가 없다",
+    "usage.question_len_median": "감사 기록에 질문 원문이 없다",
+    "usage.answer_len_median": "감사 기록에 답변 원문이 없다",
+    "reliability.context_reset": "감사 기록에 컨텍스트 재설정 표시가 없다",
+    "reliability.restarts": "신규 저장소에 재기동 이력이 없다",
+    "reliability.incidents": _NO_INCIDENT_KIND,
+    "quality.late_addendum": _NO_INCIDENT_KIND,
+    "quality.wrong_addressee": _NO_INCIDENT_KIND,
+    "quality.split_broken": _NO_INCIDENT_KIND,
+    "quality.post_failed": _NO_INCIDENT_KIND,
+    "quality.silent": "감사 기록에 답변 원문이 없어 무응답 여부를 판정할 수 없다",
+    "quality.rewrites": "신규 저장소에 발송 전 재작성 로그가 없다",
+    "followup.same_user_repeat": _NO_USER_ID,
+    "tools": "감사 기록에 도구 호출 이름이 없다",
+    "channels[].context_tokens": "세션 맥락 크기 계측은 이 수집기 범위 밖이다",
+    "bots": "이 수집기는 프로필 하나만 받아 다른 봇 목록을 낼 수 없다",
+}
+CODEX_USAGE_BLOCK_REASON = "Codex 세션 기록 스캔은 이 수집기 범위 밖이다"
+
+_SLOW_LABELS = (
+    "10초 이하", "10-30초", "30-60초", "1-2분", "2-5분", "5-10분", "10-15분", "15분 초과",
+)
+_SLOW_EDGES = (10, 30, 60, 120, 300, 600, 900)
+
+
+def _kst(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, KST).isoformat(timespec="seconds")
+
+
+def _pct(part: int, whole: int) -> float | None:
+    return round(part / whole * 100, 1) if whole else None
+
+
+def _quantile(sorted_values: Sequence[float], q: float) -> float | None:
+    if not sorted_values:
+        return None
+    index = min(int(len(sorted_values) * q), len(sorted_values) - 1)
+    value = sorted_values[index]
+    return round(value, 2) if value < 10 else round(value)
+
+
+def _epoch_from_iso(text: object) -> float | None:
+    try:
+        return datetime.fromisoformat(str(text)).timestamp()
+    except ValueError:
+        return None
+
+
+class MetricsCollector:
+    def __init__(self, profile: Profile, *, now: Callable[[], float] = time.time) -> None:
+        self._profile = profile
+        self._now = now
+
+    def collect(self, days: int) -> dict[str, object]:
+        now = self._now()
+        paths = self._profile.paths
+        db = Database(paths.database)
+        db.migrate()
+        cutoff = now - days * 86400
+
+        snapshot = self._read_snapshot(paths.state_snapshot, now)
+        requests = self._read_requests(db, cutoff)
+        reviews = self._read_reviews(db)
+        sessions = self._read_sessions(db)
+        queued_by_channel = self._read_queued_by_channel(db)
+        channels = ChannelRegistry(paths.channels).all()
+
+        latest = max((str(r.get("ts_kst") or "") for r in requests), default="")
+
+        return {
+            "generated_at": _kst(now),
+            "window_days": days,
+            "bot": self._bot_fields(),
+            "bots": [self._bot_row(snapshot)],
+            "snapshot": snapshot,
+            "last_answer_kst": latest or None,
+            "channels": self._channel_rows(requests, channels, sessions, queued_by_channel, now),
+            "responsiveness": self._responsiveness(requests),
+            "reliability": self._reliability(requests),
+            "quality": self._quality(reviews, requests),
+            "usage": self._usage(requests, channels),
+            "followup": self._followup(requests),
+            "tools": {"available": False, "reason": NOT_APPLICABLE_REASONS["tools"]},
+            "queue_wait": self._queue_wait(requests),
+            "usage_block": self._usage_block(),
+            "session_total": len(sessions),
+        }
+
+    # --- 원천 읽기 -----------------------------------------------------
+
+    def _read_snapshot(self, path: Path, now: float) -> dict[str, object]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"available": False, "reason": "스냅샷 파일 없음"}
+        if not isinstance(data, dict):
+            return {"available": False, "reason": "스냅샷 파일 없음"}
+        written_at = data.get("written_at")
+        if not isinstance(written_at, (int, float)):
+            return {"available": False, "reason": "스냅샷 파일 없음"}
+        age = now - written_at
+        result: dict[str, object] = dict(data)
+        result["age_sec"] = round(age, 1)
+        available = age <= SNAPSHOT_STALE_SEC
+        result["available"] = available
+        if not available:
+            result["reason"] = f"스냅샷이 {int(age)}초 지났다"
+        return result
+
+    def _read_requests(self, db: Database, cutoff: float) -> list[dict[str, Any]]:
+        rows = db.connect().execute(
+            "SELECT at, channel, thread_ts, payload FROM audit"
+            " WHERE kind = ? AND at >= ? ORDER BY id",
+            (REQUEST_KIND, cutoff),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            record: dict[str, Any] = dict(payload)
+            record.setdefault("channel", row["channel"])
+            record.setdefault("thread_ts", row["thread_ts"])
+            record["at"] = row["at"]
+            record["ts_kst"] = _kst(row["at"])
+            out.append(record)
+        return out
+
+    def _read_reviews(self, db: Database) -> list[dict[str, Any]]:
+        rows = db.connect().execute(
+            "SELECT kind, channel, target_ts, at FROM reviews ORDER BY at"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _read_sessions(self, db: Database) -> list[dict[str, Any]]:
+        rows = db.connect().execute(
+            "SELECT scope, key, session_id, engine, created_at, last_seen_ts,"
+            " updated_at, workdir, model FROM sessions"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _read_queued_by_channel(self, db: Database) -> dict[str, int]:
+        rows = db.connect().execute(
+            "SELECT channel, COUNT(*) AS n FROM jobs WHERE status = ? GROUP BY channel",
+            (JobStatus.QUEUED.value,),
+        ).fetchall()
+        return {str(row["channel"]): int(row["n"]) for row in rows}
+
+    def _count_corrections(self) -> int | None:
+        path = self._profile.paths.knowledge / "_corrections.md"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        return sum(1 for line in text.splitlines() if line.startswith("- "))
+
+    # --- 지표 계산 -------------------------------------------------------
+
+    def _bot_fields(self) -> dict[str, object]:
+        engine = self._profile.primary_engine
+        not_applicable = dict(NOT_APPLICABLE_REASONS)
+        if engine.type == "codex":
+            not_applicable["usage_block"] = CODEX_USAGE_BLOCK_REASON
+        return {
+            "name": self._profile.name,
+            "display_name": self._profile.display_name,
+            "engine": engine.type,
+            "default_model": engine.model,
+            "owner_model": engine.model_for_owner(),
+            "not_applicable": not_applicable,
+        }
+
+    def _bot_row(self, snapshot: Mapping[str, object]) -> dict[str, object]:
+        return {
+            "name": self._profile.name,
+            "display_name": self._profile.display_name,
+            "engine": self._profile.primary_engine.type,
+            "available": bool(snapshot.get("available")),
+            "reason": snapshot.get("reason"),
+            "pid": snapshot.get("pid"),
+            "uptime_sec": snapshot.get("uptime_sec"),
+            "inflight": snapshot.get("inflight"),
+            "queued_total": snapshot.get("queued_total"),
+            "shutting_down": bool(snapshot.get("shutting_down")),
+        }
+
+    def _responsiveness(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, object]:
+        times = sorted(
+            float(r["elapsed"]) for r in requests if isinstance(r.get("elapsed"), (int, float))
+        )
+        slow = [t for t in times if t > SLOW_SEC]
+        buckets = [0] * len(_SLOW_LABELS)
+        for value in times:
+            for i, edge in enumerate(_SLOW_EDGES):
+                if value <= edge:
+                    buckets[i] += 1
+                    break
+            else:
+                buckets[-1] += 1
+
+        by_hour: collections.Counter[int] = collections.Counter()
+        for r in requests:
+            stamp = r.get("ts_kst")
+            if isinstance(stamp, str) and stamp:
+                try:
+                    by_hour[datetime.fromisoformat(stamp).hour] += 1
+                except ValueError:
+                    pass
+
+        return {
+            "count": len(times),
+            "median_sec": _quantile(times, 0.5),
+            "p90_sec": _quantile(times, 0.9),
+            "max_sec": round(times[-1]) if times else None,
+            "slow_count": len(slow),
+            "slow_pct": _pct(len(slow), len(times)),
+            "slow_threshold_sec": SLOW_SEC,
+            "histogram": [
+                {"label": label, "count": count}
+                for label, count in zip(_SLOW_LABELS, buckets, strict=True)
+            ],
+            "by_hour": [{"hour": h, "count": by_hour.get(h, 0)} for h in range(24)],
+            "first_reaction": self._first_reaction(requests),
+        }
+
+    def _first_reaction(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, object]:
+        values = sorted(
+            float(r["first_reaction_sec"]) for r in requests
+            if isinstance(r.get("first_reaction_sec"), (int, float))
+        )
+        return {
+            "count": len(values),
+            "sample_pct": _pct(len(values), len(requests)),
+            "median_sec": _quantile(values, 0.5),
+            "p90_sec": _quantile(values, 0.9),
+            "max_sec": round(values[-1], 2) if values else None,
+        }
+
+    def _reliability(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, object]:
+        ok = [r for r in requests if r.get("ok")]
+        failed = [r for r in requests if not r.get("ok")]
+        resumed = [r for r in requests if r.get("resumed")]
+        recent_failures = [
+            {
+                "ts_kst": r.get("ts_kst"),
+                "channel": r.get("channel"),
+                "reason": r.get("failure") or "사유 없음",
+            }
+            for r in sorted(failed, key=lambda x: str(x.get("ts_kst") or ""), reverse=True)[:10]
+        ]
+        return {
+            "total": len(requests),
+            "ok": len(ok),
+            "failed": len(failed),
+            "success_pct": _pct(len(ok), len(requests)),
+            "resumed": len(resumed),
+            "resumed_pct": _pct(len(resumed), len(requests)),
+            "context_reset": None,
+            "incidents": [],
+            "restarts": None,
+            "recent_failures": recent_failures,
+        }
+
+    def _quality(
+        self, reviews: Sequence[Mapping[str, Any]], requests: Sequence[Mapping[str, Any]],
+    ) -> dict[str, object]:
+        kinds = collections.Counter(str(r["kind"]) for r in reviews)
+        asked = collections.Counter(str(r.get("channel") or "") for r in requests)
+        per_channel = collections.Counter(
+            str(r["channel"]) for r in reviews if r["kind"] == "postmortem"
+        )
+        rows = []
+        for channel, hits in per_channel.most_common():
+            total = asked.get(channel)
+            rows.append({
+                "channel": channel,
+                "postmortems": hits,
+                "requests": total,
+                "rate_pct": _pct(hits, total) if total else None,
+            })
+        return {
+            "postmortems_total": kinds.get("postmortem", 0),
+            "postmortems_by_channel": rows,
+            "format_reviews": kinds.get("format_review", 0),
+            "debug_traces": kinds.get("debug_trace", 0),
+            "late_addendum": None,
+            "wrong_addressee": None,
+            "split_broken": None,
+            "post_failed": None,
+            "silent": None,
+            "silent_pct": None,
+            "corrections": self._count_corrections(),
+            "rewrites": None,
+        }
+
+    def _usage(
+        self, requests: Sequence[Mapping[str, Any]], channels: Mapping[str, ChannelConfig],
+    ) -> dict[str, object]:
+        total = len(requests)
+        by_channel: collections.Counter[str] = collections.Counter(
+            str(r.get("channel") or "") for r in requests
+        )
+        by_model = collections.Counter(str(r["model"]) for r in requests if r.get("model"))
+        by_effort = collections.Counter(str(r["effort"]) for r in requests if r.get("effort"))
+
+        tokens: collections.Counter[str] = collections.Counter()
+        seen = 0
+        for r in requests:
+            usage = r.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            seen += 1
+            tokens["input"] += int(usage.get("input_tokens") or 0)
+            tokens["output"] += int(usage.get("output_tokens") or 0)
+            tokens["cache_write"] += int(usage.get("cache_creation_tokens") or 0)
+            tokens["cache_read"] += int(usage.get("cache_read_tokens") or 0)
+        if seen:
+            tokens["total"] = (
+                tokens["input"] + tokens["output"] + tokens["cache_write"] + tokens["cache_read"]
+            )
+
+        def named(counter: collections.Counter[str]) -> list[dict[str, object]]:
+            return [
+                {
+                    "channel": channel,
+                    "name": channels[channel].name if channel in channels else channel,
+                    "count": count,
+                    "pct": _pct(count, total),
+                }
+                for channel, count in counter.most_common()
+            ]
+
+        return {
+            "by_channel": named(by_channel),
+            "unlisted_channels": [
+                c for c in by_channel if c not in channels and not is_direct_message_channel(c)
+            ],
+            "by_user": [],
+            "user_count": None,
+            "by_model": [{"model": m, "count": n} for m, n in by_model.most_common()],
+            "by_effort": [{"effort": e, "count": n} for e, n in by_effort.most_common()],
+            "cost_total_usd": None,
+            "cost_median_usd": None,
+            "cost_by_day": [],
+            "cost_by_channel": [],
+            "turns_median": None,
+            "question_len_median": None,
+            "answer_len_median": None,
+            "tokens": dict(tokens) if seen else None,
+            "tokens_sample": seen,
+        }
+
+    def _followup(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, object]:
+        threads: collections.Counter[tuple[Any, Any]] = collections.Counter()
+        for r in requests:
+            key = (r.get("channel"), r.get("thread_ts"))
+            if all(key):
+                threads[key] += 1
+        single = sum(1 for n in threads.values() if n == 1)
+        multi = len(threads) - single
+        return {
+            "threads": len(threads),
+            "single_turn": single,
+            "multi_turn": multi,
+            "same_user_repeat": None,
+            "rate_pct": None,
+            "rate_of_multi_pct": None,
+        }
+
+    def _queue_wait(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, object]:
+        values = sorted(
+            float(r["queue_wait_sec"]) for r in requests
+            if isinstance(r.get("queue_wait_sec"), (int, float))
+        )
+        return {
+            "approximate": False,
+            "queued_events": len(values),
+            "count": len(values),
+            "matched_pct": 100.0,
+            "median_sec": _quantile(values, 0.5),
+            "p90_sec": _quantile(values, 0.9),
+            "max_sec": round(values[-1]) if values else None,
+        }
+
+    def _channel_rows(
+        self,
+        requests: Sequence[Mapping[str, Any]],
+        channels: Mapping[str, ChannelConfig],
+        sessions: Sequence[Mapping[str, Any]],
+        queued_by_channel: Mapping[str, int],
+        now: float,
+    ) -> list[dict[str, object]]:
+        settings = RuntimeSettings().override(self._profile.settings_override)
+        thread_ttl = settings.session_ttl_hours * 3600
+        channel_ttl = settings.channel_session_ttl_days * 86400
+
+        thread_channel: dict[str, str] = {}
+        last_seen: dict[str, str] = {}
+        today = datetime.fromtimestamp(now, KST).strftime("%Y-%m-%d")
+        today_count: collections.Counter[str] = collections.Counter()
+        requests_window: collections.Counter[str] = collections.Counter()
+        for r in requests:
+            channel = r.get("channel")
+            if not channel:
+                continue
+            channel = str(channel)
+            requests_window[channel] += 1
+            thread_ts = r.get("thread_ts")
+            if thread_ts:
+                thread_channel[str(thread_ts)] = channel
+            stamp = str(r.get("ts_kst") or "")
+            if stamp > last_seen.get(channel, ""):
+                last_seen[channel] = stamp
+            if stamp[:10] == today:
+                today_count[channel] += 1
+
+        live: dict[str, list[tuple[int, dict[str, object]]]] = collections.defaultdict(list)
+        for row in sessions:
+            key = str(row["key"])
+            session_channel: str | None
+            if row["scope"] == "channel":
+                session_channel = key
+                ttl = channel_ttl
+            else:
+                session_channel = thread_channel.get(key)
+                if session_channel is None and ":" in key:
+                    session_channel = key.split(":", 1)[0]
+                ttl = thread_ttl
+            if not session_channel:
+                continue
+            age = now - float(row["updated_at"])
+            if age > ttl:
+                continue
+            age_sec = round(age)
+            live[session_channel].append((age_sec, {
+                "session_id": str(row["session_id"])[:8],
+                "model": row.get("model") or None,
+                "age_sec": age_sec,
+                "created_at": _kst(float(row["created_at"])) if row.get("created_at") else None,
+                "last_used_at": _kst(float(row["updated_at"])),
+                "workdir": row.get("workdir") or None,
+                "context_tokens": None,
+            }))
+
+        seen = set(channels) | set(requests_window) | set(live) | set(queued_by_channel)
+        rows: list[dict[str, object]] = []
+        for channel in seen:
+            conf = channels.get(channel)
+            entries = [entry for _, entry in sorted(live.get(channel, []), key=lambda x: x[0])]
+            dm = is_direct_message_channel(channel)
+            rows.append({
+                "channel": channel,
+                "name": conf.name if conf else channel,
+                "is_dm": dm,
+                "listed": conf is not None,
+                "mode": conf.mode if conf else "default",
+                "model": (conf.model if conf and conf.model else self._profile.primary_engine.model),
+                "model_inherited": not (conf and conf.model),
+                "effort": (conf.effort if conf and conf.effort else DEFAULT_EFFORT),
+                "effort_inherited": not (conf and conf.effort),
+                "answer_unaddressed": bool(conf and conf.answer_unaddressed),
+                "rich": bool(conf and conf.rich),
+                "light_context": bool(conf and conf.light_context),
+                "session_scope": conf.session_scope if conf else "thread",
+                "live_sessions": len(entries),
+                "newest_session": entries[0] if entries else None,
+                "context_total": None,
+                "context_max": None,
+                "context_unread": len(entries),
+                "requests_today": today_count.get(channel, 0),
+                "requests_window": requests_window.get(channel, 0),
+                "last_seen": last_seen.get(channel) or None,
+                "queued": queued_by_channel.get(channel, 0),
+            })
+
+        rows.sort(key=lambda r: str(r["last_seen"] or ""), reverse=True)
+        return rows
+
+    def _usage_block(self) -> dict[str, object]:
+        if self._profile.primary_engine.type == "codex":
+            return {
+                "available": False,
+                "kind": "codex_rate_limit",
+                "reason": CODEX_USAGE_BLOCK_REASON,
+            }
+        block = self._ccusage_block()
+        block["kind"] = "ccusage_block"
+        return block
+
+    def _ccusage_block(self) -> dict[str, object]:
+        if not Path(CCUSAGE_BIN).exists():
+            return {"available": False, "reason": "ccusage 없음"}
+        try:
+            out = subprocess.run(
+                [CCUSAGE_BIN, "blocks", "--active", "-z", "Asia/Seoul", "--json"],
+                capture_output=True, text=True, timeout=CCUSAGE_TIMEOUT_SEC, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return {"available": False, "reason": "ccusage 실행 실패"}
+        if out.returncode != 0:
+            return {"available": False, "reason": "ccusage 실행 실패"}
+        try:
+            parsed = json.loads(out.stdout)
+        except json.JSONDecodeError:
+            return {"available": False, "reason": "ccusage 응답을 읽지 못함"}
+        blocks = (parsed or {}).get("blocks") or []
+        block = next((b for b in blocks if b.get("isActive")), None)
+        if not block:
+            return {"available": False, "reason": "열려 있는 블록 없음"}
+
+        start = _epoch_from_iso(block.get("startTime"))
+        end = _epoch_from_iso(block.get("endTime"))
+        now = time.time()
+        counts = block.get("tokenCounts") or {}
+        burn = block.get("burnRate") or {}
+        projection = block.get("projection") or {}
+        return {
+            "available": True,
+            "start_kst": _kst(start) if start else None,
+            "end_kst": _kst(end) if end else None,
+            "elapsed_sec": round(now - start) if start else None,
+            "remaining_sec": (max(0, round(end - now)) if end else None),
+            "cost_usd": round(block.get("costUSD") or 0, 2),
+            "cost_per_hour_usd": round(burn.get("costPerHour") or 0, 2),
+            "projected_cost_usd": round(projection.get("totalCost") or 0, 2),
+            "total_tokens": block.get("totalTokens"),
+            "cache_read_tokens": counts.get("cacheReadInputTokens"),
+            "output_tokens": counts.get("outputTokens"),
+            "entries": block.get("entries"),
+            "models": block.get("models") or [],
+            "scope": "이 노트북 기록만",
+        }

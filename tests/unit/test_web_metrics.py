@@ -1,0 +1,511 @@
+"""웹 콘솔 지표 수집. 신규 저장소(state.db + ChannelRegistry) 기준.
+
+원본(mametchi-slack-bot/dashboard/metrics.py)과 최상위 키는 같게 두되, 신규
+감사 기록에 없는 값(사용자 식별자·질문/답변 원문·비용·턴 수·도구 이름)은
+None 이나 not_applicable 사유로 낸다. 0 으로 채우지 않는다.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from slack_cli_agent.config.channel import ChannelRegistry
+from slack_cli_agent.config.profile import Profile
+from slack_cli_agent.jobs.ports import JobStatus
+from slack_cli_agent.observability.audit import REQUEST_KIND
+from slack_cli_agent.storage.database import Database
+from slack_cli_agent.web import metrics as metrics_module
+from slack_cli_agent.web.metrics import MetricsCollector
+
+TOP_LEVEL_KEYS = {
+    "generated_at", "window_days", "bot", "bots", "snapshot", "last_answer_kst",
+    "channels", "responsiveness", "reliability", "quality", "usage", "followup",
+    "tools", "queue_wait", "usage_block", "session_total",
+}
+
+
+def make_profile(tmp_path: Path, *, engine: str = "claude") -> Profile:
+    state_dir = tmp_path / "bot"
+    data = {
+        "name": "example",
+        "primary_engine": {"type": engine, "binary": "bin", "model": "model-x",
+                            "model_owner": "model-owner"},
+        "state_dir": str(state_dir),
+        "owner_user_id": "U1",
+        "troubleshoot_channel": "C1",
+    }
+    return Profile.from_dict(data)
+
+
+def open_db(profile: Profile) -> Database:
+    db = Database(profile.paths.database)
+    db.migrate()
+    return db
+
+
+def insert_request(
+    db: Database,
+    *,
+    at: float,
+    channel: str,
+    thread_ts: str = "1.1",
+    elapsed: float = 1.0,
+    ok: bool = True,
+    resumed: bool = False,
+    model: str = "model-x",
+    effort: str = "medium",
+    first_reaction_sec: float | None = None,
+    queue_wait_sec: float | None = None,
+    usage: dict[str, int] | None = None,
+    failure: str = "",
+) -> None:
+    payload: dict[str, object] = {
+        "message_ts": thread_ts,
+        "session_id": "sid",
+        "resumed": resumed,
+        "model": model,
+        "effort": effort,
+        "elapsed": elapsed,
+        "ok": ok,
+        "first_reaction_sec": first_reaction_sec,
+        "queue_wait_sec": queue_wait_sec,
+        "usage": usage,
+    }
+    if failure:
+        payload["failure"] = failure
+    db.connect().execute(
+        "INSERT INTO audit (at, kind, channel, thread_ts, payload) VALUES (?, ?, ?, ?, ?)",
+        (at, REQUEST_KIND, channel, thread_ts, json.dumps(payload, ensure_ascii=False)),
+    )
+
+
+def insert_review(db: Database, *, kind: str, channel: str, target_ts: str, at: float) -> None:
+    db.connect().execute(
+        "INSERT INTO reviews (kind, channel, target_ts, at, result) VALUES (?, ?, ?, ?, ?)",
+        (kind, channel, target_ts, at, json.dumps({"status": "완료"})),
+    )
+
+
+def insert_session(
+    db: Database,
+    *,
+    scope: str,
+    key: str,
+    session_id: str,
+    updated_at: float,
+    created_at: float | None = None,
+    model: str = "model-x",
+    workdir: str = "",
+) -> None:
+    db.connect().execute(
+        "INSERT INTO sessions (scope, key, session_id, engine, created_at, last_seen_ts,"
+        " updated_at, workdir, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (scope, key, session_id, "claude", created_at or updated_at, "1.1",
+         updated_at, workdir, model),
+    )
+
+
+def insert_job(db: Database, *, channel: str, status: str, message_ts: str) -> None:
+    db.connect().execute(
+        "INSERT INTO jobs (channel, thread_ts, message_ts, user_id, payload, status, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (channel, message_ts, message_ts, "U1", "{}", status, 0.0),
+    )
+
+
+def write_snapshot(profile: Profile, data: dict[str, object]) -> None:
+    profile.paths.root.mkdir(parents=True, exist_ok=True)
+    profile.paths.state_snapshot.write_text(json.dumps(data), encoding="utf-8")
+
+
+class Test최상위_키:
+    def test_원본과_같은_최상위_키를_낸다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        result = collector.collect(days=7)
+        assert set(result.keys()) == TOP_LEVEL_KEYS
+
+    def test_window_days_가_그대로_돌아온다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        result = collector.collect(days=3)
+        assert result["window_days"] == 3
+
+    def test_generated_at_은_주입한_시계_기준_KST_이다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        # 2020-01-01T00:00:00+09:00
+        collector = MetricsCollector(profile, now=lambda: 1577804400.0)
+        result = collector.collect(days=7)
+        assert result["generated_at"] == "2020-01-01T00:00:00+09:00"
+
+
+class Test스냅샷_20초_규칙:
+    def test_20초_이내면_상태를_안다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        write_snapshot(profile, {"written_at": 1_000.0, "pid": 123})
+        collector = MetricsCollector(profile, now=lambda: 1_015.0)
+        snapshot = collector.collect(days=7)["snapshot"]
+        assert snapshot["available"] is True
+
+    def test_20초_넘으면_상태_모름이다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        write_snapshot(profile, {"written_at": 1_000.0, "pid": 123})
+        collector = MetricsCollector(profile, now=lambda: 1_021.0)
+        snapshot = collector.collect(days=7)["snapshot"]
+        assert snapshot["available"] is False
+        assert "지났다" in str(snapshot["reason"])
+
+    def test_스냅샷_파일이_없으면_상태_모름이다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        snapshot = collector.collect(days=7)["snapshot"]
+        assert snapshot["available"] is False
+        assert snapshot["reason"] == "스냅샷 파일 없음"
+
+    def test_마지막_값을_현재로_읽지_않는다(self, tmp_path: Path) -> None:
+        """오래된 스냅샷의 pid 등 값은 그대로 실려도 available 판정은 별개다."""
+        profile = make_profile(tmp_path)
+        write_snapshot(profile, {"written_at": 1_000.0, "pid": 999, "inflight": 5})
+        collector = MetricsCollector(profile, now=lambda: 5_000.0)
+        snapshot = collector.collect(days=7)["snapshot"]
+        assert snapshot["available"] is False
+        assert snapshot["pid"] == 999
+
+
+class Test응답성:
+    def test_지연_중앙값과_건수를_낸다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        for i, elapsed in enumerate([5.0, 15.0, 400.0]):
+            insert_request(db, at=1_000.0 + i, channel="C1", elapsed=elapsed)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        responsiveness = collector.collect(days=7)["responsiveness"]
+        assert responsiveness["count"] == 3
+        assert responsiveness["median_sec"] == 15.0
+        assert responsiveness["slow_count"] == 1
+
+    def test_창_밖의_요청은_빠진다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        now = 10 * 86400.0
+        insert_request(db, at=now - 8 * 86400, channel="C1", elapsed=5.0)
+        insert_request(db, at=now - 1 * 86400, channel="C1", elapsed=9.0)
+        collector = MetricsCollector(profile, now=lambda: now)
+        responsiveness = collector.collect(days=7)["responsiveness"]
+        assert responsiveness["count"] == 1
+        assert responsiveness["median_sec"] == 9.0
+
+    def test_첫_반응_표본은_계측된_요청만_센다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", first_reaction_sec=2.0)
+        insert_request(db, at=1_001.0, channel="C1", first_reaction_sec=None)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        first_reaction = collector.collect(days=7)["responsiveness"]["first_reaction"]
+        assert first_reaction["count"] == 1
+        assert first_reaction["sample_pct"] == 50.0
+
+
+class Test신뢰성:
+    def test_성공률과_실패_사유를_낸다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", ok=True)
+        insert_request(db, at=1_001.0, channel="C1", ok=False, failure="엔진 실행 실패")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        reliability = collector.collect(days=7)["reliability"]
+        assert reliability["total"] == 2
+        assert reliability["ok"] == 1
+        assert reliability["failed"] == 1
+        assert reliability["success_pct"] == 50.0
+        assert reliability["recent_failures"][0]["reason"] == "엔진 실행 실패"
+        assert reliability["recent_failures"][0]["channel"] == "C1"
+
+    def test_감사_기록에_없는_값은_None이다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        reliability = collector.collect(days=7)["reliability"]
+        assert reliability["context_reset"] is None
+        assert reliability["restarts"] is None
+        assert reliability["incidents"] == []
+
+
+class Test검수_원장_기반_품질:
+    def test_부검_건수를_채널별로_센다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        insert_review(db, kind="postmortem", channel="C1", target_ts="1.1", at=1_000.0)
+        insert_review(db, kind="postmortem", channel="C1", target_ts="1.2", at=1_001.0)
+        insert_review(db, kind="format_review", channel="C1", target_ts="1.3", at=1_002.0)
+        insert_review(db, kind="debug_trace", channel="C2", target_ts="1.4", at=1_003.0)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        quality = collector.collect(days=7)["quality"]
+        assert quality["postmortems_total"] == 2
+        assert quality["format_reviews"] == 1
+        assert quality["debug_traces"] == 1
+        row = next(r for r in quality["postmortems_by_channel"] if r["channel"] == "C1")
+        assert row["postmortems"] == 2
+        assert row["requests"] == 1
+
+    def test_정정_지식_파일의_항목수를_센다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        knowledge = profile.paths.knowledge
+        knowledge.mkdir(parents=True)
+        (knowledge / "_corrections.md").write_text(
+            "- 첫 정정\n- 둘째 정정\n메모\n", encoding="utf-8",
+        )
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        quality = collector.collect(days=7)["quality"]
+        assert quality["corrections"] == 2
+
+    def test_정정_파일이_없으면_None이다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        quality = collector.collect(days=7)["quality"]
+        assert quality["corrections"] is None
+
+    def test_원본에_있던_사고_유형_구분은_None이다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        quality = collector.collect(days=7)["quality"]
+        assert quality["late_addendum"] is None
+        assert quality["silent"] is None
+        assert quality["rewrites"] is None
+
+
+class Test사용_현황:
+    def test_채널_모델_effort별_건수를_낸다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", model="claude-x", effort="high")
+        insert_request(db, at=1_001.0, channel="C1", model="claude-x", effort="high")
+        insert_request(db, at=1_002.0, channel="C2", model="claude-y", effort="low")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        usage = collector.collect(days=7)["usage"]
+        by_channel = {row["channel"]: row["count"] for row in usage["by_channel"]}
+        assert by_channel == {"C1": 2, "C2": 1}
+        by_model = {row["model"]: row["count"] for row in usage["by_model"]}
+        assert by_model == {"claude-x": 2, "claude-y": 1}
+
+    def test_토큰을_합산한다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", usage={
+            "input_tokens": 10, "output_tokens": 5,
+            "cache_creation_tokens": 2, "cache_read_tokens": 3,
+        })
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        usage = collector.collect(days=7)["usage"]
+        assert usage["tokens"] == {
+            "input": 10, "output": 5, "cache_write": 2, "cache_read": 3, "total": 20,
+        }
+        assert usage["tokens_sample"] == 1
+
+    def test_사용자_식별자가_없어_by_user는_빈다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        usage = collector.collect(days=7)["usage"]
+        assert usage["by_user"] == []
+        assert usage["cost_total_usd"] is None
+        assert usage["turns_median"] is None
+
+    def test_등록되지_않은_채널을_모은다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C9")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        usage = collector.collect(days=7)["usage"]
+        assert "C9" in usage["unlisted_channels"]
+
+
+class Test후속_질문:
+    def test_스레드당_단발과_복수_요청을_가른다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", thread_ts="1.1")
+        insert_request(db, at=1_001.0, channel="C1", thread_ts="1.1")
+        insert_request(db, at=1_002.0, channel="C1", thread_ts="1.2")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        followup = collector.collect(days=7)["followup"]
+        assert followup["threads"] == 2
+        assert followup["single_turn"] == 1
+        assert followup["multi_turn"] == 1
+        assert followup["same_user_repeat"] is None
+
+
+class Test큐_대기시간:
+    def test_실측값의_분위수를_낸다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", queue_wait_sec=2.0)
+        insert_request(db, at=1_001.0, channel="C1", queue_wait_sec=8.0)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        queue_wait = collector.collect(days=7)["queue_wait"]
+        assert queue_wait["count"] == 2
+        assert queue_wait["median_sec"] == 8.0
+        assert queue_wait["approximate"] is False
+
+    def test_대기가_없던_요청만_있으면_0건이지_판정불가가_아니다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", queue_wait_sec=None)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        queue_wait = collector.collect(days=7)["queue_wait"]
+        assert queue_wait["count"] == 0
+        assert queue_wait["median_sec"] is None
+
+
+class Test채널별_행:
+    def test_등록된_채널과_감사_기록의_채널을_모두_담는다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        registry = ChannelRegistry(profile.paths.channels)
+        registry.update("C1", {"name": "일번 채널"})
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C9")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        rows = {r["channel"]: r for r in collector.collect(days=7)["channels"]}
+        assert rows["C1"]["listed"] is True
+        assert rows["C1"]["name"] == "일번 채널"
+        assert rows["C9"]["listed"] is False
+
+    def test_대기줄_건수는_jobs_표에서_읽는다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_job(db, channel="C1", status=JobStatus.QUEUED.value, message_ts="1.1")
+        insert_job(db, channel="C1", status=JobStatus.QUEUED.value, message_ts="1.2")
+        insert_job(db, channel="C1", status=JobStatus.RUNNING.value, message_ts="1.3")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        rows = {r["channel"]: r for r in collector.collect(days=7)["channels"]}
+        assert rows["C1"]["queued"] == 2
+
+    def test_TTL_이내_세션만_살아있는_것으로_센다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        now = 1_000_000.0
+        # 24시간(THREAD_TTL) 이내
+        insert_session(db, scope="thread", key="C1:1.1", session_id="s1",
+                        updated_at=now - 3600)
+        # 24시간을 넘겨 죽은 세션
+        insert_session(db, scope="thread", key="C1:1.2", session_id="s2",
+                        updated_at=now - 2 * 86400)
+        insert_request(db, at=now - 100, channel="C1", thread_ts="1.1")
+        insert_request(db, at=now - 200, channel="C1", thread_ts="1.2")
+        collector = MetricsCollector(profile, now=lambda: now)
+        rows = {r["channel"]: r for r in collector.collect(days=7)["channels"]}
+        assert rows["C1"]["live_sessions"] == 1
+
+    def test_채널_범위_세션은_키가_곧_채널이다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        now = 1_000_000.0
+        insert_session(db, scope="channel", key="C1", session_id="s1", updated_at=now - 10)
+        collector = MetricsCollector(profile, now=lambda: now)
+        rows = {r["channel"]: r for r in collector.collect(days=7)["channels"]}
+        assert rows["C1"]["live_sessions"] == 1
+
+
+class Test세션_총계:
+    def test_TTL과_무관하게_모든_세션을_센다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        now = 1_000_000.0
+        insert_session(db, scope="thread", key="C1:1.1", session_id="s1",
+                        updated_at=now - 100)
+        insert_session(db, scope="thread", key="C1:1.2", session_id="s2",
+                        updated_at=now - 30 * 86400)
+        collector = MetricsCollector(profile, now=lambda: now)
+        assert collector.collect(days=7)["session_total"] == 2
+
+
+class Test사용량_블록:
+    def test_codex_봇은_사용량_블록을_낼_수_없다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path, engine="codex")
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        usage_block = collector.collect(days=7)["usage_block"]
+        assert usage_block["available"] is False
+
+    def test_ccusage_실행파일이_없으면_사용_불가다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(metrics_module, "CCUSAGE_BIN", str(tmp_path / "없음"))
+        profile = make_profile(tmp_path, engine="claude")
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        usage_block = collector.collect(days=7)["usage_block"]
+        assert usage_block["available"] is False
+
+    def test_ccusage_결과가_있으면_비용을_담는다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        binary = tmp_path / "ccusage"
+        binary.write_text("", encoding="utf-8")
+        monkeypatch.setattr(metrics_module, "CCUSAGE_BIN", str(binary))
+
+        class FakeCompleted:
+            returncode = 0
+            stdout = json.dumps({
+                "blocks": [{
+                    "isActive": True,
+                    "startTime": "2024-01-01T00:00:00Z",
+                    "endTime": "2024-01-01T05:00:00Z",
+                    "costUSD": 1.23,
+                    "burnRate": {"costPerHour": 0.5},
+                    "projection": {"totalCost": 2.0},
+                    "totalTokens": 100,
+                    "tokenCounts": {"cacheReadInputTokens": 10, "outputTokens": 20},
+                    "entries": 3,
+                    "models": ["claude-x"],
+                }],
+            })
+
+        def fake_run(*args: object, **kwargs: object) -> FakeCompleted:
+            return FakeCompleted()
+
+        monkeypatch.setattr(metrics_module.subprocess, "run", fake_run)
+        profile = make_profile(tmp_path, engine="claude")
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        usage_block = collector.collect(days=7)["usage_block"]
+        assert usage_block["available"] is True
+        assert usage_block["cost_usd"] == 1.23
+        assert usage_block["kind"] == "ccusage_block"
+
+
+class Test빈_저장소:
+    def test_DB가_없어도_0건이지_예외가_아니다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        result = collector.collect(days=7)
+        assert result["session_total"] == 0
+        assert result["responsiveness"]["count"] == 0
+        assert result["reliability"]["total"] == 0
+
+    def test_손상된_DB_페이로드는_건너뛴다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        db.connect().execute(
+            "INSERT INTO audit (at, kind, channel, thread_ts, payload)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (1_000.0, REQUEST_KIND, "C1", "1.1", "이건 JSON이 아니다"),
+        )
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        result = collector.collect(days=7)
+        assert result["responsiveness"]["count"] == 0
+
+
+class Test남지_않는_사유:
+    def test_not_applicable_이유가_문자열로_있다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        result = collector.collect(days=7)
+        bot = result["bot"]
+        assert isinstance(bot, dict)
+        not_applicable = bot["not_applicable"]
+        assert isinstance(not_applicable, dict)
+        assert not_applicable
+        for reason in not_applicable.values():
+            assert isinstance(reason, str) and reason
