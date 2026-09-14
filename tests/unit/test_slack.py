@@ -594,6 +594,40 @@ class TestTranscriptBuilder:
         assert "테스트봇" in body
         assert "안녕하세요" in body
 
+    def test_파일을_붙여_보낸_말도_기록에_넣는다(
+        self, settings: RuntimeSettings, notices: NoticeCatalog
+    ) -> None:
+        """기록에서 빠지면 모델이 그 말을 못 보고 답한다."""
+        client = FakeWebClient()
+        client.set_replies_response({
+            "messages": [
+                {"ts": "1700000000.000001", "user": "U1", "subtype": "file_share", "text": "이 그림 봐줘"},
+            ]
+        })
+        builder = TranscriptBuilder(
+            client, settings, notices,
+            name_resolver=lambda uid: {"U1": "김철수"}.get(uid, ""),
+            identity=fake_identity(), bot_display_name="테스트봇",
+        )
+        body = builder.thread_transcript("C1", "1700000000.000001", before_ts=None)
+        assert "이 그림 봐줘" in body
+
+    def test_채널_참여_알림은_기록에_안_넣는다(
+        self, settings: RuntimeSettings, notices: NoticeCatalog
+    ) -> None:
+        client = FakeWebClient()
+        client.set_replies_response({
+            "messages": [
+                {"ts": "1700000000.000001", "user": "U1", "subtype": "channel_join", "text": "들어왔습니다"},
+            ]
+        })
+        builder = TranscriptBuilder(
+            client, settings, notices,
+            name_resolver=lambda uid: {"U1": "김철수"}.get(uid, ""),
+            identity=fake_identity(), bot_display_name="테스트봇",
+        )
+        assert "들어왔습니다" not in builder.thread_transcript("C1", "1700000000.000001", before_ts=None)
+
     def test_다른_봇의_말은_이봇의_이름으로_적히지_않는다(
         self, settings: RuntimeSettings, notices: NoticeCatalog
     ) -> None:

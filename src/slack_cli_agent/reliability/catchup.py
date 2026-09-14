@@ -24,6 +24,7 @@ from ..core.context import RequestContext
 from ..core.result import Outcome
 from ..observability.notices import NoticeCatalog
 from ..slack.gate import ResponseGate
+from ..slack.message_kind import MessageKind
 from .ports import HistoryReader
 
 # 이 봇이 답을 내면 다는 표식, 답하지 않기로 하면 다는 표식. 원본 DONE_EMOJI.
@@ -158,6 +159,8 @@ class CatchupService:
         self._started_at = started_at if started_at is not None else now()
         # 원본 _catchup_pending. channel -> (최초 실패 시각, 시도 횟수)
         self._pending: dict[str, tuple[float, int]] = {}
+        # 메시지를 무엇으로 볼지는 한 곳에서 판정한다. 여기 따로 적으면 기준이 갈린다.
+        self._kind = MessageKind()
 
     def find_missed(self, channel: str, window: float) -> Outcome[list[RequestContext]]:
         """놓친 멘션을 찾는다.
@@ -210,7 +213,7 @@ class CatchupService:
                 else:
                     asked_before[x.get("ts")] = pending_ask
             for m in thread:
-                if m.get("bot_id") or m.get("subtype"):
+                if not self._kind.is_human(m):
                     continue
                 text = m.get("text") or ""
                 # 이 봇을 부른 말이거나, 이 봇이 낀 스레드에서 답을 기다리는 말이다
