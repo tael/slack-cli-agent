@@ -262,6 +262,7 @@ class Application:
         self._attachments: AttachmentStore | None = None
         self._response_archive: ResponseArchive | None = None
         self._learning_batch: LearningBatch | None = None
+        self._proposals: ProposalStore | None = None
         self._catchup_service: CatchupService | None = None
         self._pending_report: PendingReportStore | None = None
         self._outage_tracker: OutageTracker | None = None
@@ -582,7 +583,7 @@ class Application:
                     limit=self._settings.learning_thread_reply_limit,
                 ),
                 builder=ProposalBuilder(analyzer),
-                store=ProposalStore(paths.proposals),
+                store=self._proposal_store(),
                 applier=LearningApplier(paths.knowledge, self._profile.display_name),
                 renderer=ProposalRenderer(),
                 notify=self._notify_owner,
@@ -594,7 +595,13 @@ class Application:
         """채널 이름으로 슬랙 채널 ID 를 찾는다. 모르면 None.
 
         기록 디렉터리 이름이 채널 이름이라 되찾아야 한다. 소유자 개인 대화는
-        채널 목록에 없으므로 프로필에서 가져온다 — 원본도 그렇게 했다.
+        채널 목록에 없으므로 프로필에서 가져온다.
+
+        원본은 프로필 값이 비어 있으면 `<state>/owner_dm` 파일을 한 번 더
+        읽었다(learn.py:49-56). 그 대비 경로를 옮기지 않았다 — 이 저장소는
+        소유자 개인 대화의 단일 출처가 프로필이고, 알림·재기동 보고를 포함한
+        모든 경로가 `profile.owner_dm` 만 본다. 여기만 파일을 더 읽으면 그
+        값이 두 곳에서 갈린다. 옛 봇을 옮길 때 프로필에 이 값을 채워야 한다.
         """
         for channel_id, config in self._channels.all().items():
             if config.name == channel_name:
@@ -604,13 +611,36 @@ class Application:
         return None
 
     def _learning_day_done(self, day: str) -> bool:
-        """그날 제안 파일이 이미 있으면 끝난 것으로 본다."""
-        return (self._profile.paths.proposals / f"{day}.json").exists()
+        """배치가 남긴 완료 표식이 있으면 끝난 것으로 본다.
+
+        제안 파일 존재로 판정하면 안 된다 — 배치는 제안을 먼저 저장하고 반영
+        하므로, 반영이 실패한 날이 끝난 것으로 읽혀 영영 다시 안 돈다.
+        """
+        return self._proposal_store().is_done(day)
+
+    def _proposal_store(self) -> ProposalStore:
+        """제안 파일 저장소. 배치와 완료 판정이 같은 것을 봐야 한다."""
+        if self._proposals is None:
+            self._proposals = ProposalStore(self._profile.paths.proposals)
+        return self._proposals
+
+    def _learning_run_hour(self) -> int:
+        """학습 시작 시각. 0-23 밖이면 기본값으로 되돌린다.
+
+        범위를 벗어난 값을 그대로 쓰면 그 조건이 하루도 성립하지 않아 배치가
+        조용히 안 돈다. 설정 오타를 침묵으로 넘기지 않는다.
+        """
+        hour = self._settings.learning_run_hour
+        if 0 <= hour <= 23:
+            return hour
+        fallback = RuntimeSettings().learning_run_hour
+        log.warning("learning_run_hour 값이 범위 밖이다(%s). %s 시로 돌린다", hour, fallback)
+        return fallback
 
     def learning_schedule(self) -> DailyBatchSchedule:
         return DailyBatchSchedule(
             clock=lambda: datetime.now(KST),
-            run_hour=self._settings.learning_run_hour,
+            run_hour=self._learning_run_hour(),
             is_done=self._learning_day_done,
         )
 
@@ -712,18 +742,23 @@ class Application:
     def _post_owner_dm(self, text: str) -> None:
         self.publisher().post(self._profile.owner_dm, "", text, False)
 
-    def _notify_owner(self, text: str) -> None:
-        """소유자 개인 대화로 알린다.
+    def _notify_owner(self, text: str) -> bool:
+        """소유자 개인 대화로 알린다. 지금 닿았으면 True.
 
         발송이 실패하면 그 보고를 파일에 남긴다. 로그만 남기고 끝내면 운영자는
         장애가 났다는 사실 자체를 못 받는다 — 특히 재기동 사유를 알리는 그
         순간은 소켓이 불안정해 발송이 실패하기 쉬운 시점이다.
+
+        보류에 남긴 것과 사람에게 닿은 것은 다르다. 같은 값으로 돌려주면
+        부르는 쪽이 즉시 발송 실패를 성공으로 보고한다.
         """
         try:
             self._post_owner_dm(text)
         except Exception as exc:  # noqa: BLE001 — 발송 실패 원인이 슬랙 SDK 예외부터 네트워크 오류까지 다양하다. 어떤 실패든 보고를 남기는 것이 목적이다
             log.warning("소유자 알림 발송 실패, 보고를 남긴다 : %s", exc)
             self.pending_report().save(text)
+            return False
+        return True
 
     def _watch_run_check(self, job: WatchJob) -> EngineResponse:
         """감시 확인 한 건을 엔진으로 실행한다.

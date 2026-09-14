@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -26,6 +27,8 @@ from .apply import LearningApplier
 from .ports import ReactionSource, ResponseArchiveReader
 from .proposal import LearningProposal, ProposalStore
 from .render import ProposalRenderer
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -57,7 +60,10 @@ class LearningBatch:
         store: ProposalStore,
         applier: LearningApplier,
         renderer: ProposalRenderer,
-        notify: Callable[[str], None],
+        # 발송기. 지금 사람에게 닿았으면 True 를 돌려준다 — 조립의 발송기는
+        # 실패를 예외가 아니라 보류 저장으로 처리하므로, 예외만 보면 즉시
+        # 발송 실패가 보고에서 성공으로 읽힌다.
+        notify: Callable[[str], bool],
         clock: Callable[[], datetime],
     ) -> None:
         self._archives = archives
@@ -86,11 +92,15 @@ class LearningBatch:
     def _run_locked(self, day: str) -> BatchReport:
         channel_archives = self._archives.read_day(day)
         if not channel_archives:
+            # 기록이 없는 날도 끝난 것으로 표시한다. 안 하면 그 날짜가 계속
+            # 미완료로 남아 주기마다 다시 집힌다.
+            self._store.mark_done(day)
             return BatchReport(day=day, ran=False, reason="응답 기록이 없다", proposal=None)
 
         try:
             reactions = self._reactions.collect(day)
-        except Exception:  # noqa: BLE001 — 반응 조회 실패로 그날 학습 자체를 버리지 않는다
+        except Exception as exc:  # noqa: BLE001 — 반응 조회 실패로 그날 학습 자체를 버리지 않는다
+            log.warning("%s 사람 반응을 모으지 못했다. 응답 기록만으로 분석한다 : %s", day, exc)
             reactions = {}
 
         proposal = self._builder.build(day, channel_archives, reactions)
@@ -102,10 +112,13 @@ class LearningBatch:
             if applied:
                 self._store.mark_applied(day, applied)
 
+        # 반영까지 끝난 뒤에 표시한다. 저장 직후에 표시하면 반영이 실패한 날을
+        # 다음 주기가 끝난 것으로 보고 넘어간다.
+        self._store.mark_done(day)
+
         text = self._render_text(day, proposal, applied)
-        notified = True
         try:
-            self._notify(text)
+            notified = bool(self._notify(text))
         except Exception:  # noqa: BLE001 — 반영은 이미 끝났다. 알림 실패를 배치 실패로 만들지 않는다
             notified = False
 

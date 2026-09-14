@@ -70,3 +70,13 @@ def test_오늘이_먼저다():
         clock=_clock("2026-09-14 22:10"), run_hour=22, is_done=lambda day: False
     )
     assert schedule.due_day() == "2026-09-14"
+
+
+def test_기준_시각이_범위_밖이면_거부한다():
+    """25시는 영원히 오지 않는다. 그 값을 받으면 조용히 안 도는 배치가 된다."""
+    for hour in (-1, 24):
+        try:
+            DailyBatchSchedule(clock=_clock("2026-09-14 10:00"), run_hour=hour, is_done=lambda day: True)
+        except ValueError:
+            continue
+        raise AssertionError(f"{hour} 를 받아들였다")
