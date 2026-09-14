@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..config.settings import RuntimeSettings
+from .outage import OutageTracker
 
 log = logging.getLogger(__name__)
 
@@ -109,27 +110,19 @@ class HealthMonitor:
         now: Callable[[], float] = time.time,
     ) -> None:
         self._watch = watch
-        self._reachable = reachable
         self._restart = restart
         self._settings = settings
         self._now = now
-        self._healthy = True
-        self._down_since: float | None = None
+        # 닿는지의 상태 전이는 되짚기 쪽도 쓴다. 판정을 한 곳에 둔다.
+        self._outage = OutageTracker(reachable=reachable, now=now)
 
     def check(self) -> HealthEvent:
-        ok = self._reachable()
+        outage = self._outage.check()
 
-        if not ok:
-            if self._healthy:
-                self._healthy = False
-                self._down_since = self._now()
+        if not self._outage.healthy:
             return HealthEvent(kind=HealthEventKind.DOWN)
 
-        if not self._healthy:
-            since = self._down_since if self._down_since is not None else self._now()
-            outage = self._now() - since
-            self._healthy = True
-            self._down_since = None
+        if outage is not None:
             self._watch.clear()
             return HealthEvent(kind=HealthEventKind.RECOVERED, outage_sec=outage)
 

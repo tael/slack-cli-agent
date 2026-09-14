@@ -109,6 +109,7 @@ from ..prompt.sections import (
 from ..reliability.catchup import CatchupService
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
+from ..reliability.outage import OutageTracker
 from ..reliability.pending_report import PendingReportStore
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
 from ..reliability.watchrunner import WatchJobChecker, watch_check_prompt
@@ -240,6 +241,7 @@ class Application:
         self._attachments: AttachmentStore | None = None
         self._catchup_service: CatchupService | None = None
         self._pending_report: PendingReportStore | None = None
+        self._outage_tracker: OutageTracker | None = None
         # 엔진 실행 부품. 엔진을 만들 때 함께 정한다 — 폴백이 설정돼
         # 있는지는 그 시점에만 드러나고, 나중에 종류로 되짚으면 조립이
         # 무엇을 만들었는지가 코드에서 사라진다.
@@ -990,7 +992,35 @@ class Application:
             name="catchup_retry",
         )
 
+    def outage_tracker(self) -> OutageTracker:
+        """슬랙 도달 여부의 상태 전이. 한 번 만들어 계속 쓴다.
+
+        회차마다 새로 만들면 앞 회차의 결과가 없어 복구를 판정할 수 없다.
+        """
+        if self._outage_tracker is None:
+            self._outage_tracker = OutageTracker(reachable=self._slack_reachable, now=self._clock)
+        return self._outage_tracker
+
+    def _recovery_window_sec(self, outage_sec: float) -> float:
+        """끊겼던 시간에 맞춰 되짚기 창을 정한다.
+
+        기본 창보다 넓혀야 끊긴 구간의 앞부분이 남지 않는다. 여유 600초는
+        끊김을 알아채기까지 걸린 시간을 덮는다. 최대값을 두는 이유는 한 회차가
+        채널 전체의 며칠치 기록을 읽는 것을 막기 위해서다.
+        """
+        return min(
+            max(self._settings.catchup_window_sec, outage_sec + 600),
+            self._settings.catchup_max_window_sec,
+        )
+
     def _catchup_retry_tick(self, worker: Worker) -> None:
+        outage_sec = self.outage_tracker().check()
+        if outage_sec is not None:
+            # 닿지 않던 동안 들어온 요청은 소켓 이벤트로 다시 오지 않는다.
+            # 돌아왔을 때 되짚지 않으면 그 시간의 요청은 영영 처리되지 않는다.
+            log.info("슬랙 연결이 돌아왔다. 끊긴 시간 %.0f초", outage_sec)
+            worker.catch_up(self.channel_ids(), window_sec=self._recovery_window_sec(outage_sec))
+
         for status in worker.retry_catchup():
             if not status.alert:
                 continue
