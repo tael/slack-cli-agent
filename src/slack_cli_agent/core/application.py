@@ -63,7 +63,10 @@ from ..engine.runner import (
     FallbackInvoker,
 )
 from ..engine.switcher import EngineSwitcher
-from ..engine.transcript import ClaudeTranscriptReader
+from ..engine.transcript import (
+    SessionTranscriptReader,
+    TranscriptReaderRegistry,
+)
 from ..guard.base import OutputGuard
 from ..guard.dropline import ConfiguredLineDropGuard
 from ..guard.mentions import AddresseeGuard, PlainMentionGuard
@@ -191,6 +194,7 @@ class Application:
         plugins: Sequence[BotPlugin] | None = None,
         database: Database | None = None,
         engine_registry: EngineRegistry | None = None,
+        transcript_readers: TranscriptReaderRegistry | None = None,
         token_provider: Any = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -251,6 +255,8 @@ class Application:
         self._catchup_service: CatchupService | None = None
         self._pending_report: PendingReportStore | None = None
         self._outage_tracker: OutageTracker | None = None
+        self._transcript_reader: SessionTranscriptReader | None = None
+        self._transcript_readers = transcript_readers or TranscriptReaderRegistry()
         # 엔진 실행 부품. 엔진을 만들 때 함께 정한다 — 폴백이 설정돼
         # 있는지는 그 시점에만 드러나고, 나중에 종류로 되짚으면 조립이
         # 무엇을 만들었는지가 코드에서 사라진다.
@@ -870,13 +876,29 @@ class Application:
 
     # -- 연결 감시 -------------------------------------------------
 
+    def transcript_reader(self) -> SessionTranscriptReader:
+        """이 봇의 엔진에 맞는 세션 기록 리더. 한 번 만들어 계속 쓴다.
+
+        기록 형식은 엔진마다 다르다. 조립이 Claude 리더를 직접 만들면 codex
+        프로필에서도 Claude 기록 경로를 뒤진다 — 원본은 그 경우 경로를 아예
+        만들지 않는다(bot.py:3083).
+
+        구간 분해와 사용량 행이 같은 리더를 본다. 따로 만들면 같은 파일을 두
+        번 읽는다.
+        """
+        if self._transcript_reader is None:
+            self._transcript_reader = self._transcript_readers.create(
+                self._profile.primary_engine.type, self._profile.work_root,
+            )
+        return self._transcript_reader
+
     def _slow_reporter(self) -> SlowRequestReporter:
         """느린 요청의 구간별 시간 분해를 보고 채널에 올리는 객체.
 
         세션 기록 형식은 엔진마다 다르므로 파서를 주입한다. 보고 채널이 빈
         프로필이 정상이다 — 그때는 보고기가 기준값 판정 전에 넘어간다.
         """
-        reader = ClaudeTranscriptReader(self._profile.work_root)
+        reader = self.transcript_reader()
         return SlowRequestReporter(
             publisher=self.publisher(),
             calculator=TimeBreakdownCalculator(reader, self._settings.assumed_tokens_per_sec),

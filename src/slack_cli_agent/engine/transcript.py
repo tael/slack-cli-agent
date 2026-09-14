@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -151,3 +152,61 @@ class ClaudeTranscriptReader(SessionTranscriptReader):
             return datetime.fromisoformat(str(value)).timestamp()
         except (ValueError, TypeError):
             return None
+
+
+class NullTranscriptReader(SessionTranscriptReader):
+    """기록을 안 남기는 엔진용. 언제나 빈 목록이다.
+
+    원본은 codex 프로필에서 기록 경로를 아예 만들지 않았다(bot.py:3083). 그
+    주석에 근거가 있다 — "없는 파일을 찾아 헤매다 빈 표를 내는 것보다 낫다".
+    Claude 리더를 그대로 쓰면 결과는 같은 빈 목록이지만 남의 홈 디렉터리를
+    뒤지게 된다.
+    """
+
+    def __init__(self, workdir: Path, home: Path | None = None) -> None:
+        self._workdir = workdir
+        self._home = home
+
+    def read(self, session_id: str) -> list[TranscriptEvent]:
+        return []
+
+
+#: 작업 디렉터리와 홈을 받아 리더를 만드는 것. 홈을 함께 받는 이유는 시험이
+#: 실제 홈을 안 건드리고 기록이 있는 상태를 만들 수 있어야 해서다 — 그것이
+#: 없으면 "찾지 않는다" 와 "찾았는데 없다" 가 같은 결과라 구분이 안 된다.
+ReaderFactory = Callable[[Path, Path | None], SessionTranscriptReader]
+
+
+class TranscriptReaderRegistry:
+    """엔진 이름별 세션 기록 리더 등록소.
+
+    `engine/environment.py` 의 `EngineEnvironmentPolicyRegistry` 와 같은
+    형태다. 엔진 종류가 코드에 고정되면 쓰는 쪽이 자기 엔진의 기록 형식을
+    못 붙인다.
+
+    모르는 엔진에는 예외 대신 빈 기록을 준다. 환경 격리 정책은 없으면 위험해
+    예외를 내지만, 여기는 구간 분해용이라 실패해도 이미 끝난 요청 처리를
+    망치면 안 된다 — `SessionTranscriptReader` 계약이 같은 이유로 예외를
+    밖으로 내지 않는다.
+    """
+
+    def __init__(self) -> None:
+        # 작업 디렉터리를 받아 리더를 만드는 것이면 된다. 클래스로 한정하지
+        # 않는 이유는 생성자 인자가 리더마다 다를 수 있어서다 — 그 차이는
+        # 등록하는 쪽이 람다나 partial 로 가둔다.
+        self._factories: dict[str, ReaderFactory] = {
+            "claude": ClaudeTranscriptReader,
+            "codex": NullTranscriptReader,
+        }
+
+    def register(self, name: str, factory: ReaderFactory) -> None:
+        self._factories[name] = factory
+
+    def create(
+        self, name: str, workdir: Path, home: Path | None = None
+    ) -> SessionTranscriptReader:
+        factory = self._factories.get(name, NullTranscriptReader)
+        return factory(workdir, home)
+
+    def known_names(self) -> list[str]:
+        return sorted(self._factories)
