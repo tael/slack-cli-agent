@@ -78,6 +78,7 @@ from ..jobs.queue import SqliteJobQueue
 from ..observability.app_snapshot import ApplicationSnapshotSource
 from ..observability.audit import AuditLog
 from ..observability.notices import NoticeCatalog
+from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import (
     ElapsedDiagnostician,
     SessionContextCalculator,
@@ -252,6 +253,7 @@ class Application:
         # 들고 있어, 회차마다 새로 만들면 복구 판정이 나오지 않는다.
         self._health_runner: PeriodicRunner | None = None
         self._attachments: AttachmentStore | None = None
+        self._response_archive: ResponseArchive | None = None
         self._catchup_service: CatchupService | None = None
         self._pending_report: PendingReportStore | None = None
         self._outage_tracker: OutageTracker | None = None
@@ -527,8 +529,21 @@ class Application:
                 late_addendum=self._late_addendum(),
                 consumption=self.consumption,
                 watch_queue=self.watch_jobs(),
+                response_archive=self.response_archive(),
             )
         return self._pipeline
+
+    def response_archive(self) -> ResponseArchive:
+        """올린 응답을 채널별 날짜 파일로 남기는 곳. 학습 배치가 이것을 읽는다.
+
+        날짜와 시각을 KST 로 정한다. UTC 로 정하면 밤 9시 이후 기록이 다음 날
+        파일로 가고, 그날 학습이 그 대화를 못 본다. 원본도 KST 로 정했다.
+        """
+        if self._response_archive is None:
+            self._response_archive = ResponseArchive(
+                self._profile.paths.responses, clock=lambda: datetime.now(KST),
+            )
+        return self._response_archive
 
     def job_purge_runner(self) -> PeriodicRunner:
         """끝난 작업을 주기적으로 지운다. 안 띄우면 jobs 표가 계속 커진다.

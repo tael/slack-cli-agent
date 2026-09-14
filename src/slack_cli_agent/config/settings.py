@@ -82,6 +82,15 @@ class RuntimeSettings:
     catchup_retry_interval_sec: float = 30
     # 보내지 못한 보고를 다시 보내는 간격. 원본은 건강 점검 주기에 얹어 돌렸다.
     pending_report_flush_interval_sec: float = 30
+    # 학습 배치를 돌릴지 판정하는 간격. 판정 자체는 파일 확인뿐이라 싸다 —
+    # 실제로 도는 것은 하루 한 번이고, 그 날짜 판정은 learning/schedule.py 가 한다.
+    learning_batch_interval_sec: float = 600
+    # 그날 학습을 시작하는 KST 시각. 이 시각 전에는 그날 기록이 아직 다 안
+    # 쌓였으므로 돌리지 않는다. 원본은 launchd 일정에 이 값이 있었다.
+    learning_run_hour: int = 22
+    # 학습 분석에 쓸 모델과 노력 수준. 원본 learn.py 는 `--model sonnet` 고정이었다.
+    learning_model: str = "sonnet"
+    learning_effort: str = "medium"
 
     # 추측한 값으로 퍼센트를 만들지 않는다. 비워 둔다
     context_limit: Mapping[str, int] = field(default_factory=dict)
