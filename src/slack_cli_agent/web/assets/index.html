@@ -856,7 +856,7 @@ async function saveFile(kind){
     await api(paths.put(st.current), {
       method: "PUT",
       headers: {"content-type": "application/json"},
-      body: JSON.stringify({content: text}),
+      body: JSON.stringify({text: text}),
     });
     st.text = text;
     msg.textContent = "저장했다.";

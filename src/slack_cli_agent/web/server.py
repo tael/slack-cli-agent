@@ -8,14 +8,18 @@ HTTP/1.1 로 응답한다. 기본값 HTTP/1.0 은 응답마다 연결을 닫아 
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Protocol, Self
 from urllib.parse import parse_qsl, urlsplit
 
 from .api import ApiResponse
+
+_LOGGER = logging.getLogger(__name__)
 
 DEFAULT_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
@@ -26,7 +30,7 @@ _FALLBACK_HTML = (
 )
 
 
-class _ApiRouterLike:
+class _ApiRouterLike(Protocol):
     def handle(self, method: str, path: str, query: Mapping[str, str], body: object | None) -> ApiResponse: ...
 
 
@@ -115,9 +119,10 @@ def _make_handler_class(
                 return None
             raw = self.rfile.read(length)
             try:
-                return json.loads(raw.decode("utf-8"))
+                parsed: object = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return None
+            return parsed
 
         def _serve_index(self) -> None:
             index_path = assets_dir / "index.html"
@@ -146,8 +151,8 @@ def _make_handler_class(
             except Exception as exc:  # noqa: BLE001 - 요청 스레드가 죽으면 화면 전체가 멎는다
                 try:
                     self._send_json(ApiResponse(500, {"error": f"{type(exc).__name__}: {exc}"}))
-                except Exception:  # noqa: BLE001 - 응답 전송 자체가 실패해도 스레드는 살린다
-                    pass
+                except Exception:
+                    _LOGGER.exception("500 응답 전송에 실패했다")
 
     return Handler
 
@@ -200,6 +205,13 @@ class WebServer:
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
 
+    def serve_forever(self) -> None:
+        """Blocks until stop() is called. start() runs the loop on a thread."""
+        if self._thread is None:
+            raise RuntimeError("서버가 아직 시작되지 않았다")
+        while self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+
     def stop(self) -> None:
         if self._httpd is None:
             return
@@ -210,7 +222,7 @@ class WebServer:
         self._httpd = None
         self._thread = None
 
-    def __enter__(self) -> "WebServer":
+    def __enter__(self) -> Self:
         self.start()
         return self
 
