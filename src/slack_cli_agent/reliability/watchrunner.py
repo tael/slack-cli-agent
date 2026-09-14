@@ -1,14 +1,9 @@
-"""감시 큐 실행 — 등록된 감시 건을 실제로 확인하고 처리한다.
+"""Runs the watch job queue: checks registered jobs and handles the outcome.
 
-`watchjobs.py` 가 저장 계층(큐 자체)이고, 여기는 그 큐를 주기적으로 돌며
-확인 프롬프트를 실행하고 결과에 따라 완료·포기·재확인을 가르는 실행 계층
-이다. 원본 `bot.py` 의 `_watch_check_prompt()`, `job_watch()` 에 대응한다.
-
-이 모듈이 맡지 않는 것 — 주기적으로 `check_once()` 를 부르는 것은 조립 코드
-(스케줄러) 의 몫이다. 확인 프롬프트를 어떤 엔진·권한·작업 디렉터리로 돌릴지도
-`run_check` 콜백으로 주입받으므로 이 클래스는 모른다. `WatchJob` 하나를
-`run_check` 로 넘기고 그 응답을 보고 완료·포기·재확인을 가르는 것까지만
-안다.
+Scheduling (calling `check_once()` periodically) and running the check
+prompt itself (engine, permissions, working directory) are both the caller's
+job, injected via `run_check`. This class only decides done/give-up/recheck
+based on the response.
 """
 
 from __future__ import annotations
@@ -29,7 +24,6 @@ log = logging.getLogger(__name__)
 
 
 def watch_check_prompt(description: str) -> str:
-    """확인 프롬프트 문구. 원본 `_watch_check_prompt()` 를 그대로 옮겼다."""
     return (
         "다음 백그라운드 작업이 끝났는지 지금 확인해라. 조회만 하고 새로 시키지 않는다.\n\n"
         f"지켜보는 작업 : {description}\n\n"
@@ -40,10 +34,11 @@ def watch_check_prompt(description: str) -> str:
 
 
 class WatchJobChecker:
-    """감시 큐 한 회차 처리.
+    """Processes one round of the watch queue.
 
-    포기 대상을 먼저 처리하고, 그 회차에서 포기 처리한 건은 이어지는 확인
-    대상에서 뺀다 — 같은 건에 포기와 확인을 둘 다 하면 엔진을 헛되이 부른다.
+    Give-up jobs are handled first and excluded from the check pass that
+    follows, so a job that's just been given up doesn't also trigger a
+    wasted engine call.
     """
 
     def __init__(
@@ -55,8 +50,8 @@ class WatchJobChecker:
         channels: ChannelRegistry,
         settings: RuntimeSettings,
         reactions: ReactionMarker | None = None,
-        # 돌려주는 값은 보지 않는다. 발송 성공 여부를 쓰는 호출부가 있어
-        # 반환형을 object 로 둔다 — 그 값을 여기서 판정하지 않는다.
+        # Return value is ignored here; object rather than None since some
+        # callers care whether the send succeeded.
         notify_owner: Callable[[str], object] | None = None,
         now: Callable[[], float] = time.time,
     ) -> None:
@@ -87,7 +82,7 @@ class WatchJobChecker:
     def _check_one(self, job: WatchJob, now: float) -> None:
         try:
             response = self._run_check(job)
-        except Exception as exc:  # noqa: BLE001 — 감시 확인 중 예외로 워커 전체가 멎으면 안 된다 — 이 작업만 다음 회차로 넘긴다
+        except Exception as exc:  # noqa: BLE001 — one job's check failing shouldn't stop the worker; retry it next round
             log.error("감시 확인 중 오류 : %s", exc)
             self._queue.mark_checked(job.id, now)
             return
@@ -106,15 +101,13 @@ class WatchJobChecker:
         rich = bool(config and config.rich)
         try:
             self._publisher.post(job.channel, job.thread_ts, body, rich)
-        except Exception as exc:  # noqa: BLE001 — 완료 보고 발송 실패가 완료 표시 자체를 막으면 안 된다 — 안 막으면 다음 회차에 같은 보고를 또 게시한다
+        except Exception as exc:  # noqa: BLE001 — a post failure shouldn't block marking done, or the same report reposts next round
             log.error("감시 완료 보고 발송 실패 : %s", exc)
 
         if self._reactions is not None and job.msg_ts:
             self._reactions.remove(job.channel, job.msg_ts, WATCH_MARK_EMOJI)
             self._reactions.mark_done(job.channel, job.msg_ts)
 
-        # 발신·리액션이 실패해도 완료 표시는 한다. 여기서 안 끝내면 같은
-        # 완료 보고를 다음 회차에 또 게시한다.
         self._queue.mark_done(job.id)
 
 

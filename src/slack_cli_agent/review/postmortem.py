@@ -1,10 +1,6 @@
-"""부검 — 지적받은 답변이 왜 잘못됐고 어떻게 고칠지를 낸다.
-
-원본 bot.py 의 `_run_postmortem()` 이 만들던 프롬프트·
-머리말·재시도 요청을 그대로 옮겼다. 구분선(`===상세===`)이 없으면 형식을
-지켜 다시 쓰게 하는 것은 세 점검 중 부검만 하던 것이라 `retry_on_missing_split()`
-을 여기서만 켠다.
-"""
+# Only this review kind retries when the `===상세===` divider is missing --
+# without it, summary and detail can't be split and a long report floods
+# the channel.
 
 from __future__ import annotations
 
@@ -15,7 +11,6 @@ from slack_cli_agent.review.base import ReviewTarget, ReviewTask, as_table, mode
 
 
 class PostmortemTask(ReviewTask):
-    """리액션 "dango" 로 시작하는 부검."""
 
     log_name: ClassVar[str] = "postmortem"
     emoji: ClassVar[str] = "dango"
@@ -30,7 +25,6 @@ class PostmortemTask(ReviewTask):
         return True
 
     def missing_split_prompt(self) -> str:
-        """형식을 지키지 않은 부검을 다시 쓰게 하는 요청. 문구는 원본 그대로다."""
         return (
             "방금 낸 부검에 `===상세===` 구분선이 없다.\n"
             "요약과 상세를 가르지 못해 그대로 올리면 채널이 긴 보고서로 덮인다.\n\n"

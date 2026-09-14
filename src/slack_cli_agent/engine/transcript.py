@@ -1,11 +1,12 @@
-"""엔진 세션 기록 파서 — 소요 시간 구간 분해가 읽을 이벤트 목록을 엔진별로 만든다.
+"""Per-engine session transcript readers, for turn-duration breakdown.
 
-원본 bot.py 의 `claude_transcript()`/`time_breakdown()` 앞부분(파일 경로 판정과
-이벤트 파싱)을 분리한 것이다. 이 패키지는 엔진이 교체 가능한 범용 어댑터이고
-(`engine/base.py` 참조), Claude Code CLI 의 jsonl 형식에 대한 의존은 이 모듈
-안에만 가둔다. 다른 엔진이 다른 형식의 세션 기록을 남기면 `SessionTranscriptReader`
-계약을 구현하는 클래스를 하나 더 두면 되고, 소요 시간 분해 계산 쪽
-(`observability/slow_report.py`)은 그 클래스가 무엇인지 몰라도 된다.
+Splits out the file-path resolution and event-parsing part of the
+original bot.py's claude_transcript()/time_breakdown(). Since this
+package treats the engine as swappable (see engine/base.py), the
+Claude Code CLI's jsonl format is kept contained to this module. A
+different engine with a different transcript format just needs a
+class implementing SessionTranscriptReader; observability/slow_report.py
+doesn't need to know what it is.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class TranscriptEvent:
-    """세션 기록 한 줄에서 뽑은 값. 소요 시간 분해에 필요한 것만 담는다."""
+    """One parsed line of session transcript, holding only what duration breakdown needs."""
 
     ts: float
     role: str | None
@@ -29,37 +30,39 @@ class TranscriptEvent:
     brief: str
     output_tokens: int | None
     input_tokens: int | None = None
-    """그 턴이 모델에 보낸 입력 토큰. 세션 컨텍스트 사용량 계산
-    (`observability.slow_report.SessionContextCalculator`)에 쓴다."""
+    """Input tokens sent to the model on that turn. Used for session
+    context usage (observability.slow_report.SessionContextCalculator)."""
     cache_creation_tokens: int | None = None
     cache_read_tokens: int | None = None
     request_id: str | None = None
-    """재시도 감지(`observability.slow_report.detect_retries`)에 쓰는 값이다.
+    """Used for retry detection (observability.slow_report.detect_retries).
 
-    끊겼다 다시 부른 요청은 실패 이벤트 자체가 기록에 안 남고, 캐시 사용량의
-    불연속으로만 역산할 수 있다. 원본 bot.py `time_breakdown()` 앞부분
-    (3260행 근처)이 이 세 값을 함께 담던 것과 같다.
+    A dropped-and-retried request leaves no failure event in the
+    transcript — it can only be inferred from a discontinuity in cache
+    usage. Same three values the original bot.py's time_breakdown()
+    (around line 3260) tracked together.
     """
 
 
 class SessionTranscriptReader(ABC):
-    """세션 하나의 기록을 이벤트 목록으로 돌려주는 계약.
+    """Contract for reading one session's transcript as a list of events.
 
-    기록이 없거나 읽지 못하면 빈 목록을 돌려준다. 예외를 밖으로 내지 않는다 —
-    소요 시간 분해가 실패해도 이미 끝난 요청 처리 자체를 망치면 안 된다.
+    Returns an empty list rather than raising when the transcript is
+    missing or unreadable — a duration-breakdown failure shouldn't
+    wreck handling of an already-completed request.
     """
 
     @abstractmethod
-    def read(self, session_id: str) -> list[TranscriptEvent]:
-        """세션 기록을 시각순으로 정렬해 돌려준다."""
+    def read(self, session_id: str) -> list[TranscriptEvent]: ...
 
 
 class ClaudeTranscriptReader(SessionTranscriptReader):
-    """Claude Code CLI 가 남기는 jsonl 세션 기록을 읽는다.
+    """Reads the jsonl session transcript the Claude Code CLI writes.
 
-    경로는 `<home>/.claude/projects/<workdir 슬러그>/<session_id>.jsonl` 이다.
-    슬러그는 workdir 절대경로 문자열의 "/" 와 "." 을 "-" 로 바꾼 것이다.
-    원본 bot.py `claude_transcript()`(3076행)와 같은 규칙이다.
+    Path: <home>/.claude/projects/<slugified workdir>/<session_id>.jsonl.
+    The slug replaces "/" and "." in the absolute workdir path with
+    "-". Same rule as the original bot.py's claude_transcript()
+    (line 3076).
     """
 
     def __init__(self, workdir: Path, home: Path | None = None) -> None:
@@ -142,10 +145,8 @@ class ClaudeTranscriptReader(SessionTranscriptReader):
 
     @staticmethod
     def _parse_iso_ts(value: Any) -> float | None:
-        """ISO8601 timestamp 를 epoch 초로 바꾼다. 실패하면 None.
-
-        원본 bot.py `_parse_iso_ts()`(3066행)와 같다.
-        """
+        """Converts an ISO8601 timestamp to epoch seconds, or None on
+        failure. Same as the original bot.py's _parse_iso_ts() (line 3066)."""
         if not value:
             return None
         try:
@@ -155,12 +156,13 @@ class ClaudeTranscriptReader(SessionTranscriptReader):
 
 
 class NullTranscriptReader(SessionTranscriptReader):
-    """기록을 안 남기는 엔진용. 언제나 빈 목록이다.
+    """Always returns an empty list — for engines that don't write a transcript.
 
-    원본은 codex 프로필에서 기록 경로를 아예 만들지 않았다(bot.py:3083). 그
-    주석에 근거가 있다 — "없는 파일을 찾아 헤매다 빈 표를 내는 것보다 낫다".
-    Claude 리더를 그대로 쓰면 결과는 같은 빈 목록이지만 남의 홈 디렉터리를
-    뒤지게 된다.
+    The original didn't even construct a transcript path for the codex
+    profile (bot.py:3083), reasoning that it's better than hunting for
+    a file that doesn't exist and rendering an empty table. Reusing
+    the Claude reader would produce the same empty result, but by
+    poking around someone else's home directory.
     """
 
     def __init__(self, workdir: Path, home: Path | None = None) -> None:
@@ -171,29 +173,34 @@ class NullTranscriptReader(SessionTranscriptReader):
         return []
 
 
-#: 작업 디렉터리와 홈을 받아 리더를 만드는 것. 홈을 함께 받는 이유는 시험이
-#: 실제 홈을 안 건드리고 기록이 있는 상태를 만들 수 있어야 해서다 — 그것이
-#: 없으면 "찾지 않는다" 와 "찾았는데 없다" 가 같은 결과라 구분이 안 된다.
+#: Takes a workdir and a home dir and produces a reader. Home is
+#: threaded through separately so tests can set up a transcript
+#: without touching the real home dir — without that, "didn't look"
+#: and "looked and found nothing" are indistinguishable.
 ReaderFactory = Callable[[Path, Path | None], SessionTranscriptReader]
 
 
 class TranscriptReaderRegistry:
-    """엔진 이름별 세션 기록 리더 등록소.
+    """Registry of session-transcript readers by engine name.
 
-    `engine/environment.py` 의 `EngineEnvironmentPolicyRegistry` 와 같은
-    형태다. 엔진 종류가 코드에 고정되면 쓰는 쪽이 자기 엔진의 기록 형식을
-    못 붙인다.
+    Same shape as engine/environment.py's
+    EngineEnvironmentPolicyRegistry. Hardcoding engine kinds in code
+    would keep callers from plugging in their own engine's transcript
+    format.
 
-    모르는 엔진에는 예외 대신 빈 기록을 준다. 환경 격리 정책은 없으면 위험해
-    예외를 내지만, 여기는 구간 분해용이라 실패해도 이미 끝난 요청 처리를
-    망치면 안 된다 — `SessionTranscriptReader` 계약이 같은 이유로 예외를
-    밖으로 내지 않는다.
+    An unknown engine gets an empty transcript instead of an
+    exception, unlike the environment policy registry, where a missing
+    policy is dangerous enough to fail loudly. This one only feeds
+    duration breakdown, where a failure shouldn't wreck handling of an
+    already-completed request — same reason SessionTranscriptReader's
+    contract never raises.
     """
 
     def __init__(self) -> None:
-        # 작업 디렉터리를 받아 리더를 만드는 것이면 된다. 클래스로 한정하지
-        # 않는 이유는 생성자 인자가 리더마다 다를 수 있어서다 — 그 차이는
-        # 등록하는 쪽이 람다나 partial 로 가둔다.
+        # A factory just needs to take a workdir and return a reader —
+        # not restricted to a class, since constructor args vary per
+        # reader. Whoever registers one wraps that difference in a
+        # lambda or partial.
         self._factories: dict[str, ReaderFactory] = {
             "claude": ClaudeTranscriptReader,
             "codex": NullTranscriptReader,

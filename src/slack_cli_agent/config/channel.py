@@ -1,4 +1,4 @@
-"""채널 설정. 파일로 두어 사람이 편집하고 재기동 없이 반영되게 한다."""
+"""Channel settings, kept as a file so people can edit them and have the change apply without a restart."""
 
 from __future__ import annotations
 
@@ -18,25 +18,19 @@ KNOWN_KEYS = frozenset(
         "progress",
     }
 )
-"""코어가 읽는 채널 설정 키.
-
-원본 bot.py 에서 실제로 조회되는 키를 실측해 정했다. 조직 고유 키
-(org_admins 등)는 여기 넣지 않는다 — 플러그인이 extra 에서 읽는다.
-"""
+"""Channel-setting keys the core reads. Org-specific keys (like org_admins)
+aren't here — plugins read those from `extra`."""
 
 CHAT_DEFAULT = "normal"
-"""채널의 대화량. 원본 CHAT_DEFAULT 와 같은 값이다. 프롬프트 조립에 쓰인다."""
+"""Default chat volume, used when assembling prompts."""
 
 
 @dataclass(frozen=True)
 class ChannelConfig:
     channel_id: str
     name: str = ""
-    """슬랙에서 조회한 채널 이름. 목록 표시에 쓴다.
-
-    조회에 실패하면 원본과 같이 채널 ID 를 그대로 쓴다. 읽을 때 채우므로 이
-    필드가 비어 있는 상태로 나오지 않는다.
-    """
+    """Channel name from Slack, for display. Falls back to the channel ID
+    on lookup failure, filled in at read time so it's never blank."""
     mode: str = "default"
     workdir: Path | None = None
     model: str = ""
@@ -52,7 +46,7 @@ class ChannelConfig:
     rich: bool = False
     chat: str = CHAT_DEFAULT
     progress: bool = False
-    """긴 작업의 중간 단계를 흘려 보낼지. 채널마다 켜고 끈다."""
+    """Whether to stream progress updates for long-running work."""
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -81,11 +75,8 @@ class ChannelConfig:
 
 
 class ChannelRegistry:
-    """채널 설정 파일을 요청마다 다시 읽는다.
-
-    mtime 이 바뀌었을 때만 파싱하므로 매 요청 읽어도 부담이 없고, 사람이 파일을
-    고치면 재기동 없이 반영된다.
-    """
+    """Re-reads the channel-config file on every access, but only reparses
+    when mtime changes, so hand-edits apply without a restart."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -106,11 +97,8 @@ class ChannelRegistry:
         return list(self._current())
 
     def update(self, channel_id: str, changes: Mapping[str, Any]) -> ChannelConfig:
-        """채널 설정의 일부 항목만 바꾼다. 없는 채널이면 새로 만든다.
-
-        알 수 없는 키는 그대로 둔다 — 플러그인이 쓰는 항목을 코어의 쓰기가
-        지우면 안 된다. 바뀐 설정을 돌려준다.
-        """
+        """Merges changes into one channel's config, creating it if missing.
+        Unknown keys are preserved since plugins may own them."""
         with self._lock:
             raw = self._read_raw()
             entry = dict(raw.get(channel_id) or {})
@@ -120,7 +108,7 @@ class ChannelRegistry:
             return self._configs[channel_id]
 
     def remove(self, channel_id: str) -> bool:
-        """채널 등록을 해제한다. 없는 채널이면 거짓을 돌려준다."""
+        """Unregisters a channel. Returns False if it wasn't registered."""
         with self._lock:
             raw = self._read_raw()
             if channel_id not in raw:
@@ -130,7 +118,8 @@ class ChannelRegistry:
             return True
 
     def _read_raw(self) -> dict[str, Any]:
-        """파일 내용을 그대로 읽는다. 알 수 없는 키까지 보존해야 해서 필요하다."""
+        """Reads the file as-is; unknown keys must survive, so this can't
+        just parse straight into ChannelConfig."""
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -138,14 +127,13 @@ class ChannelRegistry:
         return dict(raw) if isinstance(raw, Mapping) else {}
 
     def _write_raw(self, raw: Mapping[str, Any]) -> None:
-        """임시 파일에 쓰고 교체한다.
+        """Writes to a temp file and replaces atomically, so a reader never
+        sees a truncated write mid-edit — only the old file or the new one,
+        never both.
 
-        원본은 대상 파일에 바로 쓴다. 그 동안 읽으면 잘린 JSON 이 읽히고,
-        읽는 쪽은 그것을 편집 중 파일로 보고 직전 설정을 유지한다. 교체 방식은
-        읽는 쪽이 옛 파일이나 새 파일 하나만 보게 한다.
-
-        쓴 뒤 캐시를 직접 갱신한다. mtime 해상도가 1초인 파일 시스템에서는
-        같은 초에 두 번 쓰면 mtime 이 안 바뀌어 캐시가 유지된다.
+        Updates the cache directly afterward: on filesystems with 1-second
+        mtime resolution, two writes in the same second wouldn't otherwise
+        be noticed.
         """
         self._path.parent.mkdir(parents=True, exist_ok=True)
         임시 = self._path.with_name(self._path.name + ".tmp")
@@ -179,8 +167,9 @@ class ChannelRegistry:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            # 편집 중 저장된 깨진 파일로 전체 처리가 멈추지 않게 한다.
-            # mtime 이 또 바뀌므로 고치면 다음 읽기에서 반영된다
+            # A file mid-save can briefly be invalid JSON; keep the last
+            # good config instead of failing. mtime changes again once the
+            # edit finishes, so the fix applies on the next read.
             return dict(self._configs)
         if not isinstance(raw, Mapping):
             return {}

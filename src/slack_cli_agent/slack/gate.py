@@ -1,13 +1,12 @@
-"""응답 게이트 — 부르지 않은 자리에서 나설지 판정한다.
+"""Decides whether to jump into a thread the bot wasn't addressed in,
+and whether the bot's last message was left awaiting a reply.
 
-원본 `worth_answering`, `asked_back` 과 그 판정에 쓰는 정규식을 그대로
-옮겼다. 정규식은 역추적 폭발을 피하려고 만든 형태라 대안 구성을 바꾸지
-않는다 — `REACTION_WORD` 의 어느 대안에도 `+` 를 붙이지 않는 이유가
-아래 주석에 있다.
+The regexes are shaped to avoid backtracking blowup; see the comments
+on REACTION_WORD for why no alternative there gets its own `+`.
 
-`ELAPSED_LINE` 은 되물음 판정 전에 소요 시간 표식을 걷어내는 용도로 쓴다.
-가드 계층 소속이 아니라 `core.markers` 에서 가져온다 — 게이트 계층이
-가드 계층을 import 할 이유가 없다.
+ELAPSED_LINE strips the timing footer before checking for a question.
+It comes from core.markers rather than the guard layer, since gate has
+no reason to depend on guard.
 """
 
 from __future__ import annotations
@@ -16,15 +15,18 @@ import re
 
 from slack_cli_agent.core.markers import ELAPSED_LINE
 
-# 이 봇이 되물은 말인지 본다. 물음표로 끝나거나 묻는 어미로 끝나면 물음이다.
+# Matches the bot's own text ending in a question mark or a Korean
+# question-ending suffix.
 ASKED_BACK = re.compile(r"(?:[?？]|까요|을까|ㄹ까|나요|린가요|드릴까)[\s.!]*$")
 
-# 답을 기대하지 않는 반응 어휘. 이 단어들만으로 이뤄진 말은 맞장구다.
+# Reaction words that don't expect a reply. A message made up only of
+# these is just an acknowledgment.
 #
-# 어느 대안에도 + 를 붙이지 않는다. 아래 REACTION_ONLY 가 이 묶음을 다시 + 로
-# 감싸기 때문에, 안쪽에 + 가 있으면 (?:ㅋ+)+ 형태가 되어 같은 문자열을 나누는
-# 경우의 수가 문자 수에 따라 두 배씩 증가한다. 반복은 바깥 + 로만 표현한다.
-# "오오오" 는 대안 오 가 세 번 반복되는 것으로 동일하게 일치한다.
+# No alternative here gets its own `+`. REACTION_ONLY wraps this whole
+# group in `+` below, so an inner `+` would produce a form like
+# (?:ㅋ+)+, where the number of ways to split the same string doubles
+# per character. Repetition is expressed only via the outer `+` — "오오오"
+# still matches, as the alternative "오" repeated three times.
 REACTION_WORD = (
     r"(?:오|와|우와|헐|아|어|음|흠|네|넵|예|응|good|굿|"
     r"감사(?:합니다|해요|요)?|고맙(?:습니다|다)|반가(?:워요|워|웠어요)|"
@@ -33,63 +35,59 @@ REACTION_WORD = (
     r"수고(?:하셨습니다|하셨어요|요)?|고생(?:하셨습니다|하셨어요)?|"
     r"ㅇㅇ|ㅋ|ㅎ|ㄱㅅ|굳)"
 )
-# 대안 사이에 올 수 있는 문자. 여기에 ㅋ ㅎ 를 넣지 않는다.
-# 넣으면 대안과 이 문자 클래스가 같은 문자에 모두 일치해 역추적 경로가
-# 지수적으로 증가한다.
+# Characters allowed between reaction words. Deliberately excludes ㅋ/ㅎ
+# — including them would let this class overlap with the word
+# alternatives above and blow up backtracking.
 REACTION_GAP = r"[\s.!~,]*"
-# 반응 어휘가 하나 이상 이어지기만 한 말이면 답을 기다리는 말이 아니다.
+# One or more reaction words strung together isn't something awaiting a reply.
 REACTION_ONLY = re.compile(rf"^\s*(?:{REACTION_WORD}{REACTION_GAP})+$")
-# 이보다 긴 입력은 맞장구로 판정하지 않는다. 문자 수로 역추적 비용의 상한을 둔다.
-# 패턴을 수정해도 이 상한은 유지한다. 이후 대안을 추가해도 소요 시간이
-# 상한을 넘지 않는다. 상한을 넘겨 판정을 건너뛰면 답변 대상으로 넘어간다.
-# 답변하는 쪽이 안전한 방향이다.
+# Caps backtracking cost, not realistic input length. Keep this even
+# if REACTION_WORD grows more alternatives. Longer input just skips
+# the reaction check and falls through to answering — the safer
+# default.
 REACTION_MAX_LEN = 120
 
-# 말 전체가 괄호 하나로 둘러싸인 경우. (우걱우걱), (딴생각), (하품) 처럼
-# 의성어·의태어·행동 묘사를 괄호로 감싸는 것은 혼잣말 표시이지 상대에게
-# 답을 구하는 말이 아니다.
+# A message entirely wrapped in one pair of parentheses, like
+# (딴생각) or (하품) — a self-directed aside, not something addressed
+# to the bot.
 MUTTER_ONLY = re.compile(r"^[\(（].*[\)）]$", re.DOTALL)
 
 
 class ResponseGate:
-    """부르지 않은 자리에서 나설지, 상대의 마지막 말이 되물음인지 판정한다."""
-
     def worth_answering(self, text: str, bot_asked: bool = False) -> bool:
-        """부르지 않은 말에 나설지 판단한다.
+        """Decide whether to jump into a thread the bot wasn't addressed in.
 
-        스레드에서 오가는 말이 전부 이 봇에게 하는 말은 아니다. 반가움의
-        표시나 사람들끼리의 맞장구에 매번 끼어들면 소음이 된다.
-
-        길이로 판단하지 않는다. 한국어 지시문은 짧다. "올려", "보내",
-        "취소해" 는 전부 지시인데 15자를 넘지 않는다. 2026-08-25 에 길이
-        규칙이 승인 3건을 연달아 버렸다. 거르는 기준은 길이가 아니라
-        어휘다. 맞장구 단어만으로 이뤄진 말만 거른다. 그 밖의 말은
-        모델에게 넘기고, 나설 자리가 아니라는 판단도 모델이 한다.
+        Filters by vocabulary, not length — Korean commands are short
+        ("올려", "보내", "취소해", none over 15 characters), and a
+        length cutoff dropped three real approvals in a row on
+        2026-08-25. Anything that isn't purely reaction words gets
+        forwarded to the model, including the judgment that this
+        isn't a place to speak up.
         """
         t = (text or "").strip()
         if not t:
             return False
-        # 괄호로 감싼 혼잣말은 봇이 되물은 자리라도 답이 아니다. 가장 먼저 거른다.
+        # Filter this first: a muttered aside isn't an answer even if the bot just asked something.
         if MUTTER_ONLY.match(t):
             return False
-        # 봇이 되물은 자리에서 온 말은 그 물음의 답이다.
-        # 짧아도, 자모나 이모지만 있어도 버리지 않는다. ㅇㅇ 와 :+1: 도 승인이다.
+        # A reply to the bot's own question counts no matter how short —
+        # "ㅇㅇ" or a thumbs-up emoji is a valid approval.
         if bot_asked:
             return True
-        # 이모지와 문장부호만 남는 말
         if not re.search(r"[가-힣a-zA-Z0-9]", t):
             return False
         if len(t) <= REACTION_MAX_LEN and REACTION_ONLY.match(t):
             return False
-        # 맺음 인사는 부탁이라는 말이 들어가도 답을 기다리는 말이 아니다
+        # A closing pleasantry ("앞으로 잘 부탁") isn't a request even
+        # though it contains 부탁, unless it's phrased as a question.
         return not (re.search(r"(?:잘|앞으로|많이)\s*부탁", t) and not re.search(r"[?？]", t))
 
     def asked_back(self, text: str) -> bool:
-        """봇이 답을 기다리는 말을 남겼는지 본다.
+        """Whether the bot's last message was left awaiting a reply.
 
-        걸린 시간 줄은 본문이 아니라 덧붙인 표식이라 되물음 판정에서
-        걷어낸다. 2026-09-02 : 이 줄이 끝에 붙어 있어 "지금 반영할까요."
-        뒤에 온 "네" 가 맞장구로 걸러졌다.
+        Strips the timing footer first — on 2026-09-02 a trailing "네"
+        after "지금 반영할까요." was misread as a reaction because the
+        footer sat between them.
         """
         t = ELAPSED_LINE.sub("", (text or "").strip()).strip()
         return bool(ASKED_BACK.search(t))

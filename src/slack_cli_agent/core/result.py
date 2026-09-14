@@ -1,8 +1,4 @@
-"""조회 결과 타입. 부재와 판정 불가를 구분한다.
-
-원본은 빈 목록과 None 으로 이 둘을 구분했고, 호출부가 그것을 안 지키면 조용히
-"없다" 가 된다. 타입으로 강제한다.
-"""
+"""Lookup result that distinguishes "absent" from "could not determine"."""
 
 from __future__ import annotations
 
@@ -59,14 +55,14 @@ class Outcome(Generic[T]):
         return self._reason
 
     def value(self) -> T:
-        """FOUND 가 아니면 예외. 판정 불가를 값으로 전달하지 않는다."""
         if self._kind is not OutcomeKind.FOUND:
             detail = f" {self._reason}" if self._reason else ""
             raise ValueError(f"값이 없다: {self._kind.value}{detail}")
         return self._value  # type: ignore[return-value]
 
     def value_or(self, default: T) -> T:
-        """부재일 때만 기본값을 준다. 판정 불가는 예외로 남긴다."""
+        # Only ABSENT gets the default; UNKNOWN still raises so a lookup failure
+        # can't silently be treated as "not found".
         if self._kind is OutcomeKind.UNKNOWN:
             raise ValueError(f"판정 불가를 기본값으로 대체할 수 없다: {self._reason}")
         if self._kind is OutcomeKind.ABSENT:

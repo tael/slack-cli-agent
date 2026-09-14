@@ -1,9 +1,7 @@
-"""엔진 전환 승인/거부 관리 명령.
+"""Engine switch approve/deny admin commands.
 
-원본 `handle_admin` 의 "엔진 승인"/"엔진 거부" 분기와 대응한다. 전환 상태
-쓰기는 `EngineSwitcher` 를 거친다 — `engine_state.json` 을 직접 읽고 쓰지
-않는다(이미 `EngineStatusCommand` 가 상태 읽기만 하고 있어, 쓰기는 여기서
-`EngineSwitcher.approve`/`deny` 로 맡긴다).
+Writes go through `EngineSwitcher.approve`/`deny` rather than touching
+`engine_state.json` directly.
 """
 
 from __future__ import annotations
@@ -15,8 +13,6 @@ from .command import AdminCommand, AdminContext, AdminResult
 
 
 class EngineApproveCommand(AdminCommand):
-    """대체 실행기로의 전환을 승인한다. 전환이 없으면 그렇다고 답한다."""
-
     name: ClassVar[str] = "engine_approve"
 
     def matches(self, text: str) -> bool:
@@ -39,8 +35,6 @@ class EngineApproveCommand(AdminCommand):
 
 
 class EngineDenyCommand(AdminCommand):
-    """대체 실행기로의 전환을 거부한다. 전환이 없으면 그렇다고 답한다."""
-
     name: ClassVar[str] = "engine_deny"
 
     def matches(self, text: str) -> bool:

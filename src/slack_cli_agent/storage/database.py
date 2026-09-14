@@ -1,7 +1,8 @@
-"""SQLite 커넥션과 트랜잭션.
+"""SQLite connection and transaction handling.
 
-기계가 쓰는 상태를 한 파일에 모은다. 프롬프트·페르소나·채널 설정은 여기 넣지
-않는다 — 파일이어야 사람이 편집하고 재기동 없이 반영된다.
+Holds machine-managed state only. Prompts, personas, and channel config stay
+out of the DB and in files instead, so a person can edit them without a
+restart.
 """
 
 from __future__ import annotations
@@ -28,12 +29,13 @@ class Database:
         return self._path
 
     def connect(self) -> sqlite3.Connection:
-        """스레드마다 커넥션 하나. sqlite3 커넥션은 스레드 간 공유가 안 된다."""
+        """One connection per thread; sqlite3 connections aren't thread-safe."""
         conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
         if conn is None:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            # isolation_level=None 으로 두어 드라이버의 암묵적 트랜잭션을 끈다.
-            # BEGIN IMMEDIATE 를 직접 열어야 디큐의 조회와 전이가 한 트랜잭션이 된다
+            # isolation_level=None disables the driver's implicit transactions,
+            # so we can open BEGIN IMMEDIATE ourselves and keep dequeue's
+            # select-then-update atomic.
             conn = sqlite3.connect(self._path, timeout=30, isolation_level=None)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
@@ -43,7 +45,6 @@ class Database:
         return conn
 
     def migrate(self) -> int:
-        """적용된 마지막 버전을 돌려준다. 이미 최신이면 아무것도 실행하지 않는다."""
         conn = self.connect()
         current = int(conn.execute("PRAGMA user_version").fetchone()[0])
         if current >= SCHEMA_VERSION:
@@ -55,14 +56,16 @@ class Database:
             with self.transaction() as tx:
                 for statement in statements:
                     tx.execute(statement)
-                # PRAGMA 는 파라미터 바인딩을 받지 않는다. 값은 코드 상수뿐이다
+                # PRAGMA doesn't accept parameter binding; version is a code constant.
                 tx.execute(f"PRAGMA user_version={version}")
             log.info("스키마 마이그레이션 적용: v%d %s", version, label)
         return SCHEMA_VERSION
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
-        """IMMEDIATE 로 연다. 디큐가 조회와 상태 전이를 한 트랜잭션에서 한다."""
+        """Opens with BEGIN IMMEDIATE so dequeue's select and state change
+        happen in one transaction.
+        """
         conn = self.connect()
         conn.execute("BEGIN IMMEDIATE")
         try:

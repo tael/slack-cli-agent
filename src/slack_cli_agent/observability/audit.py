@@ -1,9 +1,6 @@
-"""감사 기록. DB(`audit` 테이블)와 `audit.jsonl` 파일에 함께 남긴다.
-
-외부 도구와 대시보드가 jsonl 형식을 읽으므로, 저장할 때 원본 필드 이름을
-그대로 쓴다. DB 는 조회·집계용이고 jsonl 은 외부 도구와의 접점이다 — 어느
-한쪽만 쓰면 그쪽 소비자가 못 읽는다.
-"""
+# Audit records go to both the DB (`audit` table) and an `audit.jsonl` file.
+# External tools and dashboards read the jsonl, so field names there must
+# stay stable; the DB is for querying and aggregation.
 
 from __future__ import annotations
 
@@ -16,8 +13,6 @@ from typing import Any
 from ..storage.database import Database
 from ..storage.repository import SqliteRepository
 
-# 요청 처리 한 건의 감사 기록 종류. 원본은 이 항목에 kind 를 남기지 않았으나
-# audit 테이블의 kind 컬럼이 NOT NULL 이라 이름을 붙인다.
 REQUEST_KIND = "request"
 
 
@@ -40,11 +35,6 @@ class AuditLog(SqliteRepository):
         thread_ts: str = "",
         **fields: Any,
     ) -> None:
-        """감사 기록 한 건을 DB 와 jsonl 에 함께 남긴다.
-
-        `fields` 는 종류마다 다른 부가 정보다. DB 의 `payload` 컬럼과 jsonl 줄에
-        같은 내용이 담긴다.
-        """
         at = self._now()
         self._execute(
             "INSERT INTO audit (at, kind, channel, thread_ts, payload) "
@@ -72,11 +62,6 @@ class AuditLog(SqliteRepository):
         usage: Mapping[str, Any] | None = None,
         **extra: Any,
     ) -> None:
-        """요청 처리 한 건의 감사 기록.
-
-        원본이 남기던 항목 — 첫 반응까지 걸린 시간, 대기 시간, 세션, 모델,
-        effort, 소요, 토큰(usage), 성공 여부 — 을 그대로 담는다.
-        """
         self.record(
             REQUEST_KIND,
             channel=channel,

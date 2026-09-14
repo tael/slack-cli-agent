@@ -1,11 +1,13 @@
-"""엔진 실행과 전환을 감싸는 계층.
+"""Wraps engine execution and fallback switching.
 
-``EngineRunner`` 는 subprocess 실행만 맡는다. 명령줄 조립(``build_command``)과
-출력 파싱(``parse``)은 Engine 이 순수 함수로 제공하므로, 여기서는 그 둘 사이의
-실행 한 걸음만 두고 테스트에서 subprocess 를 대역으로 주입할 수 있게 한다.
+EngineRunner only runs the subprocess. Command assembly
+(build_command) and output parsing (parse) are pure functions Engine
+provides, so this layer is just the execution step between them,
+letting tests inject a subprocess double.
 
-``FallbackEngine`` 은 ``EngineRunner`` 를 써서 1차·2차 엔진 실행과 전환 판정을
-감싼다. 호출부는 이 클래스 하나만 보면 된다 — 전환 여부를 몰라도 된다.
+FallbackEngine wraps EngineRunner to handle primary/secondary
+execution and the switch decision. Callers only see this one class —
+they don't need to know whether a switch happened.
 """
 
 from __future__ import annotations
@@ -27,10 +29,10 @@ SubprocessRunner = Callable[..., Any]
 
 
 class EngineRunner:
-    """엔진이 만든 명령줄을 subprocess 로 실행하고 결과를 파싱한다.
+    """Runs an engine's command via subprocess and parses the result.
 
-    타임아웃 900초에는 근거가 있다 — 300초는 150건 중 2건을 잘랐고 중앙값은
-    34초였다(RuntimeSettings.request_timeout_sec 기본값).
+    The 900s timeout is measured: 300s cut off 2 of 150 requests, with
+    a 34s median (RuntimeSettings.request_timeout_sec default).
     """
 
     def __init__(self, settings: RuntimeSettings,
@@ -39,9 +41,10 @@ class EngineRunner:
                source_env: Mapping[str, str] | None = None) -> None:
         self._settings = settings
         self._run = subprocess_runner or self._default_runner
-        # 환경 변수 격리 정책. 안 주면 환경을 안 넘겨 부모 프로세스의 것을
-        # 그대로 물려받는다 — 정책을 안 주는 호출부가 아직 있어 기존 동작을
-        # 유지한다. 빈 환경을 넘기면 엔진이 PATH 를 못 찾아 실행되지 않는다.
+        # Environment isolation policy. If not given, no env argument
+        # is passed at all and the child inherits the parent's — kept
+        # for existing callers that don't provide one yet. Passing an
+        # empty environment would break the engine by hiding PATH.
         self._environment_policy = environment_policy
         self._source_env = source_env
 
@@ -49,8 +52,9 @@ class EngineRunner:
            timeout_sec: float | None = None) -> EngineResponse:
         cmd = engine.build_command(request)
         timeout = timeout_sec if timeout_sec is not None else self._settings.request_timeout_sec
-        # 정책이 없으면 env 인자 자체를 안 넘긴다. 넘기면 실행기를 대역으로
-        # 주입하는 기존 호출부가 그 인자를 안 받아 실행 자체가 실패한다.
+        # Skip the env argument entirely when there's no policy —
+        # passing it would break existing callers whose injected
+        # runner double doesn't accept that kwarg.
         extra: dict[str, Any] = {}
         if self._environment_policy is not None:
             source = self._source_env if self._source_env is not None else os.environ
@@ -74,8 +78,9 @@ class EngineRunner:
     def _default_runner(
         cmd: list[str], cwd: str, timeout: float, env: Mapping[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]:
-        # returncode 는 engine.parse() 가 직접 해석한다 — 여기서 예외로 바꾸면
-        # 실패 종료 코드를 실패 응답으로 담아내는 경로가 끊긴다.
+        # engine.parse() interprets returncode directly — turning it
+        # into an exception here would break the path that carries a
+        # failed exit code as a failure response.
         return subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
             env=dict(env) if env is not None else None, check=False,
@@ -83,21 +88,21 @@ class EngineRunner:
 
 
 class EngineInvoker(ABC):
-    """엔진을 한 번 실행하는 부품. 호출부는 폴백 여부를 모른다.
+    """Runs one engine call. Callers don't know whether fallback is configured.
 
-    `EngineRunner.run(engine, request)` 를 호출부가 직접 부르면, 폴백이
-    설정돼 있어도 `FallbackEngine.run()` 이 안 불린다. 그 클래스의 전환 판정과
-    상태 기록이 통째로 건너뛰어져, 한도가 소진돼도 대체 엔진으로 안 넘어간다.
-    어느 쪽을 쓸지는 조립이 정하고, 호출부는 이 계약만 본다.
+    Calling EngineRunner.run(engine, request) directly, bypassing this,
+    skips FallbackEngine.run() even when fallback is configured — its
+    switch decision and state recording never run, so hitting a usage
+    limit never triggers a switch. Assembly decides which invoker to
+    use; callers only see this contract.
     """
 
     @abstractmethod
-    def invoke(self, request: EngineRequest) -> EngineResponse:
-        """요청 하나를 실행한다."""
+    def invoke(self, request: EngineRequest) -> EngineResponse: ...
 
 
 class DirectInvoker(EngineInvoker):
-    """폴백이 없을 때. 실행기로 그 엔진을 그대로 돌린다."""
+    """No fallback configured — runs that one engine via the runner."""
 
     def __init__(self, runner: EngineRunner, engine: Engine) -> None:
         self._runner = runner
@@ -108,7 +113,7 @@ class DirectInvoker(EngineInvoker):
 
 
 class FallbackInvoker(EngineInvoker):
-    """폴백이 있을 때. 전환 판정을 포함한 `FallbackEngine.run()` 을 부른다."""
+    """Fallback configured — delegates to FallbackEngine.run(), which includes the switch decision."""
 
     def __init__(self, engine: FallbackEngine) -> None:
         self._engine = engine
@@ -118,23 +123,25 @@ class FallbackInvoker(EngineInvoker):
 
 
 class FallbackEngine(Engine):
-    """1차 엔진이 한도 소진을 내면 2차 엔진에 위임한다.
+    """Delegates to the secondary engine when the primary reports a usage limit.
 
-    호출부는 Engine 하나만 본다. 전환 여부를 몰라도 된다.
-
-    동작은 원본 bot.py 의 ``run_with_fallback()`` 그대로다 — 전환은 즉시 하고,
-    사람이 승인하기 전에는 한도 안내만 답한다. ``EngineSwitcher`` 가
-    ``engine_state.json`` 을 관리하고, 이 클래스가 실제 실행 분기를 맡는다.
+    Callers only see one Engine and don't need to know whether a
+    switch happened. Same behavior as the original bot.py's
+    run_with_fallback() — switching happens immediately, but the bot
+    only replies with a limit notice until a human approves it.
+    EngineSwitcher manages engine_state.json; this class handles the
+    actual execution branch.
     """
 
     name = "fallback"
 
-    # 대체 실행기가 실제로 쓸 수 있는 상태인지 확인하는 짧은 요청. 원본
-    # ENGINE_PROBE_PROMPT 와 같다.
+    # Short request confirming the fallback engine is actually usable.
+    # Same as the original ENGINE_PROBE_PROMPT.
     PROBE_PROMPT = "준비됐으면 OK 두 글자만 답해라."
-    # 짧은 요청 전용 타임아웃. 원본 ENGINE_PROBE_TIMEOUT 과 같다. 전체 요청
-    # 타임아웃(request_timeout_sec)을 그대로 쓰면 대체 실행기가 응답 없이
-    # 걸렸을 때 사람이 기다리는 턴이 그만큼 길어진다.
+    # Timeout for the probe only. Same as the original
+    # ENGINE_PROBE_TIMEOUT. Using the full request_timeout_sec here
+    # would make a human wait just as long when the fallback engine is
+    # unresponsive.
     PROBE_TIMEOUT_SEC = 120.0
 
     def __init__(self, primary: Engine, secondary: Engine, switcher: EngineSwitcher,
@@ -144,12 +151,14 @@ class FallbackEngine(Engine):
         self.secondary = secondary
         self.switcher = switcher
         self.runner = runner
-        # build_command/parse 를 이 클래스에 직접 부르는 호출부를 위한
-        # 위임 대상. run() 이 실제로 어느 엔진을 쓸지 정하고 갱신한다.
+        # Delegate target for callers that invoke build_command/parse
+        # directly on this class. run() decides which engine is
+        # actually active and updates this.
         self._active: Engine = primary
 
-    # -- Engine 계약. EngineRunner 를 거치지 않고 이 클래스가 직접 build_command
-    # /parse 로 쓰일 때를 위한 위임이다. 실제 호출부는 run() 을 쓴다.
+    # -- Engine contract. Delegates for callers that use build_command
+    # /parse directly on this class instead of going through
+    # EngineRunner. Real callers use run().
     def build_command(self, request: EngineRequest) -> list[str]:
         return self._active.build_command(request)
 
@@ -171,9 +180,9 @@ class FallbackEngine(Engine):
     def readable_paths_note(self, paths: Sequence[Path]) -> str:
         return self._active.readable_paths_note(paths)
 
-    # -- 실제 진입점.
+    # -- The real entry point.
     def run(self, request: EngineRequest) -> EngineResponse:
-        """전환 상태를 확인하고 1차 또는 2차로 실행한다."""
+        """Checks switch state and runs on primary or secondary accordingly."""
         state = self.switcher.load()
 
         if state:
@@ -208,10 +217,11 @@ class FallbackEngine(Engine):
         return response
 
     def _run_secondary(self, request: EngineRequest) -> EngineResponse:
-        """승인된 대체 엔진으로 이번 턴을 처리한다.
+        """Handles this turn on the approved fallback engine.
 
-        엔진이 다르면 세션을 잇지 못한다. 새 세션으로 연다. 모델 이름 체계도
-        엔진마다 달라 대체 엔진 자신의 설정값을 쓴다.
+        A different engine can't continue a session, so this opens a
+        new one. Model naming also differs per engine, so it uses the
+        secondary's own configured model.
         """
         self._active = self.secondary
         fallback_request = EngineRequest(
@@ -224,10 +234,11 @@ class FallbackEngine(Engine):
         return self.runner.run(self.secondary, fallback_request)
 
     def _probe_primary_recovery(self, request: EngineRequest) -> EngineResponse | None:
-        """기본 실행기가 돌아왔는지 실제 요청으로 떠본다.
+        """Probes whether the primary has recovered, using a real request.
 
-        요청 경로에서만 한다. 사람이 기다리는 자리라 되돌아온 사실을 가장
-        먼저 알아야 하고, 되돌린 뒤 그 턴을 바로 처리할 수 있다.
+        Only happens on the request path — a human is waiting there,
+        so they should be the first to benefit once it's recovered,
+        and this turn can be handled immediately.
         """
         self._active = self.primary
         response = self.runner.run(self.primary, request)
@@ -238,10 +249,11 @@ class FallbackEngine(Engine):
         return None
 
     def _probe_secondary(self, request: EngineRequest) -> tuple[bool, str]:
-        """대체 실행기가 실제로 답하는지 짧은 요청으로 확인한다.
+        """Confirms the fallback engine actually answers, via a short request.
 
-        상태 파일만 바꾸고 전환했다고 알리면, 정작 그 실행기도 못 쓰는
-        경우에 사람이 잘못된 상태를 믿는다.
+        Flipping the state file and declaring a switch without this
+        risks a human trusting a switch to an engine that doesn't
+        actually work either.
         """
         probe_request = EngineRequest(
             prompt=self.PROBE_PROMPT, system_prompt="",

@@ -1,4 +1,4 @@
-"""봇 하나의 정의. 코드에 조직 고유값을 두지 않기 위한 경계다."""
+"""A single bot's definition — the boundary that keeps org-specific values out of code."""
 
 from __future__ import annotations
 
@@ -14,19 +14,16 @@ from .paths import StatePaths
 
 @dataclass(frozen=True)
 class EngineSpec:
-    """엔진 하나의 실행 방식.
-
-    엔진이 늘어도 프로필 최상위 키가 증가하지 않도록 블록으로 묶는다.
-    """
+    """How one engine is invoked. Grouped as a block so adding an engine
+    doesn't grow the profile's top-level keys."""
 
     type: str
     binary: Path
     model: str
     model_owner: str = ""
     options: Mapping[str, Any] = field(default_factory=dict)
-    # 이 엔진 전용 홈 경로(예: CODEX_HOME). 봇마다 세션·인증을 가르는 값이라
-    # 사용자 개인 홈과 겹치면 안 된다. 원본 bot_profile.py Profile.codex_home
-    # 과 같은 개념을 엔진 일반으로 넓힌 것이다.
+    # Engine-specific home path (e.g. CODEX_HOME). Keeps sessions/auth
+    # separated per bot, so it can't collide with the user's own home.
     home_dir: Path | None = None
 
     @classmethod
@@ -71,16 +68,12 @@ class Profile:
 
     @property
     def roster_file(self) -> Path:
-        """계정 핸들과 사람 이름 표. 원본 bot.py:78 PEOPLE_FILE = DATA_DIR / "people.md".
-
-        파일 이름은 roster.md 로 바꿨다 — 새 패키지 이름(RosterBuilder)에 맞춘
-        것이고 내용·자리는 원본과 같다.
-        """
+        """Account handle to person-name table."""
         return self.data_dir / "roster.md"
 
     @classmethod
     def load(cls, name: str, search_paths: Sequence[Path]) -> Profile:
-        """`<name>.json` 을 검색 경로 순서대로 찾는다. 먼저 찾은 것을 쓴다."""
+        """Finds `<name>.json` on search_paths in order and uses the first match."""
         for base in search_paths:
             candidate = base / f"{name}.json"
             if candidate.is_file():
@@ -126,7 +119,7 @@ class Profile:
         return state_dir / name
 
     def validate(self) -> list[str]:
-        """설정 오류 목록. 빈 목록이면 정상."""
+        """Config problems; an empty list means the profile is valid."""
         problems: list[str] = []
         if not self.owner_user_id:
             problems.append("owner_user_id 가 비어 있다")

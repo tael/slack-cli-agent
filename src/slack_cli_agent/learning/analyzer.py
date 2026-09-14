@@ -1,14 +1,8 @@
-"""채널 기록을 분석해 학습 제안 항목을 뽑는다.
+"""Analyzes channel history to extract learning proposals.
 
-원본 learn.py 의 ``build_proposal()`` 과 ``main()`` 의 채널별 취합 루프를
-대응한다. 분석 자체는 기존 엔진 계층(``Engine``/``EngineRunner``)을 그대로
-재사용한다 — learn.py 가 Claude CLI 를 ``-p --output-format json`` 으로 불러
-``result`` 필드를 읽는 방식과, ``ClaudeEngine.parse()`` 가 이미 하는 일이
-같다. subprocess 호출과 JSON 파싱을 다시 구현하지 않는다.
-
-원본은 그날 전 채널 기록을 한 프롬프트에 이어 붙이다가 40000자에서 잘라 뒤
-채널이 조용히 누락된 적이 있다(2026-08-31). 그래서 채널마다 따로 분석한다 —
-이 클래스의 analyze_channel() 이 채널 하나만 맡는 것이 그 교훈을 반영한 것이다.
+Each channel is analyzed separately rather than concatenated into one prompt —
+a prior version truncated combined text at 40000 chars and silently dropped
+later channels.
 """
 
 from __future__ import annotations
@@ -24,7 +18,6 @@ from ..engine.base import Engine, EngineRequest
 from ..engine.runner import EngineRunner
 from .proposal import LearningProposal
 
-# 원본 PROMPT 를 그대로 옮긴다. 조직 고유값이 없어 코어에 둘 수 있다.
 _PROMPT_TEMPLATE = """아래는 슬랙봇 <<봇>>가 오늘 <<채널>> 채널에서 낸 응답과, 그 뒤에 사람이 남긴 말이다.
 
 이 기록에서 <<봇>>가 앞으로 기억해야 할 것을 뽑아라.
@@ -61,7 +54,7 @@ _REACTIONS_LIMIT = 15000
 
 @dataclass(frozen=True)
 class ChannelAnalysisResult:
-    """채널 하나를 분석한 결과. 원본 build_proposal() 의 반환값에 대응한다."""
+    """Result of analyzing a single channel."""
 
     writing_style: tuple[str, ...] = ()
     channel_facts: tuple[str, ...] = ()
@@ -70,7 +63,7 @@ class ChannelAnalysisResult:
 
 
 class ProposalAnalyzer:
-    """채널 기록 하나를 분석기에 보내 제안 항목을 받는다."""
+    """Sends one channel's history to the engine and parses the proposal."""
 
     def __init__(
         self,
@@ -153,7 +146,7 @@ class ProposalAnalyzer:
 
 
 class ProposalBuilder:
-    """채널별 분석 결과를 하루치 제안 하나로 합친다. 원본 main() 의 취합 루프."""
+    """Merges per-channel analysis results into one day's proposal."""
 
     def __init__(self, analyzer: ProposalAnalyzer) -> None:
         self._analyzer = analyzer

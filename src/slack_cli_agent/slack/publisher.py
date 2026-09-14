@@ -1,14 +1,14 @@
-"""MessagePublisher — 발신과 실패 처리.
+"""Posts replies and handles the failure paths: two rendering modes
+per channel (rich markdown blocks vs. plain mrkdwn), chunk
+verification with a safe fallback, falling back to plain text when
+Slack rejects rich blocks, and a partial-delivery notice on failed
+chunk sends.
 
-원본 bot.py 의 `post` 를 재구성했다. 채널별 표기 이원화
-(리치 markdown 블록 / 평문 mrkdwn), 분할 점검과 안전 낙하, 리치 표기 거절 시
-평문 재발신, 조각 전송 실패 시 부분전달 안내는 원본 로직을 그대로 따른다.
-
-`ELAPSED_MODEL_LINE` 은 원본에서 특정 채널 한정으로 답변 끝에 실행
-모델을 적던 자리다. 회사 결합을 걷어내고 `ChannelConfig.rich` 로 일반화했다
-— 리치 표기가 켜진 채널에서만 실행 모델을 표기한다. 정규식 자체는 가드
-계층이 아니라 `core.markers` 에서 가져온다 — 발신 계층이 가드 계층을
-import 할 이유가 없다.
+ELAPSED_MODEL_LINE generalizes what used to be a company-specific
+footer appending the model name for one hardcoded channel — now it's
+driven by ChannelConfig.rich, so any rich channel gets it. The regex
+itself comes from core.markers, not the guard layer, since the
+publisher has no reason to depend on guard.
 """
 
 from __future__ import annotations
@@ -28,13 +28,11 @@ from slack_cli_agent.render.verifier import SplitVerifier
 
 log = logging.getLogger(__name__)
 
-# 상태를 색으로 가른다. 글을 읽기 전에 성공인지 실패인지 먼저 보이게 한다.
+# Color-codes status so success vs. failure is visible before reading the text.
 COLOR_FAIL = "#d64541"
 
 
 class MessagePublisher:
-    """채널 표기에 맞춰 발신하고, 실패를 원본과 같은 순서로 처리한다."""
-
     def __init__(
         self,
         client: Any,
@@ -56,10 +54,11 @@ class MessagePublisher:
         self._audit = audit or (lambda **_: None)
 
     def apply_elapsed_model_line(self, body: str, model: str, rich: bool) -> str:
-        """답변 끝에 실행 모델을 적는다. rich 채널에서만, model 이 있을 때만.
+        """Appends the model-name footer, only for rich channels with a model set.
 
-        모델이 앞 대화를 흉내 내 본문 끝에 같은 줄을 써 넣는 경우가 있다.
-        붙이기 전에 지운다 — 그대로 두면 두 줄이 되고 값도 서로 다르다.
+        Strips any existing footer first — a model sometimes echoes
+        prior context and writes this same line itself, and leaving
+        both would produce two lines with possibly different values.
         """
         if not rich or not model:
             return body
@@ -67,11 +66,11 @@ class MessagePublisher:
         return cleaned.rstrip() + f"\n> 실행 모델 : {model}"
 
     def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None:
-        """채널에 맞는 표기로 게시한다.
+        """Posts using the channel's rendering mode.
 
-        리치 자리에서는 마크다운 원문을 markdown 블록으로 그대로 넘긴다.
-        그 밖의 자리에서는 mrkdwn 으로 낮춰 쓴다. 채널은 스레드로 답하고
-        DM 은 본문에 쓴다.
+        Rich channels get the markdown source verbatim in a markdown
+        block; everything else gets it downgraded to mrkdwn. Channels
+        reply in a thread; DMs post directly.
         """
         if rich:
             separated = self._verifier.separate_tables(text)
@@ -84,9 +83,10 @@ class MessagePublisher:
                     sizes=[len(c) for c in chunks],
                 )
                 chunks = self._verifier.safe_fallback(separated)
-            # md_chunks 가 표와 문단을 각각의 덩어리로 끊고 split_for_blocks 가
-            # 그것들을 다시 이어 붙이면서 사이 빈 줄이 사라진다. 점검이 끝난
-            # 뒤에 다시 띄운다.
+            # separate_tables split tables and paragraphs into distinct
+            # chunks, and split_for_blocks rejoined them, losing the
+            # blank line between them. Re-separate now that
+            # verification is done.
             chunks = [self._verifier.separate_tables(c) for c in chunks]
         else:
             chunks = self._splitter.chunk(self._markdown.to_mrkdwn(text))
@@ -131,7 +131,7 @@ class MessagePublisher:
                         if parent_ts is None:
                             parent_ts = res["ts"]
                         continue
-                    except Exception as retry_exc:  # noqa: BLE001 — 재시도 발송 실패를 최초 예외와 함께 다뤄 실패 보고로 이어간다
+                    except Exception as retry_exc:  # noqa: BLE001 - fold the retry failure into the original for failure reporting
                         exc = retry_exc
 
                 self._audit(
@@ -152,7 +152,7 @@ class MessagePublisher:
                                 ),
                             }],
                         )
-                    except Exception as notify_exc:  # noqa: BLE001 — 부분 발송 실패 안내 자체가 실패해도 원래 오류 보고를 막지 않는다
+                    except Exception as notify_exc:  # noqa: BLE001 - a failed failure-notice shouldn't block the original error report
                         log.warning("부분 발송 실패 안내 전송 실패 : %s", notify_exc)
                 raise SlackError(str(exc)) from exc
             sent += 1

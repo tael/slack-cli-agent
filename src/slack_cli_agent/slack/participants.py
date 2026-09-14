@@ -1,11 +1,10 @@
-"""스레드에 함께 있는 사람을 추린다.
+"""Figures out who's present in a thread: people who spoke, plus
+people pulled in by @mention — a mention notifies them and the thread
+is open, so they're treated as present.
 
-원본 `bot.py` 의 `recent_thread()` 와 `thread_people()` 을 합쳐 옮겼다.
-말한 사람과 멘션으로 불려 들어온 사람이 대상이다 — 멘션은 알림이 가고
-스레드가 열려 있으므로 그 자리에 있는 것으로 본다.
-
-본문에서 누가 함께 있는지를 추론하게 두면 없는 사람 취급을 하는 답이
-나온다. 세어서 프롬프트에 적어 준다.
+Left to infer this on its own, the model treats unmentioned
+participants as absent. Counting them explicitly and putting it in
+the prompt avoids that.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from typing import Any, Protocol
 
 from slack_cli_agent.core.channel_kind import is_direct_message_channel
 
-# 슬랙 본문의 멘션 표기. `<@U123>` 또는 `<@U123|이름>` 둘 다 받는다.
+# Matches Slack's <@U123> or <@U123|name> mention markup.
 MENTION_IN_TEXT = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]*)?>")
 
 UNKNOWN_NAME = "이름 모르는 사람"
@@ -27,8 +26,6 @@ class ThreadHistory(Protocol):
 
 
 class ThreadParticipants:
-    """스레드 메시지를 읽어 참여자 목록을 만든다."""
-
     def __init__(
         self,
         history: ThreadHistory,
@@ -42,15 +39,13 @@ class ThreadParticipants:
         self._limit = limit
 
     def of(self, channel: str, thread_ts: str) -> tuple[tuple[str, str], ...]:
-        """(표시 이름, 멘션 표기) 의 목록. 처음 나온 순서를 지킨다."""
-        # 디엠에는 봇과 상대뿐이라 셀 것이 없다. 원본 `recent_thread()` 와 같다.
+        """(display name, mention markup) pairs, in first-seen order."""
+        # DMs only ever have the bot and one other person — nothing to count.
         if is_direct_message_channel(channel):
             return ()
         try:
             messages = self._history.read_thread(channel, thread_ts, self._limit)
-        except Exception:  # noqa: BLE001 — 참가자 조회 실패로 요청 자체를 실패시키지 않는다 — 프롬프트에 그 대목만 빠진다
-            # 함께 있는 사람을 못 셌다고 요청 자체를 실패시키지 않는다.
-            # 이 값이 없으면 프롬프트에 그 대목이 안 붙을 뿐이다.
+        except Exception:  # noqa: BLE001 - a failed lookup shouldn't fail the request, just omit this section
             return ()
 
         seen: set[str] = set()
@@ -63,7 +58,7 @@ class ThreadParticipants:
             people.append((self._name_resolver(user_id) or UNKNOWN_NAME, f"<@{user_id}>"))
 
         for message in messages:
-            # 봇이 보낸 말의 발신자는 사람이 아니다. 그 안의 멘션은 그대로 센다.
+            # The bot's own messages aren't a person, but mentions inside them still count.
             if not message.get("bot_id"):
                 add(message.get("user"))
             for user_id in MENTION_IN_TEXT.findall(message.get("text") or ""):
