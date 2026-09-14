@@ -168,6 +168,12 @@ class CatchupService:
         봇을 부른 메시지 중 그 뒤에 봇 답글이 없는 것을 고른다. 스레드
         답글로 부른 경우도 잡아야 한다.
         """
+        if not self._identity.known:
+            # 부름 판정의 근거가 없다. 여기서 빈 목록을 돌려주면 "부른 말이
+            # 없다" 와 구분되지 않고, 그 회차가 재시도 목록에서도 빠져 신원이
+            # 복구돼도 그 구간을 회수하지 못한다.
+            return Outcome.unknown("봇 신원을 몰라 부름 판정 불가")
+
         now = self._now()
         oldest = now - window
         # 스레드는 부모가 오래됐어도 답글이 방금 달릴 수 있다. 찾는 범위를 넓게 잡는다.
@@ -276,18 +282,9 @@ class CatchupService:
                 unchecked.append(channel)
                 continue
 
-            groups: dict[str, list[RequestContext]] = {}
-            for ctx in outcome.value():
-                groups.setdefault(ctx.thread_ts, []).append(ctx)
-
-            for items in groups.values():
-                items.sort(key=lambda c: float(c.ts))
-                rep, rest = items[-1], items[:-1]
-                # 답하겠다고 미리 말하지 않는다. 늦었다는 사실은 실제로 답할 때
-                # 그 답 앞에 붙인다. 2026-08-25 에 약속만 두 번 올리고 두 번 다
-                # 침묵해 약속이 깨졌다.
-                missed.append(rep.marked_late())
-                skipped.extend(rest)
+            대표, 나머지 = self._pick_representatives(outcome.value())
+            missed.extend(대표)
+            skipped.extend(나머지)
 
         if unchecked:
             # 알리고 끝내지 않는다. 볼 때까지 계속 다시 본다.
@@ -296,6 +293,29 @@ class CatchupService:
             self._pending.clear()
 
         return CatchupReport(missed=missed, skipped=skipped, unchecked_channels=unchecked)
+
+    def _pick_representatives(
+        self, found: list[RequestContext]
+    ) -> tuple[list[RequestContext], list[RequestContext]]:
+        """스레드마다 가장 최근 것 하나만 대표로 남기고 나머지를 돌려준다.
+
+        지난 대화 복원이 나머지를 함께 담으므로 그 하나의 답이 전체를 종합한
+        답이 된다. 건마다 따로 답하면 10개가 밀렸을 때 답이 10개 올라간다.
+
+        답하겠다고 미리 말하지 않는다. 늦었다는 사실은 실제로 답할 때 그 답
+        앞에 붙인다. 2026-08-25 에 약속만 두 번 올리고 두 번 다 침묵했다.
+        """
+        groups: dict[str, list[RequestContext]] = {}
+        for ctx in found:
+            groups.setdefault(ctx.thread_ts, []).append(ctx)
+
+        대표: list[RequestContext] = []
+        나머지: list[RequestContext] = []
+        for items in groups.values():
+            items.sort(key=lambda c: float(c.ts))
+            대표.append(items[-1].marked_late())
+            나머지.extend(items[:-1])
+        return 대표, 나머지
 
     def retry_pending(self) -> list[RetryStatus]:
         """마치지 못한 되짚기를 다시 본다. 건강 점검이 돌 때마다 부른다.
@@ -327,10 +347,12 @@ class CatchupService:
                 continue
 
             self._pending.pop(ch, None)
-            found = outcome.value()
-            if found:
+            # 정상 되짚기와 같은 묶음을 쓴다. 여기서만 전부 돌려주면 같은
+            # 스레드의 여러 요청에 각각 답이 올라간다.
+            대표, _나머지 = self._pick_representatives(outcome.value())
+            if 대표:
                 statuses.append(
-                    RetryStatus(channel=ch, stuck_sec=0.0, alert=False, missed=tuple(found))
+                    RetryStatus(channel=ch, stuck_sec=0.0, alert=False, missed=tuple(대표))
                 )
 
         return statuses
