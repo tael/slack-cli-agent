@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from ..config.settings import RuntimeSettings
 from ..core.context import RequestContext
@@ -28,7 +28,7 @@ from ..core.lifecycle import InflightCounter
 from ..core.ports import HandleOutcome, RequestHandler
 from ..jobs.heartbeat import WorkerHeartbeat
 from ..jobs.ports import JobQueue, ReclaimResult
-from ..reliability.catchup import CatchupReport, CatchupService
+from ..reliability.catchup import CatchupReport, CatchupService, RetryStatus
 from ..slack.reactions import ReactionMarker
 
 log = logging.getLogger(__name__)
@@ -164,16 +164,14 @@ class Worker:
             self._markers.mark_failed(context.channel, context.ts)
         return result
 
-    def catch_up(self, channels: list[str]) -> CatchupReport:
-        """놓친 요청을 찾아 큐에 넣는다. 이미 대기·실행 중인 대표건은 거른다."""
-        report = self._catchup.sweep(channels, self._settings.catchup_window_sec)
-
+    def _enqueue_new(self, contexts: Sequence[RequestContext]) -> list[RequestContext]:
+        """아직 대기·실행 중이 아닌 것만 큐에 넣고 실제로 들어간 것을 돌려준다."""
         with self._lock:
             running_keys = {context.key for context in self._running.values()}
         pending_keys = {job.context.key for job in self._queue.pending()}
 
         accepted: list[RequestContext] = []
-        for context in report.missed:
+        for context in contexts:
             if context.key in pending_keys or context.key in running_keys:
                 continue
             # 실패로 끝난 건은 되살아난다. 상한을 함께 넘겨, 계속 실패하는
@@ -181,6 +179,27 @@ class Worker:
             if self._queue.enqueue(context, max_attempts=self._settings.job_max_attempts):
                 accepted.append(context)
                 pending_keys.add(context.key)
+        return accepted
+
+    def retry_catchup(self) -> list[RetryStatus]:
+        """마치지 못한 되짚기를 다시 본다.
+
+        슬랙이 채널 기록을 빈 목록으로 주는 것은 대개 잠깐이다. 한 번 실패하고
+        끝내면 그 구간에 답을 기다리는 요청이 어느 경로에서도 안 잡힌다.
+
+        오래 못 본 채널을 사람에게 알릴지는 여기서 정하지 않는다 — 알림 경로를
+        아는 것은 조립이므로 상태를 그대로 돌려준다.
+        """
+        statuses = self._catchup.retry_pending()
+        for status in statuses:
+            if status.missed:
+                self._enqueue_new(status.missed)
+        return statuses
+
+    def catch_up(self, channels: list[str]) -> CatchupReport:
+        """놓친 요청을 찾아 큐에 넣는다. 이미 대기·실행 중인 대표건은 거른다."""
+        report = self._catchup.sweep(channels, self._settings.catchup_window_sec)
+        accepted = self._enqueue_new(report.missed)
 
         # 걸러진 대표건도 연결 대상이다. 거른 것은 "이미 처리 예정" 이라는
         # 뜻이지 "묻힌 건을 버린다" 는 뜻이 아니다. 버리면 그 건에 표식이

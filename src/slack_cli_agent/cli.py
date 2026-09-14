@@ -261,10 +261,12 @@ class WorkerCommand(ProfileAwareCommand):
         parser.add_argument("--worker-id", default="worker", help="이 워커를 구분할 이름")
         parser.add_argument("--once", action="store_true", help="한 번만 처리하고 끝난다")
         parser.add_argument(
-            "--catch-up",
-            action="store_true",
-            help="시작 전 등록된 채널을 되짚어 놓친 작업이 있는지 확인한다",
+            "--no-catch-up",
+            dest="catch_up",
+            action="store_false",
+            help="시작 시 되짚기를 건너뛴다. 기본은 되짚는다",
         )
+        parser.set_defaults(catch_up=True)
 
     def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
         app = self._factory(profile)
@@ -285,8 +287,11 @@ class WorkerCommand(ProfileAwareCommand):
             # 주기 실행기는 묶음으로 띄운다. 상태 기록 갱신, 감시 확인, 끝난
             # 작업 정리가 여기 들어 있다. 하나씩 손으로 시작하던 때에 실제로
             # 추가한 실행기를 이 위치에서 빠뜨린 적이 있다.
-            with app.worker_services():
+            with app.worker_services(worker):
                 worker.reclaim()
+                # 되짚기는 기본으로 한다. 재기동 중에 들어온 멘션은 소켓
+                # 이벤트로 다시 오지 않으므로, 플래그를 줘야만 되짚으면 그것을
+                # 빠뜨린 순간 그 요청들이 유실된다.
                 if args.catch_up:
                     worker.catch_up(app.channel_ids())
                 try:

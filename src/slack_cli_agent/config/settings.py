@@ -78,6 +78,8 @@ class RuntimeSettings:
     # 받아 놓은 첨부를 지우는 간격. 원본은 기동 시 한 번만 지웠다 — 며칠 도는
     # 프로세스에서는 그 뒤에 받은 것이 계속 남는다.
     attachment_cleanup_interval_sec: float = 3600
+    # 마치지 못한 되짚기를 다시 보는 간격. 원본은 건강 점검 주기에 얹어 돌렸다.
+    catchup_retry_interval_sec: float = 30
 
     # 추측한 값으로 퍼센트를 만들지 않는다. 비워 둔다
     context_limit: Mapping[str, int] = field(default_factory=dict)
