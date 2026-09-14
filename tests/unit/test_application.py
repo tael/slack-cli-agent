@@ -13,6 +13,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Sequence
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -1087,3 +1088,24 @@ class Test플러그인엔진등록:
             profile, client, plugins=[self.엔진을더하는플러그인()], engine_registry=EngineRegistry()
         )
         assert application.engine_registry.available() == ["mine"]
+
+
+class Test응답기록:
+    """학습 배치가 읽을 자료를 남기는 쪽이 실제로 조립에 들어갔는지 본다.
+
+    부품만 있고 파이프라인에 안 들어가면 기록이 한 줄도 안 생기고, 그러면
+    배치는 매일 "응답 기록이 없다" 로 끝난다.
+    """
+
+    def test_파이프라인에_응답_기록이_들어간다(self, app: Application) -> None:
+        assert app.pipeline()._response_archive is app.response_archive()
+
+    def test_같은_객체를_돌려준다(self, app: Application) -> None:
+        assert app.response_archive() is app.response_archive()
+
+    def test_상태_디렉터리_아래에_남긴다(self, app: Application) -> None:
+        assert app.response_archive()._root == app.profile.paths.responses
+
+    def test_날짜를_KST_로_정한다(self, app: Application) -> None:
+        """UTC 로 정하면 밤 9시 이후 기록이 다음 날 파일로 간다."""
+        assert app.response_archive()._clock().utcoffset() == timedelta(hours=9)
