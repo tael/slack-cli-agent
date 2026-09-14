@@ -25,7 +25,7 @@ class SqliteJobQueue(SqliteRepository):
         키를 계속 차지하면, 되짚기가 미응답 멘션을 찾아내도 재등록이 조용히
         무시돼 그 요청은 영영 처리되지 않는다. 실패 행은 대기로 되돌린다.
 
-        `max_attempts` 가 0 보다 크면 그만큼 시도한 건은 되돌리지 않는다.
+        `max_attempts` 가 0 보다 크면 그만큼 시도한 건은 되실행하지 않는다.
         같은 요청이 계속 실패하는데 되짚기가 매번 되살리면 끝나지 않는다.
         """
         with self._transaction() as conn:

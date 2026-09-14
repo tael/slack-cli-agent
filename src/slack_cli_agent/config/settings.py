@@ -75,18 +75,18 @@ class RuntimeSettings:
     job_retention_sec: float = 7 * 86400
     # 끝난 작업을 정리하는 주기.
     job_purge_interval_sec: float = 3600
-    # 받아 놓은 첨부를 지우는 간격. 원본은 기동 시 한 번만 지웠다 — 며칠 도는
+    # 받아 놓은 첨부를 지우는 간격. 원본은 기동 시 한 번만 지웠다 — 며칠 실행되는
     # 프로세스에서는 그 뒤에 받은 것이 계속 남는다.
     attachment_cleanup_interval_sec: float = 3600
     # 마치지 못한 되짚기를 다시 보는 간격. 원본은 건강 점검 주기에 얹어 돌렸다.
     catchup_retry_interval_sec: float = 30
     # 보내지 못한 보고를 다시 보내는 간격. 원본은 건강 점검 주기에 얹어 돌렸다.
     pending_report_flush_interval_sec: float = 30
-    # 학습 배치를 돌릴지 판정하는 간격. 판정 자체는 파일 확인뿐이라 싸다 —
-    # 실제로 도는 것은 하루 한 번이고, 그 날짜 판정은 learning/schedule.py 가 한다.
+    # 학습 배치를 실행할지 판정하는 간격. 판정 자체는 파일 확인뿐이라 싸다 —
+    # 실제로 실행되는 것은 하루 한 번이고, 그 날짜 판정은 learning/schedule.py 가 한다.
     learning_batch_interval_sec: float = 600
     # 그날 학습을 시작하는 KST 시각. 이 시각 전에는 그날 기록이 아직 다 안
-    # 쌓였으므로 돌리지 않는다. 원본은 launchd 일정에 이 값이 있었다.
+    # 쌓였으므로 실행하지 않는다. 원본은 launchd 일정에 이 값이 있었다.
     learning_run_hour: int = 22
     # 학습 분석에 쓸 모델과 노력 수준. 원본 learn.py 는 `--model sonnet` 고정이었다.
     learning_model: str = "sonnet"

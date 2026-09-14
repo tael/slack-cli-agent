@@ -450,7 +450,7 @@ class TestRoster:
 
     def test_갱신기를_매번_새로_만들지_않는다(self, tmp_path: Path) -> None:
         """주기 실행기가 매번 새로 만들어지면 시작한 객체와 정지시키는 객체가
-        달라져, 정지를 요청해도 먼저 시작된 스레드가 계속 돈다."""
+        달라져, 정지를 요청해도 먼저 시작된 스레드가 계속 실행된다."""
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
         assert app.roster_refresher() is app.roster_refresher()
 
@@ -1148,7 +1148,7 @@ class Test학습배치:
         assert app.learning_batch_runner().name == "learning_batch"
 
     def test_완료_표식이_있어야_그날을_끝난_것으로_본다(self, app: Application) -> None:
-        """제안 파일 존재로 판정하면 저장 뒤 반영이 실패한 날이 영영 다시 안 돈다."""
+        """제안 파일 존재로 판정하면 저장 뒤 반영이 실패한 날이 영영 다시 실행되지 않는다."""
         proposals = app.profile.paths.proposals
         proposals.mkdir(parents=True, exist_ok=True)
         (proposals / "2026-09-14.json").write_text("{}", encoding="utf-8")
@@ -1177,7 +1177,7 @@ class Test학습배치:
     def test_기준_시각_설정이_범위_밖이면_기본값으로_돌린다(
         self, tmp_path: Path, client: FakeSlackClient
     ) -> None:
-        """0-23 밖이면 그 값으로는 하루도 안 돈다. 설정 오타로 배치가 멎는다."""
+        """0-23 밖이면 그 값으로는 하루도 실행되지 않는다. 설정 오타로 배치가 멎는다."""
         application = Application(write_profile(tmp_path, settings={"learning_run_hour": 25}), client)
         assert application.learning_schedule()._run_hour == RuntimeSettings().learning_run_hour
 

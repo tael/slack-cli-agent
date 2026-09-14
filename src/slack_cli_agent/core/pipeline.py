@@ -80,7 +80,7 @@ class RequestPipeline:
         # 발송 직전 스레드 재확인. 안 주면 그 확인을 아예 안 한다 — 슬랙
         # 조회가 한 번 더 나가므로 조립 코드에서 선택한다.
         late_addendum: LateAddendumChecker | None = None,
-        # 재확인이 흡수한 말을 대기줄이 또 돌리지 않게 적어 두는 자리.
+        # 재확인이 흡수한 말을 대기줄이 또 실행하지 않게 적어 두는 자리.
         # 두 경로가 같은 기록을 봐야 하므로 밖에서 하나를 만들어 공유한다.
         consumption: ThreadConsumption | None = None,
         # 지켜보겠다는 약속을 등록할 감시 큐. 안 주면 등록을 안 한다 —
@@ -357,7 +357,7 @@ class RequestPipeline:
         """발송 직전에 스레드 아래로 새로 달린 말을 담아 다시 낸다.
 
         (올릴 본문, 앞 답) 을 돌려준다. 다시 내지 않았으면 앞 답은 None 이다 —
-        그 값이 있을 때만 유실 판정 가드가 돈다.
+        그 값이 있을 때만 유실 판정 가드가 실행된다.
 
         다시 내기가 실패했으면 앞 답을 그대로 올리고 소화 기록도 안 남긴다.
         그 말은 아직 답을 못 받은 것이라 대기줄이 처리해야 한다.
@@ -405,7 +405,7 @@ class RequestPipeline:
         하고 등록은 아무도 안 해, 지켜보겠다는 답만 나가고 실제 확인은 없다.
 
         rerun 요청은 한 번까지만 엔진 재호출로 잇는다. 두 번째 가드 실행은
-        ``is_rewrite_retry=True`` 로 돈다 — 그 결과의 ``rerun`` 은 보지 않는다.
+        ``is_rewrite_retry=True`` 로 실행된다 — 그 결과의 ``rerun`` 은 보지 않는다.
         여기서 그 값을 무시하는 것 자체가 무한 재시도를 막는 구조다.
         """
         is_owner = principal.trust is TrustLevel.OWNER
