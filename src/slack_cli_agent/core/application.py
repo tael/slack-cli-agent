@@ -680,8 +680,7 @@ class Application:
                 gate=ResponseGate(),
                 notices=self._notices,
                 settings=self._settings,
-                bot_user_id=self.identity.user_id,
-                is_self=self._is_self_message,
+                identity=self.identity,
             )
         return self._catchup_service
 

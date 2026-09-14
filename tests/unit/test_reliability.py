@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from identity_support import fake_identity
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.result import OutcomeKind
@@ -191,7 +192,7 @@ def make_service(
     history: FakeHistoryReader,
     *,
     bot_user_id: str = "U_BOT",
-    is_self=None,
+    identity=None,
     settings: RuntimeSettings | None = None,
     now: float = 100_000.0,
 ):
@@ -202,8 +203,7 @@ def make_service(
         gate=ResponseGate(),
         notices=NoticeCatalog(),
         settings=settings or RuntimeSettings(),
-        bot_user_id=bot_user_id,
-        is_self=is_self or (lambda m: m.get("bot_id") == "B123"),
+        identity=identity or fake_identity(user_id=bot_user_id, bot_id="B123"),
         now=lambda: now,
         started_at=0.0,  # 이 프로세스가 아주 예전에 떴다고 가정 — 유예 창을 검사 대상에서 뺀다
     )
@@ -267,6 +267,32 @@ class TestFindMissed:
 
         assert service.find_missed("C1", window=3600).value() == []
 
+    def test_표시_이름이_붙은_멘션도_찾는다(self) -> None:
+        """슬랙은 `<@U123|이름>` 형태로도 보낸다. 문자열 포함으로 보면 못 잡는다."""
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "99000.0", "user": "U1", "text": "<@U_BOT|마메치> 질문"},
+                ]
+            }
+        )
+        service = make_service(history)
+
+        assert [m.ts for m in service.find_missed("C1", window=3600).value()] == ["99000.0"]
+
+    def test_다른_봇을_부른_것은_안_찾는다(self) -> None:
+        """`<@U_BOT2>` 안에 `U_BOT` 이 들어 있다. 문자열 포함으로 보면 걸린다."""
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "99000.0", "user": "U1", "text": "<@U_BOT2> 질문"},
+                ]
+            }
+        )
+        service = make_service(history)
+
+        assert service.find_missed("C1", window=3600).value() == []
+
     def test_이미_답변_표식이_있으면_빠진다(self) -> None:
         history = FakeHistoryReader(
             history={
@@ -304,8 +330,7 @@ class TestFindMissed:
             gate=ResponseGate(),
             notices=NoticeCatalog(),
             settings=settings,
-            bot_user_id="U_BOT",
-            is_self=lambda m: m.get("bot_id") == "B123",
+            identity=fake_identity(user_id="U_BOT", bot_id="B123"),
             now=lambda: now,
             started_at=now - 3600,
         )

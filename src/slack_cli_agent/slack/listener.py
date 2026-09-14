@@ -92,7 +92,7 @@ class EventListener:
             return None
 
         text = event.get("text") or ""
-        if self._identity.user_id and f"<@{self._identity.user_id}>" in text:
+        if self._identity.is_mentioned(text):
             # 멘션이 있으면 app_mention 이 이미 받는다. 두 번 처리하지 않는다
             return None
 
