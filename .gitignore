@@ -23,3 +23,8 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads-credential-key
+.beads/proxieddb/
