@@ -18,10 +18,11 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any, Protocol
 
 from ..config.settings import RuntimeSettings
+from ..core.timezones import KST
 from ..engine.base import Usage
 from ..engine.transcript import SessionTranscriptReader, TranscriptEvent
 from ..review.base import as_table
@@ -29,7 +30,6 @@ from ..review.base import as_table
 log = logging.getLogger(__name__)
 
 # 보고에 적는 시각의 기준. 원본 bot.py 의 KST 와 같다.
-KST = timezone(timedelta(hours=9))
 
 
 @dataclass(frozen=True)

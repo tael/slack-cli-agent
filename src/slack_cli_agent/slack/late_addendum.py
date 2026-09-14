@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -31,7 +31,7 @@ from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.reliability.ports import HistoryReader
 from slack_cli_agent.slack.message_kind import MessageKind
 
-KST = timezone(timedelta(hours=9))
+from ..core.timezones import KST
 
 
 class ThreadConsumption:

@@ -24,6 +24,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from typing import Any
 
 from ..admin.channel_commands import (
@@ -159,6 +160,7 @@ from .lifecycle import InflightCounter
 from .periodic import PeriodicRunner
 from .pipeline import RequestPipeline
 from .services import ServiceGroup
+from .timezones import KST
 from .worker import Worker
 
 log = logging.getLogger(__name__)
@@ -1012,13 +1014,30 @@ class Application:
             self._settings.catchup_max_window_sec,
         )
 
+    def _report_recovery(self, outage_sec: float, recovered: int) -> None:
+        """끊겼다 돌아온 사실과 회수 건수를 소유자에게 알린다.
+
+        알리지 않으면 운영자는 장애가 있었다는 것도, 그 구간이 회수됐는지도
+        모른다. 건수를 함께 적는 이유는 회수가 0건인 것과 회수 자체가 안 돈
+        것이 구분되어야 해서다.
+        """
+        self._notify_owner(
+            "*연결 복구*\n\n"
+            f"- 끊긴 시간 : {outage_sec / 60:.0f}분\n"
+            f"- 복구 시각 : {datetime.now(KST).strftime('%m-%d %H:%M:%S')} KST\n"
+            f"- 되짚어 처리한 요청 : {recovered}건"
+        )
+
     def _catchup_retry_tick(self, worker: Worker) -> None:
         outage_sec = self.outage_tracker().check()
         if outage_sec is not None:
             # 닿지 않던 동안 들어온 요청은 소켓 이벤트로 다시 오지 않는다.
             # 돌아왔을 때 되짚지 않으면 그 시간의 요청은 영영 처리되지 않는다.
             log.info("슬랙 연결이 돌아왔다. 끊긴 시간 %.0f초", outage_sec)
-            worker.catch_up(self.channel_ids(), window_sec=self._recovery_window_sec(outage_sec))
+            report = worker.catch_up(
+                self.channel_ids(), window_sec=self._recovery_window_sec(outage_sec)
+            )
+            self._report_recovery(outage_sec, len(report.missed))
 
         for status in worker.retry_catchup():
             if not status.alert:
