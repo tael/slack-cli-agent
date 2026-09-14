@@ -23,6 +23,7 @@ from typing import Any
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.slack.gate import ResponseGate
+from slack_cli_agent.slack.identity import BotIdentity
 
 # 파일을 붙여 보낸 말은 subtype 이 있어도 사람이 새로 건넨 말로 친다.
 HUMAN_SUBTYPES = frozenset({"file_share"})
@@ -36,14 +37,14 @@ class EventListener:
         client: Any,
         channel_registry: ChannelRegistry,
         gate: ResponseGate,
-        bot_user_id: str = "",
-        bot_id: str = "",
+        identity: BotIdentity,
     ) -> None:
         self._client = client
         self._channels = channel_registry
         self._gate = gate
-        self._bot_user_id = bot_user_id
-        self._bot_id = bot_id
+        # 자기 말 판정과 멘션 대조가 같은 신원을 봐야 한다. 따로 들면 조립이
+        # 한쪽에만 값을 줘도 부품 시험이 통과한다.
+        self._identity = identity
 
     def _context_from_event(
         self, event: Mapping[str, Any], *, unaddressed: bool, is_dm: bool
@@ -63,13 +64,6 @@ class EventListener:
     def from_app_mention(self, event: Mapping[str, Any]) -> RequestContext:
         return self._context_from_event(event, unaddressed=False, is_dm=False)
 
-    def _is_self(self, msg: Mapping[str, Any]) -> bool:
-        if self._bot_id and msg.get("bot_id"):
-            return msg.get("bot_id") == self._bot_id
-        if self._bot_user_id and msg.get("user"):
-            return msg.get("user") == self._bot_user_id
-        return bool(msg.get("bot_id"))
-
     def _thread_state(self, channel: str, thread_ts: str) -> tuple[bool, bool]:
         """스레드에서 봇의 위치를 본다. (이미 끼었는가, 마지막 말이 되물음인가)."""
         try:
@@ -79,8 +73,8 @@ class EventListener:
         except Exception:  # noqa: BLE001 — 스레드 위치 조회 실패를 아직 안 낀 것으로 본다 — 조회 제한 초과도 이 경로로 들어온다
             return False, False
         msgs = replies.get("messages", [])
-        joined = any(self._is_self(m) for m in msgs)
-        last_self = next((m for m in reversed(msgs) if self._is_self(m)), None)
+        joined = any(self._identity.is_self(m) for m in msgs)
+        last_self = next((m for m in reversed(msgs) if self._identity.is_self(m)), None)
         asked = self._gate.asked_back(last_self.get("text") if last_self else "")
         return joined, asked
 
@@ -101,7 +95,7 @@ class EventListener:
             return None
 
         text = event.get("text") or ""
-        if self._bot_user_id and f"<@{self._bot_user_id}>" in text:
+        if self._identity.user_id and f"<@{self._identity.user_id}>" in text:
             # 멘션이 있으면 app_mention 이 이미 받는다. 두 번 처리하지 않는다
             return None
 
@@ -131,8 +125,8 @@ class EventListener:
         item = event.get("item") or {}
         if item.get("type") != "message":
             return None
-        if self._bot_user_id and event.get("item_user") != self._bot_user_id:
+        if self._identity.user_id and event.get("item_user") != self._identity.user_id:
             return None
-        if self._bot_user_id and event.get("user") == self._bot_user_id:
+        if self._identity.user_id and event.get("user") == self._identity.user_id:
             return None
         return reaction, item.get("channel") or "", item.get("ts") or "", event.get("user") or ""

@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from identity_support import fake_identity
 
 from slack_cli_agent.admin.command import AdminCommand, AdminContext, AdminResult
 from slack_cli_agent.admin.router import AdminRouter
@@ -128,7 +129,7 @@ def registry() -> ChannelRegistry:
 
 @pytest.fixture
 def listener(registry: ChannelRegistry, gate: ResponseGate) -> EventListener:
-    return EventListener(FakeWebClient(), registry, gate, bot_user_id="U_BOT")
+    return EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
 
 
 @pytest.fixture
