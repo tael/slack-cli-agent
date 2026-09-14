@@ -333,3 +333,36 @@ class Test복구보고:
         러너._task()
         러너._task()
         assert [이름 for 이름, _ in client.calls if 이름 == "chat_postMessage"] == []
+
+
+class Test느린요청보고의기록리더:
+    """엔진에 맞는 기록 리더를 쓰는가.
+
+    조립이 `ClaudeTranscriptReader` 를 직접 만들고 있었다. codex 프로필에서도
+    Claude 기록 경로를 뒤진다는 뜻이다. 원본은 codex 면 경로를 만들지 않는다
+    (bot.py:3083).
+    """
+
+    def test_claude_프로필은_claude_리더를_쓴다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        from slack_cli_agent.engine.transcript import ClaudeTranscriptReader
+
+        app = Application(write_profile(tmp_path), client)
+        assert isinstance(app.transcript_reader(), ClaudeTranscriptReader)
+
+    def test_codex_프로필은_claude_리더를_안_쓴다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        binary = tmp_path / "bin" / "fake-engine"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        profile = write_profile(
+            tmp_path, primary_engine={"type": "codex", "binary": str(binary), "model": "model-a"}
+        )
+        from slack_cli_agent.engine.transcript import ClaudeTranscriptReader
+
+        app = Application(profile, client)
+        # 결과가 빈 목록인 것만으로는 안 드러난다 — Claude 리더도 파일이
+        # 없으면 빈 목록이다. 어느 리더를 골랐는지를 본다.
+        assert not isinstance(app.transcript_reader(), ClaudeTranscriptReader)
+
+    def test_한_번_만든_리더를_계속_쓴다(self, app: Application) -> None:
+        """구간 분해와 사용량 행이 같은 리더를 본다. 따로 만들면 조회가 두 배다."""
+        assert app.transcript_reader() is app.transcript_reader()
