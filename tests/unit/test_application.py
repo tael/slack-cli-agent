@@ -1157,10 +1157,11 @@ class Test학습배치:
         (proposals / "2026-09-14.done").write_text("{}", encoding="utf-8")
         assert app._learning_day_done("2026-09-14") is True
 
-    def test_돌릴_날이_없으면_배치를_부르지_않는다(
+    def test_분석할_날짜가_없으면_배치를_실행하지_않는다(
         self, tmp_path: Path, client: FakeSlackClient
     ) -> None:
-        """판정이 없는데 돌면 같은 날 제안을 하루에도 여러 번 다시 만든다."""
+        """주기 실행기는 10분마다 틱을 낸다. 판정이 없으면 그때마다 그날
+        기록을 다시 분석해 엔진을 부르고 제안 파일을 덮어쓴다."""
         application = Application(write_profile(tmp_path, settings={"learning_run_hour": 23}), client)
         batch = RecordingBatch()
         application._learning_batch = batch  # type: ignore[assignment]  # 호출 여부만 본다
@@ -1180,7 +1181,7 @@ class Test학습배치:
         application = Application(write_profile(tmp_path, settings={"learning_run_hour": 25}), client)
         assert application.learning_schedule()._run_hour == RuntimeSettings().learning_run_hour
 
-    def test_돌릴_날이_있으면_그날로_배치를_부른다(
+    def test_분석할_날짜가_있으면_그_날짜로_배치를_실행한다(
         self, tmp_path: Path, client: FakeSlackClient
     ) -> None:
         application = Application(write_profile(tmp_path, settings={"learning_run_hour": 0}), client)
