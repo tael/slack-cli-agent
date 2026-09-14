@@ -64,6 +64,13 @@ class RuntimeSettings:
     heartbeat_interval_sec: float = 5
     heartbeat_stale_sec: float = 15
     job_max_attempts: int = 3
+    # 끝난 작업을 보관하는 기간. 이 값을 넘긴 행은 지운다. 안 지우면
+    # jobs 표가 계속 커진다. 되짚기 최대 창(catchup_max_window_sec)보다
+    # 길어야 한다 — 짧으면 되짚기가 이미 답한 메시지를 미응답으로 보고
+    # 다시 등록해 같은 답이 두 번 나간다.
+    job_retention_sec: float = 7 * 86400
+    # 끝난 작업을 정리하는 주기.
+    job_purge_interval_sec: float = 3600
 
     # 추측한 값으로 퍼센트를 만들지 않는다. 비워 둔다
     context_limit: Mapping[str, int] = field(default_factory=dict)

@@ -43,10 +43,15 @@ class ReclaimResult:
 
 @runtime_checkable
 class JobQueue(Protocol):
-    def enqueue(self, ctx: RequestContext) -> bool:
+    def enqueue(self, ctx: RequestContext, max_attempts: int = 0) -> bool:
         """등록하면 True, 같은 채널·메시지가 이미 있으면 False.
 
         중복 방어가 여기 있다. 프로세스 수명과 무관하게 유지된다.
+
+        실패로 끝난 같은 건은 예외다 — 대기로 되돌리고 True 를 돌려준다.
+        그 차단을 그대로 두면 되짚기가 미응답 멘션을 찾아내도 재등록이
+        무시돼 그 요청이 영영 처리되지 않는다. `max_attempts` 가 0 보다
+        크면 그만큼 시도한 건은 되돌리지 않는다.
         """
 
     def claim_next(self, worker_id: str) -> Job | None:

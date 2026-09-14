@@ -296,6 +296,10 @@ class WorkerCommand(ProfileAwareCommand):
         # 답이 큐에 등록만 되고 아무도 그 결과를 보고하지 않는다.
         watch_runner = app.watch_runner()
         watch_runner.start()
+        # 끝난 작업을 주기적으로 지운다. 안 띄우면 완료·실패 행이 계속 남아
+        # jobs 표가 무한히 커진다.
+        purge_runner = app.job_purge_runner()
+        purge_runner.start()
         try:
             worker.reclaim()
             if args.catch_up:
@@ -310,6 +314,7 @@ class WorkerCommand(ProfileAwareCommand):
             except KeyboardInterrupt:
                 pass
         finally:
+            purge_runner.stop()
             watch_runner.stop()
             snapshot_runner.stop()
             worker.shutdown()

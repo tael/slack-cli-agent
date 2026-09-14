@@ -219,6 +219,7 @@ class FakeApplication:
         self.snapshot_runner = FakeRefresher()
         self.watch_runner_ = FakeRefresher()
         self.health_runner_ = FakeRefresher()
+        self.purge_runner_ = FakeRefresher()
         # 접수 프로세스가 재기동 동작을 무엇으로 넘겼는지 기록한다.
         self.health_restart: object | None = None
         self.restarter_calls = 0
@@ -231,6 +232,9 @@ class FakeApplication:
 
     def watch_runner(self) -> "FakeRefresher":
         return self.watch_runner_
+
+    def job_purge_runner(self) -> "FakeRefresher":
+        return self.purge_runner_
 
     def health_runner(self, restart: object) -> "FakeRefresher":
         self.health_restart = restart
@@ -771,3 +775,39 @@ class TestWorker빈큐대기:
         self._돌린다(tmp_path, worker, once=True)
         assert worker.run_once_calls == 1
         assert "run_forever" not in worker.calls
+
+
+class TestWorker끝난작업정리:
+    """워커가 끝난 작업 정리를 주기적으로 실행하는가.
+
+    안 띄우면 완료·실패 행이 계속 남아 jobs 표가 무한히 커진다. 워커가
+    여럿 떠도 삭제는 조건이 같아 서로 어긋나지 않는다.
+    """
+
+    @staticmethod
+    def _돌린다(tmp_path: Path, worker: FakeWorker) -> int:
+        profiles = tmp_path / "profiles"
+        write_profile(profiles, tmp_path / "state")
+        app = FakeApplication(worker=worker)
+        cli = SlackCliAgent([
+            WorkerCommand(
+                application_factory=lambda profile: app,
+                signal_register=lambda signum, handler: None,
+            )
+        ])
+        code = cli.run(
+            ["worker", "--profile", "example", "--profile-dir", str(profiles)],
+            stdout=io.StringIO(),
+        )
+        TestWorker끝난작업정리.app = app
+        return code
+
+    def test_기동하면_정리를_시작한다(self, tmp_path: Path) -> None:
+        worker = FakeWorker(stop_after_run_once=1)
+        self._돌린다(tmp_path, worker)
+        assert self.app.purge_runner_.start_calls == 1
+
+    def test_끝날때_정리를_멈춘다(self, tmp_path: Path) -> None:
+        worker = FakeWorker(stop_after_run_once=1)
+        self._돌린다(tmp_path, worker)
+        assert self.app.purge_runner_.stop_calls == 1
