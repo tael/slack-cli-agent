@@ -226,24 +226,17 @@ class IngressCommand(ProfileAwareCommand):
             return 2
 
         app = self._factory(profile)
-        health_runner = None
         try:
             gateway = app.gateway()
             app.ingress().register(gateway)
             # 연결 감시는 기동 전에 켠다. 소켓 연결은 이 프로세스에만 있으므로
             # 여기서 안 켜면 어디서도 안 켜지고, 소켓이 끊겨도 아무 기록이 안 남는다.
             app.connection_watch()
-            # 세는 것과 판정하는 것은 다르다. 점검을 주기적으로 실행하지 않으면
-            # 소켓 오류가 상한을 넘어도 재기동이 발화하지 않는다.
-            health_runner = app.health_runner(app.self_restarter())
-            health_runner.start()
-            # 명부 갱신은 접수 프로세스가 맡는다. 워커는 여럿 뜰 수 있어 거기서
-            # 돌리면 같은 파일을 여러 프로세스가 동시에 쓴다.
-            app.roster_refresher().start()
-            gateway.start(token)
+            # 주기 실행기는 묶음으로 띄운다. 여기서 하나씩 손으로 시작하면
+            # 새 실행기를 추가할 때 이 위치를 같이 안 고쳐 그 동작이 안 돈다.
+            with app.ingress_services(app.self_restarter()):
+                gateway.start(token)
         finally:
-            if health_runner is not None:
-                health_runner.stop()
             app.close()
         return 0
 
@@ -288,35 +281,24 @@ class WorkerCommand(ProfileAwareCommand):
             on_shutdown_start=lambda inflight: app.mark_shutting_down(),
         )
         shutdown.register()
-        # 상태 기록을 주기적으로 갈아 끼운다. 띄우지 않으면 파일이 한 번도
-        # 안 바뀌어 밖에서 지금 몇 건이 진행 중인지 볼 수 없다.
-        snapshot_runner = app.state_snapshot_runner()
-        snapshot_runner.start()
-        # 등록된 감시 건을 주기적으로 확인한다. 띄우지 않으면 "지켜보겠다" 는
-        # 답이 큐에 등록만 되고 아무도 그 결과를 보고하지 않는다.
-        watch_runner = app.watch_runner()
-        watch_runner.start()
-        # 끝난 작업을 주기적으로 지운다. 안 띄우면 완료·실패 행이 계속 남아
-        # jobs 표가 무한히 커진다.
-        purge_runner = app.job_purge_runner()
-        purge_runner.start()
         try:
-            worker.reclaim()
-            if args.catch_up:
-                worker.catch_up(app.channel_ids())
-            try:
-                if args.once:
-                    worker.run_once()
-                else:
-                    # 반복은 워커가 맡는다. 여기서 run_once 를 되풀이하면 큐가
-                    # 비었을 때의 대기가 빠져 SQLite 조회가 쉬지 않고 일어난다.
-                    worker.run_forever(lambda: shutdown.is_shutting_down)
-            except KeyboardInterrupt:
-                pass
+            # 주기 실행기는 묶음으로 띄운다. 상태 기록 갱신, 감시 확인, 끝난
+            # 작업 정리가 여기 들어 있다. 하나씩 손으로 시작하던 때에 실제로
+            # 추가한 실행기를 이 위치에서 빠뜨린 적이 있다.
+            with app.worker_services():
+                worker.reclaim()
+                if args.catch_up:
+                    worker.catch_up(app.channel_ids())
+                try:
+                    if args.once:
+                        worker.run_once()
+                    else:
+                        # 반복은 워커가 맡는다. 여기서 run_once 를 되풀이하면 큐가
+                        # 비었을 때의 대기가 빠져 SQLite 조회가 쉬지 않고 일어난다.
+                        worker.run_forever(lambda: shutdown.is_shutting_down)
+                except KeyboardInterrupt:
+                    pass
         finally:
-            purge_runner.stop()
-            watch_runner.stop()
-            snapshot_runner.stop()
             worker.shutdown()
             app.close()
         return 0

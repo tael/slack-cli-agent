@@ -75,6 +75,9 @@ class RuntimeSettings:
     job_retention_sec: float = 7 * 86400
     # 끝난 작업을 정리하는 주기.
     job_purge_interval_sec: float = 3600
+    # 받아 놓은 첨부를 지우는 간격. 원본은 기동 시 한 번만 지웠다 — 며칠 도는
+    # 프로세스에서는 그 뒤에 받은 것이 계속 남는다.
+    attachment_cleanup_interval_sec: float = 3600
 
     # 추측한 값으로 퍼센트를 만들지 않는다. 비워 둔다
     context_limit: Mapping[str, int] = field(default_factory=dict)
