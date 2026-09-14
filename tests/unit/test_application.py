@@ -24,7 +24,7 @@ from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ingress import IngressService
 from slack_cli_agent.core.pipeline import RequestPipeline
 from slack_cli_agent.core.worker import Worker
-from slack_cli_agent.engine.runner import EngineRunner, FallbackEngine
+from slack_cli_agent.engine.runner import DirectInvoker, EngineRunner, FallbackEngine, FallbackInvoker
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard
 from slack_cli_agent.plugin.base import BotPlugin
 from slack_cli_agent.prompt.sections import CompositionContext, PromptSection, RosterSection
@@ -883,4 +883,50 @@ class Test끝난작업정리연결:
     def test_보관기간은_되짚기_최대창보다_길다(self, app: Application) -> None:
         """짧으면 이미 답한 메시지를 되짚기가 미응답으로 보고 다시 등록한다."""
         assert app.settings.job_retention_sec > app.settings.catchup_max_window_sec
+        app.close()
+
+
+class Test폴백엔진연결:
+    """폴백이 실제 요청 경로에서 도는가.
+
+    `FallbackEngine` 을 만드는 것과 요청이 그 `run()` 을 거치는 것은 다르다.
+    실행기를 파이프라인에 그대로 넘기면 감싼 의미가 없어, 한도 소진 때 대체
+    엔진 전환과 상태 기록이 일어나지 않는다.
+    """
+
+    @staticmethod
+    def _폴백있는프로필(tmp_path: Path) -> Profile:
+        binary = tmp_path / "bin" / "fake-engine"
+        return write_profile(
+            tmp_path,
+            fallback_engine={"type": "codex", "binary": str(binary), "model": "model-b"},
+        )
+
+    def test_폴백이_없으면_직접실행을_쓴다(self, app: Application) -> None:
+        assert isinstance(app.engine_invoker, DirectInvoker)
+        app.close()
+
+    def test_폴백이_있으면_전환판정을_거친다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        application = Application(self._폴백있는프로필(tmp_path), client)
+        assert isinstance(application.engine_invoker, FallbackInvoker)
+        application.close()
+
+    def test_파이프라인이_그_부품을_받는다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        """만드는 것과 요청 경로에 연결하는 것은 다르다."""
+        application = Application(self._폴백있는프로필(tmp_path), client)
+        assert application.pipeline()._invoker is application.engine_invoker
+        application.close()
+
+    def test_감시확인도_같은_부품을_쓴다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        """확인 실행만 실행기를 직접 부르면 그 경로에서 전환이 안 일어난다."""
+        import inspect
+
+        from slack_cli_agent.core import application as 조립모듈
+
+        본문 = inspect.getsource(조립모듈.Application._watch_run_check)
+        assert "engine_runner.run(" not in 본문
+        assert "engine_invoker.invoke(" in 본문
+
+    def test_같은_부품을_되풀이_쓴다(self, app: Application) -> None:
+        assert app.engine_invoker is app.engine_invoker
         app.close()

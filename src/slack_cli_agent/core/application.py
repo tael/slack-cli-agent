@@ -52,7 +52,7 @@ from ..engine.codex import CodexEngine
 from ..engine.registry import EngineRegistry
 from ..engine.transcript import ClaudeTranscriptReader
 from ..engine.environment import create_environment_policy
-from ..engine.runner import EngineRunner, FallbackEngine
+from ..engine.runner import DirectInvoker, EngineInvoker, EngineRunner, FallbackEngine, FallbackInvoker
 from ..engine.switcher import EngineSwitcher
 from ..guard.base import OutputGuard
 from ..guard.dropline import ConfiguredLineDropGuard
@@ -225,6 +225,10 @@ class Application:
         # 연결 점검기와 그 주기 실행기. 점검기는 끊김 시작 시각을 안에
         # 들고 있어, 회차마다 새로 만들면 복구 판정이 나오지 않는다.
         self._health_runner: PeriodicRunner | None = None
+        # 엔진 실행 부품. 엔진을 만들 때 함께 정한다 — 폴백이 설정돼
+        # 있는지는 그 시점에만 드러나고, 나중에 종류로 되짚으면 조립이
+        # 무엇을 만들었는지가 코드에서 사라진다.
+        self._invoker: EngineInvoker | None = None
         self._watch_jobs: WatchJobQueue | None = None
         self._closed = False
 
@@ -296,17 +300,30 @@ class Application:
                 self._profile.primary_engine.type, self._profile, self._settings
             )
             fallback_spec = self._profile.fallback_engine
+            runner = self.engine_runner
             if fallback_spec is None:
                 self._engine = primary
+                self._invoker = DirectInvoker(runner, primary)
             else:
                 secondary = self._registry.create(fallback_spec.type, self._profile, self._settings)
-                self._engine = FallbackEngine(
+                fallback = FallbackEngine(
                     primary,
                     secondary,
                     EngineSwitcher(self._profile.paths.engine_state),
-                    self.engine_runner,
+                    runner,
                 )
+                self._engine = fallback
+                # 실행기를 그대로 넘기면 이 클래스의 전환 판정이 건너뛰어진다.
+                self._invoker = FallbackInvoker(fallback)
         return self._engine
+
+    @property
+    def engine_invoker(self) -> EngineInvoker:
+        """엔진 실행 한 걸음. 호출부는 폴백 여부를 모른다."""
+        if self._invoker is None:
+            self.engine
+        assert self._invoker is not None
+        return self._invoker
 
     @property
     def engine_runner(self) -> EngineRunner:
@@ -452,7 +469,7 @@ class Application:
                 prompt_composer=self._composer(),
                 session_manager=SessionManager(SqliteSessionStore(self._database), self._settings),
                 engine=self.engine,
-                engine_runner=self.engine_runner,
+                invoker=self.engine_invoker,
                 guard_pipeline=self._guards(),
                 publisher=self.publisher(),
                 audit=AuditLog(self._database, self._profile.paths.audit_log),
@@ -553,7 +570,7 @@ class Application:
             is_rich=bool(config and config.rich),
             chat_level=config.chat if config else "normal",
         ))
-        return self.engine_runner.run(self.engine, EngineRequest(
+        return self.engine_invoker.invoke(EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
             session_id=uuid.uuid4().hex,
