@@ -190,7 +190,7 @@ class ContentSplitter:
             if not buf:
                 return
             if final:
-                # 마지막 방출에서는 헤딩을 되돌리지 않는다. 되돌린 꼬리가 갈 곳이 없다.
+                # 마지막 방출에서는 헤딩을 되실행하지 않는다. 되돌린 꼬리가 갈 곳이 없다.
                 parts.append("\n".join(buf).strip("\n"))
                 forced.append(by_marker)
                 buf.clear()

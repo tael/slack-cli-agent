@@ -614,7 +614,7 @@ class Application:
         """배치가 남긴 완료 표식이 있으면 끝난 것으로 본다.
 
         제안 파일 존재로 판정하면 안 된다 — 배치는 제안을 먼저 저장하고 반영
-        하므로, 반영이 실패한 날이 끝난 것으로 읽혀 영영 다시 안 돈다.
+        하므로, 반영이 실패한 날이 끝난 것으로 읽혀 영영 다시 실행되지 않는다.
         """
         return self._proposal_store().is_done(day)
 
@@ -628,13 +628,13 @@ class Application:
         """학습 시작 시각. 0-23 밖이면 기본값으로 되돌린다.
 
         범위를 벗어난 값을 그대로 쓰면 그 조건이 하루도 성립하지 않아 배치가
-        조용히 안 돈다. 설정 오타를 침묵으로 넘기지 않는다.
+        조용히 실행되지 않는다. 설정 오타를 침묵으로 넘기지 않는다.
         """
         hour = self._settings.learning_run_hour
         if 0 <= hour <= 23:
             return hour
         fallback = RuntimeSettings().learning_run_hour
-        log.warning("learning_run_hour 값이 범위 밖이다(%s). %s 시로 돌린다", hour, fallback)
+        log.warning("learning_run_hour 값이 범위 밖이다(%s). %s 시로 되돌린다", hour, fallback)
         return fallback
 
     def learning_schedule(self) -> DailyBatchSchedule:
@@ -645,7 +645,7 @@ class Application:
         )
 
     def _learning_batch_tick(self) -> None:
-        """돌릴 날이 있을 때만 배치를 부른다. 판정은 일정이 한다."""
+        """분석할 날짜가 있을 때만 배치를 부른다. 판정은 일정이 한다."""
         day = self.learning_schedule().due_day()
         if day is None:
             return
@@ -656,9 +656,9 @@ class Application:
         log.info("%s 학습 배치를 마쳤다. 반영 %s, 알림 %s", day, dict(report.applied), report.notified)
 
     def learning_batch_runner(self) -> PeriodicRunner:
-        """학습 배치를 돌릴 때가 됐는지 주기로 판정한다.
+        """학습 배치를 실행할 때가 됐는지 주기로 판정한다.
 
-        간격이 짧아도 실제로 도는 것은 하루 한 번이다 — 틱마다 하는 일은
+        간격이 짧아도 실제로 실행되는 것은 하루 한 번이다 — 틱마다 하는 일은
         파일 하나를 확인하는 것뿐이고, 날짜 판정은 `learning/schedule.py` 가 한다.
         """
         return PeriodicRunner(
@@ -763,7 +763,7 @@ class Application:
     def _watch_run_check(self, job: WatchJob) -> EngineResponse:
         """감시 확인 한 건을 엔진으로 실행한다.
 
-        새 세션으로 돈다 — 확인은 등록보다 한참 뒤에 일어나 원래 대화 세션이
+        새 세션으로 실행된다 — 확인은 등록보다 한참 뒤에 일어나 원래 대화 세션이
         이미 만료됐을 수 있고, 없는 세션으로 이어받기를 시도하면 그 실행 자체가
         실패한다. 원본도 확인마다 새 세션 ID 를 쓴다.
 
@@ -978,7 +978,7 @@ class Application:
         return self._review_tasks
 
     def _review_engine(self) -> ReviewEngineCaller:
-        """점검은 소유자 권한으로 돈다. 시스템 프롬프트는 비운다 —
+        """점검은 소유자 권한으로 실행된다. 시스템 프롬프트는 비운다 —
 
         점검 지침 전부를 각 ReviewTask 의 `build_prompt` 가 본문에 담는다.
         """
@@ -1075,7 +1075,7 @@ class Application:
         맡을지는 조립이 아니라 그 프로세스의 결정이다.
 
         캐시한다. 매번 새로 만들면 시작한 객체와 정지를 요청받는 객체가 달라져,
-        정지시켜도 먼저 시작된 스레드가 계속 돈다.
+        정지시켜도 먼저 시작된 스레드가 계속 실행된다.
         """
         if self._roster_refresher is None:
             self._roster_refresher = PeriodicRunner(
@@ -1118,7 +1118,7 @@ class Application:
         )
 
     def health_runner(self, restart: Callable[[str], None]) -> PeriodicRunner:
-        """연결 점검을 주기적으로 실행한다. 안 띄우면 판정 자체가 안 돈다.
+        """연결 점검을 주기적으로 실행한다. 안 띄우면 판정 자체가 실행되지 않는다.
 
         소켓 오류를 세는 핸들러를 로거에 붙이는 것과, 그 값이 상한을 넘었는지
         보는 것은 다른 일이다. 이 실행기가 없으면 오류가 아무리 쌓여도 재기동이
@@ -1234,8 +1234,8 @@ class Application:
         """접수 프로세스가 띄우는 주기 실행기 묶음.
 
         연결 점검은 소켓 연결이 이 프로세스에만 있으므로 여기서 안 띄우면
-        어디서도 안 돈다. 명부 갱신도 접수가 맡는다 — 워커는 여럿 뜰 수 있어
-        거기서 돌리면 같은 파일을 여러 프로세스가 동시에 쓴다.
+        어디서도 실행되지 않는다. 명부 갱신도 접수가 맡는다 — 워커는 여럿 뜰 수 있어
+        거기서 실행하면 같은 파일을 여러 프로세스가 동시에 쓴다.
         """
         return ServiceGroup(
             [

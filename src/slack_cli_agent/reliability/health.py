@@ -30,7 +30,7 @@ class SocketErrorWatch(logging.Handler):
 
     소켓이 끊어진 것을 봇 스스로 알아채는 근거다. 라이브러리가 알려주는
     콜백에 기대지 않고 로그를 직접 본다. 판별 대상 로그 문구가 바뀌어도
-    건강 점검 자체는 계속 돈다.
+    건강 점검 자체는 계속 실행된다.
     """
 
     def __init__(self, now: Callable[[], float] = time.time) -> None:
