@@ -237,6 +237,7 @@ class Application:
         # 들고 있어, 회차마다 새로 만들면 복구 판정이 나오지 않는다.
         self._health_runner: PeriodicRunner | None = None
         self._attachments: AttachmentStore | None = None
+        self._catchup_service: CatchupService | None = None
         # 엔진 실행 부품. 엔진을 만들 때 함께 정한다 — 폴백이 설정돼
         # 있는지는 그 시점에만 드러나고, 나중에 종류로 되짚으면 조립이
         # 무엇을 만들었는지가 코드에서 사라진다.
@@ -631,14 +632,21 @@ class Application:
         )
 
     def _catchup(self) -> CatchupService:
-        return CatchupService(
-            history=self._history_port(),
-            gate=ResponseGate(),
-            notices=self._notices,
-            settings=self._settings,
-            bot_user_id=self.identity.user_id,
-            is_self=self._is_self_message,
-        )
+        """되짚기 서비스. 한 번 만들어 계속 쓴다.
+
+        마치지 못한 채널과 재시도 횟수를 이 객체가 들고 있다. 회차마다 새로
+        만들면 그 기록이 매번 비어 재시도 간격이 항상 첫 회차 값이 된다.
+        """
+        if self._catchup_service is None:
+            self._catchup_service = CatchupService(
+                history=self._history_port(),
+                gate=ResponseGate(),
+                notices=self._notices,
+                settings=self._settings,
+                bot_user_id=self.identity.user_id,
+                is_self=self._is_self_message,
+            )
+        return self._catchup_service
 
     def worker(self, worker_id: str = "worker") -> Worker:
         """워커는 부를 때마다 새로 만든다. worker_id 가 프로세스마다 달라야 한다."""
@@ -935,6 +943,32 @@ class Application:
             name="attachment_cleanup",
         )
 
+    def catchup_retry_runner(self, worker: Worker) -> PeriodicRunner:
+        """마치지 못한 되짚기를 주기적으로 다시 본다.
+
+        슬랙이 채널 기록을 빈 목록으로 주는 것은 대개 잠깐이다. 다시 보지
+        않으면 그 구간에 답을 기다리는 요청이 어느 경로에서도 안 잡힌다.
+        """
+        return PeriodicRunner(
+            lambda: self._catchup_retry_tick(worker),
+            self._settings.catchup_retry_interval_sec,
+            name="catchup_retry",
+        )
+
+    def _catchup_retry_tick(self, worker: Worker) -> None:
+        for status in worker.retry_catchup():
+            if not status.alert:
+                continue
+            # 오래 못 보면 사람이 알아야 한다. 조용히 다시 보기만 하면 몇
+            # 시간째 안 잡히는 것을 아무도 모른다.
+            self._notify_owner(
+                "*되짚기를 오래 마치지 못하고 있습니다*\n\n"
+                f"- 채널 : {status.channel}\n"
+                f"- {status.stuck_sec / 60:.0f}분째입니다\n\n"
+                "슬랙이 채널 기록을 계속 빈 목록으로 돌려줍니다.\n"
+                "그 채널에서 답을 기다리는 요청이 있어도 잡히지 않습니다."
+            )
+
     def ingress_services(self, restart: Callable[[str], None]) -> ServiceGroup:
         """접수 프로세스가 띄우는 주기 실행기 묶음.
 
@@ -947,10 +981,18 @@ class Application:
             name="ingress",
         )
 
-    def worker_services(self) -> ServiceGroup:
-        """워커 프로세스가 띄우는 주기 실행기 묶음."""
+    def worker_services(self, worker: Worker) -> ServiceGroup:
+        """워커 프로세스가 띄우는 주기 실행기 묶음.
+
+        되짚기 재시도는 그 워커의 큐에 넣으므로 워커를 함께 받는다.
+        """
         return ServiceGroup(
-            [self.state_snapshot_runner(), self.watch_runner(), self.job_purge_runner()],
+            [
+                self.state_snapshot_runner(),
+                self.watch_runner(),
+                self.job_purge_runner(),
+                self.catchup_retry_runner(worker),
+            ],
             name="worker",
         )
 

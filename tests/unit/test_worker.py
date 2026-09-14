@@ -66,9 +66,16 @@ class FakeCatchup:
     report: CatchupReport
     calls: list[tuple[list[str], float]] = field(default_factory=list)
 
+    retry_statuses: list = field(default_factory=list)
+    retry_calls: int = 0
+
     def sweep(self, channels: list[str], window: float) -> CatchupReport:
         self.calls.append((channels, window))
         return self.report
+
+    def retry_pending(self) -> list:
+        self.retry_calls += 1
+        return self.retry_statuses
 
 
 class FakeSlackClient:
@@ -517,3 +524,45 @@ class Test되짚기가_실패건을_되살린다:
         report = CatchupReport(missed=[ctx("1.1", "T1")], skipped=[], unchecked_channels=[])
         worker._catchup = FakeCatchup(report)
         assert worker.catch_up(["C1"]).missed == []
+
+
+class Test마치지못한되짚기를다시본다:
+    """슬랙이 채널 기록을 빈 목록으로 주면 그 구간의 요청이 안 잡힌다.
+
+    한 번 실패하고 끝내면 그 요청들은 어느 경로에서도 처리되지 않는다.
+    원본은 건강 점검이 돌 때마다 다시 봤다.
+    """
+
+    def test_다시_보아_찾은_요청을_큐에_넣는다(self, database) -> None:
+        from slack_cli_agent.reliability.catchup import RetryStatus
+
+        catchup = FakeCatchup(CatchupReport(missed=[], skipped=[], unchecked_channels=[]))
+        catchup.retry_statuses = [RetryStatus(channel="C1", stuck_sec=0.0, alert=False, missed=(ctx("9.1", "T9"),))]
+        worker, queue, _client = make_worker(database=database, catchup=catchup)
+
+        worker.retry_catchup()
+
+        assert [job.context.ts for job in queue.pending()] == ["9.1"]
+
+    def test_이미_대기중인_건은_다시_안_넣는다(self, database) -> None:
+        from slack_cli_agent.reliability.catchup import RetryStatus
+
+        catchup = FakeCatchup(CatchupReport(missed=[], skipped=[], unchecked_channels=[]))
+        catchup.retry_statuses = [RetryStatus(channel="C1", stuck_sec=0.0, alert=False, missed=(ctx("9.1", "T9"),))]
+        worker, queue, _client = make_worker(database=database, catchup=catchup)
+        queue.enqueue(ctx("9.1", "T9"))
+
+        worker.retry_catchup()
+
+        assert len(queue.pending()) == 1
+
+    def test_상태를_그대로_돌려준다(self, database) -> None:
+        """오래 못 본 채널을 사람에게 알릴지는 호출부가 정한다."""
+        from slack_cli_agent.reliability.catchup import RetryStatus
+
+        catchup = FakeCatchup(CatchupReport(missed=[], skipped=[], unchecked_channels=[]))
+        막힌것 = RetryStatus(channel="C9", stuck_sec=3600.0, alert=True)
+        catchup.retry_statuses = [막힌것]
+        worker, _queue, _client = make_worker(database=database, catchup=catchup)
+
+        assert worker.retry_catchup() == [막힌것]

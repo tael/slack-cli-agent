@@ -225,12 +225,14 @@ class FakeApplication:
         self.watch_runner_ = FakeRefresher()
         self.health_runner_ = FakeRefresher()
         self.purge_runner_ = FakeRefresher()
+        self.catchup_retry_runner_ = FakeRefresher()
         # 접수 프로세스가 재기동 동작을 무엇으로 넘겼는지 기록한다.
         self.health_restart: object | None = None
         self.restarter_calls = 0
         self.shutdown_marks = 0
         self.ingress_services_calls = 0
         self.worker_services_calls = 0
+        self.worker_services_arg: object | None = None
         # 종료 대기 상한을 여기서 가져간다. 실제 Application 과 같은 계약이다.
         self.settings = RuntimeSettings()
 
@@ -239,9 +241,13 @@ class FakeApplication:
         self.health_restart = restart
         return ServiceGroup([self.health_runner_, self._roster_refresher], name="ingress")
 
-    def worker_services(self) -> ServiceGroup:
+    def worker_services(self, worker: object) -> ServiceGroup:
         self.worker_services_calls += 1
-        return ServiceGroup([self.snapshot_runner, self.watch_runner_, self.purge_runner_], name="worker")
+        self.worker_services_arg = worker
+        return ServiceGroup(
+            [self.snapshot_runner, self.watch_runner_, self.purge_runner_, self.catchup_retry_runner_],
+            name="worker",
+        )
 
     def state_snapshot_runner(self) -> FakeRefresher:
         return self.snapshot_runner
@@ -504,7 +510,8 @@ class TestWorkerCommand:
             ["worker", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
         )
         assert code == 0
-        assert worker.calls[:2] == ["reclaim", "run_forever"]
+        assert worker.calls[0] == "reclaim"
+        assert worker.calls.index("reclaim") < worker.calls.index("run_forever")
 
     def test_once_주면_run_once가_한번만_불린다(self, tmp_path: Path) -> None:
         profiles = tmp_path / "profiles"
@@ -519,28 +526,36 @@ class TestWorkerCommand:
         assert code == 0
         assert worker.run_once_calls == 1
 
-    def test_catch_up_없으면_안_부른다(self, tmp_path: Path) -> None:
-        profiles = tmp_path / "profiles"
-        write_profile(profiles, tmp_path / "state")
-        worker = FakeWorker()
-        app = FakeApplication(worker=worker)
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile: app)])
-        out = io.StringIO()
-        cli.run(["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"], stdout=out)
-        assert worker.catch_up_calls == []
+    def test_기동하면_플래그_없이도_되짚는다(self, tmp_path: Path) -> None:
+        """원본은 기동 직후 되짚기를 예약한다.
 
-    def test_catch_up_주면_부른다(self, tmp_path: Path) -> None:
+        재기동 중에 들어온 멘션은 소켓 이벤트로 다시 오지 않는다. 되짚지
+        않으면 그 요청들은 어느 경로에서도 처리되지 않는다. 플래그를 줘야만
+        되짚으면 운영에서 그 플래그를 빠뜨린 순간 유실이 난다.
+        """
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker()
         app = FakeApplication(worker=worker, channel_ids=["C1", "C2"])
         cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile: app)])
-        out = io.StringIO()
         cli.run(
-            ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once", "--catch-up"],
-            stdout=out,
+            ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"],
+            stdout=io.StringIO(),
         )
         assert worker.catch_up_calls == [["C1", "C2"]]
+
+    def test_no_catch_up_을_주면_안_되짚는다(self, tmp_path: Path) -> None:
+        """되짚기는 슬랙 기록 조회를 동반한다. 끌 수단은 남긴다."""
+        profiles = tmp_path / "profiles"
+        write_profile(profiles, tmp_path / "state")
+        worker = FakeWorker()
+        app = FakeApplication(worker=worker, channel_ids=["C1", "C2"])
+        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile: app)])
+        cli.run(
+            ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once", "--no-catch-up"],
+            stdout=io.StringIO(),
+        )
+        assert worker.catch_up_calls == []
 
     def test_KeyboardInterrupt가_나면_shutdown이_불리고_0을_돌려준다(self, tmp_path: Path) -> None:
         profiles = tmp_path / "profiles"
