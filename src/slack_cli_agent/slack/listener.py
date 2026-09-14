@@ -24,9 +24,7 @@ from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import BotIdentity
-
-# 파일을 붙여 보낸 말은 subtype 이 있어도 사람이 새로 건넨 말로 친다.
-HUMAN_SUBTYPES = frozenset({"file_share"})
+from slack_cli_agent.slack.message_kind import MessageKind
 
 
 class EventListener:
@@ -45,6 +43,8 @@ class EventListener:
         # 자기 말 판정과 멘션 대조가 같은 신원을 봐야 한다. 따로 들면 조립이
         # 한쪽에만 값을 줘도 부품 시험이 통과한다.
         self._identity = identity
+        # 메시지를 무엇으로 볼지는 한 곳에서 판정한다. 여기 따로 적으면 기준이 갈린다.
+        self._kind = MessageKind()
 
     def _context_from_event(
         self, event: Mapping[str, Any], *, unaddressed: bool, is_dm: bool
@@ -79,10 +79,7 @@ class EventListener:
         return joined, asked
 
     def from_message(self, event: Mapping[str, Any]) -> RequestContext | None:
-        if event.get("bot_id"):
-            return None
-        subtype = event.get("subtype")
-        if subtype and subtype not in HUMAN_SUBTYPES:
+        if not self._kind.is_human(event):
             return None
 
         if event.get("channel_type") == "im":

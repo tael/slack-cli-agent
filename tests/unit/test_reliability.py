@@ -236,6 +236,37 @@ class TestFindMissed:
         assert missed[0].channel == "C1"
         assert missed[0].thread_ts == "99000.0"
 
+    def test_파일을_붙여_부른_말도_찾는다(self) -> None:
+        """슬랙은 파일을 붙이면 subtype 을 붙인다.
+
+        소켓 이벤트를 받는 쪽은 그것을 사람 말로 받는다. 되짚기가 거르면 그
+        요청은 재기동 중에 들어왔을 때만 유실되고, 평소에는 멀쩡해 보인다.
+        """
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "99000.0", "user": "U1", "subtype": "file_share", "text": "<@U_BOT> 이거 봐줘"},
+                ]
+            }
+        )
+        service = make_service(history)
+
+        outcome = service.find_missed("C1", window=3600)
+
+        assert [m.ts for m in outcome.value()] == ["99000.0"]
+
+    def test_채널_참여_알림은_안_찾는다(self) -> None:
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "99000.0", "user": "U1", "subtype": "channel_join", "text": "<@U_BOT> 들어옴"},
+                ]
+            }
+        )
+        service = make_service(history)
+
+        assert service.find_missed("C1", window=3600).value() == []
+
     def test_이미_답변_표식이_있으면_빠진다(self) -> None:
         history = FakeHistoryReader(
             history={

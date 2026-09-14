@@ -136,6 +136,26 @@ class TestLateAddendumCheckerNewMessages:
         assert addendum.index("첫 번째 추가") < addendum.index("두 번째 추가")
         assert latest == "120.0"
 
+    def test_파일을_붙여_추가한_말도_반영한다(self):
+        """답변을 준비하는 사이 파일을 붙여 덧붙인 말이 빠지면 그 요청을 못 본 채 답한다."""
+        history = FakeHistory(thread_msgs=[
+            {"ts": "100.0", "user": "U1", "text": "원래 물음"},
+            {"ts": "150.5", "user": "U2", "subtype": "file_share", "text": "이 그림도 같이 봐줘"},
+        ])
+        checker = make_checker(history)
+        addendum, latest = checker.check("C1", "T1", "100.0", scope="thread")
+        assert "이 그림도 같이 봐줘" in addendum
+        assert latest == "150.5"
+
+    def test_채널_참여_알림은_반영하지_않는다(self):
+        history = FakeHistory(thread_msgs=[
+            {"ts": "100.0", "user": "U1", "text": "원래 물음"},
+            {"ts": "150.5", "user": "U2", "subtype": "channel_join", "text": "들어왔습니다"},
+        ])
+        checker = make_checker(history)
+        addendum, _latest = checker.check("C1", "T1", "100.0", scope="thread")
+        assert addendum == ""
+
     def test_bot_messages_are_skipped(self):
         history = FakeHistory(thread_msgs=[
             {"ts": "110.0", "bot_id": "B1", "text": "봇이 남긴 말"},
