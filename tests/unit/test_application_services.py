@@ -227,10 +227,17 @@ class Test복구직후되짚기:
 
     @staticmethod
     def 워커를_바꾼다(app: Application, 닿는다: list[bool]) -> tuple[Any, list[tuple[list[str], float | None]]]:
+        from slack_cli_agent.reliability.catchup import CatchupReport
+
         기록: list[tuple[list[str], float | None]] = []
         워커 = app.worker()
         워커.retry_catchup = list  # type: ignore[method-assign]
-        워커.catch_up = lambda channels, window_sec=None: 기록.append((channels, window_sec))  # type: ignore[method-assign,return-value]
+
+        def 되짚는다(channels: list[str], window_sec: float | None = None) -> CatchupReport:
+            기록.append((channels, window_sec))
+            return CatchupReport(missed=[], skipped=[], unchecked_channels=[])
+
+        워커.catch_up = 되짚는다  # type: ignore[method-assign]
         app._slack_reachable = lambda: 닿는다[0]  # type: ignore[method-assign]
         return 워커, 기록
 
@@ -281,3 +288,48 @@ class Test복구직후되짚기:
         닿는다[0] = True
         러너._task()
         assert 기록[0][1] == app.settings.catchup_max_window_sec
+
+
+class Test복구보고:
+    """끊겼다 돌아온 사실을 소유자에게 알리는가.
+
+    원본은 복구 시각과 되짚어 처리한 건수를 개인 대화로 보낸다(bot.py:6852).
+    알리지 않으면 운영자는 장애가 있었다는 것도, 그 구간이 회수됐는지도 모른다.
+    """
+
+    @staticmethod
+    def 복구시킨다(app: Application) -> list[tuple[str, dict[str, Any]]]:
+        from slack_cli_agent.reliability.catchup import CatchupReport
+
+        닿는다 = [True]
+        워커 = app.worker()
+        워커.retry_catchup = list  # type: ignore[method-assign]
+        워커.catch_up = lambda channels, window_sec=None: CatchupReport(  # type: ignore[method-assign]
+            missed=[object(), object()], skipped=[], unchecked_channels=[]
+        )
+        app._slack_reachable = lambda: 닿는다[0]  # type: ignore[method-assign]
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        닿는다[0] = True
+        러너._task()
+        return app._client.calls  # type: ignore[attr-defined]
+
+    def test_복구를_소유자에게_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        보낸것 = [kwargs for 이름, kwargs in self.복구시킨다(app) if 이름 == "chat_postMessage"]
+        assert any("연결 복구" in str(kwargs) for kwargs in 보낸것), 보낸것
+
+    def test_되짚어_처리한_건수를_함께_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        """건수가 없으면 회수가 됐는지 0건이었는지 구분되지 않는다."""
+        보낸것 = [kwargs for 이름, kwargs in self.복구시킨다(app) if 이름 == "chat_postMessage"]
+        assert any("2건" in str(kwargs) for kwargs in 보낸것), 보낸것
+
+    def test_끊기지_않았으면_안_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        워커 = app.worker()
+        워커.retry_catchup = list  # type: ignore[method-assign]
+        app._slack_reachable = lambda: True  # type: ignore[method-assign]
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        러너._task()
+        assert [이름 for 이름, _ in client.calls if 이름 == "chat_postMessage"] == []

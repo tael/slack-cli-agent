@@ -24,15 +24,16 @@ import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from ..core.timezones import KST
 
 logger = logging.getLogger(__name__)
 
 # 시각 표기 기준. transcript.py 의 KST 와 값은 같지만, 이 모듈은 그쪽에
 # 의존하지 않기 위해 따로 둔다.
-KST = timezone(timedelta(hours=9))
 
 # 명부 파일 사용 안내에 넣는 예시. 실제 인물이 아닌 가상 핸들이다.
 _EXAMPLE_HANDLE = "jamie.oh"
