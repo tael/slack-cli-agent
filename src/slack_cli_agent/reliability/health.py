@@ -41,7 +41,7 @@ class SocketErrorWatch(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = record.getMessage()
-        except Exception:
+        except Exception:  # noqa: BLE001 — 로그 레코드 포맷 실패로 감시 자체가 멎으면 안 된다 — 그 레코드만 건너뛴다
             return
         now = self._now()
         if "on_error invoked" in msg or "Failed to " in msg:
@@ -193,7 +193,7 @@ class SelfRestarter:
         if self._on_shutdown_start is not None:
             try:
                 self._on_shutdown_start()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — 종료 표시 실패가 재기동 자체를 막으면 안 된다 — 표시를 못 해도 나가는 것이 우선이다
                 log.warning("종료 표시 실패 : %s", exc)
         self._drain()
         self._exit(1)
@@ -208,7 +208,7 @@ class SelfRestarter:
             return
         try:
             self._notify(f"자동 재기동\n\n- 사유 : {reason}\n\n슬랙 API 는 닿는데 소켓만 끊겨 다시 띄웁니다.")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — 재기동 사유 알림 실패가 종료 절차를 막으면 안 된다
             log.warning("재기동 사유 알림 실패 : %s", exc)
 
     def _drain(self) -> None:
@@ -224,7 +224,7 @@ class SelfRestarter:
         while waited < self._grace_sec:
             try:
                 remaining = self._inflight_count()
-            except Exception:
+            except Exception:  # noqa: BLE001 — 처리 중 건수 조회 실패 시 더 기다리지 않고 종료한다 — 무한정 기다리면 소켓이 끊긴 채로 계속 산다
                 return
             if remaining <= 0:
                 return

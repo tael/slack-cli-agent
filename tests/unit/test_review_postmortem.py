@@ -13,20 +13,20 @@ from slack_cli_agent.review.postmortem import PostmortemTask
 
 
 def make_task(**overrides) -> PostmortemTask:
-    kwargs = dict(
-        ledger=None,
-        message_lookup=None,
-        transcript=None,
-        answer_finder=None,
-        reactions=None,
-        permalinks=None,
-        publisher=None,
-        engine=None,
-        troubleshoot_channel="TS",
-        bot_display_name="테스트봇",
-        code_dir="/code",
-        persona_dir="/persona",
-    )
+    kwargs = {
+        "ledger": None,
+        "message_lookup": None,
+        "transcript": None,
+        "answer_finder": None,
+        "reactions": None,
+        "permalinks": None,
+        "publisher": None,
+        "engine": None,
+        "troubleshoot_channel": "TS",
+        "bot_display_name": "테스트봇",
+        "code_dir": "/code",
+        "persona_dir": "/persona",
+    }
     kwargs.update(overrides)
     return PostmortemTask(**kwargs)
 

@@ -186,6 +186,7 @@ class TestSlowReportFormatter:
         diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(900.0, None)
         summary, detail = formatter.format(meta, diagnosis, None)
         assert "계산하지 못했습니다" in detail
+        assert "900" in summary
 
 
 class FakePublisher:
@@ -212,11 +213,11 @@ class TestSlowRequestReporter:
         )
 
     def _meta(self, **overrides) -> SlowRequestMeta:
-        base = dict(
-            elapsed_wall=850.0, mono_elapsed=840.0, started=0.0, model="claude-x",
-            model_actual=None, effort="high", num_turns=5, reason=None,
-            session_id="s1", resume=True, channel="C1", channel_name="테스트채널", text="원문",
-        )
+        base = {
+            "elapsed_wall": 850.0, "mono_elapsed": 840.0, "started": 0.0, "model": "claude-x",
+            "model_actual": None, "effort": "high", "num_turns": 5, "reason": None,
+            "session_id": "s1", "resume": True, "channel": "C1", "channel_name": "테스트채널", "text": "원문",
+        }
         base.update(overrides)
         return SlowRequestMeta(**base)
 

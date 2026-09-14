@@ -12,21 +12,21 @@ from slack_cli_agent.review.trace import DebugTraceTask
 
 
 def make_task(**overrides) -> DebugTraceTask:
-    kwargs = dict(
-        ledger=None,
-        message_lookup=None,
-        transcript=None,
-        answer_finder=None,
-        reactions=None,
-        permalinks=None,
-        publisher=None,
-        engine=None,
-        troubleshoot_channel="TS",
-        bot_display_name="테스트봇",
-        code_dir="/code",
-        persona_dir="/persona",
-        owner_display_name="관리자",
-    )
+    kwargs = {
+        "ledger": None,
+        "message_lookup": None,
+        "transcript": None,
+        "answer_finder": None,
+        "reactions": None,
+        "permalinks": None,
+        "publisher": None,
+        "engine": None,
+        "troubleshoot_channel": "TS",
+        "bot_display_name": "테스트봇",
+        "code_dir": "/code",
+        "persona_dir": "/persona",
+        "owner_display_name": "관리자",
+    }
     kwargs.update(overrides)
     return DebugTraceTask(**kwargs)
 

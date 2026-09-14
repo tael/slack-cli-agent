@@ -11,12 +11,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -76,7 +79,8 @@ class AttachmentStore:
             dest = where / name
             try:
                 result = self._downloader(url, token)
-            except Exception:
+            except Exception:  # noqa: BLE001 — 파일 하나의 다운로드 실패로 나머지 첨부 처리를 막지 않는다
+                log.warning("첨부 다운로드 실패 : %s", name)
                 continue
             if "text/html" in (result.content_type or ""):
                 # 권한이 없으면 슬랙이 로그인 화면을 준다. 200 이라 성공처럼 보인다.

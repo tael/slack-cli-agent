@@ -93,7 +93,8 @@ class ClaudeTranscriptReader(SessionTranscriptReader):
             if not isinstance(message, dict):
                 continue
             kind, brief = self._classify_content(message.get("content"))
-            usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
+            raw_usage = message.get("usage")
+            usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
             tokens = usage.get("output_tokens")
             input_tokens = usage.get("input_tokens")
             cache_creation = usage.get("cache_creation_input_tokens")
@@ -147,6 +148,6 @@ class ClaudeTranscriptReader(SessionTranscriptReader):
         if not value:
             return None
         try:
-            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(str(value)).timestamp()
         except (ValueError, TypeError):
             return None

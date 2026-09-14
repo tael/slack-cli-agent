@@ -43,7 +43,7 @@ class SqliteJobQueue(SqliteRepository):
                 return True
             return self._reopen_failed(conn, ctx, max_attempts)
 
-    def _reopen_failed(self, conn, ctx: RequestContext, max_attempts: int) -> bool:
+    def _reopen_failed(self, conn: sqlite3.Connection, ctx: RequestContext, max_attempts: int) -> bool:
         """실패로 끝난 같은 건을 대기로 되돌린다. 되돌렸으면 True.
 
         앞 회차의 실패 사유와 워커·시각을 함께 지운다. 남겨 두면 대기 중인

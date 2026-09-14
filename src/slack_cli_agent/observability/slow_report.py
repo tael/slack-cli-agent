@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -90,7 +91,7 @@ def detect_retries(events: Sequence[TranscriptEvent]) -> dict[float, int]:
         reqs.append((event.ts, event.cache_creation_tokens or 0, event.cache_read_tokens))
 
     found: dict[float, int] = {}
-    for (_, prev_cache_creation, prev_cache_read), (ts, cache_creation, cache_read) in zip(reqs, reqs[1:]):
+    for (_, prev_cache_creation, prev_cache_read), (ts, cache_creation, cache_read) in itertools.pairwise(reqs):
         orphan = cache_read - (prev_cache_read + prev_cache_creation)
         if cache_creation == 0 and orphan > 0:
             found[ts] = orphan
@@ -369,8 +370,10 @@ class UsageRowBuilder:
             return ("세션", f"{_fmt_tokens(context.used)}/{_fmt_tokens(context.limit)} ({ratio:.0f}퍼센트)")
         # 한도를 모르면 비율을 내지 않는다. 추측한 한도로 만든 퍼센트는
         # 컨텍스트 소진 임박 판정을 틀리게 한다.
-        return ("세션", f"{_fmt_tokens(context.used)} 사용, 한도 미상 "
-                        f"({model or '?'} 의 맥락 한도를 확인하지 못했습니다)")
+        return ("세션", (
+            f"{_fmt_tokens(context.used)} 사용, 한도 미상 "
+            f"({model or '?'} 의 맥락 한도를 확인하지 못했습니다)"
+        ))
 
 
 class SlowReportFormatter:
@@ -435,10 +438,14 @@ class SlowReportFormatter:
         lines = [
             "*시간 분해*",
             "",
-            f"- 대상 : {scope}, 세션 {meta.session_id[:8]} "
-            f"{total_span:.1f}초 ({breakdown.start_ts:.0f}부터 {breakdown.end_ts:.0f}까지)",
-            f"- 사고와 단순 대기는 출력 토큰 수를 초당 {self._assumed_tokens_per_sec:.0f}개로 나눠 "
-            "가른 근사치입니다. 실측이 아닙니다",
+            (
+                f"- 대상 : {scope}, 세션 {meta.session_id[:8]} "
+                f"{total_span:.1f}초 ({breakdown.start_ts:.0f}부터 {breakdown.end_ts:.0f}까지)"
+            ),
+            (
+                f"- 사고와 단순 대기는 출력 토큰 수를 초당 {self._assumed_tokens_per_sec:.0f}개로 나눠 "
+                "가른 근사치입니다. 실측이 아닙니다"
+            ),
             "",
             as_table(
                 [

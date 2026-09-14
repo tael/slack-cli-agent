@@ -152,6 +152,7 @@ class TestLateAddendumCheckerNewMessages:
         checker = make_checker(history)
         addendum, latest = checker.check("C1", "T1", "100.0", scope="thread")
         assert addendum == ""
+        assert latest is None
 
     def test_notice_messages_are_skipped(self):
         notices = NoticeCatalog()
@@ -167,6 +168,7 @@ class TestLateAddendumCheckerNewMessages:
         )
         addendum, latest = checker.check("C1", "T1", "100.0", scope="thread")
         assert addendum == ""
+        assert latest is None
 
     def test_blank_text_is_skipped(self):
         history = FakeHistory(thread_msgs=[
@@ -175,6 +177,7 @@ class TestLateAddendumCheckerNewMessages:
         checker = make_checker(history)
         addendum, latest = checker.check("C1", "T1", "100.0", scope="thread")
         assert addendum == ""
+        assert latest is None
 
     def test_owner_display_name_used_for_owner(self):
         history = FakeHistory(thread_msgs=[
@@ -193,10 +196,12 @@ class TestLateAddendumCheckerNewMessages:
         checker = make_checker(history)
         addendum, latest = checker.check("C1", "T1", "100.0", scope="channel")
         assert "채널에 새로 단 말" in addendum
+        assert latest == "150.0"
         assert history.read_history_calls
         called_channel, called_oldest, called_limit = history.read_history_calls[0]
         assert called_channel == "C1"
         assert called_oldest == 100.0
+        assert called_limit == 40
 
     def test_thread_scope_uses_read_thread_port(self):
         history = FakeHistory(thread_msgs=[])
@@ -206,6 +211,7 @@ class TestLateAddendumCheckerNewMessages:
         called_channel, called_thread_ts, called_limit = history.read_thread_calls[0]
         assert called_channel == "C1"
         assert called_thread_ts == "T1"
+        assert called_limit == 40
 
 
 class TestLateAddendumPrompt:

@@ -66,7 +66,8 @@ class SplitVerifier:
         """
         if limit is None:
             limit = self._settings.markdown_block_limit
-        parts, buf = [], []
+        parts: list[str] = []
+        buf: list[str] = []
         for line in text.replace(SPLIT_MARKER, "").split("\n"):
             if buf and len("\n".join(buf + [line])) > limit:
                 parts.append("\n".join(buf))
@@ -130,5 +131,5 @@ class SplitVerifier:
         res = getattr(exc, "response", None)
         try:
             return (res or {}).get("error") == "invalid_blocks"
-        except Exception:
+        except Exception:  # noqa: BLE001 — 응답 형태가 기대와 달라도 예외 형에 기대지 않고 문자열로 재판별한다
             return "invalid_blocks" in str(exc)

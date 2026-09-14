@@ -77,15 +77,15 @@ def make_caller(**overrides) -> tuple[ReviewEngineCaller, FakeRunner]:
     profile = overrides.pop("profile", None) or make_profile()
     runner = overrides.pop("runner", None) or FakeRunner(_response())
     engine = overrides.pop("engine", None) or FakeEngine(profile, None)
-    kwargs = dict(
-        engine=engine,
-        runner=runner,
-        profile=profile,
-        workdir=Path("/code"),
-        system_prompt="시스템 프롬프트",
-        readable_dirs=(Path("/persona"),),
-        allowed_tools=("Read",),
-    )
+    kwargs = {
+        "engine": engine,
+        "runner": runner,
+        "profile": profile,
+        "workdir": Path("/code"),
+        "system_prompt": "시스템 프롬프트",
+        "readable_dirs": (Path("/persona"),),
+        "allowed_tools": ("Read",),
+    }
     kwargs.update(overrides)
     return ReviewEngineCaller(**kwargs), runner
 

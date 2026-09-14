@@ -17,21 +17,21 @@ from slack_cli_agent.review.format import FormatReviewTask
 
 
 def make_task(**overrides) -> FormatReviewTask:
-    kwargs = dict(
-        ledger=None,
-        message_lookup=None,
-        transcript=None,
-        answer_finder=None,
-        reactions=None,
-        permalinks=None,
-        publisher=None,
-        engine=None,
-        troubleshoot_channel="TS",
-        bot_display_name="테스트봇",
-        persona_dir="/persona",
-        prompts_dir="/prompts",
-        post_rich_command="python3 /tools/post_rich.py --profile example",
-    )
+    kwargs = {
+        "ledger": None,
+        "message_lookup": None,
+        "transcript": None,
+        "answer_finder": None,
+        "reactions": None,
+        "permalinks": None,
+        "publisher": None,
+        "engine": None,
+        "troubleshoot_channel": "TS",
+        "bot_display_name": "테스트봇",
+        "persona_dir": "/persona",
+        "prompts_dir": "/prompts",
+        "post_rich_command": "python3 /tools/post_rich.py --profile example",
+    }
     kwargs.update(overrides)
     return FormatReviewTask(**kwargs)
 

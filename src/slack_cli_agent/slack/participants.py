@@ -46,7 +46,7 @@ class ThreadParticipants:
             return ()
         try:
             messages = self._history.read_thread(channel, thread_ts, self._limit)
-        except Exception:
+        except Exception:  # noqa: BLE001 — 참가자 조회 실패로 요청 자체를 실패시키지 않는다 — 프롬프트에 그 대목만 빠진다
             # 함께 있는 사람을 못 셌다고 요청 자체를 실패시키지 않는다.
             # 이 값이 없으면 프롬프트에 그 대목이 안 붙을 뿐이다.
             return ()

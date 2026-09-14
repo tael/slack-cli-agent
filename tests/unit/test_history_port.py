@@ -106,11 +106,7 @@ def test_read_history_none_is_distinguishable_from_actual_empty() -> None:
     """실제로 비어 있는 것(빈 목록)과 판정 불가(None)가 같은 값이 되면 안 된다."""
     empty_client = FakeWebClient()
     empty_client.queue_history({"ok": True, "messages": []})
-    settings = RuntimeSettings()
     empty_client._history_responses = [{"ok": True, "messages": []}]
-    real_reader = HistoryReader(
-        empty_client, settings, clock=lambda: 0.0, sleep=lambda _s: None
-    )
     # read_history 실물이 첫 시도에 성공하려면 messages 가 비어 있지 않아야 하므로,
     # "실제로 비어 있음"을 확인하려면 실물 대신 대역 reader 로 직접 [] 를 반환시킨다.
 

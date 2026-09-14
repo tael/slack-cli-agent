@@ -51,7 +51,7 @@ class ThreadTranscriptPort:
         try:
             # 점검은 스레드 전부를 본다 — before_ts 는 항상 None 이다.
             return self._builder.thread_transcript(channel, thread_ts, None)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — 대화록을 못 읽었다고 점검 전체를 멈추지 않는다
             logger.warning(
                 "대화록 조회 실패: channel=%s thread_ts=%s error=%s", channel, thread_ts, exc
             )
@@ -67,7 +67,7 @@ class SlackPermalinks:
     def permalink(self, channel: str, ts: str) -> str:
         try:
             resp = self._client.chat_getPermalink(channel=channel, message_ts=ts)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — 링크는 부가 정보다. 없어도 점검 결과는 낸다
             logger.warning("영구 링크 조회 실패: channel=%s ts=%s error=%s", channel, ts, exc)
             return ""
 

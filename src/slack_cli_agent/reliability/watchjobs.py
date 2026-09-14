@@ -111,7 +111,11 @@ class WatchJobQueue(SqliteRepository):
                 msg_ts, int(trust), _dump_extra(extra),
             ),
         )
-        return int(cursor.lastrowid)
+        # INSERT 가 성공하면 sqlite3 가 rowid 테이블의 lastrowid 를 채운다.
+        # None 이면 이 INSERT 문 자체가 rowid 를 안 만든 것이라 호출부 계약이
+        # 이미 깨진 상태다 — 타입에서만 있는 경우라 assert 로 명시한다.
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
 
     def due(self, now: float, min_gap: float, max_checks: int | None = None) -> list[WatchJob]:
         sql = (

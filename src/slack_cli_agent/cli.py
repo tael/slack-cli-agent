@@ -28,7 +28,7 @@ from typing import Any, ClassVar, TextIO
 from .config.channel import ChannelRegistry
 from .config.profile import Profile
 from .core.errors import AgentError
-from .core.lifecycle import GracefulShutdown
+from .core.lifecycle import GracefulShutdown, SignalRegister
 from .preflight.check import PreflightContext
 from .preflight.checks import (
     EngineBinaryCheck,
@@ -257,7 +257,7 @@ class WorkerCommand(ProfileAwareCommand):
     def __init__(
         self,
         application_factory: ApplicationFactory | None = None,
-        signal_register: Callable[[int, Callable[..., Any]], Any] = signal.signal,
+        signal_register: SignalRegister = signal.signal,
     ) -> None:
         self._factory = application_factory or _default_application
         # 신호 등록을 주입받는다. `signal.signal` 을 그대로 부르면 단위
