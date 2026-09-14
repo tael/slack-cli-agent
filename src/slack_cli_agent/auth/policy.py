@@ -14,6 +14,7 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from ..core.channel_kind import is_direct_message_channel
 from .principal import Principal, TrustLevel
 
 if TYPE_CHECKING:
@@ -62,7 +63,7 @@ class AccessPolicy:
         따지는 것과 같다. 다른 사용자는 그 채널의 trusted_users 목록에
         있을 때만 TRUSTED 다.
         """
-        is_dm = channel.startswith("D")
+        is_dm = is_direct_message_channel(channel)
         if user and user == self._profile.owner_user_id:
             trust = TrustLevel.OWNER
         elif user and self._is_channel_trusted(channel, user):

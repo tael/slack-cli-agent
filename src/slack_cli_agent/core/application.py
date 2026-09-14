@@ -154,6 +154,7 @@ from ..slack.review_ports import (
 from ..slack.roster import RosterBuilder
 from ..slack.transcript import TranscriptBuilder
 from ..storage.database import Database
+from .channel_kind import is_direct_message_channel
 from .context import RequestContext
 from .ingress import IngressService
 from .lifecycle import InflightCounter
@@ -623,7 +624,7 @@ class Application:
             user_id=self._profile.owner_user_id if job.trust is TrustLevel.OWNER else "",
             channel=job.channel,
             trust=job.trust,
-            is_direct_message=job.channel.startswith("D"),
+            is_direct_message=is_direct_message_channel(job.channel),
         )
         config = self._channels.get(job.channel)
         prompt = watch_check_prompt(job.condition)
