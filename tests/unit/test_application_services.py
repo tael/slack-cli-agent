@@ -65,6 +65,7 @@ RUNNER_ARGS: dict[str, Any] = {
     "health_runner": lambda app: (lambda 사유: None,),
     "catchup_retry_runner": lambda app: (app.worker(),),
     "pending_report_runner": lambda app: (),
+    "learning_batch_runner": lambda app: (),
 }
 
 
@@ -107,6 +108,7 @@ class Test묶음구성:
             "job_purge",
             "catchup_retry",
             "pending_report",
+            "learning_batch",
         }
 
     def test_명부_갱신은_접수에만_있다(self, app: Application) -> None:

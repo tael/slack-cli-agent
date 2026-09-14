@@ -13,7 +13,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,7 @@ from slack_cli_agent.core.application import Application
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ingress import IngressService
 from slack_cli_agent.core.pipeline import RequestPipeline
+from slack_cli_agent.core.timezones import KST
 from slack_cli_agent.core.worker import Worker
 from slack_cli_agent.engine.runner import (
     DirectInvoker,
@@ -33,6 +34,7 @@ from slack_cli_agent.engine.runner import (
     FallbackInvoker,
 )
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard
+from slack_cli_agent.learning.batch import BatchReport
 from slack_cli_agent.plugin.base import BotPlugin
 from slack_cli_agent.prompt.sections import CompositionContext, PromptSection, RosterSection
 from slack_cli_agent.review.base import ReviewTarget
@@ -1109,3 +1111,68 @@ class Test응답기록:
     def test_날짜를_KST_로_정한다(self, app: Application) -> None:
         """UTC 로 정하면 밤 9시 이후 기록이 다음 날 파일로 간다."""
         assert app.response_archive()._clock().utcoffset() == timedelta(hours=9)
+
+
+class Test학습배치:
+    """제안을 새로 만드는 배치가 조립과 워커에 실제로 연결됐는지 본다.
+
+    원본은 launchd 가 부르는 별도 스크립트였다. 그 진입점이 없으면 표시·반영·
+    되돌리기 명령은 살아 있는데 그 명령들이 읽을 제안 파일을 아무도 안 만든다.
+    """
+
+    def test_같은_객체를_돌려준다(self, app: Application) -> None:
+        assert app.learning_batch() is app.learning_batch()
+
+    def test_응답_기록을_읽는다(self, app: Application) -> None:
+        assert app.learning_batch()._archives is app.response_archive()
+
+    def test_소유자에게_알린다(self, app: Application) -> None:
+        assert app.learning_batch()._notify == app._notify_owner
+
+    def test_실행기_이름은_learning_batch(self, app: Application) -> None:
+        assert app.learning_batch_runner().name == "learning_batch"
+
+    def test_제안_파일이_있으면_그날은_끝난_것으로_본다(self, app: Application) -> None:
+        proposals = app.profile.paths.proposals
+        proposals.mkdir(parents=True, exist_ok=True)
+        (proposals / "2026-09-14.json").write_text("{}", encoding="utf-8")
+        assert app._learning_day_done("2026-09-14") is True
+        assert app._learning_day_done("2026-09-13") is False
+
+    def test_돌릴_날이_없으면_배치를_부르지_않는다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """판정이 없는데 돌면 같은 날 제안을 하루에도 여러 번 다시 만든다."""
+        application = Application(write_profile(tmp_path, settings={"learning_run_hour": 25}), client)
+        batch = RecordingBatch()
+        application._learning_batch = batch  # type: ignore[assignment]  # 호출 여부만 본다
+        proposals = application.profile.paths.proposals
+        proposals.mkdir(parents=True, exist_ok=True)
+        for moment in (datetime.now(KST), datetime.now(KST) - timedelta(days=1)):
+            (proposals / f"{moment.strftime('%Y-%m-%d')}.json").write_text("{}", encoding="utf-8")
+
+        application._learning_batch_tick()
+
+        assert batch.days == []
+
+    def test_돌릴_날이_있으면_그날로_배치를_부른다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        application = Application(write_profile(tmp_path, settings={"learning_run_hour": 0}), client)
+        batch = RecordingBatch()
+        application._learning_batch = batch  # type: ignore[assignment]  # 호출 인자만 본다
+
+        application._learning_batch_tick()
+
+        assert batch.days == [datetime.now(KST).strftime("%Y-%m-%d")]
+
+
+class RecordingBatch:
+    """학습 배치 호출만 기록한다. 실행기 판정이 부르는지를 보는 용도다."""
+
+    def __init__(self) -> None:
+        self.days: list[str] = []
+
+    def run(self, day: str | None = None) -> BatchReport:
+        self.days.append(day or "")
+        return BatchReport(day=day or "", ran=False, reason="시험용", proposal=None)

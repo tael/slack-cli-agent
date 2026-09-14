@@ -91,6 +91,8 @@ class RuntimeSettings:
     # 학습 분석에 쓸 모델과 노력 수준. 원본 learn.py 는 `--model sonnet` 고정이었다.
     learning_model: str = "sonnet"
     learning_effort: str = "medium"
+    # 반응을 모을 때 스레드 하나에서 읽는 메시지 수. 원본 learn.py 의 limit 50.
+    learning_thread_reply_limit: int = 50
 
     # 추측한 값으로 퍼센트를 만들지 않는다. 비워 둔다
     context_limit: Mapping[str, int] = field(default_factory=dict)
