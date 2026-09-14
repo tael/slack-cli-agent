@@ -5,9 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -25,7 +23,6 @@ from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.gateway import SlackGateway
 from slack_cli_agent.slack.listener import EventListener
 from slack_cli_agent.slack.reactions import ReactionMarker
-
 
 # ---------------------------------------------------------------------------
 # 대역들

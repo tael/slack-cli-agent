@@ -40,7 +40,7 @@ class LearningProposal:
     note: str = ""
 
     @classmethod
-    def from_dict(cls, day: str, data: Mapping[str, object]) -> "LearningProposal":
+    def from_dict(cls, day: str, data: Mapping[str, object]) -> LearningProposal:
         raw_channels = data.get("channel_knowledge") or {}
         channels = {
             str(name): tuple(items or ())

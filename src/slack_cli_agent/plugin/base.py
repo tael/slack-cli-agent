@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from abc import ABC
 from collections.abc import Sequence
-from typing import ClassVar, TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
     from ..admin.command import AdminCommand
@@ -25,17 +25,17 @@ class BotPlugin(ABC):
 
     name: ClassVar[str]
 
-    def access_extensions(self) -> Sequence["AccessExtension"]:
+    def access_extensions(self) -> Sequence[AccessExtension]:
         return ()
 
-    def admin_commands(self) -> Sequence["AdminCommand"]:
+    def admin_commands(self) -> Sequence[AdminCommand]:
         return ()
 
-    def prompt_sections(self) -> Sequence["PromptSection"]:
+    def prompt_sections(self) -> Sequence[PromptSection]:
         return ()
 
-    def output_guards(self) -> Sequence["OutputGuard"]:
+    def output_guards(self) -> Sequence[OutputGuard]:
         return ()
 
-    def preflight_checks(self) -> Sequence["PreflightCheck"]:
+    def preflight_checks(self) -> Sequence[PreflightCheck]:
         return ()

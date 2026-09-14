@@ -6,15 +6,12 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.prompt.sections import CompositionContext, RosterSection
-from slack_cli_agent.slack.roster import RosterBuilder, RosterEntry
+from slack_cli_agent.slack.roster import RosterBuilder
 
 
 class _FakeSlackClient:

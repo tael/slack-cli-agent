@@ -11,22 +11,18 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.config.channel import ChannelConfig
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.pipeline import RequestPipeline
-from slack_cli_agent.core.ports import HandleOutcome
 from slack_cli_agent.engine.base import Engine, EngineRequest, EngineResponse, Usage
 from slack_cli_agent.engine.runner import DirectInvoker
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard, RerunRequest
 from slack_cli_agent.guard.pipeline import GuardPipeline
 from slack_cli_agent.guard.watch import WatchPromiseGuard
 from slack_cli_agent.session.manager import SessionManager
-from slack_cli_agent.session.ports import SessionKey, SessionRecord, SessionStore
-
+from slack_cli_agent.session.ports import SessionKey, SessionRecord
 
 # ---------------------------------------------------------------------------
 # 대역

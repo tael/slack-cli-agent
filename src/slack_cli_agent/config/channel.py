@@ -56,7 +56,7 @@ class ChannelConfig:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, channel_id: str, data: Mapping[str, Any]) -> "ChannelConfig":
+    def from_dict(cls, channel_id: str, data: Mapping[str, Any]) -> ChannelConfig:
         workdir = data.get("workdir")
         return cls(
             channel_id=channel_id,

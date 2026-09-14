@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Any
 
 from slack_cli_agent.config.settings import RuntimeSettings
-from slack_cli_agent.core.errors import HistoryUnavailable
 from slack_cli_agent.reliability.ports import HistoryReader as HistoryReaderPort
 from slack_cli_agent.slack.history import HistoryReader
 from slack_cli_agent.slack.history_port import SlackHistoryPort

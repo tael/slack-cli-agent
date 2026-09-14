@@ -60,8 +60,8 @@ class CompositionContext:
     format_review: bool = False
     chat_level: str = "normal"
     silent_mark: str = SILENT_MARK
-    library: "PromptLibrary | None" = None
-    knowledge: "KnowledgeLoader | None" = None
+    library: PromptLibrary | None = None
+    knowledge: KnowledgeLoader | None = None
     # 이 대화에 함께 있는 사람 목록. (표시 이름, 멘션 표기) 쌍이다.
     # 목록을 만드는 것(발화자·멘션 추적)은 이 패키지의 책임이 아니다 —
     # 호출부가 이미 모아 채워 넘긴다. PresentPeopleSection 이 쓴다.
@@ -86,12 +86,12 @@ class CompositionContext:
         """부검·디버그 추적·서식 점검. 평소 대화가 아니다."""
         return self.postmortem or self.debug_trace or self.format_review
 
-    def _library_or_raise(self) -> "PromptLibrary":
+    def _library_or_raise(self) -> PromptLibrary:
         if self.library is None:
             raise RuntimeError("CompositionContext 에 library 가 없다. Composer 를 거쳐야 한다")
         return self.library
 
-    def _knowledge_or_raise(self) -> "KnowledgeLoader":
+    def _knowledge_or_raise(self) -> KnowledgeLoader:
         if self.knowledge is None:
             raise RuntimeError("CompositionContext 에 knowledge 가 없다. Composer 를 거쳐야 한다")
         return self.knowledge

@@ -12,12 +12,12 @@ from .service import LearningService
 
 __all__ = [
     "ChannelAnalysisResult",
+    "LearningApplier",
+    "LearningProposal",
+    "LearningReverter",
+    "LearningService",
     "ProposalAnalyzer",
     "ProposalBuilder",
-    "LearningApplier",
-    "LearningReverter",
-    "LearningProposal",
-    "ProposalStore",
     "ProposalRenderer",
-    "LearningService",
+    "ProposalStore",
 ]

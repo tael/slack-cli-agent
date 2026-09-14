@@ -33,10 +33,10 @@ class RequestContext:
         """중복 판정 키. 채널과 메시지 ts 의 쌍이다."""
         return (self.channel, self.ts)
 
-    def marked_late(self) -> "RequestContext":
+    def marked_late(self) -> RequestContext:
         return replace(self, late=True)
 
-    def marked_requeued(self, queued_at: float) -> "RequestContext":
+    def marked_requeued(self, queued_at: float) -> RequestContext:
         return replace(self, requeued=True, queued_at=queued_at)
 
     def to_json(self) -> str:
@@ -44,7 +44,7 @@ class RequestContext:
         return json.dumps(asdict(self), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, payload: str) -> "RequestContext":
+    def from_json(cls, payload: str) -> RequestContext:
         data = json.loads(payload)
         data["files"] = tuple(data.get("files") or ())
         return cls(**data)

@@ -16,7 +16,6 @@ from slack_cli_agent.guard.pipeline import GuardPipeline, PipelineResult
 from slack_cli_agent.guard.rewrite import RewriteLossGuard
 from slack_cli_agent.guard.watch import PROMISE_WITHOUT_WATCH_RE, WATCH_RE, WatchPromiseGuard
 
-
 # ---------------------------------------------------------------------------
 # base.py — 계약 자체
 

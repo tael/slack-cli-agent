@@ -24,7 +24,12 @@ from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ingress import IngressService
 from slack_cli_agent.core.pipeline import RequestPipeline
 from slack_cli_agent.core.worker import Worker
-from slack_cli_agent.engine.runner import DirectInvoker, EngineRunner, FallbackEngine, FallbackInvoker
+from slack_cli_agent.engine.runner import (
+    DirectInvoker,
+    EngineRunner,
+    FallbackEngine,
+    FallbackInvoker,
+)
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard
 from slack_cli_agent.plugin.base import BotPlugin
 from slack_cli_agent.prompt.sections import CompositionContext, PromptSection, RosterSection

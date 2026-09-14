@@ -9,13 +9,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from slack_cli_agent.config.channel import ChannelConfig, ChannelRegistry
+from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.errors import ConfigError, HistoryUnavailable, SlackError
@@ -31,7 +30,6 @@ from slack_cli_agent.slack.history import HistoryReader
 from slack_cli_agent.slack.listener import EventListener
 from slack_cli_agent.slack.publisher import MessagePublisher
 from slack_cli_agent.slack.reactions import (
-    DONE_EMOJI,
     FORMAT_REVIEW_EMOJI,
     POSTMORTEM_EMOJI,
     SILENT_MARK_EMOJI,
@@ -39,7 +37,6 @@ from slack_cli_agent.slack.reactions import (
     ReactionMarker,
 )
 from slack_cli_agent.slack.transcript import TranscriptBuilder
-
 
 # ---------------------------------------------------------------------------
 # 대역 슬랙 클라이언트

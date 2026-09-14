@@ -19,7 +19,7 @@ class OutcomeKind(Enum):
 
 
 class Outcome(Generic[T]):
-    __slots__ = ("_kind", "_value", "_reason")
+    __slots__ = ("_kind", "_reason", "_value")
 
     def __init__(self, kind: OutcomeKind, value: T | None, reason: str) -> None:
         self._kind = kind
@@ -27,15 +27,15 @@ class Outcome(Generic[T]):
         self._reason = reason
 
     @classmethod
-    def found(cls, value: T) -> "Outcome[T]":
+    def found(cls, value: T) -> Outcome[T]:
         return cls(OutcomeKind.FOUND, value, "")
 
     @classmethod
-    def absent(cls) -> "Outcome[T]":
+    def absent(cls) -> Outcome[T]:
         return cls(OutcomeKind.ABSENT, None, "")
 
     @classmethod
-    def unknown(cls, reason: str) -> "Outcome[T]":
+    def unknown(cls, reason: str) -> Outcome[T]:
         return cls(OutcomeKind.UNKNOWN, None, reason)
 
     @property

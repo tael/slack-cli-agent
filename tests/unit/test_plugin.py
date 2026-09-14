@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from slack_cli_agent.plugin.base import BotPlugin
-from slack_cli_agent.plugin.loader import PluginLoadError, PluginLoader
+from slack_cli_agent.plugin.loader import PluginLoader, PluginLoadError
 
 
 def write_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_name: str, source: str) -> None:

@@ -34,7 +34,7 @@ class EngineRunner:
 
     def __init__(self, settings: RuntimeSettings,
                subprocess_runner: SubprocessRunner | None = None,
-               environment_policy: "EngineEnvironmentPolicy | None" = None,
+               environment_policy: EngineEnvironmentPolicy | None = None,
                source_env: Mapping[str, str] | None = None) -> None:
         self._settings = settings
         self._run = subprocess_runner or self._default_runner
@@ -105,7 +105,7 @@ class DirectInvoker(EngineInvoker):
 class FallbackInvoker(EngineInvoker):
     """폴백이 있을 때. 전환 판정을 포함한 `FallbackEngine.run()` 을 부른다."""
 
-    def __init__(self, engine: "FallbackEngine") -> None:
+    def __init__(self, engine: FallbackEngine) -> None:
         self._engine = engine
 
     def invoke(self, request: EngineRequest) -> EngineResponse:

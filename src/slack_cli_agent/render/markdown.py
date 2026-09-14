@@ -56,9 +56,9 @@ class MarkdownConverter:
             b = re.sub(r"\*\*\*(.+?)\*\*\*", r"*\1*", b)      # 굵은 기울임도 굵게로
             b = re.sub(r"\*\*(.+?)\*\*", r"*\1*", b)            # 이중 별표를 단일로
             b = re.sub(r"__(.+?)__", r"_\1_", b)                  # 이중 밑줄을 단일로
-            b = re.sub(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", r"*\1*", b, flags=re.M)  # 헤딩을 굵게로
-            b = re.sub(r"^\s*[•◦▪]\s+", "- ", b, flags=re.M)      # 가운뎃점을 하이픈으로
-            b = re.sub(r"^\s*[-*]{3,}\s*$", "", b, flags=re.M)    # 구분선 제거
+            b = re.sub(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", r"*\1*", b, flags=re.MULTILINE)  # 헤딩을 굵게로
+            b = re.sub(r"^\s*[•◦▪]\s+", "- ", b, flags=re.MULTILINE)      # 가운뎃점을 하이픈으로
+            b = re.sub(r"^\s*[-*]{3,}\s*$", "", b, flags=re.MULTILINE)    # 구분선 제거
             # 표를 먼저 편다. 링크를 먼저 바꾸면 그 안의 파이프가 셀 구분자로 오인된다.
             b = self.tables_to_bullets(b)
             b = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r"<\2|\1>", b)  # 마크다운 링크

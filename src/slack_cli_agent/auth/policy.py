@@ -47,8 +47,8 @@ class AccessPolicy:
 
     def __init__(
         self,
-        profile: "Profile",
-        channels: "ChannelRegistry",
+        profile: Profile,
+        channels: ChannelRegistry,
         extensions: Sequence[AccessExtension] = (),
     ) -> None:
         self._profile = profile

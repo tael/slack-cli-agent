@@ -16,6 +16,6 @@ import re
 ELAPSED_LINE = re.compile(r"(?:\n\s*>\s*걸린 시간 : \s*\d+초\s*)+$")
 # 모델이 앞 대화를 흉내 내 본문 끝에 같은 줄을 써 넣는 경우를 지운다.
 # 걸린 시간 줄과 같은 이유다. 예전 표기 "실행 엔진" 도 함께 지운다.
-ELAPSED_MODEL_LINE = re.compile(r"\n*>\s*실행\s*(모델|엔진)\s*:.*$", re.M)
+ELAPSED_MODEL_LINE = re.compile(r"\n*>\s*실행\s*(모델|엔진)\s*:.*$", re.MULTILINE)
 
 __all__ = ["ELAPSED_LINE", "ELAPSED_MODEL_LINE"]

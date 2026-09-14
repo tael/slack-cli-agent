@@ -327,7 +327,7 @@ class UsageRowBuilder:
     def __init__(
         self,
         owner_only_channels: frozenset[str],
-        session_context: "SessionContextCalculator | None" = None,
+        session_context: SessionContextCalculator | None = None,
     ) -> None:
         self._owner_only_channels = owner_only_channels
         self._session_context = session_context

@@ -11,7 +11,7 @@ class StatePaths:
     root: Path
 
     @classmethod
-    def for_bot(cls, name: str, home: Path | None = None) -> "StatePaths":
+    def for_bot(cls, name: str, home: Path | None = None) -> StatePaths:
         return cls((home or Path.home()) / f".{name}")
 
     @property

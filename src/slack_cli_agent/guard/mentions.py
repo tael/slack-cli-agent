@@ -16,7 +16,7 @@ from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard
 ADDRESSED_AT_HEAD = re.compile(r"^\s*<@([A-Z0-9]+)>\s*(?:님|씨)?[,.!\s]*")
 
 # 코드 울타리와 인라인 코드. 그 안의 글자는 손대지 않는다.
-CODE_SPANS = re.compile(r"```.*?```|`[^`\n]*`", re.S)
+CODE_SPANS = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
 
 
 class PlainMentionGuard(OutputGuard):

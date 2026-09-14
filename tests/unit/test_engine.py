@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from slack_cli_agent.config.profile import EngineSpec, Profile
+from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.errors import ConfigError
 from slack_cli_agent.engine.base import (

@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,11 +16,9 @@ from typing import Any
 import pytest
 
 from slack_cli_agent.config.settings import RuntimeSettings
-from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.result import OutcomeKind
 from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.slack.gate import ResponseGate
-
 
 # ---------------------------------------------------------------------------
 # dedup.py — DeduplicationTracker
@@ -476,7 +473,11 @@ class RestartSpy:
 
 class TestHealthMonitor:
     def test_안닿으면_DOWN을_돌려준다(self) -> None:
-        from slack_cli_agent.reliability.health import HealthEventKind, HealthMonitor, SocketErrorWatch
+        from slack_cli_agent.reliability.health import (
+            HealthEventKind,
+            HealthMonitor,
+            SocketErrorWatch,
+        )
 
         monitor = HealthMonitor(
             watch=SocketErrorWatch(),
@@ -488,7 +489,11 @@ class TestHealthMonitor:
         assert event.kind is HealthEventKind.DOWN
 
     def test_끊겼다_돌아오면_RECOVERED_를_돌려주고_끊긴_시간을_잰다(self) -> None:
-        from slack_cli_agent.reliability.health import HealthEventKind, HealthMonitor, SocketErrorWatch
+        from slack_cli_agent.reliability.health import (
+            HealthEventKind,
+            HealthMonitor,
+            SocketErrorWatch,
+        )
 
         clock = {"t": 0.0}
         reachable = {"ok": False}
@@ -510,7 +515,11 @@ class TestHealthMonitor:
 
     def test_재연결_상한을_넘으면_재기동한다(self) -> None:
         # 실측 근거: 정상 4시간35분 0회 vs 장애 22분 128회. 상한 4.
-        from slack_cli_agent.reliability.health import HealthEventKind, HealthMonitor, SocketErrorWatch
+        from slack_cli_agent.reliability.health import (
+            HealthEventKind,
+            HealthMonitor,
+            SocketErrorWatch,
+        )
 
         clock = {"t": 0.0}
         watch = SocketErrorWatch(now=lambda: clock["t"])
@@ -538,7 +547,11 @@ class TestHealthMonitor:
         assert "4" in spy.reasons[0]
 
     def test_재연결이_상한_미만이면_그대로_돈다(self) -> None:
-        from slack_cli_agent.reliability.health import HealthEventKind, HealthMonitor, SocketErrorWatch
+        from slack_cli_agent.reliability.health import (
+            HealthEventKind,
+            HealthMonitor,
+            SocketErrorWatch,
+        )
 
         monitor = HealthMonitor(
             watch=SocketErrorWatch(),
@@ -550,7 +563,11 @@ class TestHealthMonitor:
         assert event.kind is HealthEventKind.OK
 
     def test_오류_상한을_넘어도_재기동한다(self) -> None:
-        from slack_cli_agent.reliability.health import HealthEventKind, HealthMonitor, SocketErrorWatch
+        from slack_cli_agent.reliability.health import (
+            HealthEventKind,
+            HealthMonitor,
+            SocketErrorWatch,
+        )
 
         clock = {"t": 0.0}
         watch = SocketErrorWatch(now=lambda: clock["t"])

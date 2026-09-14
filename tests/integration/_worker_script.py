@@ -22,8 +22,8 @@ from pathlib import Path
 _SRC = Path(__file__).resolve().parents[2] / "src"
 sys.path.insert(0, str(_SRC))
 
-from slack_cli_agent.jobs.queue import SqliteJobQueue  # noqa: E402
-from slack_cli_agent.storage.database import Database  # noqa: E402
+from slack_cli_agent.jobs.queue import SqliteJobQueue
+from slack_cli_agent.storage.database import Database
 
 
 def _make_queue(db_path: str) -> SqliteJobQueue:
