@@ -19,6 +19,7 @@ from typing import Any
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.observability.notices import NoticeCatalog
+from slack_cli_agent.slack.identity import BotIdentity
 
 KST = timezone(timedelta(hours=9))
 
@@ -130,8 +131,7 @@ class TranscriptBuilder:
         settings: RuntimeSettings,
         notices: NoticeCatalog,
         name_resolver: Callable[[str], str],
-        bot_user_id: str = "",
-        bot_id: str = "",
+        identity: BotIdentity,
         bot_display_name: str = "",
         owner_user_id: str = "",
         owner_display_name: str = "",
@@ -140,21 +140,15 @@ class TranscriptBuilder:
         self._settings = settings
         self._notices = notices
         self._name_resolver = name_resolver
-        self._bot_user_id = bot_user_id
-        self._bot_id = bot_id
+        # 자기 말 판정 근거. 부품마다 따로 들면 조립이 일부에만 값을 줘도
+        # 부품 시험이 통과해, 그 부품만 조용히 예전 판정으로 돌아간다.
+        self._identity = identity
         self._bot_display_name = bot_display_name
         self._owner_user_id = owner_user_id
         self._owner_display_name = owner_display_name
 
-    def _is_self(self, msg: Mapping[str, Any]) -> bool:
-        if self._bot_id and msg.get("bot_id"):
-            return msg.get("bot_id") == self._bot_id
-        if self._bot_user_id and msg.get("user"):
-            return msg.get("user") == self._bot_user_id
-        return bool(msg.get("bot_id"))
-
     def _speaker_of(self, msg: Mapping[str, Any]) -> str:
-        if self._is_self(msg):
+        if self._identity.is_self(msg):
             return self._bot_display_name or "봇"
         if msg.get("bot_id"):
             profile = msg.get("bot_profile") or {}
