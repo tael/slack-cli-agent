@@ -29,6 +29,7 @@ from typing import Any
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.reliability.ports import HistoryReader
+from slack_cli_agent.slack.message_kind import MessageKind
 
 KST = timezone(timedelta(hours=9))
 
@@ -89,6 +90,8 @@ class LateAddendumChecker:
         self._settings = settings
         self._owner_user_id = owner_user_id
         self._owner_display_name = owner_display_name
+        # 메시지를 무엇으로 볼지는 한 곳에서 판정한다. 여기 따로 적으면 기준이 갈린다.
+        self._kind = MessageKind()
 
     def _speaker_of(self, msg: Mapping[str, Any]) -> str:
         user = msg.get("user") or ""
@@ -123,7 +126,7 @@ class LateAddendumChecker:
         lines: list[str] = []
         latest: str | None = None
         for m in msgs:
-            if m.get("bot_id") or m.get("subtype"):
+            if not self._kind.is_human(m):
                 continue
             mts = float(m.get("ts", 0) or 0)
             if mts <= base_ts:
