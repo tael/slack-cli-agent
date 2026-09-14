@@ -13,10 +13,11 @@ import argparse
 import os
 import signal
 import sys
+import webbrowser
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, ClassVar, TextIO
+from typing import Any, ClassVar, Protocol, TextIO, runtime_checkable
 
 from .config.channel import ChannelRegistry
 from .config.profile import Profile
@@ -317,6 +318,75 @@ class LearnCommand(ProfileAwareCommand):
         return 0
 
 
+@runtime_checkable
+class ServerLike(Protocol):
+    """What WebCommand needs from a server.
+
+    Declared here so mypy checks the real server against it: a test double that
+    grows a method the real class lacks otherwise passes every test and fails on
+    the first real run.
+    """
+
+    @property
+    def port(self) -> int: ...
+
+    def start(self) -> None: ...
+
+    def serve_forever(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+
+ConsoleFactory = Callable[[Sequence[Path], int], ServerLike]
+
+
+def _default_console(search_dirs: Sequence[Path], port: int) -> ServerLike:
+    from .web.console import WebConsole
+
+    return WebConsole(search_dirs).server(port=port)
+
+
+class WebCommand(CliCommand):
+    """설정과 지표를 브라우저에서 보는 콘솔을 띄운다.
+
+    One server covers every profile: per-bot servers would force the operator to
+    remember which port belongs to which bot.
+    """
+
+    name: ClassVar[str] = "web"
+    help: ClassVar[str] = "설정과 지표를 보는 웹 콘솔을 띄운다"
+
+    def __init__(self, console_factory: ConsoleFactory | None = None) -> None:
+        self._factory = console_factory or _default_console
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--profile-dir",
+            action="append",
+            default=None,
+            help="프로필 파일(<이름>.json)을 찾을 디렉터리. 여러 번 줄 수 있다. 기본은 현재 디렉터리",
+        )
+        parser.add_argument("--port", type=int, default=8787, help="열 포트. 기본 8787")
+        parser.add_argument("--open", action="store_true", help="브라우저도 함께 연다")
+
+    def execute(self, args: argparse.Namespace, stdout: TextIO) -> int:
+        search_dirs = [Path(p) for p in (args.profile_dir or [Path.cwd()])]
+        server = self._factory(search_dirs, args.port)
+        server.start()
+        url = f"http://127.0.0.1:{server.port}/"
+        print(f"콘솔을 열었습니다 : {url}", file=stdout)
+        print("멈추려면 Ctrl-C 를 누르세요.", file=stdout)
+        if args.open:
+            webbrowser.open(url)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.stop()
+        return 0
+
+
 DEFAULT_COMMANDS: tuple[CliCommand, ...] = (
     PreflightCommand(),
     MigrateCommand(),
@@ -324,6 +394,7 @@ DEFAULT_COMMANDS: tuple[CliCommand, ...] = (
     IngressCommand(),
     WorkerCommand(),
     LearnCommand(),
+    WebCommand(),
 )
 
 
