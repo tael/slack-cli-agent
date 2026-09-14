@@ -16,6 +16,7 @@ import pytest
 from slack_cli_agent.cli import IngressCommand, SlackCliAgent, WorkerCommand
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.lifecycle import InflightCounter
+from slack_cli_agent.core.services import ServiceGroup
 from slack_cli_agent.storage.database import Database
 
 MINIMAL_PROFILE = {
@@ -190,11 +191,16 @@ class FakeRefresher:
         self.start_calls = 0
         self.stop_calls = 0
 
+    name = "fake"
+
     def start(self) -> None:
         self.start_calls += 1
 
     def stop(self) -> None:
         self.stop_calls += 1
+
+    def join(self, timeout: float | None = None) -> None:
+        return None
 
 
 class FakeApplication:
@@ -223,8 +229,19 @@ class FakeApplication:
         self.health_restart: object | None = None
         self.restarter_calls = 0
         self.shutdown_marks = 0
+        self.ingress_services_calls = 0
+        self.worker_services_calls = 0
         # 종료 대기 상한을 여기서 가져간다. 실제 Application 과 같은 계약이다.
         self.settings = RuntimeSettings()
+
+    def ingress_services(self, restart: object) -> ServiceGroup:
+        self.ingress_services_calls += 1
+        self.health_restart = restart
+        return ServiceGroup([self.health_runner_, self._roster_refresher], name="ingress")
+
+    def worker_services(self) -> ServiceGroup:
+        self.worker_services_calls += 1
+        return ServiceGroup([self.snapshot_runner, self.watch_runner_, self.purge_runner_], name="worker")
 
     def state_snapshot_runner(self) -> FakeRefresher:
         return self.snapshot_runner
@@ -810,3 +827,36 @@ class TestWorker끝난작업정리:
         worker = FakeWorker(stop_after_run_once=1)
         self._돌린다(tmp_path, worker)
         assert self.app.purge_runner_.stop_calls == 1
+
+
+class Test주기실행기를묶음으로띄운다:
+    """CLI 가 실행기를 하나씩 손으로 띄우면 새 실행기를 추가할 때 빠뜨린다.
+
+    묶음을 쓰면 `Application` 쪽에 넣는 것만으로 기동과 종료가 함께 갖춰지고,
+    누락은 `test_application_services.py` 의 대조 시험으로 검출된다.
+    """
+
+    def test_접수는_묶음을_기동한다(self, tmp_path: Path) -> None:
+        profiles = tmp_path / "profiles"
+        write_profile(profiles, tmp_path / "state")
+        app = FakeApplication()
+        SlackCliAgent([IngressCommand(application_factory=lambda profile: app)]).run(
+            ["ingress", "--profile", "example", "--profile-dir", str(profiles), "--app-token", "xapp-토큰"],
+            stdout=io.StringIO(),
+        )
+        assert app.ingress_services_calls == 1
+
+    def test_워커는_묶음을_기동한다(self, tmp_path: Path) -> None:
+        profiles = tmp_path / "profiles"
+        write_profile(profiles, tmp_path / "state")
+        app = FakeApplication(worker=FakeWorker())
+        SlackCliAgent([
+            WorkerCommand(
+                application_factory=lambda profile: app,
+                signal_register=lambda signum, handler: None,
+            )
+        ]).run(
+            ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"],
+            stdout=io.StringIO(),
+        )
+        assert app.worker_services_calls == 1

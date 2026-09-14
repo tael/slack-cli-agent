@@ -31,6 +31,11 @@ class PeriodicRunner:
         self._thread: threading.Thread | None = None
 
     @property
+    def name(self) -> str:
+        """이 실행기의 이름. 어떤 실행기가 기동됐는지 대조하는 쪽이 읽는다."""
+        return self._name
+
+    @property
     def thread(self) -> threading.Thread | None:
         return self._thread
 
