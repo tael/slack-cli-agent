@@ -282,9 +282,9 @@ class CatchupService:
                 unchecked.append(channel)
                 continue
 
-            대표, 나머지 = self._pick_representatives(outcome.value())
-            missed.extend(대표)
-            skipped.extend(나머지)
+            representatives, rest = self._pick_representatives(outcome.value())
+            missed.extend(representatives)
+            skipped.extend(rest)
 
         if unchecked:
             # 알리고 끝내지 않는다. 볼 때까지 계속 다시 본다.
@@ -309,13 +309,13 @@ class CatchupService:
         for ctx in found:
             groups.setdefault(ctx.thread_ts, []).append(ctx)
 
-        대표: list[RequestContext] = []
-        나머지: list[RequestContext] = []
+        representatives: list[RequestContext] = []
+        rest: list[RequestContext] = []
         for items in groups.values():
             items.sort(key=lambda c: float(c.ts))
-            대표.append(items[-1].marked_late())
-            나머지.extend(items[:-1])
-        return 대표, 나머지
+            representatives.append(items[-1].marked_late())
+            rest.extend(items[:-1])
+        return representatives, rest
 
     def retry_pending(self) -> list[RetryStatus]:
         """마치지 못한 되짚기를 다시 본다. 건강 점검이 돌 때마다 부른다.
@@ -349,10 +349,10 @@ class CatchupService:
             self._pending.pop(ch, None)
             # 정상 되짚기와 같은 묶음을 쓴다. 여기서만 전부 돌려주면 같은
             # 스레드의 여러 요청에 각각 답이 올라간다.
-            대표, _나머지 = self._pick_representatives(outcome.value())
-            if 대표:
+            representatives, _ = self._pick_representatives(outcome.value())
+            if representatives:
                 statuses.append(
-                    RetryStatus(channel=ch, stuck_sec=0.0, alert=False, missed=tuple(대표))
+                    RetryStatus(channel=ch, stuck_sec=0.0, alert=False, missed=tuple(representatives))
                 )
 
         return statuses
