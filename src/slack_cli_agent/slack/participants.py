@@ -14,6 +14,8 @@ import re
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from slack_cli_agent.core.channel_kind import is_direct_message_channel
+
 # 슬랙 본문의 멘션 표기. `<@U123>` 또는 `<@U123|이름>` 둘 다 받는다.
 MENTION_IN_TEXT = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]*)?>")
 
@@ -42,7 +44,7 @@ class ThreadParticipants:
     def of(self, channel: str, thread_ts: str) -> tuple[tuple[str, str], ...]:
         """(표시 이름, 멘션 표기) 의 목록. 처음 나온 순서를 지킨다."""
         # 디엠에는 봇과 상대뿐이라 셀 것이 없다. 원본 `recent_thread()` 와 같다.
-        if channel.startswith("D"):
+        if is_direct_message_channel(channel):
             return ()
         try:
             messages = self._history.read_thread(channel, thread_ts, self._limit)

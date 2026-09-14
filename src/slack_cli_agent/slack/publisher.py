@@ -18,6 +18,7 @@ from collections.abc import Callable
 from typing import Any
 
 from slack_cli_agent.config.settings import RuntimeSettings
+from slack_cli_agent.core.channel_kind import is_direct_message_channel
 from slack_cli_agent.core.errors import SlackError
 from slack_cli_agent.core.markers import ELAPSED_MODEL_LINE
 from slack_cli_agent.render.blocks import BlockBuilder
@@ -90,7 +91,7 @@ class MessagePublisher:
         else:
             chunks = self._splitter.chunk(self._markdown.to_mrkdwn(text))
 
-        parent_ts = None if channel.startswith("D") else thread_ts
+        parent_ts = None if is_direct_message_channel(channel) else thread_ts
         sent = 0
         for idx, part in enumerate(chunks):
             kwargs: dict[str, Any] = {"channel": channel, "username": self._bot_display_name}
