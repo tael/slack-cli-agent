@@ -1,4 +1,4 @@
-"""저장소 공통 기반. 커넥션 접근과 트랜잭션 진입을 한 번만 쓴다."""
+"""Shared repository base: single place for connection access and transactions."""
 
 from __future__ import annotations
 
@@ -11,10 +11,8 @@ from .database import Database
 
 
 class SqliteRepository:
-    """SQLite 를 쓰는 저장소의 기반.
-
-    이 클래스는 구현끼리 공유하는 것이고 계약이 아니다. 계약은 각 도메인
-    패키지의 Protocol 이 정의한다.
+    """Base for SQLite-backed repositories. Shared implementation detail, not
+    a contract — each domain package's Protocol defines that.
     """
 
     def __init__(self, db: Database) -> None:

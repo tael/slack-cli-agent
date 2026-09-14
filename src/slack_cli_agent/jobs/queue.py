@@ -1,4 +1,4 @@
-"""작업 큐의 SQLite 구현. 계약은 ports.JobQueue 에 있다."""
+"""SQLite implementation of the job queue. Contract lives in ports.JobQueue."""
 
 from __future__ import annotations
 
@@ -18,15 +18,13 @@ class SqliteJobQueue(SqliteRepository):
         self._now = now
 
     def enqueue(self, ctx: RequestContext, max_attempts: int = 0) -> bool:
-        """작업을 등록한다. 새로 들어갔으면 True.
+        """Enqueue a job, returning True if it was newly inserted.
 
-        `(channel, message_ts)` 가 유일해 같은 메시지는 한 번만 들어간다. 그
-        차단이 대기·실행·완료에는 맞지만 실패에는 안 맞는다 — 실패한 행이 그
-        키를 계속 차지하면, 되짚기가 미응답 멘션을 찾아내도 재등록이 조용히
-        무시돼 그 요청은 영영 처리되지 않는다. 실패 행은 대기로 되돌린다.
-
-        `max_attempts` 가 0 보다 크면 그만큼 시도한 건은 되실행하지 않는다.
-        같은 요청이 계속 실패하는데 되짚기가 매번 되살리면 끝나지 않는다.
+        The (channel, message_ts) uniqueness is fine for queued/running/completed
+        rows, but a failed row would otherwise keep occupying that key forever,
+        silently swallowing re-enqueue attempts for a mention that never got a
+        reply. So failed rows get reopened back to queued instead of ignored,
+        unless they've already hit max_attempts.
         """
         with self._transaction() as conn:
             cursor = conn.execute(
@@ -44,11 +42,11 @@ class SqliteJobQueue(SqliteRepository):
             return self._reopen_failed(conn, ctx, max_attempts)
 
     def _reopen_failed(self, conn: sqlite3.Connection, ctx: RequestContext, max_attempts: int) -> bool:
-        """실패로 끝난 같은 건을 대기로 되돌린다. 되돌렸으면 True.
+        """Reopen a failed row matching this key back to queued. True if reopened.
 
-        앞 회차의 실패 사유와 워커·시각을 함께 지운다. 남겨 두면 대기 중인
-        작업이 실패 사유를 달고 있어 상태 조회가 지금 상태를 잘못 읽는다.
-        `attempts` 는 그대로 둔다 — 그 값이 상한 판정의 근거다.
+        Clears the previous failure reason and worker/time fields too, or a
+        queued job would still show a stale failure on status queries.
+        `attempts` is left alone since it's what max_attempts checks against.
         """
         condition = "status = ? AND channel = ? AND message_ts = ?"
         params: list[object] = [JobStatus.FAILED.value, ctx.channel, ctx.ts]

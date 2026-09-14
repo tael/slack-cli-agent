@@ -1,18 +1,16 @@
-"""EventListener — 슬랙 이벤트를 RequestContext 로 변환.
+"""Turns a raw Slack event into a RequestContext, or decides it's not
+one to act on.
 
-원본 `on_mention`, `on_message`, `on_reaction` 세 핸들러가 하던 판정을
-옮겼다.
+- app_mention: always accepted
+- message: DMs always accepted. In channels, only accepted for thread
+  replies where the bot already has a foot in the thread — a mention
+  is already handled by app_mention, so it isn't processed twice here
+- reaction_added: only accepted when a registered emoji lands on this
+  bot's own reply
 
-- `app_mention` — 그대로 받는다
-- `message` — DM 은 바로 받는다. 채널은 스레드 답글일 때만, 그것도 봇이
-  이미 그 스레드에 낀 경우에만 받는다. 멘션이 있으면 `app_mention` 이 이미
-  받으므로 중복 처리하지 않는다
-- `reaction_added` — 등록된 이모지가 봇 자신의 답변에 달렸을 때만 받는다
-
-원본 `mention_only(channel)` 은 기본값 True(이름을 불러야만 답한다)였다.
-`ChannelConfig.answer_unaddressed` 는 그 반대 의미로 이미 있는 필드이고
-기본값 False 라 그대로 대응된다 — 채널 설정이 없거나 `answer_unaddressed`
-가 꺼져 있으면 이름을 불러야만 답한다.
+ChannelConfig.answer_unaddressed (default False) is the inverse of the
+original's mention_only(channel) (default True, meaning the bot must
+be named): no config, or answer_unaddressed off, means the bot must be named.
 """
 
 from __future__ import annotations
@@ -28,8 +26,6 @@ from slack_cli_agent.slack.message_kind import MessageKind
 
 
 class EventListener:
-    """슬랙 이벤트 하나를 받아 처리할지 판단하고, 처리한다면 RequestContext 로 만든다."""
-
     def __init__(
         self,
         client: Any,
@@ -40,10 +36,12 @@ class EventListener:
         self._client = client
         self._channels = channel_registry
         self._gate = gate
-        # 자기 말 판정과 멘션 대조가 같은 신원을 봐야 한다. 따로 들면 조립이
-        # 한쪽에만 값을 줘도 부품 시험이 통과한다.
+        # Self-message detection and mention matching must use the
+        # same identity source — holding it separately would let
+        # wiring pass the value to only one and still pass unit tests.
         self._identity = identity
-        # 메시지를 무엇으로 볼지는 한 곳에서 판정한다. 여기 따로 적으면 기준이 갈린다.
+        # Message classification lives in one place; duplicating it
+        # here would let the criteria drift.
         self._kind = MessageKind()
 
     def _context_from_event(
@@ -65,12 +63,12 @@ class EventListener:
         return self._context_from_event(event, unaddressed=False, is_dm=False)
 
     def _thread_state(self, channel: str, thread_ts: str) -> tuple[bool, bool]:
-        """스레드에서 봇의 위치를 본다. (이미 끼었는가, 마지막 말이 되물음인가)."""
+        """(has the bot already joined this thread, was its last message a question)."""
         try:
             replies = self._client.conversations_replies(
                 channel=channel, ts=thread_ts, limit=30
             )
-        except Exception:  # noqa: BLE001 — 스레드 위치 조회 실패를 아직 안 낀 것으로 본다 — 조회 제한 초과도 이 경로로 들어온다
+        except Exception:  # noqa: BLE001 - treat a lookup failure (including rate limiting) as not joined
             return False, False
         msgs = replies.get("messages", [])
         joined = any(self._identity.is_self(m) for m in msgs)
@@ -88,12 +86,11 @@ class EventListener:
         channel = event.get("channel") or ""
         thread_ts = event.get("thread_ts")
         if not thread_ts:
-            # 스레드 답글이 아니면 부르지 않은 것이다
             return None
 
         text = event.get("text") or ""
         if self._identity.is_mentioned(text):
-            # 멘션이 있으면 app_mention 이 이미 받는다. 두 번 처리하지 않는다
+            # app_mention already handles mentions; don't process this twice.
             return None
 
         config = self._channels.get(channel)
@@ -111,10 +108,8 @@ class EventListener:
     def from_reaction(
         self, event: Mapping[str, Any], allowed: frozenset[str]
     ) -> tuple[str, str, str, str] | None:
-        """리액션 이벤트에서 (이모지, 채널, 메시지시각, 누른사람) 을 뽑는다.
-
-        대상 이모지가 아니거나, 메시지가 아니거나, 봇 자신의 답변이 아니거나,
-        봇 자신이 누른 것이면 받지 않는다.
+        """Extracts (emoji, channel, message ts, reactor) from a
+        reaction event, or None if it's not one to act on.
         """
         reaction = event.get("reaction")
         if reaction not in allowed:

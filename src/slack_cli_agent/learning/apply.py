@@ -1,11 +1,8 @@
-"""학습 제안을 지식 파일에 반영/되돌리기.
+"""Applies and reverts learning proposals against knowledge files.
 
-원본 learn.py 의 apply_items()/apply_proposal()/revert() 를 대응한다. 각 줄
-끝에 꼬리표(``<!-- learn:YYYY-MM-DD -->``)를 달아 되돌릴 항목을 찾는다.
-
-원본은 파일 전체를 ``write_text()`` 로 통짜 덮어썼다. 쓰는 도중 다른 프로세스가
-읽으면 잘린 파일이 읽힌다. 여기서는 임시 파일에 쓰고 ``os.replace`` 로
-교체한다.
+Each added line carries an `<!-- learn:YYYY-MM-DD -->` tag so a revert can
+find exactly what a given day added. Writes go through a temp file + os.replace
+so a concurrent reader never sees a half-written file.
 """
 
 from __future__ import annotations
@@ -27,14 +24,14 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 class LearningApplier:
-    """제안 항목을 지식 파일에 쌓는다. 이미 있는 문장은 다시 넣지 않는다."""
+    """Appends proposal items to knowledge files, skipping duplicates."""
 
     def __init__(self, knowledge_dir: Path, bot_name: str) -> None:
         self._dir = knowledge_dir
         self._bot_name = bot_name
 
     def apply(self, proposal: LearningProposal) -> dict[str, int]:
-        """제안을 반영하고, 무엇을 몇 건 넣었는지 파일 이름별로 돌려준다."""
+        """Applies the proposal and returns the count added per file."""
         done: dict[str, int] = {}
         for name, items in proposal.channel_knowledge.items():
             n = self._apply_items(self._channel_file(name), proposal.day, items, name)
@@ -84,7 +81,7 @@ class LearningApplier:
 
 
 class LearningReverter:
-    """그날 자동으로 넣은 줄만 지운다."""
+    """Removes only the lines a given day's batch added."""
 
     def __init__(self, knowledge_dir: Path) -> None:
         self._dir = knowledge_dir

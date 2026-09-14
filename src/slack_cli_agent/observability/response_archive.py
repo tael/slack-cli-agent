@@ -1,9 +1,6 @@
-"""응답 아카이브.
-
-원본 `mametchi-slack-bot/bot.py` 의 `archive_response()` 와 `RESPONSE_DIR` 을
-이식한 것이다. 감사 로그가 처리 사실만 남기는 것과 달리 여기에는 응답 본문을
-그대로 둔다. 학습 배치가 이 기록을 근거로 제안을 만든다.
-"""
+# Unlike the audit log, which only records that a request was handled,
+# this keeps the full response body -- the training batch uses it as
+# source material for suggestions.
 
 from __future__ import annotations
 
@@ -16,7 +13,6 @@ _THREAD_TS_PATTERN = re.compile(r"- 스레드 : (\d+\.\d+)")
 
 
 class ResponseArchive:
-    """봇이 낸 응답을 채널별 날짜 파일에 남기고 되읽는다."""
 
     def __init__(self, root: Path, *, clock: Callable[[], datetime]) -> None:
         self._root = root
@@ -34,7 +30,6 @@ class ResponseArchive:
         elapsed_sec: float,
         turns: int | None,
     ) -> Path:
-        """응답 하나를 `<root>/<channel_slug>/<YYYY-MM-DD>.md` 에 이어 붙인다."""
         now = self._clock()
         day = now.strftime("%Y-%m-%d")
         path = self._root / channel_slug / f"{day}.md"
@@ -53,7 +48,6 @@ class ResponseArchive:
         return path
 
     def read_day(self, day: str) -> Mapping[str, str]:
-        """그날 채널별 기록 전문. 읽기 실패한 채널 하나가 나머지를 막지 않는다."""
         if not self._root.is_dir():
             return {}
         result: dict[str, str] = {}
@@ -66,5 +60,4 @@ class ResponseArchive:
 
     @staticmethod
     def thread_timestamps(text: str) -> tuple[str, ...]:
-        """기록 본문에서 스레드 타임스탬프를 중복 없이 등장 순서대로 뽑는다."""
         return tuple(dict.fromkeys(_THREAD_TS_PATTERN.findall(text)))

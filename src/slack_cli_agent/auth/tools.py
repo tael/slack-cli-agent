@@ -1,14 +1,12 @@
-"""허용 도구 결정.
+"""Decides which tools a request gets.
 
-원본 build_command 의 분기를 그대로 옮긴다.
+    readonly (postmortem/debug trace)   base tools only
+    owner                                base + owner extras
+    an extension applies                 base + whatever the extension adds
+    otherwise                            base tools only
 
-    readonly(부검·디버그 추적)  ALLOWED_TOOLS 만
-    소유자                     ALLOWED_TOOLS + OWNER_EXTRA_TOOLS
-    확장이 적용되는 자리        ALLOWED_TOOLS + 확장이 주는 도구
-    그 외                      ALLOWED_TOOLS 만
-
-읽기 전용이 기본이다. Skill 은 aside(부검·디버그·서식 점검) 가 아니고
-채널이 켜 두었을 때만 맨 끝에 더한다.
+Read-only by default. Skill is appended last, and only when the request
+isn't aside (postmortem/debug/format-check) and the channel has it enabled.
 """
 
 from __future__ import annotations
@@ -22,8 +20,6 @@ SKILL_TOOL = "Skill"
 
 
 class ToolPolicy:
-    """요청 하나에 붙일 도구 목록을 정한다."""
-
     def __init__(
         self,
         base_tools: Sequence[str],

@@ -1,4 +1,4 @@
-"""상태 디렉터리 하위 경로. 경로 조립을 한 곳에 모은다."""
+"""Paths under the state directory, assembled in one place."""
 
 from __future__ import annotations
 
@@ -32,17 +32,17 @@ class StatePaths:
 
     @property
     def responses(self) -> Path:
-        """봇이 낸 응답을 채널별 날짜 파일로 남기는 곳. 원본 RESPONSE_DIR."""
+        """Bot replies, logged per channel into per-day files."""
         return self.root / "responses"
 
     @property
     def proposals(self) -> Path:
-        """학습 제안 파일이 날짜별로 쌓이는 곳. 원본 PROPOSAL_DIR."""
+        """Learning proposal files, one set per day."""
         return self.root / "proposals"
 
     @property
     def knowledge(self) -> Path:
-        """채널별 지식 파일. 학습 반영이 이 아래에 줄을 더한다. 원본 KNOWLEDGE_DIR."""
+        """Per-channel knowledge files; applying a learning proposal appends a line here."""
         return self.persona / "knowledge"
 
     @property
@@ -55,17 +55,17 @@ class StatePaths:
 
     @property
     def database(self) -> Path:
-        """기계 상태 전부. 큐·세션·감사·부검 기록·지켜보기 큐."""
+        """All machine state: queue, sessions, audit trail, postmortems, watch queue."""
         return self.root / "state.db"
 
     @property
     def audit_log(self) -> Path:
-        """감사 기록 사본. 외부 도구가 읽는 형식이라 DB 와 함께 남긴다."""
+        """Audit log copy, kept alongside the DB since external tools read this format."""
         return self.root / "audit.jsonl"
 
     @property
     def state_snapshot(self) -> Path:
-        """프로세스 상태 기록. 주기적으로 통째로 갈아 끼운다. 원본 STATE_FILE."""
+        """Process state snapshot, rewritten wholesale on a timer."""
         return self.root / "state.json"
 
     @property

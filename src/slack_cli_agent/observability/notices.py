@@ -1,13 +1,6 @@
-"""상태 안내문 목록.
-
-봇이 내는 상태 메시지(처리 중, 한도 소진, 오류 등)를 목록으로 관리한다.
-안내문이 답변으로 세어지면 되짚기가 그 요청을 처리된 것으로 짝지어 앞 요청이
-영영 묻힌다. 그래서 리터럴을 흩어 두지 않고 상수로 모아, 안내문인지 여부를
-한 곳에서 판정한다.
-
-문구는 설정으로 덮어쓸 수 있게 하되 기본값은 코드에 둔다 — 설정이 없어도
-동작해야 하기 때문이다.
-"""
+# Notice text is centralized here so `is_notice()` has a single source of
+# truth -- if a notice were counted as a real reply, catch-up would treat
+# the earlier request as answered and it would get lost permanently.
 
 from __future__ import annotations
 
@@ -33,9 +26,6 @@ class NoticeKey(str, Enum):
     CHANNEL_UNREGISTERED = "channel_unregistered"
 
 
-# 원본 NOTICE_* 상수를 옮긴 것이다. 조직 고유 표현(제품명, 조직 전용 모드
-# 이름, 조직 내부 문의처)은 일반화했다 — MODE_MENTION_ONLY 와
-# MODE_STRUCTURED 가 그 대응이다.
 DEFAULT_NOTICES: Mapping[NoticeKey, str] = {
     NoticeKey.LATE: "답이 늦었어요. 지금 확인해서 이어서 답할게요.",
     NoticeKey.BUSY: "앞 요청을 처리 중입니다. 끝나면 이어서 답하겠습니다.",
@@ -61,12 +51,10 @@ class NoticeCatalog:
             self._texts.update(overrides)
 
     def render(self, key: Any, **params: Any) -> str:
-        """등록된 안내문을 돌려준다. 없는 키면 KeyError."""
         text = self._texts[key]
         return text.format(**params) if params else text
 
     def is_notice(self, text: str | None) -> bool:
-        """이 문자열이 안내문인지 판정한다. 답변 여부 판정(되짚기)이 이것을 쓴다."""
         stripped = (text or "").strip()
         if not stripped:
             return False

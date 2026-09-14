@@ -1,13 +1,8 @@
-"""학습 제안 표시·반영·되돌리기의 상위 진입점.
+"""Top-level entry point for showing, applying, and reverting proposals.
 
-원본 bot.py 의 show_proposal()/apply_learning()/revert_learning() 세 함수를
-하나로 묶는다. 세 함수 모두 "사람에게 그대로 올릴 메시지 문자열"을 돌려주는
-계약이었다 — admin/ 계층이 이 서비스 하나만 호출하면 그 계약이 그대로 유지된다.
-
-원본과 다르게 만든 것 — 판정 불가(제안 파일이 깨짐)와 부재(제안이 없음)를
-구분한다. 원본 show_proposal()/apply_learning()은 latest_proposal()의 두 실패
-모드(파일 없음/파싱 실패)를 똑같이 "없다"로 봤다. 여기서는 ProposalStore가
-Outcome으로 구분해 주므로, 깨진 파일이면 "읽지 못했다"는 별도 안내를 낸다.
+Each method returns a message string meant to be posted as-is. A missing
+proposal and a corrupt one are reported differently, since ProposalStore
+distinguishes them via Outcome.
 """
 
 from __future__ import annotations
@@ -36,7 +31,6 @@ class LearningService:
         self._renderer = renderer
 
     def show_proposal(self) -> str:
-        """원본 show_proposal() 과 같다."""
         outcome = self._store.latest()
         if outcome.kind is OutcomeKind.ABSENT:
             return "아직 학습 제안이 없어요."
@@ -45,8 +39,8 @@ class LearningService:
         return self._renderer.render_for_display(outcome.value())
 
     def apply_latest(self) -> str:
-        """원본 apply_learning() 과 같다. 밤 배치가 이미 반영해도 이 명령은
-        되짚어 넣는 용도라 같은 항목은 두 번 들어가지 않는다."""
+        # Safe to call even after the nightly batch already applied the
+        # proposal — LearningApplier skips items already present.
         outcome = self._store.latest()
         if outcome.kind is OutcomeKind.ABSENT:
             return "반영할 학습 제안이 없어요."
@@ -67,7 +61,6 @@ class LearningService:
         )
 
     def revert(self, day: str) -> str:
-        """원본 revert_learning() 과 같다."""
         if not _DAY_PATTERN.fullmatch(day or ""):
             return "되분석할 날짜를 함께 주세요. 예 : 학습 되돌리기 2026-08-26"
         try:

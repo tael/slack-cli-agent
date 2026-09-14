@@ -1,9 +1,9 @@
-"""봇별 확장점.
+"""Per-bot extension points.
 
-원본은 회사 전용 기능(사내 워크플로 도구 조작, 사내 API 헬프데스크 모드, 조직
-코치 모드)이 코어 코드(`bot.py`)에 섞여 있다(01-source-analysis.md 21절).
-`BotPlugin` 은 그것을 코어 밖으로 빼는 유일한 통로다 — 전부 기본 구현이
-빈 튜플이라, 플러그인은 자기가 필요한 확장점만 재정의한다.
+`BotPlugin` is the only way to keep org-specific features (internal
+workflow-tool integration, an internal API helpdesk mode, a coach mode) out
+of core code. Every hook defaults to an empty sequence, so a plugin only
+overrides what it needs.
 """
 
 from __future__ import annotations
@@ -22,8 +22,6 @@ if TYPE_CHECKING:
 
 
 class BotPlugin(ABC):
-    """봇 하나에 붙는 조직 전용 확장 전부의 진입점."""
-
     name: ClassVar[str]
 
     def access_extensions(self) -> Sequence[AccessExtension]:
@@ -42,9 +40,7 @@ class BotPlugin(ABC):
         return ()
 
     def engines(self) -> Sequence[type[Engine]]:
-        """이 플러그인이 더하는 엔진 종류.
-
-        엔진 종류가 코드에 고정되면 쓰는 쪽이 자기 엔진을 못 붙인다. 접근
-        정책·관리 명령과 같은 자리에 둔다.
-        """
+        """Engine types this plugin adds. Kept as an extension point, like
+        access policy and admin commands, rather than hardcoded — otherwise
+        a caller couldn't plug in its own engine."""
         return ()

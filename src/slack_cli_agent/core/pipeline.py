@@ -1,13 +1,6 @@
-"""요청 처리 파이프라인.
-
-세션 판정부터 슬랙 발신까지 요청 하나를 끝까지 처리한다. 원본 bot.py 의
-``handle_request`` 에 해당한다. ``core.ports.RequestHandler`` 계약을
-구현해 워커와 분리한다 — 워커는 이 계약(``HandleOutcome``)만 알면 되고,
-화자 판정·세션·프롬프트 조립·엔진 실행·가드 보정·발신의 실제 조립은
-이 클래스가 맡는다.
-
-예외를 밖으로 내지 않는다. 어떤 단계에서 실패해도 ``HandleOutcome(ok=False)``
-로 돌려준다 — 워커가 예외 처리를 대신하면 그 사유가 큐에 남지 않는다.
+"""Handles a request end to end: session resolution, prompt assembly, engine
+call, guard corrections, and posting to Slack. Implements
+``core.ports.RequestHandler`` so the worker only needs to know ``HandleOutcome``.
 """
 
 from __future__ import annotations
@@ -45,13 +38,6 @@ from .ports import HandleOutcome
 log = logging.getLogger(__name__)
 
 class RequestPipeline:
-    """요청 하나를 끝까지 처리한다. ``core.ports.RequestHandler`` 를 구현한다.
-
-    ``reactions`` 는 처리 상태 리액션(``slack.reactions.ReactionMarker`` 상당)을
-    다는 대상이다. ``None`` 이면 표식을 안 단다 — 시험이나 표식이 필요 없는
-    자리에서 선택으로 뺄 수 있게 한다.
-    """
-
     def __init__(
         self,
         *,
@@ -60,9 +46,8 @@ class RequestPipeline:
         prompt_composer: SystemPromptComposer,
         session_manager: SessionManager,
         engine: Engine,
-        # 엔진 실행 한 걸음. 실행기를 직접 받지 않는다 — 폴백이 설정돼
-        # 있어도 `EngineRunner.run()` 을 직접 부르면 `FallbackEngine.run()`
-        # 이 안 불려 한도 소진 때 전환과 상태 기록이 건너뛰어진다.
+        # Not the raw runner — calling EngineRunner.run() directly would skip
+        # FallbackEngine.run(), so a usage-limit hit wouldn't trigger the fallback switch.
         invoker: EngineInvoker,
         guard_pipeline: GuardPipeline,
         publisher: MessagePublisher,
@@ -74,22 +59,15 @@ class RequestPipeline:
         name_resolver: Callable[[str], str] = lambda user_id: user_id,
         mention_table: Callable[[], Mapping[str, str]] = dict,
         slow_reporter: SlowRequestReporter | None = None,
-        # 스레드에 함께 있는 사람을 추리는 함수. 안 주면 그 대목을 프롬프트에
-        # 안 붙인다 — 슬랙 스레드 조회가 한 번 더 나가므로 기본은 끈 상태다.
+        # Optional to avoid an extra Slack lookup where it's not needed.
         participants: Callable[[str, str], tuple[tuple[str, str], ...]] | None = None,
-        # 발송 직전 스레드 재확인. 안 주면 그 확인을 아예 안 한다 — 슬랙
-        # 조회가 한 번 더 나가므로 조립 코드에서 선택한다.
+        # Optional to avoid an extra Slack lookup where it's not needed.
         late_addendum: LateAddendumChecker | None = None,
-        # 재확인이 흡수한 말을 대기줄이 또 실행하지 않게 적어 두는 자리.
-        # 두 경로가 같은 기록을 봐야 하므로 밖에서 하나를 만들어 공유한다.
+        # Shared with the caller so both the late-addendum check and the queue see
+        # the same consumed-messages record.
         consumption: ThreadConsumption | None = None,
-        # 지켜보겠다는 약속을 등록할 감시 큐. 안 주면 등록을 안 한다 —
-        # 가드가 태그를 뽑아내도 그 값을 넣을 곳이 없으면 아무도 다시 확인하지
-        # 않는다. 원본 `register_watch_job()` 호출 위치에 대응한다.
         watch_queue: WatchJobPort | None = None,
-        # 올린 응답을 채널별 날짜 파일로 남기는 곳. 안 주면 안 남긴다 —
-        # 학습 배치가 읽는 자료가 이것뿐이라, 여기서 빠지면 그 배치는 매일
-        # "응답 기록이 없다" 로 끝난다. 원본 `archive_response()` 자리다.
+        # Feeds the learning batch — without it, that batch has nothing to read.
         response_archive: ResponseArchive | None = None,
         now: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
@@ -121,12 +99,11 @@ class RequestPipeline:
     def handle(self, ctx: RequestContext) -> HandleOutcome:
         try:
             return self._handle(ctx)
-        except Exception as exc:  # 예외를 밖으로 내지 않는다  # noqa: BLE001 — 요청 처리기 예외를 밖으로 내지 않는다 — 워커 루프가 이 한 건 실패로 멎으면 안 된다
+        except Exception as exc:  # noqa: BLE001 — must not raise; the worker loop shouldn't die on one bad request
             failure = str(exc) or exc.__class__.__name__
             self._mark_failed(ctx)
             self._record_best_effort(ctx, failure)
             return HandleOutcome(ok=False, failure=failure)
-
 
     def _report_if_slow(
         self,
@@ -139,11 +116,7 @@ class RequestPipeline:
         response: EngineResponse,
         started: float,
     ) -> None:
-        """느린 요청을 보고 경로로 넘긴다. 기준값 판정은 보고기가 한다.
-
-        예외를 밖으로 내지 않는다. 보고는 이미 끝난 요청의 부가 기록이고,
-        그것이 실패했다고 성공한 응답을 실패로 뒤집으면 안 된다.
-        """
+        # A reporting failure must not flip an already-successful response to a failure.
         if self._slow_reporter is None:
             return
         config = self._channels.get(ctx.channel)
@@ -152,8 +125,8 @@ class RequestPipeline:
                 SlowRequestMeta(
                     elapsed_wall=elapsed,
                     mono_elapsed=mono_elapsed,
-                    # 세션 기록에는 여러 요청의 이벤트가 누적된다. 이 값을 안 넘기면
-                    # 이번 요청이 아니라 세션 시작부터의 전체 경과가 분해 대상이 된다.
+                    # Session records accumulate events across requests; without this,
+                    # the breakdown covers the whole session, not just this request.
                     started=started,
                     model=model,
                     model_actual=response.model_actual,
@@ -166,8 +139,8 @@ class RequestPipeline:
                     channel_name=config.name if config else ctx.channel,
                     text=ctx.text,
                     usage=response.usage,
-                    # 정상 종료 경로에는 이 키가 없다. 빈 문자열을 채워 넣으면
-                    # 보고에 내용 없는 블록이 나간다.
+                    # None rather than "" for a missing key, so the report doesn't
+                    # render an empty block.
                     stdout_tail=tail_output(response.raw.get("stdout")) or None,
                     stderr_tail=tail_output(response.raw.get("stderr")) or None,
                 )
@@ -175,12 +148,9 @@ class RequestPipeline:
         except Exception:
             log.exception("느린 요청 보고에 실패했다")
 
-    # -- 본 흐름 -------------------------------------------------------
-
     def _handle(self, ctx: RequestContext) -> HandleOutcome:
         start = self._now()
-        # 벽시계와 단조시계를 함께 잰다. 벽시계만으로는 실제로 느린 것과
-        # 기기가 절전에 들어갔던 것이 같은 값으로 나온다.
+        # Wall clock alone can't distinguish "actually slow" from "device slept".
         mono_start = self._monotonic()
         self._mark_processing(ctx)
 
@@ -225,9 +195,8 @@ class RequestPipeline:
             response = self._invoker.invoke(request)
 
         elapsed = self._now() - start
-        # 성공·실패·침묵 어느 경로로 갈라지기 전에 한 번만 부른다. 분기마다
-        # 넣으면 한 요청이 여러 번 보고된다. 실패한 요청이 오히려 더 느리다 —
-        # 타임아웃으로 끝난 것이 가장 긴 소요다.
+        # Called once here, before branching into success/failure/silent — calling
+        # it in each branch would report the same request multiple times.
         self._report_if_slow(ctx, decision, model, effort, elapsed, self._monotonic() - mono_start, response, start)
 
         if not response.ok:
@@ -236,9 +205,8 @@ class RequestPipeline:
             self._mark_failed(ctx)
             return HandleOutcome(ok=False, failure=failure)
 
-        # 엔진이 자기 세션 ID 를 발급했으면 매핑에 반영한다. 성공한 뒤에만
-        # 한다 — 실패한 실행이 낸 ID 를 다음 요청의 이어받기에 쓰면 그 요청도
-        # 함께 깨진다. 원본 `persist_runner_session()` 호출 위치와 같다.
+        # Only adopt the engine's session ID after success — resuming from a
+        # failed run's session ID would break the next request too.
         if response.session_id and self._sessions.adopt_engine_session(
             key, decision.session_id, self._engine.name, response.session_id
         ):
@@ -259,8 +227,7 @@ class RequestPipeline:
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage)
         if watch_desc and self._register_watch(ctx, principal, watch_desc):
-            # 감시로 넘어간 건은 완료가 아니다. 완료 표식을 달면 미완료 복구
-            # 대상에서 빠져 되짚기가 다시 보지 않는다.
+            # Not "done" — marking it done would exclude it from catch-up recovery.
             self._mark_watch(ctx)
         else:
             self._mark_done(ctx)
@@ -269,11 +236,7 @@ class RequestPipeline:
     def _archive_response(
         self, ctx: RequestContext, channel_slug: str, body: str, response: EngineResponse
     ) -> None:
-        """올린 응답 본문을 그대로 남긴다. 학습 배치가 이 기록을 근거로 쓴다.
-
-        예외를 밖으로 내지 않는다. 이미 발송까지 끝난 요청이고, 부가 기록이
-        실패했다고 성공한 응답을 실패로 뒤집으면 안 된다.
-        """
+        # The message is already sent; an archive failure must not flip this to a failure.
         if self._response_archive is None:
             return
         try:
@@ -289,8 +252,6 @@ class RequestPipeline:
             )
         except Exception:
             log.exception("응답 기록에 실패했다")
-
-    # -- 조립 도움 -------------------------------------------------------
 
     def _session_key(self, ctx: RequestContext, scope: str) -> SessionKey:
         key_value = ctx.channel if scope == SessionScope.CHANNEL else f"{ctx.channel}:{ctx.thread_ts}"
@@ -333,16 +294,12 @@ class RequestPipeline:
         return self._composer.compose(composition_ctx)
 
     def _present_people(self, ctx: RequestContext) -> tuple[tuple[str, str], ...]:
-        """스레드에 함께 있는 사람. 못 세면 빈 목록이다.
-
-        여기서 실패해도 요청은 그대로 처리한다 — 이 값이 없으면 프롬프트에
-        그 대목이 안 붙을 뿐이고, 조회 실패로 답변 자체를 막을 이유가 없다.
-        """
+        # A lookup failure just omits this from the prompt; it must not block the reply.
         if self._participants is None:
             return ()
         try:
             return self._participants(ctx.channel, ctx.thread_ts)
-        except Exception as exc:  # noqa: BLE001 — 참가자 조회 실패로 답변 자체를 막지 않는다 — 프롬프트에 그 대목만 빠진다
+        except Exception as exc:  # noqa: BLE001 — a lookup failure must not block the reply, just omit this from the prompt
             log.warning("함께 있는 사람을 세지 못했다 : %s", exc)
             return ()
 
@@ -354,14 +311,10 @@ class RequestPipeline:
         request: EngineRequest,
         response: EngineResponse,
     ) -> tuple[str, str | None]:
-        """발송 직전에 스레드 아래로 새로 달린 말을 담아 다시 낸다.
-
-        (올릴 본문, 앞 답) 을 돌려준다. 다시 내지 않았으면 앞 답은 None 이다 —
-        그 값이 있을 때만 유실 판정 가드가 실행된다.
-
-        다시 내기가 실패했으면 앞 답을 그대로 올리고 소화 기록도 안 남긴다.
-        그 말은 아직 답을 못 받은 것이라 대기줄이 처리해야 한다.
-        """
+        # Returns (body to post, previous body). previous_body is None unless a
+        # re-run happened — the loss-detection guard only runs when it's set. If the
+        # re-run itself fails, the original body is posted and nothing is marked
+        # consumed, since that message still hasn't been answered.
         body = response.body
         if self._late_addendum is None:
             return body, None
@@ -369,7 +322,7 @@ class RequestPipeline:
             addendum, addendum_ts = self._late_addendum.check(
                 ctx.channel, ctx.thread_ts, ctx.ts, scope
             )
-        except Exception as exc:  # noqa: BLE001 — 발송 전 재확인 실패로 이미 만든 답을 버리지 않는다 — 그대로 올리고 대기줄에 맡긴다
+        except Exception as exc:  # noqa: BLE001 — a failed pre-send recheck must not discard the answer already produced
             log.warning("발송 전 스레드 재확인 실패 : %s", exc)
             return body, None
         if not addendum:
@@ -398,16 +351,9 @@ class RequestPipeline:
         decision: SessionDecision,
         previous_body: str | None = None,
     ) -> tuple[str, str]:
-        """가드를 적용한다. 보정한 본문과 감시 대상 설명을 함께 돌려준다.
-
-        감시 대상 설명은 `WatchPromiseGuard` 가 `[[WATCH: ...]]` 태그에서 뽑은
-        값이다. 없으면 빈 문자열이다. 이 값을 버리면 가드가 태그를 지우기만
-        하고 등록은 아무도 안 해, 지켜보겠다는 답만 나가고 실제 확인은 없다.
-
-        rerun 요청은 한 번까지만 엔진 재호출로 잇는다. 두 번째 가드 실행은
-        ``is_rewrite_retry=True`` 로 실행된다 — 그 결과의 ``rerun`` 은 보지 않는다.
-        여기서 그 값을 무시하는 것 자체가 무한 재시도를 막는 구조다.
-        """
+        # A rewrite rerun is chained at most once — the second guard run
+        # (is_rewrite_retry=True) has its own `rerun` ignored, which is what caps
+        # this at one retry instead of looping.
         is_owner = principal.trust is TrustLevel.OWNER
         guard_ctx = GuardContext(
             channel=ctx.channel,
@@ -427,21 +373,13 @@ class RequestPipeline:
         )
         rerun_response = self._invoker.invoke(rerun_request)
         if not rerun_response.ok:
-            # 다시 쓰기 자체가 실패했다. 앞서 가드를 거친 본문을 그대로 쓴다.
             return result.body, _watch_desc_of(result)
 
         retry_ctx = replace(guard_ctx, previous_body=result.body, is_rewrite_retry=True)
         final_result = self._guards.run(rerun_response.body, retry_ctx)
-        # 다시 쓴 답에 태그가 붙었으면 그것도 등록 대상이다. 원본도 재작성
-        # 결과에서 태그를 다시 찾아 등록한다.
         return final_result.body, _watch_desc_of(final_result)
 
     def _register_watch(self, ctx: RequestContext, principal: Principal, description: str) -> bool:
-        """감시 큐에 등록한다. 실제로 등록했으면 True.
-
-        예외를 밖으로 내지 않는다. 답은 이미 나간 뒤라, 등록 실패로 요청
-        전체를 실패로 적으면 워커가 재시도해 같은 답이 두 번 올라간다.
-        """
         if self._watch_queue is None:
             return False
         try:
@@ -449,13 +387,11 @@ class RequestPipeline:
                 ctx.channel, ctx.thread_ts, description,
                 msg_ts=ctx.ts, trust=principal.trust,
             )
-        except Exception as exc:  # noqa: BLE001 — 감시 등록 실패를 요청 실패로 적지 않는다 — 답은 이미 나갔고 재시도하면 같은 답이 중복 발송된다
+        except Exception as exc:  # noqa: BLE001 — the answer is already sent; a retry on this failure would double-post it
             log.warning("감시 등록 실패 : %s", exc)
             return False
         log.info("감시 등록 : %s", description[:80])
         return True
-
-    # -- 감사 -------------------------------------------------------
 
     def _record(
         self,
@@ -491,8 +427,6 @@ class RequestPipeline:
         )
 
     def _record_best_effort(self, ctx: RequestContext, failure: str) -> None:
-        """예외 경로에서 남기는 최소 감사 기록. 이것마저 실패해도 삼킨다 —
-        감사 기록 실패가 원래 처리 실패를 덮어써서는 안 된다."""
         try:
             self._audit.record_request(
                 channel=ctx.channel,
@@ -506,7 +440,7 @@ class RequestPipeline:
                 ok=False,
                 failure=failure,
             )
-        except Exception as exc:  # noqa: BLE001 — 감사 기록 실패가 원래 처리 실패를 덮어쓰면 안 된다
+        except Exception as exc:  # noqa: BLE001 — an audit-log failure must not mask the original processing failure
             log.warning("최소 감사 기록 실패 : %s", exc)
 
     @staticmethod
@@ -526,8 +460,6 @@ class RequestPipeline:
             return time.time() - ctx.queued_at
         except TypeError:
             return None
-
-    # -- 표식 -------------------------------------------------------
 
     def _mark_processing(self, ctx: RequestContext) -> None:
         if self._reactions is not None:
@@ -551,6 +483,5 @@ class RequestPipeline:
 
 
 def _watch_desc_of(result: Any) -> str:
-    """가드 실행 결과에서 감시 대상 설명을 꺼낸다. 없으면 빈 문자열."""
     detail = result.details.get(WatchPromiseGuard.name) or {}
     return str(detail.get("watch_desc") or "")

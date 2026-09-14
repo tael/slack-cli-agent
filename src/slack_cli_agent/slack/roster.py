@@ -1,21 +1,22 @@
-"""RosterBuilder — 계정 핸들과 사람 이름을 잇는 명부를 만든다.
+"""Builds a roster mapping account handles to real names.
 
-원본 `bot.py` 의 `build_people()`(4550행 근처)을 옮긴 것이다. 사내 데이터는
-사람을 계정 핸들(예: alice.kim)로 남기는데, 그 핸들이 누구인지 모르면 답변이
-핸들과 실명을 섞어 쓰게 되고 읽는 사람이 같은 사람인지 대조해야 한다.
+Internal data refers to people by account handle (e.g. alice.kim); if
+we don't know who that is, replies mix handles and real names and the
+reader has to cross-reference them manually.
 
-슬랙 `users_list` 의 `name` 이 계정 핸들이고 `profile.real_name` 이 실명이다.
-이메일 스코프 없이 이 둘만으로 잇는다.
+Slack's users_list gives `name` (the handle) and `profile.real_name`
+(the real name) — no email scope needed to join them.
 
-퇴사자(`deleted`)도 담는다. 과거 데이터에 남은 이름이라 오히려 더 필요하다.
-표 전체는 매 요청에 싣지 않고 파일로 둔다 — 그 이유로 이 클래스는 표 내용을
-돌려주지 않고 파일에 쓰기만 한다. 모델에게 경로를 알리는 일은
-`prompt.sections.RosterSection` 몫이다.
+Includes departed employees (`deleted`) too — historical data actually
+needs them more, not less. The full table isn't loaded into every
+request; it's written to a file, and this class only writes it.
+Telling the model where the file is is prompt.sections.RosterSection's
+job.
 
-`refresh()` 한 번이 한 회차다. 주기 반복(원본 `people_loop`)은 이 클래스
-안에 두지 않는다 — 무한 루프를 클래스 안에 두면 단위 시험으로 한 회차만
-검증할 수 없다. 반복은 호출부가 `RuntimeSettings.roster_refresh_sec` 간격으로
-`refresh()` 를 다시 부르는 방식으로 돌린다.
+refresh() does one pass. The periodic loop (the original's
+people_loop) doesn't live in this class — an infinite loop inside it
+would make unit-testing a single pass impossible. The caller re-runs
+refresh() every RuntimeSettings.roster_refresh_sec instead.
 """
 
 from __future__ import annotations
@@ -28,14 +29,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# Same value as transcript.py's KST; imported separately here to avoid
+# depending on that module.
 from ..core.timezones import KST
 
 logger = logging.getLogger(__name__)
 
-# 시각 표기 기준. transcript.py 의 KST 와 값은 같지만, 이 모듈은 그쪽에
-# 의존하지 않기 위해 따로 둔다.
-
-# 명부 파일 사용 안내에 넣는 예시. 실제 인물이 아닌 가상 핸들이다.
+# Example values used in the usage note written into the roster file — not real people.
 _EXAMPLE_HANDLE = "jamie.oh"
 _EXAMPLE_NAME = "오제이미"
 _EXAMPLE_LEFT_NAME = "최우주 (퇴사)"
@@ -43,7 +43,7 @@ _EXAMPLE_LEFT_NAME = "최우주 (퇴사)"
 
 @dataclass(frozen=True)
 class RosterEntry:
-    """명부 한 줄. 계정 핸들 하나와 그 사람의 실명, 퇴사 여부."""
+    """One roster row: an account handle, its real name, and departure status."""
 
     account_handle: str
     display_name: str
@@ -51,8 +51,6 @@ class RosterEntry:
 
 
 class RosterBuilder:
-    """슬랙 사용자 목록에서 계정 핸들과 실명 표를 만들어 파일로 쓴다."""
-
     def __init__(
         self,
         client: Any,
@@ -66,15 +64,15 @@ class RosterBuilder:
         self._now = now
 
     def refresh(self) -> int:
-        """한 회차를 돌린다. 담은 인원 수를 돌려준다.
+        """Runs one pass. Returns the number of entries written.
 
-        조회가 예외를 내거나 결과가 비면 기존 파일을 그대로 두고 0을
-        돌려준다. 조회 한 번의 실패로 명부가 사라지면 그 뒤 모든 답변이
-        핸들만 쓰게 된다 — 그것을 막는 것이 이 정책의 목적이다.
+        If the fetch raises or returns nothing, leaves the existing
+        file alone and returns 0 — one failed lookup shouldn't wipe
+        out the roster and make every reply fall back to bare handles.
         """
         try:
             entries = self._fetch_entries()
-        except Exception as exc:  # noqa: BLE001 - 원본과 같은 정책. 실패 사유를 가리지 않고 남긴다
+        except Exception as exc:  # noqa: BLE001 - same policy as the original: log the failure, don't hide the cause
             logger.warning("명부를 만들지 못했다: %s", exc)
             return 0
 
@@ -88,7 +86,6 @@ class RosterBuilder:
         return len(entries)
 
     def _fetch_entries(self) -> list[RosterEntry]:
-        """`users_list` 를 커서 페이지네이션으로 끝까지 조회한다."""
         rows: dict[str, RosterEntry] = {}
         cursor = ""
         while True:
@@ -104,12 +101,13 @@ class RosterBuilder:
 
     @staticmethod
     def _to_entry(member: Mapping[str, Any]) -> RosterEntry | None:
-        """원본과 같은 제외 기준. 하나라도 걸리면 그 사람은 명부에 넣지 않는다.
+        """Same exclusion rules as the original. Any one of these
+        drops the person from the roster:
 
-        - 봇·앱 사용자는 계정 핸들 개념이 없다
-        - 핸들 또는 실명이 비어 있으면 이을 대상이 없다
-        - 핸들과 실명이 같으면 표에 넣어도 도움이 안 된다
-        - 핸들에 점이 없으면 계정 핸들 형태가 아니다(사내 규칙)
+        - bots/app users have no account-handle concept
+        - an empty handle or name leaves nothing to join
+        - a handle equal to the name adds no value
+        - a handle without a dot isn't the company's handle format
         """
         if member.get("is_bot") or member.get("is_app_user"):
             return None
