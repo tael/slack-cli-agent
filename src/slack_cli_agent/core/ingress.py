@@ -75,6 +75,10 @@ class IngressService:
         reply: ReplyCallback,
         allowed_reactions: frozenset[str],
         on_reaction: ReactionCallback,
+        # 실패로 끝난 같은 건을 되살릴 때의 시도 상한. 0 이면 제한이 없다.
+        # 설정 객체 전체 대신 이 값 하나만 받는다 — 접수는 다른 설정을
+        # 안 쓴다.
+        job_max_attempts: int = 0,
     ) -> None:
         self._listener = listener
         self._dedup = dedup
@@ -86,6 +90,7 @@ class IngressService:
         self._reply = reply
         self._allowed_reactions = allowed_reactions
         self._on_reaction = on_reaction
+        self._job_max_attempts = job_max_attempts
 
     def register(self, gateway: SlackGateway) -> None:
         """게이트웨이에 이벤트 핸들러 세 종류를 등록한다."""
@@ -136,7 +141,7 @@ class IngressService:
 
             ctx = self._merge_attachments(ctx, event)
 
-            if not self._queue.enqueue(ctx):
+            if not self._queue.enqueue(ctx, max_attempts=self._job_max_attempts):
                 # 이미 있는 요청이다. 대기 표식을 두 번 달지 않는다.
                 return
             self._reactions.mark_waiting(ctx.channel, ctx.ts)

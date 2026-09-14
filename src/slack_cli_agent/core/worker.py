@@ -176,7 +176,9 @@ class Worker:
         for context in report.missed:
             if context.key in pending_keys or context.key in running_keys:
                 continue
-            if self._queue.enqueue(context):
+            # 실패로 끝난 건은 되살아난다. 상한을 함께 넘겨, 계속 실패하는
+            # 요청을 되짚기가 매 회차 되살리지 않게 한다.
+            if self._queue.enqueue(context, max_attempts=self._settings.job_max_attempts):
                 accepted.append(context)
                 pending_keys.add(context.key)
 

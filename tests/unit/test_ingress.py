@@ -57,11 +57,15 @@ class FakeJobQueue:
         self.enqueued: list[RequestContext] = []
         self._enqueue_result = enqueue_result
         self._raise_on_enqueue = raise_on_enqueue
+        # 등록 때 함께 넘어온 재시도 상한. 접수가 이 값을 안 넘기면
+        # 실패로 끝난 건이 재전달돼도 되살아나지 않는다.
+        self.enqueue_limits: list[int] = []
 
-    def enqueue(self, ctx: RequestContext) -> bool:
+    def enqueue(self, ctx: RequestContext, max_attempts: int = 0) -> bool:
         if self._raise_on_enqueue:
             raise RuntimeError("큐 저장소 장애")
         self.enqueued.append(ctx)
+        self.enqueue_limits.append(max_attempts)
         return self._enqueue_result
 
     def claim_next(self, worker_id: str) -> Job | None:
@@ -146,6 +150,7 @@ def make_ingress(
     tmp_path: Path,
     replies: list[tuple[str, str, str]] | None = None,
     reactions_seen: list[tuple[str, str, str, str]] | None = None,
+    job_max_attempts: int = 0,
 ) -> IngressService:
     profile = make_profile(tmp_path)
     channels = ChannelRegistry(Path("/nonexistent.json"))
@@ -185,6 +190,7 @@ def make_ingress(
         reply=reply,
         allowed_reactions=frozenset({"dango"}),
         on_reaction=on_reaction,
+        job_max_attempts=job_max_attempts,
     )
 
 
@@ -439,3 +445,32 @@ class Test삼킨_예외를_기록한다:
             ingress.handle_app_mention(mention_event())
 
         assert any("큐 저장소 장애" in r.message or r.exc_info for r in caplog.records)
+
+
+class Test접수가_재시도상한을_넘긴다:
+    """실패한 건을 다시 등록할 때 상한을 함께 넘기는가.
+
+    상한 없이 되살리면 계속 실패하는 요청이 슬랙 재전달마다 되살아나 끝나지
+    않는다. 반대로 안 넘기면 실패한 건이 답 없이 남는다.
+    """
+
+    def test_등록에_상한이_함께_넘어간다(
+        self, tmp_path: Path, listener: EventListener, admin_router: AdminRouter
+    ) -> None:
+        queue = FakeJobQueue()
+        service = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router,
+            tmp_path=tmp_path, job_max_attempts=3,
+        )
+        service.handle_app_mention(mention_event())
+        assert queue.enqueue_limits == [3]
+
+    def test_상한을_안_주면_제한없음으로_넘어간다(
+        self, tmp_path: Path, listener: EventListener, admin_router: AdminRouter
+    ) -> None:
+        queue = FakeJobQueue()
+        service = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+        )
+        service.handle_app_mention(mention_event())
+        assert queue.enqueue_limits == [0]

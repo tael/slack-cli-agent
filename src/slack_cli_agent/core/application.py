@@ -472,6 +472,23 @@ class Application:
             )
         return self._pipeline
 
+    def job_purge_runner(self) -> PeriodicRunner:
+        """끝난 작업을 주기적으로 지운다. 안 띄우면 jobs 표가 계속 커진다.
+
+        완료·실패 행은 중복 방어 기록이기도 하다. 되짚기 최대 창보다 오래
+        남겨야 이미 답한 메시지를 미응답으로 다시 집지 않는다.
+        """
+        return PeriodicRunner(
+            self._purge_finished_jobs,
+            self._settings.job_purge_interval_sec,
+            name="job_purge",
+        )
+
+    def _purge_finished_jobs(self) -> None:
+        removed = self.queue().purge_finished(time.time() - self._settings.job_retention_sec)
+        if removed:
+            log.info("끝난 작업 정리 : %s건", removed)
+
     def watch_jobs(self) -> WatchJobQueue:
         """감시 큐. 등록·확인·상태 기록이 같은 객체를 본다.
 
@@ -664,6 +681,9 @@ class Application:
                 reply=self._reply,
                 allowed_reactions=self.allowed_reactions(),
                 on_reaction=self.on_reaction,
+                # 실패로 끝난 건은 재등록으로 되살아난다. 상한을 함께 넘겨
+                # 계속 실패하는 요청이 재전달마다 되살아나지 않게 한다.
+                job_max_attempts=self._settings.job_max_attempts,
             )
         return self._ingress
 

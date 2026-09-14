@@ -189,3 +189,70 @@ class TestWorkerHeartbeat:
         result = WorkerHeartbeat(fake, RuntimeSettings()).reclaim_stale()
 
         assert result.requeued == [target]
+
+
+class Test실패건재등록:
+    """실패로 끝난 건을 다시 등록할 수 있는가.
+
+    `UNIQUE(channel, message_ts)` 와 `INSERT OR IGNORE` 때문에, 실패한 행이
+    그 키를 계속 차지한다. 되짚기가 미응답 멘션을 찾아내도 재등록이 조용히
+    무시돼 그 요청은 영영 처리되지 않는다.
+
+    완료된 건은 반대다. 다시 등록하면 같은 답이 두 번 나간다 — 그 차단은
+    그대로 둔다.
+    """
+
+    def test_실패한건은_다시_등록된다(self, database) -> None:
+        queue = SqliteJobQueue(database)
+        assert queue.enqueue(ctx("1.0")) is True
+        job = queue.claim_next("w")
+        assert job is not None
+        queue.complete(job.id, ok=False, failure="엔진 오류")
+
+        assert queue.enqueue(ctx("1.0")) is True
+        assert [j.context.ts for j in queue.pending()] == ["1.0"]
+
+    def test_재등록해도_실패기록은_지워진다(self, database) -> None:
+        """앞 회차의 실패 사유가 남아 있으면 지금 상태를 잘못 읽는다."""
+        queue = SqliteJobQueue(database)
+        queue.enqueue(ctx("1.0"))
+        job = queue.claim_next("w")
+        assert job is not None
+        queue.complete(job.id, ok=False, failure="엔진 오류")
+        queue.enqueue(ctx("1.0"))
+        assert queue.counts().get(JobStatus.FAILED.value, 0) == 0
+
+    def test_완료된건은_다시_등록되지_않는다(self, database) -> None:
+        queue = SqliteJobQueue(database)
+        queue.enqueue(ctx("1.0"))
+        job = queue.claim_next("w")
+        assert job is not None
+        queue.complete(job.id, ok=True)
+
+        assert queue.enqueue(ctx("1.0")) is False
+        assert queue.pending() == []
+
+    def test_시도상한을_넘긴건은_다시_등록되지_않는다(self, database) -> None:
+        """같은 요청이 계속 실패하는데 되짚기가 매번 되살리면 끝나지 않는다."""
+        queue = SqliteJobQueue(database)
+        queue.enqueue(ctx("1.0"))
+        for _ in range(3):
+            job = queue.claim_next("w")
+            assert job is not None
+            queue.complete(job.id, ok=False, failure="엔진 오류")
+            queue.enqueue(ctx("1.0"), max_attempts=3)
+        assert queue.enqueue(ctx("1.0"), max_attempts=3) is False
+
+    def test_대기중인_같은건은_그대로_무시된다(self, database) -> None:
+        queue = SqliteJobQueue(database)
+        assert queue.enqueue(ctx("1.0")) is True
+        assert queue.enqueue(ctx("1.0")) is False
+        assert len(queue.pending()) == 1
+
+    def test_실행중인_같은건은_그대로_무시된다(self, database) -> None:
+        """처리 중인 건을 대기로 되돌리면 같은 답이 두 번 나간다."""
+        queue = SqliteJobQueue(database)
+        queue.enqueue(ctx("1.0"))
+        queue.claim_next("w")
+        assert queue.enqueue(ctx("1.0")) is False
+        assert queue.pending() == []
