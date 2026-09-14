@@ -306,3 +306,63 @@ class TestPresentPeopleSection:
         text = section.render(ctx)
         assert "- 홍길동 <@U1>  (지금 말을 건 사람)" in text
         assert "- 김영희 <@U2>  (지금 말을 건 사람)" not in text
+
+
+class TestPromptLibraryDefaultsFallback:
+    """상태 디렉터리에 없으면 패키지 동봉 기본 프롬프트로 대체한다."""
+
+    def test_상태_디렉터리에_있으면_그쪽을_쓴다(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state_prompts"
+        state_dir.mkdir()
+        defaults_dir = tmp_path / "pkg_defaults"
+        defaults_dir.mkdir()
+        write(state_dir / "owner_note.md", "상태 디렉터리 본문")
+        write(defaults_dir / "owner_note.md", "패키지 기본 본문")
+        library = PromptLibrary(state_dir, defaults_dir=defaults_dir)
+        assert library.text("OWNER_NOTE") == "상태 디렉터리 본문"
+
+    def test_상태_디렉터리에_없으면_패키지_기본을_쓴다(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state_prompts"
+        state_dir.mkdir()
+        defaults_dir = tmp_path / "pkg_defaults"
+        defaults_dir.mkdir()
+        write(defaults_dir / "owner_note.md", "패키지 기본 본문")
+        library = PromptLibrary(state_dir, defaults_dir=defaults_dir)
+        assert library.text("OWNER_NOTE") == "패키지 기본 본문"
+
+    def test_둘_다_없으면_MissingPromptError(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state_prompts"
+        state_dir.mkdir()
+        defaults_dir = tmp_path / "pkg_defaults"
+        defaults_dir.mkdir()
+        library = PromptLibrary(state_dir, defaults_dir=defaults_dir)
+        with pytest.raises(MissingPromptError):
+            library.text("OWNER_NOTE")
+
+    def test_defaults_dir을_생략하면_패키지_동봉_자산을_쓴다(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state_prompts"
+        state_dir.mkdir()
+        library = PromptLibrary(state_dir)
+        from slack_cli_agent.core.application import DEFAULT_PROMPT, mode_prompt_names
+
+        required = {DEFAULT_PROMPT, *mode_prompt_names().values()}
+        required |= {
+            "OWNER_NOTE",
+            "NON_OWNER_NOTE",
+            "SLACK_FORMAT_RICH",
+            "SLACK_FORMAT_PLAIN",
+            "POSTMORTEM_NOTE",
+            "DEBUG_TRACE_NOTE",
+            "FORMAT_REVIEW_NOTE",
+            "DIRECTION_NOTE",
+            "TRUSTED_NOTE",
+            "SENSITIVE_GUARD",
+            "FULL_AUTHORITY_NOTE",
+            "MECHANISM_NOTE",
+            "WATCH_NOTE",
+            "CHAT_GUIDE_ACTIVE",
+            "CHAT_GUIDE_NORMAL",
+            "CHAT_GUIDE_QUIET",
+        }
+        for name in required:
+            assert library.text(name).strip(), f"{name} 기본 프롬프트가 비어 있다"
