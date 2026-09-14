@@ -1,0 +1,25 @@
+# 봇별 실제 설정과 상태. 조직 고유값이 들어간다
+profiles/*.json
+!profiles/*.example.json
+prompts/*.md
+!prompts/*.md.example
+persona/
+*.local.json
+
+# 상태와 산출물
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+*.pid
+*.log
+
+# 파이썬
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

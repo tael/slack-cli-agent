@@ -1,0 +1,37 @@
+[project]
+name = "slack-cli-agent"
+version = "0.1.0"
+description = "로컬 CLI 에이전트를 슬랙에 연결하는 범용 어댑터"
+requires-python = ">=3.11"
+dependencies = [
+    "slack-sdk>=3.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-xdist", "pytest-cov", "mypy", "ruff"]
+
+[project.scripts]
+slack-cli-agent = "slack_cli_agent.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-n 4"
+markers = [
+    "integration: 실제 프로세스를 SIGKILL 로 죽이는 등 느린 통합 시험",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
