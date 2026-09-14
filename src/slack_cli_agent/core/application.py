@@ -109,6 +109,7 @@ from ..prompt.sections import (
 from ..reliability.catchup import CatchupService
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
+from ..reliability.pending_report import PendingReportStore
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
 from ..reliability.watchrunner import WatchJobChecker, watch_check_prompt
 from ..render.blocks import BlockBuilder
@@ -238,6 +239,7 @@ class Application:
         self._health_runner: PeriodicRunner | None = None
         self._attachments: AttachmentStore | None = None
         self._catchup_service: CatchupService | None = None
+        self._pending_report: PendingReportStore | None = None
         # 엔진 실행 부품. 엔진을 만들 때 함께 정한다 — 폴백이 설정돼
         # 있는지는 그 시점에만 드러나고, 나중에 종류로 되짚으면 조립이
         # 무엇을 만들었는지가 코드에서 사라진다.
@@ -555,9 +557,42 @@ class Application:
             name="watch_jobs",
         )
 
-    def _notify_owner(self, text: str) -> None:
-        """소유자 개인 대화로 알린다. 원본 `save_pending_report()` 의 대응이다."""
+    def pending_report(self) -> PendingReportStore:
+        """보내지 못한 보고를 남겨 두는 자리. 한 번 만들어 계속 쓴다."""
+        if self._pending_report is None:
+            self._pending_report = PendingReportStore(
+                path=self._profile.state_dir / "pending_report.json",
+                sender=self._post_owner_dm,
+            )
+        return self._pending_report
+
+    def pending_report_runner(self) -> PeriodicRunner:
+        """남겨둔 보고를 주기적으로 다시 보낸다.
+
+        기동 시 한 번만 보내면 그 뒤에 생긴 보고는 다음 재기동까지 파일에
+        남는다. 원본에서 실제로 되짚기 실패 보고가 139분 동안 전달되지 않았다.
+        """
+        return PeriodicRunner(
+            self.pending_report().flush,
+            self._settings.pending_report_flush_interval_sec,
+            name="pending_report",
+        )
+
+    def _post_owner_dm(self, text: str) -> None:
         self.publisher().post(self._profile.owner_dm, "", text, False)
+
+    def _notify_owner(self, text: str) -> None:
+        """소유자 개인 대화로 알린다.
+
+        발송이 실패하면 그 보고를 파일에 남긴다. 로그만 남기고 끝내면 운영자는
+        장애가 났다는 사실 자체를 못 받는다 — 특히 재기동 사유를 알리는 그
+        순간은 소켓이 불안정해 발송이 실패하기 쉬운 시점이다.
+        """
+        try:
+            self._post_owner_dm(text)
+        except Exception as exc:  # noqa: BLE001 — 발송 실패 원인이 슬랙 SDK 예외부터 네트워크 오류까지 다양하다. 어떤 실패든 보고를 남기는 것이 목적이다
+            log.warning("소유자 알림 발송 실패, 보고를 남긴다 : %s", exc)
+            self.pending_report().save(text)
 
     def _watch_run_check(self, job: WatchJob) -> EngineResponse:
         """감시 확인 한 건을 엔진으로 실행한다.
@@ -977,7 +1012,12 @@ class Application:
         거기서 돌리면 같은 파일을 여러 프로세스가 동시에 쓴다.
         """
         return ServiceGroup(
-            [self.health_runner(restart), self.roster_refresher(), self.attachment_cleanup_runner()],
+            [
+                self.health_runner(restart),
+                self.roster_refresher(),
+                self.attachment_cleanup_runner(),
+                self.pending_report_runner(),
+            ],
             name="ingress",
         )
 
@@ -992,6 +1032,7 @@ class Application:
                 self.watch_runner(),
                 self.job_purge_runner(),
                 self.catchup_retry_runner(worker),
+                self.pending_report_runner(),
             ],
             name="worker",
         )
