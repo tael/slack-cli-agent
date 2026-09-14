@@ -15,9 +15,12 @@ from typing import ClassVar
 # 이 모듈에서 쓰지 않지만 재노출한다. 옛 호출부가 `guard.watch` 에서
 # 가져가고, 그 이름이 `core.markers` 의 것과 같은 객체여야 한다 — 정규식이
 # 두 벌이 되면 한쪽만 고쳐 조용히 어긋난다.
-from slack_cli_agent.core.markers import ELAPSED_LINE as ELAPSED_LINE
-from slack_cli_agent.core.markers import ELAPSED_MODEL_LINE as ELAPSED_MODEL_LINE
+from slack_cli_agent.core.markers import ELAPSED_LINE, ELAPSED_MODEL_LINE
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard, RerunRequest
+
+# __all__ 에 올려 재노출임을 명시한다. 그냥 import 만 하면 이 모듈 안에서
+# 안 쓴다는 이유로 정적 검사가 미사용 import 로 본다.
+__all__ = ["ELAPSED_LINE", "ELAPSED_MODEL_LINE"]
 
 # 모델이 확인 결과를 담아 돌려주는 표식. 사용자에게는 보이지 않고 여기서만 본다.
 WATCH_DONE_TAG = "[[WATCH_DONE]]"

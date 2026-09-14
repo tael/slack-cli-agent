@@ -23,6 +23,17 @@ from pathlib import Path
 from ..core.result import Outcome
 
 
+def _str_tuple(value: object) -> tuple[str, ...]:
+    """JSON 에서 읽은 필드를 문자열 튜플로 만든다. 원본과 런타임 동작이 같다.
+
+    ``data.get(key)`` 는 ``object | None`` 이라 mypy 가 원소 형을 못 본다.
+    저장 형식은 이 프로세스가 직접 만든 파일이라 원소가 문자열이라고
+    믿는 것은 원본 그대로다 — 여기서 신뢰 경계를 명시할 뿐 판정을
+    새로 넣지 않는다.
+    """
+    return tuple(value or ())  # type: ignore[arg-type]  # 원소가 문자열이라는 저장 계약을 신뢰한다
+
+
 @dataclass(frozen=True)
 class LearningProposal:
     """하루치 학습 제안 한 건.
@@ -48,9 +59,9 @@ class LearningProposal:
         } if isinstance(raw_channels, Mapping) else {}
         return cls(
             day=day,
-            writing_style=tuple(data.get("writing_style") or ()),
+            writing_style=_str_tuple(data.get("writing_style")),
             channel_knowledge=channels,
-            corrections=tuple(data.get("corrections") or ()),
+            corrections=_str_tuple(data.get("corrections")),
             note=str(data.get("note") or ""),
         )
 

@@ -76,7 +76,7 @@ class EventListener:
             replies = self._client.conversations_replies(
                 channel=channel, ts=thread_ts, limit=30
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 — 스레드 위치 조회 실패를 아직 안 낀 것으로 본다 — 조회 제한 초과도 이 경로로 들어온다
             return False, False
         msgs = replies.get("messages", [])
         joined = any(self._is_self(m) for m in msgs)

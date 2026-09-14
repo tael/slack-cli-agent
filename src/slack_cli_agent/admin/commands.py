@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import json
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from .command import AdminCommand, AdminContext, AdminResult
 
@@ -87,7 +87,8 @@ class EngineStatusCommand(AdminCommand):
                     "- 전환 : 없음"
                 )
             )
-        label = {"approved": "승인됨", "denied": "거부됨"}.get(state.get("approval"), "승인 대기")
+        approval = str(state.get("approval") or "")
+        label = {"approved": "승인됨", "denied": "거부됨"}.get(approval, "승인 대기")
         return AdminResult(
             message=(
                 "*실행기 상태*\n\n"
@@ -98,11 +99,12 @@ class EngineStatusCommand(AdminCommand):
         )
 
     @staticmethod
-    def _read_state(ctx: AdminContext) -> dict:
+    def _read_state(ctx: AdminContext) -> dict[str, Any]:
         path = ctx.profile.paths.engine_state
         if not path.exists():
             return {}
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
+        return data if isinstance(data, dict) else {}

@@ -62,7 +62,7 @@ class ApplicationSnapshotSource:
         데이터베이스에 있어 상태별 집계가 같은 물음에 답한다."""
         try:
             counts = self._queue.counts()
-        except Exception:
+        except Exception:  # noqa: BLE001 — 집계 실패를 스냅샷 조회 실패로 번지지 않게 한다 — 빈 집계로 대체한다
             return {}
         return {status: n for status, n in counts.items() if status in PENDING_STATUSES}
 
@@ -83,7 +83,7 @@ class ApplicationSnapshotSource:
     def watch_job_count(self) -> int | None:
         try:
             return self._watch_jobs.open_count()
-        except Exception:
+        except Exception:  # noqa: BLE001 — 감시 작업 건수 조회 실패를 스냅샷 조회 실패로 번지지 않게 한다
             return None
 
     def is_shutting_down(self) -> bool:

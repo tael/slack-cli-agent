@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from slack_cli_agent.core.errors import ConfigError
 from slack_cli_agent.engine.environment import (
     ClaudeEnvironmentPolicy,
     CodexEnvironmentPolicy,
@@ -125,5 +126,5 @@ class TestCreateEnvironmentPolicy:
         assert isinstance(policy, ClaudeEnvironmentPolicy)
 
     def test_unknown_engine_name_raises(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ConfigError):
             create_environment_policy("unknown", profile_name="examplebot", home_dir=None)

@@ -91,10 +91,10 @@ def blocks_to_text(blocks: Any) -> str:
             if body:
                 out.append(body)
         elif kind in ("section", "markdown"):
-            body = block.get("text")
-            body = body.get("text") if isinstance(body, dict) else body
-            if body:
-                out.append(body)
+            text_field = block.get("text")
+            section_body = text_field.get("text") if isinstance(text_field, dict) else text_field
+            if isinstance(section_body, str) and section_body:
+                out.append(section_body)
         elif kind == "context":
             parts = [
                 (e.get("text") or "") for e in block.get("elements") or []
@@ -191,7 +191,7 @@ class TranscriptBuilder:
                 msgs = self._client.conversations_replies(
                     channel=channel, ts=thread_ts, limit=limit
                 ).get("messages", [])
-        except Exception:
+        except Exception:  # noqa: BLE001 — 기록 조회 실패로 전체를 막지 않고 빈 결과로 넘어간다
             return ""
 
         lines = []
@@ -213,7 +213,8 @@ class TranscriptBuilder:
             return ""
 
         max_chars = self._settings.history_max_chars
-        kept, total = [], 0
+        kept: list[str] = []
+        total = 0
         for line in reversed(lines):
             total += len(line)
             if total > max_chars and kept:

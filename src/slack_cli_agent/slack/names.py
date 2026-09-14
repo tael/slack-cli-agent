@@ -45,7 +45,7 @@ class DisplayNameResolver:
                 or info["user"].get("name")
                 or ""
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 — 이름 조회 실패로 표시 이름 결정 전체를 막지 않는다 — 빈 문자열로 넘어간다
             return ""
 
     def __call__(self, user_id: str) -> str:

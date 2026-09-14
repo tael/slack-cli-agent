@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from slack_cli_agent.core.context import RequestContext
@@ -47,7 +49,7 @@ class Test처리결과:
 
     def test_결과는_바뀌지_않는다(self) -> None:
         outcome = HandleOutcome(ok=True)
-        with pytest.raises(Exception):
+        with pytest.raises(dataclasses.FrozenInstanceError):
             outcome.ok = False  # type: ignore[misc]
 
     def test_침묵은_성공이되_올린_글이_없다(self) -> None:

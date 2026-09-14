@@ -247,7 +247,7 @@ class TestEngine:
             tmp_path, primary_engine={"type": "없는엔진", "binary": str(binary), "model": "m"}
         )
         with pytest.raises(ConfigError):
-            Application(profile, client).engine
+            _ = Application(profile, client).engine
 
 
 class TestNameWiring:

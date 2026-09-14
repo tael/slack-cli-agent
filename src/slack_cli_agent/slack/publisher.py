@@ -13,6 +13,7 @@ import 할 이유가 없다.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -23,6 +24,8 @@ from slack_cli_agent.render.blocks import BlockBuilder
 from slack_cli_agent.render.markdown import MarkdownConverter
 from slack_cli_agent.render.splitter import ContentSplitter
 from slack_cli_agent.render.verifier import SplitVerifier
+
+log = logging.getLogger(__name__)
 
 # 상태를 색으로 가른다. 글을 읽기 전에 성공인지 실패인지 먼저 보이게 한다.
 COLOR_FAIL = "#d64541"
@@ -127,7 +130,7 @@ class MessagePublisher:
                         if parent_ts is None:
                             parent_ts = res["ts"]
                         continue
-                    except Exception as retry_exc:
+                    except Exception as retry_exc:  # noqa: BLE001 — 재시도 발송 실패를 최초 예외와 함께 다뤄 실패 보고로 이어간다
                         exc = retry_exc
 
                 self._audit(
@@ -148,8 +151,8 @@ class MessagePublisher:
                                 ),
                             }],
                         )
-                    except Exception:
-                        pass
+                    except Exception as notify_exc:  # noqa: BLE001 — 부분 발송 실패 안내 자체가 실패해도 원래 오류 보고를 막지 않는다
+                        log.warning("부분 발송 실패 안내 전송 실패 : %s", notify_exc)
                 raise SlackError(str(exc)) from exc
             sent += 1
             if parent_ts is None:

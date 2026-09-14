@@ -180,8 +180,8 @@ class CatchupService:
         candidates: list[tuple[Mapping[str, Any], str]] = []  # (부른 메시지, 그 스레드)
 
         for msg in hist:
-            ts = msg.get("ts")
-            thread_ts = msg.get("thread_ts") or ts
+            ts = str(msg.get("ts") or "")
+            thread_ts = str(msg.get("thread_ts") or ts)
             has_thread = bool(msg.get("thread_ts")) or msg.get("reply_count")
 
             if has_thread:

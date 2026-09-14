@@ -28,7 +28,8 @@ class SqliteRepository:
         return self._db.connect().execute(sql, params)
 
     def _fetch_one(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Row | None:
-        return self._execute(sql, params).fetchone()
+        row: sqlite3.Row | None = self._execute(sql, params).fetchone()
+        return row
 
     def _fetch_all(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
         return self._execute(sql, params).fetchall()

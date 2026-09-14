@@ -35,3 +35,11 @@ target-version = "py311"
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+[[tool.mypy.overrides]]
+module = [
+    "slack_sdk",
+    "slack_sdk.socket_mode",
+    "slack_sdk.socket_mode.response",
+]
+ignore_missing_imports = true

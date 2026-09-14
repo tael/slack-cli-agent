@@ -84,7 +84,8 @@ class EngineSwitcher:
         state = self.load()
         if not state:
             return False
-        return (now - state.get("last_probe_at", 0)) > self._probe_interval_sec
+        last_probe_at = float(state.get("last_probe_at", 0))
+        return (now - last_probe_at) > self._probe_interval_sec
 
     def mark_probed(self, now: float) -> None:
         state = self.load()

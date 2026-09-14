@@ -83,7 +83,7 @@ class BlockBuilder:
         돌려주는 값은 (본문, 보조 줄) 두 짝이다. 떼어낼 것이 없으면 보조 줄은 빈 문자열이다.
         """
         lines = text.rstrip().split("\n")
-        note = []
+        note: list[str] = []
         while lines and lines[-1].lstrip().startswith(">"):
             note.insert(0, lines.pop().lstrip()[1:].strip())
             if len(note) > self.CONTEXT_MAX_LINES:

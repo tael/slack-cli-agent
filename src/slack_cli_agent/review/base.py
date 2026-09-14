@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
@@ -51,10 +51,15 @@ def cell(value: Any) -> str:
     return str(value).replace("|", "/").replace("\n", " ").strip() or "-"
 
 
-def as_table(rows: list[tuple[Any, Any]], head: tuple[str, str] = ("항목", "값")) -> str:
-    """(라벨, 값) 목록을 파이프 표로 만든다. 빈 목록이면 빈 문자열이다.
+def as_table(
+    rows: Sequence[tuple[Any, ...]], head: tuple[str, ...] = ("항목", "값")
+) -> str:
+    """행 목록을 파이프 표로 만든다. 빈 목록이면 빈 문자열이다.
 
-    원본 `as_table()` 그대로다.
+    열 수는 `head` 의 길이가 정한다 — (라벨, 값) 두 칸이 기본이지만 호출부가
+    더 넓은 표(순위·소요·직전 도구 등)를 만들 때는 그만큼 넓은 head 와 행을
+    넘긴다. 원본 `as_table()` 은 (라벨, 값) 전용이었으나 이 프로젝트에서
+    다열 표에도 그대로 재사용한다.
     """
     if not rows:
         return ""
