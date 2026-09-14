@@ -20,6 +20,7 @@ from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.result import OutcomeKind
 from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.slack.gate import ResponseGate
+from slack_cli_agent.slack.identity import SlackBotIdentity
 
 # ---------------------------------------------------------------------------
 # dedup.py — DeduplicationTracker
@@ -292,6 +293,41 @@ class TestFindMissed:
         service = make_service(history)
 
         assert service.find_missed("C1", window=3600).value() == []
+
+    def test_신원을_모르면_판정_불가로_올린다(self) -> None:
+        """부름 판정의 근거가 없으면 "부른 말이 없다" 와 구분되지 않는다.
+
+        조회에 실패한 그 회차를 "놓친 요청 없음" 으로 끝내면 재시도 목록에서도
+        빠져, 신원이 복구돼도 그 구간을 회수하지 못한다. 원본은 봇 사용자 ID 가
+        없으면 되짚기 자체를 건너뛴다.
+        """
+
+        class 조회실패:
+            def auth_test(self, **kwargs):
+                raise RuntimeError("슬랙에 못 닿는다")
+
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "99000.0", "user": "U1", "text": "<@U_BOT> 질문"},
+                ]
+            }
+        )
+        service = make_service(history, identity=SlackBotIdentity(조회실패()))
+
+        assert service.find_missed("C1", window=3600).kind is OutcomeKind.UNKNOWN
+
+    def test_판정_불가인_채널은_다시_볼_목록에_남는다(self) -> None:
+        class 조회실패:
+            def auth_test(self, **kwargs):
+                raise RuntimeError("슬랙에 못 닿는다")
+
+        history = FakeHistoryReader(history={"C1": []})
+        service = make_service(history, identity=SlackBotIdentity(조회실패()))
+
+        report = service.sweep(["C1"], window=3600)
+
+        assert report.unchecked_channels == ["C1"]
 
     def test_이미_답변_표식이_있으면_빠진다(self) -> None:
         history = FakeHistoryReader(
@@ -817,3 +853,66 @@ class Test스스로재기동:
         )("소켓 오류 9건")
         assert sum(기다린시간) <= 2.0
         assert 나간코드 == [1]
+
+
+class Test재시도도대표건만남긴다:
+    """한 스레드에 놓친 것이 여럿이면 가장 최근 것 하나만 처리한다.
+
+    정상 되짚기는 그렇게 묶는데 재시도 경로만 전부 그대로 돌려줬다. 그러면
+    기록 조회가 한 번 실패했다가 복구된 뒤 같은 스레드의 여러 요청에 각각
+    답이 올라간다. 2026-08-31 이전에 10개가 밀리면 답이 10개 올라간 것과
+    같은 형태다.
+    """
+
+    @staticmethod
+    def 한_스레드에_여럿인_기록() -> FakeHistoryReader:
+        return FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "99000.0", "thread_ts": "99000.0", "user": "U1", "text": "<@U_BOT> 첫 물음"},
+                    {"ts": "99001.0", "thread_ts": "99000.0", "user": "U1", "text": "<@U_BOT> 두 번째"},
+                    {"ts": "99002.0", "thread_ts": "99000.0", "user": "U1", "text": "<@U_BOT> 세 번째"},
+                ]
+            },
+            threads={
+                "99000.0": [
+                    {"ts": "99000.0", "user": "U1", "text": "<@U_BOT> 첫 물음"},
+                    {"ts": "99001.0", "user": "U1", "text": "<@U_BOT> 두 번째"},
+                    {"ts": "99002.0", "user": "U1", "text": "<@U_BOT> 세 번째"},
+                ]
+            },  # 기본 now 는 100_000.0 — 유예 120초 밖이다
+        )
+
+    def test_정상_되짚기는_대표_하나만_남긴다(self) -> None:
+        service = make_service(self.한_스레드에_여럿인_기록())
+        report = service.sweep(["C1"], window=3600)
+        assert [m.ts for m in report.missed] == ["99002.0"]
+
+    def test_재시도도_대표_하나만_남긴다(self) -> None:
+        history = FakeHistoryReader(history={"C1": None})
+        service = make_service(history)
+        # 한 번 조회에 실패해 재시도 목록에 남는다
+        assert service.sweep(["C1"], window=3600).unchecked_channels == ["C1"]
+
+        # 그 뒤 조회가 복구된다
+        복구된것 = self.한_스레드에_여럿인_기록()
+        service._history = 복구된것  # type: ignore[attr-defined]
+        # 첫 재시도 대기(30초)를 넘긴다
+        service._now = lambda: 100_030.0 + 1  # type: ignore[attr-defined]
+
+        statuses = service.retry_pending()
+
+        assert [s.channel for s in statuses] == ["C1"]
+        assert [m.ts for m in statuses[0].missed] == ["99002.0"]
+
+    def test_재시도가_찾은_것도_늦었다는_표식이_붙는다(self) -> None:
+        """정상 경로는 붙이는데 재시도만 안 붙이면 늦은 답이 늦었다고 안 밝힌다."""
+        history = FakeHistoryReader(history={"C1": None})
+        service = make_service(history)
+        service.sweep(["C1"], window=3600)
+        service._history = self.한_스레드에_여럿인_기록()  # type: ignore[attr-defined]
+        service._now = lambda: 100_030.0 + 1  # type: ignore[attr-defined]
+
+        statuses = service.retry_pending()
+
+        assert statuses[0].missed[0].late
