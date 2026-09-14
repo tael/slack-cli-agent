@@ -20,6 +20,11 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The console ships its own page. Without this the installed package has no
+# UI file and `slack-cli-agent web` would serve nothing.
+[tool.setuptools.package-data]
+"slack_cli_agent.web" = ["assets/*.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

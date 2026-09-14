@@ -1,0 +1,926 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>봇 웹 콘솔</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23587a3e'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#ffffff; --line:#e3e3df; --ink:#1b1b19; --dim:#6b6b64;
+  --ok:#2f7d4f; --warn:#a8761c; --bad:#b03a2e; --idle:#9a9a92;
+  --c1:#587a3e; --c2:#3f6b8a; --c3:#8a6a3f; --c4:#7a4f6b; --c5:#4f7a75;
+  --c6:#8a4f4f; --c7:#5f5f8a; --c8:#6b7a3f; --c9:#8a7a4f; --c10:#4f6b8a;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#16161a; --panel:#1e1e23; --line:#31313a; --ink:#e8e8e4; --dim:#9a9a92;
+    --ok:#6cc08a; --warn:#d8a94a; --bad:#e07a6a; --idle:#6b6b64;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+.wrap{width:100%;padding:18px 22px 60px}
+h1{font-size:19px;margin:0 0 2px;font-weight:600}
+h2{font-size:14px;margin:26px 0 10px;font-weight:600;color:var(--dim);
+  text-transform:none;letter-spacing:.02em}
+.sub{color:var(--dim);font-size:12px;margin-bottom:16px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+.grid{display:grid;gap:10px}
+.tiles{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.cols2{grid-template-columns:repeat(auto-fit,minmax(360px,1fr))}
+.cols3{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:11px 13px}
+.tile .k{font-size:11px;color:var(--dim);margin-bottom:5px}
+.tile .v{font-size:22px;font-weight:600;line-height:1.15;font-variant-numeric:tabular-nums}
+.tile .n{font-size:11px;color:var(--dim);margin-top:4px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
+.d-ok{background:var(--ok)} .d-warn{background:var(--warn)}
+.d-bad{background:var(--bad)} .d-idle{background:var(--idle)}
+.ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)} .dim{color:var(--dim)}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);
+  white-space:nowrap;font-variant-numeric:tabular-nums}
+th{color:var(--dim);font-weight:500;font-size:11px}
+tr:last-child td{border-bottom:none}
+td.num,th.num{text-align:right}
+.tag{display:inline-block;padding:1px 6px;border:1px solid var(--line);border-radius:10px;
+  font-size:10.5px;color:var(--dim);margin-right:3px}
+.scroll{overflow-x:auto}
+.bar{display:flex;align-items:center;gap:8px;margin:4px 0}
+.bar .lab{width:118px;font-size:11.5px;color:var(--dim);text-align:right;flex:none}
+.bar .track{flex:1;height:14px;background:var(--line);border-radius:3px;overflow:hidden}
+.bar .fill{height:100%;background:var(--c1)}
+.bar .val{width:78px;font-size:11.5px;text-align:right;flex:none;font-variant-numeric:tabular-nums;
+  white-space:nowrap}
+.hours{display:flex;align-items:flex-end;gap:2px;height:76px;margin-top:6px}
+.hours .h{flex:1;background:var(--c2);border-radius:2px 2px 0 0;min-height:1px;position:relative}
+.hours .h span{position:absolute;top:100%;left:50%;transform:translateX(-50%);
+  font-size:9px;color:var(--dim);padding-top:2px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:10px;font-size:11.5px}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+.pend{color:var(--dim);font-style:normal}
+.err{border-color:var(--bad);color:var(--bad)}
+/* 봇 고르는 자리. 고르지 않은 봇의 생사도 같이 보이게 둔다. */
+.bots{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.bots button{display:flex;align-items:center;gap:8px;cursor:pointer;
+  background:var(--panel);color:var(--ink);border:1px solid var(--line);
+  border-radius:8px;padding:8px 13px;font:inherit;font-size:13px;text-align:left}
+.bots button:hover{border-color:var(--dim)}
+.bots button[aria-current="true"]{border-color:var(--c1);box-shadow:inset 0 0 0 1px var(--c1)}
+.bots .who{font-weight:600}
+.bots .meta{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+footer{margin-top:28px;color:var(--dim);font-size:11.5px}
+
+/* 상단 요약 줄. 어느 탭에 있어도 늘 보인다. */
+.summary{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;
+  padding:9px 13px;background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  font-size:12.5px;margin-bottom:14px}
+.summary .sep{color:var(--line)}
+
+/* 탭 */
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:16px}
+.tabs button{cursor:pointer;background:none;border:none;border-bottom:2px solid transparent;
+  color:var(--dim);font:inherit;font-size:13.5px;padding:9px 14px;margin-bottom:-1px}
+.tabs button:hover{color:var(--ink)}
+.tabs button[aria-current="true"]{color:var(--ink);border-bottom-color:var(--c1);font-weight:600}
+
+/* 설정 폼 공통 */
+.form-grid{display:grid;grid-template-columns:160px 1fr;gap:10px 14px;align-items:start}
+.form-grid label{font-size:12.5px;color:var(--dim);padding-top:8px}
+.form-grid input[type=text],.form-grid textarea{
+  width:100%;font:inherit;font-size:13px;padding:7px 9px;background:var(--bg);
+  color:var(--ink);border:1px solid var(--line);border-radius:6px}
+.form-grid textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
+  min-height:90px;resize:vertical}
+.form-grid .hint{font-size:11px;color:var(--dim);margin-top:3px}
+.btn{cursor:pointer;font:inherit;font-size:13px;padding:8px 16px;border-radius:6px;
+  border:1px solid var(--c1);background:var(--c1);color:#fff}
+.btn:hover{opacity:.9}
+.btn:disabled{opacity:.5;cursor:default}
+.btn-ghost{background:none;color:var(--ink);border-color:var(--line)}
+.msg{margin-top:10px;font-size:12.5px}
+.msg.ok{color:var(--ok)} .msg.bad{color:var(--bad)}
+.err-list{margin:8px 0 0;padding-left:18px;color:var(--bad);font-size:12.5px}
+.picker{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.picker button{cursor:pointer;font:inherit;font-size:12.5px;padding:6px 11px;
+  border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink)}
+.picker button[aria-current="true"]{border-color:var(--c1);color:var(--c1);font-weight:600}
+.cell-input{width:100%;font:inherit;font-size:12px;padding:4px 6px;border:1px solid var(--line);
+  border-radius:4px;background:var(--bg);color:var(--ink)}
+.cell-check{width:16px;height:16px}
+td.editcell{white-space:normal;min-width:90px}
+.row-save{font-size:11.5px;padding:4px 9px}
+.stale{color:var(--idle)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="title">봇 웹 콘솔</h1>
+  <div class="sub" id="stamp">불러오는 중</div>
+  <div class="bots" id="bots"></div>
+  <div class="summary" id="summary">상태 모름</div>
+  <div class="tabs" id="tabs">
+    <button type="button" data-tab="state">상태</button>
+    <button type="button" data-tab="settings">설정</button>
+    <button type="button" data-tab="channels">채널</button>
+    <button type="button" data-tab="prompts">프롬프트</button>
+    <button type="button" data-tab="knowledge">지식</button>
+  </div>
+  <div id="app"></div>
+  <footer id="foot">미계측은 아직 기록을 남기지 않는 지표다. 해당 없음은 이 봇의 엔진이 그 값을
+    내주지 않는다는 뜻이고 마우스를 올리면 사유가 나온다. 둘 다 0 이 아니다. 추정값을 넣지 않는다.</footer>
+</div>
+<script>
+/* ---------- 공통 유틸 (원본 dashboard/index.html 을 그대로 가져왔다) ---------- */
+const STATE_POLL_MS = 5000; // 원본 폴링 주기
+const PALETTE = ["--c1","--c2","--c3","--c4","--c5","--c6","--c7","--c8","--c9","--c10"];
+const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const nil = '<span class="pend">미계측</span>';
+const unknown = '<span class="pend stale">상태 모름</span>';
+
+let notApplicable = {};
+const isNA = key => Object.prototype.hasOwnProperty.call(notApplicable, key);
+const na = key => `<span class="pend" title="${esc(notApplicable[key] || "")}">해당 없음</span>`;
+
+function num(v, unit){
+  if (v === null || v === undefined) return nil;
+  const s = typeof v === "number" ? v.toLocaleString("ko-KR") : esc(v);
+  return s + (unit || "");
+}
+function tok(v){
+  if (v === null || v === undefined) return nil;
+  if (v >= 1000000) return (v/1000000).toFixed(2) + "M";
+  if (v >= 1000) return Math.round(v/1000) + "k";
+  return String(v);
+}
+function dur(sec){
+  if (sec === null || sec === undefined) return nil;
+  if (sec < 60) return Math.round(sec) + "초";
+  if (sec < 3600) return Math.floor(sec/60) + "분 " + Math.round(sec%60) + "초";
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60);
+  return h + "시간 " + m + "분";
+}
+function ago(iso){
+  if (!iso) return nil;
+  const gap = (Date.now() - new Date(iso).getTime())/1000;
+  return gap < 0 ? "방금" : dur(gap) + " 전";
+}
+function tile(k, v, note, cls){
+  return `<div class="tile"><div class="k">${esc(k)}</div>
+    <div class="v ${cls||""}">${v}</div>
+    <div class="n">${note||"&nbsp;"}</div></div>`;
+}
+function bars(rows, unit){
+  if (!rows || !rows.length) return '<div class="dim">해당 없음</div>';
+  const max = Math.max(1, ...rows.map(r => r.value || 0));
+  return rows.map((r,i) => `<div class="bar">
+    <div class="lab" title="${esc(r.title || r.label)}">${esc(r.label)}</div>
+    <div class="track"><div class="fill" style="width:${(r.value/max*100).toFixed(1)}%;
+      background:var(${PALETTE[i % PALETTE.length]})"></div></div>
+    <div class="val">${num(r.value, unit)}</div></div>`).join("");
+}
+function donut(rows){
+  if (!rows || !rows.length) return '<div class="dim">해당 없음</div>';
+  const total = rows.reduce((a,r) => a + r.value, 0) || 1;
+  let at = 0;
+  const arcs = rows.map((r,i) => {
+    const frac = r.value/total, R = 54, C = 2*Math.PI*R;
+    const seg = `<circle r="${R}" cx="70" cy="70" fill="none" stroke="var(${PALETTE[i%PALETTE.length]})"
+      stroke-width="22" stroke-dasharray="${(frac*C).toFixed(2)} ${C.toFixed(2)}"
+      stroke-dashoffset="${(-at*C).toFixed(2)}" transform="rotate(-90 70 70)"></circle>`;
+    at += frac; return seg;
+  }).join("");
+  const legend = rows.map((r,i) =>
+    `<span><i style="background:var(${PALETTE[i%PALETTE.length]})"></i>${esc(r.label)}
+     <span class="dim">${r.value}</span></span>`).join("");
+  return `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+    <svg width="140" height="140" viewBox="0 0 140 140">${arcs}</svg>
+    <div class="legend" style="flex:1">${legend}</div></div>`;
+}
+function hours(list){
+  if (!list || !list.length) return '<div class="dim">해당 없음</div>';
+  const max = Math.max(1, ...list.map(h => h.count));
+  return `<div class="hours">` + list.map(h =>
+    `<div class="h" style="height:${(h.count/max*100).toFixed(1)}%" title="${h.hour}시 ${h.count}건">
+      ${h.hour % 6 === 0 ? `<span>${h.hour}</span>` : ""}</div>`).join("") + `</div>
+    <div class="dim" style="margin-top:16px;font-size:11px">시각은 KST</div>`;
+}
+function table(head, rows){
+  if (!rows.length) return `<div class="dim">해당 없음</div>`;
+  const th = head.map(h => `<th class="${h.num?"num":""}">${esc(h.label)}</th>`).join("");
+  const tr = rows.map(r => "<tr>" + r.map((c,i) =>
+    `<td class="${head[i].num?"num":""}">${c}</td>`).join("") + "</tr>").join("");
+  return `<div class="scroll"><table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>`;
+}
+async function api(path, opts){
+  const res = await fetch(path, Object.assign({cache:"no-store"}, opts || {}));
+  let body = null;
+  try { body = await res.json(); } catch (e) { /* 본문 없는 응답도 있다 */ }
+  if (!res.ok){
+    const err = new Error((body && (body.error || (body.errors||[]).join(", "))) || res.statusText);
+    err.status = res.status;
+    err.errors = (body && body.errors) || null;
+    throw err;
+  }
+  return body;
+}
+
+/* ---------- 전역 상태 ---------- */
+let current = null;
+try { current = localStorage.getItem("console.bot"); } catch (e) { current = null; }
+let profileNames = [];       // /api/profiles 로 얻은 이름. 지표를 아직 못 받았을 때 쓴다.
+let lastMetrics = null;      // 최근 성공한 /api/state 응답. 실패하면 갱신하지 않는다.
+let activeTab = "state";
+
+/* ---------- 봇 선택줄과 상단 요약 ---------- */
+function botBar(d){
+  const bots = (d && d.bots) || profileNames.map(name => ({name, display_name:name, available:null}));
+  const rows = bots.map(b => {
+    let dot, note;
+    if (b.available === null || b.available === undefined){
+      dot = "d-idle"; note = "상태 모름";
+    } else if (b.available === false && b.engine === null){
+      dot = "d-bad"; note = esc(b.reason || "프로필을 읽지 못했다");
+    } else if (!b.available){
+      dot = "d-bad"; note = esc(b.reason || "상태 모름");
+    } else if (b.shutting_down){
+      dot = "d-warn"; note = "종료 중";
+    } else {
+      dot = "d-ok";
+      note = `${esc(b.engine||"")} · 처리 중 ${num(b.inflight)} · 대기 ${num(b.queued_total)}`
+           + ` · 가동 ${dur(b.uptime_sec)}`;
+    }
+    const on = b.name === current;
+    return `<button type="button" data-bot="${esc(b.name)}" aria-current="${on}">
+      <span class="dot ${dot}"></span>
+      <span><span class="who">${esc(b.display_name || b.name)}</span><br>
+        <span class="meta">${note}</span></span></button>`;
+  }).join("");
+  const host = document.getElementById("bots");
+  host.innerHTML = rows || '<span class="dim">봇 목록을 가져오지 못했다</span>';
+  host.querySelectorAll("button").forEach(el => {
+    el.onclick = () => {
+      if (el.dataset.bot === current) return;
+      current = el.dataset.bot;
+      try { localStorage.setItem("console.bot", current); } catch (e) { /* 저장 못 해도 본다 */ }
+      lastMetrics = null;
+      onBotChanged();
+    };
+  });
+}
+
+function summaryLine(d){
+  const host = document.getElementById("summary");
+  if (!d){ host.innerHTML = unknown; return; }
+  const s = d.snapshot || {};
+  const rel = d.reliability || {};
+  let dot, label;
+  if (!s.available){ dot = "d-bad"; label = "상태 모름"; }
+  else if (s.shutting_down){ dot = "d-warn"; label = "종료 중"; }
+  else { dot = "d-ok"; label = "살아있음"; }
+  host.innerHTML =
+    `<span><span class="dot ${dot}"></span>${label}</span>` +
+    `<span class="sep">·</span><span>마지막 응답 ${ago(d.last_answer_kst)}</span>` +
+    `<span class="sep">·</span><span>성공률 ${rel.success_pct===null||rel.success_pct===undefined?nil:rel.success_pct+"%"}</span>` +
+    `<span class="sep">·</span><span>처리 중 ${s.available?num(s.inflight):nil} · 대기 ${s.available?num(s.queued_total):nil}</span>`;
+}
+
+/* ---------- 상태 탭 (원본 index.html 을 그대로 이어받았다) ---------- */
+function statusBand(d){
+  const s = d.snapshot || {};
+  let dot, label, note;
+  if (!s.available){
+    dot = "d-bad"; label = "상태 모름";
+    note = esc(s.reason || "스냅샷을 읽지 못했다");
+  } else if (s.shutting_down){
+    dot = "d-warn"; label = "종료 중"; note = "새 요청을 받지 않는다";
+  } else {
+    dot = "d-ok"; label = "살아있음";
+    note = "pid " + s.pid + " · 스냅샷 " + Math.round(s.age_sec) + "초 전";
+  }
+  const q = s.available ? (s.queued_total || 0) : null;
+  const sockErr = s.available ? (s.socket_errors_3min || 0) : null;
+  const rel = d.reliability || {};
+  const resp = d.responsiveness || {};
+  const today = (d.channels || []).reduce((a,c) => a + (c.requests_today||0), 0);
+
+  return `<div class="grid tiles">
+    ${tile("봇", `<span class="dot ${dot}"></span>${label}`, note)}
+    ${tile("가동 시간", s.available ? dur(s.uptime_sec) : nil,
+           s.available ? "기동 " + new Date(s.started_at*1000).toLocaleString("ko-KR") : "")}
+    ${tile("처리 중 · 대기줄", s.available ? `${s.inflight} · ${q}` : nil,
+           s.available ? `대기 스레드 ${s.queued_threads}` : "",
+           q > 0 ? "warn" : "")}
+    ${tile("최근 3분 소켓 오류", sockErr === null ? nil : sockErr,
+           s.available ? `재연결 누적 ${s.socket_reconnects_total}` : "",
+           sockErr > 0 ? "bad" : "")}
+    ${tile("마지막 응답", ago(d.last_answer_kst), esc(d.last_answer_kst || ""))}
+    ${tile("오늘 요청", today, `최근 ${d.window_days}일 ${rel.total || 0}건`)}
+    ${tile("성공률", rel.success_pct === null || rel.success_pct === undefined ? nil : rel.success_pct + "%",
+           `실패 ${rel.failed || 0}건`, (rel.failed||0) > 0 ? "warn" : "ok")}
+    ${tile("느린 요청", resp.slow_pct === null || resp.slow_pct === undefined ? nil : resp.slow_pct + "%",
+           `${resp.slow_threshold_sec}초 초과 ${resp.slow_count}건`,
+           resp.slow_pct > 10 ? "bad" : resp.slow_pct > 5 ? "warn" : "")}
+  </div>`;
+}
+
+function channelTable(d){
+  const rows = (d.channels || []).map(c => {
+    const tags = [
+      c.mention_only ? "멘션 전용" : null,
+      c.rich ? "리치" : null,
+      c.light_context ? "얕은 맥락" : null,
+      c.listed || c.is_dm ? null : "설정 없음",
+    ].filter(Boolean).map(t => `<span class="tag">${t}</span>`).join("");
+    const ses = c.newest_session;
+    return [
+      esc(c.name) + " " + tags,
+      c.mode_inherited ? `<span class="dim">${esc(c.mode)}</span>` : esc(c.mode),
+      c.model_inherited
+        ? `<span class="dim" title="채널 설정이 없어 기본값을 쓴다">${esc((c.model||"").replace("claude-",""))}</span>`
+        : esc((c.model||"").replace("claude-","")),
+      c.effort_inherited
+        ? `<span class="dim" title="채널 설정이 없어 기본값을 쓴다">${esc(c.effort)}</span>`
+        : esc(c.effort),
+      esc(c.session_scope),
+      c.live_sessions,
+      ses ? `<code>${esc(ses.session_id)}</code>` : `<span class="dim">없음</span>`,
+      ses ? dur(ses.age_sec) : nil,
+      c.context_unread
+        ? `${tok(c.context_total)} <span class="dim" title="세션 ${c.context_unread}개는 기록을 읽지 못해 합계에서 빠졌다">+${c.context_unread}</span>`
+        : tok(c.context_total),
+      tok(c.context_max),
+      c.queued === null || c.queued === undefined ? nil : c.queued,
+      c.requests_today,
+      c.requests_window,
+      ago(c.last_seen),
+    ];
+  });
+  return table([
+    {label:"채널"}, {label:"모드"}, {label:"모델"}, {label:"effort"},
+    {label:"세션 범위"}, {label:"살아있는 세션",num:true}, {label:"최근 세션"},
+    {label:"세션 유지 시간",num:true},
+    {label:"맥락 합계",num:true}, {label:"최대 세션",num:true},
+    {label:"대기",num:true},
+    {label:"오늘",num:true}, {label:"기간",num:true}, {label:"마지막 활동"},
+  ], rows);
+}
+
+function usageBlockTile(blk){
+  const codex = blk.kind === "codex_rate_limit";
+  const label = codex ? "Codex 한도 소진율" : "5시간 블록";
+  if (!blk.available) return tile(label, nil, esc(blk.reason || ""));
+  if (codex)
+    return tile(label, num(blk.used_percent, "%"),
+      `${esc(blk.window_label || "")} 창 · 초기화까지 ${dur(blk.remaining_sec)}`
+      + ` · ${esc(blk.scope)} · ${esc(blk.measured_kst || "")} 기준`);
+  return tile(label, num(blk.cost_usd) + " USD",
+    `잔여 ${dur(blk.remaining_sec)} · 시간당 ${num(blk.cost_per_hour_usd)} USD `
+    + `· 종료 시 ${num(blk.projected_cost_usd)} USD 예상 · ${blk.scope}`);
+}
+
+function renderStateTab(d){
+  const host = document.getElementById("app");
+  if (!d){
+    host.innerHTML = `<div class="panel">${unknown} — 지표를 아직 받지 못했다.</div>`;
+    return;
+  }
+  const resp = d.responsiveness || {}, rel = d.reliability || {}, qa = d.quality || {}, us = d.usage || {};
+  const fr = resp.first_reaction || {}, blk = d.usage_block || {};
+  const bot = d.bot || {};
+  notApplicable = d.not_applicable || {};
+
+  const respPanel = `<div class="grid cols2">
+    <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">지연 분포</div>
+      ${bars((resp.histogram||[]).map(h => ({label:h.label, value:h.count})), "건")}
+      <div class="dim" style="margin-top:8px;font-size:11.5px">
+        중위 ${dur(resp.median_sec)} · p90 ${dur(resp.p90_sec)} · 최대 ${dur(resp.max_sec)}<br>
+        대기줄에서 기다린 시간은 중위 ${dur((d.queue_wait||{}).median_sec)}.
+        ${(d.queue_wait||{}).approximate ? "로그 대조로 낸 근사치다" : "요청 기록에 남은 실측값이다"}</div></div>
+    <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">시간대별 요청</div>
+      ${hours(resp.by_hour)}</div></div>`;
+
+  const relPanel = `<div class="grid cols3">
+    <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">사고 유형</div>
+      ${(rel.incidents||[]).length ? bars(rel.incidents.map(i => ({label:i.kind, value:i.count})), "건")
+        : '<div class="dim">해당 없음</div>'}
+      <div class="dim" style="margin-top:8px;font-size:11.5px">
+        재기동 ${num(rel.restarts, "회")} · 컨텍스트 초기화 ${rel.context_reset}회</div></div>
+    <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">세션 이어가기</div>
+      ${bars([{label:"이어감", value:rel.resumed||0},
+              {label:"새로 시작", value:(rel.total||0) - (rel.resumed||0)}], "건")}
+      <div class="dim" style="margin-top:8px;font-size:11.5px">
+        이어감 ${rel.resumed_pct}% · 저장된 세션 ${d.session_total}개</div></div>
+    <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">최근 실패</div>
+      ${table([{label:"시각"},{label:"채널"},{label:"사유"}],
+        (rel.recent_failures||[]).map(f => [
+          esc((f.ts_kst||"").slice(5,16).replace("T"," ")),
+          esc(f.name || f.channel), esc(String(f.reason).slice(0,40))]))}</div></div>`;
+
+  const qaPanel = `<div class="grid tiles">
+    ${tile("부검 요청 누적", qa.postmortems_total, "경단 리액션. 불만족 신호로 읽는다")}
+    ${tile("서식 점검", qa.format_reviews, "연필 리액션")}
+    ${tile("디버그 흐름", qa.debug_traces, "")}
+    ${tile("뒤늦은 덧붙임", qa.late_addendum, "처음 응답에서 놓친 신호")}
+    ${tile("화자 오인", qa.wrong_addressee, "여러 사람 스레드 오답",
+           qa.wrong_addressee > 0 ? "warn" : "")}
+    ${tile("분할 깨짐", qa.split_broken, "코드블록 펜스 짝")}
+    ${tile("발송 실패", qa.post_failed, "", qa.post_failed > 0 ? "warn" : "")}
+    ${tile("응답 재작성", num(qa.rewrites, "회"), "발송 직전 스레드가 이어짐")}
+    ${tile("정정 누적", num(qa.corrections, "건"), "지식 파일 항목 수")}
+    ${tile("침묵", qa.silent_pct === null || qa.silent_pct === undefined ? nil : qa.silent_pct + "%",
+           `${qa.silent}건. 답하지 않기로 판단`)}
+    ${tile("후속 질문율", (d.followup||{}).rate_pct + "%",
+           `스레드 ${(d.followup||{}).threads}개 중 ${(d.followup||{}).same_user_repeat}개에서 같은 사람이 다시 물음`)}
+  </div>
+  <div class="panel" style="margin-top:10px">
+    <div class="k dim" style="font-size:11px;margin-bottom:8px">채널별 부검 발생율</div>
+    ${table([{label:"채널"},{label:"부검",num:true},{label:"요청",num:true},{label:"발생율",num:true}],
+      (qa.postmortems_by_channel||[]).map(r => [esc(r.name), r.postmortems,
+        num(r.requests), r.rate_pct === null || r.rate_pct === undefined ? nil : r.rate_pct + "%"]))}</div>`;
+
+  const usPanel = `<div class="grid cols2">
+    <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">채널별 요청 비중</div>
+      ${donut((us.by_channel||[]).map(c => ({label:c.name, value:c.count})))}</div>
+    <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">사용자별 요청</div>
+      ${bars((us.by_user||[]).slice(0,12).map(u => ({label:u.short, title:u.name, value:u.count})), "건")}
+      <div class="dim" style="margin-top:8px;font-size:11.5px">전체 ${us.user_count}명</div></div>
+    <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">모델과 effort</div>
+      ${bars((us.by_model||[]).map(m => ({label:(m.model||"").replace("claude-",""), value:m.count})), "건")}
+      <div style="margin-top:10px">${bars((us.by_effort||[]).map(e => ({label:e.effort, value:e.count})), "건")}</div>
+      <div class="dim" style="margin-top:8px;font-size:11.5px">
+        model 과 effort 는 최근에 기록을 시작해 표본이 전체보다 적다</div></div>
+    <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">일별 비용</div>
+      ${isNA("cost")
+        ? `<div class="dim">${na("cost")}</div>`
+        : bars((us.cost_by_day||[]).map(c => ({label:c.day.slice(5), value:c.usd})), " USD") +
+          `<div class="dim" style="margin-top:8px;font-size:11.5px">
+            누적 ${num(us.cost_total_usd)} USD · 요청당 중위 ${num(us.cost_median_usd)} USD</div>`}</div>
+  </div>
+  <div class="grid tiles" style="margin-top:10px">
+    ${tile("질문 길이 중위", num(us.question_len_median, "자"), "")}
+    ${tile("답변 길이 중위", num(us.answer_len_median, "자"), "")}
+    ${isNA("turns")
+        ? tile("모델 턴 수 중위", na("turns"), "")
+        : tile("도구 호출 중위", num(us.turns_median, "회"), "모델 턴 수")}
+    ${us.tokens ? tile("토큰 누적", num(us.tokens.total),
+        `입력 ${num(us.tokens.input)} · 캐시읽기 ${num(us.tokens.cache_read)} · 출력 ${num(us.tokens.output)} · 표본 ${us.tokens_sample}건`)
+      : tile("토큰 누적", nil, "usage 기록 없음")}
+    ${tile("도구 호출 누적", num((d.tools||{}).total, "회"),
+           ((d.tools||{}).source === "audit"
+             ? `요청 ${d.tools.requests_scanned}건에서 셈` +
+               (d.tools.requests_missing ? ` · 도구 기록 없음 ${d.tools.requests_missing}건` : "")
+             : `세션 ${(d.tools||{}).sessions_scanned}개 훑음` +
+               ((d.tools||{}).sessions_missing ? ` · 기록 없음 ${d.tools.sessions_missing}개` : "")))}
+    ${tile("큐 대기 중위", dur((d.queue_wait||{}).median_sec),
+           !(d.queue_wait||{}).approximate
+             ? `실측 ${(d.queue_wait||{}).count}건 · p90 ${dur((d.queue_wait||{}).p90_sec)}`
+             : ((d.queue_wait||{}).queued_events
+                 ? `근사치 · p90 ${dur((d.queue_wait||{}).p90_sec)} · 매칭 ${num((d.queue_wait||{}).matched_pct)}%`
+                 : "대기줄에 들어간 요청이 이 기간에 없다"))}
+    ${fr.count
+        ? tile("첫 반응까지", dur(fr.median_sec),
+               `p90 ${dur(fr.p90_sec)} · 표본 ${fr.count}건 (전체의 ${fr.sample_pct}%)`)
+        : tile("첫 반응까지", nil, "계측 시작 이후 기록이 아직 없다")}
+    ${usageBlockTile(blk)}
+  </div>
+  <div class="grid cols2" style="margin-top:10px">
+    <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">MCP 서버별 도구 호출</div>
+      ${bars(((d.tools||{}).by_server||[]).map(s => ({label:s.server, value:s.count})), "회")}</div>
+    <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">내장 도구 호출</div>
+      ${bars(((d.tools||{}).builtin||[]).map(s => ({label:s.tool, value:s.count})), "회")}</div>
+  </div>`;
+
+  const unlisted = (us.unlisted_channels||[]).length
+    ? `<div class="dim" style="margin-top:8px;font-size:11.5px">설정 없는 채널 :
+        ${us.unlisted_channels.map(esc).join(", ")}</div>` : "";
+
+  host.innerHTML =
+    statusBand(d) +
+    `<h2>채널과 세션</h2><div class="panel">${channelTable(d)}
+      <div class="dim" style="margin-top:8px;font-size:11.5px">
+        흐린 값은 채널 설정이 없어 전역 기본값을 쓴다는 뜻이다.
+        이 봇의 모델 기본값은 ${esc(bot.default_model || "")},
+        홍길동 대화는 ${esc(bot.owner_model || "")}, effort 기본값은 medium 이다.</div>
+      ${unlisted}</div>` +
+    `<h2>응답성</h2>${respPanel}` +
+    `<h2>신뢰성</h2>${relPanel}` +
+    `<h2>품질 대리지표</h2>${qaPanel}` +
+    `<h2>사용과 비용</h2>${usPanel}`;
+}
+
+/* ---------- 지표 폴링 ---------- */
+let stateFailures = 0;
+async function tickState(){
+  if (!current){ botBar(null); summaryLine(null); return; }
+  try{
+    const d = await api(`/api/state/${encodeURIComponent(current)}?days=7`);
+    stateFailures = 0;
+    lastMetrics = d;
+    current = (d.bot || {}).name || current;
+    document.getElementById("title").textContent = `${(d.bot||{}).display_name || "봇"} 웹 콘솔`;
+    document.title = `${(d.bot||{}).display_name || "봇"} 콘솔`;
+    document.getElementById("stamp").textContent =
+      `${(d.bot||{}).display_name || ""} · 엔진 ${(d.bot||{}).engine || ""}`
+      + ` · 생성 ${d.generated_at} · 최근 ${d.window_days}일 기준 · ${STATE_POLL_MS/1000}초마다 갱신`;
+    botBar(d);
+    summaryLine(d);
+    if (activeTab === "state") renderStateTab(d);
+  }catch(e){
+    stateFailures++;
+    lastMetrics = null;
+    document.getElementById("stamp").innerHTML =
+      `<span class="bad">지표를 가져오지 못했다 : ${esc(e.message)} (${stateFailures}회)</span>`;
+    botBar(null);
+    summaryLine(null);
+    if (activeTab === "state") renderStateTab(null);
+  }
+}
+
+/* ---------- 설정 탭 ---------- */
+let profileData = null; // 서버에서 읽은 그대로. 편집하지 않는 필드도 여기 보관했다가 그대로 되돌려 보낸다.
+
+function renderSettingsTab(){
+  const host = document.getElementById("app");
+  if (!current){ host.innerHTML = `<div class="panel">${unknown}</div>`; return; }
+  if (!profileData){
+    host.innerHTML = `<div class="panel">불러오는 중...</div>`;
+    return;
+  }
+  const p = profileData;
+  const eng = p.primary_engine || {};
+  host.innerHTML = `<div class="panel">
+    <div class="form-grid">
+      <label>이름</label><div>${esc(p.name || current)}<div class="hint">파일 이름과 같다. 여기서 못 바꾼다</div></div>
+      <label>표시 이름</label><input type="text" id="f-display_name">
+      <label>엔진 타입</label><input type="text" id="f-eng-type">
+      <label>엔진 실행 파일</label><input type="text" id="f-eng-binary">
+      <label>엔진 모델</label><input type="text" id="f-eng-model">
+      <label>소유자용 모델</label><input type="text" id="f-eng-model_owner">
+      <label>상태 디렉터리</label><input type="text" id="f-state_dir">
+      <label>작업 디렉터리</label><input type="text" id="f-work_root">
+      <label>소유자 (owner_user_id)</label><input type="text" id="f-owner_user_id">
+      <label>보고 채널</label><input type="text" id="f-troubleshoot_channel">
+      <label>플러그인</label><input type="text" id="f-plugins">
+      <div></div><div class="hint">쉼표로 구분한다. 예: plugin_a, plugin_b</div>
+      <label>settings 덮어쓰기</label><textarea id="f-settings"></textarea>
+      <div></div><div class="hint">JSON 객체로 입력한다. 비우면 {} 로 저장된다</div>
+    </div>
+    <div style="margin-top:14px">
+      <button type="button" class="btn" id="save-profile">저장</button>
+      <span class="msg" id="profile-msg"></span>
+    </div>
+  </div>`;
+  document.getElementById("f-display_name").value = p.display_name || "";
+  document.getElementById("f-eng-type").value = eng.type || "";
+  document.getElementById("f-eng-binary").value = eng.binary || "";
+  document.getElementById("f-eng-model").value = eng.model || "";
+  document.getElementById("f-eng-model_owner").value = eng.model_owner || "";
+  document.getElementById("f-state_dir").value = p.state_dir || "";
+  document.getElementById("f-work_root").value = p.work_root || "";
+  document.getElementById("f-owner_user_id").value = p.owner_user_id || "";
+  document.getElementById("f-troubleshoot_channel").value = p.troubleshoot_channel || "";
+  document.getElementById("f-plugins").value = (p.plugins || []).join(", ");
+  document.getElementById("f-settings").value = JSON.stringify(p.settings || {}, null, 2);
+
+  document.getElementById("save-profile").onclick = saveProfile;
+}
+
+async function loadProfile(){
+  profileData = null;
+  renderSettingsTab();
+  try{
+    profileData = await api(`/api/profile/${encodeURIComponent(current)}`);
+  }catch(e){
+    profileData = null;
+    document.getElementById("app").innerHTML =
+      `<div class="panel"><span class="bad">프로필을 가져오지 못했다 : ${esc(e.message)}</span></div>`;
+    return;
+  }
+  renderSettingsTab();
+}
+
+async function saveProfile(){
+  const msg = document.getElementById("profile-msg");
+  msg.textContent = ""; msg.className = "msg";
+  const btn = document.getElementById("save-profile");
+  let settingsObj;
+  try{
+    const raw = document.getElementById("f-settings").value.trim();
+    settingsObj = raw ? JSON.parse(raw) : {};
+  }catch(e){
+    msg.textContent = "settings 덮어쓰기 항목이 올바른 JSON 이 아니다: " + e.message;
+    msg.className = "msg bad";
+    return;
+  }
+  const merged = Object.assign({}, profileData, {
+    display_name: document.getElementById("f-display_name").value,
+    primary_engine: Object.assign({}, profileData.primary_engine, {
+      type: document.getElementById("f-eng-type").value,
+      binary: document.getElementById("f-eng-binary").value,
+      model: document.getElementById("f-eng-model").value,
+      model_owner: document.getElementById("f-eng-model_owner").value,
+    }),
+    state_dir: document.getElementById("f-state_dir").value,
+    work_root: document.getElementById("f-work_root").value,
+    owner_user_id: document.getElementById("f-owner_user_id").value,
+    troubleshoot_channel: document.getElementById("f-troubleshoot_channel").value,
+    plugins: document.getElementById("f-plugins").value.split(",").map(s => s.trim()).filter(Boolean),
+    settings: settingsObj,
+  });
+  btn.disabled = true;
+  try{
+    await api(`/api/profile/${encodeURIComponent(current)}`, {
+      method: "PUT",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify(merged),
+    });
+    profileData = merged;
+    msg.textContent = "저장했다.";
+    msg.className = "msg ok";
+  }catch(e){
+    if (e.errors && e.errors.length){
+      msg.innerHTML = "저장하지 못했다 :<ul class=\"err-list\">" +
+        e.errors.map(x => `<li>${esc(x)}</li>`).join("") + "</ul>";
+    } else {
+      msg.textContent = "저장하지 못했다 : " + e.message;
+    }
+    msg.className = "msg bad";
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+/* ---------- 채널 탭 ---------- */
+let channelsData = null;
+
+function channelRowHtml(c, idx){
+  const knowledge = (c.knowledge || []).join(", ");
+  const trusted = (c.trusted_users || []).join(", ");
+  return `<tr data-idx="${idx}">
+    <td>${esc(c.name || c.channel_id)}<div class="dim" style="font-size:10.5px">${esc(c.channel_id)}</div></td>
+    <td class="editcell"><input class="cell-input" data-f="mode" value="${esc(c.mode||"")}"></td>
+    <td class="editcell"><input class="cell-input" data-f="model" value="${esc(c.model||"")}"></td>
+    <td class="editcell"><input class="cell-input" data-f="effort" value="${esc(c.effort||"")}"></td>
+    <td class="editcell"><input class="cell-input" data-f="session_scope" value="${esc(c.session_scope||"")}"></td>
+    <td class="editcell"><input class="cell-input" data-f="chat" value="${esc(c.chat||"")}"></td>
+    <td class="editcell"><input class="cell-input" data-f="workdir" value="${esc(c.workdir||"")}"></td>
+    <td class="editcell"><input class="cell-input" data-f="persona" value="${esc(c.persona||"")}"></td>
+    <td class="editcell"><input class="cell-input" data-f="knowledge" value="${esc(knowledge)}" title="쉼표로 구분"></td>
+    <td class="editcell"><input class="cell-input" data-f="trusted_users" value="${esc(trusted)}" title="쉼표로 구분"></td>
+    <td><input type="checkbox" class="cell-check" data-f="answer_unaddressed" ${c.answer_unaddressed?"checked":""}></td>
+    <td><input type="checkbox" class="cell-check" data-f="disclose_mechanism" ${c.disclose_mechanism?"checked":""}></td>
+    <td><input type="checkbox" class="cell-check" data-f="skills" ${c.skills?"checked":""}></td>
+    <td><input type="checkbox" class="cell-check" data-f="light_context" ${c.light_context?"checked":""}></td>
+    <td><input type="checkbox" class="cell-check" data-f="rich" ${c.rich?"checked":""}></td>
+    <td><input type="checkbox" class="cell-check" data-f="progress" ${c.progress?"checked":""}></td>
+    <td><button type="button" class="btn row-save" data-idx="${idx}">저장</button>
+      <div class="msg" data-idx-msg="${idx}"></div></td>
+  </tr>`;
+}
+
+function renderChannelsTab(){
+  const host = document.getElementById("app");
+  if (!current){ host.innerHTML = `<div class="panel">${unknown}</div>`; return; }
+  if (!channelsData){
+    host.innerHTML = `<div class="panel">불러오는 중...</div>`;
+    return;
+  }
+  if (!channelsData.length){
+    host.innerHTML = `<div class="panel dim">등록된 채널이 없다.</div>`;
+    return;
+  }
+  const head = ["채널","모드","모델","effort","세션 범위","대화량(chat)","작업 디렉터리","페르소나",
+    "지식","신뢰 사용자","무호명 응답","경로 공개","스킬","얕은 맥락","리치","진행 알림",""];
+  host.innerHTML = `<div class="panel"><div class="scroll"><table>
+    <thead><tr>${head.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>
+    <tbody>${channelsData.map(channelRowHtml).join("")}</tbody>
+  </table></div>
+  <div class="dim" style="margin-top:8px;font-size:11.5px">
+    한 행씩 저장한다. 자동 저장은 없다. 값이 잘못되면 그 행에만 오류가 나온다.</div></div>`;
+
+  host.querySelectorAll(".row-save").forEach(btn => {
+    btn.onclick = () => saveChannel(parseInt(btn.dataset.idx, 10));
+  });
+}
+
+async function loadChannels(){
+  channelsData = null;
+  renderChannelsTab();
+  try{
+    channelsData = await api(`/api/channels/${encodeURIComponent(current)}`);
+  }catch(e){
+    channelsData = null;
+    document.getElementById("app").innerHTML =
+      `<div class="panel"><span class="bad">채널 목록을 가져오지 못했다 : ${esc(e.message)}</span></div>`;
+    return;
+  }
+  renderChannelsTab();
+}
+
+async function saveChannel(idx){
+  const row = document.querySelector(`tr[data-idx="${idx}"]`);
+  const msg = document.querySelector(`[data-idx-msg="${idx}"]`);
+  const btn = row.querySelector(".row-save");
+  const c = channelsData[idx];
+  const changes = {};
+  row.querySelectorAll(".cell-input").forEach(inp => {
+    const f = inp.dataset.f;
+    if (f === "knowledge" || f === "trusted_users"){
+      changes[f] = inp.value.split(",").map(s => s.trim()).filter(Boolean);
+    } else {
+      changes[f] = inp.value;
+    }
+  });
+  row.querySelectorAll(".cell-check").forEach(chk => {
+    changes[chk.dataset.f] = chk.checked;
+  });
+  btn.disabled = true;
+  msg.textContent = ""; msg.className = "msg";
+  try{
+    const updated = await api(`/api/channels/${encodeURIComponent(current)}/${encodeURIComponent(c.channel_id)}`, {
+      method: "PUT",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify(changes),
+    });
+    channelsData[idx] = updated || Object.assign({}, c, changes);
+    msg.textContent = "저장했다.";
+    msg.className = "msg ok";
+  }catch(e){
+    if (e.errors && e.errors.length){
+      msg.innerHTML = "<ul class=\"err-list\">" + e.errors.map(x => `<li>${esc(x)}</li>`).join("") + "</ul>";
+    } else {
+      msg.textContent = "저장하지 못했다 : " + e.message;
+    }
+    msg.className = "msg bad";
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+/* ---------- 프롬프트 · 지식 탭 (구조가 같아 kind 로 나눈다) ---------- */
+const fileTabState = {
+  prompts: {names:null, current:null, text:""},
+  knowledge: {names:null, current:null, text:""},
+};
+
+function fileTabPaths(kind){
+  return kind === "prompts"
+    ? {list: `/api/prompts/${encodeURIComponent(current)}`,
+       get: n => `/api/prompt/${encodeURIComponent(current)}/${encodeURIComponent(n)}`,
+       put: n => `/api/prompt/${encodeURIComponent(current)}/${encodeURIComponent(n)}`}
+    : {list: `/api/knowledge/${encodeURIComponent(current)}`,
+       get: n => `/api/knowledge/${encodeURIComponent(current)}/${encodeURIComponent(n)}`,
+       put: n => `/api/knowledge/${encodeURIComponent(current)}/${encodeURIComponent(n)}`};
+}
+
+function renderFileTab(kind){
+  const host = document.getElementById("app");
+  const st = fileTabState[kind];
+  if (!current){ host.innerHTML = `<div class="panel">${unknown}</div>`; return; }
+  if (st.names === null){
+    host.innerHTML = `<div class="panel">불러오는 중...</div>`;
+    return;
+  }
+  if (!st.names.length){
+    host.innerHTML = `<div class="panel dim">파일이 없다.</div>`;
+    return;
+  }
+  const picker = st.names.map(n =>
+    `<button type="button" data-name="${esc(n)}" aria-current="${n===st.current}">${esc(n)}</button>`).join("");
+  host.innerHTML = `<div class="panel">
+    <div class="picker">${picker}</div>
+    ${st.current ? `
+      <textarea id="file-text" style="width:100%;min-height:360px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+        font-size:12.5px;padding:10px;border:1px solid var(--line);border-radius:6px;
+        background:var(--bg);color:var(--ink)">${esc(st.text)}</textarea>
+      <div style="margin-top:10px">
+        <button type="button" class="btn" id="file-save">저장</button>
+        <span class="msg" id="file-msg"></span>
+      </div>` : `<div class="dim">왼쪽에서 파일을 고른다.</div>`}
+  </div>`;
+  host.querySelectorAll(".picker button").forEach(btn => {
+    btn.onclick = () => selectFile(kind, btn.dataset.name);
+  });
+  if (st.current){
+    document.getElementById("file-save").onclick = () => saveFile(kind);
+  }
+}
+
+async function loadFileList(kind){
+  const st = fileTabState[kind];
+  st.names = null; st.current = null; st.text = "";
+  renderFileTab(kind);
+  const paths = fileTabPaths(kind);
+  try{
+    st.names = await api(paths.list);
+  }catch(e){
+    st.names = null;
+    document.getElementById("app").innerHTML =
+      `<div class="panel"><span class="bad">목록을 가져오지 못했다 : ${esc(e.message)}</span></div>`;
+    return;
+  }
+  renderFileTab(kind);
+}
+
+async function selectFile(kind, name){
+  const st = fileTabState[kind];
+  const paths = fileTabPaths(kind);
+  try{
+    const body = await api(paths.get(name));
+    st.current = name;
+    st.text = (body && typeof body === "object") ? (body.content || "") : (body || "");
+  }catch(e){
+    st.current = name;
+    st.text = "";
+    renderFileTab(kind);
+    document.getElementById("app").insertAdjacentHTML("beforeend",
+      `<div class="panel" style="margin-top:10px"><span class="bad">불러오지 못했다 : ${esc(e.message)}</span></div>`);
+    return;
+  }
+  renderFileTab(kind);
+}
+
+async function saveFile(kind){
+  const st = fileTabState[kind];
+  const paths = fileTabPaths(kind);
+  const text = document.getElementById("file-text").value;
+  const msg = document.getElementById("file-msg");
+  const btn = document.getElementById("file-save");
+  btn.disabled = true;
+  msg.textContent = ""; msg.className = "msg";
+  try{
+    await api(paths.put(st.current), {
+      method: "PUT",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify({content: text}),
+    });
+    st.text = text;
+    msg.textContent = "저장했다.";
+    msg.className = "msg ok";
+  }catch(e){
+    if (e.errors && e.errors.length){
+      msg.innerHTML = "<ul class=\"err-list\">" + e.errors.map(x => `<li>${esc(x)}</li>`).join("") + "</ul>";
+    } else {
+      msg.textContent = "저장하지 못했다 : " + e.message;
+    }
+    msg.className = "msg bad";
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+/* ---------- 탭 전환과 봇 전환 ---------- */
+function loadTab(){
+  if (!current){
+    document.getElementById("app").innerHTML = `<div class="panel">${unknown} — 봇을 먼저 고른다.</div>`;
+    return;
+  }
+  if (activeTab === "state") renderStateTab(lastMetrics);
+  else if (activeTab === "settings") loadProfile();
+  else if (activeTab === "channels") loadChannels();
+  else if (activeTab === "prompts") loadFileList("prompts");
+  else if (activeTab === "knowledge") loadFileList("knowledge");
+}
+
+function switchTab(name){
+  activeTab = name;
+  document.querySelectorAll("#tabs button").forEach(b => {
+    b.setAttribute("aria-current", String(b.dataset.tab === name));
+  });
+  loadTab();
+}
+
+function onBotChanged(){
+  botBar(lastMetrics);
+  loadTab();
+}
+
+document.querySelectorAll("#tabs button").forEach(b => {
+  b.onclick = () => switchTab(b.dataset.tab);
+});
+document.querySelector('#tabs button[data-tab="state"]').setAttribute("aria-current", "true");
+
+/* ---------- 시작 ---------- */
+async function init(){
+  try{
+    profileNames = await api("/api/profiles");
+  }catch(e){
+    profileNames = [];
+  }
+  if (!current || (profileNames.length && !profileNames.includes(current))){
+    current = profileNames[0] || current;
+  }
+  botBar(null);
+  summaryLine(null);
+  loadTab();
+  tickState();
+  setInterval(tickState, STATE_POLL_MS);
+}
+init();
+</script>
+</body>
+</html>
