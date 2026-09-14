@@ -185,9 +185,12 @@ class Application:
         database: Database | None = None,
         engine_registry: EngineRegistry | None = None,
         token_provider: Any = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._profile = profile
         self._client = client
+        # 신원 재조회 간격을 재는 시계. 시험이 시간을 제어할 수 있게 주입받는다.
+        self._clock = clock
         profile.paths.ensure()
 
         base = settings or RuntimeSettings()
@@ -228,6 +231,11 @@ class Application:
         # 말과 이 봇의 말을 구분하는 근거다. 사용자 ID 와 다른 값이고,
         # 봇이 올린 메시지에는 `user` 대신 이 값이 담긴다.
         self._bot_id_cache: str | None = None
+        # 신원 조회를 마지막으로 시도한 시각. 실패했을 때 언제 다시 부를지
+        # 판정한다. 한 번 실패했다고 영구히 포기하면 일시 장애가 영구 오판이
+        # 되고, 판정마다 다시 부르면 장애가 이어지는 동안 요청 수만큼 API
+        # 호출이 늘어난다.
+        self._identity_attempted_at: float | None = None
         self._roster_builder: RosterBuilder | None = None
         self._roster_refresher: PeriodicRunner | None = None
         self._connection_watch: SocketErrorWatch | None = None
@@ -776,8 +784,8 @@ class Application:
         """
         paths = self._profile.paths
         return ReviewEngineCaller(
-            engine=self.engine,
-            runner=self.engine_runner,
+            # 실행기를 그대로 넘기면 폴백이 설정돼 있어도 전환 판정이 건너뛰어진다.
+            invoker=self.engine_invoker,
             profile=self._profile,
             workdir=self._profile.work_root,
             system_prompt="",
@@ -944,7 +952,7 @@ class Application:
         결과는 캐시한다. 접수기·되짚기·자기 메시지 판정이 이 값을 각각
         요구하는데, 매번 조회하면 API 호출이 그만큼 늘고 그중 한 번이
         실패하면 그 부품만 빈 값을 갖게 돼 판정이 부품마다 달라진다.
-        실패도 캐시한다 — 실패한 조회를 요청마다 되풀이하지 않는다.
+        실패는 캐시하지 않는다 — 재조회 간격이 지나면 다시 부른다.
         """
         self._load_identity()
         return self._bot_user_id_cache or ""
@@ -954,37 +962,68 @@ class Application:
         self._load_identity()
         return self._bot_id_cache or ""
 
+    def _has_identity(self) -> bool:
+        """판정에 쓸 신원을 이미 확보했는가. 조회를 유발하지 않는다.
+
+        조회가 성공해도 값이 비어 있으면 확보한 것이 아니다. 빈 값으로는
+        어떤 메시지도 대조할 수 없다.
+        """
+        return bool(self._bot_id_cache or self._bot_user_id_cache)
+
+    def _identity_known(self) -> bool:
+        """필요하면 조회한 뒤, 판정에 쓸 신원이 있는지 알린다."""
+        self._load_identity()
+        return self._has_identity()
+
     def _load_identity(self) -> None:
-        """`auth_test` 를 한 번만 불러 사용자 ID 와 `bot_id` 를 함께 채운다.
+        """`auth_test` 를 불러 사용자 ID 와 `bot_id` 를 함께 채운다.
 
         둘을 따로 조회하면 같은 API 를 두 번 부르고, 그중 한 번이 실패하면
         판정 근거가 부품마다 달라진다.
+
+        성공하면 그 값을 계속 쓴다. 실패는 캐시하지 않고 재조회 간격이 지난
+        뒤 다시 부른다 — 실패를 영구 캐시하면 슬랙 API 의 일시 장애가 그
+        프로세스가 사는 내내 이어지는 오판이 된다.
         """
-        if self._bot_user_id_cache is not None:
+        if self._has_identity():
             return
+        now = self._clock()
+        if self._identity_attempted_at is not None:
+            elapsed = now - self._identity_attempted_at
+            if elapsed < self._settings.identity_retry_interval_sec:
+                return
+        self._identity_attempted_at = now
         try:
             info = self._client.auth_test() or {}
-        except Exception:  # noqa: BLE001 — 신원 조회 실패를 판정 근거로 남기고 빈 값으로 넘어간다 — 여기서 죽으면 이후 처리 전체가 막힌다
+        except Exception:  # noqa: BLE001 — 조회 실패로 여기서 죽으면 이후 처리 전체가 막힌다
             log.warning("봇 신원을 조회하지 못했다")
             info = {}
         self._bot_user_id_cache = str(info.get("user_id") or "")
         self._bot_id_cache = str(info.get("bot_id") or "")
 
     def _is_self_message(self, msg: Any) -> bool:
-        """이 봇이 올린 말인지 판정한다. 원본 `bot.py` 의 `is_self()` 와 같다.
+        """이 봇이 올린 말인지 판정한다.
 
         `bot_id` 가 있다는 것만으로 이 봇의 말로 보면 안 된다. 같은 채널에서
         함께 답하는 다른 봇의 말까지 이 봇의 답으로 세어지고, 되짚기가 실제
         미응답 멘션을 복구 대상에서 뺀다.
+
+        신원을 아직 못 받았으면 False 다. 원본 `bot.py` 는 이 경우
+        `bool(msg.get("bot_id"))` 로 돌아가는데, 그것이 2026-09-02 에 사고를
+        낸 예전 방식 그대로다. 오판의 두 방향 중 방어가 있는 쪽으로 기운다 —
+        이 봇의 답을 남의 것으로 보면 되짚기가 재등록을 시도해도 jobs 표의
+        `(channel, message_ts)` 유일 제약이 중복을 막지만, 반대 방향은 막는
+        것이 없어 미응답 멘션이 그대로 유실된다.
         """
-        bot_id = self._bot_id()
+        if not self._identity_known():
+            return False
+        bot_id = self._bot_id_cache or ""
         if bot_id and msg.get("bot_id"):
             return bool(msg.get("bot_id") == bot_id)
-        user_id = self._bot_user_id()
+        user_id = self._bot_user_id_cache or ""
         if user_id and msg.get("user"):
             return bool(msg.get("user") == user_id)
-        # 자기 신원을 아직 못 받았다. 판정 근거가 없어 예전 방식으로 본다.
-        return bool(msg.get("bot_id"))
+        return False
 
     def close(self) -> None:
         """DB 연결을 닫는다. 두 번 불러도 문제가 없다."""
