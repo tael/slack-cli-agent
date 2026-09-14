@@ -22,14 +22,14 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.reliability.ports import HistoryReader
 from slack_cli_agent.slack.message_kind import MessageKind
+from slack_cli_agent.slack.speaker import SpeakerNamer
 
 from ..core.timezones import KST
 
@@ -86,19 +86,20 @@ class LateAddendumChecker:
     ) -> None:
         self._history = history
         self._notices = notices
-        self._name_resolver = name_resolver
         self._settings = settings
-        self._owner_user_id = owner_user_id
-        self._owner_display_name = owner_display_name
+        # 화자 표시는 TranscriptBuilder 와 공유하는 SpeakerNamer 에 위임한다.
+        # 여기는 MessageKind.is_human 이 봇 메시지를 미리 걸러 내므로 `is_self`
+        # 자리에 언제나 False 를 돌려주는 함수를 넘긴다 — 봇 분기가 있는 코드를
+        # 쓰지만 그 분기를 탈 메시지가 안 들어와 지금 화면은 그대로다.
+        self._speaker = SpeakerNamer(
+            name_resolver=name_resolver,
+            is_self=lambda msg: False,
+            bot_display_name="",
+            owner_user_id=owner_user_id,
+            owner_display_name=owner_display_name,
+        )
         # 메시지를 무엇으로 볼지는 한 곳에서 판정한다. 여기 따로 적으면 기준이 갈린다.
         self._kind = MessageKind()
-
-    def _speaker_of(self, msg: Mapping[str, Any]) -> str:
-        user = msg.get("user") or ""
-        if user == self._owner_user_id and self._owner_display_name:
-            return self._owner_display_name
-        name = self._name_resolver(user) or "이름 모르는 사람"
-        return f"{name} <@{user}>" if user else name
 
     def check(
         self,
@@ -135,7 +136,7 @@ class LateAddendumChecker:
             if not text or self._notices.is_notice(text):
                 continue
             when = datetime.fromtimestamp(mts, KST).strftime("%H:%M:%S")
-            who = self._speaker_of(m)
+            who = self._speaker.speaker_of(m)
             lines.append(f"[{when} {who}]\n{text}")
             latest = m.get("ts")
         return "\n\n".join(lines), latest

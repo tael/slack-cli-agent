@@ -8,7 +8,8 @@
 화자 이름 해석은 원본이 전역 캐시(`_asker_cache`)와 회사 고유 상수
 (`OWNER_USER_ID`, `BOT_DISPLAY_NAME`)로 처리하던 부분이다. 생성자로 주입받는
 `name_resolver` 로 재구성했다 — 이름 조회와 그 캐시는 이 클래스의 책임이
-아니다.
+아니다. 화자 표시 문자열을 만드는 판정 자체는 `SpeakerNamer` 에 있다 —
+`LateAddendumChecker` 와 같은 판정을 쓰게 하려는 목적이다.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.slack.identity import BotIdentity
 from slack_cli_agent.slack.message_kind import MessageKind
+from slack_cli_agent.slack.speaker import SpeakerNamer
 
 from ..core.timezones import KST
 
@@ -140,28 +142,20 @@ class TranscriptBuilder:
         self._client = client
         self._settings = settings
         self._notices = notices
-        self._name_resolver = name_resolver
         # 자기 말 판정 근거. 부품마다 따로 들면 조립이 일부에만 값을 줘도
         # 부품 시험이 통과해, 그 부품만 조용히 예전 판정으로 돌아간다.
         self._identity = identity
-        self._bot_display_name = bot_display_name
-        self._owner_user_id = owner_user_id
-        self._owner_display_name = owner_display_name
+        # 화자 표시는 late_addendum 과 공유하는 SpeakerNamer 에 위임한다.
+        # 봇 분기를 포함한 완전한 판정을 한 곳에 두려는 목적이다.
+        self._speaker = SpeakerNamer(
+            name_resolver=name_resolver,
+            is_self=identity.is_self,
+            bot_display_name=bot_display_name,
+            owner_user_id=owner_user_id,
+            owner_display_name=owner_display_name,
+        )
         # 메시지를 무엇으로 볼지는 한 곳에서 판정한다. 여기 따로 적으면 기준이 갈린다.
         self._kind = MessageKind()
-
-    def _speaker_of(self, msg: Mapping[str, Any]) -> str:
-        if self._identity.is_self(msg):
-            return self._bot_display_name or "봇"
-        if msg.get("bot_id"):
-            profile = msg.get("bot_profile") or {}
-            name = profile.get("name") or msg.get("username") or ""
-            return f"{name} (다른 봇)" if name else "이름 모르는 봇"
-        user = msg.get("user") or ""
-        if user == self._owner_user_id and self._owner_display_name:
-            return self._owner_display_name
-        name = self._name_resolver(user) or "이름 모르는 사람"
-        return f"{name} <@{user}>" if user else name
 
     def thread_transcript(
         self,
@@ -203,7 +197,7 @@ class TranscriptBuilder:
             if not text or self._notices.is_notice(text):
                 continue
             when = datetime.fromtimestamp(float(m.get("ts", 0)), KST).strftime("%H:%M:%S")
-            who = self._speaker_of(m)
+            who = self._speaker.speaker_of(m)
             lines.append(f"[{when} {who}]\n{text}")
 
         if not lines:
