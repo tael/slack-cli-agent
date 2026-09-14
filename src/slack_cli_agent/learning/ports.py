@@ -2,7 +2,7 @@
 
 배치(`learning/batch.py`)는 응답 기록과 사람 반응을 읽어 제안을 만든다. 그
 두 자료의 실물은 각각 파일 시스템과 슬랙 API 에 있는데, 배치가 그것을 직접
-알면 배치 시험이 파일과 API 를 함께 세워야 돈다. 여기 계약만 알게 해 실물을
+알면 배치 시험이 파일과 API 를 함께 세워야 한다. 여기 계약만 알게 해 실물을
 밖에서 조립한다.
 
 원본 learn.py 는 `RESPONSES.glob()` 과 `slack("conversations.replies")` 를

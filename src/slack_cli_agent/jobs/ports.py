@@ -51,7 +51,7 @@ class JobQueue(Protocol):
         실패로 끝난 같은 건은 예외다 — 대기로 되돌리고 True 를 돌려준다.
         그 차단을 그대로 두면 되짚기가 미응답 멘션을 찾아내도 재등록이
         무시돼 그 요청이 영영 처리되지 않는다. `max_attempts` 가 0 보다
-        크면 그만큼 시도한 건은 되돌리지 않는다.
+        크면 그만큼 시도한 건은 되실행하지 않는다.
         """
 
     def claim_next(self, worker_id: str) -> Job | None:

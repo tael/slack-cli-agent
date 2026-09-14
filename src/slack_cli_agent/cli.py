@@ -92,7 +92,7 @@ class PreflightCommand(ProfileAwareCommand):
     """기동 전 점검을 실행한다. 원본 `restart.sh` 앞머리 + `check.py` 를 합친 것.
 
     구문 검사·단위 시험 실행(원본 `restart.sh` 가 하던 것)은 여기 없다.
-    `pytest` 를 이 프로세스 밖에서 따로 돌리는 것이 자연스럽고, 이 명령은
+    `pytest` 를 이 프로세스 밖에서 따로 실행하는 것이 자연스럽고, 이 명령은
     "지금 이 프로필로 기동해도 되는가" 만 본다.
     """
 
@@ -233,7 +233,7 @@ class IngressCommand(ProfileAwareCommand):
             # 여기서 안 켜면 어디서도 안 켜지고, 소켓이 끊겨도 아무 기록이 안 남는다.
             app.connection_watch()
             # 주기 실행기는 묶음으로 띄운다. 여기서 하나씩 손으로 시작하면
-            # 새 실행기를 추가할 때 이 위치를 같이 안 고쳐 그 동작이 안 돈다.
+            # 새 실행기를 추가할 때 이 위치를 같이 안 고쳐 그 동작이 실행되지 않는다.
             with app.ingress_services(app.self_restarter()):
                 gateway.start(token)
         finally:
@@ -310,9 +310,9 @@ class WorkerCommand(ProfileAwareCommand):
 
 
 class LearnCommand(ProfileAwareCommand):
-    """하루치 학습 배치를 한 번 돌린다. 원본 `run-learn.sh` 에 대응한다.
+    """하루치 학습 배치를 한 번 실행한다. 원본 `run-learn.sh` 에 대응한다.
 
-    워커 주기 실행기가 부르는 것과 같은 배치를 부른다. 손으로 돌리는 쪽이
+    워커 주기 실행기가 부르는 것과 같은 배치를 부른다. 손으로 실행하는 쪽이
     다른 코드를 쓰면 두 경로의 동작이 갈린다.
     """
 
@@ -326,7 +326,7 @@ class LearnCommand(ProfileAwareCommand):
         parser.add_argument(
             "--day",
             default=None,
-            help="분석할 날짜(YYYY-MM-DD). 안 주면 오늘을 돌린다",
+            help="분석할 날짜(YYYY-MM-DD). 안 주면 오늘을 분석한다",
         )
 
     def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
@@ -336,7 +336,7 @@ class LearnCommand(ProfileAwareCommand):
         finally:
             app.close()
         if not report.ran:
-            print(f"{report.day} 학습 배치를 돌리지 않았다 : {report.reason}", file=stdout)
+            print(f"{report.day} 학습 배치를 실행하지 않았다 : {report.reason}", file=stdout)
             return 1
         where = ", ".join(f"{k} {v}건" for k, v in report.applied.items()) or "없음"
         print(f"{report.day} 학습 배치를 마쳤다. 반영 : {where}", file=stdout)

@@ -69,7 +69,7 @@ class LearningService:
     def revert(self, day: str) -> str:
         """원본 revert_learning() 과 같다."""
         if not _DAY_PATTERN.fullmatch(day or ""):
-            return "되돌릴 날짜를 함께 주세요. 예 : 학습 되돌리기 2026-08-26"
+            return "되분석할 날짜를 함께 주세요. 예 : 학습 되돌리기 2026-08-26"
         try:
             n = self._reverter.revert(day)
         except OSError as e:
