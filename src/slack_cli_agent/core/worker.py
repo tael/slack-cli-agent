@@ -107,6 +107,20 @@ class Worker:
         self._finish(job.id, context, outcome)
         return True
 
+    def run_forever(self, should_stop: Callable[[], bool]) -> None:
+        """중단 요청이 올 때까지 큐를 처리한다.
+
+        집을 것이 없으면 쉰다. 반복하는 쪽이 `run_once()` 를 그대로 되풀이하면
+        빈 큐에도 SQLite 조회가 쉬지 않고 일어나 한 코어를 계속 쓴다. 그 대기를
+        여기 둬, 이 워커를 돌리는 모든 경로가 같은 동작을 하게 한다.
+
+        중단 여부를 한 회차 전에 본다. 종료 중인데 큐를 한 번 더 집으면 그
+        작업이 붙잡힌 채 남아, 다음 워커가 정체 판정 시각까지 못 집는다.
+        """
+        while not should_stop():
+            if not self.run_once():
+                self._sleep(self._settings.queue_idle_sleep_sec)
+
     def _safe_handle(self, context: RequestContext) -> HandleOutcome:
         """처리기가 예외를 내도 워커가 죽지 않게 감싼다.
 

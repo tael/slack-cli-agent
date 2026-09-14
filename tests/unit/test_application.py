@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -712,3 +713,117 @@ class Test감시확인연결:
 class _프롬프트조립대역:
     def compose(self, ctx: Any) -> str:
         return "시스템 프롬프트"
+
+
+class Test자기메시지판정:
+    """이 봇의 말과 다른 봇의 말을 가르는 판정.
+
+    같은 채널에 다른 슬랙 봇이 함께 답한다. `bot_id` 가 있다는 것만으로 이
+    봇의 말로 보면, 다른 봇의 답이 이 봇의 답으로 세어져 되짚기가 실제
+    미응답 멘션을 복구 대상에서 뺀다. 원본 `bot.py` 의 `is_self()` 가 같은
+    사고로 고쳐진 부분이다.
+    """
+
+    @staticmethod
+    def _신원을준다(client: FakeSlackClient, user_id: str = "U_ME", bot_id: str = "B_ME") -> None:
+        client.auth_test = lambda **kwargs: {  # type: ignore[method-assign]
+            "ok": True, "user_id": user_id, "bot_id": bot_id,
+        }
+
+    def test_다른봇의_말은_이봇의_말이_아니다(self, app: Application, client: FakeSlackClient) -> None:
+        self._신원을준다(client)
+        assert app._is_self_message({"bot_id": "B_OTHER", "text": "다른 봇의 답"}) is False
+        app.close()
+
+    def test_자기_bot_id_면_이봇의_말이다(self, app: Application, client: FakeSlackClient) -> None:
+        self._신원을준다(client)
+        assert app._is_self_message({"bot_id": "B_ME", "text": "내 답"}) is True
+        app.close()
+
+    def test_bot_id_가_없으면_사용자ID로_판정한다(self, app: Application, client: FakeSlackClient) -> None:
+        self._신원을준다(client)
+        assert app._is_self_message({"user": "U_ME", "text": "내 말"}) is True
+        assert app._is_self_message({"user": "U_HUMAN", "text": "사람 말"}) is False
+        app.close()
+
+    def test_신원조회가_실패하면_bot_id_유무로_본다(self, app: Application, client: FakeSlackClient) -> None:
+        """판정 근거가 없을 때는 원본과 같이 예전 방식으로 돌아간다."""
+        def boom(**kwargs: Any) -> dict:
+            raise RuntimeError("조회 실패")
+
+        client.auth_test = boom  # type: ignore[method-assign]
+        assert app._is_self_message({"bot_id": "B_ANY"}) is True
+        assert app._is_self_message({"user": "U_HUMAN"}) is False
+        app.close()
+
+    def test_신원조회는_한번만_한다(self, app: Application, client: FakeSlackClient) -> None:
+        """판정마다 조회하면 요청 수만큼 API 호출이 늘어난다."""
+        app._is_self_message({"bot_id": "B_X"})
+        app._is_self_message({"user": "U_Y"})
+        assert [name for name, _ in client.calls].count("auth_test") == 1
+        app.close()
+
+
+class Test연결감시연결:
+    """소켓 오류를 세는 것과 그 값을 보고 판정하는 것은 다르다.
+
+    `SocketErrorWatch` 를 로거에 붙여도 `HealthMonitor.check()` 를 부르는
+    경로가 없으면 상한을 넘어도 재기동이 발화하지 않는다.
+    """
+
+    def test_감시_주기실행기를_만든다(self, app: Application) -> None:
+        runner = app.health_runner(lambda reason: None)
+        assert runner.thread is None
+        app.close()
+
+    def test_주기는_설정값을_따른다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        profile = write_profile(tmp_path, settings={"health_interval_sec": 11})
+        application = Application(profile, client)
+        runner = application.health_runner(lambda reason: None)
+        assert runner._interval_sec == 11
+        application.close()
+
+    def test_같은_점검기를_되풀이_쓴다(self, app: Application) -> None:
+        """회차마다 새로 만들면 끊김 시작 시각을 잃어 복구 판정이 안 나온다."""
+        runner = app.health_runner(lambda reason: None)
+        assert app.health_runner(lambda reason: None) is runner
+        app.close()
+
+    def test_한_회차가_재기동까지_이어진다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        """실행기를 만드는 것과 그것이 판정과 재기동을 부르는 것은 다르다."""
+        profile = write_profile(tmp_path, settings={"socket_error_limit": 1})
+        application = Application(profile, client)
+        사유: list[str] = []
+        runner = application.health_runner(사유.append)
+        # 소켓 오류를 상한만큼 기록해 둔다. 감시 핸들러는 로거에 붙어 있다.
+        watch = application.connection_watch()
+        watch.emit(logging.LogRecord("x", logging.ERROR, "f", 1, "on_error invoked", None, None))
+        runner._task()
+        assert 사유 and "소켓 오류" in 사유[0]
+        application.close()
+
+    def test_재기동은_처리중인_요청이_끝나기를_기다린다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        """진행 중인 건을 버리고 나가면 그 요청은 답 없이 사라진다."""
+        profile = write_profile(tmp_path, settings={"shutdown_grace_sec": 1})
+        application = Application(profile, client)
+        application.inflight.enter()
+        나간코드: list[int] = []
+        started = time.monotonic()
+        application.self_restarter(exit_process=나간코드.append)("소켓 오류 9건")
+        assert time.monotonic() - started >= 1.0
+        assert 나간코드 == [1]
+        application.close()
+
+    def test_처리중인_건이_없으면_바로_나간다(self, app: Application) -> None:
+        나간코드: list[int] = []
+        started = time.monotonic()
+        app.self_restarter(exit_process=나간코드.append)("소켓 오류 9건")
+        assert time.monotonic() - started < 0.5
+        assert 나간코드 == [1]
+        app.close()
+
+    def test_재기동_전에_종료중임을_상태기록에_남긴다(self, app: Application) -> None:
+        """상태 파일만 보는 쪽이 멎은 프로세스와 재기동 중인 것을 구분해야 한다."""
+        app.self_restarter(exit_process=lambda code: None)("소켓 오류 9건")
+        assert app._shutting_down is True
+        app.close()

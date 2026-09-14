@@ -682,3 +682,65 @@ class TestWatchJobQueue열린건수:
         watch_queue.enqueue("C1", "T2", "조건2")
         watch_queue.mark_done(first)
         assert watch_queue.open_count() == 1
+
+
+class Test스스로재기동:
+    """소켓이 죽은 채로 살아 있으면 아무 이벤트도 안 들어온다. 스스로 나가고
+    감독 프로세스가 다시 띄우게 한다. 원본 `bot.py` 의 `self_restart()`.
+    """
+
+    def test_0이_아닌_코드로_나간다(self) -> None:
+        """0 으로 나가면 감독 프로세스가 정상 종료로 보고 다시 안 띄운다."""
+        from slack_cli_agent.reliability.health import SelfRestarter
+
+        나간코드: list[int] = []
+        SelfRestarter(exit_process=나간코드.append)("소켓 오류 9건")
+        assert 나간코드 == [1]
+
+    def test_나가기전에_사유를_알린다(self) -> None:
+        from slack_cli_agent.reliability.health import SelfRestarter
+
+        알린것: list[str] = []
+        나간코드: list[int] = []
+        SelfRestarter(notify=알린것.append, exit_process=나간코드.append)("소켓 오류 9건")
+        assert 알린것 and "소켓 오류 9건" in 알린것[0]
+        assert 나간코드 == [1]
+
+    def test_알림이_실패해도_나간다(self) -> None:
+        """알릴 곳이 죽어 있다고 끊긴 프로세스가 그대로 살아 있으면 안 된다."""
+        from slack_cli_agent.reliability.health import SelfRestarter
+
+        def boom(text: str) -> None:
+            raise RuntimeError("발송 실패")
+
+        나간코드: list[int] = []
+        SelfRestarter(notify=boom, exit_process=나간코드.append)("소켓 오류 9건")
+        assert 나간코드 == [1]
+
+    def test_처리중인_요청이_끝나기를_기다린다(self) -> None:
+        """처리 중인 답을 버리고 나가면 그 요청은 답 없이 사라진다."""
+        from slack_cli_agent.reliability.health import SelfRestarter
+
+        남은건수 = [2, 1, 0]
+        기다린시간: list[float] = []
+        나간코드: list[int] = []
+        SelfRestarter(
+            inflight_count=lambda: 남은건수.pop(0) if 남은건수 else 0,
+            sleep=기다린시간.append,
+            exit_process=나간코드.append,
+        )("소켓 오류 9건")
+        assert 기다린시간 and 나간코드 == [1]
+
+    def test_끝나기를_무한정_기다리지는_않는다(self) -> None:
+        from slack_cli_agent.reliability.health import SelfRestarter
+
+        기다린시간: list[float] = []
+        나간코드: list[int] = []
+        SelfRestarter(
+            inflight_count=lambda: 1,
+            sleep=기다린시간.append,
+            grace_sec=2.0,
+            exit_process=나간코드.append,
+        )("소켓 오류 9건")
+        assert sum(기다린시간) <= 2.0
+        assert 나간코드 == [1]
