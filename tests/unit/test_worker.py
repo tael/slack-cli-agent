@@ -420,3 +420,52 @@ class TestInflight진행중건수:
         queue.enqueue(ctx("1"))
         worker.run_once()
         assert worker.inflight.count == 0
+
+
+class Test빈큐대기:
+    """집을 것이 없을 때 곧바로 다시 조회하지 않는가.
+
+    `run_once()` 는 큐가 비면 바로 False 로 돌아온다. 반복하는 쪽이 그 결과를
+    안 보고 다시 부르면 SQLite 조회가 쉬지 않고 되풀이돼 한 코어를 계속 쓴다.
+    대기를 워커 안에 둬, 반복하는 쪽마다 따로 짜지 않게 한다.
+    """
+
+    def test_집을것이_없으면_기다린다(self, database) -> None:
+        settings = RuntimeSettings(heartbeat_interval_sec=0.01)
+        기다린시간: list[float] = []
+        worker, _queue, _client = make_worker(
+            database=database, settings=settings, sleep=기다린시간.append,
+        )
+        멈춤 = [False, False, True]
+        worker.run_forever(lambda: 멈춤.pop(0))
+        # 심장박동 스레드도 같은 대역으로 쉰다. 빈 큐 대기값만 세어 구분한다.
+        쉰횟수 = [t for t in 기다린시간 if t == settings.queue_idle_sleep_sec]
+        assert 쉰횟수 == [settings.queue_idle_sleep_sec] * 2
+
+    def test_집을것이_있으면_안_기다린다(self, database) -> None:
+        """처리할 것이 남아 있는데 쉬면 응답이 그만큼 늦어진다."""
+        기다린시간: list[float] = []
+        worker, queue, _client = make_worker(database=database, sleep=기다린시간.append)
+        queue.enqueue(ctx("1.0"))
+        queue.enqueue(ctx("2.0"))
+        멈춤 = [False, False, True]
+        worker.run_forever(lambda: 멈춤.pop(0))
+        assert RuntimeSettings().queue_idle_sleep_sec not in 기다린시간
+
+    def test_멈추라면_한_회차도_안_돈다(self, database) -> None:
+        """종료 중인 프로세스가 큐를 한 번 더 집으면 그 건이 붙잡힌 채 남는다."""
+        handler = FakeHandler()
+        worker, queue, _client = make_worker(database=database, handler=handler)
+        queue.enqueue(ctx("1.0"))
+        worker.run_forever(lambda: True)
+        assert handler.received == []
+
+    def test_예외가_나도_반복이_끝나지_않는다(self, database) -> None:
+        """한 건의 실패로 반복이 끝나면 그 워커는 다시 아무것도 처리하지 않는다."""
+        worker, queue, _client = make_worker(database=database, handler=RaisingHandler())
+        queue.enqueue(ctx("1.0"))
+        queue.enqueue(ctx("2.0"))
+        멈춤 = [False, False, True]
+        worker.run_forever(lambda: 멈춤.pop(0))
+        # 두 건 다 집혔다. 첫 건의 예외가 반복을 끝내지 않았다.
+        assert queue.claim_next("other") is None

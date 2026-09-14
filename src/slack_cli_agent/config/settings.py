@@ -41,6 +41,10 @@ class RuntimeSettings:
     # 이전 20건/180초는 실제 발생률 16.8건보다 높아 한 번도 발화하지 않았다
     socket_error_limit: int = 8
     health_interval_sec: float = 30
+    # 큐가 비었을 때 다음 조회까지 쉬는 시간. 0 으로 두면 워커가 빈 큐를
+    # 쉬지 않고 조회해 한 코어를 계속 쓴다. 이 값만큼 응답이 늦어질 수
+    # 있어, 사람이 못 느끼는 범위에서 가장 크게 잡는다.
+    queue_idle_sleep_sec: float = 0.5
     shutdown_grace_sec: float = 330
 
     watch_check_interval_sec: float = 300
