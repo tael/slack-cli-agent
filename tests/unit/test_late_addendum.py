@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from identity_support import fake_identity
+
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.slack.late_addendum import (
@@ -41,6 +43,8 @@ def make_checker(history, owner_user_id="", owner_display_name=""):
         settings=RuntimeSettings(),
         owner_user_id=owner_user_id,
         owner_display_name=owner_display_name,
+        identity=fake_identity(),
+        bot_display_name="시험봇",
     )
 
 
@@ -185,6 +189,8 @@ class TestLateAddendumCheckerNewMessages:
             notices=notices,
             name_resolver=lambda user_id: user_id,
             settings=RuntimeSettings(),
+            identity=fake_identity(),
+            bot_display_name="시험봇",
         )
         addendum, latest = checker.check("C1", "T1", "100.0", scope="thread")
         assert addendum == ""
@@ -246,3 +252,21 @@ class TestLateAddendumPrompt:
     def test_prompt_instructs_to_keep_prior_answer_content(self):
         prompt = late_addendum_prompt("아무 내용")
         assert "빠짐없이" in prompt or "그대로 다시" in prompt
+
+
+class Test봇의말이들어와도화자를맞게적는다:
+    """봇 메시지가 여기까지 오지 않는다는 전제에 기대지 않는다.
+
+    `MessageKind.is_human` 이 걸러 내므로 지금은 안 들어온다. 그 전제가 바뀌면
+    이 봇의 말이 "이름 모르는 봇" 으로 적히고, 그 오류는 화면을 볼 때까지
+    드러나지 않는다. 신원을 받아 두면 전제와 무관하게 맞는다.
+    """
+
+    def test_이_봇의_말은_이_봇_이름으로_적는다(self) -> None:
+        checker = make_checker(FakeHistory(thread_msgs=[]))
+        assert checker._speaker.speaker_of({"bot_id": "B_BOT"}) == "시험봇"
+
+    def test_다른_봇의_말은_다른_봇으로_적는다(self) -> None:
+        checker = make_checker(FakeHistory(thread_msgs=[]))
+        적힌것 = checker._speaker.speaker_of({"bot_id": "B_OTHER", "bot_profile": {"name": "잠만보"}})
+        assert 적힌것 == "잠만보 (다른 봇)"

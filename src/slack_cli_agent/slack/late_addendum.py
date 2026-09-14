@@ -28,6 +28,7 @@ from datetime import datetime
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.reliability.ports import HistoryReader
+from slack_cli_agent.slack.identity import BotIdentity
 from slack_cli_agent.slack.message_kind import MessageKind
 from slack_cli_agent.slack.speaker import SpeakerNamer
 
@@ -81,6 +82,8 @@ class LateAddendumChecker:
         notices: NoticeCatalog,
         name_resolver: Callable[[str], str],
         settings: RuntimeSettings,
+        identity: BotIdentity,
+        bot_display_name: str,
         owner_user_id: str = "",
         owner_display_name: str = "",
     ) -> None:
@@ -88,13 +91,13 @@ class LateAddendumChecker:
         self._notices = notices
         self._settings = settings
         # 화자 표시는 TranscriptBuilder 와 공유하는 SpeakerNamer 에 위임한다.
-        # 여기는 MessageKind.is_human 이 봇 메시지를 미리 걸러 내므로 `is_self`
-        # 자리에 언제나 False 를 돌려주는 함수를 넘긴다 — 봇 분기가 있는 코드를
-        # 쓰지만 그 분기를 탈 메시지가 안 들어와 지금 화면은 그대로다.
+        # 지금은 MessageKind.is_human 이 봇 메시지를 미리 걸러 내 봇 분기를 탈
+        # 일이 없지만, 그 전제에 기대지 않는다 — 전제가 바뀌면 이 봇의 말이
+        # "이름 모르는 봇" 으로 적히고 그 오류는 화면을 볼 때까지 안 드러난다.
         self._speaker = SpeakerNamer(
             name_resolver=name_resolver,
-            is_self=lambda msg: False,
-            bot_display_name="",
+            is_self=identity.is_self,
+            bot_display_name=bot_display_name,
             owner_user_id=owner_user_id,
             owner_display_name=owner_display_name,
         )
