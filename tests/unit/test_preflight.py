@@ -15,9 +15,12 @@ from pathlib import Path
 import pytest
 
 from slack_cli_agent.config.profile import Profile
+from slack_cli_agent.core.errors import ConfigError
+from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
 from slack_cli_agent.preflight.check import CheckResult, PreflightCheck, PreflightContext
 from slack_cli_agent.preflight.checks import (
     EngineBinaryCheck,
+    EngineHomeCredentialCheck,
     McpServerCheck,
     OwnerSettingsInertCheck,
     PromptFileCheck,
@@ -366,3 +369,135 @@ class TestOwnerSettingsInertCheck:
         check = OwnerSettingsInertCheck()
         result = check.run(PreflightContext(profile=profile))
         assert result.ok is True
+
+
+# ---------------------------------------------------------------------------
+# EngineHomeCredentialCheck
+
+
+class TestEngineHomeCredentialCheck:
+    """봇별 홈을 가르면 그 홈에는 로그인 정보가 없다. 지금은 손으로 복사해야
+    하는데, 안 하면 엔진이 답을 못 내는 것으로만 드러난다 (sca-kos.6).
+    """
+
+    def _프로필(self, tmp_path: Path, engine: str, home: Path) -> Profile:
+        return make_profile(
+            tmp_path,
+            primary_engine={
+                "type": engine,
+                "binary": str(tmp_path / "bin"),
+                "model": "m",
+                "home_dir": str(home),
+            },
+        )
+
+    def test_홈을_안_가르면_점검_대상이_아니다(self, tmp_path: Path) -> None:
+        결과 = EngineHomeCredentialCheck().run(PreflightContext(make_profile(tmp_path)))
+        assert 결과.ok
+
+    def test_codex_홈에_auth_json_이_없으면_막는다(self, tmp_path: Path) -> None:
+        홈 = tmp_path / "codex-home"
+        홈.mkdir()
+        결과 = EngineHomeCredentialCheck().run(
+            PreflightContext(self._프로필(tmp_path, "codex", 홈))
+        )
+        assert not 결과.ok
+        assert 결과.fatal
+        assert "auth.json" in 결과.detail
+
+    def test_codex_홈에_auth_json_이_있으면_통과한다(self, tmp_path: Path) -> None:
+        홈 = tmp_path / "codex-home"
+        홈.mkdir()
+        자격 = 홈 / "auth.json"
+        자격.write_text("{}", encoding="utf-8")
+        자격.chmod(0o600)
+        결과 = EngineHomeCredentialCheck().run(
+            PreflightContext(self._프로필(tmp_path, "codex", 홈))
+        )
+        assert 결과.ok
+
+    def test_다른_사용자가_읽을_수_있으면_막는다(self, tmp_path: Path) -> None:
+        홈 = tmp_path / "codex-home"
+        홈.mkdir()
+        자격 = 홈 / "auth.json"
+        자격.write_text("{}", encoding="utf-8")
+        자격.chmod(0o604)
+        결과 = EngineHomeCredentialCheck().run(
+            PreflightContext(self._프로필(tmp_path, "codex", 홈))
+        )
+        assert not 결과.ok
+        assert "권한" in 결과.detail
+
+    def test_제미나이는_다른_파일을_본다(self, tmp_path: Path) -> None:
+        홈 = tmp_path / "gemini-home"
+        홈.mkdir()
+        결과 = EngineHomeCredentialCheck().run(
+            PreflightContext(self._프로필(tmp_path, "gemini", 홈))
+        )
+        assert not 결과.ok
+        assert "antigravity-oauth-token" in 결과.detail
+
+    def test_소유자가_못_읽는_파일도_막는다(self, tmp_path: Path) -> None:
+        """000 과 100 은 group/other 비트가 없어 권한 검사를 빠져나간다."""
+        홈 = tmp_path / "codex-home"
+        홈.mkdir()
+        자격 = 홈 / "auth.json"
+        자격.write_text("{}", encoding="utf-8")
+        for 권한 in (0o000, 0o100):
+            자격.chmod(권한)
+            결과 = EngineHomeCredentialCheck().run(
+                PreflightContext(self._프로필(tmp_path, "codex", 홈))
+            )
+            assert not 결과.ok, oct(권한)
+            assert "읽을 수 없다" in 결과.detail
+        자격.chmod(0o600)
+
+    def test_클로드는_홈을_가르는_것_자체를_지원하지_않는다(self, tmp_path: Path) -> None:
+        """그래서 자격 선언이 비어 있다. 키체인과 CLAUDE_CODE_OAUTH_TOKEN 을
+        쓰므로 홈에 둘 파일이 없다 (코덱스 리뷰).
+        """
+        assert ClaudeEnvironmentPolicy.CREDENTIAL_FILES == ()
+        with pytest.raises(ConfigError):
+            ClaudeEnvironmentPolicy(profile_name="example", home_dir=tmp_path)
+
+    def test_홈을_못_가르는_엔진에_홈을_주면_막는다(self, tmp_path: Path) -> None:
+        """자격 선언이 비었다고 통과시키면 preflight 는 기동 가능이라 하고
+        첫 요청에서 실패한다 (코덱스 리뷰).
+        """
+        홈 = tmp_path / "claude-home"
+        홈.mkdir()
+        결과 = EngineHomeCredentialCheck().run(
+            PreflightContext(self._프로필(tmp_path, "claude", 홈))
+        )
+        assert not 결과.ok
+        assert "봇별 홈" in 결과.detail
+
+    def test_안내에_복사할_원본_경로가_들어간다(self, tmp_path: Path) -> None:
+        홈 = tmp_path / "codex-home"
+        홈.mkdir()
+        결과 = EngineHomeCredentialCheck().run(
+            PreflightContext(self._프로필(tmp_path, "codex", 홈))
+        )
+        assert "~/.codex/auth.json" in 결과.detail
+
+    def test_2차_엔진의_홈도_본다(self, tmp_path: Path) -> None:
+        홈 = tmp_path / "codex-home"
+        홈.mkdir()
+        프로필 = make_profile(
+            tmp_path,
+            fallback_engine={
+                "type": "codex",
+                "binary": str(tmp_path / "bin"),
+                "model": "m",
+                "home_dir": str(홈),
+            },
+        )
+        결과 = EngineHomeCredentialCheck().run(PreflightContext(프로필))
+        assert not 결과.ok
+        assert "2차" in 결과.detail
+
+    def test_모르는_엔진은_점검을_건너뛴다(self, tmp_path: Path) -> None:
+        결과 = EngineHomeCredentialCheck().run(
+            PreflightContext(self._프로필(tmp_path, "없는엔진", tmp_path / "홈"))
+        )
+        assert 결과.ok
