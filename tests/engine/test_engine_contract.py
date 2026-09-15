@@ -305,3 +305,24 @@ def test_허용_도구_목록이_명령에_반영된다(fx: EngineFixture, tmp_p
     joined = _joined(cmd)
     assert "전용도구A" in joined
     assert "전용도구B" in joined
+
+
+@pytest.mark.parametrize("fx", _fixture_params())
+def test_프롬프트가_하이픈으로_시작해도_플래그로_안_읽힌다(
+    fx: EngineFixture, tmp_path: Path
+) -> None:
+    """사용자가 "--version ..." 같은 말을 던지면 CLI 가 그것을 플래그로 읽는다.
+    codex 가 실제로 종료 코드 2 로 죽었다(2026-09-15, 실 CLI 스모크 시험).
+    엔진마다 막는 방법이 다르므로 계약은 "프롬프트 바로 앞에 -- 가 있거나
+    프롬프트가 값 자리에 있다" 로 둔다."""
+    engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
+    prompt = "--version 이라는 말은 빼고 답하라"
+    cmd = engine.build_command(_request(prompt=prompt))
+
+    # 엔진에 따라 시스템 지침을 프롬프트 앞에 붙이므로 정확히 일치하지 않는다.
+    carrier = next(i for i, arg in enumerate(cmd) if prompt in arg)
+    assert carrier > 0, "프롬프트가 명령의 첫 인자로 들어갔다"
+    assert cmd[carrier - 1] in ("--", "-p"), (
+        f"{fx.id}: 프롬프트 앞이 {cmd[carrier - 1]!r} 이다. "
+        "하이픈으로 시작하는 프롬프트가 플래그로 읽힌다"
+    )

@@ -391,6 +391,14 @@ class Test엔진성공:
         assert ("processing", "C1", "1700000001.000100") in deps["reactions"].events
         assert ("done", "C1", "1700000001.000100") in deps["reactions"].events
 
+    def test_감사_기록에_사용자와_턴_수가_담긴다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1"))
+
+        record = deps["audit"].records[0]
+        assert record["user"] == "U1"
+        assert record["turns"] == 1
+
 
 class Test엔진실패:
     def test_실패하면_ok_거짓과_사유를_돌려준다(self, tmp_path: Path) -> None:
@@ -413,6 +421,16 @@ class Test엔진실패:
 
         assert len(deps["audit"].records) == 1
         assert deps["audit"].records[0]["ok"] is False
+
+    def test_실패해도_사용자는_남고_턴_수는_모름으로_남는다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("usage_limit")], tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(user="U1"))
+
+        record = deps["audit"].records[0]
+        assert record["user"] == "U1"
+        assert record["turns"] is None
 
     def test_실패_표식을_단다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(
@@ -442,6 +460,17 @@ class Test예외처리:
 
         assert len(deps["audit"].records) == 1
         assert deps["audit"].records[0]["ok"] is False
+
+    def test_예외가_나도_사용자는_남고_턴_수는_모름이다(self, tmp_path: Path) -> None:
+        """예외가 나면 EngineResponse 자체가 없으므로 턴 수를 0이 아니라 모름으로 남긴다."""
+        pipeline, deps = build_pipeline(
+            responses=[ok_response()], composer=_Explodes(), tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(user="U1"))
+
+        record = deps["audit"].records[0]
+        assert record["user"] == "U1"
+        assert record.get("turns") is None
 
     def test_예외가_나도_실패_표식을_단다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(

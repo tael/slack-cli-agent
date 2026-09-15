@@ -13,6 +13,24 @@ from Claude/Codex:
   This engine always sends the suffix-free name plus ``--effort``.
 - There's no dedicated system-prompt flag; it's prefixed onto the prompt
   text, same spot readable_paths_note() lands for Codex.
+
+MCP servers (sca-kos.2): `agy --help` lists every top-level flag and none
+of them takes inline MCP config — the only documented path is a
+workspace-local file, <work_root>/.agents/mcp_config.json (docs/agy-실측.md
+section 4). This engine writes that file the same defensive way
+_ensure_settings_file() already does: read what's there, replace only the
+mcpServers key, write back, so it never wipes something added another way.
+Schema (mcpServers.<name>.command/args/env/cwd for stdio,
+serverUrl/headers for remote, disabled, disabledTools) is per
+antigravity.google/docs/cli/mcp. Because the server data lands in a file
+rather than argv, TestMcpInjectionIsolation can't observe it through
+build_command() and stays xfail for this engine (see that test's
+docstring).
+
+Skills (sca-kos.3): docs/agy-실측.md already established
+<work_root>/.agents/skills/<name>/ as the workspace-local convention —
+same limitation as MCP, no flag takes an arbitrary directory, so
+TestSkillDirectoryIsolation also stays xfail here.
 """
 
 from __future__ import annotations
@@ -23,6 +41,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from ..config.profile import McpServerSpec
 from .base import Engine, EngineRequest, EngineResponse, Usage, UsageLimit
 
 _VALID_EFFORTS = frozenset({"low", "medium", "high"})
@@ -32,6 +51,30 @@ _SETTINGS_CONTENT: Mapping[str, Any] = {
     "allowNonWorkspaceAccess": True,
     "permissions": {"allow": ["*"], "deny": [], "ask": []},
 }
+
+
+def _agy_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, Any]:
+    servers: dict[str, Any] = {}
+    for name, server in mcp_servers.items():
+        entry: dict[str, Any]
+        if server.is_remote:
+            entry = {"serverUrl": server.url}
+            if server.headers:
+                entry["headers"] = dict(server.headers)
+        else:
+            entry = {"command": server.command}
+            if server.args:
+                entry["args"] = list(server.args)
+            if server.env:
+                entry["env"] = dict(server.env)
+            if server.cwd:
+                entry["cwd"] = str(server.cwd)
+        if server.disabled:
+            entry["disabled"] = True
+        if server.disabled_tools:
+            entry["disabledTools"] = list(server.disabled_tools)
+        servers[name] = entry
+    return servers
 
 
 def _normalize_effort(value: str) -> str:
@@ -57,6 +100,7 @@ class GeminiEngine(Engine):
 
     def prepare(self, request: EngineRequest) -> None:
         self._ensure_settings_file(self.spec.home_dir)
+        self._ensure_mcp_config_file(request.workdir, self.profile.mcp_servers)
 
     def build_command(self, request: EngineRequest) -> list[str]:
         spec = self.spec
@@ -185,5 +229,26 @@ class GeminiEngine(Engine):
             existing = dict(loaded)
         existing.update(_SETTINGS_CONTENT)
         settings_path.write_text(
+            json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+
+    @staticmethod
+    def _ensure_mcp_config_file(workdir: Path, mcp_servers: Mapping[str, McpServerSpec]) -> None:
+        servers = _agy_mcp_servers(mcp_servers)
+        if not servers:
+            # An installed bot with no configured servers must not create
+            # this file at all — see docs/패키징-경계.md.
+            return
+        config_path = workdir / ".agents" / "mcp_config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        existing: dict[str, Any] = {}
+        try:
+            loaded = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            loaded = None
+        if isinstance(loaded, Mapping):
+            existing = dict(loaded)
+        existing["mcpServers"] = servers
+        config_path.write_text(
             json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8",
         )

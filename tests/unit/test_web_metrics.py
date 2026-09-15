@@ -46,6 +46,13 @@ def open_db(profile: Profile) -> Database:
     return db
 
 
+# Sentinel so a caller can omit user/turns entirely — distinct from passing
+# "" or None, which is what a post-sca-qi5.2 record looks like when the
+# value itself is genuinely empty/unknown. Rows from before that change
+# don't have the key at all, and tests need to represent both shapes.
+_UNSET = object()
+
+
 def insert_request(
     db: Database,
     *,
@@ -61,6 +68,8 @@ def insert_request(
     queue_wait_sec: float | None = None,
     usage: dict[str, int] | None = None,
     failure: str = "",
+    user: object = _UNSET,
+    turns: object = _UNSET,
 ) -> None:
     payload: dict[str, object] = {
         "message_ts": thread_ts,
@@ -76,6 +85,10 @@ def insert_request(
     }
     if failure:
         payload["failure"] = failure
+    if user is not _UNSET:
+        payload["user"] = user
+    if turns is not _UNSET:
+        payload["turns"] = turns
     db.connect().execute(
         "INSERT INTO audit (at, kind, channel, thread_ts, payload) VALUES (?, ?, ?, ?, ?)",
         (at, REQUEST_KIND, channel, thread_ts, json.dumps(payload, ensure_ascii=False)),
@@ -446,6 +459,70 @@ class Test사용_현황:
         assert usage["by_user"] == []
         assert usage["cost_total_usd"] is None
         assert usage["turns_median"] is None
+        assert usage["tracked_since"] == {"by_user": None, "turns_median": None}
+
+    def test_사용자_필드가_기록되면_건수로_집계된다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", user="U1")
+        insert_request(db, at=1_010.0, channel="C1", user="U1")
+        insert_request(db, at=1_020.0, channel="C1", user="U2")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        usage = collector.collect(days=7)["usage"]
+        by_user = {row["user"]: row["count"] for row in usage["by_user"]}
+        assert by_user == {"U1": 2, "U2": 1}
+        assert usage["user_count"] == 2
+        assert usage["tracked_since"]["by_user"] == metrics_module._kst(1_000.0)
+
+    def test_사용자_필드가_빈_문자열이면_집계에서_빠진다(self, tmp_path: Path) -> None:
+        """필드는 있지만 값이 비어 있는 요청(예: 식별 실패)까지 사용자로 세면 안 된다."""
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", user="")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        usage = collector.collect(days=7)["usage"]
+        assert usage["by_user"] == []
+        assert usage["user_count"] == 0
+        # 필드 자체는 기록되기 시작했으므로 계측 시작 시각은 있다.
+        assert usage["tracked_since"]["by_user"] == metrics_module._kst(1_000.0)
+
+    def test_턴_수가_기록되면_중앙값을_낸다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", turns=1)
+        insert_request(db, at=1_010.0, channel="C1", turns=3)
+        insert_request(db, at=1_020.0, channel="C1", turns=5)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        usage = collector.collect(days=7)["usage"]
+        assert usage["turns_median"] == 3
+        assert usage["tracked_since"]["turns_median"] == metrics_module._kst(1_000.0)
+
+    def test_턴_수가_모름이면_중앙값_계산에서_빠진다(self, tmp_path: Path) -> None:
+        """codex 처럼 턴 수를 안 내는 엔진의 요청은 turns 키가 null 로 남는다.
+
+        필드 자체는 기록되기 시작했으니 계측 시작 시각은 있어도, 값이 없는
+        건 0으로 세지 않고 중앙값 계산에서 제외해야 한다.
+        """
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", turns=None)
+        insert_request(db, at=1_010.0, channel="C1", turns=4)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        usage = collector.collect(days=7)["usage"]
+        assert usage["turns_median"] == 4
+        assert usage["tracked_since"]["turns_median"] == metrics_module._kst(1_000.0)
+
+    def test_필드가_기록되기_시작하면_not_applicable에서_빠진다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", user="U1", turns=2)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        result = collector.collect(days=7)
+        not_applicable = result["bot"]["not_applicable"]
+        assert "usage.by_user" not in not_applicable
+        assert "usage.turns_median" not in not_applicable
+        # 비용은 여전히 계산하지 않는다 — 단가를 코드에 못 박지 않기로 했다.
+        assert "usage.cost_total_usd" in not_applicable
 
     def test_등록되지_않은_채널을_모은다(self, tmp_path: Path) -> None:
         profile = make_profile(tmp_path)

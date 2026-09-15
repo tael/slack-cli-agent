@@ -58,6 +58,10 @@ class FakeWebClient:
         self.reaction_remove_calls: list[tuple[str, str, str]] = []
         self._raise_on_reaction_add: set[str] = set()
         self._replies_response: dict = {"messages": []}
+        self.auth_test_response: dict = {"team": "", "user": ""}
+
+    def auth_test(self) -> dict:
+        return self.auth_test_response
 
     def queue_history(self, response: dict) -> None:
         self._history_responses.append(response)
@@ -421,6 +425,92 @@ class TestSlackGatewayConnection:
         )
         gateway.start("xapp-1-token")
         assert seen == [(gateway, "xapp-1-token")]
+
+
+class TestSlackGateway연결성공로그:
+    """sca-0nr: 실패만 기록되고 성공은 조용해서, 연결됐는지 죽었는지 로그만
+    보고는 구분할 수 없었다. 소켓이 실제로 연결된 시점에 한 줄을 남긴다."""
+
+    def test_연결되면_워크스페이스와_봇과_프로필이_담긴_로그를_남긴다(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = FakeWebClient()
+        client.auth_test_response = {"team": "테스트팀", "user": "봇계정"}
+        gateway = SlackGateway(client=client, profile_name="example")
+        with caplog.at_level(logging.INFO):
+            gateway.log_connected()
+        assert any(
+            "테스트팀" in r.message and "봇계정" in r.message and "example" in r.message
+            for r in caplog.records
+        )
+
+    def test_auth_test가_실패해도_예외_없이_확인_안_됨으로_남는다(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        class BrokenClient:
+            def auth_test(self) -> dict:
+                raise RuntimeError("네트워크 장애")
+
+        gateway = SlackGateway(client=BrokenClient(), profile_name="example")
+        with caplog.at_level(logging.INFO):
+            gateway.log_connected()
+        assert any("확인 안 됨" in r.message for r in caplog.records)
+
+    def test_재연결_로그는_최초_연결과_문구가_다르다(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = FakeWebClient()
+        client.auth_test_response = {"team": "테스트팀", "user": "봇계정"}
+        gateway = SlackGateway(client=client)
+        with caplog.at_level(logging.INFO):
+            gateway.log_connected()
+            gateway.log_connected(reconnect=True)
+        messages = [r.message for r in caplog.records]
+        assert not any("재연결" in m for m in messages[:1])
+        assert any("재연결" in m for m in messages[1:])
+
+    def test_토큰이_로그에_안_남는다(self, caplog: pytest.LogCaptureFixture) -> None:
+        client = FakeWebClient()
+        client.auth_test_response = {"team": "테스트팀", "user": "봇계정"}
+        gateway = SlackGateway(client=client)
+        with caplog.at_level(logging.INFO):
+            gateway.log_connected()
+        assert not any("xoxb-" in r.message or "xapp-" in r.message for r in caplog.records)
+
+
+class Test연결_상태_전환_감지:
+    """ConnectionEdgeDetector — is_connected() 를 주기적으로 찍은 값들에서
+    "방금 연결됐다" 시점만 골라낸다. 매 주기 로그를 남기면 조용한 정상
+    상태와 소켓이 실제로 붙는 순간을 구분할 수 없다."""
+
+    def test_최초_연결에서_initial을_낸다(self) -> None:
+        from slack_cli_agent.slack.gateway import ConnectionEdgeDetector
+
+        detector = ConnectionEdgeDetector()
+        assert detector.on_poll(True) == "initial"
+
+    def test_연결된_채로_반복_확인해도_다시_안_낸다(self) -> None:
+        from slack_cli_agent.slack.gateway import ConnectionEdgeDetector
+
+        detector = ConnectionEdgeDetector()
+        assert detector.on_poll(True) == "initial"
+        assert detector.on_poll(True) is None
+        assert detector.on_poll(True) is None
+
+    def test_끊긴_뒤_다시_붙으면_reconnect를_낸다(self) -> None:
+        from slack_cli_agent.slack.gateway import ConnectionEdgeDetector
+
+        detector = ConnectionEdgeDetector()
+        assert detector.on_poll(True) == "initial"
+        assert detector.on_poll(False) is None
+        assert detector.on_poll(False) is None
+        assert detector.on_poll(True) == "reconnect"
+
+    def test_연결_전에는_아무것도_안_낸다(self) -> None:
+        from slack_cli_agent.slack.gateway import ConnectionEdgeDetector
+
+        detector = ConnectionEdgeDetector()
+        assert detector.on_poll(False) is None
 
 
 # ---------------------------------------------------------------------------

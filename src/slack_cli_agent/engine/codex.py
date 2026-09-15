@@ -10,19 +10,60 @@ Three differences from Claude:
 - Session: the Codex CLI mints its own thread_id, returned by
   session_id_from(). new_session_id() only produces a placeholder used
   until then.
+- Prompt: passed after a ``--`` separator. Without it a prompt starting
+  with a hyphen is parsed as a flag and the CLI exits with code 2
+  (observed 2026-09-15). The official reference documents ``-`` plus
+  stdin for this case but is silent on ``--``; ``--`` was confirmed to
+  work against the real CLI and is guarded by the real_cli smoke suite.
 - Paths: there's no --add-dir equivalent. readable_paths_note() builds
   a sentence appended to the system instructions instead.
+
+MCP servers (sca-kos.2): codex has no --mcp-config-style flag, but `-c`
+takes a dotted config path per `codex --help` ("Use a dotted path
+(foo.bar.baz) to override nested values"), and learn.chatgpt.com's
+config reference documents config.toml's mcp_servers.<id> keys —
+command/args/env/cwd for stdio, url for remote, disabled_tools, and
+enabled (our disabled, inverted). Each field becomes its own -c
+override, so no config.toml file needs writing for this. Skills have no
+equivalent injection point (see engine/base.py's docstring override on
+this class, TestSkillDirectoryIsolation's xfail reason in
+tests/unit/test_engine_isolation.py): codex only scans .agents/skills
+relative to CWD/repo root, or $HOME/.agents/skills — there's no flag to
+point it at an arbitrary bot-owned directory.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from ..config.profile import McpServerSpec
 from .base import Engine, EngineRequest, EngineResponse, Usage, UsageLimit
+
+
+def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec]) -> list[str]:
+    args: list[str] = []
+    for name, server in mcp_servers.items():
+        prefix = f"mcp_servers.{name}"
+        if server.disabled:
+            args += ["-c", f"{prefix}.enabled=false"]
+            continue
+        if server.is_remote:
+            args += ["-c", f"{prefix}.url={CodexEngine._toml_string(server.url)}"]
+        else:
+            args += ["-c", f"{prefix}.command={CodexEngine._toml_string(server.command)}"]
+            if server.args:
+                args += ["-c", f"{prefix}.args={json.dumps(list(server.args))}"]
+            if server.cwd:
+                args += ["-c", f"{prefix}.cwd={CodexEngine._toml_string(str(server.cwd))}"]
+        for key, value in server.env.items():
+            args += ["-c", f"{prefix}.env.{key}={CodexEngine._toml_string(value)}"]
+        if server.disabled_tools:
+            args += ["-c", f"{prefix}.disabled_tools={json.dumps(list(server.disabled_tools))}"]
+    return args
 
 
 class CodexEngine(Engine):
@@ -42,6 +83,7 @@ class CodexEngine(Engine):
             cmd += ["-m", request.model]
         if request.effort:
             cmd += ["-c", f"model_reasoning_effort={self._toml_string(request.effort)}"]
+        cmd += _codex_mcp_config_args(self.profile.mcp_servers)
         if not request.resume and request.system_prompt:
             instructions = request.system_prompt + self.readable_paths_note(request.readable_dirs)
             cmd += ["-c", f"developer_instructions={self._toml_string(instructions)}"]
@@ -49,9 +91,9 @@ class CodexEngine(Engine):
         if request.resume:
             # resume doesn't accept --sandbox or -C; achieve the same effect via config keys instead.
             cmd += ["-c", f"sandbox_mode={self._toml_string(sandbox)}",
-                   request.session_id, request.prompt]
+                   request.session_id, "--", request.prompt]
         else:
-            cmd += ["--sandbox", sandbox, "-C", str(request.workdir), request.prompt]
+            cmd += ["--sandbox", sandbox, "-C", str(request.workdir), "--", request.prompt]
         return cmd
 
     def new_session_id(self) -> str:

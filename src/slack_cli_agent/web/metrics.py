@@ -42,9 +42,19 @@ CCUSAGE_TIMEOUT_SEC = 20
 
 _NO_USER_ID = "감사 기록에 사용자 식별자가 없다"
 
+# usage.by_user / usage.turns_median were added to the audit record after it
+# already had traffic — sca-qi5.2. Rows written before that carry neither
+# field at all, so a 0 count in the window can mean "not instrumented yet"
+# as easily as "really zero". _usage_field_first_seen() tells them apart the
+# same way quality.tracked_since does for incident kinds; these two entries
+# are removed from the dict dynamically once a field's first appearance is known.
 NOT_APPLICABLE_REASONS: dict[str, str] = {
     "usage.by_user": _NO_USER_ID,
-    "usage.cost_total_usd": "감사 기록에 비용 필드가 없다",
+    # Unit price differs by model and changes over time — computing a total
+    # here would bake in a stale rate with no way to tell when it applied.
+    # Token counts (usage.tokens) are recorded instead; deriving cost from
+    # those is left to a reporting layer that can date its price table.
+    "usage.cost_total_usd": "감사 기록에 비용 필드가 없다(단가는 모델·시점마다 달라 토큰 수만 남긴다)",
     "usage.turns_median": "감사 기록에 턴 수가 없다",
     "usage.question_len_median": "감사 기록에 질문 원문이 없다",
     "usage.answer_len_median": "감사 기록에 답변 원문이 없다",
@@ -112,6 +122,7 @@ class MetricsCollector:
         snapshot = self._read_snapshot(paths.state_snapshot, now)
         requests, incident_counts = self._read_requests(db, cutoff)
         first_seen = self._kind_first_seen_map(db)
+        field_first_seen = self._usage_field_first_seen(db)
         reviews = self._read_reviews(db)
         sessions = self._read_sessions(db)
         queued_by_channel = self._read_queued_by_channel(db)
@@ -122,7 +133,7 @@ class MetricsCollector:
         return {
             "generated_at": _kst(now),
             "window_days": days,
-            "bot": self._bot_fields(),
+            "bot": self._bot_fields(field_first_seen),
             "bots": [self._bot_row(snapshot)],
             "snapshot": snapshot,
             "last_answer_kst": latest or None,
@@ -130,7 +141,7 @@ class MetricsCollector:
             "responsiveness": self._responsiveness(requests),
             "reliability": self._reliability(requests, incident_counts),
             "quality": self._quality(reviews, requests, incident_counts, first_seen),
-            "usage": self._usage(requests, channels),
+            "usage": self._usage(requests, channels, field_first_seen),
             "followup": self._followup(requests),
             "tools": {"available": False, "reason": NOT_APPLICABLE_REASONS["tools"]},
             "queue_wait": self._queue_wait(requests),
@@ -214,6 +225,37 @@ class MetricsCollector:
                 result[kind] = value
         return result
 
+    def _usage_field_first_seen(self, db: Database) -> dict[str, float]:
+        """Earliest `at` of a REQUEST row whose payload carries the `user` or
+        `turns` key at all (regardless of value), unbounded by the window.
+
+        These two fields were added to the audit record after request
+        traffic already existed (sca-qi5.2), so a row can be missing the
+        key entirely rather than carrying an empty/None value — presence of
+        the key, not truthiness of the value, marks when instrumentation
+        started. Without this, a window that predates the change would read
+        as "0 사용자" instead of "collection hadn't started yet".
+        """
+        rows = db.connect().execute(
+            "SELECT at, payload FROM audit WHERE kind = ? ORDER BY id", (REQUEST_KIND,)
+        ).fetchall()
+        result: dict[str, float] = {}
+        for row in rows:
+            if "by_user" in result and "turns_median" in result:
+                break
+            try:
+                payload = json.loads(row["payload"])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            at = float(row["at"])
+            if "user" in payload and "by_user" not in result:
+                result["by_user"] = at
+            if "turns" in payload and "turns_median" not in result:
+                result["turns_median"] = at
+        return result
+
     def _read_reviews(self, db: Database) -> list[dict[str, Any]]:
         rows = db.connect().execute(
             "SELECT kind, channel, target_ts, at FROM reviews ORDER BY at"
@@ -244,9 +286,13 @@ class MetricsCollector:
 
     # --- 지표 계산 -------------------------------------------------------
 
-    def _bot_fields(self) -> dict[str, object]:
+    def _bot_fields(self, field_first_seen: Mapping[str, float]) -> dict[str, object]:
         engine = self._profile.primary_engine
         not_applicable = dict(NOT_APPLICABLE_REASONS)
+        if "by_user" in field_first_seen:
+            not_applicable.pop("usage.by_user", None)
+        if "turns_median" in field_first_seen:
+            not_applicable.pop("usage.turns_median", None)
         if engine.type == "codex":
             not_applicable["usage_block"] = CODEX_USAGE_BLOCK_REASON
         return {
@@ -398,7 +444,10 @@ class MetricsCollector:
         }
 
     def _usage(
-        self, requests: Sequence[Mapping[str, Any]], channels: Mapping[str, ChannelConfig],
+        self,
+        requests: Sequence[Mapping[str, Any]],
+        channels: Mapping[str, ChannelConfig],
+        field_first_seen: Mapping[str, float],
     ) -> dict[str, object]:
         total = len(requests)
         by_channel: collections.Counter[str] = collections.Counter(
@@ -406,6 +455,18 @@ class MetricsCollector:
         )
         by_model = collections.Counter(str(r["model"]) for r in requests if r.get("model"))
         by_effort = collections.Counter(str(r["effort"]) for r in requests if r.get("effort"))
+
+        by_user_counter: collections.Counter[str] = collections.Counter(
+            str(r["user"]) for r in requests if r.get("user")
+        )
+        by_user = [
+            {"user": user, "count": count, "pct": _pct(count, total)}
+            for user, count in by_user_counter.most_common()
+        ]
+        user_tracked_since = "by_user" in field_first_seen
+
+        turns_values = sorted(int(r["turns"]) for r in requests if isinstance(r.get("turns"), int))
+        turns_tracked_since = "turns_median" in field_first_seen
 
         tokens: collections.Counter[str] = collections.Counter()
         seen = 0
@@ -439,19 +500,26 @@ class MetricsCollector:
             "unlisted_channels": [
                 c for c in by_channel if c not in channels and not is_direct_message_channel(c)
             ],
-            "by_user": [],
-            "user_count": None,
+            "by_user": by_user if user_tracked_since else [],
+            "user_count": len(by_user_counter) if user_tracked_since else None,
             "by_model": [{"model": m, "count": n} for m, n in by_model.most_common()],
             "by_effort": [{"effort": e, "count": n} for e, n in by_effort.most_common()],
             "cost_total_usd": None,
             "cost_median_usd": None,
             "cost_by_day": [],
             "cost_by_channel": [],
-            "turns_median": None,
+            "turns_median": _quantile(turns_values, 0.5) if turns_tracked_since else None,
             "question_len_median": None,
             "answer_len_median": None,
             "tokens": dict(tokens) if seen else None,
             "tokens_sample": seen,
+            # None means this field has never been recorded in this store —
+            # a 0 count above can't otherwise be told apart from "not
+            # instrumented in this window yet". Per sca-qi5.2.
+            "tracked_since": {
+                "by_user": _kst(field_first_seen["by_user"]) if user_tracked_since else None,
+                "turns_median": _kst(field_first_seen["turns_median"]) if turns_tracked_since else None,
+            },
         }
 
     def _followup(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, object]:
