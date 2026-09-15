@@ -1,4 +1,4 @@
-"""기동 직후 되짚기 시험."""
+"""기동 직후 캐치업 시험."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ class _Sweeper:
         self.calls += 1
 
 
-def test_첫_호출에_되짚는다() -> None:
+def test_첫_호출에_캐치업한다() -> None:
     sweep = _Sweeper()
     StartupCatchup(sweep).tick()
     assert sweep.calls == 1
@@ -36,7 +36,7 @@ def test_횟수를_정할_수_있다() -> None:
     assert sweep.calls == 3
 
 
-def test_되짚기가_실패해도_횟수를_쓴다() -> None:
+def test_캐치업이_실패해도_횟수를_쓴다() -> None:
     """실패를 무한 재시도로 두면 같은 조회가 끝없이 나간다. 재시도는 catchup_retry 몫이다."""
     calls = []
 

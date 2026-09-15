@@ -43,7 +43,7 @@ class TestRequestContext:
     def test_중복_판정_키는_채널과_메시지_ts_다(self) -> None:
         assert ctx(channel="C1", ts="1.1").key == ("C1", "1.1")
 
-    def test_되짚기_표시는_원본을_바꾸지_않는다(self) -> None:
+    def test_캐치업_표시는_원본을_바꾸지_않는다(self) -> None:
         original = ctx()
         marked = original.marked_late()
         assert marked.late is True

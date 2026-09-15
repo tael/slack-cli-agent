@@ -102,18 +102,18 @@ class Test세션_유지_기간:
         assert SETTINGS.channel_session_ttl_days == 7
 
 
-class Test되짚기_창_상수:
+class Test캐치업_창_상수:
     """원본 bot.py:859, 861, 909, 936 과 같아야 한다."""
 
-    def test_되짚기_기본_창이_7200초다(self) -> None:
+    def test_캐치업_기본_창이_7200초다(self) -> None:
         # 원본 bot.py:859 CATCHUP_WINDOW_SEC = 7200
         assert SETTINGS.catchup_window_sec == 7200
 
-    def test_되짚기_최대_창이_86400초다(self) -> None:
+    def test_캐치업_최대_창이_86400초다(self) -> None:
         # 원본 bot.py:861 CATCHUP_MAX_WINDOW_SEC = 86400
         assert SETTINGS.catchup_max_window_sec == 86400
 
-    def test_스레드_되짚기_창이_7일이다(self) -> None:
+    def test_스레드_캐치업_창이_7일이다(self) -> None:
         # 원본 bot.py:909 CATCHUP_THREAD_LOOKBACK_SEC = 7 * 86400
         assert SETTINGS.catchup_thread_lookback_sec == 7 * 86400
 
@@ -359,7 +359,7 @@ class Test분할_마커와_상수:
         assert BlockBuilder.CONTEXT_MAX_CHARS == 120
 
 
-class Test되짚기_재시도_상수:
+class Test캐치업_재시도_상수:
     """원본 bot.py:957, 959, 900, 960 과 같아야 한다."""
 
     def test_재시도_대기_간격이_같다(self) -> None:
@@ -378,7 +378,7 @@ class Test되짚기_재시도_상수:
         """
         assert CATCHUP_MAX_THREADS_PER_CHANNEL == 60
 
-    def test_완료_표식_집합이_되짚기_모듈에서도_같다(self) -> None:
+    def test_완료_표식_집합이_캐치업_모듈에서도_같다(self) -> None:
         assert DONE_EMOJI == frozenset({"white_check_mark", "zipper_mouth_face"})
 
 

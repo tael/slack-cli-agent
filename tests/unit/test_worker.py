@@ -1,7 +1,7 @@
 """큐 소비 워커.
 
 Worker 는 JobQueue 와 RequestHandler 를 잇는다. 처리기 자체는 대역으로
-세우고, 이 시험은 워커가 큐 상태 전이·리액션 표식·되짚기 중복 제거를
+세우고, 이 시험은 워커가 큐 상태 전이·리액션 표식·캐치업 중복 제거를
 정확히 하는지만 본다.
 """
 
@@ -369,8 +369,8 @@ class Test대표건이_걸러져도_묻힌_건은_따라간다:
     def test_이미_대기중인_대표건에_묻힌_건도_같은_표식을_받는다(self, database) -> None:
         """대표건을 거르는 것과 묻힌 건을 버리는 것은 다르다.
 
-        접수 경로로 이미 큐에 들어간 요청이 되짚기에도 잡히면 대표건은
-        걸러진다. 그때 묻힌 건을 그냥 버리면 표식이 안 달려, 다음 되짚기가
+        접수 경로로 이미 큐에 들어간 요청이 캐치업에도 잡히면 대표건은
+        걸러진다. 그때 묻힌 건을 그냥 버리면 표식이 안 달려, 다음 캐치업이
         그것을 다시 대표건으로 집는다 — 이미 답한 것에 또 답하게 된다.
         """
         handler = FakeHandler(outcome=HandleOutcome(ok=True))
@@ -476,10 +476,10 @@ class Test빈큐대기:
         assert queue.claim_next("other") is None
 
 
-class Test되짚기가_실패건을_되살린다:
-    """실패로 끝난 건을 되짚기가 다시 등록하는가.
+class Test캐치업이_실패건을_되살린다:
+    """실패로 끝난 건을 캐치업이 다시 등록하는가.
 
-    실패한 행이 `(channel, message_ts)` 를 계속 차지하면, 되짚기가 미응답
+    실패한 행이 `(channel, message_ts)` 를 계속 차지하면, 캐치업이 미응답
     멘션을 찾아내도 등록이 조용히 무시된다. 그 요청은 답을 못 받은 채로
     영영 남는다.
     """
@@ -499,7 +499,7 @@ class Test되짚기가_실패건을_되살린다:
         assert [j.context.ts for j in queue.pending()] == ["1.1"]
 
     def test_시도상한을_넘긴건은_되살리지_않는다(self, database) -> None:
-        """계속 실패하는 요청을 되짚기가 매번 되살리면 끝나지 않는다."""
+        """계속 실패하는 요청을 캐치업이 매번 되살리면 끝나지 않는다."""
         settings = RuntimeSettings(heartbeat_interval_sec=0.01, job_max_attempts=1)
         worker, queue, _client = make_worker(database=database, settings=settings)
         queue.enqueue(ctx("1.1", "T1"))
@@ -526,7 +526,7 @@ class Test되짚기가_실패건을_되살린다:
         assert worker.catch_up(["C1"]).missed == []
 
 
-class Test마치지못한되짚기를다시본다:
+class Test마치지못한캐치업을다시본다:
     """슬랙이 채널 기록을 빈 목록으로 주면 그 구간의 요청이 안 잡힌다.
 
     한 번 실패하고 끝내면 그 요청들은 어느 경로에서도 처리되지 않는다.
@@ -568,7 +568,7 @@ class Test마치지못한되짚기를다시본다:
         assert worker.retry_catchup() == [막힌것]
 
 
-class Test되짚기창을받는다:
+class Test캐치업창을받는다:
     """끊겼던 시간이 기본 창보다 길면 그만큼 넓게 봐야 그 구간이 잡힌다."""
 
     def test_창을_주면_그대로_쓴다(self, database) -> None:

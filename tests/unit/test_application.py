@@ -219,7 +219,7 @@ class TestWiring:
         """InlineTaskSpawner 가 들어가면 점검이 소켓 처리기를 막는다."""
         assert isinstance(app.ingress()._spawn, ThreadTaskSpawner)
 
-    def test_워커_서비스에_기동_되짚기가_있다(self, app: Application) -> None:
+    def test_워커_서비스에_기동_캐치업이_있다(self, app: Application) -> None:
         """재기동 중에 온 멘션은 이벤트도 장애 기록도 안 남는다. 기동 때 한 번 훑지
         않으면 그 요청은 아무 절차로도 안 잡힌다."""
         group = app.worker_services(app.worker())
@@ -751,7 +751,7 @@ class Test자기메시지판정:
     """이 봇의 말과 다른 봇의 말을 가르는 판정.
 
     같은 채널에 다른 슬랙 봇이 함께 답한다. `bot_id` 가 있다는 것만으로 이
-    봇의 말로 보면, 다른 봇의 답이 이 봇의 답으로 세어져 되짚기가 실제
+    봇의 말로 보면, 다른 봇의 답이 이 봇의 답으로 세어져 캐치업이 실제
     미응답 멘션을 복구 대상에서 뺀다. 원본 `bot.py` 의 `is_self()` 가 같은
     사고로 고쳐진 부분이다.
     """
@@ -793,10 +793,10 @@ class Test자기메시지판정:
 
         원본 `bot.py` 는 이 경우 `bool(msg.get("bot_id"))` 로 돌아가는데, 그것이
         바로 2026-09-02 에 사고를 낸 예전 방식이다. 조회가 한 번 실패한 직후
-        되짚기가 돌면 같은 오판이 그대로 재현된다.
+        캐치업이 돌면 같은 오판이 그대로 재현된다.
 
         오판의 두 방향 중 방어가 있는 쪽으로 기운다. 이 봇의 답을 남의 것으로
-        보면 되짚기가 재등록을 시도하지만 jobs 표의 `(channel, message_ts)`
+        보면 캐치업이 재등록을 시도하지만 jobs 표의 `(channel, message_ts)`
         유일 제약이 그 중복을 막는다. 반대 방향은 막는 것이 없어 미응답 멘션이
         복구 대상에서 빠진 채 그대로 유실된다.
         """
@@ -966,7 +966,7 @@ class Test끝난작업정리연결:
     """끝난 작업을 지우는 경로가 있는가.
 
     `purge_finished()` 는 있지만 부르는 곳이 없으면 jobs 표가 계속 커진다.
-    지우는 기준 시각은 되짚기 창보다 커야 한다 — 그보다 짧게 잡으면 되짚기가
+    지우는 기준 시각은 캐치업 창보다 커야 한다 — 그보다 짧게 잡으면 캐치업이
     이미 답한 메시지를 미응답으로 보고 다시 등록해 같은 답이 두 번 나간다.
     """
 
@@ -998,8 +998,8 @@ class Test끝난작업정리연결:
         assert queue.counts() != {}
         application.close()
 
-    def test_보관기간은_되짚기_최대창보다_길다(self, app: Application) -> None:
-        """짧으면 이미 답한 메시지를 되짚기가 미응답으로 보고 다시 등록한다."""
+    def test_보관기간은_캐치업_최대창보다_길다(self, app: Application) -> None:
+        """짧으면 이미 답한 메시지를 캐치업이 미응답으로 보고 다시 등록한다."""
         assert app.settings.job_retention_sec > app.settings.catchup_max_window_sec
         app.close()
 
