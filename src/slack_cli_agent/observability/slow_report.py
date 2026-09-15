@@ -189,6 +189,16 @@ class ElapsedDiagnostician:
 
 @dataclass(frozen=True)
 class SlowRequestMeta:
+    """Everything the slow-request report is allowed to carry.
+
+    This goes to the troubleshooting channel, which is not the channel the
+    request came from, so nothing here may hold engine output or file contents:
+    stdout carries the engine's reply body, which can quote the originating
+    conversation, a file it read, or a linked thread (sca-r25). Keeping raw out
+    of the type rather than filtering at the formatter means a field added later
+    can't leak by default.
+    """
+
     elapsed_wall: float
     mono_elapsed: float | None
     started: float | None  # this request's start (since_ts); falls back to the whole session if unset
@@ -205,18 +215,6 @@ class SlowRequestMeta:
     usage: Usage | None = None
     #: Engine that actually answered. Empty means the profile's primary.
     engine: str = ""
-    stdout_tail: str | None = None
-    stderr_tail: str | None = None
-    """Tail of stdout/stderr from an abnormal engine exit, via tail_output(). None on
-    normal exit, in which case the report omits that block."""
-
-
-def tail_output(buf: str | bytes | None, limit: int = 800) -> str:
-    """Keep only the last `limit` characters of engine output; empty string if there's none."""
-    if not buf:
-        return ""
-    text = buf.decode("utf-8", "replace") if isinstance(buf, bytes) else buf
-    return text.strip()[-limit:]
 
 
 def _fmt_tokens(count: int) -> str:
@@ -381,9 +379,7 @@ class SlowReportFormatter:
 
     def _format_detail(self, meta: SlowRequestMeta, breakdown: TimeBreakdown | None) -> str:
         if breakdown is None:
-            lines = ["*시간 분해*", "", "계산하지 못했습니다. 세션 기록이 없습니다."]
-            lines += self._tail_lines(meta)
-            return "\n".join(lines)
+            return "*시간 분해*\n\n계산하지 못했습니다. 세션 기록이 없습니다."
 
         total_span = breakdown.total_span
         tool_pct = 100 * breakdown.tool_sec / total_span
@@ -476,17 +472,7 @@ class SlowReportFormatter:
         else:
             lines.append("- 특정 구간에 시간이 몰리지 않고 고르게 분산돼 있습니다.")
 
-        lines += self._tail_lines(meta)
-
         return "\n".join(lines)
-
-    @staticmethod
-    def _tail_lines(meta: SlowRequestMeta) -> list[str]:
-        lines: list[str] = []
-        for label, tail in (("표준 오류", meta.stderr_tail), ("표준 출력", meta.stdout_tail)):
-            if tail:
-                lines += ["", f"*{label} 끝부분*", "```", tail[-600:], "```"]
-        return lines
 
     @staticmethod
     def _model_effort_cell(meta: SlowRequestMeta) -> str:
@@ -572,5 +558,4 @@ __all__ = [
     "TranscriptReaderResolver",
     "UsageRowBuilder",
     "detect_retries",
-    "tail_output",
 ]
