@@ -12,10 +12,11 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from slack_cli_agent.core.result import OutcomeKind
 from slack_cli_agent.engine.base import Engine, EngineRequest, EngineResponse
 from slack_cli_agent.engine.runner import DirectInvoker, EngineRunner
 from slack_cli_agent.learning.analyzer import ProposalAnalyzer, ProposalBuilder
+from slack_cli_agent.learning.progress import FailureKind
+from slack_cli_agent.learning.proposal import LearningProposal
 
 
 class FakeEngine(Engine):
@@ -23,11 +24,12 @@ class FakeEngine(Engine):
 
     name = "fake"
 
-    def __init__(self) -> None:
+    def __init__(self, failure_reason: str = "nonzero_exit") -> None:
         # Engine.__init__ 은 profile/settings 를 요구하지만 이 테스트는 안 쓴다.
         self.profile = None
         self.settings = None
         self.built_requests: list[EngineRequest] = []
+        self._failure_reason = failure_reason
 
     def build_command(self, request: EngineRequest) -> list[str]:
         self.built_requests.append(request)
@@ -37,7 +39,7 @@ class FakeEngine(Engine):
         if returncode != 0:
             return EngineResponse(
                 ok=False, body="실패", session_id=None, model_actual=None,
-                elapsed=0.0, turns=None, usage=None, raw={}, failure_reason="nonzero_exit",
+                elapsed=0.0, turns=None, usage=None, raw={}, failure_reason=self._failure_reason,
             )
         payload = json.loads(stdout)
         return EngineResponse(
@@ -86,8 +88,8 @@ class TestProposalAnalyzer:
             DirectInvoker(runner, engine), model="m", effort="low", workdir=tmp_path, bot_name="봇",
         )
         outcome = analyzer.analyze_channel("2026-09-14", "공지", "기록 본문", [])
-        assert outcome.is_found
-        result = outcome.value()
+        assert outcome.ok
+        result = outcome.result
         assert result.channel_facts == ("9월 회의는 매주 화요일이다",)
         assert result.writing_style == ("문장을 짧게 써라",)
 
@@ -103,23 +105,57 @@ class TestProposalAnalyzer:
         assert "봇" in request.system_prompt
         assert "기록 본문" in request.prompt
 
-    def test_엔진_실행_실패는_판정_불가다(self, tmp_path: Path) -> None:
+    def test_엔진_실행_실패는_실행_실패로_갈린다(self, tmp_path: Path) -> None:
         engine = FakeEngine()
         runner = make_runner("실패", returncode=1)
         analyzer = ProposalAnalyzer(
             DirectInvoker(runner, engine), model="m", effort="low", workdir=tmp_path, bot_name="봇",
         )
-        outcome = analyzer.analyze_channel("2026-09-14", "공지", "기록", [])
-        assert outcome.kind is OutcomeKind.UNKNOWN
+        분석 = analyzer.analyze_channel("2026-09-14", "공지", "기록", [])
+        assert 분석.ok is False
+        assert 분석.failure is not None
+        assert 분석.failure.kind is FailureKind.ENGINE_FAILED
+        assert 분석.failure.channel == "공지"
 
-    def test_json이_아닌_응답은_판정_불가다(self, tmp_path: Path) -> None:
+    def test_한도_소진은_그_종류를_잃지_않는다(self, tmp_path: Path) -> None:
+        """엔진 계층이 이미 구조화해 둔 값이다. 문자열로 평탄화하면 배치가
+        승인만 하면 풀리는 건과 그냥 실패를 구분하지 못한다(sca-b4o).
+        """
+        engine = FakeEngine(failure_reason="usage_limit")
+        runner = make_runner("한도", returncode=1)
+        analyzer = ProposalAnalyzer(
+            DirectInvoker(runner, engine), model="m", effort="low", workdir=tmp_path, bot_name="봇",
+        )
+        분석 = analyzer.analyze_channel("2026-09-14", "공지", "기록", [])
+        assert 분석.failure is not None
+        assert 분석.failure.kind is FailureKind.USAGE_LIMIT
+
+    def test_json이_아닌_응답은_읽기_실패로_갈린다(self, tmp_path: Path) -> None:
         engine = FakeEngine()
         runner = make_runner(json.dumps({"result": "그냥 문장일 뿐이다"}))
         analyzer = ProposalAnalyzer(
             DirectInvoker(runner, engine), model="m", effort="low", workdir=tmp_path, bot_name="봇",
         )
-        outcome = analyzer.analyze_channel("2026-09-14", "공지", "기록", [])
-        assert outcome.kind is OutcomeKind.UNKNOWN
+        분석 = analyzer.analyze_channel("2026-09-14", "공지", "기록", [])
+        assert 분석.failure is not None
+        assert 분석.failure.kind is FailureKind.DECODE_FAILED
+
+
+class 채널별분석기:
+    """지정한 채널만 성공하고 나머지는 실패하는 대역."""
+
+    def __init__(self, 성공: dict[str, str]) -> None:
+        self._성공 = 성공
+
+    def analyze_channel(self, day, channel_name, archive_text, reactions):
+        from slack_cli_agent.learning.analyzer import ChannelAnalysis
+        from slack_cli_agent.learning.decoder import ChannelAnalysisResult
+        from slack_cli_agent.learning.progress import ChannelFailure, FailureKind
+
+        if channel_name in self._성공:
+            return ChannelAnalysis.succeeded(ChannelAnalysisResult(channel_facts=("사실 A",)))
+        return ChannelAnalysis.failed(
+            ChannelFailure(channel=channel_name, kind=FailureKind.ENGINE_FAILED, detail="사유"))
 
 
 class TestProposalBuilder:
@@ -130,21 +166,26 @@ class TestProposalBuilder:
             DirectInvoker(runner, engine), model="m", effort="low", workdir=tmp_path, bot_name="봇",
         )
         builder = ProposalBuilder(analyzer)
-        proposal = builder.build("2026-09-14", {"공지": "기록1", "잡담": "기록2"})
+        결과 = builder.build("2026-09-14", {"공지": "기록1", "잡담": "기록2"})
+        proposal = LearningProposal.from_results("2026-09-14", 결과.results)
         assert proposal.day == "2026-09-14"
         assert proposal.channel_knowledge["공지"] == ("사실 A",)
         assert proposal.channel_knowledge["잡담"] == ("사실 A",)
 
-    def test_분석_실패한_채널은_note에_사유를_남기고_계속한다(self, tmp_path: Path) -> None:
-        engine = FakeEngine()
-        runner = make_runner("실패", returncode=1)
-        analyzer = ProposalAnalyzer(
-            DirectInvoker(runner, engine), model="m", effort="low", workdir=tmp_path, bot_name="봇",
-        )
-        builder = ProposalBuilder(analyzer)
-        proposal = builder.build("2026-09-14", {"공지": "기록1"})
-        assert proposal.channel_knowledge == {}
-        assert "공지" in proposal.note
+    def test_성공한_채널과_실패한_채널이_갈려서_나온다(self, tmp_path: Path) -> None:
+        """실패를 note 문자열로 합치면 배치가 그날을 완료로 찍어도 되는지를
+        판단할 근거가 사라진다(sca-b4o).
+        """
+        analyzer = 채널별분석기({"공지": "기록1"})
+        결과 = ProposalBuilder(analyzer).build("2026-09-14", {"공지": "기록1", "잡담": "기록2"})
+        assert set(결과.results) == {"공지"}
+        assert [f.channel for f in 결과.failures] == ["잡담"]
+
+    def test_운영_실패는_제안의_note에_안_섞인다(self, tmp_path: Path) -> None:
+        analyzer = 채널별분석기({})
+        결과 = ProposalBuilder(analyzer).build("2026-09-14", {"잡담": "기록2"})
+        proposal = LearningProposal.from_results("2026-09-14", 결과.results)
+        assert proposal.note == ""
 
 
 class TestAnalyzer가_디코더를_쓰는가:
@@ -163,13 +204,13 @@ class TestAnalyzer가_디코더를_쓰는가:
                           "corrections": [], "note": ""}, ensure_ascii=False)
         본문 = f"분석 결과입니다.\n\n{제안}\n\n이상입니다."
         outcome = self._분석기(본문, tmp_path).analyze_channel("2026-09-16", "공지", "기록", [])
-        assert outcome.is_found
-        assert outcome.value().writing_style == ("짧게",)
+        assert outcome.ok
+        assert outcome.result.writing_style == ("짧게",)
 
     def test_배열_자리에_문자열이_오면_판정_불가다(self, tmp_path: Path) -> None:
         본문 = '{"writing_style": "짧게 써라", "channel_facts": [], "corrections": [], "note": ""}'
         outcome = self._분석기(본문, tmp_path).analyze_channel("2026-09-16", "공지", "기록", [])
-        assert outcome.kind is OutcomeKind.UNKNOWN
+        assert outcome.failure is not None
 
 
 class Test학습도_같은_호출부품을_쓴다:
@@ -200,7 +241,7 @@ class Test학습도_같은_호출부품을_쓴다:
         )
         outcome = analyzer.analyze_channel("2026-09-16", "공지", "기록", [])
 
-        assert outcome.is_found, "응답을 못 읽으면 어느 경로로 갔는지도 못 믿는다"
+        assert outcome.ok, "응답을 못 읽으면 어느 경로로 갔는지도 못 믿는다"
         assert 받은 == [CallOrigin.BACKGROUND]
 
     def test_분석이_실행기를_직접_부르지_않는다(self) -> None:
@@ -227,6 +268,6 @@ class Test학습도_같은_호출부품을_쓴다:
         )
         outcome = analyzer.analyze_channel("2026-09-16", "공지", "기록", [])
 
-        assert outcome.is_found
+        assert outcome.ok
         assert len(secondary.built_requests) == 1
         assert primary.built_requests == []

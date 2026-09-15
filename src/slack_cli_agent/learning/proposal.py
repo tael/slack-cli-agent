@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -17,8 +18,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ..core.result import Outcome
+from .decoder import ChannelAnalysisResult
 
 _DEFAULT_STALE_AFTER = timedelta(hours=6)
+_DAY_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _str_tuple(value: object) -> tuple[str, ...]:
@@ -56,6 +59,35 @@ class LearningProposal:
             note=str(data.get("note") or ""),
         )
 
+    @classmethod
+    def from_results(
+        cls, day: str, results: Mapping[str, ChannelAnalysisResult],
+    ) -> LearningProposal:
+        """Merges per-channel results into one day's proposal.
+
+        Only reasons a successful analysis gave for finding nothing go into
+        note; operational failures are the batch's business (sca-b4o).
+        """
+        writing_style: list[str] = []
+        channel_knowledge: dict[str, tuple[str, ...]] = {}
+        corrections: list[str] = []
+        notes: list[str] = []
+        for channel_name, result in results.items():
+            writing_style += list(result.writing_style)
+            if result.channel_facts:
+                channel_knowledge[channel_name] = result.channel_facts
+            corrections += list(result.corrections)
+            has_picked = bool(result.channel_facts or result.writing_style or result.corrections)
+            if result.note and not has_picked:
+                notes.append(f"{channel_name} : {result.note}")
+        return cls(
+            day=day,
+            writing_style=tuple(writing_style),
+            channel_knowledge=channel_knowledge,
+            corrections=tuple(corrections),
+            note=" / ".join(notes),
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "writing_style": list(self.writing_style),
@@ -85,7 +117,9 @@ class ProposalStore:
     def latest(self) -> Outcome[LearningProposal]:
         if not self._dir.exists():
             return Outcome.absent()
-        files = sorted(self._dir.glob("*.json"))
+        # Only YYYY-MM-DD.json. The directory also holds per-day batch state,
+        # and a loose glob read a progress file as an empty proposal (sca-b4o).
+        files = sorted(p for p in self._dir.glob("*.json") if _DAY_PATTERN.fullmatch(p.stem))
         if not files:
             return Outcome.absent()
         path = files[-1]

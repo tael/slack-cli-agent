@@ -1167,6 +1167,26 @@ class Test폴백엔진연결:
         분석기 = app.learning_batch()._builder._analyzer
         assert 분석기._invoker is app.engine_invoker
 
+    def test_학습_일정이_미완료_날짜를_볼_수_있다(self, app: Application) -> None:
+        """안 넘기면 한도 소진으로 미완료인 날이 이틀 뒤 후보에서 사라진다."""
+        일정 = app.learning_schedule()
+        assert 일정._unsettled_days.__self__ is app._learning_progress_store()
+
+    def test_학습_일정이_대기_여부를_볼_수_있다(self, app: Application) -> None:
+        """안 넘기면 오늘이 재시도 대기 중일 때 옛 미완료 날짜가 순서를 못 받는다."""
+        일정 = app.learning_schedule()
+        assert 일정._is_waiting.__self__ is app._learning_progress_store()
+
+    def test_학습_배치가_진행_상태_저장소를_받는다(self, app: Application) -> None:
+        """부품을 만든 것과 조립이 그것을 넘기는 것은 다르다. 안 넘기면 채널별
+        재시도가 전부 안 돌고 배치는 매번 처음부터 분석한다(sca-b4o).
+        """
+        from slack_cli_agent.learning.progress import ProgressStore
+
+        진행 = app.learning_batch()._progress
+        assert isinstance(진행, ProgressStore)
+        assert 진행._dir == app._profile.paths.proposals / "progress"
+
     def test_학습_모델을_안_정하면_엔진이_고르게_비워_보낸다(self, app: Application) -> None:
         """공통 문자열을 넣으면 코덱스·제미나이 프로필에서 없는 모델명이 된다.
         비워 보내면 실행기가 그 엔진의 spec.model 로 채운다(sca-dyb.10).

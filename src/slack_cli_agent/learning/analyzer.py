@@ -9,17 +9,54 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
-from ..core.result import Outcome
 from ..engine.base import CallOrigin, EngineRequest
 from ..engine.runner import EngineInvoker
 from .decoder import ChannelAnalysisResult, ProposalDecoder
-from .proposal import LearningProposal
+from .progress import ChannelFailure, FailureKind
 
 # Re-exported: the result type moved to .decoder along with the shape checking
 # that produces it, and existing imports read it from here.
-__all__ = ["ChannelAnalysisResult", "ProposalAnalyzer", "ProposalBuilder"]
+__all__ = [
+    "BuildResult", "ChannelAnalysis", "ChannelAnalysisResult",
+    "ProposalAnalyzer", "ProposalBuilder",
+]
+
+
+@dataclass(frozen=True)
+class ChannelAnalysis:
+    """One channel's analysis: either a parsed result or a classified failure.
+
+    A plain Outcome flattened the reason to a string, which lost the engine
+    layer's already-structured usage_limit signal — and the batch needs that to
+    tell "approve the switch and it works" from "this channel just fails"
+    (sca-b4o).
+    """
+
+    result: ChannelAnalysisResult | None = None
+    failure: ChannelFailure | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.result is not None
+
+    @classmethod
+    def succeeded(cls, result: ChannelAnalysisResult) -> ChannelAnalysis:
+        return cls(result=result)
+
+    @classmethod
+    def failed(cls, failure: ChannelFailure) -> ChannelAnalysis:
+        return cls(failure=failure)
+
+
+@dataclass(frozen=True)
+class BuildResult:
+    """What one analysis round produced, per channel."""
+
+    results: Mapping[str, ChannelAnalysisResult]
+    failures: tuple[ChannelFailure, ...]
 
 _PROMPT_TEMPLATE = """아래는 슬랙봇 <<봇>>가 오늘 <<채널>> 채널에서 낸 응답과, 그 뒤에 사람이 남긴 말이다.
 
@@ -87,7 +124,7 @@ class ProposalAnalyzer:
         channel_name: str,
         archive_text: str,
         reactions: Sequence[Mapping[str, object]],
-    ) -> Outcome[ChannelAnalysisResult]:
+    ) -> ChannelAnalysis:
         system_prompt = _PROMPT_TEMPLATE.replace("<<채널>>", channel_name).replace(
             "<<봇>>", self._bot_name
         )
@@ -106,9 +143,19 @@ class ProposalAnalyzer:
         # fallback's recovery probe that an interactive request needs.
         response = self._invoker.invoke(request, CallOrigin.BACKGROUND)
         if not response.ok:
-            return Outcome.unknown(response.failure_reason or "분석 실행에 실패했다")
+            kind = (FailureKind.USAGE_LIMIT if response.failure_reason == "usage_limit"
+                    else FailureKind.ENGINE_FAILED)
+            return ChannelAnalysis.failed(ChannelFailure(
+                channel=channel_name, kind=kind,
+                detail=response.failure_reason or "분석 실행에 실패했다",
+            ))
 
-        return self._decoder.decode(response.body)
+        outcome = self._decoder.decode(response.body)
+        if not outcome.is_found:
+            return ChannelAnalysis.failed(ChannelFailure(
+                channel=channel_name, kind=FailureKind.DECODE_FAILED, detail=outcome.reason,
+            ))
+        return ChannelAnalysis.succeeded(outcome.value())
 
     def _build_body(
         self,
@@ -130,7 +177,12 @@ class ProposalAnalyzer:
 
 
 class ProposalBuilder:
-    """Merges per-channel analysis results into one day's proposal."""
+    """Runs one analysis round over the channels it is given.
+
+    Returns per-channel results rather than a merged proposal: the batch has to
+    know which channels finished, and flattening failures into the proposal's
+    note left it unable to tell a failed day from an uneventful one (sca-b4o).
+    """
 
     def __init__(self, analyzer: ProposalAnalyzer) -> None:
         self._analyzer = analyzer
@@ -140,32 +192,17 @@ class ProposalBuilder:
         day: str,
         channel_archives: Mapping[str, str],
         reactions_by_channel: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
-    ) -> LearningProposal:
+    ) -> BuildResult:
         reactions_by_channel = reactions_by_channel or {}
-        writing_style: list[str] = []
-        channel_knowledge: dict[str, tuple[str, ...]] = {}
-        corrections: list[str] = []
-        notes: list[str] = []
+        results: dict[str, ChannelAnalysisResult] = {}
+        failures: list[ChannelFailure] = []
 
         for channel_name, archive_text in channel_archives.items():
             reactions = reactions_by_channel.get(channel_name, ())
-            outcome = self._analyzer.analyze_channel(day, channel_name, archive_text, reactions)
-            if not outcome.is_found:
-                notes.append(f"{channel_name} 분석 실패 : {outcome.reason}")
-                continue
-            result = outcome.value()
-            writing_style += list(result.writing_style)
-            if result.channel_facts:
-                channel_knowledge[channel_name] = result.channel_facts
-            corrections += list(result.corrections)
-            has_picked = bool(result.channel_facts or result.writing_style or result.corrections)
-            if result.note and not has_picked:
-                notes.append(f"{channel_name} : {result.note}")
+            analysis = self._analyzer.analyze_channel(day, channel_name, archive_text, reactions)
+            if analysis.result is not None:
+                results[channel_name] = analysis.result
+            elif analysis.failure is not None:
+                failures.append(analysis.failure)
 
-        return LearningProposal(
-            day=day,
-            writing_style=tuple(writing_style),
-            channel_knowledge=channel_knowledge,
-            corrections=tuple(corrections),
-            note=" / ".join(notes),
-        )
+        return BuildResult(results=results, failures=tuple(failures))

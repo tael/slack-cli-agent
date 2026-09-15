@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from slack_cli_agent.learning.progress import ChannelFailure, FailureKind
 from slack_cli_agent.learning.proposal import LearningProposal
 from slack_cli_agent.learning.render import ProposalRenderer
 
@@ -77,3 +78,37 @@ class TestRenderSummary:
         empty = make_proposal(writing_style=(), corrections=(), channel_knowledge={}, note="")
         text = ProposalRenderer().render_summary(empty)
         assert text == "오늘은 새로 배울 게 없었어요."
+
+
+class Test배치_요약은_실패도_싣는다:
+    """항목이 하나라도 있으면 실패가 사라지던 것을 고친다(sca-b4o)."""
+
+    def _실패(self, channel: str, kind: FailureKind) -> ChannelFailure:
+        return ChannelFailure(channel=channel, kind=kind, detail="사유")
+
+    def test_항목이_있어도_실패_절이_함께_나온다(self) -> None:
+        text = ProposalRenderer().render_batch_summary(
+            make_proposal(), (self._실패("잡담", FailureKind.ENGINE_FAILED),))
+        assert "*형식 교정*" in text
+        assert "잡담" in text
+
+    def test_한도_소진은_승인하면_풀린다는_것이_드러난다(self) -> None:
+        text = ProposalRenderer().render_batch_summary(
+            make_proposal(), (self._실패("잡담", FailureKind.USAGE_LIMIT),))
+        assert "승인" in text
+
+    def test_사유_코드_이름이_그대로_안_나온다(self) -> None:
+        text = ProposalRenderer().render_batch_summary(
+            make_proposal(), (self._실패("잡담", FailureKind.ENGINE_FAILED),))
+        assert "engine_failed" not in text
+
+    def test_실패가_없으면_요약과_같다(self) -> None:
+        proposal = make_proposal()
+        assert ProposalRenderer().render_batch_summary(proposal, ()) == \
+            ProposalRenderer().render_summary(proposal)
+
+    def test_뽑은_것이_없어도_실패는_보인다(self) -> None:
+        empty = make_proposal(writing_style=(), corrections=(), channel_knowledge={}, note="")
+        text = ProposalRenderer().render_batch_summary(
+            empty, (self._실패("잡담", FailureKind.ENGINE_FAILED),))
+        assert "잡담" in text
