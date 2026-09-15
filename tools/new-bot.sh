@@ -4,15 +4,30 @@
 #
 #   tools/new-bot.sh <ascii이름> <표시이름> <엔진> <모델> [아이콘경로]
 #
+# 조직 고유값은 환경변수로 받는다. 저장소에 박아 두면 다른 사람이 이 저장소를
+# 써도 남의 소유자 ID 가 들어간 프로필이 만들어진다.
+#
+#   BOT_WORKSPACE            앱을 만들 슬랙 워크스페이스 이름
+#   BOT_OWNER_USER_ID        소유자 슬랙 사용자 ID (U 로 시작)
+#   BOT_TROUBLESHOOT_CHANNEL 문제를 알릴 채널 ID (C 로 시작)
+#
+# 매번 넣기 번거로우면 <저장소>/.new-bot.env 에 적어 둔다. 그 파일은
+# .gitignore 가 막는다.
+#
 # 예: tools/new-bot.sh rei "아야나미 레이" gemini gemini-3.8-flash ~/Jobs/tasks/bot-assets/rei-icon.png
 set -e
 NAME=$1; DISPLAY=$2; ENGINE=$3; MODEL=$4; ICON=$5
-REPO=/Users/example/Jobs/slack-cli-agent
-[ -z "$MODEL" ] && { sed -n '2,9p' "$0"; exit 2; }
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+[ -z "$MODEL" ] && { sed -n '2,20p' "$0"; exit 2; }
+
+[ -f "$REPO/.new-bot.env" ] && . "$REPO/.new-bot.env"
+for v in BOT_WORKSPACE BOT_OWNER_USER_ID BOT_TROUBLESHOOT_CHANNEL; do
+  [ -n "${!v}" ] || { echo "환경변수 $v 가 없다. 이 파일 머리말을 본다."; exit 2; }
+done
 
 case "$ENGINE" in
-  claude) BIN=/Users/example/.local/bin/claude ;;
-  codex)  BIN=/Users/example/.local/bin/codex ;;
+  claude) BIN=$HOME/.local/bin/claude ;;
+  codex)  BIN=$HOME/.local/bin/codex ;;
   gemini) BIN=/opt/homebrew/bin/agy ;;
   *) echo "모르는 엔진: $ENGINE"; exit 2 ;;
 esac
@@ -42,7 +57,7 @@ print(json.dumps({
 PY
 
 echo "== 2. 앱 생성"
-APP_ID=$("$REPO/tools/slack-app.py" create tael /tmp/$NAME-manifest.json)
+APP_ID=$("$REPO/tools/slack-app.py" create "$BOT_WORKSPACE" /tmp/$NAME-manifest.json)
 echo "  app_id=$APP_ID"
 
 echo "== 3. 상태 디렉터리"
@@ -85,16 +100,17 @@ cat > "$D/persona/PERSONA.md" <<EOF
 EOF
 
 echo "== 4. 프로필"
-python3 - "$NAME" "$DISPLAY" "$ENGINE" "$MODEL" "$BIN" "$REPO" <<'PY'
+python3 - "$NAME" "$DISPLAY" "$ENGINE" "$MODEL" "$BIN" "$REPO" \
+         "$BOT_OWNER_USER_ID" "$BOT_TROUBLESHOOT_CHANNEL" <<'PY'
 import json, sys
-name, display, engine, model, binary, repo = sys.argv[1:7]
+name, display, engine, model, binary, repo, owner, channel = sys.argv[1:9]
 data = {
   "name": name, "display_name": display,
   "primary_engine": {"type": engine, "binary": binary, "model": model,
                      "model_owner": model, "home_dir": f"~/.{name}/engine/{engine}-home"},
   "state_dir": f"~/.{name}", "work_root": f"/Users/Shared/{name}-work",
-  "launch_label": f"local.{name}", "owner_user_id": "U0EXAMPLE07",
-  "troubleshoot_channel": "C0EXAMPLE01", "plugins": [],
+  "launch_label": f"local.{name}", "owner_user_id": owner,
+  "troubleshoot_channel": channel, "plugins": [],
   "settings": {"request_timeout_sec": 900, "max_concurrent": 4,
                "base_tools": ["Read", "Grep", "Glob"],
                "owner_tools": ["Write", "Edit", "Bash", "NotebookEdit", "WebFetch", "WebSearch"]},
