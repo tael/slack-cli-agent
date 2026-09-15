@@ -84,6 +84,29 @@ class TestPreflightCommand:
         )
         assert "engine_binary" in out.getvalue()
 
+    def test_엔진_홈에_자격이_없으면_기동_불가로_나온다(self, tmp_path: Path) -> None:
+        """점검을 만든 것과 preflight 가 그것을 부르는 것은 다르다 (sca-kos.6)."""
+        profiles = tmp_path / "profiles"
+        홈 = tmp_path / "codex-home"
+        홈.mkdir()
+        write_profile(
+            profiles,
+            tmp_path / "state",
+            primary_engine={
+                "type": "codex",
+                "binary": "python3",
+                "model": "m",
+                "home_dir": str(홈),
+            },
+        )
+        out = io.StringIO()
+        code = SlackCliAgent().run(
+            ["preflight", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
+        )
+        assert code == 1
+        assert "engine_home_credentials" in out.getvalue()
+        assert "auth.json" in out.getvalue()
+
     def test_프로필을_못_찾으면_알리고_2를_돌려준다(self, tmp_path: Path) -> None:
         out = io.StringIO()
         code = SlackCliAgent().run(
