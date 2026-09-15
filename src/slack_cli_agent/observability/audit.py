@@ -96,6 +96,10 @@ class AuditLog(SqliteRepository):
         first_reaction_sec: float | None = None,
         queue_wait_sec: float | None = None,
         usage: Mapping[str, Any] | None = None,
+        user: str = "",
+        # None means the engine didn't report a turn count (e.g. Codex) —
+        # distinct from 0 turns, which is a real value.
+        turns: int | None = None,
         **extra: Any,
     ) -> None:
         self.record(
@@ -112,6 +116,8 @@ class AuditLog(SqliteRepository):
             first_reaction_sec=first_reaction_sec,
             queue_wait_sec=queue_wait_sec,
             usage=dict(usage) if usage is not None else None,
+            user=user,
+            turns=turns,
             **extra,
         )
 

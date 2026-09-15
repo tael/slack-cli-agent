@@ -11,16 +11,53 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from ..core.errors import ConfigError
+from ..core.periodic import PeriodicRunner
 
 log = logging.getLogger(__name__)
 
 Connector = Callable[["SlackGateway", str], Any]
 
+# How often the background watch checks whether the socket is actually up.
+# Not the process's own heartbeat — apps.connections.open plus the
+# websocket handshake can take a couple of seconds, so this only needs to
+# be short enough that the first "connected" log doesn't lag noticeably.
+_CONNECTION_POLL_SEC = 2.0
+
+
+class ConnectionEdgeDetector:
+    """Turns repeated `is_connected()` polls into "just became connected"
+    events, and tells the first connection apart from a reconnect.
+
+    Without this, a poll loop that logs on every `True` would log once per
+    poll interval for the entire time the socket stays up — the opposite of
+    the quiet-means-fine signal this is meant to produce.
+    """
+
+    def __init__(self) -> None:
+        self._connected = False
+        self._ever_connected = False
+
+    def on_poll(self, connected: bool) -> str | None:
+        if connected and not self._connected:
+            kind = "reconnect" if self._ever_connected else "initial"
+            self._connected = True
+            self._ever_connected = True
+            return kind
+        if not connected:
+            self._connected = False
+        return None
+
 
 class SlackGateway:
-    def __init__(self, client: Any, connector: Connector | None = None) -> None:
+    def __init__(
+        self,
+        client: Any,
+        connector: Connector | None = None,
+        profile_name: str = "",
+    ) -> None:
         self._client = client
         self._connector = connector or _socket_mode_connect
+        self._profile_name = profile_name
         self._handlers: dict[str, list[Callable[[Mapping[str, Any]], None]]] = {}
 
     @property
@@ -53,6 +90,28 @@ class SlackGateway:
             self.dispatch(event_type, event)
         except Exception:
             log.exception("이벤트 처리 실패: %s", event_type)
+
+    def log_connected(self, *, reconnect: bool = False) -> None:
+        """Logs one line for an actual Socket Mode connection, not just the
+        process having started. `auth_test` failing doesn't block the log —
+        it just leaves the workspace/bot fields as "확인 안 됨" instead of
+        losing the connection event entirely.
+        """
+        team = "확인 안 됨"
+        bot_user = "확인 안 됨"
+        try:
+            info = self._client.auth_test()
+            team = str(info.get("team") or team)
+            bot_user = str(info.get("user") or info.get("user_id") or bot_user)
+        except Exception:  # noqa: BLE001, S110 — identifying the workspace is best-effort; the connection event itself must still be logged
+            pass
+        log.info(
+            "슬랙 소켓 %s : 워크스페이스=%s 봇=%s 프로필=%s",
+            "재연결" if reconnect else "연결",
+            team,
+            bot_user,
+            self._profile_name or "확인 안 됨",
+        )
 
     def start(self, app_token: str) -> None:
         """Opens the Socket Mode connection. Blocks until it drops.
@@ -87,6 +146,19 @@ def _socket_mode_connect(gateway: SlackGateway, app_token: str) -> None:
 
     socket.socket_mode_request_listeners.append(on_request)
     socket.connect()
+
+    # connect() returns as soon as it kicks off the handshake, not once the
+    # socket is actually up — is_connected() is the real observation point.
+    # Polling (rather than a one-shot check) also catches any later
+    # reconnect after a drop, which would otherwise go unlogged.
+    detector = ConnectionEdgeDetector()
+
+    def poll_connection() -> None:
+        kind = detector.on_poll(bool(socket.is_connected()))
+        if kind is not None:
+            gateway.log_connected(reconnect=(kind == "reconnect"))
+
+    PeriodicRunner(poll_connection, _CONNECTION_POLL_SEC, name="socket_mode_watch").start()
 
     # Block here — connect() returns immediately, so without this the
     # process would exit before receiving any events.
