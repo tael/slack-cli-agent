@@ -14,6 +14,8 @@ from .command import AdminCommand, AdminContext, AdminResult
 
 class EngineApproveCommand(AdminCommand):
     name: ClassVar[str] = "engine_approve"
+    usage: ClassVar[str] = "엔진 승인"
+    description: ClassVar[str] = "한도로 바뀐 실행기로 답하는 것을 허용한다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("엔진 승인", "엔진승인", "엔진 허용")
@@ -36,6 +38,8 @@ class EngineApproveCommand(AdminCommand):
 
 class EngineDenyCommand(AdminCommand):
     name: ClassVar[str] = "engine_deny"
+    usage: ClassVar[str] = "엔진 거부"
+    description: ClassVar[str] = "바뀐 실행기로 답하지 않고 한도 안내만 낸다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("엔진 거부", "엔진거부", "엔진 취소")
