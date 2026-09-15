@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -210,6 +211,55 @@ class Test빈완료보고:
         assert 발행.게시내역[0][2] == "끝났습니다"
 
 
+class Test태그가둘다있을때:
+    """완료 태그와 진행 태그가 한 응답에 같이 왔을 때.
+
+    원본 bot.py:6788 도 완료 태그를 먼저 보고 완료로 처리한다. 판정은 원본을
+    그대로 두되, 게시 본문에 내부 태그가 남는 것은 고친다 — 그 문자열은 사람이
+    읽는 자리에 나갈 것이 아니다.
+    """
+
+    def test_두_태그가_다_지워진_본문이_올라간다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job: 응답(ok=True, body=f"{WATCH_STILL_TAG} 끝났습니다 {WATCH_DONE_TAG}"),
+            발행=발행,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        본문 = 발행.게시내역[0][2]
+        assert WATCH_DONE_TAG not in 본문
+        assert WATCH_STILL_TAG not in 본문
+        assert "끝났습니다" in 본문
+
+    def test_모순된_응답이라는_것을_기록한다(self, 큐, caplog) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        c = 체커(
+            큐=큐,
+            run_check=lambda job: 응답(ok=True, body=f"{WATCH_STILL_TAG}{WATCH_DONE_TAG}"),
+        )
+        큐.시각["값"] = 2000.0
+        with caplog.at_level(logging.WARNING):
+            c.check_once()
+        기록 = [r.getMessage() for r in caplog.records]
+        assert any("태그" in m and "모순" in m for m in 기록)
+        # 완료 우선이라는 계약. 경고만 내고 미완료로 되돌리면 감시가 영영 안 끝난다.
+        assert 큐.due(3000.0, 0.0) == []
+        assert any("작업 1" in m and "확인 0회" in m for m in 기록)
+        assert not any("배포 확인" in m for m in 기록)
+
+    def test_완료_태그만_있으면_기록이_안_남는다(self, 큐, caplog) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        c = 체커(큐=큐, run_check=lambda job: 응답(ok=True, body=f"끝 {WATCH_DONE_TAG}"))
+        큐.시각["값"] = 2000.0
+        with caplog.at_level(logging.WARNING):
+            c.check_once()
+        assert caplog.records == []
+
+
 class Test미완료처리:
     def test_아직안끝났으면게시하지않고확인횟수만갱신한다(self, 큐) -> None:
         작업_id = 큐.enqueue("C1", "111.1", "배포 확인")
@@ -250,6 +300,24 @@ class Test미완료처리:
 
         남은 = {작업.condition: 작업.checks for 작업 in 큐.due(now=99999.0, min_gap=0.0)}
         assert 남은 == {"실패할 건": 1, "정상 확인될 건": 1}
+
+
+class Test게시실패기록:
+    def test_완료_보고_발송_실패에_작업_식별자가_남는다(self, 큐, caplog) -> None:
+        """식별자가 없으면 어느 감시 건이 실패했는지 로그만으로 못 찾는다.
+        감시 조건 자체는 슬랙 대화나 파일 내용을 담을 수 있어 안 남긴다."""
+        큐.enqueue("C1", "111.1", "민감할 수 있는 감시 조건")
+        c = 체커(
+            큐=큐,
+            run_check=lambda job: 응답(ok=True, body=f"끝 {WATCH_DONE_TAG}"),
+            발행=가짜발행(실패=True),
+        )
+        큐.시각["값"] = 2000.0
+        with caplog.at_level(logging.ERROR):
+            c.check_once()
+        기록 = [r.getMessage() for r in caplog.records]
+        assert any("작업 1" in m and "C1" in m for m in 기록)
+        assert not any("민감할 수 있는 감시 조건" in m for m in 기록)
 
 
 class Test확인실패진단:
