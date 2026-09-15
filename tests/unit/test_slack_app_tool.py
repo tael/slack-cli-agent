@@ -20,7 +20,7 @@ _SPEC.loader.exec_module(slack_app)
 class Test멀티파트_본문:
     def test_필드와_파일을_담는다(self, tmp_path: Path) -> None:
         png = tmp_path / "icon.png"
-        png.write_bytes(b"\x89PNG\r\n\x1a\n" + "바이트".encode("utf-8"))
+        png.write_bytes(b"\x89PNG\r\n\x1a\n" + "바이트".encode())
 
         body, content_type = slack_app.multipart_body({"app_id": "A1"}, "file", png)
 
