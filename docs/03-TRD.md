@@ -59,7 +59,7 @@ Socket Mode 구현 위에 데코레이터 등록과 미들웨어를 얹은 래�
     save_restart_dropped    큐가 대체한다. 제거
     save_inflight_dropped   큐가 대체한다. 제거
     replay_restart_dropped  큐의 QUEUED 작업 재개가 대신한다. 제거
-    catch_up (되짚기)       유지한다. 소켓 끊김 동안 도착한 메시지는 큐로 못 막는다
+    catch_up (캐치업)       유지한다. 소켓 끊김 동안 도착한 메시지는 큐로 못 막는다
     _busy_threads·_thread_queue   큐의 스레드 배타 락이 대신한다. 제거
 
 그 외 응답 동작은 전부 원본과 같아야 한다. **기능이 1대1 로 대응되어야 shadow
@@ -261,7 +261,7 @@ Socket Mode 구현 위에 데코레이터 등록과 미들웨어를 얹은 래�
         pipeline.py              GuardPipeline
 
       reliability/
-        catchup.py               CatchupService — 되짚기
+        catchup.py               CatchupService — 캐치업
         health.py                HealthMonitor — 연결 감시와 자가 재기동
         watchjobs.py             WatchJobQueue
         dedup.py                 DeduplicationTracker — 중복 처리 방어
@@ -367,7 +367,7 @@ class RequestContext:
     text: str
     files: tuple[Mapping, ...]
     unaddressed: bool          # 멘션 없이 들어온 것
-    late: bool                 # 되짚기로 다시 집은 것
+    late: bool                 # 캐치업으로 다시 집은 것
     requeued: bool             # 대기줄에서 다시 꺼낸 것
     queued_at: float | None
     first_reaction_at: float | None
@@ -836,7 +836,7 @@ class JobQueue:
 
 ### 배경 작업
 
-되짚기·건강 감시·지켜보기 큐·사용량 확인·인명표 갱신은 Worker 프로세스가
+캐치업·건강 감시·지켜보기 큐·사용량 확인·인명표 갱신은 Worker 프로세스가
 소유한다. Ingress 는 수신만 한다.
 
 ```python
@@ -1336,7 +1336,7 @@ PRD 9절의 단계에 대응한다. 각 단계 끝에 동작하는 봇이 있어
     엣지 케이스 테스트 전부 통과
     shadow 대조 불일치 0
     그 채널에서 며칠 운영해 리액션 상태가 원본과 같게 전이되는지 확인
-    되짚기가 같은 요청을 중복 처리하지 않는지 확인
+    캐치업이 같은 요청을 중복 처리하지 않는지 확인
 
 ### 되돌리기
 

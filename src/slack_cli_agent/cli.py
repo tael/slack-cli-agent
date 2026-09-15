@@ -336,7 +336,7 @@ class WorkerCommand(ProfileAwareCommand):
             "--no-catch-up",
             dest="catch_up",
             action="store_false",
-            help="시작 시 되짚기를 건너뛴다. 기본은 되짚는다",
+            help="시작 시 캐치업을 건너뛴다. 기본은 캐치업한다",
         )
         parser.set_defaults(catch_up=True)
 

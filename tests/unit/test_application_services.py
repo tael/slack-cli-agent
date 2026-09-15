@@ -102,7 +102,7 @@ class Test묶음구성:
             "pending_report",
         }
 
-    def test_워커_묶음은_상태기록과_감시와_정리와_되짚기를_띄운다(self, app: Application) -> None:
+    def test_워커_묶음은_상태기록과_감시와_정리와_캐치업을_띄운다(self, app: Application) -> None:
         assert set(app.worker_services(app.worker()).runner_names) == {
             "state_snapshot",
             "watch_jobs",
@@ -158,8 +158,8 @@ class Test첨부정리:
         assert "attachment_cleanup" in app.ingress_services(lambda 사유: None).runner_names
 
 
-class Test되짚기재시도:
-    """마치지 못한 되짚기를 다시 보는 실행기가 실제로 도는가.
+class Test캐치업재시도:
+    """마치지 못한 캐치업을 다시 보는 실행기가 실제로 도는가.
 
     `CatchupService.retry_pending()` 은 호출처가 없으면 한 번도 실행되지 않는다.
     그러면 슬랙이 채널 기록을 빈 목록으로 준 구간의 요청은 영영 안 잡힌다.
@@ -173,7 +173,7 @@ class Test되짚기재시도:
         assert 불린다 == [True]
 
     def test_오래_막힌_채널은_소유자에게_알린다(self, app: Application, client: FakeSlackClient) -> None:
-        """알리지 않으면 되짚기가 몇 시간째 안 되는 것을 아무도 모른다."""
+        """알리지 않으면 캐치업이 몇 시간째 안 되는 것을 아무도 모른다."""
         from slack_cli_agent.reliability.catchup import RetryStatus
 
         워커 = app.worker()
@@ -222,10 +222,10 @@ class Test보내지못한보고:
         assert "pending_report" in app.worker_services(app.worker()).runner_names
 
 
-class Test복구직후되짚기:
+class Test복구직후캐치업:
     """슬랙에 닿지 않던 동안 들어온 요청은 소켓 이벤트로 다시 오지 않는다.
 
-    돌아왔을 때 되짚지 않으면 그 시간의 요청은 어느 경로에서도 처리되지 않는다.
+    돌아왔을 때 캐치업하지 않으면 그 시간의 요청은 어느 경로에서도 처리되지 않는다.
     끊겼던 시간이 기본 창보다 길면 그만큼 넓게 본다.
     """
 
@@ -237,22 +237,22 @@ class Test복구직후되짚기:
         워커 = app.worker()
         워커.retry_catchup = list  # type: ignore[method-assign]
 
-        def 되짚는다(channels: list[str], window_sec: float | None = None) -> CatchupReport:
+        def 캐치업한다(channels: list[str], window_sec: float | None = None) -> CatchupReport:
             기록.append((channels, window_sec))
             return CatchupReport(missed=[], skipped=[], unchecked_channels=[])
 
-        워커.catch_up = 되짚는다  # type: ignore[method-assign]
+        워커.catch_up = 캐치업한다  # type: ignore[method-assign]
         app._slack_reachable = lambda: 닿는다[0]  # type: ignore[method-assign]
         return 워커, 기록
 
-    def test_계속_닿으면_되짚지_않는다(self, app: Application) -> None:
+    def test_계속_닿으면_캐치업하지_않는다(self, app: Application) -> None:
         워커, 기록 = self.워커를_바꾼다(app, [True])
         러너 = app.catchup_retry_runner(워커)
         러너._task()
         러너._task()
         assert 기록 == []
 
-    def test_돌아온_회차에_되짚는다(self, app: Application) -> None:
+    def test_돌아온_회차에_캐치업한다(self, app: Application) -> None:
         닿는다 = [True]
         워커, 기록 = self.워커를_바꾼다(app, 닿는다)
         러너 = app.catchup_retry_runner(워커)
@@ -297,7 +297,7 @@ class Test복구직후되짚기:
 class Test복구보고:
     """끊겼다 돌아온 사실을 소유자에게 알리는가.
 
-    원본은 복구 시각과 되짚어 처리한 건수를 개인 대화로 보낸다(bot.py:6852).
+    원본은 복구 시각과 캐치업으로 처리한 건수를 개인 대화로 보낸다(bot.py:6852).
     알리지 않으면 운영자는 장애가 있었다는 것도, 그 구간이 회수됐는지도 모른다.
     """
 
@@ -324,7 +324,7 @@ class Test복구보고:
         보낸것 = [kwargs for 이름, kwargs in self.복구시킨다(app) if 이름 == "chat_postMessage"]
         assert any("연결 복구" in str(kwargs) for kwargs in 보낸것), 보낸것
 
-    def test_되짚어_처리한_건수를_함께_알린다(self, app: Application, client: FakeSlackClient) -> None:
+    def test_캐치업으로_처리한_건수를_함께_알린다(self, app: Application, client: FakeSlackClient) -> None:
         """건수가 없으면 회수가 됐는지 0건이었는지 구분되지 않는다."""
         보낸것 = [kwargs for 이름, kwargs in self.복구시킨다(app) if 이름 == "chat_postMessage"]
         assert any("2건" in str(kwargs) for kwargs in 보낸것), 보낸것

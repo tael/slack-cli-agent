@@ -757,7 +757,7 @@ class TestTranscriptBuilder:
     def test_다른_봇의_말은_이봇의_이름으로_적히지_않는다(
         self, settings: RuntimeSettings, notices: NoticeCatalog
     ) -> None:
-        """화자 표시만 어긋나는 것이 아니다. 되짚기가 같은 판정을 쓴다."""
+        """화자 표시만 어긋나는 것이 아니다. 캐치업이 같은 판정을 쓴다."""
         client = FakeWebClient()
         client.set_replies_response({
             "messages": [

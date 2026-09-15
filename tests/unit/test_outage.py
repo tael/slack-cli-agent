@@ -1,8 +1,8 @@
 """OutageTracker — 슬랙에 닿는지를 보고 끊겼다 돌아온 순간을 판정한다.
 
-같은 판정을 `HealthMonitor` 와 되짚기가 각자 들고 있으면, 한쪽만 고칠 때
+같은 판정을 `HealthMonitor` 와 캐치업이 각자 들고 있으면, 한쪽만 고칠 때
 동작이 갈린다. 두 프로세스가 각각 이것을 쓴다 — 접수는 소켓 재기동 판정에,
-워커는 복구 직후 되짚기에 쓴다.
+워커는 복구 직후 캐치업에 쓴다.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ class Test복구판정:
         assert tracker.check() == 90.0
 
     def test_복구_직후_회차는_다시_복구가_아니다(self) -> None:
-        """매 회차 복구로 보면 되짚기가 쉬지 않고 돈다."""
+        """매 회차 복구로 보면 캐치업이 쉬지 않고 돈다."""
         닿는다 = [False]
         시계 = Clock()
         tracker = OutageTracker(reachable=lambda: 닿는다[0], now=시계)

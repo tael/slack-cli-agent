@@ -534,12 +534,12 @@ class TestWorkerCommand:
         assert code == 0
         assert worker.run_once_calls == 1
 
-    def test_기동하면_플래그_없이도_되짚는다(self, tmp_path: Path) -> None:
-        """원본은 기동 직후 되짚기를 예약한다.
+    def test_기동하면_플래그_없이도_캐치업한다(self, tmp_path: Path) -> None:
+        """원본은 기동 직후 캐치업을 예약한다.
 
-        재기동 중에 들어온 멘션은 소켓 이벤트로 다시 오지 않는다. 되짚지
+        재기동 중에 들어온 멘션은 소켓 이벤트로 다시 오지 않는다. 캐치업하지
         않으면 그 요청들은 어느 경로에서도 처리되지 않는다. 플래그를 줘야만
-        되짚으면 운영에서 그 플래그를 빠뜨린 순간 유실이 난다.
+        캐치업으면 운영에서 그 플래그를 빠뜨린 순간 유실이 난다.
         """
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
@@ -552,8 +552,8 @@ class TestWorkerCommand:
         )
         assert worker.catch_up_calls == [["C1", "C2"]]
 
-    def test_no_catch_up_을_주면_안_되짚는다(self, tmp_path: Path) -> None:
-        """되짚기는 슬랙 기록 조회를 동반한다. 끌 수단은 남긴다."""
+    def test_no_catch_up_을_주면_안_캐치업한다(self, tmp_path: Path) -> None:
+        """캐치업은 슬랙 기록 조회를 동반한다. 끌 수단은 남긴다."""
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker()

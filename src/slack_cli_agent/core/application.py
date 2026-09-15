@@ -1082,7 +1082,7 @@ class Application:
 
     def _startup_catchup_tick(self, worker: Worker) -> None:
         report = worker.catch_up(self.channel_ids())
-        log.info("기동 되짚기: 다시 처리한 요청 %d건", len(report.missed))
+        log.info("기동 캐치업: 다시 처리한 요청 %d건", len(report.missed))
 
     def outage_tracker(self) -> OutageTracker:
         # cached — recreating it each tick would lose the previous result
@@ -1108,7 +1108,7 @@ class Application:
             "*연결 복구*\n\n"
             f"- 끊긴 시간 : {outage_sec / 60:.0f}분\n"
             f"- 복구 시각 : {datetime.now(KST).strftime('%m-%d %H:%M:%S')} KST\n"
-            f"- 되짚어 처리한 요청 : {recovered}건"
+            f"- 캐치업으로 처리한 요청 : {recovered}건"
         )
 
     def _catchup_retry_tick(self, worker: Worker) -> None:
@@ -1127,7 +1127,7 @@ class Application:
                 continue
             # silently retrying forever would hide a channel stuck for hours from anyone
             self._notify_owner(
-                "*되짚기를 오래 마치지 못하고 있습니다*\n\n"
+                "*캐치업을 오래 마치지 못하고 있습니다*\n\n"
                 f"- 채널 : {status.channel}\n"
                 f"- {status.stuck_sec / 60:.0f}분째입니다\n\n"
                 "슬랙이 채널 기록을 계속 빈 목록으로 돌려줍니다.\n"

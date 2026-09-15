@@ -68,7 +68,7 @@
 `core/application.py`, `core/ingress.py`, `core/worker.py` 통합. 처리할 것.
 
 - `slack/gate.py` 와 `guard/watch.py` 의 의존 방향 정리. 경과 시간 안내 상수를 공용 위치로
-- 되짚기 대표건을 큐에 넣기 직전 `JobQueue.pending()` 과 실행 중 여부를 대조해 거른다
+- 캐치업 대표건을 큐에 넣기 직전 `JobQueue.pending()` 과 실행 중 여부를 대조해 거른다
 - `CatchupService` 생성자에 실물 게이트웨이 값을 넘긴다
 - `reliability/ports.py` 의 HistoryReader 대역을 `slack/history.py` 실물로 교체
 
