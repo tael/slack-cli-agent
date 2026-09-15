@@ -11,6 +11,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.config.channel import ChannelConfig
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -274,6 +276,8 @@ def build_pipeline(
     watch_queue: Any = None,
     response_archive: Any = None,
     tool_policy: Any = None,
+    readable_dirs: tuple[Path, ...] = (),
+    now: Any = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -310,6 +314,10 @@ def build_pipeline(
         extra_kwargs["response_archive"] = response_archive
     if tool_policy is not None:
         extra_kwargs["tool_policy"] = tool_policy
+    if readable_dirs:
+        extra_kwargs["readable_dirs"] = readable_dirs
+    if now is not None:
+        extra_kwargs["now"] = now
 
     pipeline = RequestPipeline(
         access_policy=access,
@@ -1225,6 +1233,23 @@ def test_올린_응답을_채널_이름으로_기록한다():
     assert call["body"] == "최종 답변"
     assert call["ok"] is True
     assert call["turns"] == 1
+
+
+def test_기록한_소요_시간은_엔진_보고값이_아니라_파이프라인_측정값이다():
+    """codex 는 elapsed=0.0 을 고정으로 보고한다(응답이 진짜로 즉시 끝난 게
+    아니라 그 엔진이 값을 안 채우는 것). audit 기록은 파이프라인이 잰 벽시계
+    시간을 쓰므로, archive 도 같은 값을 써야 두 기록이 대조 가능하다."""
+    archive = FakeResponseArchive()
+    clock = iter([1000.0, 1007.52])
+    pipeline, _ = build_pipeline(
+        responses=[ok_response()],  # 응답 자체는 elapsed=1.5 를 보고한다
+        response_archive=archive,
+        now=lambda: next(clock),
+    )
+
+    pipeline.handle(make_ctx())
+
+    assert archive.calls[0]["elapsed_sec"] == pytest.approx(7.52)
 
 
 def test_채널_설정이_없으면_채널_ID_로_기록한다():

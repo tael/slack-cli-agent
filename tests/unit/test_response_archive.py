@@ -68,7 +68,8 @@ def test_record가_실패를_실패로_표시한다(tmp_path: Path) -> None:
 
     text = path.read_text()
     assert "· 실패" in text
-    assert "- 소요 : 1.0초, None턴" in text
+    assert "- 소요 : 1.0초, 턴 정보 없음" in text
+    assert "None" not in text
 
 
 def test_record가_같은_날_같은_파일에_이어붙인다(tmp_path: Path) -> None:

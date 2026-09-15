@@ -36,12 +36,13 @@ class ResponseArchive:
         path.parent.mkdir(parents=True, exist_ok=True)
         stamp = now.strftime("%H:%M")
         status = "성공" if ok else "실패"
+        turns_display = f"{turns}턴" if turns is not None else "턴 정보 없음"
         with open(path, "a") as f:
             f.write(
                 f"\n## {stamp} KST · {status}\n\n"
                 f"- 질문자 : {user}\n"
                 f"- 스레드 : {thread_ts}\n"
-                f"- 소요 : {elapsed_sec:.1f}초, {turns}턴\n\n"
+                f"- 소요 : {elapsed_sec:.1f}초, {turns_display}\n\n"
                 f"### 질문\n\n{question}\n\n"
                 f"### 응답\n\n{body}\n"
             )
