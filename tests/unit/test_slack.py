@@ -24,6 +24,7 @@ from slack_cli_agent.render.blocks import BlockBuilder
 from slack_cli_agent.render.markdown import MarkdownConverter
 from slack_cli_agent.render.splitter import ContentSplitter
 from slack_cli_agent.render.verifier import SplitVerifier
+from slack_cli_agent.review.base import ReactionPort
 from slack_cli_agent.slack.attachments import AttachmentStore, DownloadResult
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.gateway import SlackGateway
@@ -186,6 +187,16 @@ class TestReactionMarker:
         marker = ReactionMarker(client)
         marker.mark_processing("C1", "1.0")  # 예외를 내지 않아야 한다
         assert client.reaction_add_calls == []
+
+    def test_ReactionPort_를_만족한다(self) -> None:
+        """점검이 이 객체로 clear_processing 을 부른다. 없으면 실행 중에 AttributeError 가 난다."""
+        assert isinstance(ReactionMarker(FakeWebClient()), ReactionPort)
+
+    def test_clear_processing은_눈_표식을_뗀다(self) -> None:
+        client = FakeWebClient()
+        marker = ReactionMarker(client)
+        marker.clear_processing("C1", "1.0")
+        assert client.reaction_remove_calls == [("C1", "1.0", "eyes")]
 
     def test_mark_done은_미완료_표식을_떼고_체크를_단다(self) -> None:
         client = FakeWebClient()
