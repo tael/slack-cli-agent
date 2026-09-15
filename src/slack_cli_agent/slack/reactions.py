@@ -51,6 +51,9 @@ class ReactionMarker:
     def mark_processing(self, channel: str, ts: str) -> None:
         self.add(channel, ts, "eyes")
 
+    def clear_processing(self, channel: str, ts: str) -> None:
+        self.remove(channel, ts, "eyes")
+
     def mark_waiting(self, channel: str, ts: str) -> None:
         self.add(channel, ts, "hourglass")
 
