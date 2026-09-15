@@ -15,6 +15,7 @@ from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.errors import ConfigError
 from slack_cli_agent.engine.base import (
+    CallOrigin,
     ElapsedSource,
     Engine,
     EngineRequest,
@@ -869,6 +870,37 @@ class TestFallbackEngine:
         assert [r.session_id for r in primary.built] == ["1차-형식"]
         assert secondary.built == []
 
+    def test_배치_요청은_복구_프로브를_소비하지_않는다(self, tmp_path: Path) -> None:
+        """복구 프로브는 1차가 살아났는지를 실제 요청으로 확인하는 것이라
+        그 요청 하나가 프로브 한 번을 쓴다. 사람이 안 기다리는 배치가 그것을
+        먼저 쓰면, 실패했을 때 last_probe_at 이 밀려 직후의 사람 요청이
+        프로브 주기 내내 복구 혜택을 못 받는다.
+        """
+        fallback, primary, secondary, switcher = self._fallback(tmp_path)
+        switcher.begin_switch("weekly limit", engine_name="codex")
+        switcher.approve()
+        switcher.mark_probed(0.0)
+
+        fallback.run(request(session_id=None), origin=CallOrigin.BACKGROUND)
+
+        assert primary.built == []
+        assert len(secondary.built) == 1
+        assert switcher.should_probe(time.time()) is True
+
+    def test_사람이_기다리는_요청은_복구_프로브를_쓴다(self, tmp_path: Path) -> None:
+        ok = EngineResponse(ok=True, body="복구", session_id=None, model_actual=None,
+                            elapsed=0, turns=None, usage=None)
+        fallback, primary, _secondary, switcher = self._fallback(tmp_path, primary_response=ok)
+        switcher.begin_switch("weekly limit", engine_name="codex")
+        switcher.approve()
+        switcher.mark_probed(0.0)
+
+        response = fallback.run(request(session_id=None))
+
+        assert response.body == "복구"
+        assert len(primary.built) == 1
+        assert switcher.is_switched() is False
+
     def test_평소에는_1차_엔진으로_돈다(self, tmp_path: Path) -> None:
         ok_response = EngineResponse(ok=True, body="1차 응답", session_id="s1",
                                      model_actual=None, elapsed=0, turns=None, usage=None)
@@ -1015,7 +1047,7 @@ class Test엔진호출부품:
         부른것: list[object] = []
 
         class 폴백대역:
-            def run(self, request):
+            def run(self, request, origin=None):
                 부른것.append(request)
                 return "전환된 응답"
 

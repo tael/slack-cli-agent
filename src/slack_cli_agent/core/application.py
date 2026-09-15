@@ -26,7 +26,7 @@ from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelRegistry
 from ..config.profile import EngineSpec, Profile
 from ..config.settings import RuntimeSettings
-from ..engine.base import Engine, EngineRequest, EngineResponse
+from ..engine.base import CallOrigin, Engine, EngineRequest, EngineResponse
 from ..engine.claude import ClaudeEngine
 from ..engine.codex import CodexEngine
 from ..engine.gemini import GeminiEngine
@@ -775,7 +775,7 @@ class Application:
             effort=self.access_policy.effort_for(principal, prompt),
             workdir=(config.workdir if (config and config.workdir) else self._profile.work_root),
             trust_level=job.trust,
-        ))
+        ), CallOrigin.BACKGROUND)
 
     def mark_shutting_down(self) -> None:
         # without this flag, anything reading the state file can't tell a

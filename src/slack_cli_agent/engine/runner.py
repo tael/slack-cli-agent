@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config.settings import RuntimeSettings
-from .base import ElapsedSource, Engine, EngineRequest, EngineResponse, UsageLimit
+from .base import CallOrigin, ElapsedSource, Engine, EngineRequest, EngineResponse, UsageLimit
 from .environment import EngineEnvironmentPolicy
 from .switcher import EngineSwitcher
 
@@ -116,7 +116,8 @@ class EngineInvoker(ABC):
     """
 
     @abstractmethod
-    def invoke(self, request: EngineRequest) -> EngineResponse: ...
+    def invoke(self, request: EngineRequest,
+               origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse: ...
 
 
 class DirectInvoker(EngineInvoker):
@@ -126,7 +127,9 @@ class DirectInvoker(EngineInvoker):
         self._runner = runner
         self._engine = engine
 
-    def invoke(self, request: EngineRequest) -> EngineResponse:
+    def invoke(self, request: EngineRequest,
+               origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse:
+        # No fallback means no recovery probe, so origin has nothing to gate.
         return self._runner.run(self._engine, request)
 
 
@@ -136,8 +139,9 @@ class FallbackInvoker(EngineInvoker):
     def __init__(self, engine: FallbackEngine) -> None:
         self._engine = engine
 
-    def invoke(self, request: EngineRequest) -> EngineResponse:
-        return self._engine.run(request)
+    def invoke(self, request: EngineRequest,
+               origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse:
+        return self._engine.run(request, origin)
 
 
 class FallbackEngine(Engine):
@@ -204,12 +208,13 @@ class FallbackEngine(Engine):
         return self._active.readable_paths_note(paths)
 
     # -- The real entry point.
-    def run(self, request: EngineRequest) -> EngineResponse:
+    def run(self, request: EngineRequest,
+            origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse:
         """Checks switch state and runs on primary or secondary accordingly."""
         state = self.switcher.load()
 
         if state:
-            if self.switcher.should_probe(time.time()):
+            if origin is CallOrigin.INTERACTIVE and self.switcher.should_probe(time.time()):
                 recovered = self._probe_primary_recovery(request)
                 if recovered is not None:
                     return recovered
