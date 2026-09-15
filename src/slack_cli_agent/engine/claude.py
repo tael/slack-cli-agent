@@ -31,13 +31,25 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..config.profile import McpServerSpec
-from .base import Engine, EngineRequest, EngineResponse, Usage, UsageLimit
+from .base import ElapsedSource, Engine, EngineRequest, EngineResponse, Usage, UsageLimit
 
 # Same hint list as the original bot.py's usage_limit_message().
 _USAGE_LIMIT_HINTS = (
     "weekly limit", "usage limit", "rate limit",
     "hit your limit", "limit · resets", "limit reached",
 )
+
+# Claude's own vocabulary — its native keys already match the common ones,
+# unlike codex/gemini which need real translation. Kept as a key_map anyway
+# (rather than a from_mapping() special case) so a partial usage dict is
+# read the same way every engine reads one: a missing key is "can't tell",
+# not "measured zero".
+_USAGE_KEY_MAP: Mapping[str, str] = {
+    "input_tokens": "input_tokens",
+    "output_tokens": "output_tokens",
+    "cache_creation_tokens": "cache_creation_input_tokens",
+    "cache_read_tokens": "cache_read_input_tokens",
+}
 
 
 def _claude_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, Any]:
@@ -134,7 +146,8 @@ class ClaudeEngine(Engine):
         session_id = payload.get("session_id")
         model_actual = payload.get("model")
         turns = payload.get("num_turns")
-        usage = Usage.from_mapping(payload.get("usage"))
+        usage = Usage.from_native(payload.get("usage"), _USAGE_KEY_MAP)
+        elapsed, elapsed_source = self._elapsed_from_payload(payload)
 
         if payload.get("is_error"):
             subtype = str(payload.get("subtype") or "")
@@ -147,20 +160,30 @@ class ClaudeEngine(Engine):
                 raw["usage_limit"] = {"detail": "", "source": "subtype"}
             return EngineResponse(
                 ok=False, body=body, session_id=session_id, model_actual=model_actual,
-                elapsed=0.0, turns=turns, usage=usage, raw=raw, failure_reason=reason,
+                elapsed=elapsed, turns=turns, usage=usage, raw=raw, failure_reason=reason,
+                elapsed_source=elapsed_source,
             )
 
         body = str(payload.get("result") or "").strip()
         if not body:
             return EngineResponse(
                 ok=False, body="응답이 비어 있습니다.", session_id=session_id,
-                model_actual=model_actual, elapsed=0.0, turns=turns, usage=usage,
-                raw=dict(payload), failure_reason="empty_response",
+                model_actual=model_actual, elapsed=elapsed, turns=turns, usage=usage,
+                raw=dict(payload), failure_reason="empty_response", elapsed_source=elapsed_source,
             )
         return EngineResponse(
             ok=True, body=body, session_id=session_id, model_actual=model_actual,
-            elapsed=0.0, turns=turns, usage=usage, raw=dict(payload), failure_reason=None,
+            elapsed=elapsed, turns=turns, usage=usage, raw=dict(payload), failure_reason=None,
+            elapsed_source=elapsed_source,
         )
+
+    @staticmethod
+    def _elapsed_from_payload(payload: Mapping[str, Any]) -> tuple[float, ElapsedSource]:
+        """duration_ms confirmed 2026-09-16 against the real CLI's result event."""
+        duration_ms = payload.get("duration_ms")
+        if isinstance(duration_ms, (int, float)):
+            return float(duration_ms) / 1000.0, ElapsedSource.ENGINE
+        return 0.0, ElapsedSource.UNKNOWN
 
     @staticmethod
     def _result_event(stdout: str) -> Mapping[str, Any] | None:

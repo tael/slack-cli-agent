@@ -144,8 +144,13 @@ class RequestPipeline:
                     effort=effort,
                     num_turns=response.turns,
                     reason=response.failure_reason,
-                    session_id=decision.session_id or "",
+                    # The engine's own session ID when it returned one: Codex
+                    # rollout files are named by the thread ID the CLI picked,
+                    # so the provisional ID would find no transcript at all on
+                    # the first request of a thread.
+                    session_id=response.session_id or decision.session_id or "",
                     resume=decision.resume,
+                    engine=response.engine,
                     channel=ctx.channel,
                     channel_name=config.name if config else ctx.channel,
                     text=ctx.text,

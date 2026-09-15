@@ -25,12 +25,11 @@ from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelRegistry
-from ..config.profile import Profile
+from ..config.profile import EngineSpec, Profile
 from ..config.settings import RuntimeSettings
 from ..engine.base import Engine, EngineRequest, EngineResponse
 from ..engine.claude import ClaudeEngine
 from ..engine.codex import CodexEngine
-from ..engine.environment import create_environment_policy
 from ..engine.gemini import GeminiEngine
 from ..engine.registry import EngineRegistry
 from ..engine.runner import (
@@ -250,7 +249,7 @@ class Application:
         self._pending_report: PendingReportStore | None = None
         self._outage_tracker: OutageTracker | None = None
         self._connection_epochs: SqliteConnectionEpochs | None = None
-        self._transcript_reader: SessionTranscriptReader | None = None
+        self._transcript_reader_cache: dict[str, SessionTranscriptReader] = {}
         self._transcript_readers = transcript_readers or TranscriptReaderRegistry()
         self._invoker: EngineInvoker | None = None
         self._watch_jobs: WatchJobQueue | None = None
@@ -353,17 +352,10 @@ class Application:
 
     @property
     def engine_runner(self) -> EngineRunner:
-        """Builds the engine runner with an environment-isolation policy — without
-        it, the engine subprocess would inherit this process's entire
-        environment, leaking the Slack token and other engines' credentials.
+        """No policy is pinned here: the runner asks each Engine for its own, so a
+        fallback turn runs under the secondary's home rather than the primary's.
         """
-        spec = self._profile.primary_engine
-        return EngineRunner(
-            self._settings,
-            environment_policy=create_environment_policy(
-                spec.type, self._profile.name, spec.home_dir,
-            ),
-        )
+        return EngineRunner(self._settings)
 
     @property
     def access_policy(self) -> AccessPolicy:
@@ -971,30 +963,46 @@ class Application:
         except Exception:
             log.exception("점검 실패: %s %s:%s", emoji, channel, ts)
 
-    def transcript_reader(self) -> SessionTranscriptReader:
-        """Transcript format differs per engine — hardcoding the Claude
-        reader would make a codex profile look in the wrong place. Cached
-        because both the time-breakdown and usage-row calculations need to
-        read the same file, not read it twice.
+    def transcript_reader(self, engine: str = "") -> SessionTranscriptReader:
+        """Transcript format and home dir differ per engine, so the reader is
+        chosen by the engine that actually answered — a fallback response comes
+        from the secondary, and reading it with the primary's reader would look
+        for the wrong format in the wrong place. Cached per engine because both
+        the time-breakdown and usage-row calculations read the same file.
         """
-        if self._transcript_reader is None:
-            self._transcript_reader = self._transcript_readers.create(
-                self._profile.primary_engine.type, self._profile.work_root,
-            )
-        return self._transcript_reader
+        spec = self._engine_spec_for(engine)
+        name = spec.type if spec is not None else engine
+        reader = self._transcript_reader_cache.get(name)
+        if reader is None:
+            reader = self._transcript_readers.create(name, self._profile.work_root, spec=spec)
+            self._transcript_reader_cache[name] = reader
+        return reader
+
+    def _engine_spec_for(self, engine: str) -> EngineSpec | None:
+        """None for a name in neither slot. The registry then hands back an empty
+        reader, so the report says nothing rather than reading the primary's
+        transcript and presenting another engine's numbers as this one's.
+        """
+        if not engine or engine == self._profile.primary_engine.type:
+            return self._profile.primary_engine
+        fallback = self._profile.fallback_engine
+        if fallback is not None and engine == fallback.type:
+            return fallback
+        return None
 
     def _slow_reporter(self) -> SlowRequestReporter:
         # an empty troubleshoot_channel is valid config — the reporter just
         # skips past the threshold check in that case
-        reader = self.transcript_reader()
         return SlowRequestReporter(
             publisher=self.publisher(),
-            calculator=TimeBreakdownCalculator(reader, self._settings.assumed_tokens_per_sec),
+            # Resolved per report, not bound here — see transcript_reader().
+            readers=self.transcript_reader,
+            calculator=TimeBreakdownCalculator(self._settings.assumed_tokens_per_sec),
             # built explicitly — the default has no session-context calculator,
             # so the usage row's "session" line would never appear
             usage_row_builder=UsageRowBuilder(
                 self._settings.owner_only_channels,
-                SessionContextCalculator(reader, self._settings.context_limit),
+                SessionContextCalculator(self._settings.context_limit),
             ),
             diagnostician=ElapsedDiagnostician(self._settings.sleep_gap_suspect_sec),
             formatter=SlowReportFormatter(self._settings.assumed_tokens_per_sec),

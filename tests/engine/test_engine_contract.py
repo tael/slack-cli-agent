@@ -6,6 +6,7 @@ ENGINE_FIXTURES; every test in this module runs against it automatically.
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -145,7 +146,10 @@ ENGINE_FIXTURES: list[EngineFixture] = [
         resend_system_prompt_on_resume=False,
         resume_token="resume",
         native_usage={"input_tokens": 5, "output_tokens": 6},
-        expected_usage=Usage(input_tokens=5, output_tokens=6),
+        expected_usage=Usage(
+            input_tokens=5, output_tokens=6,
+            unavailable=frozenset({"cache_creation_tokens", "cache_read_tokens"}),
+        ),
         build_stdout=_codex_stdout,
         allowed_tools_xfail_reason=(
             "Codex CLI has no tool-allowlist flag; sandbox mode governs execution "
@@ -166,7 +170,10 @@ ENGINE_FIXTURES: list[EngineFixture] = [
             "input_tokens": 7, "output_tokens": 9, "thinking_tokens": 11,
             "cache_read_tokens": 3, "total_tokens": 30,
         },
-        expected_usage=Usage(input_tokens=7, output_tokens=9, cache_creation_tokens=0, cache_read_tokens=3),
+        expected_usage=Usage(
+            input_tokens=7, output_tokens=9, cache_creation_tokens=0, cache_read_tokens=3,
+            unavailable=frozenset({"cache_creation_tokens"}),
+        ),
         build_stdout=_gemini_stdout,
         allowed_tools_xfail_reason=(
             "agy CLI has no tool-allowlist flag; access control is settings.json "
@@ -281,6 +288,26 @@ class TestEngineContract:
         stdout, stderr, returncode = fx.build_stdout(fx.native_usage)
         resp = engine.parse(stdout, stderr, returncode)
         assert resp.usage == fx.expected_usage
+
+    def test_응답에_실행한_엔진_이름이_박힌다(self, fx: EngineFixture, tmp_path: Path) -> None:
+        """보고 쪽이 이 이름으로 기록 리더를 고른다. 비어 있으면 fallback 응답도
+        primary 형식으로 읽는다."""
+        engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
+
+        def fake_run(cmd: list[str], cwd: str, timeout: float, **_: Any) -> _FakeCompleted:
+            return _FakeCompleted(*fx.build_stdout(fx.native_usage))
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_run)
+        assert runner.run(engine, _request()).engine == engine.name
+
+    def test_시간초과_응답에도_엔진_이름이_박힌다(self, fx: EngineFixture, tmp_path: Path) -> None:
+        engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
+
+        def fake_run(cmd: list[str], cwd: str, timeout: float, **_: Any) -> _FakeCompleted:
+            raise subprocess.TimeoutExpired(cmd, timeout)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_run)
+        assert runner.run(engine, _request()).engine == engine.name
 
     def test_설정이_모자라면_ConfigError다(self, fx: EngineFixture, tmp_path: Path) -> None:
         engine = fx.engine_class(fx.unconfigured_profile(tmp_path), SETTINGS)

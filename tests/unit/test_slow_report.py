@@ -56,8 +56,9 @@ class Test도구실행구간계산:
             TranscriptEvent(ts=0.0, role="assistant", kind="tool_use", brief="Bash ls", output_tokens=None),
             TranscriptEvent(ts=5.0, role="user", kind="tool_result", brief="", output_tokens=None),
         ]
-        calc = TimeBreakdownCalculator(FakeTranscriptReader(events), assumed_tokens_per_sec=40)
-        result = calc.compute("s1")
+        reader = FakeTranscriptReader(events)
+        calc = TimeBreakdownCalculator(assumed_tokens_per_sec=40)
+        result = calc.compute(reader, "s1")
         assert result is not None
         assert result.tool_sec == 5.0
         assert result.think_sec == 0.0
@@ -75,8 +76,9 @@ class Test사고와단순대기구분:
             TranscriptEvent(ts=0.0, role="user", kind="tool_result", brief="", output_tokens=None),
             TranscriptEvent(ts=10.0, role="assistant", kind="text", brief="", output_tokens=40),
         ]
-        calc = TimeBreakdownCalculator(FakeTranscriptReader(events), assumed_tokens_per_sec=40)
-        result = calc.compute("s1")
+        reader = FakeTranscriptReader(events)
+        calc = TimeBreakdownCalculator(assumed_tokens_per_sec=40)
+        result = calc.compute(reader, "s1")
         assert result is not None
         assert result.think_sec == 1.0
         assert result.wait_sec == 9.0
@@ -86,8 +88,9 @@ class Test사고와단순대기구분:
             TranscriptEvent(ts=0.0, role="user", kind="tool_result", brief="", output_tokens=None),
             TranscriptEvent(ts=7.0, role="assistant", kind="text", brief="", output_tokens=None),
         ]
-        calc = TimeBreakdownCalculator(FakeTranscriptReader(events), assumed_tokens_per_sec=40)
-        result = calc.compute("s1")
+        reader = FakeTranscriptReader(events)
+        calc = TimeBreakdownCalculator(assumed_tokens_per_sec=40)
+        result = calc.compute(reader, "s1")
         assert result is not None
         assert result.think_sec == 0.0
         assert result.wait_sec == 7.0
@@ -115,30 +118,34 @@ class TestSinceTs로_이전요청_제외:
             TranscriptEvent(ts=920.8, role="assistant", kind="text", brief="", output_tokens=None),
         ]
         events = earlier_events + this_request_events[1:]
-        calc = TimeBreakdownCalculator(FakeTranscriptReader(events), assumed_tokens_per_sec=40)
+        reader = FakeTranscriptReader(events)
+        calc = TimeBreakdownCalculator(assumed_tokens_per_sec=40)
 
-        without_since = calc.compute("s1")
+        without_since = calc.compute(reader, "s1")
         assert without_since is not None
         assert round(without_since.end_ts - without_since.start_ts, 1) == 920.8
 
-        with_since = calc.compute("s1", since_ts=this_request_start)
+        with_since = calc.compute(reader, "s1", since_ts=this_request_start)
         assert with_since is not None
         assert round(with_since.end_ts - with_since.start_ts, 1) == 409.0
 
 
 class Test세션기록없거나깨짐:
     def test_이벤트가_없으면_None이다(self) -> None:
-        calc = TimeBreakdownCalculator(FakeTranscriptReader([]), assumed_tokens_per_sec=40)
-        assert calc.compute("없는세션") is None
+        reader = FakeTranscriptReader([])
+        calc = TimeBreakdownCalculator(assumed_tokens_per_sec=40)
+        assert calc.compute(reader, "없는세션") is None
 
     def test_이벤트가_하나뿐이면_None이다(self) -> None:
         events = [TranscriptEvent(ts=0.0, role="user", kind=None, brief="", output_tokens=None)]
-        calc = TimeBreakdownCalculator(FakeTranscriptReader(events), assumed_tokens_per_sec=40)
-        assert calc.compute("s1") is None
+        reader = FakeTranscriptReader(events)
+        calc = TimeBreakdownCalculator(assumed_tokens_per_sec=40)
+        assert calc.compute(reader, "s1") is None
 
     def test_파서가_예외_없이_빈값을_주면_계산도_예외없이_None이다(self) -> None:
-        calc = TimeBreakdownCalculator(FakeTranscriptReader(broken=True), assumed_tokens_per_sec=40)
-        assert calc.compute("s1") is None
+        reader = FakeTranscriptReader(broken=True)
+        calc = TimeBreakdownCalculator(assumed_tokens_per_sec=40)
+        assert calc.compute(reader, "s1") is None
 
 
 class TestElapsedDiagnostician:
@@ -204,12 +211,14 @@ class FakePublisher:
 class TestSlowRequestReporter:
     def _make_reporter(self, publisher, troubleshoot_channel="TS", events=None):
         settings = make_settings(slow_report_sec=800, sleep_gap_suspect_sec=30, assumed_tokens_per_sec=40)
-        calc = TimeBreakdownCalculator(FakeTranscriptReader(events or []), settings.assumed_tokens_per_sec)
+        reader = FakeTranscriptReader(events or [])
+        calc = TimeBreakdownCalculator(settings.assumed_tokens_per_sec)
         diagnostician = ElapsedDiagnostician(settings.sleep_gap_suspect_sec)
         formatter = SlowReportFormatter(settings.assumed_tokens_per_sec)
         return SlowRequestReporter(
             publisher=publisher, calculator=calc, diagnostician=diagnostician,
             formatter=formatter, settings=settings, troubleshoot_channel=troubleshoot_channel,
+            readers=lambda engine: reader,
         )
 
     def _meta(self, **overrides) -> SlowRequestMeta:
@@ -287,8 +296,9 @@ class Test재시도감지:
                 cache_creation_tokens=0, cache_read_tokens=200, request_id="req-2",
             ),
         ]
-        calc = TimeBreakdownCalculator(FakeTranscriptReader(events), assumed_tokens_per_sec=40)
-        result = calc.compute("s1")
+        reader = FakeTranscriptReader(events)
+        calc = TimeBreakdownCalculator(assumed_tokens_per_sec=40)
+        result = calc.compute(reader, "s1")
         assert result is not None
         # 두 번째 요청(ts=20)이 재시도다. orphan = 200 - (50 + 100) = 50
         assert result.retries == {20.0: 50}
@@ -309,8 +319,9 @@ class Test재시도감지:
                 cache_creation_tokens=80, cache_read_tokens=60, request_id="req-2",
             ),
         ]
-        calc = TimeBreakdownCalculator(FakeTranscriptReader(events), assumed_tokens_per_sec=40)
-        result = calc.compute("s1")
+        reader = FakeTranscriptReader(events)
+        calc = TimeBreakdownCalculator(assumed_tokens_per_sec=40)
+        result = calc.compute(reader, "s1")
         assert result is not None
         assert result.retries == {}
         assert result.retry_sec == 0.0
@@ -414,6 +425,33 @@ class TestUsageRowBuilder:
         assert rows[0][0] == "토큰"
         assert "180" in rows[0][1]
 
+    def test_판정_불가_항목은_0으로_안_적는다(self) -> None:
+        """agy 는 캐시 기록을 아예 안 낸다. 0 으로 적으면 잰 값이 0인 것과
+        구분되지 않고, 합계에 넣으면 합계도 같은 거짓말을 한다."""
+        builder = UsageRowBuilder(owner_only_channels=frozenset({"TS"}))
+        usage = Usage(
+            input_tokens=100, output_tokens=50,
+            unavailable=frozenset({"cache_creation_tokens", "cache_read_tokens"}),
+        )
+        detail = builder.build(usage, troubleshoot_channel="TS")[0][1]
+        assert "캐시 기록 판정 불가" in detail
+        assert "캐시 읽기 판정 불가" in detail
+        assert "캐시 기록 0" not in detail
+
+    def test_판정_불가가_있으면_합계를_확정으로_안_적는다(self) -> None:
+        builder = UsageRowBuilder(owner_only_channels=frozenset({"TS"}))
+        usage = Usage(
+            input_tokens=100, output_tokens=50, unavailable=frozenset({"cache_read_tokens"}),
+        )
+        detail = builder.build(usage, troubleshoot_channel="TS")[0][1]
+        assert detail.startswith("150개 이상")
+
+    def test_전부_잰_값이면_합계를_그대로_적는다(self) -> None:
+        builder = UsageRowBuilder(owner_only_channels=frozenset({"TS"}))
+        usage = Usage(input_tokens=100, output_tokens=50, cache_creation_tokens=10, cache_read_tokens=20)
+        detail = builder.build(usage, troubleshoot_channel="TS")[0][1]
+        assert detail.startswith("180개 (")
+
     def test_소유자_전용_채널이_아니면_아무것도_안_낸다(self) -> None:
         builder = UsageRowBuilder(owner_only_channels=frozenset({"TS"}))
         usage = Usage(input_tokens=100, output_tokens=50, cache_creation_tokens=10, cache_read_tokens=20)
@@ -474,36 +512,39 @@ class TestSessionContextCalculator:
             self._event(1.0, "assistant", input=1, output=2, creation=3, read=4),
             self._event(2.0, "assistant", input=10, output=20, creation=30, read=40),
         ])
-        calculator = SessionContextCalculator(reader, context_limit={})
-        assert calculator.compute("s1").used == 100
+        calculator = SessionContextCalculator(context_limit={})
+        assert calculator.compute(reader, "s1").used == 100
 
     def test_assistant가_아닌_턴은_세지_않는다(self) -> None:
         reader = FakeTranscriptReader([
             self._event(1.0, "assistant", input=1, output=2, creation=3, read=4),
             self._event(2.0, "user", input=999),
         ])
-        calculator = SessionContextCalculator(reader, context_limit={})
-        assert calculator.compute("s1").used == 10
+        calculator = SessionContextCalculator(context_limit={})
+        assert calculator.compute(reader, "s1").used == 10
 
     def test_usage가_없는_assistant_턴은_건너뛴다(self) -> None:
         reader = FakeTranscriptReader([
             self._event(1.0, "assistant", input=1, output=2, creation=3, read=4),
             self._event(2.0, "assistant"),
         ])
-        calculator = SessionContextCalculator(reader, context_limit={})
-        assert calculator.compute("s1").used == 10
+        calculator = SessionContextCalculator(context_limit={})
+        assert calculator.compute(reader, "s1").used == 10
 
     def test_기록이_없으면_사용량이_None이다(self) -> None:
-        calculator = SessionContextCalculator(FakeTranscriptReader([]), context_limit={})
-        assert calculator.compute("s1").used is None
+        reader = FakeTranscriptReader([])
+        calculator = SessionContextCalculator(context_limit={})
+        assert calculator.compute(reader, "s1").used is None
 
     def test_표에_있는_모델이면_한도를_함께_돌려준다(self) -> None:
-        calculator = SessionContextCalculator(FakeTranscriptReader([]), context_limit={"m": 200000})
-        assert calculator.compute("s1", model="m").limit == 200000
+        reader = FakeTranscriptReader([])
+        calculator = SessionContextCalculator(context_limit={"m": 200000})
+        assert calculator.compute(reader, "s1", model="m").limit == 200000
 
     def test_표에_없는_모델이면_한도가_None이다(self) -> None:
-        calculator = SessionContextCalculator(FakeTranscriptReader([]), context_limit={"m": 200000})
-        assert calculator.compute("s1", model="다른모델").limit is None
+        reader = FakeTranscriptReader([])
+        calculator = SessionContextCalculator(context_limit={"m": 200000})
+        assert calculator.compute(reader, "s1", model="다른모델").limit is None
 
 
 class TestUsageRowBuilder세션행:
@@ -516,24 +557,26 @@ class TestUsageRowBuilder세션행:
 
     def _builder(self, used: int | None, limit: int | None) -> UsageRowBuilder:
         class 고정계산기:
-            def compute(self, session_id: str, model: str | None = None) -> SessionContext:
+            def compute(
+                self, reader: object, session_id: str, model: str | None = None,
+            ) -> SessionContext:
                 return SessionContext(used=used, limit=limit)
 
         return UsageRowBuilder(owner_only_channels=frozenset({"TS"}), session_context=고정계산기())
 
     def test_한도를_알면_비율을_적는다(self) -> None:
-        rows = self._builder(100_000, 200_000).build(None, "TS", session_id="s1", model="m")
+        rows = self._builder(100_000, 200_000).build(None, "TS", reader=FakeTranscriptReader([]), session_id="s1", model="m")
         assert rows[1][0] == "세션"
         assert "100k/200k" in rows[1][1]
         assert "50퍼센트" in rows[1][1]
 
     def test_한도를_모르면_비율을_안_적는다(self) -> None:
-        rows = self._builder(100_000, None).build(None, "TS", session_id="s1", model="m")
+        rows = self._builder(100_000, None).build(None, "TS", reader=FakeTranscriptReader([]), session_id="s1", model="m")
         assert "퍼센트" not in rows[1][1]
         assert "한도 미상" in rows[1][1]
 
     def test_사용량을_못_읽으면_사유를_적는다(self) -> None:
-        rows = self._builder(None, 200_000).build(None, "TS", session_id="s1", model="m")
+        rows = self._builder(None, 200_000).build(None, "TS", reader=FakeTranscriptReader([]), session_id="s1", model="m")
         assert "조회 실패" in rows[1][1]
 
     def test_소유자_전용_채널이_아니면_세션_행도_안_낸다(self) -> None:
@@ -542,7 +585,7 @@ class TestUsageRowBuilder세션행:
 
     def test_계산기가_없으면_세션_행이_없다(self) -> None:
         builder = UsageRowBuilder(owner_only_channels=frozenset({"TS"}))
-        rows = builder.build(None, "TS", session_id="s1", model="m")
+        rows = builder.build(None, "TS", reader=FakeTranscriptReader([]), session_id="s1", model="m")
         assert [row[0] for row in rows] == ["토큰"]
 
 

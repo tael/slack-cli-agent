@@ -35,6 +35,11 @@ from slack_cli_agent.engine.runner import (
     FallbackEngine,
     FallbackInvoker,
 )
+from slack_cli_agent.engine.transcript import (
+    ClaudeTranscriptReader,
+    CodexTranscriptReader,
+    NullTranscriptReader,
+)
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard
 from slack_cli_agent.learning.batch import BatchReport
 from slack_cli_agent.plugin.base import BotPlugin
@@ -528,7 +533,7 @@ class TestSlowReport:
         profile = write_profile(tmp_path, settings={"context_limit": {"모델A": 200000}})
         app = Application.from_profile(profile, client=FakeSlackClient())
         calculator = app.pipeline()._slow_reporter._usage_row_builder._session_context
-        assert calculator.compute("없는세션", model="모델A").limit == 200000
+        assert calculator.compute(app.transcript_reader(), "없는세션", model="모델A").limit == 200000
 
     def test_사용량_노출_채널이_설정에서_온다(self, tmp_path: Path) -> None:
         """프로필 JSON 의 목록이 frozenset 으로 들어가야 이 행이 실제로
@@ -538,8 +543,50 @@ class TestSlowReport:
         )
         app = Application.from_profile(profile, client=FakeSlackClient())
         builder = app.pipeline()._slow_reporter._usage_row_builder
-        rows = builder.build(None, "C_REPORT", session_id="없는세션", model="모델A")
+        rows = builder.build(
+            None, "C_REPORT", reader=app.transcript_reader(), session_id="없는세션", model="모델A",
+        )
         assert [row[0] for row in rows] == ["토큰", "세션"]
+
+
+class Test응답엔진별_기록_리더:
+    """fallback 이 걸린 응답의 보고가 어느 엔진의 기록을 보는가.
+
+    형식도 경로도 엔진마다 다르다. primary 하나로 고정하면 secondary 가 만든
+    응답의 구간 분해와 사용량 행이 빈 채로 올라간다.
+    """
+
+    def _profile(self, tmp_path: Path) -> Profile:
+        return write_profile(
+            tmp_path,
+            fallback_engine={"type": "codex", "binary": "codex", "model": "model-b"},
+        )
+
+    def test_기본값은_primary_리더다(self, tmp_path: Path) -> None:
+        app = Application(self._profile(tmp_path), FakeSlackClient())
+        assert isinstance(app.transcript_reader(), ClaudeTranscriptReader)
+
+    def test_fallback_엔진_이름이면_그_엔진의_리더다(self, tmp_path: Path) -> None:
+        app = Application(self._profile(tmp_path), FakeSlackClient())
+        assert isinstance(app.transcript_reader("codex"), CodexTranscriptReader)
+
+    def test_프로필에_없는_엔진이면_빈_리더다(self, tmp_path: Path) -> None:
+        """예외를 내면 이미 끝난 요청의 보고가 통째로 날아간다. 그렇다고 primary
+        리더로 돌리면 다른 엔진의 숫자를 이 엔진 것으로 내놓는다."""
+        app = Application(self._profile(tmp_path), FakeSlackClient())
+        reader = app.transcript_reader("gemini")
+        assert isinstance(reader, NullTranscriptReader)
+        assert reader.read("어떤세션") == []
+
+    def test_같은_엔진은_리더를_다시_만들지_않는다(self, tmp_path: Path) -> None:
+        """구간 분해와 사용량 행이 같은 기록을 본다. 매번 새로 만들면 같은
+        파일을 두 번 읽는다."""
+        app = Application(self._profile(tmp_path), FakeSlackClient())
+        assert app.transcript_reader("codex") is app.transcript_reader("codex")
+
+    def test_primary_와_fallback_리더가_섞이지_않는다(self, tmp_path: Path) -> None:
+        app = Application(self._profile(tmp_path), FakeSlackClient())
+        assert app.transcript_reader() is not app.transcript_reader("codex")
 
 
 class Test엔진환경격리연결:
@@ -549,22 +596,36 @@ class Test엔진환경격리연결:
     토큰과 다른 엔진의 자격증명이 그대로 넘어간다.
     """
 
-    def test_실행기가_정책을_받는다(self, tmp_path: Path) -> None:
+    def _fallback_profile(self, tmp_path: Path) -> Profile:
+        return write_profile(
+            tmp_path, fallback_engine={"type": "codex", "binary": "codex", "model": "model-b"},
+        )
+
+    def test_실행기에_정책을_박지_않는다(self, tmp_path: Path) -> None:
+        """실행기에 하나를 박으면 2차 엔진도 1차의 home 으로 돈다."""
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
-        assert app.engine_runner._environment_policy is not None
+        assert app.engine_runner._environment_policy is None
 
     def test_정책이_1차_엔진_종류를_따른다(self, tmp_path: Path) -> None:
         from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
 
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
-        assert isinstance(app.engine_runner._environment_policy, ClaudeEnvironmentPolicy)
+        assert isinstance(app.engine.environment_policy(), ClaudeEnvironmentPolicy)
+
+    def test_2차_엔진은_자기_종류의_정책으로_돈다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.engine.environment import CodexEnvironmentPolicy
+
+        app = Application.from_profile(self._fallback_profile(tmp_path), client=FakeSlackClient())
+        secondary = app.engine.secondary  # type: ignore[attr-defined]
+        assert isinstance(secondary.environment_policy(), CodexEnvironmentPolicy)
 
     def test_슬랙_토큰은_엔진에_넘어가지_않는다(self, tmp_path: Path) -> None:
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
-        built = app.engine_runner._environment_policy.build(
+        built = app.engine.environment_policy().build(
             {"PATH": "/usr/bin", "SLACK_BOT_TOKEN": "비밀", "ANTHROPIC_API_KEY": "비밀"}
         )
         assert "ANTHROPIC_API_KEY" not in built
+        assert "SLACK_BOT_TOKEN" not in built
 
 
 class Test지울문구가드연결:
