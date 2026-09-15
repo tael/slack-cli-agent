@@ -345,6 +345,15 @@ class TestCodexEngineBuildCommand:
         assert "thread-abc" in cmd
         assert cmd[-1] == "안녕"
 
+    def test_기본_sandbox는_제한하지_않는다(self, tmp_path: Path) -> None:
+        """봇이 읽기와 쓰기를 다 할 수 있어야 한다(2026-09-15 사용자 지시).
+        전에는 기본이 read-only 라 프로필에 옵션을 안 적으면 조용히 막혔다."""
+        profile = codex_profile(tmp_path)
+        engine = CodexEngine(profile, SETTINGS)
+        cmd = engine.build_command(request(resume=False, model="gpt-5.6-sol"))
+        idx = cmd.index("--sandbox")
+        assert cmd[idx + 1] == "danger-full-access"
+
     def test_옵션의_sandbox값을_쓴다(self, tmp_path: Path) -> None:
         profile = codex_profile(tmp_path, options={"sandbox": "workspace-write"})
         engine = CodexEngine(profile, SETTINGS)
