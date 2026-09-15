@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 from slack_cli_agent.core.result import OutcomeKind
 from slack_cli_agent.engine.base import Engine, EngineRequest, EngineResponse
-from slack_cli_agent.engine.runner import EngineRunner
+from slack_cli_agent.engine.runner import DirectInvoker, EngineRunner
 from slack_cli_agent.learning.analyzer import ProposalAnalyzer, ProposalBuilder
 
 
@@ -48,6 +48,11 @@ class FakeEngine(Engine):
     def new_session_id(self) -> str:
         return "fixed-session"
 
+    @property
+    def spec(self):
+        # Engine.spec 은 프로필 블록을 찾는데 이 대역에는 프로필이 없다.
+        return SimpleNamespace(model=f"{self.name}-모델")
+
     def detect_usage_limit(self, response: EngineResponse):
         return None
 
@@ -78,7 +83,7 @@ class TestProposalAnalyzer:
             writing_style=["문장을 짧게 써라"],
         ))
         analyzer = ProposalAnalyzer(
-            engine, runner, model="m", effort="low", workdir=tmp_path, bot_name="봇",
+            DirectInvoker(runner, engine), model="m", effort="low", workdir=tmp_path, bot_name="봇",
         )
         outcome = analyzer.analyze_channel("2026-09-14", "공지", "기록 본문", [])
         assert outcome.is_found
@@ -90,7 +95,7 @@ class TestProposalAnalyzer:
         engine = FakeEngine()
         runner = make_runner(analysis_stdout())
         analyzer = ProposalAnalyzer(
-            engine, runner, model="m", effort="low", workdir=tmp_path, bot_name="봇",
+            DirectInvoker(runner, engine), model="m", effort="low", workdir=tmp_path, bot_name="봇",
         )
         analyzer.analyze_channel("2026-09-14", "공지", "기록 본문", [])
         request = engine.built_requests[0]
@@ -102,7 +107,7 @@ class TestProposalAnalyzer:
         engine = FakeEngine()
         runner = make_runner("실패", returncode=1)
         analyzer = ProposalAnalyzer(
-            engine, runner, model="m", effort="low", workdir=tmp_path, bot_name="봇",
+            DirectInvoker(runner, engine), model="m", effort="low", workdir=tmp_path, bot_name="봇",
         )
         outcome = analyzer.analyze_channel("2026-09-14", "공지", "기록", [])
         assert outcome.kind is OutcomeKind.UNKNOWN
@@ -111,7 +116,7 @@ class TestProposalAnalyzer:
         engine = FakeEngine()
         runner = make_runner(json.dumps({"result": "그냥 문장일 뿐이다"}))
         analyzer = ProposalAnalyzer(
-            engine, runner, model="m", effort="low", workdir=tmp_path, bot_name="봇",
+            DirectInvoker(runner, engine), model="m", effort="low", workdir=tmp_path, bot_name="봇",
         )
         outcome = analyzer.analyze_channel("2026-09-14", "공지", "기록", [])
         assert outcome.kind is OutcomeKind.UNKNOWN
@@ -122,7 +127,7 @@ class TestProposalBuilder:
         engine = FakeEngine()
         runner = make_runner(analysis_stdout(channel_facts=["사실 A"]))
         analyzer = ProposalAnalyzer(
-            engine, runner, model="m", effort="low", workdir=tmp_path, bot_name="봇",
+            DirectInvoker(runner, engine), model="m", effort="low", workdir=tmp_path, bot_name="봇",
         )
         builder = ProposalBuilder(analyzer)
         proposal = builder.build("2026-09-14", {"공지": "기록1", "잡담": "기록2"})
@@ -134,7 +139,7 @@ class TestProposalBuilder:
         engine = FakeEngine()
         runner = make_runner("실패", returncode=1)
         analyzer = ProposalAnalyzer(
-            engine, runner, model="m", effort="low", workdir=tmp_path, bot_name="봇",
+            DirectInvoker(runner, engine), model="m", effort="low", workdir=tmp_path, bot_name="봇",
         )
         builder = ProposalBuilder(analyzer)
         proposal = builder.build("2026-09-14", {"공지": "기록1"})
@@ -149,7 +154,7 @@ class TestAnalyzer가_디코더를_쓰는가:
 
     def _분석기(self, stdout: str, tmp_path: Path) -> ProposalAnalyzer:
         return ProposalAnalyzer(
-            FakeEngine(), make_runner(json.dumps({"result": stdout})),
+            DirectInvoker(make_runner(json.dumps({"result": stdout})), FakeEngine()),
             model="m", effort="low", workdir=tmp_path, bot_name="봇",
         )
 
@@ -165,3 +170,63 @@ class TestAnalyzer가_디코더를_쓰는가:
         본문 = '{"writing_style": "짧게 써라", "channel_facts": [], "corrections": [], "note": ""}'
         outcome = self._분석기(본문, tmp_path).analyze_channel("2026-09-16", "공지", "기록", [])
         assert outcome.kind is OutcomeKind.UNKNOWN
+
+
+class Test학습도_같은_호출부품을_쓴다:
+    """실행기를 직접 부르면 폴백이 설정돼 있어도 FallbackEngine.run() 이 안
+    불린다. 한도 소진 때 전환·probe·상태 기록이 통째로 건너뛰어진다. 학습
+    배치가 정확히 그 경로였다(sca-dyb.9).
+    """
+
+    def test_분석은_배치로_표시된다(self, tmp_path: Path) -> None:
+        """사람이 안 기다리는 배치가 폴백 복구 프로브를 대신 쓰면 직후의
+        사람 요청이 주기 내내 복구 혜택을 못 받는다.
+        """
+        from slack_cli_agent.engine.base import CallOrigin
+
+        받은: list[object] = []
+
+        class 기록실행부품:
+            def invoke(self, request, origin=CallOrigin.INTERACTIVE):
+                받은.append(origin)
+                return EngineResponse(
+                    ok=True, session_id=None, model_actual=None,
+                    body='{"writing_style": [], "channel_facts": [], "corrections": [], "note": ""}',
+                    elapsed=0.0, turns=None, usage=None,
+                )
+
+        analyzer = ProposalAnalyzer(
+            기록실행부품(), model="m", effort="low", workdir=tmp_path, bot_name="봇",
+        )
+        outcome = analyzer.analyze_channel("2026-09-16", "공지", "기록", [])
+
+        assert outcome.is_found, "응답을 못 읽으면 어느 경로로 갔는지도 못 믿는다"
+        assert 받은 == [CallOrigin.BACKGROUND]
+
+    def test_분석이_실행기를_직접_부르지_않는다(self) -> None:
+        import inspect
+
+        본문 = inspect.getsource(ProposalAnalyzer)
+        assert "_runner.run(" not in 본문
+        assert "_invoker.invoke(" in 본문
+
+    def test_전환된_상태에서는_2차_엔진이_분석을_맡는다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.engine.runner import FallbackEngine, FallbackInvoker
+        from slack_cli_agent.engine.switcher import EngineSwitcher
+
+        primary, secondary = FakeEngine(), FakeEngine()
+        secondary.name = "2차"
+        runner = make_runner(analysis_stdout(channel_facts=["사실"]))
+        switcher = EngineSwitcher(tmp_path / "engine_state.json")
+        switcher.begin_switch("weekly limit", engine_name="2차")
+        switcher.approve()
+        invoker = FallbackInvoker(FallbackEngine(primary, secondary, switcher, runner))
+
+        analyzer = ProposalAnalyzer(
+            invoker, model="m", effort="low", workdir=tmp_path, bot_name="봇",
+        )
+        outcome = analyzer.analyze_channel("2026-09-16", "공지", "기록", [])
+
+        assert outcome.is_found
+        assert len(secondary.built_requests) == 1
+        assert primary.built_requests == []
