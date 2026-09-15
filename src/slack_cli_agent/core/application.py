@@ -97,6 +97,7 @@ from ..prompt.sections import (
     WatchSection,
 )
 from ..reliability.catchup import CatchupService
+from ..reliability.connection import ConnectionCatchupCoordinator
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
 from ..reliability.outage import OutageTracker
@@ -143,6 +144,7 @@ from ..slack.review_ports import (
 )
 from ..slack.roster import RosterBuilder
 from ..slack.transcript import TranscriptBuilder
+from ..storage.connection_epochs import SqliteConnectionEpochs
 from ..storage.database import Database
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
@@ -245,6 +247,7 @@ class Application:
         self._catchup_service: CatchupService | None = None
         self._pending_report: PendingReportStore | None = None
         self._outage_tracker: OutageTracker | None = None
+        self._connection_epochs: SqliteConnectionEpochs | None = None
         self._transcript_reader: SessionTranscriptReader | None = None
         self._transcript_readers = transcript_readers or TranscriptReaderRegistry()
         self._invoker: EngineInvoker | None = None
@@ -417,7 +420,13 @@ class Application:
 
     def gateway(self) -> SlackGateway:
         if self._gateway is None:
-            self._gateway = SlackGateway(self._client, profile_name=self._profile.name)
+            self._gateway = SlackGateway(
+                self._client,
+                profile_name=self._profile.name,
+                # Without this the worker never learns about a reconnect,
+                # since only this process holds the socket.
+                epoch_recorder=self.connection_epochs(),
+            )
         return self._gateway
 
     def reactions(self) -> ReactionMarker:
@@ -1067,6 +1076,39 @@ class Application:
             name="catchup_retry",
         )
 
+    def connection_epochs(self) -> SqliteConnectionEpochs:
+        """One ledger per process: the liveness-write interval is instance
+        state, so extra instances would multiply the writes."""
+        if self._connection_epochs is None:
+            self._connection_epochs = SqliteConnectionEpochs(self._database, now=self._clock)
+        return self._connection_epochs
+
+    def connection_catchup_coordinator(self, worker: Worker) -> ConnectionCatchupCoordinator:
+        return ConnectionCatchupCoordinator(
+            store=self.connection_epochs(),
+            catch_up=lambda window: self._connection_catchup(worker, window),
+            settings=self._settings,
+            owner=worker.worker_id,
+            now=self._clock,
+        )
+
+    def connection_catchup_runner(self, worker: Worker) -> PeriodicRunner:
+        """Makes a socket reconnect trigger catch-up.
+
+        The OutageTracker behind catchup_retry_runner only sees Web API
+        reachability from this process, which stays fine while the ingress
+        socket is down (measured 2026-09-16).
+        """
+        return PeriodicRunner(
+            self.connection_catchup_coordinator(worker).tick,
+            self._settings.connection_catchup_interval_sec,
+            name="connection_catchup",
+        )
+
+    def _connection_catchup(self, worker: Worker, window: float) -> None:
+        report = worker.catch_up(self.channel_ids(), window_sec=window)
+        log.info("소켓 재연결 캐치업: 다시 처리한 요청 %d건", len(report.missed))
+
     def startup_catchup_runner(self, worker: Worker) -> PeriodicRunner:
         """Sweeps once at start and once more after the freshness grace period.
 
@@ -1158,6 +1200,7 @@ class Application:
                 self.watch_runner(),
                 self.job_purge_runner(),
                 self.startup_catchup_runner(worker),
+                self.connection_catchup_runner(worker),
                 self.catchup_retry_runner(worker),
                 self.pending_report_runner(),
                 self.learning_batch_runner(),
