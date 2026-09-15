@@ -1167,6 +1167,20 @@ class Test폴백엔진연결:
         분석기 = app.learning_batch()._builder._analyzer
         assert 분석기._invoker is app.engine_invoker
 
+    def test_학습_모델을_안_정하면_엔진이_고르게_비워_보낸다(self, app: Application) -> None:
+        """공통 문자열을 넣으면 코덱스·제미나이 프로필에서 없는 모델명이 된다.
+        비워 보내면 실행기가 그 엔진의 spec.model 로 채운다(sca-dyb.10).
+        """
+        분석기 = app.learning_batch()._builder._analyzer
+        assert 분석기._model is None
+
+    def test_학습_모델을_정하면_그대로_간다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        from dataclasses import replace
+        application = Application(self._폴백있는프로필(tmp_path), client)
+        application._settings = replace(application._settings, learning_model="정한모델")
+        assert application.learning_batch()._builder._analyzer._model == "정한모델"
+        application.close()
+
     def test_같은_부품을_되풀이_쓴다(self, app: Application) -> None:
         assert app.engine_invoker is app.engine_invoker
         app.close()

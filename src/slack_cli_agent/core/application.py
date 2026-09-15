@@ -556,7 +556,7 @@ class Application:
             archive = self.response_archive()
             analyzer = ProposalAnalyzer(
                 self.engine_invoker,
-                model=self._settings.learning_model,
+                model=self._settings.learning_model or None,
                 effort=self._settings.learning_effort,
                 workdir=self._profile.work_root,
                 bot_name=self._profile.display_name,
