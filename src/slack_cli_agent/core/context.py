@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
+from .jsonsafe import dump_json
+
 
 @dataclass(frozen=True)
 class RequestContext:
@@ -35,7 +37,7 @@ class RequestContext:
         return replace(self, requeued=True, queued_at=queued_at)
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False)
+        return dump_json(asdict(self))
 
     @classmethod
     def from_json(cls, payload: str) -> RequestContext:

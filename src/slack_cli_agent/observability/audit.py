@@ -4,13 +4,13 @@
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Callable, Mapping
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from ..core.jsonsafe import dump_json
 from ..storage.database import Database
 from ..storage.repository import SqliteRepository
 
@@ -75,7 +75,7 @@ class AuditLog(SqliteRepository):
         self._execute(
             "INSERT INTO audit (at, kind, channel, thread_ts, payload) "
             "VALUES (?, ?, ?, ?, ?)",
-            (at, str(kind), channel, thread_ts, _dump_json(fields)),
+            (at, str(kind), channel, thread_ts, dump_json(fields)),
         )
         line = {"kind": str(kind), "channel": channel, "thread_ts": thread_ts, "at": at}
         line.update(fields)
@@ -124,50 +124,9 @@ class AuditLog(SqliteRepository):
     def _append_jsonl(self, line: Mapping[str, Any]) -> None:
         self._jsonl_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._jsonl_path, "a", encoding="utf-8") as f:
-            f.write(_dump_json(line) + "\n")
+            f.write(dump_json(line) + "\n")
 
 
 
 #: Depth at which nesting is replaced by a placeholder. Well past anything an
 #: audit field actually carries, so reaching it means the value is malformed.
-_MAX_JSON_DEPTH = 20
-
-
-def _dump_json(payload: Mapping[str, Any]) -> str:
-    """Serializes an audit payload, giving up field fidelity before the record.
-
-    Losing one field's shape still leaves a readable record; raising loses the
-    whole request's record and, on the caller's path, the request itself
-    (sca-kwv). The normal path is a plain dumps, so a well-formed payload pays
-    nothing for this.
-    """
-    try:
-        return json.dumps(payload, ensure_ascii=False)
-    except (TypeError, ValueError):
-        return json.dumps(_json_safe(payload), ensure_ascii=False)
-
-
-def _json_safe(value: Any, depth: int = 0, seen: frozenset[int] = frozenset()) -> Any:
-    """Rewrites a value into something json.dumps always accepts.
-
-    A `default=` hook is not enough on its own: it is never called for a
-    non-string dict key, and it can raise again on the value it is handed.
-    Recursion is bounded by depth and by the ids on the current path, so a
-    cycle becomes a placeholder rather than a RecursionError.
-    """
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    if depth >= _MAX_JSON_DEPTH:
-        return "<깊이 초과>"
-    if id(value) in seen:
-        return "<순환 참조>"
-    nested = seen | {id(value)}
-    if isinstance(value, Mapping):
-        return {str(k): _json_safe(v, depth + 1, nested) for k, v in value.items()}
-    if isinstance(value, (set, frozenset)):
-        # Sorted by the rendered form: the elements themselves may not be
-        # mutually comparable, and this only needs a stable order.
-        return sorted((_json_safe(v, depth + 1, nested) for v in value), key=repr)
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(v, depth + 1, nested) for v in value]
-    return str(value)
