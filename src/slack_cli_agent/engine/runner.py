@@ -12,6 +12,7 @@ they don't need to know whether a switch happened.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import subprocess
 import time
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config.settings import RuntimeSettings
-from .base import Engine, EngineRequest, EngineResponse, UsageLimit
+from .base import ElapsedSource, Engine, EngineRequest, EngineResponse, UsageLimit
 from .environment import EngineEnvironmentPolicy
 from .switcher import EngineSwitcher
 
@@ -41,25 +42,23 @@ class EngineRunner:
                source_env: Mapping[str, str] | None = None) -> None:
         self._settings = settings
         self._run = subprocess_runner or self._default_runner
-        # Environment isolation policy. If not given, no env argument
-        # is passed at all and the child inherits the parent's — kept
-        # for existing callers that don't provide one yet. Passing an
-        # empty environment would break the engine by hiding PATH.
+        # Overrides the policy for every engine this runner runs. Normally left
+        # unset: each Engine supplies its own, so a fallback turn runs under the
+        # secondary's home rather than the primary's.
         self._environment_policy = environment_policy
         self._source_env = source_env
 
     def run(self, engine: Engine, request: EngineRequest,
            timeout_sec: float | None = None) -> EngineResponse:
+        # Resolved before prepare() so an engine with no policy fails before
+        # writing its config file.
+        policy = self._environment_policy or engine.environment_policy()
         engine.prepare(request)
         cmd = engine.build_command(request)
         timeout = timeout_sec if timeout_sec is not None else self._settings.request_timeout_sec
-        # Skip the env argument entirely when there's no policy —
-        # passing it would break existing callers whose injected
-        # runner double doesn't accept that kwarg.
-        extra: dict[str, Any] = {}
-        if self._environment_policy is not None:
-            source = self._source_env if self._source_env is not None else os.environ
-            extra["env"] = self._environment_policy.build(source)
+        source = self._source_env if self._source_env is not None else os.environ
+        extra: dict[str, Any] = {"env": policy.build(source)}
+        started = time.monotonic()
         try:
             completed = self._run(
                 cmd, cwd=str(request.workdir), timeout=timeout, **extra,
@@ -71,9 +70,22 @@ class EngineRunner:
                 body=f"시간이 오래 걸려 중단했습니다. {timeout_int}초 안에 끝나지 않았습니다.",
                 session_id=None, model_actual=None,
                 elapsed=timeout, turns=None, usage=None,
-                raw={}, failure_reason="timeout",
+                raw={}, failure_reason="timeout", elapsed_source=ElapsedSource.RUNNER,
+                engine=engine.name,
             )
-        return engine.parse(completed.stdout, completed.stderr, completed.returncode)
+        wall_elapsed = time.monotonic() - started
+        # Stamped here rather than in each Engine.parse() so every engine reports
+        # it the same way, including ones added later.
+        response = dataclasses.replace(
+            engine.parse(completed.stdout, completed.stderr, completed.returncode), engine=engine.name,
+        )
+        # sca-cfa — some engines (Codex) never report their own elapsed time.
+        # Only fill in the runner's wall-clock measurement when the engine
+        # left it unknown; an engine-reported value is more precise (it can
+        # exclude time this process itself spent, e.g. queueing).
+        if response.elapsed_source == ElapsedSource.UNKNOWN:
+            response = dataclasses.replace(response, elapsed=wall_elapsed, elapsed_source=ElapsedSource.RUNNER)
+        return response
 
     @staticmethod
     def _default_runner(
@@ -178,6 +190,11 @@ class FallbackEngine(Engine):
     def directives_for_turn(self, request: EngineRequest) -> str:
         return self._active.directives_for_turn(request)
 
+    def environment_policy(self) -> EngineEnvironmentPolicy:
+        # This class has no profile block of its own; the policy belongs to
+        # whichever engine is actually running this turn.
+        return self._active.environment_policy()
+
     def readable_paths_note(self, paths: Sequence[Path]) -> str:
         return self._active.readable_paths_note(paths)
 
@@ -198,7 +215,7 @@ class FallbackEngine(Engine):
                     ok=False, body=self.switcher.limit_reply(), session_id=None,
                     model_actual=None, elapsed=0.0, turns=None, usage=None,
                     raw={"engine_switch": self.switcher.load().get("approval", "pending")},
-                    failure_reason="usage_limit",
+                    failure_reason="usage_limit", engine=self.primary.name,
                 )
 
             return self._run_secondary(request)

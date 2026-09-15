@@ -830,6 +830,36 @@ class Test느린요청보고:
         pipeline.handle(make_ctx())
         assert len(reporter.metas) == 1
 
+    def test_엔진이_돌려준_세션_id를_보고에_쓴다(self) -> None:
+        """codex 는 rollout 파일 이름에 CLI 가 정한 thread ID 를 쓴다. 스레드의
+        첫 요청에서 잠정 ID 로 보고하면 그 이름의 기록이 없어 구간 분해와 사용량
+        행이 빈 채로 올라간다."""
+        reporter = FakeSlowReporter()
+        pipeline, _ = build_pipeline(
+            responses=[ok_response(session_id="engine-thread-1")], slow_reporter=reporter
+        )
+        pipeline.handle(make_ctx())
+        assert reporter.metas[0].session_id == "engine-thread-1"
+
+    def test_엔진이_세션_id를_안_주면_잠정_id로_보고한다(self) -> None:
+        reporter = FakeSlowReporter()
+        response = EngineResponse(
+            ok=True, body="답변입니다", session_id=None, model_actual=None,
+            elapsed=1.0, turns=1, usage=None,
+        )
+        pipeline, _ = build_pipeline(responses=[response], slow_reporter=reporter)
+        pipeline.handle(make_ctx())
+        assert reporter.metas[0].session_id != ""
+
+    def test_응답을_만든_엔진_이름을_보고에_넘긴다(self) -> None:
+        """fallback 이 걸리면 답을 만든 것은 secondary 다. primary 이름으로
+        보고하면 보고 쪽이 다른 형식의 기록을 다른 경로에서 찾는다."""
+        reporter = FakeSlowReporter()
+        response = replace(ok_response(), engine="codex")
+        pipeline, _ = build_pipeline(responses=[response], slow_reporter=reporter)
+        pipeline.handle(make_ctx())
+        assert reporter.metas[0].engine == "codex"
+
     def test_요청_시작_시각을_넘긴다(self) -> None:
         """세션 기록에는 여러 요청의 이벤트가 누적된다. 시작 시각을 안 넘기면
         이번 요청이 아니라 세션 전체 경과가 분해 대상이 된다."""

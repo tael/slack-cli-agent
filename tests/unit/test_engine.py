@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,15 +15,18 @@ from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.errors import ConfigError
 from slack_cli_agent.engine.base import (
+    ElapsedSource,
     Engine,
     EngineRequest,
     EngineResponse,
     TrustLevel,
     Usage,
     UsageLimit,
+    equivalent_values,
 )
 from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
+from slack_cli_agent.engine.gemini import GeminiEngine
 from slack_cli_agent.engine.registry import EngineRegistry
 from slack_cli_agent.engine.runner import EngineRunner, FallbackEngine
 from slack_cli_agent.engine.switcher import EngineSwitcher
@@ -46,6 +50,11 @@ def profile_with(primary: dict, fallback: dict | None = None, tmp_path: Path | N
 
 def claude_profile(tmp_path: Path, **extra: Any) -> Profile:
     primary = {"type": "claude", "binary": "claude", "model": "claude-sonnet-5", **extra}
+    return profile_with(primary, tmp_path=tmp_path)
+
+
+def gemini_profile(tmp_path: Path, **extra: Any) -> Profile:
+    primary = {"type": "gemini", "binary": "agy", "model": "gemini-3.8-flash", **extra}
     return profile_with(primary, tmp_path=tmp_path)
 
 
@@ -78,23 +87,92 @@ class FakeCompleted:
 
 
 class TestUsage:
-    def test_claude_형식_사전을_그대로_읽는다(self) -> None:
-        usage = Usage.from_mapping({
-            "input_tokens": 10,
-            "output_tokens": 20,
-            "cache_creation_input_tokens": 3,
-            "cache_read_input_tokens": 4,
-        })
+    def test_고유_키_맵으로_전체_필드가_있으면_판정_불가가_없다(self) -> None:
+        key_map = {
+            "input_tokens": "input_tokens", "output_tokens": "output_tokens",
+            "cache_creation_tokens": "cache_creation_input_tokens",
+            "cache_read_tokens": "cache_read_input_tokens",
+        }
+        usage = Usage.from_native({
+            "input_tokens": 10, "output_tokens": 20,
+            "cache_creation_input_tokens": 3, "cache_read_input_tokens": 4,
+        }, key_map)
         assert usage == Usage(input_tokens=10, output_tokens=20,
                               cache_creation_tokens=3, cache_read_tokens=4)
 
-    def test_사전이_아니면_전부_0이다(self) -> None:
-        assert Usage.from_mapping(None) == Usage()
-        assert Usage.from_mapping("문자열") == Usage()
+    def test_사전이_아니면_숫자는_전부_0이다(self) -> None:
+        key_map = {"input_tokens": "in"}
+        assert equivalent_values(Usage.from_native(None, key_map), Usage())
+        assert equivalent_values(Usage.from_native("문자열", key_map), Usage())
 
     def test_누락된_키는_0으로_채운다(self) -> None:
-        usage = Usage.from_mapping({"input_tokens": 5})
+        key_map = {"input_tokens": "input_tokens"}
+        usage = Usage.from_native({"input_tokens": 5}, key_map)
         assert usage.output_tokens == 0
+
+    def test_사전이_아니면_네_항목_모두_판정_불가로_표시한다(self) -> None:
+        """sca-dyb.4 — 값이 없음과 0이었음을 구분한다. 못 읽은 것을 0으로 세면
+        안 된다는 요구를 unavailable 로 만족한다."""
+        expected = frozenset(
+            {"input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens"}
+        )
+        assert Usage.from_native(None, {"input_tokens": "in"}).unavailable == expected
+        assert Usage.from_native("문자열", {"input_tokens": "in"}).unavailable == expected
+
+    def test_unavailable이_다르면_동등비교가_실패한다(self) -> None:
+        """코덱스 리뷰 지적 2번 — 판정 불가는 값만큼 중요한 상태라 동등비교에서
+        빠지면 시험이 그 차이를 못 본다. compare=False 를 되돌린 근거다."""
+        a = Usage(input_tokens=1)
+        b = Usage(input_tokens=1, unavailable=frozenset({"output_tokens"}))
+        assert a != b
+
+    def test_unavailable이_같으면_동등하다(self) -> None:
+        a = Usage(input_tokens=1, unavailable=frozenset({"output_tokens"}))
+        b = Usage(input_tokens=1, unavailable=frozenset({"output_tokens"}))
+        assert a == b
+
+    def test_equivalent_values는_unavailable을_무시하고_숫자만_비교한다(self) -> None:
+        """unavailable 을 무시하고 값만 비교해야 하는 기존 시험이 쓸 helper."""
+        a = Usage(input_tokens=1, unavailable=frozenset({"output_tokens"}))
+        b = Usage(input_tokens=1)
+        assert a != b
+        assert equivalent_values(a, b)
+
+    @pytest.mark.parametrize(
+        "field_name", ["input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens"],
+    )
+    def test_equivalent_values는_숫자가_다르면_False다(self, field_name: str) -> None:
+        """네 필드 중 하나만 빼먹고 비교하면 그 필드의 매핑 오류를 시험이 못 본다."""
+        assert not equivalent_values(Usage(**{field_name: 1}), Usage())
+
+    def test_고유_키_맵으로_공통_어휘로_번역한다(self) -> None:
+        key_map = {
+            "input_tokens": "in", "output_tokens": "out",
+            "cache_read_tokens": "cached", "cache_creation_tokens": "written",
+        }
+        usage = Usage.from_native({"in": 3, "out": 4, "cached": 5, "written": 6}, key_map)
+        assert usage == Usage(input_tokens=3, output_tokens=4, cache_creation_tokens=6, cache_read_tokens=5)
+        assert usage.unavailable == frozenset()
+
+    def test_키_맵에_없는_공통_필드는_판정_불가다(self) -> None:
+        """에이전트가 아예 대응 지표를 안 내는 경우(예: agy 의 cache_creation)."""
+        key_map = {"input_tokens": "in", "output_tokens": "out"}
+        usage = Usage.from_native({"in": 3, "out": 4}, key_map)
+        assert usage.cache_creation_tokens == 0
+        assert usage.cache_read_tokens == 0
+        assert usage.unavailable == frozenset({"cache_creation_tokens", "cache_read_tokens"})
+
+    def test_키_맵에_있어도_실제_데이터에_없으면_판정_불가다(self) -> None:
+        key_map = {"input_tokens": "in", "cache_read_tokens": "cached"}
+        usage = Usage.from_native({"in": 3}, key_map)
+        assert usage.unavailable == frozenset({"output_tokens", "cache_creation_tokens", "cache_read_tokens"})
+
+    def test_from_native에_사전이_아닌_값을_주면_전부_판정_불가다(self) -> None:
+        usage = Usage.from_native(None, {"input_tokens": "in"})
+        assert equivalent_values(usage, Usage())
+        assert usage.unavailable == frozenset(
+            {"input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens"}
+        )
 
 
 class TestEngineRequestResponse:
@@ -110,6 +188,7 @@ class TestEngineRequestResponse:
         )
         assert resp.raw == {}
         assert resp.failure_reason is None
+        assert resp.elapsed_source == ElapsedSource.UNKNOWN
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +311,12 @@ class TestClaudeEngineParse:
         assert resp.body == "답변 본문"
         assert resp.session_id == "s1"
         assert resp.turns == 3
-        assert resp.usage == Usage(input_tokens=1, output_tokens=2)
+        # usage 사전에 cache 키가 없어 그 두 필드는 판정 불가다(claude 도
+        # 2026-09-16 이후 from_native 를 쓴다 — 코덱스 리뷰 지적 3번).
+        assert resp.usage == Usage(
+            input_tokens=1, output_tokens=2,
+            unavailable=frozenset({"cache_creation_tokens", "cache_read_tokens"}),
+        )
         assert resp.failure_reason is None
 
     def test_결과가_비면_실패로_본다(self, tmp_path: Path) -> None:
@@ -241,6 +325,20 @@ class TestClaudeEngineParse:
         resp = engine.parse(json.dumps({"result": "  ", "is_error": False}), "", 0)
         assert resp.ok is False
         assert resp.failure_reason == "empty_response"
+
+    def test_usage_사전에_캐시_키가_없으면_판정_불가다(self, tmp_path: Path) -> None:
+        """코덱스 리뷰 지적 3번 — claude 도 codex/gemini 와 같은 from_native
+        경로를 쓴다. 이전에는 from_mapping 이 누락 키를 0으로 읽어, 같은
+        모양의 부분 usage 사전을 codex/gemini 와 다르게 판정했다."""
+        profile = claude_profile(tmp_path)
+        engine = ClaudeEngine(profile, SETTINGS)
+        payload = {
+            "result": "답", "session_id": "s1", "is_error": False,
+            "usage": {"input_tokens": 1, "output_tokens": 2},
+        }
+        resp = engine.parse(json.dumps(payload), "", 0)
+        assert resp.usage is not None
+        assert resp.usage.unavailable == frozenset({"cache_creation_tokens", "cache_read_tokens"})
 
     def test_비정상_종료는_nonzero_exit이다(self, tmp_path: Path) -> None:
         profile = claude_profile(tmp_path)
@@ -288,6 +386,25 @@ class TestClaudeEngineParse:
         resp = engine.parse(json.dumps(payload), "", 0)
         assert resp.ok is False
         assert resp.failure_reason == "is_error"
+
+    def test_duration_ms를_초로_바꿔_elapsed에_담는다(self, tmp_path: Path) -> None:
+        """sca-cfa — 2026-09-16 실측: claude -p --output-format json 의 result
+        이벤트가 duration_ms 를 낸다. 엔진이 직접 채우는 값이라 elapsed_source
+        는 'engine' 이다."""
+        profile = claude_profile(tmp_path)
+        engine = ClaudeEngine(profile, SETTINGS)
+        payload = {"result": "답", "is_error": False, "duration_ms": 4369}
+        resp = engine.parse(json.dumps(payload), "", 0)
+        assert resp.elapsed == pytest.approx(4.369)
+        assert resp.elapsed_source == "engine"
+
+    def test_duration_ms가_없으면_elapsed는_판정_불가로_남는다(self, tmp_path: Path) -> None:
+        profile = claude_profile(tmp_path)
+        engine = ClaudeEngine(profile, SETTINGS)
+        payload = {"result": "답", "is_error": False}
+        resp = engine.parse(json.dumps(payload), "", 0)
+        assert resp.elapsed == 0.0
+        assert resp.elapsed_source == "unknown"
 
 
 class TestClaudeEngineDetectUsageLimit:
@@ -377,7 +494,10 @@ class TestCodexEngineParse:
         assert resp.ok is True
         assert resp.body == "코덱스 답변"
         assert resp.session_id == "th-1"
-        assert resp.usage == Usage(input_tokens=5, output_tokens=6)
+        assert resp.usage == Usage(
+            input_tokens=5, output_tokens=6,
+            unavailable=frozenset({"cache_creation_tokens", "cache_read_tokens"}),
+        )
 
     def test_본문이_없으면_empty_response다(self, tmp_path: Path) -> None:
         profile = codex_profile(tmp_path)
@@ -398,6 +518,54 @@ class TestCodexEngineParse:
         engine = CodexEngine(profile, SETTINGS)
         resp = engine.parse("이건 jsonl이 아니다", "", 0)
         assert resp.failure_reason == "bad_json"
+
+    def test_codex_고유_캐시_키를_공통_어휘로_옮긴다(self, tmp_path: Path) -> None:
+        """sca-dyb.4 — 2026-09-16 실측: codex exec --json 의 turn.completed 는
+        cache_read_input_tokens 가 아니라 cached_input_tokens, cache_write_input_tokens
+        를 낸다. 기존 코드는 Usage.from_mapping 이 claude 키 이름만 찾아 늘 0이었다."""
+        profile = codex_profile(tmp_path)
+        engine = CodexEngine(profile, SETTINGS)
+        lines = [
+            json.dumps({"type": "thread.started", "thread_id": "th-1"}),
+            json.dumps({"type": "item.completed",
+                       "item": {"type": "agent_message", "text": "답"}}),
+            json.dumps({"type": "turn.completed", "usage": {
+                "input_tokens": 58274, "cached_input_tokens": 34304,
+                "cache_write_input_tokens": 100, "output_tokens": 232,
+                "reasoning_output_tokens": 76,
+            }}),
+        ]
+        resp = engine.parse("\n".join(lines), "", 0)
+        assert resp.usage == Usage(
+            input_tokens=58274, output_tokens=232, cache_creation_tokens=100, cache_read_tokens=34304,
+        )
+        assert resp.usage.unavailable == frozenset()
+
+    def test_사용량_사전에_캐시_키가_없으면_판정_불가다(self, tmp_path: Path) -> None:
+        profile = codex_profile(tmp_path)
+        engine = CodexEngine(profile, SETTINGS)
+        lines = [
+            json.dumps({"type": "thread.started", "thread_id": "th-1"}),
+            json.dumps({"type": "item.completed",
+                       "item": {"type": "agent_message", "text": "답"}}),
+            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 6}}),
+        ]
+        resp = engine.parse("\n".join(lines), "", 0)
+        assert resp.usage.unavailable == frozenset({"cache_creation_tokens", "cache_read_tokens"})
+
+    def test_codex는_출력에_duration이_없어_elapsed가_늘_판정_불가다(self, tmp_path: Path) -> None:
+        """sca-cfa — 2026-09-16 실측: codex exec --json 은 어떤 이벤트에도
+        경과시간 필드를 안 낸다. 실행기의 벽시계 대체값이 채워야 한다."""
+        profile = codex_profile(tmp_path)
+        engine = CodexEngine(profile, SETTINGS)
+        lines = [
+            json.dumps({"type": "thread.started", "thread_id": "th-1"}),
+            json.dumps({"type": "item.completed",
+                       "item": {"type": "agent_message", "text": "답"}}),
+        ]
+        resp = engine.parse("\n".join(lines), "", 0)
+        assert resp.elapsed == 0.0
+        assert resp.elapsed_source == "unknown"
 
 
 class TestCodexEngineSessionIdFrom:
@@ -433,6 +601,50 @@ class TestCodexEngineTurnBehavior:
         engine = CodexEngine(profile, SETTINGS)
         assert engine.directives_for_turn(request(resume=False)) == ""
         assert engine.directives_for_turn(request(resume=True)) != ""
+
+
+# ---------------------------------------------------------------------------
+# GeminiEngine — 계약 시험(tests/engine/test_engine_contract.py, test_gemini_engine.py)이
+# 이미 다루는 것은 다시 안 만든다. 여기서는 sca-cfa/sca-dyb.4 로 새로 생긴
+# elapsed_source·unavailable 판정만 본다.
+
+
+class TestGeminiEngineUsageAndElapsed:
+    def test_agy_캐시_읽기_키를_옮기고_생성_키는_판정_불가다(self, tmp_path: Path) -> None:
+        profile = gemini_profile(tmp_path)
+        engine = GeminiEngine(profile, SETTINGS)
+        payload = {
+            "conversation_id": "c1", "status": "SUCCESS", "response": "답",
+            "duration_seconds": 2.5, "num_turns": 1,
+            "usage": {"input_tokens": 7, "output_tokens": 9, "thinking_tokens": 11,
+                     "cache_read_tokens": 3, "total_tokens": 30},
+        }
+        resp = engine.parse(json.dumps(payload), "", 0)
+        assert resp.usage == Usage(
+            input_tokens=7, output_tokens=9, cache_read_tokens=3,
+            unavailable=frozenset({"cache_creation_tokens"}),
+        )
+
+    def test_duration_seconds를_그대로_elapsed로_쓰고_엔진_출처로_표시한다(self, tmp_path: Path) -> None:
+        """sca-cfa — 2026-09-16 실측: agy -p --output-format json 은 이미
+        duration_seconds 를 낸다(항상 채워져 있던 유일한 엔진)."""
+        profile = gemini_profile(tmp_path)
+        engine = GeminiEngine(profile, SETTINGS)
+        payload = {
+            "conversation_id": "c1", "status": "SUCCESS", "response": "답",
+            "duration_seconds": 49.124253, "num_turns": 1, "usage": {},
+        }
+        resp = engine.parse(json.dumps(payload), "", 0)
+        assert resp.elapsed == pytest.approx(49.124253)
+        assert resp.elapsed_source == "engine"
+
+    def test_duration_seconds_키_자체가_없으면_판정_불가다(self, tmp_path: Path) -> None:
+        profile = gemini_profile(tmp_path)
+        engine = GeminiEngine(profile, SETTINGS)
+        payload = {"conversation_id": "c1", "status": "SUCCESS", "response": "답", "usage": {}}
+        resp = engine.parse(json.dumps(payload), "", 0)
+        assert resp.elapsed == 0.0
+        assert resp.elapsed_source == "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -535,17 +747,24 @@ class RecordingEngine(Engine):
         return None
 
 
+class 통과정책:
+    """격리 자체를 보지 않는 시험용 — 받은 환경을 그대로 돌려준다."""
+
+    def build(self, source_env):
+        return dict(source_env)
+
+
 class TestEngineRunner:
     def test_엔진이_만든_명령을_실행하고_결과를_파싱한다(self, tmp_path: Path) -> None:
         profile = claude_profile(tmp_path)
         engine = RecordingEngine(profile, SETTINGS)
         calls: list[Any] = []
 
-        def fake_subprocess(cmd, cwd, timeout):
+        def fake_subprocess(cmd, cwd, timeout, env=None):
             calls.append((cmd, cwd, timeout))
             return FakeCompleted(stdout="답변", returncode=0)
 
-        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess)
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
         resp = runner.run(engine, request())
         assert resp.ok is True
         assert resp.body == "답변"
@@ -556,13 +775,46 @@ class TestEngineRunner:
         profile = claude_profile(tmp_path)
         engine = RecordingEngine(profile, SETTINGS)
 
-        def fake_subprocess(cmd, cwd, timeout):
+        def fake_subprocess(cmd, cwd, timeout, env=None):
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
-        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess)
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
         resp = runner.run(engine, request())
         assert resp.ok is False
         assert resp.failure_reason == "timeout"
+        assert resp.elapsed_source == "runner"
+
+    def test_엔진이_elapsed를_안_채우면_실행기가_벽시계로_채운다(self, tmp_path: Path) -> None:
+        """sca-cfa — codex 처럼 elapsed_source 가 'unknown' 인 응답만 실행기가
+        벽시계 측정값으로 채운다. RecordingEngine.parse() 는 elapsed_source 를
+        안 주므로 기본값 'unknown' 이다."""
+        profile = claude_profile(tmp_path)
+        engine = RecordingEngine(profile, SETTINGS)
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            time.sleep(0.05)
+            return FakeCompleted(stdout="답변", returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        resp = runner.run(engine, request())
+        assert resp.elapsed_source == "runner"
+        assert resp.elapsed >= 0.05
+
+    def test_엔진이_이미_elapsed를_채웠으면_실행기가_안_건드린다(self, tmp_path: Path) -> None:
+        profile = claude_profile(tmp_path)
+        engine_response = EngineResponse(
+            ok=True, body="답", session_id=None, model_actual=None,
+            elapsed=9.9, turns=None, usage=None, elapsed_source="engine",
+        )
+        engine = RecordingEngine(profile, SETTINGS, response=engine_response)
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            return FakeCompleted(stdout="{}", returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        resp = runner.run(engine, request())
+        assert resp.elapsed == 9.9
+        assert resp.elapsed_source == "engine"
 
 
 # ---------------------------------------------------------------------------
@@ -579,11 +831,11 @@ class TestFallbackEngine:
         switcher = EngineSwitcher(tmp_path / "engine_state.json")
         calls: list[Any] = []
 
-        def fake_subprocess(cmd, cwd, timeout):
+        def fake_subprocess(cmd, cwd, timeout, env=None):
             calls.append(cmd)
             return FakeCompleted(stdout="", returncode=0)
 
-        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess)
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
         return FallbackEngine(primary, secondary, switcher, runner), primary, secondary, switcher
 
     def test_평소에는_1차_엔진으로_돈다(self, tmp_path: Path) -> None:
@@ -670,18 +922,36 @@ class Test엔진환경격리:
         runner.run(RecordingEngine(claude_profile(tmp_path), SETTINGS), request())
         assert seen["env"] == {"PATH": "/usr/bin", "BOT_PROFILE": "testbot"}
 
-    def test_정책이_없으면_환경을_안_넘긴다(self, tmp_path: Path) -> None:
-        """정책을 안 주는 연결이 아직 있다. 그때는 기존 동작을 유지한다 —
-        빈 환경을 넘기면 엔진이 PATH 를 못 찾아 아예 실행되지 않는다."""
-        seen: dict[str, Any] = {"env": "안 불림"}
+    def test_정책을_못_만들면_준비_단계_전에_멈춘다(self, tmp_path: Path) -> None:
+        """prepare() 는 설정 파일을 쓴다. 정책 확인이 그 뒤면 실행되지도 않을
+        요청이 파일을 남긴다."""
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)  # 프로필에 fake 블록이 없다
+        runner = EngineRunner(RuntimeSettings(), subprocess_runner=lambda *a, **k: None)
+        with pytest.raises(ConfigError):
+            runner.run(engine, request())
+        assert engine.built == []
+
+    def test_정책을_안_주면_엔진_자신의_정책을_쓴다(self, tmp_path: Path) -> None:
+        """fallback 은 primary 와 다른 엔진, 다른 home 으로 돈다. 실행기에 정책을
+        하나 박아 두면 2차 엔진이 1차의 home 으로 돌아 기록 위치가 어긋난다."""
+        seen: dict[str, Any] = {}
 
         def fake_run(cmd, cwd, timeout, env=None):
             seen["env"] = env
             return FakeCompleted(stdout="{}", returncode=0)
 
+        profile = profile_with(
+            {"type": "claude", "binary": "claude", "model": "m"}, tmp_path=tmp_path,
+            fallback={"type": "codex", "binary": "codex", "model": "m2",
+                      "home_dir": str(tmp_path / "codex-home")},
+        )
         runner = EngineRunner(RuntimeSettings(), subprocess_runner=fake_run)
-        runner.run(RecordingEngine(claude_profile(tmp_path), SETTINGS), request())
-        assert seen["env"] is None
+
+        runner.run(ClaudeEngine(profile, SETTINGS), request())
+        assert "CODEX_HOME" not in seen["env"]
+
+        runner.run(CodexEngine(profile, SETTINGS), request())
+        assert seen["env"]["CODEX_HOME"] == str(tmp_path / "codex-home")
 
 
 class Test엔진호출부품:
