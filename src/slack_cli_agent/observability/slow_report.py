@@ -16,6 +16,10 @@ from ..engine.base import Usage
 from ..engine.transcript import SessionTranscriptReader, TranscriptEvent
 from ..review.base import as_table
 
+#: Maps the name of the engine that answered to the reader for its transcript
+#: format. Empty name means the profile's primary engine.
+TranscriptReaderResolver = Callable[[str], SessionTranscriptReader]
+
 log = logging.getLogger(__name__)
 
 
@@ -84,19 +88,18 @@ class TimeBreakdownCalculator:
     re-issuing an aborted request.
     """
 
-    def __init__(
-        self,
-        transcript_reader: SessionTranscriptReader,
-        assumed_tokens_per_sec: float,
-        top_n: int = 3,
-    ) -> None:
-        self._reader = transcript_reader
+    def __init__(self, assumed_tokens_per_sec: float, top_n: int = 3) -> None:
         self._assumed_tokens_per_sec = assumed_tokens_per_sec
         self._top_n = top_n
 
-    def compute(self, session_id: str, since_ts: float | None = None) -> TimeBreakdown | None:
+    def compute(
+        self, reader: SessionTranscriptReader, session_id: str, since_ts: float | None = None,
+    ) -> TimeBreakdown | None:
+        # The reader is an argument, not constructor state: which engine answered
+        # (and therefore which transcript format to read) is decided per request,
+        # and a fallback answer comes from a different engine than the primary.
         try:
-            events = self._reader.read(session_id)
+            events = reader.read(session_id)
         except Exception as exc:  # noqa: BLE001 — a calc failure must not break request handling
             log.warning("시간 분해용 세션 기록을 읽지 못했다 %s : %s", session_id[:8], exc)
             return None
@@ -200,6 +203,8 @@ class SlowRequestMeta:
     channel_name: str
     text: str
     usage: Usage | None = None
+    #: Engine that actually answered. Empty means the profile's primary.
+    engine: str = ""
     stdout_tail: str | None = None
     stderr_tail: str | None = None
     """Tail of stdout/stderr from an abnormal engine exit, via tail_output(). None on
@@ -222,6 +227,15 @@ def _fmt_tokens(count: int) -> str:
     return str(count)
 
 
+#: Display order and label for each counted usage field.
+_USAGE_LABELS = (
+    ("input_tokens", "입력"),
+    ("cache_creation_tokens", "캐시 기록"),
+    ("cache_read_tokens", "캐시 읽기"),
+    ("output_tokens", "출력"),
+)
+
+
 @dataclass(frozen=True)
 class SessionContext:
     """Current context usage and limit for a session. Either can be None: `used` when the
@@ -237,14 +251,15 @@ class SessionContextCalculator:
     creation + cache read + output is the size the next turn inherits.
     """
 
-    def __init__(self, transcript_reader: SessionTranscriptReader, context_limit: Mapping[str, int]) -> None:
-        self._reader = transcript_reader
+    def __init__(self, context_limit: Mapping[str, int]) -> None:
         self._context_limit = context_limit
 
-    def compute(self, session_id: str, model: str | None = None) -> SessionContext:
+    def compute(
+        self, reader: SessionTranscriptReader, session_id: str, model: str | None = None,
+    ) -> SessionContext:
         limit = self._context_limit.get(model or "")
         used: int | None = None
-        for event in self._reader.read(session_id):
+        for event in reader.read(session_id):
             if event.role != "assistant":
                 continue
             counts = (
@@ -279,30 +294,44 @@ class UsageRowBuilder:
         usage: Usage | None,
         troubleshoot_channel: str,
         *,
+        reader: SessionTranscriptReader | None = None,
         session_id: str = "",
         model: str | None = None,
     ) -> list[tuple[str, str]]:
         if troubleshoot_channel not in self._owner_only_channels:
             return []
         rows = [self._token_row(usage)]
-        # Without a calculator, omit the session row entirely rather than guess at 0.
-        if self._session_context is not None:
-            rows.append(self._session_row(session_id, model))
+        # Without a calculator or a reader, omit the session row entirely rather
+        # than guess at 0.
+        if self._session_context is not None and reader is not None:
+            rows.append(self._session_row(reader, session_id, model))
         return rows
 
     def _token_row(self, usage: Usage | None) -> tuple[str, str]:
         if usage is None:
             return ("토큰", "기록 없음, 실패로 끝나 사용량이 남지 않았습니다")
-        total = usage.input_tokens + usage.cache_creation_tokens + usage.cache_read_tokens + usage.output_tokens
-        detail = (
-            f"입력 {_fmt_tokens(usage.input_tokens)} / 캐시 기록 {_fmt_tokens(usage.cache_creation_tokens)} / "
-            f"캐시 읽기 {_fmt_tokens(usage.cache_read_tokens)} / 출력 {_fmt_tokens(usage.output_tokens)}"
-        )
+        # An engine that doesn't report a field at all (e.g. Gemini's cache
+        # creation) marks it unavailable. Printing 0 there would read as a
+        # measured zero, and adding it to the total would say the same.
+        parts = []
+        total = 0
+        for name, label in _USAGE_LABELS:
+            if name in usage.unavailable:
+                parts.append(f"{label} 판정 불가")
+                continue
+            value = int(getattr(usage, name))
+            total += value
+            parts.append(f"{label} {_fmt_tokens(value)}")
+        detail = " / ".join(parts)
+        if usage.unavailable:
+            return ("토큰", f"{total:,}개 이상 ({detail})")
         return ("토큰", f"{total:,}개 ({detail})")
 
-    def _session_row(self, session_id: str, model: str | None) -> tuple[str, str]:
+    def _session_row(
+        self, reader: SessionTranscriptReader, session_id: str, model: str | None,
+    ) -> tuple[str, str]:
         assert self._session_context is not None
-        context = self._session_context.compute(session_id, model)
+        context = self._session_context.compute(reader, session_id, model)
         if context.used is None:
             return ("세션", "조회 실패, 세션 기록에 사용량이 없습니다")
         if context.limit:
@@ -486,10 +515,12 @@ class SlowRequestReporter:
         formatter: SlowReportFormatter,
         settings: RuntimeSettings,
         troubleshoot_channel: str,
+        readers: TranscriptReaderResolver,
         usage_row_builder: UsageRowBuilder | None = None,
     ) -> None:
         self._publisher = publisher
         self._calculator = calculator
+        self._readers = readers
         self._diagnostician = diagnostician
         self._formatter = formatter
         self._settings = settings
@@ -510,9 +541,11 @@ class SlowRequestReporter:
 
     def _report(self, meta: SlowRequestMeta) -> str | None:
         diagnosis = self._diagnostician.diagnose(meta.elapsed_wall, meta.mono_elapsed)
-        breakdown = self._calculator.compute(meta.session_id, since_ts=meta.started)
+        reader = self._readers(meta.engine)
+        breakdown = self._calculator.compute(reader, meta.session_id, since_ts=meta.started)
         usage_rows = self._usage_row_builder.build(
-            meta.usage, self._troubleshoot_channel, session_id=meta.session_id, model=meta.model,
+            meta.usage, self._troubleshoot_channel,
+            reader=reader, session_id=meta.session_id, model=meta.model,
         )
         summary, detail = self._formatter.format(meta, diagnosis, breakdown, usage_rows=usage_rows)
 
@@ -536,6 +569,7 @@ __all__ = [
     "TimeBreakdown",
     "TimeBreakdownCalculator",
     "TranscriptEvent",
+    "TranscriptReaderResolver",
     "UsageRowBuilder",
     "detect_retries",
     "tail_output",

@@ -53,11 +53,15 @@ class FakeEngine(Engine):
 
 
 def make_runner(stdout: str, returncode: int = 0) -> EngineRunner:
-    def fake_subprocess(cmd, cwd, timeout):
+    def fake_subprocess(cmd, cwd, timeout, env=None):
         return SimpleNamespace(stdout=stdout, stderr="", returncode=returncode)
 
+    class 통과정책:
+        def build(self, source_env):
+            return dict(source_env)
+
     settings = SimpleNamespace(request_timeout_sec=10)
-    return EngineRunner(settings, subprocess_runner=fake_subprocess)
+    return EngineRunner(settings, subprocess_runner=fake_subprocess, environment_policy=통과정책())
 
 
 def analysis_stdout(**fields) -> str:

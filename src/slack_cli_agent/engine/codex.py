@@ -43,6 +43,20 @@ from typing import Any
 from ..config.profile import McpServerSpec
 from .base import Engine, EngineRequest, EngineResponse, Usage, UsageLimit
 
+# sca-dyb.4 — confirmed 2026-09-16 against the real CLI's turn.completed
+# event: Codex doesn't use Claude's cache_read_input_tokens/
+# cache_creation_input_tokens names at all.
+#
+# Public (not _-prefixed) because engine/transcript.py's CodexTranscriptReader
+# reads the same key names out of a different event type (token_usage_record)
+# and must not drift from this mapping — see that module's _merge_usage.
+CODEX_USAGE_KEY_MAP: Mapping[str, str] = {
+    "input_tokens": "input_tokens",
+    "output_tokens": "output_tokens",
+    "cache_read_tokens": "cached_input_tokens",
+    "cache_creation_tokens": "cache_write_input_tokens",
+}
+
 
 def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec]) -> list[str]:
     args: list[str] = []
@@ -140,17 +154,21 @@ class CodexEngine(Engine):
             )
 
         body = (text or "").strip()
-        raw = {"thread_id": thread_id, "tool_errors": tool_errors}
+        # elapsed stays 0.0/"unknown" — confirmed 2026-09-16 that codex exec
+        # --json never emits a duration field on any event. EngineRunner
+        # fills it from wall-clock time instead.
+        raw = {"thread_id": thread_id, "tool_errors": tool_errors, "usage": usage_data}
+        usage = Usage.from_native(usage_data, CODEX_USAGE_KEY_MAP)
         if not body:
             return EngineResponse(
                 ok=False, body="Codex 응답이 비어 있습니다.", session_id=thread_id,
                 model_actual=None, elapsed=0.0, turns=None,
-                usage=Usage.from_mapping(usage_data), raw=raw,
+                usage=usage, raw=raw,
                 failure_reason="empty_response",
             )
         return EngineResponse(
             ok=True, body=body, session_id=thread_id, model_actual=None, elapsed=0.0,
-            turns=None, usage=Usage.from_mapping(usage_data), raw=raw, failure_reason=None,
+            turns=None, usage=usage, raw=raw, failure_reason=None,
         )
 
     def detect_usage_limit(self, response: EngineResponse) -> UsageLimit | None:

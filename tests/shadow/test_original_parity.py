@@ -484,7 +484,7 @@ class TestEngineProbe_타임아웃:
 
         seen_timeouts: list[Any] = []
 
-        def fake_subprocess(cmd, cwd, timeout):
+        def fake_subprocess(cmd, cwd, timeout, env=None):
             seen_timeouts.append(timeout)
             return FakeCompleted(stdout="", returncode=0)
 
@@ -522,5 +522,5 @@ class Test사용량_노출_규칙:
             def read(self, session_id: str) -> list:
                 return []
 
-        calculator = SessionContextCalculator(빈기록(), context_limit={})
-        assert calculator.compute("s1", model="어떤모델").limit is None
+        calculator = SessionContextCalculator(context_limit={})
+        assert calculator.compute(빈기록(), "s1", model="어떤모델").limit is None
