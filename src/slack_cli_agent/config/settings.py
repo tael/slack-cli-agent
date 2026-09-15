@@ -100,6 +100,11 @@ class RuntimeSettings:
     # approximation, not a precise measurement.
     assumed_tokens_per_sec: float = 40
 
+    # Tools handed to the engine. Read-only by default; a bot that needs to
+    # write declares it in its profile rather than in code.
+    base_tools: tuple[str, ...] = ("Read", "Grep", "Glob")
+    owner_tools: tuple[str, ...] = ()
+
     # Line prefixes stripped from replies. Defaults to empty since the
     # actual prefix text is org-specific and doesn't belong in code.
     dropped_line_heads: tuple[str, ...] = ()

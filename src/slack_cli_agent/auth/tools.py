@@ -30,7 +30,7 @@ class ToolPolicy:
         self._owner_tools = tuple(owner_tools)
         self._extensions = tuple(extensions)
 
-    def tools_for(
+    def tool_list_for(
         self,
         principal: Principal,
         *,
@@ -38,7 +38,7 @@ class ToolPolicy:
         readonly: bool = False,
         aside: bool = False,
         skills_enabled: bool = False,
-    ) -> str:
+    ) -> tuple[str, ...]:
         tools: list[str] = list(self._base_tools)
         if readonly:
             pass
@@ -50,4 +50,18 @@ class ToolPolicy:
                     tools += list(ext.extra_tools(principal))
         if not aside and skills_enabled:
             tools.append(SKILL_TOOL)
-        return ",".join(tools)
+        return tuple(tools)
+
+    def tools_for(
+        self,
+        principal: Principal,
+        *,
+        prompt: str = "",
+        readonly: bool = False,
+        aside: bool = False,
+        skills_enabled: bool = False,
+    ) -> str:
+        return ",".join(self.tool_list_for(
+            principal, prompt=prompt, readonly=readonly,
+            aside=aside, skills_enabled=skills_enabled,
+        ))

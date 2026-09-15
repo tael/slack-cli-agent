@@ -266,6 +266,7 @@ def build_pipeline(
     consumption: Any = None,
     watch_queue: Any = None,
     response_archive: Any = None,
+    tool_policy: Any = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -300,6 +301,8 @@ def build_pipeline(
         extra_kwargs["watch_queue"] = watch_queue
     if response_archive is not None:
         extra_kwargs["response_archive"] = response_archive
+    if tool_policy is not None:
+        extra_kwargs["tool_policy"] = tool_policy
 
     pipeline = RequestPipeline(
         access_policy=access,
