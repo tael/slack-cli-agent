@@ -169,6 +169,47 @@ class Test완료처리:
         assert 큐.due(now=99999.0, min_gap=0.0) == []
 
 
+class Test빈완료보고:
+    """완료 태그만 오고 본문이 없을 때 스레드에 무엇이 올라가는가.
+
+    2026-09-16 실측 — 확인 응답이 태그뿐이라 본문이 비었고, rich 채널의 발행기가
+    보낼 조각을 하나도 못 만들어 아무것도 안 올라갔다. 그런데 완료 표식은 달려서
+    재시도도 안 됐다. 사람이 보기에는 감시가 조용히 사라진 것과 같다.
+    """
+
+    def test_본문이_태그뿐이면_기본_문구로_올린다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "민감할 수 있는 감시 조건")
+        발행 = 가짜발행()
+        c = 체커(큐=큐, run_check=lambda job: 응답(ok=True, body=WATCH_DONE_TAG), 발행=발행)
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert len(발행.게시내역) == 1
+        본문 = 발행.게시내역[0][2]
+        assert 본문.strip()
+        # 감시 조건에는 링크된 스레드나 파일에서 끌어온 내용이 들어갈 수 있다.
+        # 이 문구는 채널 스레드로 나가므로 조건을 싣지 않는다.
+        assert "민감할 수 있는 감시 조건" not in 본문
+
+    def test_공백만_있어도_기본_문구로_올린다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(큐=큐, run_check=lambda job: 응답(ok=True, body=f"  \n {WATCH_DONE_TAG}\n "), 발행=발행)
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역[0][2].strip()
+
+    def test_본문이_있으면_그대로_올린다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(큐=큐, run_check=lambda job: 응답(ok=True, body=f"끝났습니다 {WATCH_DONE_TAG}"), 발행=발행)
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역[0][2] == "끝났습니다"
+
+
 class Test미완료처리:
     def test_아직안끝났으면게시하지않고확인횟수만갱신한다(self, 큐) -> None:
         작업_id = 큐.enqueue("C1", "111.1", "배포 확인")
