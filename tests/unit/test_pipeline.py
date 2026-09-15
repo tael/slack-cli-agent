@@ -1124,7 +1124,7 @@ class Test감시등록:
         assert 큐.enqueued[0]["trust"] is TrustLevel.OWNER
 
     def test_등록되면_완료표식이아니라_감시표식을단다(self, tmp_path: Path) -> None:
-        """완료 표식을 달면 미완료 복구 대상에서 빠져 되짚기가 다시 보지 않는다."""
+        """완료 표식을 달면 미완료 복구 대상에서 빠져 캐치업이 다시 보지 않는다."""
         큐 = Fake감시큐()
         pipeline, deps = build_pipeline(
             responses=[ok_response(body="네\n\n[[WATCH: 작업 상태]]")],

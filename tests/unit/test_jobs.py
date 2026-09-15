@@ -195,7 +195,7 @@ class Test실패건재등록:
     """실패로 끝난 건을 다시 등록할 수 있는가.
 
     `UNIQUE(channel, message_ts)` 와 `INSERT OR IGNORE` 때문에, 실패한 행이
-    그 키를 계속 차지한다. 되짚기가 미응답 멘션을 찾아내도 재등록이 조용히
+    그 키를 계속 차지한다. 캐치업이 미응답 멘션을 찾아내도 재등록이 조용히
     무시돼 그 요청은 영영 처리되지 않는다.
 
     완료된 건은 반대다. 다시 등록하면 같은 답이 두 번 나간다 — 그 차단은
@@ -233,7 +233,7 @@ class Test실패건재등록:
         assert queue.pending() == []
 
     def test_시도상한을_넘긴건은_다시_등록되지_않는다(self, database) -> None:
-        """같은 요청이 계속 실패하는데 되짚기가 매번 되살리면 끝나지 않는다."""
+        """같은 요청이 계속 실패하는데 캐치업이 매번 되살리면 끝나지 않는다."""
         queue = SqliteJobQueue(database)
         queue.enqueue(ctx("1.0"))
         for _ in range(3):

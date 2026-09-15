@@ -75,8 +75,8 @@ class TestApplicationSnapshotSource:
         assert source.is_shutting_down() is True
         assert source.started_at() == 500.0
 
-    def test_되짚기_대기는_아직_세지_않는다(self) -> None:
-        """되짚기는 접수 시점에 바로 처리돼 대기 개념이 없다.
+    def test_캐치업_대기는_아직_세지_않는다(self) -> None:
+        """캐치업은 접수 시점에 바로 처리돼 대기 개념이 없다.
 
         원본에 있던 항목이라 계약에는 남기고 0 으로 둔다. 값을 지어내지 않는다.
         """
