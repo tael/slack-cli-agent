@@ -6,10 +6,21 @@ Ports two spots from the original bot.py:
   style. Only a minimal PATH/LANG/HOME plus BOT_PROFILE and the
   engine's own home path (CODEX_HOME) get through; Slack tokens and
   other engines' credentials were never in the list to begin with.
-- _run_claude() (bot.py:1678-1681) — Claude's environment, denylist
-  style: copies the whole environment and strips only
+- _run_claude() (bot.py:1678-1681) — Claude's environment, originally
+  denylist style: copied the whole environment and stripped only
   ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN to force the OAuth token path.
-  A different contract from Codex's.
+
+That denylist shape was re-examined for cross-bot isolation
+(2026-09-15, sca-kos.5) by listing this session's own os.environ key
+names. It let through CLAUDE_CODE_MESSAGING_SOCKET/_TOKEN (another
+Claude Code session's IPC channel), CLAUDE_CODE_SESSION_ID/CHILD_SESSION,
+SLACK_MCP_XOXC_TOKEN/XOXD_TOKEN, GEMINI_API_KEY, and other unrelated
+credentials — any parent-process variable not on the two-item denylist
+reaches the child unfiltered. ClaudeEnvironmentPolicy was switched to
+allowlist, the same shape as Codex/Gemini, so a new risky variable
+appearing in the parent process can't silently leak in; the OAuth token
+path is kept working by explicitly allowing CLAUDE_CODE_OAUTH_TOKEN
+through.
 
 Skipping the engine's own home path lets it fall through to the user's
 personal config, session, and auth — breaking isolation, which is the
@@ -61,10 +72,16 @@ class CodexEnvironmentPolicy(EngineEnvironmentPolicy):
     HOME_ENV_VAR = "CODEX_HOME"
 
     def _base_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
+        # HOME itself, not just CODEX_HOME, is pinned to this bot's home
+        # when one is configured. Otherwise a parent process whose HOME
+        # points at a different bot's directory (or a person's own home)
+        # leaks that path into this bot's process even though CODEX_HOME
+        # is correctly overridden below by build().
+        home = str(self.home_dir) if self.home_dir is not None else source_env.get("HOME", "")
         return {
             "PATH": source_env.get("PATH", "/usr/bin:/bin"),
             "LANG": source_env.get("LANG", "ko_KR.UTF-8"),
-            "HOME": source_env.get("HOME", ""),
+            "HOME": home,
             # Helper scripts the bot invokes need to know which bot
             # they're running as — without this, they'd pick the wrong
             # bot's token and channel config.
@@ -94,18 +111,38 @@ class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
 
 
 class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
-    """Claude's process environment — denylist, same as the original _run_claude()."""
+    """Claude's process environment — allowlist, same shape as Codex/Gemini.
 
-    EXCLUDED_VARS: frozenset[str] = frozenset({
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
+    Was a denylist that copied the whole parent environment through
+    except ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN. Converted to allowlist
+    for cross-bot isolation (see module docstring); CLAUDE_CODE_OAUTH_TOKEN
+    is explicitly carried through so the OAuth subscription auth path the
+    denylist was originally built for keeps working.
+    """
+
+    #: Vars beyond the fixed PATH/LANG/HOME/BOT_PROFILE set that are
+    #: individually let through when present, because the engine needs
+    #: them to function. Values are still read from source_env, not
+    #: hardcoded — only the key names are an allowlist.
+    ADDITIONAL_ALLOWED_VARS: frozenset[str] = frozenset({
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        # Without USER the CLI reports "Not logged in · Please run /login"
+        # even with HOME set (checked against the real CLI 2026-09-15).
+        # SHELL, LOGNAME and TMPDIR made no difference.
+        "USER",
     })
 
     def _base_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
-        return {
-            key: value for key, value in source_env.items()
-            if key not in self.EXCLUDED_VARS
+        env = {
+            "PATH": source_env.get("PATH", "/usr/bin:/bin"),
+            "LANG": source_env.get("LANG", "ko_KR.UTF-8"),
+            "HOME": source_env.get("HOME", ""),
+            "BOT_PROFILE": self.profile_name,
         }
+        for key in self.ADDITIONAL_ALLOWED_VARS:
+            if key in source_env:
+                env[key] = source_env[key]
+        return env
 
 
 class EngineEnvironmentPolicyRegistry:
