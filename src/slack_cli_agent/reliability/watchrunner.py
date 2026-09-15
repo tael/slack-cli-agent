@@ -82,8 +82,8 @@ class WatchJobChecker:
     def _check_one(self, job: WatchJob, now: float) -> None:
         try:
             response = self._run_check(job)
-        except Exception as exc:  # noqa: BLE001 — one job's check failing shouldn't stop the worker; retry it next round
-            log.error("감시 확인 중 오류 : %s", exc)
+        except Exception:
+            log.exception("감시 확인 중 오류 : 작업 %d, 확인 %d회", job.id, job.checks)
             self._queue.mark_checked(job.id, now)
             return
 
@@ -91,8 +91,19 @@ class WatchJobChecker:
             self._finish(job, response.body)
             return
 
-        if not response.ok or WATCH_STILL_TAG not in response.body:
-            log.warning("감시 확인 응답이 기대한 형식이 아니다 : %s", job.condition[:80])
+        # The body and the condition can carry Slack conversations or file
+        # contents, so neither goes into the log. The two failures get separate
+        # wording because they need different fixes.
+        if not response.ok:
+            log.warning(
+                "감시 확인 엔진 실패 : 작업 %d, 확인 %d회, 사유 %s, 응답 %d자",
+                job.id, job.checks, response.failure_reason or "미상", len(response.body),
+            )
+        elif WATCH_STILL_TAG not in response.body:
+            log.warning(
+                "감시 확인 태그 누락 : 작업 %d, 확인 %d회, 응답 %d자",
+                job.id, job.checks, len(response.body),
+            )
         self._queue.mark_checked(job.id, now)
 
     def _finish(self, job: WatchJob, raw_body: str) -> None:
