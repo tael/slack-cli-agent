@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from slack_cli_agent.core.timezones import KST
 from slack_cli_agent.learning.schedule import DailyBatchSchedule
@@ -80,3 +80,58 @@ def test_기준_시각이_범위_밖이면_거부한다():
         except ValueError:
             continue
         raise AssertionError(f"{hour} 를 받아들였다")
+
+
+def test_미완료로_남은_날은_이틀이_지나도_다시_후보가_된다():
+    """한도 소진으로 미완료인 날이 되돌아보기 범위 밖으로 밀리면 승인해도
+    그 날은 영영 안 돈다(sca-b4o 리뷰).
+    """
+    schedule = DailyBatchSchedule(
+        clock=_clock("2026-09-16 23:30"), run_hour=22,
+        is_done=lambda day: day not in {"2026-09-14"},
+        unsettled_days=lambda: ("2026-09-14",),
+    )
+    assert schedule.due_day() == "2026-09-14"
+
+
+def test_미완료가_있어도_오늘이_먼저다():
+    """미완료로 남은 옛 날짜가 오늘을 밀어내면 그날 기록이 늦어진다."""
+    schedule = DailyBatchSchedule(
+        clock=_clock("2026-09-16 23:30"), run_hour=22, is_done=lambda day: False,
+        unsettled_days=lambda: ("2026-09-14",),
+    )
+    assert schedule.due_day() == "2026-09-16"
+
+
+def test_미완료가_없으면_지금까지와_같다():
+    schedule = DailyBatchSchedule(
+        clock=_clock("2026-09-16 23:30"), run_hour=22,
+        is_done=lambda day: True, unsettled_days=lambda: (),
+    )
+    assert schedule.due_day() is None
+
+class Test대기_중인_날은_순서를_넘긴다:
+    """오늘이 재시도 시각 전이면 분석할 채널이 없는데도 오늘이 계속 후보로
+    나와 이미 시각이 지난 옛 날짜가 순서를 못 받는다(sca-b4o 리뷰).
+    """
+
+    def 일정(self, *, waiting: set[str], unsettled: tuple[str, ...]) -> DailyBatchSchedule:
+        return DailyBatchSchedule(
+            clock=lambda: datetime(2026, 9, 16, 5, 0, tzinfo=UTC),
+            run_hour=4,
+            is_done=lambda day: False,
+            unsettled_days=lambda: unsettled,
+            is_waiting=lambda day, now: day in waiting,
+        )
+
+    def test_오늘이_대기_중이면_미완료_날짜를_돈다(self) -> None:
+        일정 = self.일정(waiting={"2026-09-16", "2026-09-15"}, unsettled=("2026-09-10",))
+        assert 일정.due_day() == "2026-09-10"
+
+    def test_전부_대기_중이면_돌_날이_없다(self) -> None:
+        일정 = self.일정(waiting={"2026-09-16", "2026-09-15", "2026-09-10"}, unsettled=("2026-09-10",))
+        assert 일정.due_day() is None
+
+    def test_대기가_아니면_오늘이_먼저다(self) -> None:
+        일정 = self.일정(waiting=set(), unsettled=("2026-09-10",))
+        assert 일정.due_day() == "2026-09-16"

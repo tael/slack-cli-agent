@@ -54,6 +54,7 @@ from ..jobs.queue import SqliteJobQueue
 from ..learning.analyzer import ProposalAnalyzer, ProposalBuilder
 from ..learning.apply import LearningApplier
 from ..learning.batch import LearningBatch
+from ..learning.progress import ProgressStore
 from ..learning.proposal import ProposalStore
 from ..learning.reactions import ReactionCollector
 from ..learning.render import ProposalRenderer
@@ -244,6 +245,7 @@ class Application:
         self._response_archive: ResponseArchive | None = None
         self._learning_batch: LearningBatch | None = None
         self._proposals: ProposalStore | None = None
+        self._learning_progress: ProgressStore | None = None
         self._catchup_service: CatchupService | None = None
         self._pending_report: PendingReportStore | None = None
         self._outage_tracker: OutageTracker | None = None
@@ -564,7 +566,6 @@ class Application:
             self._learning_batch = LearningBatch(
                 archives=archive,
                 reactions=ReactionCollector(
-                    archive,
                     threads=self._history_port(),
                     thread_timestamps=archive.thread_timestamps,
                     channel_id_of=self._channel_id_of,
@@ -572,6 +573,7 @@ class Application:
                 ),
                 builder=ProposalBuilder(analyzer),
                 store=self._proposal_store(),
+                progress=self._learning_progress_store(),
                 applier=LearningApplier(paths.knowledge, self._profile.display_name),
                 renderer=ProposalRenderer(),
                 notify=self._notify_owner,
@@ -596,6 +598,13 @@ class Application:
         """
         return self._proposal_store().is_done(day)
 
+    def _learning_progress_store(self) -> ProgressStore:
+        if self._learning_progress is None:
+            # Its own directory: ProposalStore.latest() scans the proposal
+            # directory, and a progress file there read as a proposal.
+            self._learning_progress = ProgressStore(self._profile.paths.proposals / "progress")
+        return self._learning_progress
+
     def _proposal_store(self) -> ProposalStore:
         if self._proposals is None:
             self._proposals = ProposalStore(self._profile.paths.proposals)
@@ -618,6 +627,8 @@ class Application:
             clock=lambda: datetime.now(KST),
             run_hour=self._learning_run_hour(),
             is_done=self._learning_day_done,
+            unsettled_days=self._learning_progress_store().unsettled_days,
+            is_waiting=self._learning_progress_store().is_waiting,
         )
 
     def _learning_batch_tick(self) -> None:
