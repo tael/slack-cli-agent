@@ -2,9 +2,12 @@
 # 봇을 launchd 에 등록해 상시 기동한다. ingress(슬랙 수신)와 worker(처리)를
 # 따로 띄운다. 죽으면 다시 뜨고 로그인 시 자동으로 뜬다.
 #
-#   tools/register-launchd.sh <이름> [web포트]
+#   tools/register-launchd.sh <이름>
+#
+# 웹 콘솔은 여기서 안 띄운다. 콘솔은 모든 봇을 함께 보여주므로 봇에 매면
+# 그 봇을 내릴 때 콘솔도 내려간다. tools/register-console.sh 를 쓴다.
 set -e
-NAME=$1; WEBPORT=$2
+NAME=$1
 [ -z "$NAME" ] && { sed -n '2,7p' "$0"; exit 2; }
 mkdir -p ~/Library/LaunchAgents "$HOME/.$NAME/logs"
 
@@ -33,8 +36,6 @@ EOF
 
 gen ingress ""
 gen worker ""
-[ -n "$WEBPORT" ] && gen web "
-    <string>--port</string><string>$WEBPORT</string>"
 
 sleep 8
 echo "== 상태"

@@ -69,6 +69,14 @@ class FakeMetrics:
         return self._result
 
 
+class FakeRoster:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def rows(self) -> list[dict[str, object]]:
+        return self._rows
+
+
 class Boom:
     def names(self) -> list[str]:
         raise RuntimeError("고장")
@@ -81,18 +89,21 @@ def make_router(
     prompts: dict[str, FakeFileEditor] | None = None,
     knowledge: dict[str, FakeFileEditor] | None = None,
     metrics: dict[str, FakeMetrics] | None = None,
+    roster: FakeRoster | None = None,
 ) -> ApiRouter:
     profiles = profiles if profiles is not None else FakeProfiles({"mametchi": {"name": "mametchi"}})
     channels = channels if channels is not None else {}
     prompts = prompts if prompts is not None else {}
     knowledge = knowledge if knowledge is not None else {}
     metrics = metrics if metrics is not None else {}
+    roster = roster if roster is not None else FakeRoster([])
     return ApiRouter(
         profiles=profiles,
         channels_for=lambda bot: channels[bot],
         prompts_for=lambda bot: prompts[bot],
         knowledge_for=lambda bot: knowledge[bot],
         metrics_for=lambda bot: metrics[bot],
+        roster=roster,
     )
 
 
@@ -112,6 +123,21 @@ class Test경로_판정:
         res = router.handle("GET", "/api/health", {}, None)
         assert res.status == 200
         assert res.body == {"ok": True}
+
+
+class Test봇명부:
+    """봇 선택줄이 쓰는 경로. 지표는 봇 하나만 보므로 명부는 따로 낸다."""
+
+    def test_모든_봇의_한줄_상태를_낸다(self) -> None:
+        rows = [{"name": "asuka", "available": True}, {"name": "rei", "available": False}]
+        router = make_router(roster=FakeRoster(rows))
+        res = router.handle("GET", "/api/bots", {}, None)
+        assert res.status == 200
+        assert res.body == rows
+
+    def test_GET_이_아니면_405(self) -> None:
+        router = make_router()
+        assert router.handle("PUT", "/api/bots", {}, None).status == 405
 
 
 class Test프로필:

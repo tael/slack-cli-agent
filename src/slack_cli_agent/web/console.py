@@ -11,6 +11,7 @@ from .api import ApiRouter
 from .editor import ChannelEditor, ProfileEditor
 from .files import FileEditor
 from .metrics import MetricsCollector
+from .roster import BotRoster
 from .server import WebServer
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -20,6 +21,7 @@ class WebConsole:
     def __init__(self, search_dirs: Sequence[Path]) -> None:
         self._search_dirs = [Path(p) for p in search_dirs]
         self._profiles = ProfileEditor(self._search_dirs)
+        self._roster = BotRoster(self._search_dirs)
 
     def router(self) -> ApiRouter:
         return ApiRouter(
@@ -28,6 +30,7 @@ class WebConsole:
             prompts_for=lambda bot: FileEditor(self._profile(bot).paths.prompts),
             knowledge_for=lambda bot: FileEditor(self._profile(bot).paths.knowledge),
             metrics_for=lambda bot: MetricsCollector(self._profile(bot)),
+            roster=self._roster,
         )
 
     def server(self, *, port: int = 8787) -> WebServer:

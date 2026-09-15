@@ -55,6 +55,17 @@ class TestProfileEditorNames:
         assert editor.names() == []
 
 
+    def test_예시_프로필은_목록에서_뺀다(self, tmp_path: Path) -> None:
+        """`*.example.json` 은 저장소에 올리는 견본이다. 실제 봇이 아니므로
+        콘솔 봇 목록에 섞이면 안 된다."""
+        base = tmp_path / "profiles"
+        base.mkdir()
+        (base / "asuka.json").write_text("{}", encoding="utf-8")
+        (base / "example.example.json").write_text("{}", encoding="utf-8")
+
+        assert ProfileEditor([base]).names() == ["asuka"]
+
+
 class TestProfileEditorRead:
     def test_원본_JSON_그대로_돌려준다(self, tmp_path: Path) -> None:
         write(tmp_path / "example.json", MINIMAL)

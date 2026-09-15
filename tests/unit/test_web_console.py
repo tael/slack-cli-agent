@@ -79,6 +79,20 @@ class Test조립:
         assert res.status == 200
         assert res.body["bot"]["name"] == "example"  # type: ignore[index,call-overload]
 
+    def test_봇_명부가_모든_프로필을_낸다(self, tmp_path: Path) -> None:
+        """봇 선택줄이 이것을 쓴다. 지표 응답은 선택된 봇 하나만 담는다."""
+        console = make_console(tmp_path)
+        profiles = tmp_path / "profiles"
+        (profiles / "another.json").write_text(
+            json.dumps({**PROFILE, "name": "another", "state_dir": str(tmp_path / "state2")}),
+            encoding="utf-8",
+        )
+
+        res = console.router().handle("GET", "/api/bots", {}, None)
+
+        assert res.status == 200
+        assert [row["name"] for row in res.body] == ["another", "example"]  # type: ignore[union-attr,index]
+
     def test_프로필을_저장하면_파일이_바뀐다(self, tmp_path: Path) -> None:
         console = make_console(tmp_path)
         data = {**PROFILE, "state_dir": str(tmp_path / "state"), "display_name": "새이름"}

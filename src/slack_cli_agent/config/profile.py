@@ -11,6 +11,9 @@ from typing import Any
 from ..core.errors import ConfigError
 from .paths import StatePaths
 
+# 저장소에 올리는 견본 프로필. 실제 봇이 아니므로 검색에서 뺀다.
+EXAMPLE_SUFFIX = ".example.json"
+
 
 @dataclass(frozen=True)
 class EngineSpec:
@@ -117,6 +120,24 @@ class Profile:
     def roster_file(self) -> Path:
         """Account handle to person-name table."""
         return self.data_dir / "roster.md"
+
+    @classmethod
+    def discover(cls, search_paths: Sequence[Path]) -> list[str]:
+        """검색 경로에 있는 프로필 이름을 정렬해 돌려준다.
+
+        `*.example.json` 은 저장소에 올리는 견본이라 실제 봇이 아니다
+        (`docs/패키징-경계.md`). 걸러내지 않으면 웹 콘솔 봇 목록에
+        `example.example` 이 실제 봇처럼 섞인다.
+        """
+        found: set[str] = set()
+        for base in search_paths:
+            if not Path(base).is_dir():
+                continue
+            for path in Path(base).glob("*.json"):
+                if path.name.endswith(EXAMPLE_SUFFIX):
+                    continue
+                found.add(path.stem)
+        return sorted(found)
 
     @classmethod
     def load(cls, name: str, search_paths: Sequence[Path]) -> Profile:
