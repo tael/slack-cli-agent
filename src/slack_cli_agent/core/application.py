@@ -166,6 +166,7 @@ from .lifecycle import InflightCounter
 from .periodic import PeriodicRunner
 from .pipeline import RequestPipeline
 from .services import ServiceGroup
+from .spawn import ThreadTaskSpawner
 from .timezones import KST
 from .worker import Worker
 
@@ -880,6 +881,7 @@ class Application:
                 reply=self._reply,
                 allowed_reactions=self.allowed_reactions(),
                 on_reaction=self.on_reaction,
+                spawn=ThreadTaskSpawner(),
                 # failed jobs get resurrected via re-registration; capping attempts
                 # keeps a permanently-failing request from reviving on every redelivery
                 job_max_attempts=self._settings.job_max_attempts,
