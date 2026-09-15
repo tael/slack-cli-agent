@@ -15,6 +15,7 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from ..admin.command import AdminContext
@@ -382,6 +383,12 @@ class Application:
             self._access_policy = AccessPolicy(self._profile, self._channels, extensions)
         return self._access_policy
 
+    @property
+    def readable_dirs(self) -> tuple[Path, ...]:
+        """Directories every engine call may read. One place so the watch
+        check and the normal path cannot drift apart (sca-0ab)."""
+        return (self._profile.paths.persona, self._profile.paths.prompts)
+
     def tool_policy(self) -> ToolPolicy:
         if self._tool_policy is None:
             extensions = [e for p in self._plugins for e in p.access_extensions()]
@@ -554,7 +561,7 @@ class Application:
                 watch_queue=self.watch_jobs(),
                 response_archive=self.response_archive(),
                 tool_policy=self.tool_policy(),
-                readable_dirs=(self._profile.paths.persona, self._profile.paths.prompts),
+                readable_dirs=self.readable_dirs,
             )
         return self._pipeline
 
@@ -801,6 +808,14 @@ class Application:
             model=self.access_policy.model_for(principal),
             effort=self.access_policy.effort_for(principal, prompt),
             workdir=(config.workdir if (config and config.workdir) else self._profile.work_root),
+            # readonly: the check only looks. Owner extras and Skill would let
+            # this turn start new work, which `watch_check_prompt` forbids.
+            # Left empty before, and claude turns an empty list into
+            # `--allowedTools ""` — a turn with no tools at all (sca-0ab).
+            allowed_tools=self.tool_policy().tool_list_for(
+                principal, prompt=prompt, readonly=True, skills_enabled=False,
+            ),
+            readable_dirs=self.readable_dirs,
             trust_level=job.trust,
         ), CallOrigin.BACKGROUND)
 
