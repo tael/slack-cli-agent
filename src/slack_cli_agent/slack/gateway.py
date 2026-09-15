@@ -12,6 +12,7 @@ from typing import Any
 
 from ..core.errors import ConfigError
 from ..core.periodic import PeriodicRunner
+from ..reliability.connection import ConnectionEpochRecorder, ConnectionKind
 
 log = logging.getLogger(__name__)
 
@@ -54,11 +55,47 @@ class SlackGateway:
         client: Any,
         connector: Connector | None = None,
         profile_name: str = "",
+        epoch_recorder: ConnectionEpochRecorder | None = None,
     ) -> None:
         self._client = client
         self._connector = connector or _socket_mode_connect
         self._profile_name = profile_name
         self._handlers: dict[str, list[Callable[[Mapping[str, Any]], None]]] = {}
+        self._epoch_recorder = epoch_recorder
+        self._edges = ConnectionEdgeDetector()
+
+    def observe_connection(self, connected: bool) -> None:
+        """Feeds one socket-state observation to the log and the epoch ledger.
+
+        The worker that runs catch-up is a separate process, so the ledger is
+        the only path this observation can take.
+        """
+        kind = self._edges.on_poll(connected)
+        if kind is not None:
+            self.log_connected(reconnect=(kind == "reconnect"))
+            self._record_connection(kind)
+        elif connected:
+            self._note_alive()
+
+    def _record_connection(self, kind: str) -> None:
+        if self._epoch_recorder is None:
+            return
+        try:
+            self._epoch_recorder.record_connection(
+                ConnectionKind.RECONNECT if kind == "reconnect" else ConnectionKind.INITIAL
+            )
+        except Exception:
+            # Dropping the socket over a failed write would lose every later
+            # event; a late catch-up is the cheaper failure.
+            log.exception("소켓 연결 세대 기록 실패")
+
+    def _note_alive(self) -> None:
+        if self._epoch_recorder is None:
+            return
+        try:
+            self._epoch_recorder.note_alive()
+        except Exception:
+            log.exception("소켓 생존 기록 실패")
 
     @property
     def client(self) -> Any:
@@ -151,12 +188,8 @@ def _socket_mode_connect(gateway: SlackGateway, app_token: str) -> None:
     # socket is actually up — is_connected() is the real observation point.
     # Polling (rather than a one-shot check) also catches any later
     # reconnect after a drop, which would otherwise go unlogged.
-    detector = ConnectionEdgeDetector()
-
     def poll_connection() -> None:
-        kind = detector.on_poll(bool(socket.is_connected()))
-        if kind is not None:
-            gateway.log_connected(reconnect=(kind == "reconnect"))
+        gateway.observe_connection(bool(socket.is_connected()))
 
     PeriodicRunner(poll_connection, _CONNECTION_POLL_SEC, name="socket_mode_watch").start()
 

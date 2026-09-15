@@ -19,8 +19,10 @@ def 컬럼목록(db) -> set[str]:
 
 class Test감시작업스키마:
     def test_스키마버전이올라간다(self) -> None:
-        assert SCHEMA_VERSION == 3
-        assert [단계[0] for 단계 in MIGRATIONS] == [1, 2, 3]
+        """감시 작업 컬럼이 v3 단계로 들어간 것을 고정한다. 그 뒤 단계가 더 붙어도
+        이 시험이 깨지면 안 되므로 전체 버전 수가 아니라 단계 번호를 본다."""
+        assert 3 in [단계[0] for 단계 in MIGRATIONS]
+        assert [단계[0] for 단계 in MIGRATIONS] == list(range(1, SCHEMA_VERSION + 1))
 
     def test_리액션대상메시지를저장한다(self, database) -> None:
         """원본은 감시 표식을 붙인 메시지의 ts 를 들고 있다가 완료 시 바꾼다."""
@@ -38,7 +40,7 @@ class Test감시작업스키마:
         """원본의 org_admin 처럼 조직 전용 값은 코어 컬럼으로 올리지 않는다."""
         assert "extra" in 컬럼목록(database.connect())
 
-    def test_v2로만든DB도v3로올라간다(self, tmp_path) -> None:
+    def test_v2로만든DB도최신으로올라간다(self, tmp_path) -> None:
         경로 = tmp_path / "v2.db"
         연결 = sqlite3.connect(경로)
         for 단계 in MIGRATIONS[:2]:
@@ -53,7 +55,7 @@ class Test감시작업스키마:
         db = Database(경로)
         db.migrate()
         assert {"msg_ts", "checks", "trust_level", "extra"} <= 컬럼목록(db.connect())
-        assert db.connect().execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.connect().execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
     def test_기존행은기본값으로남는다(self, tmp_path) -> None:
         """돌고 있는 DB 의 행이 컬럼 추가로 깨지면 안 된다."""
