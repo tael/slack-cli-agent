@@ -808,6 +808,28 @@ class Test감시확인연결:
         assert 보낸요청[0].resume is False
         assert 보낸요청[0].prompt.find("배포 확인") >= 0
 
+    def test_확인실행은_배치로_표시된다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        """감시 확인은 아무도 기다리지 않는다. 사람이 기다리는 요청으로
+        표시하면 폴백 복구 프로브를 대신 써 버려, 그 프로브가 실패했을 때
+        직후의 사람 요청이 주기 내내 복구 혜택을 못 받는다.
+        """
+        from slack_cli_agent.engine.base import CallOrigin
+        from slack_cli_agent.reliability.watchjobs import WatchJob
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        app._composer = lambda: _프롬프트조립대역()  # type: ignore[method-assign]
+        받은: list[Any] = []
+        app.engine_invoker.invoke = (  # type: ignore[method-assign]
+            lambda request, origin=CallOrigin.INTERACTIVE: 받은.append(origin)
+        )
+
+        app._watch_run_check(WatchJob(
+            id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
+            created_at=0.0, last_run=None,
+        ))
+
+        assert 받은 == [CallOrigin.BACKGROUND]
+
     def test_확인실행의_세션_id는_엔진이_만든다(self, tmp_path: Path, monkeypatch: Any) -> None:
         """직접 만들면 그 형식이 CLI 와 어긋나도 아무도 모른다. 실제로
         uuid4().hex 를 써서 클로드가 "Invalid session ID" 로 매번 거부했고,

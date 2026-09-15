@@ -40,6 +40,24 @@ class ElapsedSource(StrEnum):
     """Neither has run yet, e.g. a response built directly in a test."""
 
 
+class CallOrigin(StrEnum):
+    """Whether a human is waiting on this turn.
+
+    Only the fallback layer reads it. The recovery probe sends one real request
+    to the primary to see if it came back, and a failed probe pushes the next
+    attempt out by the probe interval — so a background caller that consumes it
+    makes a human wait out that interval for a recovery they would otherwise
+    have gotten (sca-dyb.9 review).
+
+    Interactive is the default because that is the failure that hurts: a
+    background caller that forgets loses one probe, an interactive one that
+    forgets means recovery never reaches a human at all.
+    """
+
+    INTERACTIVE = "interactive"
+    BACKGROUND = "background"
+
+
 @dataclass(frozen=True)
 class EngineRequest:
     """One request to an engine. Channel/speaker decisions are already resolved by this point."""
