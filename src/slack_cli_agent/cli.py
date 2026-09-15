@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import signal
 import sys
 import webbrowser
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, TextIO, runtime_checkable
 
@@ -522,7 +523,34 @@ class SlackCliAgent:
             return 2
 
 
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s : %(message)s"
+_LOG_LEVEL_ENV = "SLACK_CLI_AGENT_LOG_LEVEL"
+
+
+def configure_logging(source_env: Mapping[str, str] | None = None) -> None:
+    """루트 로거에 stderr 핸들러를 붙이고 수준을 INFO 로 내린다.
+
+    파이썬 기본 수준이 WARNING 이라, 설정이 없으면 log.info 가 전부
+    버려진다. 기동 성공 로그가 운영에서 한 줄도 안 나온 원인이었다
+    (2026-09-15 실측). launchd 가 stderr 를 파일로 보내므로 핸들러는
+    stderr 로 낸다. 이미 핸들러가 있으면 건드리지 않는다 - 시험이나
+    상위 프로그램이 잡은 설정을 덮지 않기 위해서다.
+    """
+    env = os.environ if source_env is None else source_env
+    level_name = env.get(_LOG_LEVEL_ENV, "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    if not isinstance(level, int):
+        level = logging.INFO
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+        root.addHandler(handler)
+    root.setLevel(level)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_logging()
     return SlackCliAgent().run(argv)
 
 
