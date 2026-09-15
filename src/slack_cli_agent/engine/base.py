@@ -69,7 +69,10 @@ class EngineRequest:
     #: format themselves (sca-56y).
     session_id: str | None
     resume: bool
-    model: str
+    #: None means the engine that ends up running this uses its own spec.model.
+    #: Model names differ per engine, and which engine runs isn't settled until
+    #: EngineRunner.run() (sca-dyb.10).
+    model: str | None
     effort: str
     workdir: Path
     readable_dirs: tuple[Path, ...] = ()
@@ -88,6 +91,14 @@ class EngineRequest:
         if not self.session_id:
             raise ValueError("세션 ID 가 아직 정해지지 않았습니다. EngineRunner.run 을 거쳐야 합니다.")
         return self.session_id
+
+    def require_model(self) -> str:
+        """For build_command, which only ever runs after EngineRunner filled it in."""
+        # Empty counts as missing, same as session_id: a blank --model argument
+        # reaches the CLI as present-but-empty rather than raising here.
+        if not self.model:
+            raise ValueError("모델이 아직 정해지지 않았습니다. EngineRunner.run 을 거쳐야 합니다.")
+        return self.model
 
 
 _USAGE_FIELDS: tuple[str, ...] = (

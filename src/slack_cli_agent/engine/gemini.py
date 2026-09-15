@@ -115,7 +115,7 @@ class GeminiEngine(Engine):
     def build_command(self, request: EngineRequest) -> list[str]:
         spec = self.spec
 
-        base_model, suffix_effort = _split_model_suffix(request.model)
+        base_model, suffix_effort = _split_model_suffix(request.require_model())
         effort = _normalize_effort(request.effort or suffix_effort or "")
         timeout_sec = int(self.settings.request_timeout_sec)
 

@@ -88,7 +88,9 @@ class RuntimeSettings:
     learning_batch_interval_sec: float = 600
     # KST hour learning starts; before this, that day's records aren't all in yet.
     learning_run_hour: int = 22
-    learning_model: str = "sonnet"
+    # Empty delegates to the running engine's own configured model. A shared
+    # literal here was invalid on codex/gemini profiles (sca-dyb.10).
+    learning_model: str = ""
     learning_effort: str = "medium"
     learning_thread_reply_limit: int = 50
 
