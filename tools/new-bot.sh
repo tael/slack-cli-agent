@@ -119,10 +119,15 @@ python3 - "$NAME" "$DISPLAY" "$ENGINE" "$MODEL" "$BIN" "$REPO" \
          "$BOT_OWNER_USER_ID" "$BOT_TROUBLESHOOT_CHANNEL" <<'PY'
 import json, sys
 name, display, engine, model, binary, repo, owner, channel = sys.argv[1:9]
+# claude 는 봇별 홈이 없다. 적으면 프로필 적재가 거부된다.
+if engine != "claude":
+    engine_home = {"home_dir": f"~/.{name}/engine/{engine}-home"}
+else:
+    engine_home = {}
 data = {
   "name": name, "display_name": display,
   "primary_engine": {"type": engine, "binary": binary, "model": model,
-                     "model_owner": model, "home_dir": f"~/.{name}/engine/{engine}-home"},
+                     "model_owner": model, **engine_home},
   "state_dir": f"~/.{name}", "work_root": f"/Users/Shared/{name}-work",
   "launch_label": f"local.{name}", "owner_user_id": owner,
   "troubleshoot_channel": channel, "plugins": [],
