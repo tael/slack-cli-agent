@@ -52,6 +52,11 @@ class EngineEnvironmentPolicy(ABC):
     HOME_ENV_VAR: str | None = None
 
     def __init__(self, profile_name: str, home_dir: Path | None = None) -> None:
+        if home_dir is not None and self.HOME_ENV_VAR is None:
+            raise ConfigError(
+                f"{profile_name} 프로필: 이 엔진은 봇별 홈을 지원하지 않는다. "
+                "home_dir 을 지우거나 다른 엔진을 쓴다"
+            )
         self.profile_name = profile_name
         self.home_dir = home_dir
 

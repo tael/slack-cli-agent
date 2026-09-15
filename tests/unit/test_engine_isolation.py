@@ -21,6 +21,7 @@ import pytest
 
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
+from slack_cli_agent.core.errors import ConfigError
 from slack_cli_agent.engine.base import Engine, EngineRequest
 from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
@@ -37,7 +38,7 @@ _ENGINE_NAMES = tuple(_ENGINE_CLASSES)
 
 
 def _make_profile(
-    bot_name: str, engine_type: str, home_dir: Path,
+    bot_name: str, engine_type: str, home_dir: Path | None,
 ) -> Profile:
     """봇 하나의 프로필. MCP 서버 이름·명령·env 값이 전부 그 봇 고유 문자열을 담는다."""
     mcp_name = f"mcp-{bot_name}-only"
@@ -47,7 +48,7 @@ def _make_profile(
             "type": engine_type,
             "binary": f"/usr/bin/{engine_type}",
             "model": "test-model",
-            "home_dir": str(home_dir),
+            **({"home_dir": str(home_dir)} if home_dir else {}),
         },
         "owner_user_id": "U-OWNER",
         "troubleshoot_channel": "C-TROUBLE",
@@ -121,7 +122,8 @@ class TestEnvironmentIsolation:
 
     @pytest.mark.parametrize("engine_type", _ENGINE_NAMES)
     def test_bot_a_env_has_no_bot_b_markers(self, tmp_path, engine_type):
-        home_a = tmp_path / "bot-a-home"
+        # claude 는 봇별 홈을 지원하지 않는다. 적으면 거부되므로 여기서는 안 준다.
+        home_a = None if engine_type == "claude" else tmp_path / "bot-a-home"
         home_b = tmp_path / "bot-b-home"
         profile_a = _make_profile("bot_a", engine_type, home_a)
 
@@ -160,23 +162,14 @@ class TestEnvironmentIsolation:
 
         assert str(home_b) not in env_text
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="claude 엔진은 봇별 HOME 격리 개념이 아직 없다 — 부모 프로세스의 HOME 을 그대로 넘긴다",
-    )
-    def test_claude_env_home_is_not_bot_b_home(self, tmp_path):
-        home_a = tmp_path / "bot-a-home"
-        home_b = tmp_path / "bot-b-home"
-        profile_a = _make_profile("bot_a", "claude", home_a)
-        polluted_source_env = {
-            "PATH": "/usr/bin:/bin",
-            "LANG": "ko_KR.UTF-8",
-            "HOME": str(home_b),
-        }
+    def test_claude_에_home_dir_을_적으면_거부한다(self, tmp_path):
+        """claude 는 봇별 홈 개념이 없다. 그대로 두면 프로필이 격리를 약속하고
+        실제로는 사용자 홈을 쓴다."""
+        with pytest.raises(ConfigError):
+            create_environment_policy("claude", "bot_a", tmp_path / "bot-a-home")
 
-        env_text = _build_env_text("claude", profile_a, polluted_source_env)
-
-        assert str(home_b) not in env_text
+    def test_claude_에_home_dir_이_없으면_만들어진다(self):
+        assert create_environment_policy("claude", "bot_a", None) is not None
 
 
 class TestGeminiSettingsFileIsolation:
