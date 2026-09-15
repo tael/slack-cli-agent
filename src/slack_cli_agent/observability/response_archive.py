@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+
+from ..learning.ports import DayArchives
 
 _THREAD_TS_PATTERN = re.compile(r"- 스레드 : (\d+\.\d+)")
 
@@ -48,16 +50,19 @@ class ResponseArchive:
             )
         return path
 
-    def read_day(self, day: str) -> Mapping[str, str]:
+    def read_day(self, day: str) -> DayArchives:
         if not self._root.is_dir():
-            return {}
-        result: dict[str, str] = {}
+            return DayArchives()
+        texts: dict[str, str] = {}
+        unreadable: set[str] = set()
         for path in self._root.glob(f"*/{day}.md"):
             try:
-                result[path.parent.name] = path.read_text()
-            except OSError:
-                continue
-        return result
+                texts[path.parent.name] = path.read_text()
+            except (OSError, UnicodeDecodeError):
+                # A channel that exists but can't be read right now is not a
+                # channel without history, and callers act on that difference.
+                unreadable.add(path.parent.name)
+        return DayArchives(texts=texts, unreadable=frozenset(unreadable))
 
     @staticmethod
     def thread_timestamps(text: str) -> tuple[str, ...]:

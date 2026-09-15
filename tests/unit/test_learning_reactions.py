@@ -7,20 +7,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from slack_cli_agent.learning.reactions import ReactionCollector
-
-
-class FakeArchive:
-    """ResponseArchiveReader 대역. 채널별 기록 본문을 고정으로 돌려준다."""
-
-    def __init__(self, day_map: Mapping[str, str]) -> None:
-        self._day_map = day_map
-
-    def read_day(self, day: str) -> Mapping[str, str]:
-        return self._day_map
 
 
 class FakeThreads:
@@ -60,23 +50,23 @@ def make_collector(
     channel_ids: Mapping[str, str] | None = None,
     limit: int = 50,
     ts_by_text: Mapping[str, Sequence[str]] | None = None,
-) -> tuple[ReactionCollector, FakeThreads]:
+) -> tuple[Callable[[], Mapping[str, object]], FakeThreads]:
     channel_ids = channel_ids or {}
     ts_by_text = ts_by_text or {}
     threads = FakeThreads(thread_map, raise_on=raise_on)
     collector = ReactionCollector(
-        FakeArchive(day_map),
         threads=threads,
         thread_timestamps=lambda text: tuple(ts_by_text.get(text, ())),
         channel_id_of=lambda name: channel_ids.get(name),
         limit=limit,
     )
-    return collector, threads
+    # 그날 본문은 배치가 이미 읽어 넘긴다. 시험에서도 같은 자료를 묶어 둔다.
+    return lambda: collector.collect(day_map), threads
 
 
 class TestReactionCollector:
     def test_봇_응답_뒤_사람_메시지를_반응으로_담는다(self) -> None:
-        collector, _ = make_collector(
+        collect, _ = make_collector(
             day_map={"공지": "- 스레드 : 111.222"},
             thread_map={
                 ("C1", "111.222"): [
@@ -87,13 +77,13 @@ class TestReactionCollector:
             channel_ids={"공지": "C1"},
             ts_by_text={"- 스레드 : 111.222": ("111.222",)},
         )
-        result = collector.collect("2026-09-14")
+        result = collect()
         assert result == {
             "공지": ({"channel": "공지", "thread": "111.222", "text": "고마워요"},)
         }
 
     def test_봇_메시지보다_앞에_봇_메시지가_없으면_제외한다(self) -> None:
-        collector, _ = make_collector(
+        collect, _ = make_collector(
             day_map={"공지": "본문"},
             thread_map={
                 ("C1", "111.222"): [
@@ -104,11 +94,11 @@ class TestReactionCollector:
             channel_ids={"공지": "C1"},
             ts_by_text={"본문": ("111.222",)},
         )
-        result = collector.collect("2026-09-14")
+        result = collect()
         assert result == {}
 
     def test_bot_id_있는_메시지는_반응이_아니다(self) -> None:
-        collector, _ = make_collector(
+        collect, _ = make_collector(
             day_map={"공지": "본문"},
             thread_map={
                 ("C1", "111.222"): [
@@ -119,11 +109,11 @@ class TestReactionCollector:
             channel_ids={"공지": "C1"},
             ts_by_text={"본문": ("111.222",)},
         )
-        result = collector.collect("2026-09-14")
+        result = collect()
         assert result == {}
 
     def test_공백만_있는_본문은_제외한다(self) -> None:
-        collector, _ = make_collector(
+        collect, _ = make_collector(
             day_map={"공지": "본문"},
             thread_map={
                 ("C1", "111.222"): [
@@ -134,12 +124,12 @@ class TestReactionCollector:
             channel_ids={"공지": "C1"},
             ts_by_text={"본문": ("111.222",)},
         )
-        result = collector.collect("2026-09-14")
+        result = collect()
         assert result == {}
 
     def test_본문을_천_자로_자른다(self) -> None:
         long_text = "가" * 1500
-        collector, _ = make_collector(
+        collect, _ = make_collector(
             day_map={"공지": "본문"},
             thread_map={
                 ("C1", "111.222"): [
@@ -150,22 +140,22 @@ class TestReactionCollector:
             channel_ids={"공지": "C1"},
             ts_by_text={"본문": ("111.222",)},
         )
-        result = collector.collect("2026-09-14")
+        result = collect()
         assert len(result["공지"][0]["text"]) == 1000
 
     def test_채널_ID_를_모르면_건너뛴다(self) -> None:
-        collector, threads = make_collector(
+        collect, threads = make_collector(
             day_map={"모르는채널": "본문"},
             thread_map={},
             channel_ids={},
             ts_by_text={"본문": ("111.222",)},
         )
-        result = collector.collect("2026-09-14")
+        result = collect()
         assert result == {}
         assert threads.calls == []
 
     def test_스레드_조회_실패는_그_스레드만_건너뛰고_계속한다(self) -> None:
-        collector, _ = make_collector(
+        collect, _ = make_collector(
             day_map={"공지": "본문"},
             thread_map={
                 ("C1", "222.222"): [
@@ -177,13 +167,13 @@ class TestReactionCollector:
             channel_ids={"공지": "C1"},
             ts_by_text={"본문": ("111.222", "222.222")},
         )
-        result = collector.collect("2026-09-14")
+        result = collect()
         assert result == {
             "공지": ({"channel": "공지", "thread": "222.222", "text": "이건 잡힌다"},)
         }
 
     def test_반응이_없는_채널은_키를_안_넣는다(self) -> None:
-        collector, _ = make_collector(
+        collect, _ = make_collector(
             day_map={"공지": "본문", "잡담": "본문2"},
             thread_map={
                 ("C1", "111.222"): [{"bot_id": "B1", "text": "봇 응답"}],
@@ -195,16 +185,16 @@ class TestReactionCollector:
             channel_ids={"공지": "C1", "잡담": "C2"},
             ts_by_text={"본문": ("111.222",), "본문2": ("333.333",)},
         )
-        result = collector.collect("2026-09-14")
+        result = collect()
         assert set(result.keys()) == {"잡담"}
 
     def test_limit_이_스레드_조회에_전달된다(self) -> None:
-        collector, threads = make_collector(
+        collect, threads = make_collector(
             day_map={"공지": "본문"},
             thread_map={("C1", "111.222"): []},
             channel_ids={"공지": "C1"},
             ts_by_text={"본문": ("111.222",)},
             limit=7,
         )
-        collector.collect("2026-09-14")
+        collect()
         assert threads.calls == [("C1", "111.222", 7)]

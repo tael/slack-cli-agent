@@ -101,7 +101,7 @@ def test_read_day가_채널별_전문을_돌려준다(tmp_path: Path) -> None:
         ok=True, elapsed_sec=1.0, turns=1,
     )
 
-    result = archive.read_day("2026-09-14")
+    result = archive.read_day("2026-09-14").texts
 
     assert set(result) == {"dm", "general"}
     assert "q1" in result["dm"]
@@ -111,7 +111,7 @@ def test_read_day가_채널별_전문을_돌려준다(tmp_path: Path) -> None:
 def test_read_day는_디렉터리가_없으면_빈_매핑이다(tmp_path: Path) -> None:
     archive = ResponseArchive(tmp_path, clock=_clock_at(datetime(2026, 9, 14, 10, 0, tzinfo=KST)))
 
-    assert archive.read_day("2026-09-14") == {}
+    assert archive.read_day("2026-09-14").texts == {}
 
 
 def test_read_day는_그날_파일이_없는_채널을_빈_매핑으로_돌려준다(tmp_path: Path) -> None:
@@ -121,7 +121,7 @@ def test_read_day는_그날_파일이_없는_채널을_빈_매핑으로_돌려�
         ok=True, elapsed_sec=1.0, turns=1,
     )
 
-    assert archive.read_day("2026-09-15") == {}
+    assert archive.read_day("2026-09-15").texts == {}
 
 
 def test_read_day는_읽기_실패한_파일이_있어도_나머지를_읽는다(tmp_path: Path) -> None:
@@ -134,7 +134,7 @@ def test_read_day는_읽기_실패한_파일이_있어도_나머지를_읽는다
     broken_dir = tmp_path / "broken" / "2026-09-14.md"
     broken_dir.mkdir(parents=True)
 
-    result = archive.read_day("2026-09-14")
+    result = archive.read_day("2026-09-14").texts
 
     assert "dm" in result
     assert "q1" in result["dm"]
@@ -160,3 +160,57 @@ def test_thread_timestamps는_스레드_표시가_없으면_빈_튜플이다() -
 def test_clock에_기본값이_없다() -> None:
     with pytest.raises(TypeError):
         ResponseArchive(Path("/tmp/whatever"))  # type: ignore[call-arg]
+
+
+def _아카이브(root: Path) -> ResponseArchive:
+    return ResponseArchive(root, clock=_clock_at(datetime(2026, 9, 14, 10, 0, tzinfo=KST)))
+
+
+def test_읽기_실패한_채널을_따로_알려준다(tmp_path: Path) -> None:
+    """read_day 가 건너뛰면 기록이 없는 채널과 구분되지 않는다. 그 차이로 학습
+    진행 상태를 지우면 그 채널의 재시도가 사라진다(sca-b4o 리뷰).
+    """
+    archive = _아카이브(tmp_path)
+    for name in ("공지", "잡담"):
+        path = tmp_path / name / "2026-09-14.md"
+        path.parent.mkdir(parents=True)
+        path.write_text("본문")
+    (tmp_path / "잡담" / "2026-09-14.md").chmod(0o000)
+    try:
+        assert archive.read_day("2026-09-14").unreadable == frozenset({"잡담"})
+    finally:
+        (tmp_path / "잡담" / "2026-09-14.md").chmod(0o644)
+
+
+def test_읽기_실패가_없으면_빈_집합이다(tmp_path: Path) -> None:
+    archive = _아카이브(tmp_path)
+    path = tmp_path / "공지" / "2026-09-14.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("본문")
+    assert archive.read_day("2026-09-14").unreadable == frozenset()
+
+
+def test_디렉터리가_없으면_빈_집합이다(tmp_path: Path) -> None:
+    assert _아카이브(tmp_path / "없음").read_day("2026-09-14").unreadable == frozenset()
+
+
+def test_인코딩이_깨진_파일도_읽기_실패로_센다(tmp_path: Path) -> None:
+    """OSError 만 잡으면 UnicodeDecodeError 가 배치를 중단시킨다(sca-b4o 리뷰)."""
+    archive = _아카이브(tmp_path)
+    path = tmp_path / "잡담" / "2026-09-14.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff\xfe\x00\x81")
+    읽음 = archive.read_day("2026-09-14")
+    assert 읽음.unreadable == frozenset({"잡담"})
+    assert 읽음.texts == {}
+
+
+def test_한_번_읽어_본문과_실패를_함께_돌려준다(tmp_path: Path) -> None:
+    """두 번 훑으면 그 사이에 복구된 파일 때문에 판정이 어긋난다(sca-b4o 리뷰)."""
+    archive = _아카이브(tmp_path)
+    path = tmp_path / "공지" / "2026-09-14.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("본문")
+    읽음 = archive.read_day("2026-09-14")
+    assert 읽음.texts == {"공지": "본문"}
+    assert 읽음.unreadable == frozenset()

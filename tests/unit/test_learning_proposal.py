@@ -110,3 +110,22 @@ class TestProposalStore:
         applied = json.loads((tmp_path / "2026-09-14.applied").read_text(encoding="utf-8"))
         assert applied["done"] == {"공지": 2}
         assert "applied_at" in applied
+
+
+class Test제안_조회는_날짜_파일만_본다:
+    """같은 디렉터리에 다른 JSON 이 놓이면 latest() 가 그것을 제안으로 읽는다.
+    실제로 진행 상태 파일이 그렇게 읽혔다(sca-b4o 리뷰).
+    """
+
+    def test_날짜가_아닌_이름은_제안이_아니다(self, tmp_path: Path) -> None:
+        store = ProposalStore(tmp_path)
+        store.save(LearningProposal(day="2026-09-14", corrections=("고침",)))
+        (tmp_path / "2026-09-14.progress.json").write_text("{}", encoding="utf-8")
+
+        proposal = store.latest().value()
+        assert proposal.day == "2026-09-14"
+        assert proposal.corrections == ("고침",)
+
+    def test_제안이_하나도_없으면_없음이다(self, tmp_path: Path) -> None:
+        (tmp_path / "메모.json").write_text("{}", encoding="utf-8")
+        assert ProposalStore(tmp_path).latest().is_absent

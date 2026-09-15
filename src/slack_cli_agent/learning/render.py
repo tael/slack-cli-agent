@@ -8,6 +8,9 @@ keeps each order under its own method name rather than unifying them.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
+from .progress import ChannelFailure
 from .proposal import LearningProposal
 
 _EMPTY_NOTICE = "오늘은 새로 배울 게 없었어요."
@@ -31,6 +34,20 @@ class ProposalRenderer:
             if proposal.note:
                 lines.append(proposal.note)
         return "\n".join(lines).strip()
+
+    def render_batch_summary(
+        self, proposal: LearningProposal, failures: Sequence[ChannelFailure],
+    ) -> str:
+        """The batch DM. Failures show regardless of whether anything was picked —
+        a channel that failed used to disappear whenever another one succeeded
+        (sca-b4o).
+        """
+        body = self.render_summary(proposal)
+        if not failures:
+            return body
+        lines = ["*분석하지 못한 채널*"]
+        lines += [f"- {f.channel} : {f.kind.description}" for f in failures]
+        return f"{body}\n\n" + "\n".join(lines)
 
     @staticmethod
     def _append_style_and_corrections(lines: list[str], proposal: LearningProposal) -> None:

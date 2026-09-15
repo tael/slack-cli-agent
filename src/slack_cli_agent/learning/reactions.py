@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from slack_cli_agent.learning.ports import ResponseArchiveReader
 from slack_cli_agent.reliability.ports import HistoryReader
 
 
@@ -20,22 +19,23 @@ class ReactionCollector:
 
     def __init__(
         self,
-        archive: ResponseArchiveReader,
         *,
         threads: HistoryReader,
         thread_timestamps: Callable[[str], tuple[str, ...]],
         channel_id_of: Callable[[str], str | None],
         limit: int,
     ) -> None:
-        self._archive = archive
         self._threads = threads
         self._thread_timestamps = thread_timestamps
         self._channel_id_of = channel_id_of
         self._limit = limit
 
-    def collect(self, day: str) -> Mapping[str, tuple[Mapping[str, object], ...]]:
+    def collect(self, texts: Mapping[str, str]) -> Mapping[str, tuple[Mapping[str, object], ...]]:
+        """Takes the day's history the caller already read — reading it again
+        here would mix reactions with a different snapshot (sca-b4o review).
+        """
         result: dict[str, tuple[Mapping[str, object], ...]] = {}
-        for channel_name, text in self._archive.read_day(day).items():
+        for channel_name, text in texts.items():
             channel_id = self._channel_id_of(channel_name)
             if channel_id is None:
                 continue
