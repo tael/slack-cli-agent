@@ -11,16 +11,21 @@ eyes/hourglass/x survive a process crash, since none of them mean
 "done" — recovery still treats them as unfinished. A human manually
 adding white_check_mark counts the same way, as a manual override.
 
-Reaction API failures are swallowed silently: one failed reaction
-shouldn't halt the rest of processing.
+Reaction API failures don't propagate: one failed reaction shouldn't halt
+the rest of processing. They are logged at debug level — swallowing them
+without a trace left no way to tell a failed call from one that was never
+made (sca-aj3).
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 from slack_cli_agent.guard.watch import WATCH_MARK_EMOJI
+
+log = logging.getLogger(__name__)
 
 SILENT_MARK_EMOJI = "zipper_mouth_face"
 DONE_EMOJI = frozenset({"white_check_mark", SILENT_MARK_EMOJI})
@@ -39,14 +44,14 @@ class ReactionMarker:
     def add(self, channel: str, ts: str, name: str) -> None:
         try:
             self._client.reactions_add(channel=channel, timestamp=ts, name=name)
-        except Exception:  # noqa: BLE001, S110 - reactions are cosmetic; swallow per the module docstring
-            pass
+        except Exception as exc:  # noqa: BLE001 - reactions are cosmetic; don't propagate per the module docstring
+            log.debug("이모지 추가 실패 : %s %s:%s, %s", name, channel, ts, exc)
 
     def remove(self, channel: str, ts: str, name: str) -> None:
         try:
             self._client.reactions_remove(channel=channel, timestamp=ts, name=name)
-        except Exception:  # noqa: BLE001, S110 - reactions are cosmetic; swallow per the module docstring
-            pass
+        except Exception as exc:  # noqa: BLE001 - reactions are cosmetic; don't propagate per the module docstring
+            log.debug("이모지 제거 실패 : %s %s:%s, %s", name, channel, ts, exc)
 
     def mark_processing(self, channel: str, ts: str) -> None:
         self.add(channel, ts, "eyes")

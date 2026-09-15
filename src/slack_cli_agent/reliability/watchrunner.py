@@ -107,7 +107,10 @@ class WatchJobChecker:
         self._queue.mark_checked(job.id, now)
 
     def _finish(self, job: WatchJob, raw_body: str) -> None:
-        body = raw_body.replace(WATCH_DONE_TAG, "").strip()
+        # A reply that is nothing but the done tag leaves an empty body, and an
+        # empty body posts nothing at all. The job is marked done either way, so
+        # without this the watch just disappears from the thread.
+        body = raw_body.replace(WATCH_DONE_TAG, "").strip() or _bare_done_report()
         config = self._channels.get(job.channel)
         rich = bool(config and config.rich)
         try:
@@ -120,6 +123,18 @@ class WatchJobChecker:
             self._reactions.mark_done(job.channel, job.msg_ts)
 
         self._queue.mark_done(job.id)
+
+
+def _bare_done_report() -> str:
+    """Deliberately omits job.condition. The condition can carry content pulled
+    from a linked thread or a file, and this goes to a channel thread — unlike
+    the give-up report, which goes to the owner alone. The thread itself says
+    what was being watched.
+    """
+    return (
+        "*지켜보던 작업이 끝났습니다*\n\n"
+        "확인 응답에 내용이 없어 결과를 옮기지 못했습니다. 직접 확인이 필요합니다."
+    )
 
 
 def _give_up_report(job: WatchJob) -> str:

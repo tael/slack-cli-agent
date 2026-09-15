@@ -387,6 +387,68 @@ class TestMessagePublisher:
 # ---------------------------------------------------------------------------
 
 
+class Test이모지실패_흔적:
+    """이모지 조작 실패가 흔적을 남기는가.
+
+    전부 삼키면 "실패했다" 와 "아예 안 불렀다" 가 구분되지 않는다. 감시 완료 후
+    mag 가 안 지워진 원인을 못 갈라낸 이유다(sca-aj3).
+    """
+
+    def _marker(self, failing: str):
+        class 실패하는클라이언트:
+            def reactions_add(self, **kwargs):
+                if failing == "add":
+                    raise RuntimeError("no_reaction")
+
+            def reactions_remove(self, **kwargs):
+                if failing == "remove":
+                    raise RuntimeError("no_reaction")
+
+        return ReactionMarker(실패하는클라이언트())
+
+    @pytest.mark.parametrize("동작", ["add", "remove"])
+    def test_실패_사유가_기록된다(self, 동작: str, caplog) -> None:
+        marker = self._marker(동작)
+        with caplog.at_level(logging.DEBUG, logger="slack_cli_agent.slack.reactions"):
+            getattr(marker, 동작)("C1", "100.0", "mag")
+        assert any("no_reaction" in r.getMessage() for r in caplog.records)
+
+    def test_성공하면_아무것도_안_남긴다(self, caplog) -> None:
+        marker = self._marker("add")
+        with caplog.at_level(logging.DEBUG, logger="slack_cli_agent.slack.reactions"):
+            marker.remove("C1", "100.0", "mag")
+        assert caplog.records == []
+
+
+class Test빈본문게시:
+    """보낼 내용이 없을 때 발행기가 그 사실을 남기는가.
+
+    2026-09-16 실측 — rich 채널에서 빈 본문을 주면 split_for_blocks 가 빈 목록을
+    돌려주고 발송 루프가 한 번도 안 돈다. 예외도 감사 기록도 없어서 성공과
+    구분되지 않았고, 감시 완료 보고가 조용히 사라졌다.
+    """
+
+    def test_리치_채널에서_빈_본문이면_경고를_남기고_안_보낸다(
+        self, settings, markdown, splitter, verifier, block_builder, caplog
+    ) -> None:
+        client = FakeWebClient()
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        with caplog.at_level(logging.WARNING):
+            assert pub.post("C1", "100.0", "", rich=True) is None
+        assert client.calls == []
+        assert any("빈 본문" in r.getMessage() for r in caplog.records)
+
+    def test_보낼_내용이_있으면_경고가_안_남는다(
+        self, settings, markdown, splitter, verifier, block_builder, caplog
+    ) -> None:
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        with caplog.at_level(logging.WARNING):
+            pub.post("C1", "100.0", "본문", rich=True)
+        assert caplog.records == []
+
+
 class TestSlackGateway:
     def test_등록한_핸들러_전부에게_이벤트를_분배한다(self) -> None:
         gateway = SlackGateway(client=FakeWebClient())
