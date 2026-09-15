@@ -808,6 +808,32 @@ class Test감시확인연결:
         assert 보낸요청[0].resume is False
         assert 보낸요청[0].prompt.find("배포 확인") >= 0
 
+    def test_확인실행의_세션_id는_엔진이_만든다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """직접 만들면 그 형식이 CLI 와 어긋나도 아무도 모른다. 실제로
+        uuid4().hex 를 써서 클로드가 "Invalid session ID" 로 매번 거부했고,
+        감시 확인이 한 번도 성공한 적이 없었다(sca-56y).
+        """
+        from slack_cli_agent.reliability.watchjobs import WatchJob
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        app._composer = lambda: _프롬프트조립대역()  # type: ignore[method-assign]
+        받은요청: list[Any] = []
+        app._profile.work_root.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(
+            type(app.engine), "new_session_id", lambda self: "엔진이-만든-값",
+        )
+        monkeypatch.setattr(
+            type(app.engine), "build_command",
+            lambda self, request: 받은요청.append(request) or ["true"],
+        )
+
+        app._watch_run_check(WatchJob(
+            id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
+            created_at=0.0, last_run=None,
+        ))
+
+        assert 받은요청[0].session_id == "엔진이-만든-값"
+
 
 class _프롬프트조립대역:
     def compose(self, ctx: Any) -> str:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -353,3 +354,17 @@ def test_프롬프트가_하이픈으로_시작해도_플래그로_안_읽힌다
         f"{fx.id}: 프롬프트 앞이 {cmd[carrier - 1]!r} 이다. "
         "하이픈으로 시작하는 프롬프트가 플래그로 읽힌다"
     )
+
+
+@pytest.mark.parametrize("fx", _fixture_params())
+def test_새_세션_id는_그_CLI가_받는_형식이다(fx: EngineFixture, tmp_path: Path) -> None:
+    """세 CLI 모두 하이픈 포함 UUID 를 요구한다. 클로드는 하이픈 없는 32자에
+    "Error: Invalid session ID. Must be a valid UUID." 로 거부한다(sca-56y 실측).
+
+    형식을 여기서 고정해 둬야, 세션 ID 를 직접 만드는 호출자가 생겼을 때
+    무엇을 어겼는지가 드러난다.
+    """
+    engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
+    session_id = engine.new_session_id()
+    assert uuid.UUID(session_id)
+    assert str(uuid.UUID(session_id)) == session_id

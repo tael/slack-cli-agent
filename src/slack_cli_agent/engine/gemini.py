@@ -129,7 +129,7 @@ class GeminiEngine(Engine):
         for path in request.readable_dirs:
             cmd += ["--add-dir", str(path)]
         if request.resume:
-            cmd += ["--conversation", request.session_id]
+            cmd += ["--conversation", request.require_session_id()]
         cmd += ["--print-timeout", f"{timeout_sec}s"]
 
         prompt = (

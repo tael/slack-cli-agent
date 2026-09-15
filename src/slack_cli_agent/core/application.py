@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import time
-import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any
@@ -768,7 +767,9 @@ class Application:
         return self.engine_invoker.invoke(EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
-            session_id=uuid.uuid4().hex,
+            # Left empty on purpose: the engine that ends up running this
+            # check mints one in its own format (sca-56y).
+            session_id=None,
             resume=False,
             model=self.access_policy.model_for(principal),
             effort=self.access_policy.effort_for(principal, prompt),
