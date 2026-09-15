@@ -632,3 +632,45 @@ class TestPreflightSuite:
         assert "[실패]" not in 본문
         assert "기동 가능" in 본문
 
+
+
+class _터지는점검(PreflightCheck):
+    name = "터지는점검"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        raise OSError("디스크가 응답하지 않음")
+
+
+class TestRunner예외처리:
+    """점검 하나가 예상 밖 예외를 던지면 run_all 이 그대로 터져 나머지
+    점검 결과까지 사라졌다. '첫 실패에서 멈추지 않는다' 는 이 클래스의
+    계약과 어긋난다(sca-ylz).
+    """
+
+    def test_예외를_fatal_결과로_바꾼다(self, tmp_path: Path) -> None:
+        runner = PreflightRunner([_터지는점검()])
+        report = runner.run_all(PreflightContext(profile=make_profile(tmp_path)))
+        assert report.bootable is False
+        assert "디스크가 응답하지 않음" in report.results[0].detail
+
+    def test_사유가_빈_예외여도_종류가_남는다(self, tmp_path: Path) -> None:
+        """str(exc) 가 빈 내장 예외가 여럿이다. 그대로 쓰면 운영자가 보는
+        사유가 빈칸이 된다 (코덱스 리뷰).
+        """
+
+        class _조용히터지는점검(PreflightCheck):
+            name = "조용히터지는점검"
+
+            def run(self, ctx: PreflightContext) -> CheckResult:
+                raise RecursionError
+
+        report = PreflightRunner([_조용히터지는점검()]).run_all(
+            PreflightContext(profile=make_profile(tmp_path))
+        )
+        assert "RecursionError" in report.results[0].detail
+
+    def test_터진_뒤에도_나머지_점검을_돈다(self, tmp_path: Path) -> None:
+        runner = PreflightRunner([_터지는점검(), _AlwaysOk()])
+        report = runner.run_all(PreflightContext(profile=make_profile(tmp_path)))
+        assert len(report.results) == 2
+        assert report.results[1].ok is True
