@@ -316,7 +316,7 @@ class TestIngressRosterRefresh:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
         cli.run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles), "--app-token", "xapp-토큰"],
             stdout=io.StringIO(),
@@ -330,7 +330,7 @@ class TestIngressRosterRefresh:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
         code = cli.run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles)],
             stdout=io.StringIO(),
@@ -350,7 +350,7 @@ class TestIngressConnectionWatch:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
         cli.run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles), "--app-token", "xapp-토큰"],
             stdout=io.StringIO(),
@@ -366,7 +366,7 @@ class TestIngressConnectionWatch:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
         code = cli.run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles)],
             stdout=io.StringIO(),
@@ -422,7 +422,7 @@ class TestIngressCommand:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
         out = io.StringIO()
         code = cli.run(
             [
@@ -444,7 +444,7 @@ class TestIngressCommand:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
         out = io.StringIO()
         cli.run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles), "--app-token", "xapp-토큰"],
@@ -459,7 +459,7 @@ class TestIngressCommand:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
         out = io.StringIO()
         code = cli.run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
@@ -474,7 +474,7 @@ class TestIngressCommand:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
         out = io.StringIO()
         code = cli.run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
@@ -487,7 +487,7 @@ class TestIngressCommand:
         write_profile(profiles, tmp_path / "state")
         gateway = FakeGateway(raise_on_start=RuntimeError("연결 실패"))
         app = FakeApplication(gateway=gateway)
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
         out = io.StringIO()
         with pytest.raises(RuntimeError):
             cli.run(
@@ -512,7 +512,7 @@ class TestWorkerCommand:
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker(stop_after_run_once=1)
         app = FakeApplication(worker=worker)
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile, _resolver: app)])
         out = io.StringIO()
         code = cli.run(
             ["worker", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
@@ -526,7 +526,7 @@ class TestWorkerCommand:
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker()
         app = FakeApplication(worker=worker)
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile, _resolver: app)])
         out = io.StringIO()
         code = cli.run(
             ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"], stdout=out
@@ -545,7 +545,7 @@ class TestWorkerCommand:
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker()
         app = FakeApplication(worker=worker, channel_ids=["C1", "C2"])
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile, _resolver: app)])
         cli.run(
             ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"],
             stdout=io.StringIO(),
@@ -558,7 +558,7 @@ class TestWorkerCommand:
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker()
         app = FakeApplication(worker=worker, channel_ids=["C1", "C2"])
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile, _resolver: app)])
         cli.run(
             ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once", "--no-catch-up"],
             stdout=io.StringIO(),
@@ -570,7 +570,7 @@ class TestWorkerCommand:
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker(stop_after_run_once=2)
         app = FakeApplication(worker=worker)
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile, _resolver: app)])
         out = io.StringIO()
         code = cli.run(
             ["worker", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
@@ -584,7 +584,7 @@ class TestWorkerCommand:
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker()
         app = FakeApplication(worker=worker)
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile, _resolver: app)])
         out = io.StringIO()
         cli.run(["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"], stdout=out)
         assert worker.shutdown_calls == 1
@@ -605,7 +605,7 @@ class TestWorkerCommand종료신호:
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=worker)
         command = WorkerCommand(
-            application_factory=lambda profile: app,
+            application_factory=lambda profile, _resolver: app,
             signal_register=lambda sig, handler: registered.append((sig, handler)),
         )
         return SlackCliAgent([command]).run(
@@ -666,7 +666,7 @@ class TestWorkerCommand상태기록:
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=FakeWorker(stop_after_run_once=1))
         command = WorkerCommand(
-            application_factory=lambda profile: app,
+            application_factory=lambda profile, _resolver: app,
             signal_register=lambda sig, handler: None,
         )
         SlackCliAgent([command]).run(
@@ -683,7 +683,7 @@ class TestWorkerCommand상태기록:
         app = FakeApplication(worker=FakeWorker(stop_after_run_once=1))
         registered: list = []
         command = WorkerCommand(
-            application_factory=lambda profile: app,
+            application_factory=lambda profile, _resolver: app,
             signal_register=lambda sig, handler: registered.append(handler),
         )
         SlackCliAgent([command]).run(
@@ -704,7 +704,7 @@ class TestWorkerCommand감시확인:
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=FakeWorker(stop_after_run_once=1))
         command = WorkerCommand(
-            application_factory=lambda profile: app,
+            application_factory=lambda profile, _resolver: app,
             signal_register=lambda sig, handler: None,
         )
         SlackCliAgent([command]).run(
@@ -719,7 +719,7 @@ class TestWorkerCommand감시확인:
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=FakeWorker())
         command = WorkerCommand(
-            application_factory=lambda profile: app,
+            application_factory=lambda profile, _resolver: app,
             signal_register=lambda sig, handler: None,
         )
         SlackCliAgent([command]).run(
@@ -741,7 +741,7 @@ class TestIngress연결점검주기:
     def _기동한다(tmp_path: Path, app: FakeApplication, token: bool = True) -> int:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile: app)])
+        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
         argv = ["ingress", "--profile", "example", "--profile-dir", str(profiles)]
         if token:
             argv += ["--app-token", "xapp-토큰"]
@@ -789,7 +789,7 @@ class TestWorker빈큐대기:
         app = FakeApplication(worker=worker)
         cli = SlackCliAgent([
             WorkerCommand(
-                application_factory=lambda profile: app,
+                application_factory=lambda profile, _resolver: app,
                 signal_register=lambda signum, handler: None,
             )
         ])
@@ -830,7 +830,7 @@ class TestWorker끝난작업정리:
         app = FakeApplication(worker=worker)
         cli = SlackCliAgent([
             WorkerCommand(
-                application_factory=lambda profile: app,
+                application_factory=lambda profile, _resolver: app,
                 signal_register=lambda signum, handler: None,
             )
         ])
@@ -863,7 +863,7 @@ class Test주기실행기를묶음으로띄운다:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        SlackCliAgent([IngressCommand(application_factory=lambda profile: app)]).run(
+        SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)]).run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles), "--app-token", "xapp-토큰"],
             stdout=io.StringIO(),
         )
@@ -875,7 +875,7 @@ class Test주기실행기를묶음으로띄운다:
         app = FakeApplication(worker=FakeWorker())
         SlackCliAgent([
             WorkerCommand(
-                application_factory=lambda profile: app,
+                application_factory=lambda profile, _resolver: app,
                 signal_register=lambda signum, handler: None,
             )
         ]).run(
@@ -921,7 +921,7 @@ class TestLearnCommand:
         write_profile(profiles, tmp_path / "state")
         batch = FakeLearningBatch(report)
         app = FakeLearningApplication(batch)
-        command = LearnCommand(application_factory=lambda profile: app)
+        command = LearnCommand(application_factory=lambda profile, _resolver: app)
         out = io.StringIO()
         code = SlackCliAgent([command]).run(
             ["learn", "--profile", "example", "--profile-dir", str(profiles), *(extra or [])],

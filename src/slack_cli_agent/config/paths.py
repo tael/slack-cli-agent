@@ -72,6 +72,11 @@ class StatePaths:
         return self.root / "profile.json"
 
     @property
+    def credentials(self) -> Path:
+        """Slack tokens. Operator-owned, never part of the installed package."""
+        return self.root / "credentials.json"
+
+    @property
     def channels(self) -> Path:
         return self.root / "channels.json"
 

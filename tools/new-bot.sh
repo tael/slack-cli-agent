@@ -89,11 +89,9 @@ esac
 
 cat > "$D/run.sh" <<EOF
 #!/bin/bash
-# $DISPLAY 봇 기동. 토큰은 상태 디렉터리에서 읽는다
+# $DISPLAY 봇 기동. 토큰은 \$D/credentials.json 에서 읽는다
 set -e
 D="\$HOME/.$NAME"
-export SLACK_BOT_TOKEN=\$(cat "\$D/.slack_bot_token")
-export SLACK_APP_TOKEN=\$(cat "\$D/.slack_app_token")
 export PATH="\$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 exec "\$D/venv/bin/slack-cli-agent" "\$@" --profile $NAME --profile-dir $REPO/profiles
 EOF
@@ -146,11 +144,11 @@ python3 -m venv "$D/venv"
 echo
 echo "여기까지 자동이다. 아이콘도 올라갔다. 남은 것은 브라우저로 한다."
 echo "  1) 설치 승인   https://api.slack.com/apps/$APP_ID/install-on-team"
-echo "     설치 후 OAuth 페이지에서 봇 토큰(xoxb)을 복사해"
-echo "     $D/.slack_bot_token 에 넣고 chmod 600"
+echo "     설치 후 OAuth 페이지에서 봇 토큰(xoxb)을 복사한다"
 echo "  2) 앱 토큰     https://api.slack.com/apps/$APP_ID/general"
 echo "     Generate Token and Scopes, 스코프는 connections:write"
-echo "     $D/.slack_app_token 에 넣고 chmod 600"
+echo "  3) 두 토큰을 $D/credentials.json 에 넣고 chmod 600"
+echo "     {\"bot_token\": \"xoxb-...\", \"app_token\": \"xapp-...\"}"
 echo
 echo "그 뒤:"
 echo "  $D/run.sh preflight        # '기동 가능' 이 나와야 한다"
