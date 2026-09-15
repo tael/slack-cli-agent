@@ -24,6 +24,7 @@ from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import BotIdentity
 from slack_cli_agent.slack.message_kind import MessageKind
+from slack_cli_agent.slack.message_lookup import SlackMessageLookup
 
 log = logging.getLogger(__name__)
 
@@ -35,8 +36,12 @@ class EventListener:
         channel_registry: ChannelRegistry,
         gate: ResponseGate,
         identity: BotIdentity,
+        message_lookup: Any | None = None,
     ) -> None:
         self._client = client
+        # Same lookup the review tasks use; a second copy here is how the
+        # thread-reply fallback ended up in only one of them.
+        self._message_lookup = message_lookup or SlackMessageLookup(client)
         self._channels = channel_registry
         self._gate = gate
         # Self-message detection and mention matching must use the
@@ -143,35 +148,15 @@ class EventListener:
         item_user = event.get("item_user")
         if item_user:
             return bool(item_user == self._identity.user_id)
-        message = self._find_message(channel, ts)
+        message = self._message_lookup.find(channel, ts)
         if message is None:
+            log.info("점검 리액션 무시: 대상 메시지를 못 찾았다 %s:%s", channel, ts)
             return False
-        return self._identity.is_self(message)
+        mine = self._identity.is_self(message)
+        if not mine:
+            log.info(
+                "점검 리액션 무시: 이 봇의 답변이 아니다 %s:%s bot_id=%s user=%s",
+                channel, ts, message.get("bot_id"), message.get("user"),
+            )
+        return mine
 
-    def _find_message(self, channel: str, ts: str) -> Mapping[str, Any] | None:
-        """Looks the message up by timestamp.
-
-        conversations_history doesn't return thread replies, and these
-        reactions usually land on one, so an empty result falls through
-        to conversations_replies.
-        """
-        for finder in (self._from_history, self._from_replies):
-            try:
-                messages = finder(channel, ts)
-            except Exception as exc:  # noqa: BLE001 - a lookup failure must not act on someone else's message
-                log.warning("메시지 조회 실패: channel=%s ts=%s error=%s", channel, ts, exc)
-                continue
-            for message in messages:
-                if message.get("ts") == ts:
-                    return message
-        return None
-
-    def _from_history(self, channel: str, ts: str) -> list[Mapping[str, Any]]:
-        resp = self._client.conversations_history(
-            channel=channel, latest=ts, oldest=ts, inclusive=True, limit=1
-        )
-        return list((resp or {}).get("messages") or [])
-
-    def _from_replies(self, channel: str, ts: str) -> list[Mapping[str, Any]]:
-        resp = self._client.conversations_replies(channel=channel, ts=ts, limit=200)
-        return list((resp or {}).get("messages") or [])
