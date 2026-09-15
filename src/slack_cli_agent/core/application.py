@@ -78,6 +78,7 @@ from ..plugin.loader import PluginLoader
 from ..prompt.composer import SystemPromptComposer
 from ..prompt.knowledge import KnowledgeLoader
 from ..prompt.library import PromptLibrary
+from ..prompt.linked_threads import LinkedThreadNote
 from ..prompt.sections import (
     AskerSection,
     AuthoritySection,
@@ -126,6 +127,7 @@ from ..slack.history import HistoryReader
 from ..slack.history_port import SlackHistoryPort
 from ..slack.identity import BotIdentity, SlackBotIdentity
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption
+from ..slack.linked_threads import LinkedThreadReader
 from ..slack.listener import EventListener
 from ..slack.names import DisplayNameResolver
 from ..slack.participants import ThreadParticipants
@@ -490,6 +492,22 @@ class Application:
             limit=self._settings.history_max_msgs,
         )
 
+    def _linked_threads(self) -> LinkedThreadNote:
+        """Reuses _transcript_builder so a linked thread is formatted exactly
+        like the current one — a second formatter here would drift.
+        """
+        return LinkedThreadNote(
+            LinkedThreadReader(
+                self._transcript_builder(),
+                self._channel_display_name,
+                max_links=self._settings.linked_thread_max,
+            )
+        )
+
+    def _channel_display_name(self, channel: str) -> str:
+        config = self._channels.get(channel)
+        return getattr(config, "name", "") or ""
+
     def _history_port(self) -> SlackHistoryPort:
         return SlackHistoryPort(HistoryReader(self._client, self._settings), self._client)
 
@@ -520,6 +538,7 @@ class Application:
                 # built lazily rather than as a field — eagerly building it here would
                 # look up the bot user ID, making assembly alone call out to Slack
                 participants=lambda channel, thread_ts: self._participants().of(channel, thread_ts),
+                linked_threads=lambda text, channel: self._linked_threads().of(text, channel),
                 late_addendum=self._late_addendum(),
                 consumption=self.consumption,
                 watch_queue=self.watch_jobs(),
