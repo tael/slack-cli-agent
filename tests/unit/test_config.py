@@ -10,7 +10,7 @@ import pytest
 
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.paths import StatePaths
-from slack_cli_agent.config.profile import EngineSpec, Profile
+from slack_cli_agent.config.profile import EngineSpec, McpServerSpec, Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.errors import ConfigError
 
@@ -113,6 +113,99 @@ class TestProfile:
             }
         )
         assert any("실행 파일" in p for p in profile.validate())
+
+
+class TestMcpServerSpec:
+    def test_command_형은_command만_있으면_된다(self) -> None:
+        spec = McpServerSpec.from_dict("서버", {"command": "node", "args": ["a.js"]})
+        assert spec.command == "node"
+        assert spec.args == ("a.js",)
+        assert spec.is_remote is False
+
+    def test_url_형은_url만_있으면_된다(self) -> None:
+        spec = McpServerSpec.from_dict("서버", {"url": "https://example.com/mcp/"})
+        assert spec.url == "https://example.com/mcp/"
+        assert spec.is_remote is True
+
+    def test_command과_url이_둘_다_없으면_설정_오류다(self) -> None:
+        with pytest.raises(ConfigError, match="command"):
+            McpServerSpec.from_dict("서버", {})
+
+    def test_command과_url이_둘_다_있으면_설정_오류다(self) -> None:
+        with pytest.raises(ConfigError, match="동시에"):
+            McpServerSpec.from_dict(
+                "서버", {"command": "node", "url": "https://example.com/mcp/"}
+            )
+
+    def test_env와_headers_기본값은_빈_딕셔너리다(self) -> None:
+        spec = McpServerSpec.from_dict("서버", {"command": "node"})
+        assert spec.env == {}
+        assert spec.headers == {}
+
+    def test_env를_그대로_보존한다(self) -> None:
+        spec = McpServerSpec.from_dict(
+            "서버", {"command": "node", "env": {"KEY": "value"}}
+        )
+        assert spec.env == {"KEY": "value"}
+
+    def test_disabled_기본값은_거짓이다(self) -> None:
+        assert McpServerSpec.from_dict("서버", {"command": "node"}).disabled is False
+
+    def test_disabled_tools_기본값은_빈_튜플이다(self) -> None:
+        spec = McpServerSpec.from_dict("서버", {"command": "node"})
+        assert spec.disabled_tools == ()
+
+    def test_disabled_tools를_튜플로_받는다(self) -> None:
+        spec = McpServerSpec.from_dict(
+            "서버", {"command": "node", "disabled_tools": ["a", "b"]}
+        )
+        assert spec.disabled_tools == ("a", "b")
+
+    def test_cwd의_물결표를_확장한다(self, tmp_path: Path) -> None:
+        spec = McpServerSpec.from_dict(
+            "서버", {"command": "node", "cwd": "~/work"}
+        )
+        assert spec.cwd == tmp_path / "work"
+
+    def test_cwd가_없으면_None이다(self) -> None:
+        assert McpServerSpec.from_dict("서버", {"command": "node"}).cwd is None
+
+
+class TestProfileMcpServers:
+    def test_기본값은_빈_딕셔너리다(self) -> None:
+        assert Profile.from_dict(MINIMAL).mcp_servers == {}
+
+    def test_이름별로_McpServerSpec을_만든다(self) -> None:
+        profile = Profile.from_dict(
+            {**MINIMAL, "mcp_servers": {"a": {"command": "node"}}}
+        )
+        assert isinstance(profile.mcp_servers["a"], McpServerSpec)
+        assert profile.mcp_servers["a"].name == "a"
+
+    def test_잘못된_서버_설정은_설정_오류로_이어진다(self) -> None:
+        with pytest.raises(ConfigError, match="command"):
+            Profile.from_dict({**MINIMAL, "mcp_servers": {"a": {}}})
+
+    def test_설치물_기본_프로필에는_서버_이름이_없다(self) -> None:
+        """새 봇을 만들 때 특정 MCP 서버가 딸려오면 안 된다."""
+        assert Profile.from_dict(MINIMAL).mcp_servers == {}
+
+    def test_존재하지_않는_cwd는_검증에_걸린다(self, tmp_path: Path) -> None:
+        profile = Profile.from_dict(
+            {
+                **MINIMAL,
+                "mcp_servers": {
+                    "a": {"command": "node", "cwd": str(tmp_path / "없음")}
+                },
+            }
+        )
+        assert any("cwd" in p for p in profile.validate())
+
+    def test_정상_서버_설정은_검증을_통과한다(self, tmp_path: Path) -> None:
+        profile = Profile.from_dict(
+            {**MINIMAL, "mcp_servers": {"a": {"command": "node", "cwd": str(tmp_path)}}}
+        )
+        assert profile.validate() == []
 
 
 class TestStatePaths:

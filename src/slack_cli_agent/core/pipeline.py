@@ -19,9 +19,11 @@ from ..config.channel import ChannelConfig, ChannelRegistry
 from ..engine.base import Engine, EngineRequest, EngineResponse, Usage
 from ..engine.runner import EngineInvoker
 from ..guard.base import GuardContext
+from ..guard.mentions import AddresseeGuard
 from ..guard.pipeline import GuardPipeline
+from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard
-from ..observability.audit import AuditLog
+from ..observability.audit import AuditLog, IncidentKind
 from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter, tail_output
 from ..prompt.composer import SystemPromptComposer
@@ -154,6 +156,10 @@ class RequestPipeline:
             log.exception("느린 요청 보고에 실패했다")
 
     @property
+    def audit(self) -> AuditLog:
+        return self._audit
+
+    @property
     def tool_policy(self) -> ToolPolicy | None:
         return self._tool_policy
 
@@ -235,6 +241,7 @@ class RequestPipeline:
 
         if response.body.strip() == SILENT_MARK:
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage)
+            self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             self._mark_silent(ctx)
             return HandleOutcome(ok=True, silent=True)
 
@@ -353,6 +360,11 @@ class RequestPipeline:
             resume=True,
             session_id=decision.session_id,
         ))
+        self._audit.record(
+            IncidentKind.LATE_ADDENDUM.value,
+            channel=ctx.channel, thread_ts=ctx.thread_ts,
+            ok=rerun.ok, added_chars=len(addendum),
+        )
         new_body = (rerun.body or "").strip()
         if not rerun.ok or not new_body or new_body == SILENT_MARK:
             return body, None
@@ -385,6 +397,7 @@ class RequestPipeline:
         )
         result = self._guards.run(body, guard_ctx)
         if result.rerun is None:
+            self._record_guard_incidents(ctx, result.details)
             return result.body, _watch_desc_of(result)
 
         rerun_request = replace(
@@ -392,11 +405,27 @@ class RequestPipeline:
         )
         rerun_response = self._invoker.invoke(rerun_request)
         if not rerun_response.ok:
+            self._record_guard_incidents(ctx, result.details)
             return result.body, _watch_desc_of(result)
 
         retry_ctx = replace(guard_ctx, previous_body=result.body, is_rewrite_retry=True)
         final_result = self._guards.run(rerun_response.body, retry_ctx)
+        self._record_guard_incidents(ctx, final_result.details)
         return final_result.body, _watch_desc_of(final_result)
+
+    def _record_guard_incidents(self, ctx: RequestContext, details: Mapping[str, Mapping[str, Any]]) -> None:
+        wrong = details.get(AddresseeGuard.name)
+        if wrong:
+            self._audit.record(
+                IncidentKind.WRONG_ADDRESSEE.value, channel=ctx.channel, thread_ts=ctx.thread_ts,
+                wrong_target=wrong.get("wrong_target"),
+            )
+        loss = details.get(RewriteLossGuard.name)
+        if loss:
+            self._audit.record(
+                IncidentKind.REWRITE_LOSS.value, channel=ctx.channel, thread_ts=ctx.thread_ts,
+                before_chars=loss.get("before_chars"), after_chars=loss.get("after_chars"),
+            )
 
     def _register_watch(self, ctx: RequestContext, principal: Principal, description: str) -> bool:
         if self._watch_queue is None:

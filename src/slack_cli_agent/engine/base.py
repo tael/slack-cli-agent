@@ -127,6 +127,11 @@ class Engine(ABC):
         """
         return None
 
+    def prepare(self, request: EngineRequest) -> None:
+        """Side effects the engine needs before running, e.g. writing its
+        own config file. Separate from build_command() so building a
+        command stays free of filesystem writes. Default: nothing."""
+
     def directives_for_turn(self, request: EngineRequest) -> str:
         """Per-turn directives, for engines with a pinned system prompt. Default: empty."""
         return ""

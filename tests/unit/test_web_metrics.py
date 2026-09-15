@@ -15,7 +15,7 @@ import pytest
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.jobs.ports import JobStatus
-from slack_cli_agent.observability.audit import REQUEST_KIND
+from slack_cli_agent.observability.audit import REQUEST_KIND, IncidentKind
 from slack_cli_agent.storage.database import Database
 from slack_cli_agent.web import metrics as metrics_module
 from slack_cli_agent.web.metrics import MetricsCollector
@@ -86,6 +86,21 @@ def insert_review(db: Database, *, kind: str, channel: str, target_ts: str, at: 
     db.connect().execute(
         "INSERT INTO reviews (kind, channel, target_ts, at, result) VALUES (?, ?, ?, ?, ?)",
         (kind, channel, target_ts, at, json.dumps({"status": "완료"})),
+    )
+
+
+def insert_incident(
+    db: Database,
+    *,
+    kind: str,
+    at: float,
+    channel: str = "C1",
+    thread_ts: str = "1.1",
+    **payload: object,
+) -> None:
+    db.connect().execute(
+        "INSERT INTO audit (at, kind, channel, thread_ts, payload) VALUES (?, ?, ?, ?, ?)",
+        (at, kind, channel, thread_ts, json.dumps(payload, ensure_ascii=False)),
     )
 
 
@@ -268,13 +283,130 @@ class Test검수_원장_기반_품질:
         quality = collector.collect(days=7)["quality"]
         assert quality["corrections"] is None
 
-    def test_원본에_있던_사고_유형_구분은_None이다(self, tmp_path: Path) -> None:
+    def test_사건이_한_건도_없으면_0건이지_판정불가가_아니다(self, tmp_path: Path) -> None:
+        """sca-qi5.1: request 만 있고 사건이 하나도 없는 창은 0건이다.
+
+        None(판정불가)과 다르다 — 이 종류는 이제 계측되므로, 없다는 것 자체가
+        실제로 안 일어났다는 뜻이다. tracked_since 가 없는 것으로 '아직 한 번도
+        기록되지 않았다'와 구분한다(test_아직_한_번도_기록되지_않은_종류는_구분된다).
+        """
         profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        quality = collector.collect(days=7)["quality"]
+        assert quality["late_addendum"] == 0
+        assert quality["wrong_addressee"] == 0
+        assert quality["split_broken"] == 0
+        assert quality["post_failed"] == 0
+        assert quality["silent"] == 0
+        assert quality["rewrites"] == 0
+
+
+class Test사고_종류별_건수:
+    """sca-qi5.1: split_broken/post_failed/late_addendum 등 새 사건 종류를 센다."""
+
+    def test_각_종류를_따로_센다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        insert_incident(db, kind=IncidentKind.LATE_ADDENDUM, at=1_001.0, ok=True, added_chars=10)
+        insert_incident(db, kind=IncidentKind.WRONG_ADDRESSEE, at=1_002.0, wrong_target="U9")
+        insert_incident(db, kind=IncidentKind.WRONG_ADDRESSEE, at=1_003.0, wrong_target="U9")
+        insert_incident(db, kind=IncidentKind.SPLIT_BROKEN, at=1_004.0)
+        insert_incident(db, kind=IncidentKind.POST_FAILED, at=1_005.0)
+        insert_incident(db, kind=IncidentKind.REWRITE_LOSS, at=1_006.0)
+        insert_incident(db, kind=IncidentKind.SILENT, at=1_007.0)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        quality = collector.collect(days=7)["quality"]
+        assert quality["late_addendum"] == 1
+        assert quality["wrong_addressee"] == 2
+        assert quality["split_broken"] == 1
+        assert quality["post_failed"] == 1
+        assert quality["rewrites"] == 1
+        assert quality["silent"] == 1
+
+    def test_침묵_비율은_전체_요청_대비다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        insert_request(db, at=1_001.0, channel="C1")
+        insert_request(db, at=1_002.0, channel="C1")
+        insert_request(db, at=1_003.0, channel="C1")
+        insert_incident(db, kind=IncidentKind.SILENT, at=1_004.0)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        quality = collector.collect(days=7)["quality"]
+        assert quality["silent"] == 1
+        assert quality["silent_pct"] == 25.0
+
+    def test_창_밖의_사건은_안_센다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        old_cutoff = 1_000.0 - 8 * 86400
+        insert_incident(db, kind=IncidentKind.LATE_ADDENDUM, at=old_cutoff, ok=True)
         collector = MetricsCollector(profile, now=lambda: 1_000.0)
         quality = collector.collect(days=7)["quality"]
-        assert quality["late_addendum"] is None
-        assert quality["silent"] is None
-        assert quality["rewrites"] is None
+        assert quality["late_addendum"] == 0
+
+    def test_아직_한_번도_기록되지_않은_종류는_구분된다(self, tmp_path: Path) -> None:
+        """sca-qi5.1 항목 5 — 새 종류는 오늘부터 기록되므로, 예전 audit.jsonl 에는
+        아예 없다. 0건과 '아직 한 번도 안 찍힘'을 tracked_since 유무로 가른다.
+        """
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        quality = collector.collect(days=7)["quality"]
+        assert quality["tracked_since"]["late_addendum"] is None
+
+    def test_한_번이라도_기록되면_그때부터_계측됐다고_본다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        insert_incident(db, kind=IncidentKind.LATE_ADDENDUM, at=1_050.0, ok=True)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        quality = collector.collect(days=7)["quality"]
+        assert quality["tracked_since"]["late_addendum"] is not None
+
+    def test_사건_종류가_신뢰성_사고_유형에도_집계된다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        insert_incident(db, kind=IncidentKind.POST_FAILED, at=1_001.0)
+        insert_incident(db, kind=IncidentKind.POST_FAILED, at=1_002.0)
+        insert_incident(db, kind=IncidentKind.WRONG_ADDRESSEE, at=1_003.0)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        reliability = collector.collect(days=7)["reliability"]
+        by_kind = {row["kind"]: row["count"] for row in reliability["incidents"]}
+        assert by_kind["post_failed"] == 2
+        assert by_kind["wrong_addressee"] == 1
+        assert "request" not in by_kind
+
+    def test_사건이_없으면_신뢰성_사고_유형은_빈_목록이다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        reliability = collector.collect(days=7)["reliability"]
+        assert reliability["incidents"] == []
+
+    def test_kind이_빈_레코드는_request로_본다(self, tmp_path: Path) -> None:
+        """관측: record() 는 항상 kind 를 채우므로 정상 경로에선 안 일어난다.
+        수기로 만졌거나 손상된 행을 대비한 방어적 기본값이다.
+        """
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        db.connect().execute(
+            "INSERT INTO audit (at, kind, channel, thread_ts, payload) VALUES (?, ?, ?, ?, ?)",
+            (1_000.0, "", "C1", "1.1", json.dumps({
+                "message_ts": "1.1", "session_id": "sid", "resumed": False,
+                "model": "model-x", "effort": "medium", "elapsed": 1.0, "ok": True,
+            })),
+        )
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        result = collector.collect(days=7)
+        assert result["reliability"]["total"] == 1
 
 
 class Test사용_현황:

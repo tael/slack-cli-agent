@@ -72,6 +72,27 @@ class CodexEnvironmentPolicy(EngineEnvironmentPolicy):
         }
 
 
+class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
+    """agy's process environment — allowlist, same shape as Codex's.
+
+    agy has no dedicated env var for relocating its config directory
+    (confirmed by testing, see docs/agy-실측.md) — it always reads
+    ~/.gemini/. Isolation per bot means overwriting HOME itself, so this
+    is the one policy where HOME_ENV_VAR is "HOME" rather than an
+    engine-specific var name.
+    """
+
+    HOME_ENV_VAR = "HOME"
+
+    def _base_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
+        return {
+            "PATH": source_env.get("PATH", "/usr/bin:/bin"),
+            "LANG": source_env.get("LANG", "ko_KR.UTF-8"),
+            "HOME": source_env.get("HOME", ""),
+            "BOT_PROFILE": self.profile_name,
+        }
+
+
 class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
     """Claude's process environment — denylist, same as the original _run_claude()."""
 
@@ -130,6 +151,7 @@ def _build_default_registry() -> EngineEnvironmentPolicyRegistry:
     default_registry = EngineEnvironmentPolicyRegistry()
     default_registry.register("codex", CodexEnvironmentPolicy)
     default_registry.register("claude", ClaudeEnvironmentPolicy)
+    default_registry.register("gemini", GeminiEnvironmentPolicy)
     return default_registry
 
 
