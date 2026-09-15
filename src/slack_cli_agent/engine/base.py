@@ -174,6 +174,78 @@ def equivalent_values(a: Usage, b: Usage) -> bool:
     return tuple(getattr(a, name) for name in _USAGE_FIELDS) == tuple(getattr(b, name) for name in _USAGE_FIELDS)
 
 
+# Values these CLIs are known to put in the fields we read as enums. Anything
+# else is reported as its length only: the prompt and the watch condition reach
+# every CLI as argv, so a field we read as an enum can hold conversation text,
+# a token or a path. A charset filter would pass all three through unchanged,
+# so this is an allowlist rather than a denylist (sca-dyb.14).
+KNOWN_DETAIL_CODES = frozenset(
+    {
+        # claude: how a usage limit was detected
+        "status_code", "hint", "subtype",
+        # claude: result subtype
+        "success", "error_max_turns", "error_max_limit", "error_during_execution",
+        # gemini: response status
+        "SUCCESS", "ERROR",
+        # runner: engine switch approval state
+        "pending", "approved", "denied",
+    }
+)
+
+
+@dataclass(frozen=True)
+class FailureDetail:
+    """Log-safe companion to failure_reason.
+
+    Numbers the engine counted itself, plus one classification drawn from
+    KNOWN_DETAIL_CODES. A plain str field would not force callers through any
+    of this, so EngineResponse holds this type instead.
+    """
+
+    exit_code: int | None = None
+    stdout_chars: int | None = None
+    timeout_sec: int | None = None
+    tool_errors: int | None = None
+    code: str = ""
+
+    def __post_init__(self) -> None:
+        for name in ("exit_code", "stdout_chars", "timeout_sec", "tool_errors"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError(f"{name} 은 정수여야 한다 : {type(value).__name__}")
+        if not isinstance(self.code, str):
+            raise TypeError(f"code 는 문자열이어야 한다 : {type(self.code).__name__}")
+
+    def _code_text(self) -> str:
+        return self.code if self.code in KNOWN_DETAIL_CODES else f"unknown:{len(self.code)}"
+
+    def __bool__(self) -> bool:
+        return any(
+            value is not None
+            for value in (self.exit_code, self.stdout_chars, self.timeout_sec, self.tool_errors)
+        ) or bool(self.code)
+
+    def __str__(self) -> str:
+        parts = [
+            f"{name}={value}"
+            for name, value in (
+                ("exit_code", self.exit_code),
+                ("stdout_chars", self.stdout_chars),
+                ("timeout_sec", self.timeout_sec),
+                ("tool_errors", self.tool_errors),
+            )
+            if value is not None
+        ]
+        if self.code:
+            parts.append(f"code={self._code_text()}")
+        return " ".join(parts)
+
+
+NO_DETAIL = FailureDetail()
+
+
 @dataclass(frozen=True)
 class UsageLimit:
     detail: str
@@ -192,6 +264,7 @@ class EngineResponse:
     raw: Mapping[str, Any] = field(default_factory=dict)
     # nonzero_exit / bad_json / timeout / usage_limit / empty_response / is_error
     failure_reason: str | None = None
+    failure_detail: FailureDetail = NO_DETAIL
     # sca-cfa — Codex's JSONL output has no duration field at all, so its
     # elapsed_source stays UNKNOWN until EngineRunner fills it from wall-clock time.
     elapsed_source: ElapsedSource = ElapsedSource.UNKNOWN
@@ -199,6 +272,14 @@ class EngineResponse:
     # it in, so a fallback answer carries the secondary's name rather than the
     # primary's — reporting needs it to pick the matching transcript format.
     engine: str = ""
+
+    def __post_init__(self) -> None:
+        # Type annotations alone stop nobody at runtime, and this field is what
+        # reaches the log and the audit record (sca-dyb.14).
+        if not isinstance(self.failure_detail, FailureDetail):
+            raise TypeError(
+                f"failure_detail 은 FailureDetail 이어야 한다 : {type(self.failure_detail).__name__}"
+            )
 
 
 class Engine(ABC):

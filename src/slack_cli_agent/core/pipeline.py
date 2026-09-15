@@ -16,7 +16,7 @@ from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelConfig, ChannelRegistry
-from ..engine.base import Engine, EngineRequest, EngineResponse, Usage
+from ..engine.base import NO_DETAIL, Engine, EngineRequest, EngineResponse, FailureDetail, Usage
 from ..engine.runner import EngineInvoker
 from ..guard.base import GuardContext
 from ..guard.mentions import AddresseeGuard
@@ -239,6 +239,7 @@ class RequestPipeline:
             self._record(
                 ctx, decision, model, effort, elapsed,
                 ok=False, usage=None, turns=response.turns, failure=failure,
+                failure_detail=response.failure_detail,
             )
             self._mark_failed(ctx)
             return HandleOutcome(ok=False, failure=failure)
@@ -484,10 +485,13 @@ class RequestPipeline:
         usage: Usage | None,
         turns: int | None = None,
         failure: str = "",
+        failure_detail: FailureDetail = NO_DETAIL,
     ) -> None:
         extra: dict[str, Any] = {}
         if failure:
             extra["failure"] = failure
+        if failure_detail:
+            extra["failure_detail"] = str(failure_detail)
         first_reaction_sec = self._first_reaction_sec(ctx)
         queue_wait_sec = self._queue_wait_sec(ctx)
         self._audit.record_request(

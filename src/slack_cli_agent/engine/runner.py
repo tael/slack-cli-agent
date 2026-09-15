@@ -22,7 +22,15 @@ from pathlib import Path
 from typing import Any
 
 from ..config.settings import RuntimeSettings
-from .base import CallOrigin, ElapsedSource, Engine, EngineRequest, EngineResponse, UsageLimit
+from .base import (
+    CallOrigin,
+    ElapsedSource,
+    Engine,
+    EngineRequest,
+    EngineResponse,
+    FailureDetail,
+    UsageLimit,
+)
 from .environment import EngineEnvironmentPolicy
 from .switcher import EngineSwitcher
 
@@ -79,7 +87,9 @@ class EngineRunner:
                 body=f"시간이 오래 걸려 중단했습니다. {timeout_int}초 안에 끝나지 않았습니다.",
                 session_id=None, model_actual=None,
                 elapsed=timeout, turns=None, usage=None,
-                raw={}, failure_reason="timeout", elapsed_source=ElapsedSource.RUNNER,
+                raw={}, failure_reason="timeout",
+                failure_detail=FailureDetail(timeout_sec=timeout_int),
+                elapsed_source=ElapsedSource.RUNNER,
                 engine=engine.name,
             )
         wall_elapsed = time.monotonic() - started
@@ -225,11 +235,13 @@ class FallbackEngine(Engine):
 
             if not self.switcher.is_approved():
                 self._active = self.primary
+                approval = str(self.switcher.load().get("approval", "pending"))
                 return EngineResponse(
                     ok=False, body=self.switcher.limit_reply(), session_id=None,
                     model_actual=None, elapsed=0.0, turns=None, usage=None,
-                    raw={"engine_switch": self.switcher.load().get("approval", "pending")},
+                    raw={"engine_switch": approval},
                     failure_reason="usage_limit", engine=self.primary.name,
+                    failure_detail=FailureDetail(code=approval),
                 )
 
             return self._run_secondary(request)

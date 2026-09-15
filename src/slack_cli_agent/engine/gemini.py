@@ -42,7 +42,15 @@ from pathlib import Path
 from typing import Any
 
 from ..config.profile import McpServerSpec
-from .base import ElapsedSource, Engine, EngineRequest, EngineResponse, Usage, UsageLimit
+from .base import (
+    ElapsedSource,
+    Engine,
+    EngineRequest,
+    EngineResponse,
+    FailureDetail,
+    Usage,
+    UsageLimit,
+)
 
 _VALID_EFFORTS = frozenset({"low", "medium", "high"})
 _MODEL_EFFORT_SUFFIXES = ("high", "medium", "low")
@@ -168,6 +176,7 @@ class GeminiEngine(Engine):
                 model_actual=None, elapsed=0.0, turns=None, usage=None,
                 raw={"stdout": stdout, "stderr": stderr, "returncode": returncode},
                 failure_reason="bad_json",
+                failure_detail=FailureDetail(exit_code=returncode, stdout_chars=len(stdout)),
             )
         if not isinstance(payload, Mapping):
             return EngineResponse(
@@ -175,6 +184,7 @@ class GeminiEngine(Engine):
                 model_actual=None, elapsed=0.0, turns=None, usage=None,
                 raw={"stdout": stdout, "stderr": stderr, "returncode": returncode},
                 failure_reason="bad_json",
+                failure_detail=FailureDetail(exit_code=returncode, stdout_chars=len(stdout)),
             )
 
         session_id = payload.get("conversation_id") or None
@@ -189,7 +199,7 @@ class GeminiEngine(Engine):
             return EngineResponse(
                 ok=False, body=body, session_id=session_id, model_actual=None,
                 elapsed=elapsed, turns=turns, usage=usage, raw=raw, failure_reason="is_error",
-                elapsed_source=elapsed_source,
+                failure_detail=FailureDetail(code=status), elapsed_source=elapsed_source,
             )
 
         body = str(payload.get("response") or "").strip()
@@ -197,6 +207,9 @@ class GeminiEngine(Engine):
             return EngineResponse(
                 ok=False, body="응답이 비어 있습니다.", session_id=session_id, model_actual=None,
                 elapsed=elapsed, turns=turns, usage=usage, raw=raw, failure_reason="empty_response",
+                failure_detail=FailureDetail(
+                    exit_code=returncode, stdout_chars=len(stdout), code=status,
+                ),
                 elapsed_source=elapsed_source,
             )
         return EngineResponse(
