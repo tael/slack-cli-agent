@@ -46,9 +46,15 @@ class FakeSlackClient:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        # 실제 슬랙은 conversations.open 에 DM 방 ID 를 돌려준다
+        self.open_channel = "D_FAKE"
 
     def _record(self, name: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append((name, kwargs))
+        if name == "conversations_open":
+            return {"ok": True, "channel": {"id": self.open_channel}}
+        if name == "chat_postMessage":
+            return {"ok": True, "ts": "1.1"}
         return {"ok": True}
 
     def __getattr__(self, name: str) -> Any:
@@ -1242,3 +1248,44 @@ class Test게이트웨이프로필배선:
         app = Application(profile, FakeSlackClient())
 
         assert app.gateway()._profile_name == "어느봇"
+
+
+class Test소유자_DM_경로:
+    """프로필에 owner_dm 을 안 적으면 빈 문자열로 발송해 channel_not_found 가
+    난다. 보류 보고가 30초마다 그 실패를 반복했다(2026-09-15 실측). 소유자
+    사용자 ID 는 이미 있으므로 DM 방을 열어서 쓴다."""
+
+    def test_owner_dm_이_없으면_소유자와의_DM_을_연다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        client.open_channel = "D_OPENED"
+        app = Application(write_profile(tmp_path), client=client)
+
+        app._post_owner_dm("본문")
+
+        opened = [kw for name, kw in client.calls if name == "conversations_open"]
+        assert opened and opened[0]["users"] == "U_OWNER"
+        posted = [kw for name, kw in client.calls if name == "chat_postMessage"]
+        assert posted and posted[0]["channel"] == "D_OPENED"
+
+    def test_프로필에_적힌_owner_dm_이_있으면_그대로_쓴다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        app = Application(write_profile(tmp_path, owner_dm="D_FIXED"), client=client)
+
+        app._post_owner_dm("본문")
+
+        assert not [name for name, _ in client.calls if name == "conversations_open"]
+        posted = [kw for name, kw in client.calls if name == "chat_postMessage"]
+        assert posted and posted[0]["channel"] == "D_FIXED"
+
+    def test_한_번_연_DM_은_다시_열지_않는다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        client.open_channel = "D_OPENED"
+        app = Application(write_profile(tmp_path), client=client)
+
+        app._post_owner_dm("첫 번째")
+        app._post_owner_dm("두 번째")
+
+        assert len([name for name, _ in client.calls if name == "conversations_open"]) == 1
