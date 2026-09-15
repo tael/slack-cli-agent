@@ -601,6 +601,12 @@ class Test함께있는사람연결:
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
         assert app.pipeline()._participants is not None
 
+    def test_링크된_스레드_추출기가_파이프라인에_붙는다(self, tmp_path: Path) -> None:
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        assert app.pipeline()._linked_threads is not None
+
+
+
 
 class Test발송전재확인연결:
     """발송 직전 스레드 재확인이 조립에 들어가는가.

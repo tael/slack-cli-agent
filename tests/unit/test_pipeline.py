@@ -271,6 +271,7 @@ def build_pipeline(
     mention_table: Any = None,
     slow_reporter: Any = None,
     participants: Any = None,
+    linked_threads: Any = None,
     late_addendum: Any = None,
     consumption: Any = None,
     watch_queue: Any = None,
@@ -304,6 +305,8 @@ def build_pipeline(
         extra_kwargs["slow_reporter"] = slow_reporter
     if participants is not None:
         extra_kwargs["participants"] = participants
+    if linked_threads is not None:
+        extra_kwargs["linked_threads"] = linked_threads
     if late_addendum is not None:
         extra_kwargs["late_addendum"] = late_addendum
     if consumption is not None:
@@ -926,6 +929,35 @@ class Test함께있는사람:
         pipeline, parts = build_pipeline(responses=[ok_response()])
         pipeline.handle(make_ctx())
         assert parts["composer"].contexts[0].people == ()
+
+
+class Test링크된스레드:
+    """본문에 걸린 슬랙 링크의 스레드가 실제 요청 프롬프트에 들어가는가.
+
+    시스템 프롬프트가 아니라 요청 프롬프트여야 한다. codex 는 이어받기 요청에
+    시스템 프롬프트를 안 붙이므로, 거기 두면 스레드의 두 번째 요청부터 사라진다.
+    """
+
+    def test_링크된_스레드를_요청_프롬프트에_붙인다(self) -> None:
+        pipeline, parts = build_pipeline(
+            responses=[ok_response()],
+            linked_threads=lambda text, self_channel: "----- 링크된 스레드 : 테스트 -----",
+        )
+        pipeline.handle(make_ctx())
+        assert "----- 링크된 스레드 : 테스트 -----" in parts["runner"].calls[0].prompt
+
+    def test_조회가_예외를_내도_요청을_막지_않는다(self) -> None:
+        def 터진다(text: str, self_channel: str) -> str:
+            raise RuntimeError("조회 실패")
+
+        pipeline, parts = build_pipeline(responses=[ok_response()], linked_threads=터진다)
+        pipeline.handle(make_ctx())
+        assert parts["runner"].calls[0].prompt
+
+    def test_추출기를_안_주면_아무것도_안_붙는다(self) -> None:
+        pipeline, parts = build_pipeline(responses=[ok_response()])
+        pipeline.handle(make_ctx())
+        assert "링크된 스레드" not in parts["runner"].calls[0].prompt
 
 
 class Test엔진발급세션ID:
