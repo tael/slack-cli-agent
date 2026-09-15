@@ -51,6 +51,14 @@ class EngineEnvironmentPolicy(ABC):
     #: even if set.
     HOME_ENV_VAR: str | None = None
 
+    #: Login files the engine expects inside its home, as (path under
+    #: home_dir, path under the operator's own home) pairs. A fresh
+    #: per-bot home has none of them and the engine then fails at answer
+    #: time rather than at boot, so preflight reads this (sca-kos.6).
+    #: Paired so the place to copy from cannot drift from the place it
+    #: goes. Empty means the engine keeps credentials elsewhere.
+    CREDENTIAL_FILES: tuple[tuple[str, str], ...] = ()
+
     def __init__(self, profile_name: str, home_dir: Path | None = None) -> None:
         if home_dir is not None and self.HOME_ENV_VAR is None:
             raise ConfigError(
@@ -75,6 +83,7 @@ class CodexEnvironmentPolicy(EngineEnvironmentPolicy):
     """Codex's process environment — allowlist, same as the original codex_environment()."""
 
     HOME_ENV_VAR = "CODEX_HOME"
+    CREDENTIAL_FILES = (("auth.json", ".codex/auth.json"),)
 
     def _base_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
         # HOME itself, not just CODEX_HOME, is pinned to this bot's home
@@ -105,6 +114,8 @@ class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
     """
 
     HOME_ENV_VAR = "HOME"
+    _AGY_TOKEN = ".gemini/antigravity-cli/antigravity-oauth-token"
+    CREDENTIAL_FILES = ((_AGY_TOKEN, _AGY_TOKEN),)
 
     def _base_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
         return {
@@ -136,6 +147,10 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # SHELL, LOGNAME and TMPDIR made no difference.
         "USER",
     })
+
+    #: Empty on purpose: claude keeps its subscription credentials in the
+    #: macOS keychain and CLAUDE_CODE_OAUTH_TOKEN, not under its home.
+    CREDENTIAL_FILES: tuple[tuple[str, str], ...] = ()
 
     def _base_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
         env = {
@@ -184,6 +199,11 @@ class EngineEnvironmentPolicyRegistry:
             known = ", ".join(sorted(self._classes)) or "없음"
             raise ConfigError(f"엔진 {name} 의 환경 변수 정책이 없다. 등록된 엔진: {known}")
         return cls(profile_name=profile_name, home_dir=home_dir)
+
+    def policy_class(self, name: str) -> type[EngineEnvironmentPolicy] | None:
+        """For callers that need a policy's declarations without building one —
+        preflight reads CREDENTIAL_FILES before any engine process exists."""
+        return self._classes.get(name)
 
     def known_names(self) -> list[str]:
         return sorted(self._classes)

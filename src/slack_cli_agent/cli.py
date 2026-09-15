@@ -30,6 +30,7 @@ from .core.secrets import contains_secret, redact
 from .preflight.check import PreflightContext
 from .preflight.checks import (
     EngineBinaryCheck,
+    EngineHomeCredentialCheck,
     McpServerCheck,
     OwnerSettingsInertCheck,
     PromptFileCheck,
@@ -122,6 +123,7 @@ class PreflightCommand(ProfileAwareCommand):
         checks = (
             WorkdirCheck(extra_dirs=args.extra_workdir),
             EngineBinaryCheck(),
+            EngineHomeCredentialCheck(),
             McpServerCheck(),
             PromptFileCheck(required_names=args.required_prompt),
             # fatal=False: only meant to prevent a misread config, not to block boot.

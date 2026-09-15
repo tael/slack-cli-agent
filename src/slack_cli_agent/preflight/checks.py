@@ -11,14 +11,20 @@ import json
 import os
 import re
 import shutil
+import stat
 from pathlib import Path
 from typing import ClassVar
 
 from ..auth.policy import EFFORT_LEVELS, OWNER_EFFORT_MIN
 from ..config.channel import ChannelRegistry
+from ..core.errors import ConfigError
+from ..engine.environment import registry
 from .check import CheckResult, PreflightCheck, PreflightContext
 
 _SHEBANG_ENV_RE = re.compile(r"#!\s*/usr/bin/env\s+(\S+)")
+
+#: Group and other bits. A login file readable past its owner is not isolated.
+_SHARED_BITS = stat.S_IRWXG | stat.S_IRWXO
 
 
 class PromptFileCheck(PreflightCheck):
@@ -177,3 +183,60 @@ class McpServerCheck(PreflightCheck):
             if m and not shutil.which(m.group(1)):
                 broken.append(f"{name} : {m.group(1)} 를 PATH 에서 못 찾음")
         return broken
+
+
+class EngineHomeCredentialCheck(PreflightCheck):
+    """Checks that a per-bot engine home actually holds that engine's login.
+
+    Splitting CODEX_HOME/HOME per bot works, but a fresh directory has no
+    login in it and the engine then fails only when a request arrives —
+    the bot looks alive and answers nothing. Which files an engine needs
+    is declared on its environment policy (sca-kos.6).
+    """
+
+    name: ClassVar[str] = "engine_home_credentials"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        bad: list[str] = []
+        specs = [("1차", ctx.profile.primary_engine)]
+        if ctx.profile.fallback_engine:
+            specs.append(("2차", ctx.profile.fallback_engine))
+        for label, spec in specs:
+            if spec.home_dir is None:
+                continue
+            policy = registry.policy_class(spec.type)
+            if policy is None:
+                # Engine registration is EngineBinaryCheck's concern; an
+                # unknown engine must not turn into a credential failure.
+                continue
+            try:
+                # Built, not just read: an engine that has no per-bot home
+                # concept rejects home_dir here, and reading CREDENTIAL_FILES
+                # alone would call that profile bootable (코덱스 리뷰).
+                policy(profile_name=ctx.profile.name, home_dir=spec.home_dir)
+            except ConfigError as exc:
+                bad.append(f"{label} 엔진 : {exc}")
+                continue
+            bad.extend(self._missing(label, spec.home_dir, policy.CREDENTIAL_FILES))
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="엔진 홈 자격 점검 통과")
+
+    @staticmethod
+    def _missing(
+        label: str, home_dir: Path, credentials: tuple[tuple[str, str], ...]
+    ) -> list[str]:
+        bad: list[str] = []
+        for relative, source in credentials:
+            path = home_dir / relative
+            if not path.is_file():
+                bad.append(f"{label} 엔진 홈에 자격 파일이 없다 : {path} (~/{source} 를 복사한다)")
+                continue
+            mode = path.stat().st_mode
+            if mode & _SHARED_BITS:
+                bad.append(f"{label} 엔진 자격 파일의 권한을 600 으로 바꿔라 : {path}")
+            elif not mode & stat.S_IRUSR:
+                # Nobody-can-read is as broken as everybody-can-read: the
+                # engine fails at request time either way (코덱스 리뷰).
+                bad.append(f"{label} 엔진 자격 파일을 소유자가 읽을 수 없다 : {path}")
+        return bad
