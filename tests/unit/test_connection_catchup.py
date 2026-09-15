@@ -145,7 +145,6 @@ class Test조정자:
             catch_up=캐치업,
             settings=RuntimeSettings(**설정),
             owner="w1",
-            now=시계,
         )
 
     def test_연결_기록이_있으면_캐치업을_부른다(self, 원장, 시계):
@@ -178,7 +177,6 @@ class Test조정자:
                 catch_up=캐치업,
                 settings=RuntimeSettings(),
                 owner=owner,
-                now=시계,
             ).tick()
         assert len(캐치업.windows) == 1
 
@@ -317,3 +315,17 @@ class Test조립:
         app.connection_epochs().record_connection(ConnectionKind.INITIAL)
         조정자.tick()
         assert len(기록) == 1
+
+
+class Test시각기준:
+    """원장은 프로세스 경계를 넘어 읽힌다. 단조 시계는 프로세스마다 원점이 달라
+    공백 계산이 무의미해진다. Application 의 기본 시계가 time.monotonic 이라
+    그대로 주입하면 이 사고가 난다."""
+
+    def test_원장은_벽시계를_쓴다(self, app):
+        import time
+
+        원장 = app.connection_epochs()
+        원장.record_connection(ConnectionKind.INITIAL)
+        기록 = 원장.pending()[0].connected_at
+        assert abs(기록 - time.time()) < 5.0

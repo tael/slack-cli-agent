@@ -1080,7 +1080,9 @@ class Application:
         """One ledger per process: the liveness-write interval is instance
         state, so extra instances would multiply the writes."""
         if self._connection_epochs is None:
-            self._connection_epochs = SqliteConnectionEpochs(self._database, now=self._clock)
+            # Wall clock on purpose: this ledger is read by another process,
+            # and self._clock is monotonic, whose origin differs per process.
+            self._connection_epochs = SqliteConnectionEpochs(self._database)
         return self._connection_epochs
 
     def connection_catchup_coordinator(self, worker: Worker) -> ConnectionCatchupCoordinator:
@@ -1089,7 +1091,6 @@ class Application:
             catch_up=lambda window: self._connection_catchup(worker, window),
             settings=self._settings,
             owner=worker.worker_id,
-            now=self._clock,
         )
 
     def connection_catchup_runner(self, worker: Worker) -> PeriodicRunner:
