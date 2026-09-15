@@ -11,8 +11,8 @@
 #   BOT_OWNER_USER_ID        소유자 슬랙 사용자 ID (U 로 시작)
 #   BOT_TROUBLESHOOT_CHANNEL 문제를 알릴 채널 ID (C 로 시작)
 #
-# 매번 넣기 번거로우면 <저장소>/.new-bot.env 에 적어 둔다. 그 파일은
-# .gitignore 가 막는다.
+# 기본값을 두지 않는다. 조직 고유값이라 스크립트가 임의로 정하면 안 된다.
+# 후보를 모르면 tools/detect-defaults.py 가 지금 환경에서 찾아 보여준다.
 #
 # 예: tools/new-bot.sh rei "아야나미 레이" gemini gemini-3.8-flash ~/Jobs/tasks/bot-assets/rei-icon.png
 set -e
@@ -20,9 +20,12 @@ NAME=$1; DISPLAY=$2; ENGINE=$3; MODEL=$4; ICON=$5
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 [ -z "$MODEL" ] && { sed -n '2,20p' "$0"; exit 2; }
 
-[ -f "$REPO/.new-bot.env" ] && . "$REPO/.new-bot.env"
 for v in BOT_WORKSPACE BOT_OWNER_USER_ID BOT_TROUBLESHOOT_CHANNEL; do
-  [ -n "${!v}" ] || { echo "환경변수 $v 가 없다. 이 파일 머리말을 본다."; exit 2; }
+  [ -n "${!v}" ] || {
+    echo "환경변수 $v 가 없다. 이 값은 기본값을 둘 수 없다."
+    echo "후보를 보려면: $REPO/tools/detect-defaults.py"
+    exit 2
+  }
 done
 
 case "$ENGINE" in
