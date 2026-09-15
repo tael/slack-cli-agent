@@ -68,7 +68,7 @@ class ProposalAnalyzer:
         self,
         invoker: EngineInvoker,
         *,
-        model: str,
+        model: str | None,
         effort: str,
         workdir: Path,
         bot_name: str,

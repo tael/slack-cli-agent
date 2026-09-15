@@ -159,7 +159,7 @@ class Test엔진무관_전달:
                 system_prompt="시스템 지침",
                 session_id="11111111-1111-1111-1111-111111111111",
                 resume=resume,
-                model="",
+                model="m",
                 effort="",
                 workdir=tmp_path,
                 trust_level=TrustLevel.GENERAL,

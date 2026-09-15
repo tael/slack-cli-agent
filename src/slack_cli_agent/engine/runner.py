@@ -58,6 +58,10 @@ class EngineRunner:
             # primary or secondary in its own run(), and the recovery probe
             # sends a switched-state request back to the primary.
             request = dataclasses.replace(request, session_id=engine.new_session_id())
+        if not request.model:
+            # Same reason as session_id: model naming is per-engine and the
+            # concrete engine is only known here (sca-dyb.10).
+            request = dataclasses.replace(request, model=engine.spec.model)
         engine.prepare(request)
         cmd = engine.build_command(request)
         timeout = timeout_sec if timeout_sec is not None else self._settings.request_timeout_sec
@@ -255,7 +259,7 @@ class FallbackEngine(Engine):
         fallback_request = EngineRequest(
             prompt=request.prompt, system_prompt=request.system_prompt,
             session_id=None, resume=False,
-            model=self.secondary.spec.model, effort=request.effort,
+            model=None, effort=request.effort,
             workdir=request.workdir, readable_dirs=request.readable_dirs,
             allowed_tools=request.allowed_tools, trust_level=request.trust_level,
         )
@@ -286,7 +290,7 @@ class FallbackEngine(Engine):
         probe_request = EngineRequest(
             prompt=self.PROBE_PROMPT, system_prompt="",
             session_id=None, resume=False,
-            model=self.secondary.spec.model, effort="low", workdir=request.workdir,
+            model=None, effort="low", workdir=request.workdir,
             readable_dirs=(), allowed_tools=(), trust_level=request.trust_level,
         )
         response = self.runner.run(self.secondary, probe_request, timeout_sec=self.PROBE_TIMEOUT_SEC)

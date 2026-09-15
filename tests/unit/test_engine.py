@@ -851,6 +851,30 @@ class TestFallbackEngine:
 
         assert [r.session_id for r in secondary.built] == ["2차-형식"]
 
+    def test_전환_뒤_2차로_도는_요청은_2차의_모델을_받는다(self, tmp_path: Path) -> None:
+        """1차 모델명을 그대로 2차 CLI 에 넘기면 없는 모델이 된다(sca-dyb.10)."""
+        fallback, _primary, secondary, switcher = self._fallback(tmp_path)
+        switcher.begin_switch("weekly limit", engine_name="codex")
+        switcher.approve()
+
+        fallback.run(request(model="claude-sonnet-5"))
+
+        assert [r.model for r in secondary.built] == ["gpt-5.6-sol"]
+
+    def test_복구_프로브가_1차로_돌면_1차의_모델을_받는다(self, tmp_path: Path) -> None:
+        """모델을 안 정한 요청이 2차 상태에서 1차 프로브로 흘러도 1차 것을 써야 한다."""
+        ok = EngineResponse(ok=True, body="복구", session_id=None, model_actual=None,
+                            elapsed=0, turns=None, usage=None)
+        fallback, primary, secondary, switcher = self._fallback(tmp_path, primary_response=ok)
+        switcher.begin_switch("weekly limit", engine_name="codex")
+        switcher.approve()
+        fallback._active = secondary
+        switcher.mark_probed(0.0)
+
+        fallback.run(request(model=None))
+
+        assert [r.model for r in primary.built] == ["claude-sonnet-5"]
+
     def test_복구_프로브가_1차로_돌면_1차_형식의_세션_id를_받는다(self, tmp_path: Path) -> None:
         """라우팅은 run() 안에서 정해진다. 요청 전에 id 를 먼저 꺼내면 2차
         상태에서 꺼낸 값이 1차 프로브로 흘러 그 CLI 가 거부한다.
@@ -1109,3 +1133,54 @@ class Test실행_시점에_세션_id를_만든다:
         """
         with pytest.raises(ValueError):
             request(session_id=빈값).require_session_id()
+
+
+class Test모델도_실행_엔진이_정한다:
+    """모델명 형식은 엔진마다 다르다. 어느 엔진이 이번 요청을 실행하는지는
+    실행 직전에야 정해지므로 model=None 의 해석도 그 자리에서 한다(sca-dyb.10).
+
+    관찰 지점은 EngineRequest 가 아니라 실제로 조립된 명령줄이다. 요청 객체만
+    보면 채워진 값이 그 엔진의 CLI 에 유효한지가 안 드러난다.
+    """
+
+    def _capture(self, engine: Engine, req: EngineRequest) -> list[str]:
+        기록: list[list[str]] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            기록.append(list(cmd))
+            return FakeCompleted(stdout="", returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess,
+                              environment_policy=통과정책())
+        runner.run(engine, req)
+        return 기록[0]
+
+    def _모델인자(self, cmd: list[str], 플래그: str) -> str:
+        return cmd[cmd.index(플래그) + 1]
+
+    def test_클로드는_자기_프로필_모델을_받는다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        cmd = self._capture(engine, request(model=None, workdir=tmp_path))
+        assert self._모델인자(cmd, "--model") == "claude-sonnet-5"
+
+    def test_코덱스는_자기_프로필_모델을_받는다(self, tmp_path: Path) -> None:
+        profile = profile_with(
+            {"type": "codex", "binary": "codex", "model": "gpt-5.6-sol"}, tmp_path=tmp_path)
+        engine = CodexEngine(profile, SETTINGS)
+        cmd = self._capture(engine, request(model=None, workdir=tmp_path))
+        assert self._모델인자(cmd, "-m") == "gpt-5.6-sol"
+
+    def test_제미나이는_자기_프로필_모델을_받는다(self, tmp_path: Path) -> None:
+        engine = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        cmd = self._capture(engine, request(model=None, workdir=tmp_path))
+        assert self._모델인자(cmd, "--model") == "gemini-3.8-flash"
+
+    def test_호출부가_고른_모델은_그대로_간다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        cmd = self._capture(engine, request(model="claude-opus-5", workdir=tmp_path))
+        assert self._모델인자(cmd, "--model") == "claude-opus-5"
+
+    @pytest.mark.parametrize("빈값", [None, ""])
+    def test_아직_안_정해졌으면_명령_조립이_막힌다(self, 빈값: str | None) -> None:
+        with pytest.raises(ValueError):
+            request(model=빈값).require_model()

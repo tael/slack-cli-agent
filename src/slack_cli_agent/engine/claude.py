@@ -93,7 +93,7 @@ class ClaudeEngine(Engine):
             # this module) to keep Bash/Edit/Write/NotebookEdit out of
             # request.allowed_tools.
             "--allowedTools", ",".join(request.allowed_tools),
-            "--model", request.model,
+            "--model", request.require_model(),
             "--effort", request.effort,
         ]
         for path in request.readable_dirs:
