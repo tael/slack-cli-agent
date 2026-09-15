@@ -18,6 +18,9 @@
 set -e
 NAME=$1; DISPLAY=$2; ENGINE=$3; MODEL=$4; ICON=$5
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+# 아이콘을 안 주면 동봉한 기본 아이콘을 안내한다. 슬랙 앱 아이콘은 API 로 못
+# 올려서 브라우저로 올리는 것까지는 사람이 한다.
+[ -z "$ICON" ] && ICON="$REPO/src/slack_cli_agent/assets/default-bot-icon.png"
 [ -z "$MODEL" ] && { sed -n '2,20p' "$0"; exit 2; }
 
 for v in BOT_WORKSPACE BOT_OWNER_USER_ID BOT_TROUBLESHOOT_CHANNEL; do
@@ -140,7 +143,8 @@ echo "     $D/.slack_bot_token 에 넣고 chmod 600"
 echo "  2) 앱 토큰     https://api.slack.com/apps/$APP_ID/general"
 echo "     Generate Token and Scopes, 스코프는 connections:write"
 echo "     $D/.slack_app_token 에 넣고 chmod 600"
-[ -n "$ICON" ] && echo "  3) 아이콘      같은 /general 페이지의 앱 아이콘에 $ICON 을 올린다"
+echo "  3) 아이콘      같은 /general 페이지의 앱 아이콘에 이 파일을 올린다"
+echo "                $ICON"
 echo
 echo "그 뒤:"
 echo "  $D/run.sh preflight        # '기동 가능' 이 나와야 한다"
