@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -169,14 +170,25 @@ class FakePublisher:
 
 
 class FakeAuditLog:
+    """Rejects a field the real AuditLog could not write.
+
+    The real one writes one JSON line per request, so a value json can't
+    encode dropped the whole record — and on the caller's path, the request
+    itself (sca-kwv). A fake that just stores the dict hides that, so every
+    pipeline test here would pass while the deployed bot failed. No `default=`
+    fallback on purpose: this is the assertion, not the production writer.
+    """
+
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []
         self.incidents: list[dict[str, Any]] = []
 
     def record_request(self, **fields: Any) -> None:
+        json.dumps(fields, ensure_ascii=False)
         self.records.append(fields)
 
     def record(self, kind: str, **fields: Any) -> None:
+        json.dumps(fields, ensure_ascii=False)
         self.incidents.append({"kind": str(kind), **fields})
 
 

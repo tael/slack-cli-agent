@@ -167,3 +167,60 @@ class TestNoticeCatalog:
     def test_모르는_키를_render하면_예외(self, catalog: NoticeCatalog) -> None:
         with pytest.raises(KeyError):
             catalog.render("존재하지않는키")
+
+
+class TestAudit기록직렬화:
+    """audit 한 줄이 못 써지면 그 요청 기록 전체가 사라지고, 호출 경로에서는
+    요청 자체가 실패한다(sca-kwv). 기록은 필드 하나를 잃더라도 남아야 한다.
+    """
+
+    def _감사(self, database, tmp_path):
+        from slack_cli_agent.observability.audit import AuditLog
+        return AuditLog(database, tmp_path / "audit.jsonl"), tmp_path / "audit.jsonl"
+
+    def test_엔진이_만든_usage가_그대로_기록된다(self, database, tmp_path) -> None:
+        from slack_cli_agent.engine.base import Usage
+        감사, 경로 = self._감사(database, tmp_path)
+        usage = Usage.from_native({"input_tokens": 7}, {"input_tokens": "input_tokens"})
+        감사.record_request(
+            channel="C1", thread_ts="1.1", message_ts="1.1", session_id="s",
+            resumed=False, model="m", effort="low", elapsed=1.0, ok=True,
+            usage=usage.as_audit_dict(),
+        )
+        기록 = json.loads(경로.read_text(encoding="utf-8").strip())
+        assert 기록["usage"]["input_tokens"] == 7
+        assert "output_tokens" in 기록["usage"]["unavailable"]
+
+    def test_json으로_못_쓰는_값이_와도_기록이_남는다(self, database, tmp_path) -> None:
+        감사, 경로 = self._감사(database, tmp_path)
+        감사.record("request", channel="C1", 이상한값=frozenset({"b", "a"}))
+        기록 = json.loads(경로.read_text(encoding="utf-8").strip())
+        assert 기록["이상한값"] == ["a", "b"]
+
+    @pytest.mark.parametrize(
+        ("이름", "값"),
+        [
+            # sorted() 가 TypeError 를 낸다.
+            ("비교_불가_집합", {1, "x"}),
+            # 비문자열 키에는 default 가 아예 안 불린다.
+            ("튜플_키_사전", {(1, 2): "값"}),
+            ("객체", object()),
+        ],
+    )
+    def test_어떤_타입이_와도_그_요청_기록은_남는다(self, database, tmp_path, 이름, 값) -> None:
+        감사, 경로 = self._감사(database, tmp_path)
+        감사.record("request", channel="C1", 이상한값=값, 멀쩡한값=7)
+        기록 = json.loads(경로.read_text(encoding="utf-8").strip())
+        assert 기록["멀쩡한값"] == 7
+        assert 기록["channel"] == "C1"
+
+    def test_순환_참조가_있어도_기록이_남는다(self, database, tmp_path) -> None:
+        감사, 경로 = self._감사(database, tmp_path)
+        고리: dict = {"이름": "고리"}
+        고리["자신"] = 고리
+        감사.record("request", channel="C1", 이상한값=고리, 멀쩡한값=7)
+        기록 = json.loads(경로.read_text(encoding="utf-8").strip())
+        assert 기록["멀쩡한값"] == 7
+        # 깊이 제한만으로도 예외는 안 나지만 20겹이 그대로 기록에 남는다.
+        # 고리는 처음 만난 자리에서 끊는다.
+        assert 기록["이상한값"] == {"이름": "고리", "자신": "<순환 참조>"}

@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -506,7 +506,7 @@ class RequestPipeline:
             ok=ok,
             first_reaction_sec=first_reaction_sec,
             queue_wait_sec=queue_wait_sec,
-            usage=asdict(usage) if usage is not None else None,
+            usage=usage.as_audit_dict() if usage is not None else None,
             user=ctx.user,
             turns=turns,
             **extra,

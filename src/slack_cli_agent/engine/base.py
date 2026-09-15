@@ -108,6 +108,16 @@ class Usage:
         return cls(**values, unavailable=frozenset(unavailable))
 
 
+    def as_audit_dict(self) -> dict[str, Any]:
+        """JSON-safe form for the audit record. Lives here rather than at the
+        call site because every engine goes through the same audit path, and a
+        frozenset leaking into json.dumps dropped the whole request (sca-kwv).
+        """
+        record: dict[str, Any] = {name: getattr(self, name) for name in _USAGE_FIELDS}
+        record["unavailable"] = sorted(self.unavailable)
+        return record
+
+
 def equivalent_values(a: Usage, b: Usage) -> bool:
     """Compares only the four counted fields, ignoring which side could
     actually measure them.
