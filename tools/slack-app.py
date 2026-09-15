@@ -4,8 +4,9 @@
 토큰은 ~/.slack-app-config/<워크스페이스>.{access,refresh} 에 둔다.
 access 토큰은 12시간이면 만료되므로 매 호출 전에 자동으로 갱신한다.
 
-    tools/slack-app.py rotate  <ws>
-    tools/slack-app.py create  <ws> <매니페스트파일>
+    tools/slack-app.py rotate   <ws>
+    tools/slack-app.py validate <ws> <매니페스트파일>
+    tools/slack-app.py create   <ws> <매니페스트파일>
     tools/slack-app.py get     <ws> <app_id>
     tools/slack-app.py update  <ws> <app_id> <매니페스트파일>
     tools/slack-app.py list    <ws>
@@ -70,6 +71,13 @@ def main(argv: list[str]) -> None:
     if cmd == "list":
         out = _post("apps.manifest.export", {"app_id": argv[3]}, token) if len(argv) > 3 else None
         print(json.dumps(out, ensure_ascii=False, indent=2))
+        return
+    if cmd == "validate":
+        manifest = Path(argv[3]).read_text(encoding="utf-8")
+        out = _post("apps.manifest.validate", {"manifest": manifest}, token)
+        if not out.get("ok"):
+            _fail(out)
+        print("매니페스트 이상 없다")
         return
     if cmd == "create":
         manifest = Path(argv[3]).read_text(encoding="utf-8")
