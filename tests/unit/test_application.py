@@ -13,6 +13,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -855,6 +856,82 @@ class Test감시확인연결:
         ))
 
         assert 받은요청[0].session_id == "엔진이-만든-값"
+
+    def test_확인실행에_읽기_도구가_들어간다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """조회하라고 시켜 놓고 조회할 도구를 안 준 적이 있다. allowed_tools
+        를 안 넘기면 기본값이 빈 튜플이고, 클로드 엔진은 그것을
+        `--allowedTools ""` 로 그대로 넘겨 도구가 하나도 없는 턴이 된다
+        (sca-0ab).
+
+        도구 목록이 실제로 강제되는 것은 클로드뿐이다. codex 와 gemini 는
+        allowed_tools 를 읽지 않아 이 값이 그쪽에서는 아무 효과가 없다
+        (sca-dyb.11). 이 시험이 보장하는 것은 요청 객체의 내용까지다.
+        """
+        from slack_cli_agent.reliability.watchjobs import WatchJob
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        app._composer = lambda: _프롬프트조립대역()  # type: ignore[method-assign]
+        보낸요청: list[Any] = []
+        monkeypatch.setattr(
+            EngineRunner, "run",
+            lambda self, engine, request: 보낸요청.append(request),
+        )
+
+        app._watch_run_check(WatchJob(
+            id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
+            created_at=0.0, last_run=None,
+        ))
+
+        assert "Read" in 보낸요청[0].allowed_tools
+
+    def test_확인실행은_소유자_추가_도구와_스킬을_안_준다(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """확인은 조회만 한다. 소유자 권한으로 등록된 감시라도 확인 턴에
+        쓰기 도구가 들어가면 그 턴이 새로 일을 벌일 수 있다.
+        """
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.reliability.watchjobs import WatchJob
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        app._composer = lambda: _프롬프트조립대역()  # type: ignore[method-assign]
+        app._settings = replace(app.settings, owner_tools=("Bash",))
+        보낸요청: list[Any] = []
+        monkeypatch.setattr(
+            EngineRunner, "run",
+            lambda self, engine, request: 보낸요청.append(request),
+        )
+
+        app._watch_run_check(WatchJob(
+            id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
+            created_at=0.0, last_run=None, trust=TrustLevel.OWNER,
+        ))
+
+        assert "Bash" not in 보낸요청[0].allowed_tools
+        assert "Skill" not in 보낸요청[0].allowed_tools
+
+    def test_확인실행이_평상시와_같은_읽기_범위를_받는다(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """readable_dirs 가 비면 엔진이 그 경로를 못 읽는다. 평상시 경로
+        (pipeline)는 persona 와 prompts 를 넘긴다.
+        """
+        from slack_cli_agent.reliability.watchjobs import WatchJob
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        app._composer = lambda: _프롬프트조립대역()  # type: ignore[method-assign]
+        보낸요청: list[Any] = []
+        monkeypatch.setattr(
+            EngineRunner, "run",
+            lambda self, engine, request: 보낸요청.append(request),
+        )
+
+        app._watch_run_check(WatchJob(
+            id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
+            created_at=0.0, last_run=None,
+        ))
+
+        assert 보낸요청[0].readable_dirs == app.pipeline().readable_dirs
 
 
 class _프롬프트조립대역:
