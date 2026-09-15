@@ -501,3 +501,134 @@ class TestEngineHomeCredentialCheck:
             PreflightContext(self._프로필(tmp_path, "없는엔진", tmp_path / "홈"))
         )
         assert 결과.ok
+
+
+# ---------------------------------------------------------------------------
+# suite.py — 표준 점검 목록을 한 자리에
+
+
+class TestPreflightSuite:
+    """점검 목록이 명령 안에만 있으면 기동 게이트가 따로 만들게 되고, 그
+    순간 두 목록이 갈라진다(sca-s5r).
+    """
+
+    def test_표준_점검을_전부_담는다(self) -> None:
+        from slack_cli_agent.preflight.suite import PreflightSuite
+
+        이름들 = [c.name for c in PreflightSuite().checks]
+        assert 이름들 == [
+            "workdir",
+            "engine_binary",
+            "engine_home_credentials",
+            "mcp_server",
+            "prompt_files",
+            "owner_settings_inert",
+        ]
+
+    def test_추가_인자가_실제_점검에_반영된다(self, tmp_path: Path) -> None:
+        """내부 속성이 아니라 점검 결과로 본다. 넘기기만 하고 쓰이지 않으면
+        속성 단언은 통과하면서 점검은 아무것도 안 본다.
+        """
+        from slack_cli_agent.preflight.suite import PreflightSuite
+
+        profile = make_profile(tmp_path)
+        기본 = {r.detail for r in PreflightSuite().run(profile).results}
+        추가 = {
+            r.detail
+            for r in PreflightSuite(
+                required_prompts=["없는프롬프트"], extra_workdirs=["없는자리"],
+            ).run(profile).results
+        }
+        assert any("없는프롬프트" in d for d in 추가)
+        assert any("없는자리" in d for d in 추가)
+        assert not any("없는프롬프트" in d for d in 기본)
+
+    def test_보고서를_낸다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.preflight.suite import PreflightSuite
+
+        report = PreflightSuite().run(make_profile(tmp_path))
+        assert len(report.results) == len(PreflightSuite().checks)
+
+    def test_결과를_점검_이름과_함께_출력한다(self, tmp_path: Path) -> None:
+        """출력 규칙이 명령에만 있으면 게이트의 출력이 달라진다."""
+        import io
+
+        from slack_cli_agent.preflight.suite import PreflightSuite
+
+        suite = PreflightSuite()
+        out = io.StringIO()
+        report = suite.run(make_profile(tmp_path))
+        suite.report_to(report, out)
+        본문 = out.getvalue()
+        for check in suite.checks:
+            assert check.name in 본문
+        assert "기동 불가" in 본문
+
+    def test_통과하면_기동_가능을_출력한다(self, tmp_path: Path) -> None:
+        import io
+
+        from slack_cli_agent.preflight.runner import PreflightReport
+        from slack_cli_agent.preflight.suite import PreflightSuite
+
+        suite = PreflightSuite()
+        out = io.StringIO()
+        report = PreflightReport(results=tuple(
+            CheckResult(ok=True, detail="통과") for _ in suite.checks
+        ))
+        suite.report_to(report, out)
+        assert "기동 가능" in out.getvalue()
+
+    def test_출력_전체가_정해진_형식이다(self) -> None:
+        """이름 포함 여부만 보면 표식, 공백, 줄 순서가 바뀌어도 통과한다
+        (코덱스 리뷰). 게이트가 같은 문구를 로그에 내야 하므로 형식 자체를
+        고정한다.
+        """
+        import io
+
+        from slack_cli_agent.preflight.runner import PreflightReport
+        from slack_cli_agent.preflight.suite import PreflightSuite
+
+        suite = PreflightSuite()
+        results = [CheckResult(ok=True, detail="좋음") for _ in suite.checks]
+        results[1] = CheckResult(ok=False, detail="나쁨")
+        results[2] = CheckResult(ok=False, detail="주의", fatal=False)
+        out = io.StringIO()
+        suite.report_to(PreflightReport(results=tuple(results)), out)
+        assert out.getvalue() == (
+            "[통과] workdir : 좋음\n"
+            "[실패] engine_binary : 나쁨\n"
+            "[경고] engine_home_credentials : 주의\n"
+            "[통과] mcp_server : 좋음\n"
+            "[통과] prompt_files : 좋음\n"
+            "[통과] owner_settings_inert : 좋음\n"
+            "기동 불가\n"
+        )
+
+    def test_messages가_판정줄에는_결과를_안_붙인다(self) -> None:
+        """게이트가 로그 레벨을 고르려면 어느 줄이 어느 결과인지 알아야 한다."""
+        from slack_cli_agent.preflight.runner import PreflightReport
+        from slack_cli_agent.preflight.suite import PreflightSuite
+
+        suite = PreflightSuite()
+        results = tuple(CheckResult(ok=True, detail="좋음") for _ in suite.checks)
+        쌍 = list(suite.messages(PreflightReport(results=results)))
+        assert [r for r, _ in 쌍[:-1]] == list(results)
+        assert 쌍[-1][0] is None
+        assert 쌍[-1][1] == "기동 가능"
+
+    def test_경고는_실패와_다르게_표시한다(self, tmp_path: Path) -> None:
+        import io
+
+        from slack_cli_agent.preflight.runner import PreflightReport
+        from slack_cli_agent.preflight.suite import PreflightSuite
+
+        suite = PreflightSuite()
+        out = io.StringIO()
+        results = [CheckResult(ok=True, detail="통과") for _ in suite.checks]
+        results[0] = CheckResult(ok=False, detail="주의", fatal=False)
+        suite.report_to(PreflightReport(results=tuple(results)), out)
+        본문 = out.getvalue()
+        assert "[경고]" in 본문
+        assert "[실패]" not in 본문
+        assert "기동 가능" in 본문
+
