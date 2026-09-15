@@ -19,10 +19,10 @@ from slack_cli_agent.reliability.watchjobs import WatchJob, WatchJobQueue
 from slack_cli_agent.reliability.watchrunner import WatchJobChecker
 
 
-def 응답(*, ok: bool, body: str) -> EngineResponse:
+def 응답(*, ok: bool, body: str, failure_reason: str | None = None) -> EngineResponse:
     return EngineResponse(
         ok=ok, body=body, session_id=None, model_actual=None,
-        elapsed=0.0, turns=None, usage=None,
+        elapsed=0.0, turns=None, usage=None, failure_reason=failure_reason,
     )
 
 
@@ -209,6 +209,90 @@ class Test미완료처리:
 
         남은 = {작업.condition: 작업.checks for 작업 in 큐.due(now=99999.0, min_gap=0.0)}
         assert 남은 == {"실패할 건": 1, "정상 확인될 건": 1}
+
+
+class Test확인실패진단:
+    """확인이 실패했을 때 무엇이 로그에 남는가.
+
+    실패가 엔진 오류인지 모델의 태그 누락인지 로그만으로 갈려야 한다. 그런데
+    응답 본문과 감시 조건은 슬랙 대화·파일 내용이 그대로 들어올 수 있으므로
+    로그에 남기지 않는다.
+    """
+
+    def test_엔진실패는_원인과_작업식별자를_남긴다(self, 큐, caplog) -> None:
+        작업_id = 큐.enqueue("C1", "111.1", "배포 확인")
+        c = 체커(큐=큐, run_check=lambda job: 응답(ok=False, body="", failure_reason="timeout"))
+        큐.시각["값"] = 2000.0
+        with caplog.at_level("WARNING"):
+            c.check_once()
+
+        기록 = "\n".join(r.getMessage() for r in caplog.records)
+        assert "감시 확인 엔진 실패" in 기록
+        assert "timeout" in 기록
+        assert f"작업 {작업_id}" in 기록
+        assert 큐.due(now=99999.0, min_gap=0.0)[0].checks == 1
+
+    def test_태그누락은_엔진실패와_다른_문구로_남는다(self, 큐, caplog) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        c = 체커(큐=큐, run_check=lambda job: 응답(ok=True, body="그냥 답했다"))
+        큐.시각["값"] = 2000.0
+        with caplog.at_level("WARNING"):
+            c.check_once()
+
+        기록 = "\n".join(r.getMessage() for r in caplog.records)
+        assert "감시 확인 태그 누락" in 기록
+        assert "감시 확인 엔진 실패" not in 기록
+
+    def test_응답본문과_감시조건은_로그에_안_남는다(self, 큐, caplog) -> None:
+        큐.enqueue("C1", "111.1", "xoxb-비밀토큰-조건")
+        c = 체커(큐=큐, run_check=lambda job: 응답(ok=True, body="xoxb-비밀토큰-본문"))
+        큐.시각["값"] = 2000.0
+        with caplog.at_level("WARNING"):
+            c.check_once()
+
+        기록 = "\n".join(r.getMessage() for r in caplog.records)
+        assert "비밀토큰" not in 기록
+
+    def test_엔진실패_경로에서도_응답본문이_로그에_안_남는다(self, 큐, caplog) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        c = 체커(
+            큐=큐,
+            run_check=lambda job: 응답(ok=False, body="xoxb-비밀토큰-본문", failure_reason="timeout"),
+        )
+        큐.시각["값"] = 2000.0
+        with caplog.at_level("WARNING"):
+            c.check_once()
+
+        assert "비밀토큰" not in "\n".join(r.getMessage() for r in caplog.records)
+
+    def test_정상완료와_진행중에는_경고가_안_남는다(self, 큐, caplog) -> None:
+        큐.enqueue("C1", "111.1", "끝난 건")
+        큐.enqueue("C1", "111.2", "진행중인 건")
+
+        def run_check(job: WatchJob) -> EngineResponse:
+            태그 = WATCH_DONE_TAG if job.condition == "끝난 건" else WATCH_STILL_TAG
+            return 응답(ok=True, body=f"보고 {태그}")
+
+        c = 체커(큐=큐, run_check=run_check, 발행=가짜발행())
+        큐.시각["값"] = 2000.0
+        with caplog.at_level("WARNING"):
+            c.check_once()
+
+        assert [r.getMessage() for r in caplog.records] == []
+
+    def test_run_check_예외는_작업식별자와_추적을_남긴다(self, 큐, caplog) -> None:
+        작업_id = 큐.enqueue("C1", "111.1", "터지는 건")
+
+        def run_check(job: WatchJob) -> EngineResponse:
+            raise RuntimeError("엔진 오류")
+
+        c = 체커(큐=큐, run_check=run_check)
+        큐.시각["값"] = 2000.0
+        with caplog.at_level("ERROR"):
+            c.check_once()
+
+        assert any(f"작업 {작업_id}" in r.getMessage() for r in caplog.records)
+        assert any(r.exc_info is not None for r in caplog.records)
 
 
 class Test포기처리:
