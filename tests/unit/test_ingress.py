@@ -17,6 +17,7 @@ from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ingress import IngressService
+from slack_cli_agent.core.spawn import InlineTaskSpawner, TaskSpawner
 from slack_cli_agent.jobs.ports import Job, JobQueue, ReclaimResult
 from slack_cli_agent.reliability.dedup import DeduplicationTracker
 from slack_cli_agent.slack.attachments import AttachmentStore, DownloadResult
@@ -149,6 +150,7 @@ def make_ingress(
     replies: list[tuple[str, str, str]] | None = None,
     reactions_seen: list[tuple[str, str, str, str]] | None = None,
     job_max_attempts: int = 0,
+    spawn: TaskSpawner | None = None,
 ) -> IngressService:
     profile = make_profile(tmp_path)
     channels = ChannelRegistry(Path("/nonexistent.json"))
@@ -188,6 +190,7 @@ def make_ingress(
         reply=reply,
         allowed_reactions=frozenset({"dango"}),
         on_reaction=on_reaction,
+        spawn=spawn if spawn is not None else InlineTaskSpawner(),
         job_max_attempts=job_max_attempts,
     )
 
@@ -304,6 +307,36 @@ class TestReactionEvent:
         ingress.handle_reaction(event)
 
         assert queue.enqueued == []
+        assert reaction_seen == [("dango", "C1", "1.0", "U1")]
+
+    def test_점검은_이벤트_처리기_밖에서_돈다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """점검은 엔진 호출이라 몇 분이 걸린다. 그 자리에서 돌리면 그동안
+        소켓 이벤트를 하나도 못 받는다."""
+        spawned: list[tuple[str, object]] = []
+
+        class RecordingSpawner(TaskSpawner):
+            def spawn(self, name, work):
+                spawned.append((name, work))
+
+        reaction_seen: list[tuple[str, str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, reactions_seen=reaction_seen, spawn=RecordingSpawner(),
+        )
+        event = {
+            "reaction": "dango",
+            "item": {"type": "message", "channel": "C1", "ts": "1.0"},
+            "item_user": "U_BOT",
+            "user": "U1",
+        }
+
+        ingress.handle_reaction(event)
+
+        assert reaction_seen == []
+        assert [name for name, _ in spawned] == ["점검:dango"]
+        spawned[0][1]()
         assert reaction_seen == [("dango", "C1", "1.0", "U1")]
 
     def test_대상이_아닌_이모지는_콜백이_안_불린다(
