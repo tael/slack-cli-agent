@@ -14,7 +14,8 @@ from typing import Any
 
 from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
-from ..config.channel import ChannelRegistry
+from ..auth.tools import ToolPolicy
+from ..config.channel import ChannelConfig, ChannelRegistry
 from ..engine.base import Engine, EngineRequest, EngineResponse, Usage
 from ..engine.runner import EngineInvoker
 from ..guard.base import GuardContext
@@ -67,6 +68,9 @@ class RequestPipeline:
         # the same consumed-messages record.
         consumption: ThreadConsumption | None = None,
         watch_queue: WatchJobPort | None = None,
+        # Without this the engine gets an empty tool list, which for the Claude
+        # CLI means no tools at all.
+        tool_policy: ToolPolicy | None = None,
         # Feeds the learning batch — without it, that batch has nothing to read.
         response_archive: ResponseArchive | None = None,
         now: Callable[[], float] = time.time,
@@ -92,6 +96,7 @@ class RequestPipeline:
         self._late_addendum = late_addendum
         self._consumption = consumption
         self._watch_queue = watch_queue
+        self._tool_policy = tool_policy
         self._response_archive = response_archive
         self._now = now
         self._monotonic = monotonic
@@ -148,6 +153,19 @@ class RequestPipeline:
         except Exception:
             log.exception("느린 요청 보고에 실패했다")
 
+    @property
+    def tool_policy(self) -> ToolPolicy | None:
+        return self._tool_policy
+
+    def _allowed_tools(
+        self, principal: Principal, prompt: str, config: ChannelConfig | None
+    ) -> tuple[str, ...]:
+        if self._tool_policy is None:
+            return ()
+        return self._tool_policy.tool_list_for(
+            principal, prompt=prompt, skills_enabled=bool(config and config.skills),
+        )
+
     def _handle(self, ctx: RequestContext) -> HandleOutcome:
         start = self._now()
         # Wall clock alone can't distinguish "actually slow" from "device slept".
@@ -182,6 +200,7 @@ class RequestPipeline:
             model=model,
             effort=effort,
             workdir=workdir,
+            allowed_tools=self._allowed_tools(principal, ctx.text, config),
             trust_level=principal.trust,
         )
         response = self._invoker.invoke(request)
