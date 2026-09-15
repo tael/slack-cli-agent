@@ -26,6 +26,7 @@ from slack_cli_agent.core.application import Application
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ingress import IngressService
 from slack_cli_agent.core.pipeline import RequestPipeline
+from slack_cli_agent.core.spawn import ThreadTaskSpawner
 from slack_cli_agent.core.timezones import KST
 from slack_cli_agent.core.worker import Worker
 from slack_cli_agent.engine.runner import (
@@ -213,6 +214,10 @@ class TestWiring:
         assert gateway.handler_count("app_mention") == 1
         assert gateway.handler_count("message") == 1
         assert gateway.handler_count("reaction_added") == 1
+
+    def test_접수기에_스레드_실행기가_배선된다(self, app: Application) -> None:
+        """InlineTaskSpawner 가 들어가면 점검이 소켓 처리기를 막는다."""
+        assert isinstance(app.ingress()._spawn, ThreadTaskSpawner)
 
     def test_접수기와_워커가_같은_큐를_쓴다(self, app: Application) -> None:
         ingress = app.ingress()

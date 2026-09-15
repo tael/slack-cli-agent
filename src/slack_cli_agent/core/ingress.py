@@ -19,6 +19,7 @@ from ..slack.gateway import SlackGateway
 from ..slack.listener import EventListener
 from ..slack.reactions import ReactionMarker
 from .context import RequestContext
+from .spawn import TaskSpawner
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class IngressService:
         reply: ReplyCallback,
         allowed_reactions: frozenset[str],
         on_reaction: ReactionCallback,
+        spawn: TaskSpawner,
         # Retry cap for a failed job; 0 means unlimited. Takes just this value rather
         # than the whole settings object since ingress doesn't need anything else from it.
         job_max_attempts: int = 0,
@@ -61,6 +63,7 @@ class IngressService:
         self._reply = reply
         self._allowed_reactions = allowed_reactions
         self._on_reaction = on_reaction
+        self._spawn = spawn
         self._job_max_attempts = job_max_attempts
 
     def register(self, gateway: SlackGateway) -> None:
@@ -80,7 +83,9 @@ class IngressService:
             result = self._listener.from_reaction(event, self._allowed_reactions)
             if result is None:
                 return
-            self._on_reaction(*result)
+            # A review calls the engine and takes minutes; running it here
+            # would block every other Slack event for that whole time.
+            self._spawn.spawn(f"점검:{result[0]}", lambda: self._on_reaction(*result))
         except Exception:
             log.exception("리액션 이벤트 처리 실패: %s", event.get("reaction"))
 
