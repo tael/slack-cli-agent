@@ -5,8 +5,6 @@ prompts/*.md
 !prompts/*.md.example
 persona/
 *.local.json
-# new-bot.sh 가 읽는 조직 고유값
-.new-bot.env
 
 # 상태와 산출물
 *.db
