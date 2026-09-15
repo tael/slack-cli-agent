@@ -85,6 +85,34 @@ class TestAuditLogRecordRequest:
         assert entry["model"] == "claude-x"
         assert entry["ok"] is True
 
+    def test_사용자와_턴_수가_담긴다(self, audit_log, jsonl_path) -> None:
+        log, _clock = audit_log
+        log.record_request(
+            channel="C1", thread_ts="T1", message_ts="T1",
+            session_id="sid-1", resumed=True, model="claude-x", effort="high",
+            elapsed=12.3, ok=True, user="U1", turns=3,
+        )
+        row = log._fetch_all("SELECT * FROM audit")[0]
+        payload = json.loads(row["payload"])
+        assert payload["user"] == "U1"
+        assert payload["turns"] == 3
+
+        entry = json.loads(jsonl_path.read_text(encoding="utf-8").splitlines()[0])
+        assert entry["user"] == "U1"
+        assert entry["turns"] == 3
+
+    def test_턴_수를_안_주면_모름으로_None이_담긴다(self, audit_log) -> None:
+        """0턴과 모름을 구분해야 한다 — codex 는 턴 수를 아예 안 낸다."""
+        log, _clock = audit_log
+        log.record_request(
+            channel="C1", thread_ts="T1", message_ts="T1",
+            session_id="sid-1", resumed=False, model="codex-x", effort="high",
+            elapsed=1.0, ok=True,
+        )
+        payload = json.loads(log._fetch_all("SELECT * FROM audit")[0]["payload"])
+        assert payload["turns"] is None
+        assert payload["user"] == ""
+
 
 class TestIncidentKind:
     def test_새_사건_종류가_문자열_리터럴과_같다(self) -> None:

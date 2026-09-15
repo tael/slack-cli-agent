@@ -5,6 +5,22 @@ Paths go through --add-dir. We mint the session ID and pass it via
 system prompt is resent every turn via --append-system-prompt — Claude
 refreshes it each turn, so directives_for_turn() isn't needed here (it
 keeps the default empty string).
+
+MCP servers (sca-kos.2): claude --help documents "--mcp-config <configs...>
+Load MCP servers from JSON files or strings (space-separated)", so the
+converted Profile.mcp_servers go straight in as one inline JSON string —
+no file write needed. --strict-mcp-config keeps this bot from picking up
+any other bot's project/user-level MCP config. The remote-server shape
+(type/url/headers) and stdio shape (command/args/env/cwd) both come from
+code.claude.com/docs/en/mcp; there's no disabledTools-equivalent key
+documented for claude's .mcp.json, so McpServerSpec.disabled_tools is
+silently dropped for this engine (agy has serverUrl/disabledTools instead,
+see gemini.py).
+
+Skills (sca-kos.3): code.claude.com/docs/en/skills states "--add-dir 로
+추가한 디렉터리의 .claude/skills/ 에서 스킬을 읽는다" — a bot's own
+StatePaths.skills, passed the same way as any other --add-dir path, is
+enough to keep one bot's skills out of another's session.
 """
 
 from __future__ import annotations
@@ -14,6 +30,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
+from ..config.profile import McpServerSpec
 from .base import Engine, EngineRequest, EngineResponse, Usage, UsageLimit
 
 # Same hint list as the original bot.py's usage_limit_message().
@@ -21,6 +38,28 @@ _USAGE_LIMIT_HINTS = (
     "weekly limit", "usage limit", "rate limit",
     "hit your limit", "limit · resets", "limit reached",
 )
+
+
+def _claude_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, Any]:
+    servers: dict[str, Any] = {}
+    for name, server in mcp_servers.items():
+        if server.disabled:
+            continue
+        entry: dict[str, Any]
+        if server.is_remote:
+            entry = {"type": "http", "url": server.url}
+            if server.headers:
+                entry["headers"] = dict(server.headers)
+        else:
+            entry = {"command": server.command}
+            if server.args:
+                entry["args"] = list(server.args)
+            if server.env:
+                entry["env"] = dict(server.env)
+            if server.cwd:
+                entry["cwd"] = str(server.cwd)
+        servers[name] = entry
+    return servers
 
 
 class ClaudeEngine(Engine):
@@ -47,6 +86,15 @@ class ClaudeEngine(Engine):
         ]
         for path in request.readable_dirs:
             cmd += ["--add-dir", str(path)]
+        skills_dir = self.profile.paths.skills
+        if skills_dir.exists():
+            cmd += ["--add-dir", str(skills_dir)]
+        mcp_servers = _claude_mcp_servers(self.profile.mcp_servers)
+        if mcp_servers:
+            cmd += [
+                "--mcp-config", json.dumps({"mcpServers": mcp_servers}, ensure_ascii=False),
+                "--strict-mcp-config",
+            ]
         cmd += ["--append-system-prompt", request.system_prompt]
         cmd += (["--resume", request.session_id] if request.resume
                 else ["--session-id", request.session_id])

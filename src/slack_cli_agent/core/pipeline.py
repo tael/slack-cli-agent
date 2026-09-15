@@ -233,7 +233,10 @@ class RequestPipeline:
 
         if not response.ok:
             failure = response.failure_reason or "엔진 실행 실패"
-            self._record(ctx, decision, model, effort, elapsed, ok=False, usage=None, failure=failure)
+            self._record(
+                ctx, decision, model, effort, elapsed,
+                ok=False, usage=None, turns=response.turns, failure=failure,
+            )
             self._mark_failed(ctx)
             return HandleOutcome(ok=False, failure=failure)
 
@@ -247,7 +250,7 @@ class RequestPipeline:
         self._sessions.touch(key, ctx.ts)
 
         if response.body.strip() == SILENT_MARK:
-            self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage)
+            self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage, turns=response.turns)
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             self._mark_silent(ctx)
             return HandleOutcome(ok=True, silent=True)
@@ -258,7 +261,7 @@ class RequestPipeline:
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich) or ""
         self._archive_response(ctx, channel_slug, body, response, elapsed)
 
-        self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage)
+        self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage, turns=response.turns)
         if watch_desc and self._register_watch(ctx, principal, watch_desc):
             # Not "done" — marking it done would exclude it from catch-up recovery.
             self._mark_watch(ctx)
@@ -462,6 +465,7 @@ class RequestPipeline:
         *,
         ok: bool,
         usage: Usage | None,
+        turns: int | None = None,
         failure: str = "",
     ) -> None:
         extra: dict[str, Any] = {}
@@ -482,10 +486,14 @@ class RequestPipeline:
             first_reaction_sec=first_reaction_sec,
             queue_wait_sec=queue_wait_sec,
             usage=asdict(usage) if usage is not None else None,
+            user=ctx.user,
+            turns=turns,
             **extra,
         )
 
     def _record_best_effort(self, ctx: RequestContext, failure: str) -> None:
+        # No EngineResponse survived the exception that got us here, so
+        # turns stays unset (unknown) — never 0, which would claim a real value.
         try:
             self._audit.record_request(
                 channel=ctx.channel,
@@ -497,6 +505,7 @@ class RequestPipeline:
                 effort="",
                 elapsed=0.0,
                 ok=False,
+                user=ctx.user,
                 failure=failure,
             )
         except Exception as exc:  # noqa: BLE001 — an audit-log failure must not mask the original processing failure

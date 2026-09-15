@@ -1231,3 +1231,14 @@ class Test발행기감사기록배선:
         """따로 만들면 jsonl 핸들과 시계가 갈려 같은 구간이 두 기록으로 나뉜다."""
         app = Application(write_profile(tmp_path), FakeSlackClient())
         assert app.pipeline().audit is app.audit()
+
+
+class Test게이트웨이프로필배선:
+    """기동 로그에 어느 프로필인지가 들어가야 봇이 여럿일 때 누가 붙었는지
+    가린다. SlackGateway 가 profile_name 을 받는데 Application 이 안 넘겼다."""
+
+    def test_게이트웨이가_프로필_이름을_받는다(self, tmp_path: Path) -> None:
+        profile = write_profile(tmp_path, name="어느봇")
+        app = Application(profile, FakeSlackClient())
+
+        assert app.gateway()._profile_name == "어느봇"

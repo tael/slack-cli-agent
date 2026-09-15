@@ -200,17 +200,32 @@ class TestGeminiSettingsFileIsolation:
 class TestMcpInjectionIsolation:
     """MCP 서버가 실제로 명령줄·설정 파일에 실리는 것과, 봇별로 갈리는 것 둘 다를 본다.
 
-    지금은 어떤 엔진도 Profile.mcp_servers 를 build_command() 나 별도
-    설정 파일로 내보내지 않는다(sca-kos.2 미착수) — 그래서 "봇 A 자신의
-    MCP 서버가 나타난다" 는 첫 assert 에서 이미 실패한다. sca-kos.2 가
-    실제 주입을 구현하면 이 시험은 통과로 바뀌어야 하고, 격리까지
-    맞으면 strict xfail 이 XPASS 로 실패해 마커 제거를 강제한다.
+    claude(--mcp-config 에 인라인 JSON 문자열)와 codex(-c mcp_servers.<이름>.* 오버라이드)는
+    build_command() 인자 목록에 서버 값이 그대로 나타나 이 관찰 지점으로 잡힌다(sca-kos.2).
+
+    gemini(agy)는 다르다 — agy --help 로 확인한 실제 플래그 목록에 인라인 MCP 설정을
+    받는 자리가 없다. 유일한 경로는 docs/agy-실측.md 가 이미 확인해 둔
+    작업공간 로컬 파일(<work_root>/.agents/mcp_config.json) 뿐이고, 그 파일 경로만
+    build_command() 에 실리지 내용(서버 이름·명령)은 안 실린다. 그래서 이 관찰
+    지점(명령줄 텍스트)으로는 gemini 의 주입 여부를 볼 수 없어 xfail 로 남긴다 —
+    추측으로 새 플래그를 지어내지 않는다.
     """
 
-    @pytest.mark.parametrize("engine_type", _ENGINE_NAMES)
-    @pytest.mark.xfail(
-        strict=True,
-        reason="MCP 서버를 엔진 호출(인자·설정 파일)로 옮기는 로직이 아직 없다 — sca-kos.2",
+    @pytest.mark.parametrize(
+        "engine_type",
+        [
+            "claude",
+            "codex",
+            pytest.param(
+                "gemini",
+                marks=pytest.mark.xfail(
+                    strict=True,
+                    reason="agy 는 인라인 MCP 설정 플래그가 없다(agy --help 로 확인) — "
+                    "workspace-local mcp_config.json 파일로만 주입되어 이 시험의 "
+                    "관찰 지점(build_command 인자 목록)에는 안 나타난다",
+                ),
+            ),
+        ],
     )
     def test_bot_a_mcp_server_appears_and_bot_b_does_not(self, tmp_path, engine_type):
         home_a = tmp_path / "bot-a-home"
@@ -227,14 +242,42 @@ class TestMcpInjectionIsolation:
 class TestSkillDirectoryIsolation:
     """봇마다 상태 디렉터리 아래 skills/ 를 두고 그 경로만 보이는 것을 본다(설계는 sca-kos.3).
 
-    지금 StatePaths 에는 skills 개념이 아예 없다 — 그래서 hasattr 단계에서
-    이미 실패한다.
+    claude 는 공식 문서(code.claude.com/docs/en/skills)가 명시한 경로다 —
+    "--add-dir 로 추가한 디렉터리의 .claude/skills/ 에서 스킬을 읽는다"고 인용돼
+    있어 build_command() 에 --add-dir <skills 경로> 를 추가하면 된다.
+
+    codex 와 gemini(agy)는 다르다 — 공식 문서 모두 스킬 탐색 경로를
+    작업 디렉터리(CWD)나 리포지토리 루트, 또는 HOME 기준 고정 관례
+    (`.agents/skills`)로만 밝히고, 임의 경로를 지정하는 CLI 플래그를 안 낸다.
+    상태 디렉터리 아래 skills/ 를 그 관례 경로에 배치하는 것은 prepare() 의
+    파일 배치(symlink/copy)로나 가능한데, 그러면 이 시험의 관찰 지점인
+    build_command() 인자 목록에는 안 나타난다. 추측으로 없는 플래그를
+    지어내지 않고 xfail 로 남긴다.
     """
 
-    @pytest.mark.parametrize("engine_type", _ENGINE_NAMES)
-    @pytest.mark.xfail(
-        strict=True,
-        reason="봇별 skills/ 디렉터리 개념과 엔진 기동 시 그 경로만 보이게 하는 로직이 아직 없다 — sca-kos.3",
+    @pytest.mark.parametrize(
+        "engine_type",
+        [
+            "claude",
+            pytest.param(
+                "codex",
+                marks=pytest.mark.xfail(
+                    strict=True,
+                    reason="codex 는 .agents/skills 를 CWD·리포지토리 루트·HOME 기준으로만 "
+                    "찾는다(공식 문서 확인) — 임의 경로를 가리키는 플래그가 없어 "
+                    "build_command() 인자 목록에 상태 디렉터리 경로가 실릴 수 없다",
+                ),
+            ),
+            pytest.param(
+                "gemini",
+                marks=pytest.mark.xfail(
+                    strict=True,
+                    reason="agy 는 <work_root>/.agents/skills/ 고정 관례로만 스킬을 찾는다"
+                    "(docs/agy-실측.md 확인) — 임의 경로를 가리키는 플래그가 없어 "
+                    "build_command() 인자 목록에 상태 디렉터리 경로가 실릴 수 없다",
+                ),
+            ),
+        ],
     )
     def test_bot_a_sees_only_its_own_skills_directory(self, tmp_path, engine_type):
         home_a = tmp_path / "bot-a-home"

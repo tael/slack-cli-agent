@@ -428,7 +428,7 @@ class Application:
 
     def gateway(self) -> SlackGateway:
         if self._gateway is None:
-            self._gateway = SlackGateway(self._client)
+            self._gateway = SlackGateway(self._client, profile_name=self._profile.name)
         return self._gateway
 
     def reactions(self) -> ReactionMarker:

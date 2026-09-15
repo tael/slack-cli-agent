@@ -46,6 +46,15 @@ class StatePaths:
         return self.persona / "knowledge"
 
     @property
+    def skills(self) -> Path:
+        """Bot-owned skill files, kept out of any engine's shared home directory.
+
+        Layout expected inside varies by engine (see engine/claude.py,
+        engine/codex.py, engine/gemini.py for what each one can actually see).
+        """
+        return self.root / "skills"
+
+    @property
     def engine_dir(self) -> Path:
         return self.root / "engine"
 
