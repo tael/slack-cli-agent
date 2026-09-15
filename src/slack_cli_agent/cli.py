@@ -27,16 +27,7 @@ from .config.profile import Profile, validate_profile_name
 from .core.errors import AgentError, ConfigError
 from .core.lifecycle import GracefulShutdown, SignalRegister
 from .core.secrets import contains_secret, redact
-from .preflight.check import PreflightContext
-from .preflight.checks import (
-    EngineBinaryCheck,
-    EngineHomeCredentialCheck,
-    McpServerCheck,
-    OwnerSettingsInertCheck,
-    PromptFileCheck,
-    WorkdirCheck,
-)
-from .preflight.runner import PreflightRunner
+from .preflight.suite import PreflightSuite
 from .slack.credentials import CredentialResolver, resolver_for
 from .storage.database import Database
 
@@ -120,28 +111,11 @@ class PreflightCommand(ProfileAwareCommand):
         )
 
     def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
-        checks = (
-            WorkdirCheck(extra_dirs=args.extra_workdir),
-            EngineBinaryCheck(),
-            EngineHomeCredentialCheck(),
-            McpServerCheck(),
-            PromptFileCheck(required_names=args.required_prompt),
-            # fatal=False: only meant to prevent a misread config, not to block boot.
-            OwnerSettingsInertCheck(),
+        suite = PreflightSuite(
+            required_prompts=args.required_prompt, extra_workdirs=args.extra_workdir,
         )
-        runner = PreflightRunner(checks)
-        report = runner.run_all(PreflightContext(profile=profile))
-
-        for check, result in zip(checks, report.results, strict=True):
-            if result.ok:
-                mark = "통과"
-            elif result.fatal:
-                mark = "실패"
-            else:
-                mark = "경고"
-            print(f"[{mark}] {check.name} : {result.detail}", file=stdout)
-
-        print("기동 가능" if report.bootable else "기동 불가", file=stdout)
+        report = suite.run(profile)
+        suite.report_to(report, stdout)
         return 0 if report.bootable else 1
 
 
