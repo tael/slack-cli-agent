@@ -110,8 +110,12 @@ class RequestPipeline:
     def handle(self, ctx: RequestContext) -> HandleOutcome:
         try:
             return self._handle(ctx)
-        except Exception as exc:  # noqa: BLE001 — must not raise; the worker loop shouldn't die on one bad request
+        except Exception as exc:
             failure = str(exc) or exc.__class__.__name__
+            # With the reason string alone there is no way to tell where it
+            # came from; a frozenset serialization error cost a whole
+            # investigation for exactly that (sca-btw).
+            log.exception("요청 처리 실패 : %s %s", ctx.channel, ctx.ts)
             self._mark_failed(ctx)
             self._record_best_effort(ctx, failure)
             return HandleOutcome(ok=False, failure=failure)
