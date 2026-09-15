@@ -64,6 +64,7 @@ RUNNER_ARGS: dict[str, Any] = {
     "attachment_cleanup_runner": lambda app: (),
     "health_runner": lambda app: (lambda 사유: None,),
     "catchup_retry_runner": lambda app: (app.worker(),),
+    "startup_catchup_runner": lambda app: (app.worker(),),
     "pending_report_runner": lambda app: (),
     "learning_batch_runner": lambda app: (),
 }
@@ -101,11 +102,12 @@ class Test묶음구성:
             "pending_report",
         }
 
-    def test_워커_묶음은_상태기록과_감시와_정리와_되짚기재시도를_띄운다(self, app: Application) -> None:
+    def test_워커_묶음은_상태기록과_감시와_정리와_되짚기를_띄운다(self, app: Application) -> None:
         assert set(app.worker_services(app.worker()).runner_names) == {
             "state_snapshot",
             "watch_jobs",
             "job_purge",
+            "startup_catchup",
             "catchup_retry",
             "pending_report",
             "learning_batch",
