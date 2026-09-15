@@ -103,13 +103,11 @@ class ConnectionCatchupCoordinator:
         catch_up: Callable[[float], object],
         settings: RuntimeSettings,
         owner: str,
-        now: Callable[[], float],
     ) -> None:
         self._store = store
         self._catch_up = catch_up
         self._settings = settings
         self._owner = owner
-        self._now = now
 
     def tick(self) -> None:
         claimed = self._store.claim(self._owner, lease_sec=self._settings.catchup_lease_sec)
