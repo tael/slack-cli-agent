@@ -105,11 +105,38 @@ extra        JSON string for plugin-specific data that shouldn't be a core colum
 """
 
 
+V4_CONNECTION_EPOCHS_SQL = """
+CREATE TABLE connection_epochs (
+  generation     INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind           TEXT    NOT NULL,
+  connected_at   REAL    NOT NULL,
+  gap_started_at REAL    NOT NULL,
+  last_seen_at   REAL    NOT NULL,
+  state          TEXT    NOT NULL DEFAULT 'PENDING',
+  lease_owner    TEXT    NOT NULL DEFAULT '',
+  lease_until    REAL,
+  attempts       INTEGER NOT NULL DEFAULT 0,
+  completed_at   REAL
+);
+CREATE INDEX idx_connection_epochs_state ON connection_epochs(state, generation);
+"""
+"""Ledger of socket connections, written by ingress and read by workers.
+
+Ingress owns the socket, the worker runs catch-up, and nothing carried that
+fact across — an ingress-only restart went unswept (measured 2026-09-16).
+
+generation      monotonic, so reconnects don't collapse while a worker is busy
+gap_started_at  last time the socket was known up before this epoch
+last_seen_at    liveness mark for this epoch; becomes the next gap_started_at
+lease_owner     several workers can run, so one claims the span at a time
+"""
+
 # (version, label, statements). Never edit an applied step; add a new one instead.
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
     (3, "감시 작업에 표식 대상·확인 횟수·권한 추가", _statements(V3_WATCH_JOB_CONTEXT_SQL)),
+    (4, "소켓 연결 세대 원장 추가", _statements(V4_CONNECTION_EPOCHS_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

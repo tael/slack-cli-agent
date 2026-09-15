@@ -77,6 +77,11 @@ class RuntimeSettings:
     # boot, so cleanup can't be a one-time pass at startup.
     attachment_cleanup_interval_sec: float = 3600
     catchup_retry_interval_sec: float = 30
+    # How often a worker looks for connection epochs ingress left behind.
+    connection_catchup_interval_sec: float = 30
+    # Lease held while sweeping a claimed span. A measured sweep took 48s, so
+    # a short lease would let a second worker grab a span still in progress.
+    catchup_lease_sec: float = 600
     pending_report_flush_interval_sec: float = 30
     # How often to check whether the learning batch should run. The check
     # itself is just a file read; schedule.py decides the actual daily run.

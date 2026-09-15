@@ -60,6 +60,11 @@ class Worker:
         self._skip_groups: dict[tuple[str, str], list[RequestContext]] = {}
 
     @property
+    def worker_id(self) -> str:
+        # Also used as the catch-up epoch lease owner, so it must differ per process.
+        return self._worker_id
+
+    @property
     def inflight(self) -> InflightCounter:
         return self._inflight
 

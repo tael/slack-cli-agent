@@ -65,6 +65,7 @@ RUNNER_ARGS: dict[str, Any] = {
     "health_runner": lambda app: (lambda 사유: None,),
     "catchup_retry_runner": lambda app: (app.worker(),),
     "startup_catchup_runner": lambda app: (app.worker(),),
+    "connection_catchup_runner": lambda app: (app.worker(),),
     "pending_report_runner": lambda app: (),
     "learning_batch_runner": lambda app: (),
 }
@@ -108,6 +109,7 @@ class Test묶음구성:
             "watch_jobs",
             "job_purge",
             "startup_catchup",
+            "connection_catchup",
             "catchup_retry",
             "pending_report",
             "learning_batch",
