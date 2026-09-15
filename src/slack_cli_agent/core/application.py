@@ -160,6 +160,7 @@ from ..slack.transcript import TranscriptBuilder
 from ..storage.database import Database
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
+from .errors import AgentError
 from .ingress import IngressService
 from .lifecycle import InflightCounter
 from .periodic import PeriodicRunner
@@ -240,6 +241,7 @@ class Application:
         self._access_policy: AccessPolicy | None = None
         self._tool_policy: ToolPolicy | None = None
         self._audit: AuditLog | None = None
+        self._owner_dm_channel = ""
         self._queue: SqliteJobQueue | None = None
         self._reactions: ReactionMarker | None = None
         self._publisher: MessagePublisher | None = None
@@ -659,8 +661,8 @@ class Application:
         return self._watch_jobs
 
     def watch_checker(self) -> WatchJobChecker:
-        # owner notification is only wired in when profile.owner_dm is set —
-        # otherwise there's nowhere to send a give-up notice, so it just marks done
+        # owner notification needs an owner to send to; the DM channel itself
+        # is resolved at send time (see owner_dm_channel)
         return WatchJobChecker(
             queue=self.watch_jobs(),
             run_check=self._watch_run_check,
@@ -668,7 +670,7 @@ class Application:
             channels=self._channels,
             settings=self._settings,
             reactions=self.reactions(),
-            notify_owner=self._notify_owner if self._profile.owner_dm else None,
+            notify_owner=self._notify_owner if self._profile.owner_user_id else None,
         )
 
     def watch_runner(self) -> PeriodicRunner:
@@ -696,8 +698,26 @@ class Application:
             name="pending_report",
         )
 
+    def owner_dm_channel(self) -> str:
+        """Resolves the owner's DM channel, opening it if the profile doesn't
+        name one. Posting to an empty channel id fails with channel_not_found,
+        and the pending-report retry then repeats that failure on every tick."""
+        if self._profile.owner_dm:
+            return self._profile.owner_dm
+        if self._owner_dm_channel:
+            return self._owner_dm_channel
+        if not self._profile.owner_user_id:
+            return ""
+        response = self._client.conversations_open(users=self._profile.owner_user_id)
+        channel = ((response or {}).get("channel") or {}).get("id") or ""
+        self._owner_dm_channel = str(channel)
+        return self._owner_dm_channel
+
     def _post_owner_dm(self, text: str) -> None:
-        self.publisher().post(self._profile.owner_dm, "", text, False)
+        channel = self.owner_dm_channel()
+        if not channel:
+            raise AgentError("소유자 DM 방을 찾지 못했다")
+        self.publisher().post(channel, "", text, False)
 
     def _notify_owner(self, text: str) -> bool:
         """Notifies the owner's DM; returns whether it actually landed.
@@ -1156,10 +1176,10 @@ class Application:
         )
 
     def self_restarter(self, exit_process: Callable[[int], None] | None = None) -> SelfRestarter:
-        # only notifies when owner_dm is configured — otherwise there's
+        # only notifies when an owner is configured — otherwise there's
         # nowhere to send it, so the reason just goes to the log
         return SelfRestarter(
-            notify=self._notify_owner if self._profile.owner_dm else None,
+            notify=self._notify_owner if self._profile.owner_user_id else None,
             inflight_count=lambda: self.inflight.count,
             grace_sec=self._settings.shutdown_grace_sec,
             exit_process=exit_process,

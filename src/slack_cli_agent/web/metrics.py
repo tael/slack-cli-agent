@@ -156,9 +156,18 @@ class MetricsCollector:
         self._now = now
 
     def collect(self, days: int) -> dict[str, object]:
+        """Closes the connection it opens. The console polls every few
+        seconds, and a leaked handle per request eventually exhausts the
+        process (127 open state.db handles in 5 hours, 2026-09-15)."""
+        db = Database(self._profile.paths.database)
+        try:
+            return self._collect(db, days)
+        finally:
+            db.close()
+
+    def _collect(self, db: Database, days: int) -> dict[str, object]:
         now = self._now()
         paths = self._profile.paths
-        db = Database(paths.database)
         db.migrate()
         cutoff = now - days * 86400
 
