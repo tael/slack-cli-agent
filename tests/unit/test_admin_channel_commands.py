@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from slack_cli_agent.admin.channel_commands import (
-    ApiModeCommand,
     ChannelUnregisterCommand,
     ChatActiveCommand,
     ChatNormalCommand,
@@ -122,20 +121,7 @@ class TestCoachModeCommand:
 
 
 # ---------------------------------------------------------------------------
-# api 모드 / 기본 모드
-
-
-class TestApiModeCommand:
-    @pytest.mark.parametrize("text", ["api 모드", "api모드", "API 모드"])
-    def test_별칭을_받는다(self, text: str) -> None:
-        cmd = ApiModeCommand(NoticeCatalog())
-        assert cmd.matches(text) is True
-
-    def test_실행하면_mode가_api_helpdesk로_저장된다(self, tmp_path: Path) -> None:
-        ctx = make_context(tmp_path)
-        cmd = ApiModeCommand(NoticeCatalog())
-        cmd.execute(ctx)
-        assert read_channel(tmp_path)["mode"] == "api_helpdesk"
+# 기본 모드
 
 
 class TestDefaultModeCommand:

@@ -160,7 +160,7 @@ log = logging.getLogger(__name__)
 # One prompt file per channel mode, by naming convention — mode "agent_coach"
 # maps to prompts/prompt_agent_coach.md without needing a lookup table.
 DEFAULT_PROMPT = "PROMPT_DEFAULT"
-KNOWN_MODES: tuple[str, ...] = ("private", "agent_coach", "api_helpdesk")
+KNOWN_MODES: tuple[str, ...] = ("private", "agent_coach")
 
 # Loggers whose socket-connection warnings the connection watch attaches to.
 SOCKET_LOGGERS: tuple[str, ...] = ("slack_sdk.socket_mode", "slack_bolt")
