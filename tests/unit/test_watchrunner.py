@@ -14,16 +14,20 @@ from typing import Any
 import pytest
 
 from slack_cli_agent.config.settings import RuntimeSettings
-from slack_cli_agent.engine.base import EngineResponse
+from slack_cli_agent.engine.base import NO_DETAIL, EngineResponse, FailureDetail
 from slack_cli_agent.guard.watch import WATCH_DONE_TAG, WATCH_MARK_EMOJI, WATCH_STILL_TAG
 from slack_cli_agent.reliability.watchjobs import WatchJob, WatchJobQueue
 from slack_cli_agent.reliability.watchrunner import WatchJobChecker
 
 
-def 응답(*, ok: bool, body: str, failure_reason: str | None = None) -> EngineResponse:
+def 응답(
+    *, ok: bool, body: str, failure_reason: str | None = None,
+    failure_detail: FailureDetail = NO_DETAIL,
+) -> EngineResponse:
     return EngineResponse(
         ok=ok, body=body, session_id=None, model_actual=None,
         elapsed=0.0, turns=None, usage=None, failure_reason=failure_reason,
+        failure_detail=failure_detail,
     )
 
 
@@ -340,6 +344,19 @@ class Test확인실패진단:
         assert "timeout" in 기록
         assert f"작업 {작업_id}" in 기록
         assert 큐.due(now=99999.0, min_gap=0.0)[0].checks == 1
+
+    def test_엔진실패는_진단값도_남긴다(self, 큐, caplog) -> None:
+        """사유만으로는 무엇이 잘못됐는지 모른다. 실제 원인이 raw 에만 있어
+        명령을 손으로 재구성해야 했다(sca-dyb.14).
+        """
+        큐.enqueue("C1", "111.1", "배포 확인")
+        c = 체커(큐=큐, run_check=lambda job: 응답(
+            ok=False, body="", failure_reason="nonzero_exit", failure_detail=FailureDetail(exit_code=137)))
+        큐.시각["값"] = 2000.0
+        with caplog.at_level("WARNING"):
+            c.check_once()
+
+        assert "exit_code=137" in "\n".join(r.getMessage() for r in caplog.records)
 
     def test_태그누락은_엔진실패와_다른_문구로_남는다(self, 큐, caplog) -> None:
         큐.enqueue("C1", "111.1", "배포 확인")

@@ -20,6 +20,7 @@ from slack_cli_agent.engine.base import (
     Engine,
     EngineRequest,
     EngineResponse,
+    FailureDetail,
     TrustLevel,
     Usage,
     UsageLimit,
@@ -1184,3 +1185,103 @@ class Test모델도_실행_엔진이_정한다:
     def test_아직_안_정해졌으면_명령_조립이_막힌다(self, 빈값: str | None) -> None:
         with pytest.raises(ValueError):
             request(model=빈값).require_model()
+
+
+class Test실패_사유의_진단값:
+    """감시 확인 실패 로그가 '사유 nonzero_exit, 응답 11자' 만 남겼다. 실제
+    원인인 CLI 출력은 raw 에만 있어 아무도 안 읽는다. 엔진이 만들어 낸 값만
+    골라 로그에 낼 수 있게 승격한다(sca-dyb.14).
+
+    값은 숫자이거나 미리 정한 목록 안의 낱말뿐이다. 문자 치환으로 걸러도
+    ASCII 로 된 비밀값은 그대로 통과하므로 금지 목록이 아니라 허용 목록이어야
+    한다(코덱스 리뷰).
+    """
+
+    def test_담은_항목만_이름과_함께_나온다(self) -> None:
+        assert str(FailureDetail(exit_code=1, code="error_max_turns")) == "exit_code=1 code=error_max_turns"
+
+    def test_안_담은_항목은_빠진다(self) -> None:
+        assert str(FailureDetail(exit_code=2)) == "exit_code=2"
+
+    def test_종료코드_0_도_담는다(self) -> None:
+        """0 은 없는 값이 아니다. 정상 종료인데 실패한 것이 곧 진단이다."""
+        assert str(FailureDetail(exit_code=0)) == "exit_code=0"
+
+    def test_빈_진단값은_거짓이다(self) -> None:
+        assert not FailureDetail()
+        assert FailureDetail(exit_code=0)
+
+    def test_빈_진단값은_빈_문자열이_된다(self) -> None:
+        assert str(FailureDetail()) == ""
+
+    def test_모르는_낱말은_길이만_남긴다(self) -> None:
+        """CLI 가 enum 자리에 대화 내용을 넣어도 그 내용이 안 나간다."""
+        assert str(FailureDetail(code="내부 대화 내용 유출")) == "code=unknown:11"
+
+    def test_ASCII_비밀값도_길이만_남긴다(self) -> None:
+        assert str(FailureDetail(code="xoxb-1234567890-abcdef")) == "code=unknown:22"
+
+    def test_경로도_길이만_남긴다(self) -> None:
+        assert str(FailureDetail(code="/Users/taelkim/비밀/파일.md")) == "code=unknown:23"
+
+    def test_아는_낱말은_그대로_남긴다(self) -> None:
+        assert str(FailureDetail(code="SUCCESS")) == "code=SUCCESS"
+
+    def test_클로드_비정상_종료는_종료코드를_담는다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        assert str(engine.parse("이상한 출력", "에러", 3).failure_detail) == "exit_code=3"
+
+    def test_클로드_is_error_는_subtype_을_담는다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = {"type": "result", "is_error": True, "subtype": "error_max_turns"}
+        assert str(engine.parse(json.dumps(payload), "", 0).failure_detail) == "code=error_max_turns"
+
+    def test_클로드_빈_응답도_진단값을_남긴다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = {"type": "result", "result": "   ", "session_id": "s1"}
+        나온것 = engine.parse(json.dumps(payload), "", 0)
+        assert 나온것.failure_reason == "empty_response"
+        assert 나온것.failure_detail
+
+    def test_코덱스_비정상_종료는_종료코드를_담는다(self, tmp_path: Path) -> None:
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        assert str(engine.parse("", "실패", 7).failure_detail) == "exit_code=7"
+
+    def test_제미나이_실패_상태는_status_를_담는다(self, tmp_path: Path) -> None:
+        engine = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        payload = {"status": "ERROR", "error": "사용자 대화가 섞일 수 있는 문구"}
+        assert str(engine.parse(json.dumps(payload), "", 0).failure_detail) == "code=ERROR"
+
+    def test_제미나이_빈_응답도_진단값을_남긴다(self, tmp_path: Path) -> None:
+        engine = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        payload = {"status": "SUCCESS", "response": "  "}
+        나온것 = engine.parse(json.dumps(payload), "", 0)
+        assert 나온것.failure_reason == "empty_response"
+        assert 나온것.failure_detail
+
+    def test_수치_자리에_문자열을_못_넣는다(self) -> None:
+        """타입 표기만으로는 실행 중에 아무도 안 막는다. 여기가 막히지 않으면
+        FailureDetail 은 경계가 아니라 권고다(코덱스 2차 리뷰).
+        """
+        with pytest.raises(TypeError):
+            FailureDetail(exit_code="대화 내용")  # type: ignore[arg-type]
+
+    def test_수치_자리에_참거짓을_못_넣는다(self) -> None:
+        with pytest.raises(TypeError):
+            FailureDetail(stdout_chars=True)  # type: ignore[arg-type]
+
+    def test_낱말_자리에_문자열이_아닌_것을_못_넣는다(self) -> None:
+        with pytest.raises(TypeError):
+            FailureDetail(code=123)  # type: ignore[arg-type]
+
+    def test_응답의_진단값_자리에_문자열을_못_넣는다(self) -> None:
+        with pytest.raises(TypeError):
+            EngineResponse(
+                ok=False, body="", session_id=None, model_actual=None, elapsed=0.0,
+                turns=None, usage=None, failure_detail="xoxb-비밀",  # type: ignore[arg-type]
+            )
+
+    def test_성공한_응답에는_진단값이_없다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = {"type": "result", "result": "답", "session_id": "s1"}
+        assert not engine.parse(json.dumps(payload), "", 0).failure_detail

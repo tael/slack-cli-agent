@@ -31,7 +31,15 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..config.profile import McpServerSpec
-from .base import ElapsedSource, Engine, EngineRequest, EngineResponse, Usage, UsageLimit
+from .base import (
+    ElapsedSource,
+    Engine,
+    EngineRequest,
+    EngineResponse,
+    FailureDetail,
+    Usage,
+    UsageLimit,
+)
 
 # Same hint list as the original bot.py's usage_limit_message().
 _USAGE_LIMIT_HINTS = (
@@ -127,12 +135,13 @@ class ClaudeEngine(Engine):
                     model_actual=None, elapsed=0.0, turns=None, usage=None,
                     raw={"usage_limit": {"detail": limit.detail, "source": limit.source}},
                     failure_reason="usage_limit",
+                    failure_detail=FailureDetail(exit_code=returncode, code=limit.source),
                 )
             return EngineResponse(
                 ok=False, body="처리에 실패했습니다.", session_id=None, model_actual=None,
                 elapsed=0.0, turns=None, usage=None,
                 raw={"stdout": stdout, "stderr": stderr, "returncode": returncode},
-                failure_reason="nonzero_exit",
+                failure_reason="nonzero_exit", failure_detail=FailureDetail(exit_code=returncode),
             )
 
         payload = self._result_event(stdout)
@@ -141,6 +150,7 @@ class ClaudeEngine(Engine):
                 ok=False, body="처리에 실패했습니다.", session_id=None, model_actual=None,
                 elapsed=0.0, turns=None, usage=None,
                 raw={"stdout": stdout}, failure_reason="bad_json",
+                failure_detail=FailureDetail(stdout_chars=len(stdout)),
             )
 
         session_id = payload.get("session_id")
@@ -161,7 +171,7 @@ class ClaudeEngine(Engine):
             return EngineResponse(
                 ok=False, body=body, session_id=session_id, model_actual=model_actual,
                 elapsed=elapsed, turns=turns, usage=usage, raw=raw, failure_reason=reason,
-                elapsed_source=elapsed_source,
+                failure_detail=FailureDetail(code=subtype), elapsed_source=elapsed_source,
             )
 
         body = str(payload.get("result") or "").strip()
@@ -169,7 +179,12 @@ class ClaudeEngine(Engine):
             return EngineResponse(
                 ok=False, body="응답이 비어 있습니다.", session_id=session_id,
                 model_actual=model_actual, elapsed=elapsed, turns=turns, usage=usage,
-                raw=dict(payload), failure_reason="empty_response", elapsed_source=elapsed_source,
+                raw=dict(payload), failure_reason="empty_response",
+                failure_detail=FailureDetail(
+                    exit_code=returncode, stdout_chars=len(stdout),
+                    code=str(payload.get("subtype") or ""),
+                ),
+                elapsed_source=elapsed_source,
             )
         return EngineResponse(
             ok=True, body=body, session_id=session_id, model_actual=model_actual,
