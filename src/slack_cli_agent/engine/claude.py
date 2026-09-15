@@ -108,8 +108,8 @@ class ClaudeEngine(Engine):
                 "--strict-mcp-config",
             ]
         cmd += ["--append-system-prompt", request.system_prompt]
-        cmd += (["--resume", request.session_id] if request.resume
-                else ["--session-id", request.session_id])
+        cmd += (["--resume", request.require_session_id()] if request.resume
+                else ["--session-id", request.require_session_id()])
         # Keep the prompt after --. Otherwise user input starting
         # with a hyphen would be parsed as a flag.
         cmd += ["--", request.prompt]

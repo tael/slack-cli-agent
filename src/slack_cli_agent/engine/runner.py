@@ -53,6 +53,11 @@ class EngineRunner:
         # Resolved before prepare() so an engine with no policy fails before
         # writing its config file.
         policy = self._environment_policy or engine.environment_policy()
+        if request.session_id is None:
+            # Only here is the concrete engine known: FallbackEngine picks
+            # primary or secondary in its own run(), and the recovery probe
+            # sends a switched-state request back to the primary.
+            request = dataclasses.replace(request, session_id=engine.new_session_id())
         engine.prepare(request)
         cmd = engine.build_command(request)
         timeout = timeout_sec if timeout_sec is not None else self._settings.request_timeout_sec
@@ -179,7 +184,7 @@ class FallbackEngine(Engine):
         return self._active.parse(stdout, stderr, returncode)
 
     def new_session_id(self) -> str:
-        return self.primary.new_session_id()
+        return self._active.new_session_id()
 
     def detect_usage_limit(self, response: EngineResponse) -> UsageLimit | None:
         return self._active.detect_usage_limit(response)
@@ -244,7 +249,7 @@ class FallbackEngine(Engine):
         self._active = self.secondary
         fallback_request = EngineRequest(
             prompt=request.prompt, system_prompt=request.system_prompt,
-            session_id=self.secondary.new_session_id(), resume=False,
+            session_id=None, resume=False,
             model=self.secondary.spec.model, effort=request.effort,
             workdir=request.workdir, readable_dirs=request.readable_dirs,
             allowed_tools=request.allowed_tools, trust_level=request.trust_level,
@@ -275,7 +280,7 @@ class FallbackEngine(Engine):
         """
         probe_request = EngineRequest(
             prompt=self.PROBE_PROMPT, system_prompt="",
-            session_id=self.secondary.new_session_id(), resume=False,
+            session_id=None, resume=False,
             model=self.secondary.spec.model, effort="low", workdir=request.workdir,
             readable_dirs=(), allowed_tools=(), trust_level=request.trust_level,
         )

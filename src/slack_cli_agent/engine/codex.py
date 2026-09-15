@@ -107,7 +107,7 @@ class CodexEngine(Engine):
         if request.resume:
             # resume doesn't accept --sandbox or -C; achieve the same effect via config keys instead.
             cmd += ["-c", f"sandbox_mode={self._toml_string(sandbox)}",
-                   request.session_id, "--", request.prompt]
+                   request.require_session_id(), "--", request.prompt]
         else:
             cmd += ["--sandbox", sandbox, "-C", str(request.workdir), "--", request.prompt]
         return cmd
