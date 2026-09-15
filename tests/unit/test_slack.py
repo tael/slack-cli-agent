@@ -296,6 +296,19 @@ class TestMessagePublisher:
         assert kwargs["thread_ts"] == "100.0"
         assert "blocks" not in kwargs
 
+    def test_스레드_없이_채널에_올리면_첫_조각의_ts_를_돌려준다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        """점검 보고는 스레드 없이 올린다. 빈 문자열을 그대로 두면 돌려줄 ts 가
+        안 정해지고, 뒤 조각도 스레드로 안 접혀 최상위에 따로 올라간다."""
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        client.queue_post({"ts": "222.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        parent_ts = pub.post("C1", "", "본문", rich=False)
+        assert parent_ts == "111.000000"
+        assert "thread_ts" not in client.calls[0][1]
+
     def test_DM은_스레드로_접지_않는다(
         self, settings, markdown, splitter, verifier, block_builder
     ) -> None:
