@@ -100,6 +100,7 @@ class GeminiEngine(Engine):
 
     def prepare(self, request: EngineRequest) -> None:
         self._ensure_settings_file(self.spec.home_dir)
+        self._ensure_keychain_link(self.spec.home_dir)
         self._ensure_mcp_config_file(request.workdir, self.profile.mcp_servers)
 
     def build_command(self, request: EngineRequest) -> list[str]:
@@ -210,6 +211,24 @@ class GeminiEngine(Engine):
             "cache_read_input_tokens": native.get("cache_read_tokens"),
         }
         return Usage.from_mapping(translated)
+
+    @staticmethod
+    def _ensure_keychain_link(home_dir: Path | None) -> None:
+        """The CLI caches its token in the macOS login keychain. With HOME
+        moved per bot, Security finds no default keychain and macOS shows a
+        modal asking where to store 'antigravity' on every token refresh."""
+        if home_dir is None:
+            return
+        real = Path.home() / "Library" / "Keychains"
+        link = home_dir / "Library" / "Keychains"
+        if not real.is_dir() or link.resolve() == real.resolve():
+            return
+        if link.exists() and not link.is_symlink():
+            return
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(real)
 
     @staticmethod
     def _ensure_settings_file(home_dir: Path | None) -> None:
