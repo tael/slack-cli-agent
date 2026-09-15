@@ -326,3 +326,45 @@ class TestBuildCommandHasNoSideEffect:
 
         path = home / ".gemini" / "antigravity-cli" / "settings.json"
         assert path.is_file()
+
+
+class TestKeychainLink:
+    """agy 는 자격증명을 macOS 로그인 키체인에 저장한다(공식 설치·인증 문서).
+
+    HOME 을 봇별 경로로 바꾸면 그 아래에 Library/Keychains 가 없어서 기본
+    키체인을 못 찾고, 토큰을 갱신할 때마다 "저장할 키체인을 찾을 수 없습니다"
+    대화상자가 화면에 뜬다(2026-09-15 사용자 보고). 실제 키체인 위치를
+    격리 홈에서도 보이게 연결한다.
+    """
+
+    def test_격리_홈에_실제_키체인_경로를_연결한다(self, tmp_path: Path) -> None:
+        real = Path.home() / "Library" / "Keychains"
+        real.mkdir(parents=True, exist_ok=True)
+        home = tmp_path / "bot-home"
+
+        _engine(tmp_path, home_dir=home).prepare(_request())
+
+        link = home / "Library" / "Keychains"
+        assert link.is_symlink()
+        assert link.resolve() == real.resolve()
+
+    def test_홈이_실제_홈이면_연결하지_않는다(self, tmp_path: Path) -> None:
+        """자기 자신을 가리키는 연결을 만들지 않는다."""
+        real = Path.home() / "Library" / "Keychains"
+        real.mkdir(parents=True, exist_ok=True)
+
+        _engine(tmp_path, home_dir=Path.home()).prepare(_request())
+
+        assert not (Path.home() / "Library" / "Keychains").is_symlink()
+
+    def test_이미_실제_디렉터리가_있으면_안_건드린다(self, tmp_path: Path) -> None:
+        (Path.home() / "Library" / "Keychains").mkdir(parents=True, exist_ok=True)
+        home = tmp_path / "bot-home"
+        existing = home / "Library" / "Keychains"
+        existing.mkdir(parents=True)
+        (existing / "login.keychain-db").write_text("실물", encoding="utf-8")
+
+        _engine(tmp_path, home_dir=home).prepare(_request())
+
+        assert not existing.is_symlink()
+        assert (existing / "login.keychain-db").read_text(encoding="utf-8") == "실물"
