@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -119,6 +119,7 @@ from ..review.trace import DebugTraceTask
 from ..session.manager import SessionManager
 from ..session.store import SqliteSessionStore
 from ..slack.attachments import AttachmentStore, DownloadResult
+from ..slack.credentials import CredentialResolver, resolver_for
 from ..slack.download import HttpDownloader
 from ..slack.gate import ResponseGate
 from ..slack.gateway import SlackGateway
@@ -257,14 +258,30 @@ class Application:
         self._closed = False
 
     @classmethod
-    def from_profile(cls, profile: Profile, client: Any | None = None, **kwargs: Any) -> Application:
-        """Creates the Slack client here; tests bypass this constructor path."""
+    def from_profile(
+        cls,
+        profile: Profile,
+        client: Any | None = None,
+        env: Mapping[str, str] | None = None,
+        resolver: CredentialResolver | None = None,
+        **kwargs: Any,
+    ) -> Application:
+        """Creates the Slack client here; tests bypass this constructor path.
+
+        The caller passes its own resolver when it already read a token: each
+        resolver caches the credentials file separately, so building a second
+        one lets the two tokens come from different versions of it.
+        """
+        resolver = resolver or resolver_for(profile, env=env)
         if client is None:
             from slack_sdk import WebClient  # lazy import so assembly tests don't need the SDK
 
-            client = WebClient(token=_bot_token())
-        kwargs.setdefault("token_provider", _bot_token)
+            client = WebClient(token=resolver.bot_token())
+        kwargs.setdefault("token_provider", resolver.bot_token)
         return cls(profile, client, **kwargs)
+
+    def bot_token(self) -> str:
+        return str(self._token_provider())
 
     def _load_plugins(self) -> tuple[BotPlugin, ...]:
         if not self._profile.plugins:
@@ -1294,9 +1311,3 @@ class Application:
             for name in SOCKET_LOGGERS:
                 logging.getLogger(name).removeHandler(self._connection_watch)
         self._database.close()
-
-
-def _bot_token() -> str:
-    import os
-
-    return os.environ.get("SLACK_BOT_TOKEN", "")
