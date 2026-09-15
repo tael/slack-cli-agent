@@ -50,6 +50,7 @@ class EngineRunner:
 
     def run(self, engine: Engine, request: EngineRequest,
            timeout_sec: float | None = None) -> EngineResponse:
+        engine.prepare(request)
         cmd = engine.build_command(request)
         timeout = timeout_sec if timeout_sec is not None else self._settings.request_timeout_sec
         # Skip the env argument entirely when there's no policy —

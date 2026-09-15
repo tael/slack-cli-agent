@@ -1080,7 +1080,7 @@ class Test플러그인엔진등록:
         assert "mine" in application.engine_registry.available()
 
     def test_플러그인이_없으면_기본_엔진만_있다(self, profile: Profile, client: FakeSlackClient) -> None:
-        assert Application(profile, client).engine_registry.available() == ["claude", "codex"]
+        assert Application(profile, client).engine_registry.available() == ["claude", "codex", "gemini"]
 
     def test_주입한_레지스트리에도_더한다(self, tmp_path: Path, client: FakeSlackClient) -> None:
         """레지스트리를 밖에서 넣은 경우에만 플러그인 엔진이 빠지면 그 사실이 안 드러난다."""
@@ -1202,3 +1202,32 @@ class RecordingBatch:
     def run(self, day: str | None = None) -> BatchReport:
         self.days.append(day or "")
         return BatchReport(day=day or "", ran=False, reason="시험용", proposal=None)
+
+
+class Test발행기감사기록배선:
+    """부품을 만든 것과 조립에 연결한 것은 다르다. MessagePublisher 는 audit 인자를
+    받지만 Application 이 안 넘겨, 분할·게시 실패 사건이 하나도 안 남았다."""
+
+    def test_게시_실패가_감사_기록에_남는다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.core.errors import SlackError
+
+        class FailingClient(FakeSlackClient):
+            def __getattr__(self, name: str) -> Any:
+                if name == "chat_postMessage":
+                    def fail(**kwargs: Any) -> dict[str, Any]:
+                        raise RuntimeError("슬랙 게시 실패")
+                    return fail
+                return super().__getattr__(name)
+
+        profile = write_profile(tmp_path)
+        app = Application(profile, FailingClient())
+        with pytest.raises(SlackError):
+            app.publisher().post("C1", "1.1", "본문", rich=False)
+
+        lines = profile.paths.audit_log.read_text(encoding="utf-8").splitlines()
+        assert [json.loads(line)["kind"] for line in lines] == ["post_failed"]
+
+    def test_감사_기록은_파이프라인과_같은_인스턴스다(self, tmp_path: Path) -> None:
+        """따로 만들면 jsonl 핸들과 시계가 갈려 같은 구간이 두 기록으로 나뉜다."""
+        app = Application(write_profile(tmp_path), FakeSlackClient())
+        assert app.pipeline().audit is app.audit()

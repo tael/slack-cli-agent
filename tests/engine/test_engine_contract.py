@@ -18,6 +18,7 @@ from slack_cli_agent.core.errors import ConfigError
 from slack_cli_agent.engine.base import Engine, EngineRequest, TrustLevel, Usage
 from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
+from slack_cli_agent.engine.gemini import GeminiEngine
 from slack_cli_agent.engine.runner import EngineRunner
 
 SETTINGS = RuntimeSettings()
@@ -53,6 +54,12 @@ class EngineFixture(NamedTuple):
     # None: allowed_tools reflects in the command like other engines.
     # str: known engine gap; xfail(strict=True) with this reason.
     allowed_tools_xfail_reason: str | None = None
+    # The literal handed to build_command(effort=...) and expected back
+    # verbatim in the command. Default is an arbitrary marker string;
+    # engines that validate/normalize effort (e.g. Gemini's low/medium/high)
+    # override it with a value their own normalization passes through
+    # unchanged, instead of the shared test special-casing engines.
+    effort_value: str = "고유-effort-값"
 
 
 def _claude_configured(tmp_path: Path) -> Profile:
@@ -75,6 +82,18 @@ def _codex_unconfigured(tmp_path: Path) -> Profile:
     return _profile({"type": "claude", "binary": "claude", "model": "claude-sonnet-5"}, None, tmp_path)
 
 
+def _gemini_configured(tmp_path: Path) -> Profile:
+    return _profile(
+        {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+        {"type": "gemini", "binary": "agy", "model": "gemini-3.8-flash", "options": {}},
+        tmp_path,
+    )
+
+
+def _gemini_unconfigured(tmp_path: Path) -> Profile:
+    return _profile({"type": "claude", "binary": "claude", "model": "claude-sonnet-5"}, None, tmp_path)
+
+
 def _claude_stdout(usage: dict[str, Any]) -> tuple[str, str, int]:
     payload = {
         "result": "답변 본문", "session_id": "s1", "model": "claude-sonnet-5",
@@ -90,6 +109,14 @@ def _codex_stdout(usage: dict[str, Any]) -> tuple[str, str, int]:
         json.dumps({"type": "turn.completed", "usage": usage}),
     ]
     return "\n".join(lines), "", 0
+
+
+def _gemini_stdout(usage: dict[str, Any]) -> tuple[str, str, int]:
+    payload = {
+        "conversation_id": "conv-1", "status": "SUCCESS", "response": "제미나이 답변",
+        "error": "", "duration_seconds": 1.2, "num_turns": 1, "usage": usage,
+    }
+    return json.dumps(payload), "", 0
 
 
 ENGINE_FIXTURES: list[EngineFixture] = [
@@ -124,6 +151,31 @@ ENGINE_FIXTURES: list[EngineFixture] = [
             "Codex CLI has no tool-allowlist flag; sandbox mode governs execution "
             "scope instead (checked 2026-09-15)."
         ),
+    ),
+    EngineFixture(
+        id="gemini",
+        engine_class=GeminiEngine,
+        configured_profile=_gemini_configured,
+        unconfigured_profile=_gemini_unconfigured,
+        # No pinned-system-prompt mechanism exists at all (unlike Codex's
+        # first-turn-only pin), so the prompt is rebuilt with the system
+        # prompt prefixed on every turn, resumed or not.
+        resend_system_prompt_on_resume=True,
+        resume_token="--conversation",
+        native_usage={
+            "input_tokens": 7, "output_tokens": 9, "thinking_tokens": 11,
+            "cache_read_tokens": 3, "total_tokens": 30,
+        },
+        expected_usage=Usage(input_tokens=7, output_tokens=9, cache_creation_tokens=0, cache_read_tokens=3),
+        build_stdout=_gemini_stdout,
+        allowed_tools_xfail_reason=(
+            "agy CLI has no tool-allowlist flag; access control is settings.json "
+            "permissions, opened wide per 2026-09-15 user instruction (checked 2026-09-15)."
+        ),
+        # "high" is a valid effort value that agy's normalization passes
+        # through unchanged, unlike the shared arbitrary marker string,
+        # which would be normalized away (see docs/agy-실측.md 정규화 규칙).
+        effort_value="high",
     ),
 ]
 
@@ -221,8 +273,8 @@ class TestEngineContract:
 
     def test_effort가_명령에_반영된다(self, fx: EngineFixture, tmp_path: Path) -> None:
         engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
-        cmd = engine.build_command(_request(effort="고유-effort-값"))
-        assert "고유-effort-값" in _joined(cmd)
+        cmd = engine.build_command(_request(effort=fx.effort_value))
+        assert fx.effort_value in _joined(cmd)
 
     def test_usage_매핑이_엔진_고유_출력에서_올바로_들어간다(self, fx: EngineFixture, tmp_path: Path) -> None:
         engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)

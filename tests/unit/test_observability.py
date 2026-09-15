@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from slack_cli_agent.observability.audit import AuditLog
+from slack_cli_agent.observability.audit import AuditLog, IncidentKind, normalize_kind
 from slack_cli_agent.observability.notices import NoticeCatalog, NoticeKey
 
 
@@ -84,6 +84,25 @@ class TestAuditLogRecordRequest:
         entry = json.loads(jsonl_path.read_text(encoding="utf-8").splitlines()[0])
         assert entry["model"] == "claude-x"
         assert entry["ok"] is True
+
+
+class TestIncidentKind:
+    def test_새_사건_종류가_문자열_리터럴과_같다(self) -> None:
+        assert IncidentKind.LATE_ADDENDUM == "late_addendum"
+        assert IncidentKind.WRONG_ADDRESSEE == "wrong_addressee"
+        assert IncidentKind.REWRITE_LOSS == "rewrite_loss"
+        assert IncidentKind.SILENT == "silent"
+
+    def test_기록에_그대로_쓸_수_있다(self, audit_log) -> None:
+        log, _clock = audit_log
+        log.record(IncidentKind.LATE_ADDENDUM, channel="C1", thread_ts="T1", ok=True)
+        row = log._fetch_all("SELECT * FROM audit")[0]
+        assert row["kind"] == "late_addendum"
+
+    def test_kind이_비어있으면_request로_본다(self) -> None:
+        assert normalize_kind(None) == "request"
+        assert normalize_kind("") == "request"
+        assert normalize_kind("late_addendum") == "late_addendum"
 
 
 class TestNoticeCatalog:

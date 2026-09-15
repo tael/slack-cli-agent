@@ -28,7 +28,7 @@ from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
 from ..core.channel_kind import is_direct_message_channel
 from ..jobs.ports import JobStatus
-from ..observability.audit import REQUEST_KIND
+from ..observability.audit import REQUEST_KIND, IncidentKind, normalize_kind
 from ..storage.database import Database
 
 KST = timezone(timedelta(hours=9))
@@ -41,7 +41,6 @@ CCUSAGE_BIN = "/opt/homebrew/bin/ccusage"
 CCUSAGE_TIMEOUT_SEC = 20
 
 _NO_USER_ID = "감사 기록에 사용자 식별자가 없다"
-_NO_INCIDENT_KIND = "감사 기록에 사고 유형 구분이 없다"
 
 NOT_APPLICABLE_REASONS: dict[str, str] = {
     "usage.by_user": _NO_USER_ID,
@@ -51,19 +50,23 @@ NOT_APPLICABLE_REASONS: dict[str, str] = {
     "usage.answer_len_median": "감사 기록에 답변 원문이 없다",
     "reliability.context_reset": "감사 기록에 컨텍스트 재설정 표시가 없다",
     "reliability.restarts": "신규 저장소에 재기동 이력이 없다",
-    "reliability.incidents": _NO_INCIDENT_KIND,
-    "quality.late_addendum": _NO_INCIDENT_KIND,
-    "quality.wrong_addressee": _NO_INCIDENT_KIND,
-    "quality.split_broken": _NO_INCIDENT_KIND,
-    "quality.post_failed": _NO_INCIDENT_KIND,
-    "quality.silent": "감사 기록에 답변 원문이 없어 무응답 여부를 판정할 수 없다",
-    "quality.rewrites": "신규 저장소에 발송 전 재작성 로그가 없다",
     "followup.same_user_repeat": _NO_USER_ID,
     "tools": "감사 기록에 도구 호출 이름이 없다",
     "channels[].context_tokens": "세션 맥락 크기 계측은 이 수집기 범위 밖이다",
     "bots": "이 수집기는 프로필 하나만 받아 다른 봇 목록을 낼 수 없다",
 }
 CODEX_USAGE_BLOCK_REASON = "Codex 세션 기록 스캔은 이 수집기 범위 밖이다"
+
+# Quality/reliability incident kinds this collector counts. REQUEST is the
+# baseline traffic kind, tallied separately by `_read_requests`.
+_INCIDENT_KINDS: tuple[IncidentKind, ...] = (
+    IncidentKind.LATE_ADDENDUM,
+    IncidentKind.WRONG_ADDRESSEE,
+    IncidentKind.SPLIT_BROKEN,
+    IncidentKind.POST_FAILED,
+    IncidentKind.REWRITE_LOSS,
+    IncidentKind.SILENT,
+)
 
 _SLOW_LABELS = (
     "10초 이하", "10-30초", "30-60초", "1-2분", "2-5분", "5-10분", "10-15분", "15분 초과",
@@ -107,7 +110,8 @@ class MetricsCollector:
         cutoff = now - days * 86400
 
         snapshot = self._read_snapshot(paths.state_snapshot, now)
-        requests = self._read_requests(db, cutoff)
+        requests, incident_counts = self._read_requests(db, cutoff)
+        first_seen = self._kind_first_seen_map(db)
         reviews = self._read_reviews(db)
         sessions = self._read_sessions(db)
         queued_by_channel = self._read_queued_by_channel(db)
@@ -124,8 +128,8 @@ class MetricsCollector:
             "last_answer_kst": latest or None,
             "channels": self._channel_rows(requests, channels, sessions, queued_by_channel, now),
             "responsiveness": self._responsiveness(requests),
-            "reliability": self._reliability(requests),
-            "quality": self._quality(reviews, requests),
+            "reliability": self._reliability(requests, incident_counts),
+            "quality": self._quality(reviews, requests, incident_counts, first_seen),
             "usage": self._usage(requests, channels),
             "followup": self._followup(requests),
             "tools": {"available": False, "reason": NOT_APPLICABLE_REASONS["tools"]},
@@ -155,14 +159,28 @@ class MetricsCollector:
             result["reason"] = f"스냅샷이 {int(age)}초 지났다"
         return result
 
-    def _read_requests(self, db: Database, cutoff: float) -> list[dict[str, Any]]:
+    def _read_requests(
+        self, db: Database, cutoff: float
+    ) -> tuple[list[dict[str, Any]], collections.Counter[str]]:
+        """Reads every audit row in the window once and splits it by kind.
+
+        Request-kind rows go through the same payload parsing as before;
+        every other kind is only tallied by name — the quality/reliability
+        rollups need counts, not payload fields, and a bad payload there
+        shouldn't hide that the incident happened at all.
+        """
         rows = db.connect().execute(
-            "SELECT at, channel, thread_ts, payload FROM audit"
-            " WHERE kind = ? AND at >= ? ORDER BY id",
-            (REQUEST_KIND, cutoff),
+            "SELECT at, kind, channel, thread_ts, payload FROM audit"
+            " WHERE at >= ? ORDER BY id",
+            (cutoff,),
         ).fetchall()
         out: list[dict[str, Any]] = []
+        incidents: collections.Counter[str] = collections.Counter()
         for row in rows:
+            kind = normalize_kind(row["kind"])
+            if kind != REQUEST_KIND:
+                incidents[kind] += 1
+                continue
             try:
                 payload = json.loads(row["payload"])
             except json.JSONDecodeError:
@@ -175,7 +193,26 @@ class MetricsCollector:
             record["at"] = row["at"]
             record["ts_kst"] = _kst(row["at"])
             out.append(record)
-        return out
+        return out, incidents
+
+    def _kind_first_seen_map(self, db: Database) -> dict[str, float]:
+        """Earliest `at` ever recorded for each kind, unbounded by the
+        requested window — used to tell "never happened" apart from "hasn't
+        happened yet within this window because instrumentation is newer
+        than the window start".
+        """
+        rows = db.connect().execute("SELECT kind, MIN(at) AS first_at FROM audit GROUP BY kind").fetchall()
+        result: dict[str, float] = {}
+        for row in rows:
+            first_at = row["first_at"]
+            if first_at is None:
+                continue
+            kind = normalize_kind(row["kind"])
+            current = result.get(kind)
+            value = float(first_at)
+            if current is None or value < current:
+                result[kind] = value
+        return result
 
     def _read_reviews(self, db: Database) -> list[dict[str, Any]]:
         rows = db.connect().execute(
@@ -287,7 +324,9 @@ class MetricsCollector:
             "max_sec": round(values[-1], 2) if values else None,
         }
 
-    def _reliability(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, object]:
+    def _reliability(
+        self, requests: Sequence[Mapping[str, Any]], incident_counts: collections.Counter[str]
+    ) -> dict[str, object]:
         ok = [r for r in requests if r.get("ok")]
         failed = [r for r in requests if not r.get("ok")]
         resumed = [r for r in requests if r.get("resumed")]
@@ -299,6 +338,7 @@ class MetricsCollector:
             }
             for r in sorted(failed, key=lambda x: str(x.get("ts_kst") or ""), reverse=True)[:10]
         ]
+        incidents = [{"kind": kind, "count": count} for kind, count in incident_counts.most_common()]
         return {
             "total": len(requests),
             "ok": len(ok),
@@ -307,13 +347,17 @@ class MetricsCollector:
             "resumed": len(resumed),
             "resumed_pct": _pct(len(resumed), len(requests)),
             "context_reset": None,
-            "incidents": [],
+            "incidents": incidents,
             "restarts": None,
             "recent_failures": recent_failures,
         }
 
     def _quality(
-        self, reviews: Sequence[Mapping[str, Any]], requests: Sequence[Mapping[str, Any]],
+        self,
+        reviews: Sequence[Mapping[str, Any]],
+        requests: Sequence[Mapping[str, Any]],
+        incident_counts: collections.Counter[str],
+        first_seen: Mapping[str, float],
     ) -> dict[str, object]:
         kinds = collections.Counter(str(r["kind"]) for r in reviews)
         asked = collections.Counter(str(r.get("channel") or "") for r in requests)
@@ -329,19 +373,28 @@ class MetricsCollector:
                 "requests": total,
                 "rate_pct": _pct(hits, total) if total else None,
             })
+        silent = incident_counts.get(IncidentKind.SILENT.value, 0)
+        tracked_since = {
+            kind.value: (_kst(first_seen[kind.value]) if kind.value in first_seen else None)
+            for kind in _INCIDENT_KINDS
+        }
         return {
             "postmortems_total": kinds.get("postmortem", 0),
             "postmortems_by_channel": rows,
             "format_reviews": kinds.get("format_review", 0),
             "debug_traces": kinds.get("debug_trace", 0),
-            "late_addendum": None,
-            "wrong_addressee": None,
-            "split_broken": None,
-            "post_failed": None,
-            "silent": None,
-            "silent_pct": None,
+            "late_addendum": incident_counts.get(IncidentKind.LATE_ADDENDUM.value, 0),
+            "wrong_addressee": incident_counts.get(IncidentKind.WRONG_ADDRESSEE.value, 0),
+            "split_broken": incident_counts.get(IncidentKind.SPLIT_BROKEN.value, 0),
+            "post_failed": incident_counts.get(IncidentKind.POST_FAILED.value, 0),
+            "silent": silent,
+            "silent_pct": _pct(silent, len(requests)),
             "corrections": self._count_corrections(),
-            "rewrites": None,
+            "rewrites": incident_counts.get(IncidentKind.REWRITE_LOSS.value, 0),
+            # Per sca-qi5.1 item 5: None means this kind has never fired in
+            # this store, so a 0 count in the window can't be told apart
+            # from "not instrumented yet" without this.
+            "tracked_since": tracked_since,
         }
 
     def _usage(
