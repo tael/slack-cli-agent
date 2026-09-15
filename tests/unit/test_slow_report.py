@@ -16,6 +16,9 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
+from typing import ClassVar
+
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import Usage
 from slack_cli_agent.engine.transcript import SessionTranscriptReader, TranscriptEvent
@@ -29,7 +32,6 @@ from slack_cli_agent.observability.slow_report import (
     TimeBreakdown,
     TimeBreakdownCalculator,
     UsageRowBuilder,
-    tail_output,
 )
 
 
@@ -367,49 +369,25 @@ class TestSlowReportFormatter재시도표시:
         assert "끊겼다 다시 부른 요청" not in detail
 
 
-class Test표준출력오류꼬리첨부:
-    def test_긴_버퍼는_800자만_남는다(self) -> None:
-        buf = "x" * 1000 + "끝부분"
-        result = tail_output(buf)
-        assert len(result) == 800
-        assert result.endswith("끝부분")
+class Test엔진원문은_보고에_담기지_않는다:
+    """이 보고는 요청이 온 채널이 아니라 트러블슈팅 채널로 간다. stdout 은
+    엔진 응답 본문이라 원 대화·읽은 파일·링크된 스레드를 인용할 수 있다.
+    그래서 원문을 담을 자리를 타입에서 없앴다(sca-r25). 필터가 아니라 타입으로
+    막아야 나중에 추가되는 필드가 기본값으로 새지 않는다.
+    """
 
-    def test_바이트버퍼도_문자열로_바꿔_자른다(self) -> None:
-        buf = ("y" * 1000 + "끝").encode("utf-8")
-        result = tail_output(buf)
-        assert len(result) == 800
+    #: 이 보고가 실어도 되는 것 전부. 금지 목록이 아니라 허용 목록인 이유는
+    #: engine_output 이나 result_text 같은 새 이름이 금지 목록을 그냥 지나가기
+    #: 때문이다. 여기에 이름을 더하려면 그 값이 다른 채널에 나가도 되는지를
+    #: 먼저 판단하게 된다.
+    허용_필드: ClassVar[frozenset[str]] = frozenset({
+        "elapsed_wall", "mono_elapsed", "started", "model", "model_actual", "effort",
+        "num_turns", "reason", "session_id", "resume", "channel", "channel_name",
+        "text", "usage", "engine",
+    })
 
-    def test_빈값이면_빈문자열이다(self) -> None:
-        assert tail_output(None) == ""
-        assert tail_output("") == ""
-
-    def test_값이_있으면_보고에_나오고_600자로_잘린다(self) -> None:
-        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
-        breakdown = TimeBreakdown(start_ts=0.0, end_ts=10.0, tool_sec=0.0, think_sec=0.0, wait_sec=10.0)
-        meta = SlowRequestMeta(
-            elapsed_wall=800.0, mono_elapsed=790.0, started=0.0, model="claude-x",
-            model_actual=None, effort="high", num_turns=None, reason="nonzero_exit",
-            session_id="세션1", resume=True, channel="C1", channel_name="테스트채널", text="원문",
-            stdout_tail="a" * 700 + "표시부분", stderr_tail=None,
-        )
-        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
-        _, detail = formatter.format(meta, diagnosis, breakdown)
-        assert "표준 출력 끝부분" in detail
-        assert "표시부분" in detail
-        assert "표준 오류 끝부분" not in detail
-
-    def test_값이_없으면_블록이_안_나온다(self) -> None:
-        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
-        breakdown = TimeBreakdown(start_ts=0.0, end_ts=10.0, tool_sec=0.0, think_sec=0.0, wait_sec=10.0)
-        meta = SlowRequestMeta(
-            elapsed_wall=800.0, mono_elapsed=790.0, started=0.0, model="claude-x",
-            model_actual=None, effort="high", num_turns=None, reason=None,
-            session_id="세션1", resume=True, channel="C1", channel_name="테스트채널", text="원문",
-        )
-        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
-        _, detail = formatter.format(meta, diagnosis, breakdown)
-        assert "끝부분" not in detail
-
+    def test_보고_타입에_허가되지_않은_필드가_없다(self) -> None:
+        assert {f.name for f in fields(SlowRequestMeta)} == self.허용_필드
 
 class TestUsageRowBuilder:
     """원본 `usage_rows()`(bot.py 3420행)의 채널 게이트 이관 검증.
