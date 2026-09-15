@@ -117,7 +117,7 @@ td.editcell{white-space:normal;min-width:90px}
 </head>
 <body>
 <div class="wrap">
-  <h1 id="title">봇 웹 콘솔</h1>
+  <h1 id="title">에이전트 콘솔</h1>
   <div class="sub" id="stamp">불러오는 중</div>
   <div class="bots" id="bots"></div>
   <div class="summary" id="summary">상태 모름</div>
@@ -231,13 +231,16 @@ async function api(path, opts){
 /* ---------- 전역 상태 ---------- */
 let current = null;
 try { current = localStorage.getItem("console.bot"); } catch (e) { current = null; }
-let profileNames = [];       // /api/profiles 로 얻은 이름. 지표를 아직 못 받았을 때 쓴다.
+let profileNames = [];       // /api/profiles 로 얻은 이름. 명부를 아직 못 받았을 때 쓴다.
+let botRows = [];            // /api/bots 로 얻은 모든 봇의 한 줄 상태. 선택줄이 쓴다.
 let lastMetrics = null;      // 최근 성공한 /api/state 응답. 실패하면 갱신하지 않는다.
 let activeTab = "state";
 
 /* ---------- 봇 선택줄과 상단 요약 ---------- */
-function botBar(d){
-  const bots = (d && d.bots) || profileNames.map(name => ({name, display_name:name, available:null}));
+function botBar(){
+  const bots = botRows.length
+    ? botRows
+    : profileNames.map(name => ({name, display_name:name, available:null}));
   const rows = bots.map(b => {
     let dot, note;
     if (b.available === null || b.available === undefined){
@@ -512,21 +515,32 @@ function renderStateTab(d){
     `<h2>사용과 비용</h2>${usPanel}`;
 }
 
+/* ---------- 봇 명부 폴링 ---------- */
+async function tickRoster(){
+  try{
+    botRows = await api("/api/bots");
+  }catch(e){
+    botRows = [];
+  }
+  if (!current || !botRows.some(b => b.name === current)){
+    current = (botRows[0] || {}).name || current;
+  }
+  botBar();
+}
+
 /* ---------- 지표 폴링 ---------- */
 let stateFailures = 0;
 async function tickState(){
-  if (!current){ botBar(null); summaryLine(null); return; }
+  if (!current){ summaryLine(null); return; }
   try{
     const d = await api(`/api/state/${encodeURIComponent(current)}?days=7`);
     stateFailures = 0;
     lastMetrics = d;
     current = (d.bot || {}).name || current;
-    document.getElementById("title").textContent = `${(d.bot||{}).display_name || "봇"} 웹 콘솔`;
-    document.title = `${(d.bot||{}).display_name || "봇"} 콘솔`;
+    document.title = `${(d.bot||{}).display_name || "에이전트"} 콘솔`;
     document.getElementById("stamp").textContent =
       `${(d.bot||{}).display_name || ""} · 엔진 ${(d.bot||{}).engine || ""}`
       + ` · 생성 ${d.generated_at} · 최근 ${d.window_days}일 기준 · ${STATE_POLL_MS/1000}초마다 갱신`;
-    botBar(d);
     summaryLine(d);
     if (activeTab === "state") renderStateTab(d);
   }catch(e){
@@ -534,7 +548,6 @@ async function tickState(){
     lastMetrics = null;
     document.getElementById("stamp").innerHTML =
       `<span class="bad">지표를 가져오지 못했다 : ${esc(e.message)} (${stateFailures}회)</span>`;
-    botBar(null);
     summaryLine(null);
     if (activeTab === "state") renderStateTab(null);
   }
@@ -895,8 +908,9 @@ function switchTab(name){
 }
 
 function onBotChanged(){
-  botBar(lastMetrics);
+  botBar();
   loadTab();
+  tickState();
 }
 
 document.querySelectorAll("#tabs button").forEach(b => {
@@ -914,10 +928,12 @@ async function init(){
   if (!current || (profileNames.length && !profileNames.includes(current))){
     current = profileNames[0] || current;
   }
-  botBar(null);
+  botBar();
   summaryLine(null);
+  await tickRoster();
   loadTab();
   tickState();
+  setInterval(tickRoster, STATE_POLL_MS);
   setInterval(tickState, STATE_POLL_MS);
 }
 init();

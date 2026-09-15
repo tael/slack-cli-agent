@@ -39,6 +39,10 @@ class FilesPort(Protocol):
     def write(self, name: str, text: str) -> None: ...
 
 
+class RosterPort(Protocol):
+    def rows(self) -> list[dict[str, object]]: ...
+
+
 class MetricsPort(Protocol):
     def collect(self, days: int) -> dict[str, object]: ...
 
@@ -61,12 +65,14 @@ class ApiRouter:
         prompts_for: Callable[[str], FilesPort],
         knowledge_for: Callable[[str], FilesPort],
         metrics_for: Callable[[str], MetricsPort],
+        roster: RosterPort,
     ) -> None:
         self._profiles = profiles
         self._channels_for = channels_for
         self._prompts_for = prompts_for
         self._knowledge_for = knowledge_for
         self._metrics_for = metrics_for
+        self._roster = roster
 
     def handle(self, method: str, path: str, query: Mapping[str, str], body: object | None) -> ApiResponse:
         segments = self._segments(path)
@@ -92,6 +98,8 @@ class ApiRouter:
 
         if head == "health" and not rest:
             return self._require(method, "GET", lambda: ApiResponse(200, {"ok": True}))
+        if head == "bots" and not rest:
+            return self._require(method, "GET", self._get_bots)
         if head == "profiles" and not rest:
             return self._require(method, "GET", self._get_profiles)
         if head == "profile" and len(rest) == 1:
@@ -141,6 +149,9 @@ class ApiRouter:
 
     def _bot_exists(self, bot: str) -> bool:
         return bot in self._profiles.names()
+
+    def _get_bots(self) -> ApiResponse:
+        return ApiResponse(200, self._roster.rows())
 
     def _get_profiles(self) -> ApiResponse:
         return ApiResponse(200, self._profiles.names())

@@ -37,6 +37,11 @@ class CountingMetrics:
         return {"days": days, "calls": self.calls}
 
 
+class _EmptyRoster:
+    def rows(self) -> list[dict[str, object]]:
+        return []
+
+
 def make_router(metrics: CountingMetrics | None = None) -> ApiRouter:
     metrics = metrics if metrics is not None else CountingMetrics()
     return ApiRouter(
@@ -45,6 +50,7 @@ def make_router(metrics: CountingMetrics | None = None) -> ApiRouter:
         prompts_for=lambda bot: (_ for _ in ()).throw(KeyError(bot)),
         knowledge_for=lambda bot: (_ for _ in ()).throw(KeyError(bot)),
         metrics_for=lambda bot: metrics,
+        roster=_EmptyRoster(),
     )
 
 

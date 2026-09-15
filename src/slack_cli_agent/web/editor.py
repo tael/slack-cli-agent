@@ -17,13 +17,7 @@ class ProfileEditor:
         self._search_dirs = list(search_dirs)
 
     def names(self) -> list[str]:
-        found: set[str] = set()
-        for base in self._search_dirs:
-            if not base.is_dir():
-                continue
-            for path in base.glob("*.json"):
-                found.add(path.stem)
-        return sorted(found)
+        return Profile.discover(self._search_dirs)
 
     def read(self, name: str) -> dict[str, object]:
         path = self._find(name)
