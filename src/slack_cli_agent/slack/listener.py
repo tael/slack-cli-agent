@@ -15,6 +15,7 @@ be named): no config, or answer_unaddressed off, means the bot must be named.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -23,6 +24,8 @@ from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import BotIdentity
 from slack_cli_agent.slack.message_kind import MessageKind
+
+log = logging.getLogger(__name__)
 
 
 class EventListener:
@@ -117,8 +120,58 @@ class EventListener:
         item = event.get("item") or {}
         if item.get("type") != "message":
             return None
-        if self._identity.user_id and event.get("item_user") != self._identity.user_id:
+        channel = item.get("channel") or ""
+        ts = item.get("ts") or ""
+        if not self._reacted_to_own_reply(event, channel, ts):
             return None
         if self._identity.user_id and event.get("user") == self._identity.user_id:
             return None
-        return reaction, item.get("channel") or "", item.get("ts") or "", event.get("user") or ""
+        return reaction, channel, ts, event.get("user") or ""
+
+    def _reacted_to_own_reply(self, event: Mapping[str, Any], channel: str, ts: str) -> bool:
+        """Whether the reacted-to message is this bot's own reply.
+
+        Replies posted with a username override are stored as
+        subtype=bot_message, which has no `user` field, so Slack sends
+        reaction_added without item_user. Comparing item_user alone
+        dropped every review reaction. Falling back to fetching the
+        message keeps the display name override and costs one call,
+        only for emojis already known to be review triggers.
+        """
+        if not self._identity.user_id:
+            return True
+        item_user = event.get("item_user")
+        if item_user:
+            return bool(item_user == self._identity.user_id)
+        message = self._find_message(channel, ts)
+        if message is None:
+            return False
+        return self._identity.is_self(message)
+
+    def _find_message(self, channel: str, ts: str) -> Mapping[str, Any] | None:
+        """Looks the message up by timestamp.
+
+        conversations_history doesn't return thread replies, and these
+        reactions usually land on one, so an empty result falls through
+        to conversations_replies.
+        """
+        for finder in (self._from_history, self._from_replies):
+            try:
+                messages = finder(channel, ts)
+            except Exception as exc:  # noqa: BLE001 - a lookup failure must not act on someone else's message
+                log.warning("메시지 조회 실패: channel=%s ts=%s error=%s", channel, ts, exc)
+                continue
+            for message in messages:
+                if message.get("ts") == ts:
+                    return message
+        return None
+
+    def _from_history(self, channel: str, ts: str) -> list[Mapping[str, Any]]:
+        resp = self._client.conversations_history(
+            channel=channel, latest=ts, oldest=ts, inclusive=True, limit=1
+        )
+        return list((resp or {}).get("messages") or [])
+
+    def _from_replies(self, channel: str, ts: str) -> list[Mapping[str, Any]]:
+        resp = self._client.conversations_replies(channel=channel, ts=ts, limit=200)
+        return list((resp or {}).get("messages") or [])
