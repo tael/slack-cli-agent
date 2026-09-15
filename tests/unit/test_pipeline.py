@@ -19,8 +19,11 @@ from slack_cli_agent.core.pipeline import RequestPipeline
 from slack_cli_agent.engine.base import Engine, EngineRequest, EngineResponse, Usage
 from slack_cli_agent.engine.runner import DirectInvoker
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard, RerunRequest
+from slack_cli_agent.guard.mentions import AddresseeGuard
 from slack_cli_agent.guard.pipeline import GuardPipeline
+from slack_cli_agent.guard.rewrite import RewriteLossGuard
 from slack_cli_agent.guard.watch import WatchPromiseGuard
+from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.prompt.sections import SILENT_MARK
 from slack_cli_agent.session.manager import SessionManager
 from slack_cli_agent.session.ports import SessionKey, SessionRecord
@@ -166,9 +169,13 @@ class FakePublisher:
 class FakeAuditLog:
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []
+        self.incidents: list[dict[str, Any]] = []
 
     def record_request(self, **fields: Any) -> None:
         self.records.append(fields)
+
+    def record(self, kind: str, **fields: Any) -> None:
+        self.incidents.append({"kind": str(kind), **fields})
 
 
 class FakeReactions:
@@ -545,6 +552,59 @@ class Test침묵:
         assert len(deps["audit"].records) == 1
         assert deps["audit"].records[0]["ok"] is True
 
+    def test_침묵은_사건_종류로도_따로_기록된다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body=SILENT_MARK)], tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert any(i["kind"] == IncidentKind.SILENT for i in deps["audit"].incidents)
+
+
+class Test가드사건기록:
+    """AddresseeGuard/RewriteLossGuard 가 잡아낸 것이 감사 기록에도 남는가.
+
+    guard/pipeline.py 는 무엇이 바뀌었는지만 details 로 돌려주고, 그걸 감사
+    기록에 남기는 것은 호출부(RequestPipeline)의 몫이라고 guard/base.py
+    docstring 에 명시돼 있다.
+    """
+
+    def test_엉뚱한_사람을_부르면_wrong_addressee로_기록된다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="<@UOTHER> 님 안녕하세요")],
+            guards=[AddresseeGuard()],
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert any(
+            i["kind"] == IncidentKind.WRONG_ADDRESSEE and i["wrong_target"] == "UOTHER"
+            for i in deps["audit"].incidents
+        )
+
+    def test_바뀐_것이_없으면_wrong_addressee가_기록되지_않는다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="안녕하세요")],
+            guards=[AddresseeGuard()],
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert not any(i["kind"] == IncidentKind.WRONG_ADDRESSEE for i in deps["audit"].incidents)
+
+    def test_재작성이_앞_답보다_크게_짧으면_rewrite_loss로_기록된다(self, tmp_path: Path) -> None:
+        long_first = "본문 " * 100
+        checker = Fake늦은추가말("새 말", "1700000009.000000")
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(long_first), ok_response("짧은 답")],
+            guards=[RewriteLossGuard(RuntimeSettings())],
+            late_addendum=checker,
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert any(i["kind"] == IncidentKind.REWRITE_LOSS for i in deps["audit"].incidents)
+
 
 class Test화자표시이름:
     def test_name_resolver가_돌려준_이름이_asker_name에_들어간다(self, tmp_path: Path) -> None:
@@ -897,6 +957,37 @@ class Test발송전재확인:
         )
         pipeline.handle(make_ctx())
         assert len(parts["runner"].calls) == 1
+
+    def test_새_말을_반영하면_late_addendum으로_기록된다(self) -> None:
+        checker = Fake늦은추가말("새 말", "1700000009.000000")
+        pipeline, parts = build_pipeline(
+            responses=[ok_response("첫 답"), ok_response("반영한 답")],
+            late_addendum=checker,
+        )
+        pipeline.handle(make_ctx())
+        assert any(
+            i["kind"] == IncidentKind.LATE_ADDENDUM and i["ok"] is True
+            for i in parts["audit"].incidents
+        )
+
+    def test_다시_실행이_실패해도_시도_자체는_기록된다(self) -> None:
+        checker = Fake늦은추가말("새 말", "1700000009.000000")
+        pipeline, parts = build_pipeline(
+            responses=[ok_response("첫 답"), fail_response()],
+            late_addendum=checker,
+        )
+        pipeline.handle(make_ctx())
+        assert any(
+            i["kind"] == IncidentKind.LATE_ADDENDUM and i["ok"] is False
+            for i in parts["audit"].incidents
+        )
+
+    def test_새_말이_없으면_late_addendum도_기록되지_않는다(self) -> None:
+        pipeline, parts = build_pipeline(
+            responses=[ok_response("첫 답")], late_addendum=Fake늦은추가말(),
+        )
+        pipeline.handle(make_ctx())
+        assert not any(i["kind"] == IncidentKind.LATE_ADDENDUM for i in parts["audit"].incidents)
 
     def test_채택했을_때만_소화_기록을_남긴다(self) -> None:
         from slack_cli_agent.slack.late_addendum import ThreadConsumption

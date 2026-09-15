@@ -46,6 +46,50 @@ class EngineSpec:
 
 
 @dataclass(frozen=True)
+class McpServerSpec:
+    """One MCP server entry, keyed by name in `Profile.mcp_servers`.
+
+    Fields use our own naming, not any single engine CLI's. Per-engine
+    conversion (e.g. agy's serverUrl/disabledTools) is a separate concern.
+    """
+
+    name: str
+    command: str = ""
+    args: tuple[str, ...] = ()
+    env: Mapping[str, str] = field(default_factory=dict)
+    cwd: Path | None = None
+    url: str = ""
+    headers: Mapping[str, str] = field(default_factory=dict)
+    disabled: bool = False
+    disabled_tools: tuple[str, ...] = ()
+
+    @classmethod
+    def from_dict(cls, name: str, data: Mapping[str, Any]) -> McpServerSpec:
+        command = str(data.get("command") or "")
+        url = str(data.get("url") or "")
+        if command and url:
+            raise ConfigError(f"MCP 서버 {name}: command 와 url 을 동시에 줄 수 없다")
+        if not command and not url:
+            raise ConfigError(f"MCP 서버 {name}: command(로컬 실행) 또는 url(원격) 중 하나가 필요하다")
+        cwd = data.get("cwd")
+        return cls(
+            name=name,
+            command=command,
+            args=tuple(str(a) for a in (data.get("args") or ())),
+            env=dict(data.get("env") or {}),
+            cwd=Path(str(cwd)).expanduser() if cwd else None,
+            url=url,
+            headers=dict(data.get("headers") or {}),
+            disabled=bool(data.get("disabled", False)),
+            disabled_tools=tuple(str(t) for t in (data.get("disabled_tools") or ())),
+        )
+
+    @property
+    def is_remote(self) -> bool:
+        return bool(self.url)
+
+
+@dataclass(frozen=True)
 class Profile:
     name: str
     display_name: str
@@ -61,6 +105,9 @@ class Profile:
     owner_dm: str = ""
     plugins: tuple[str, ...] = ()
     settings_override: Mapping[str, Any] = field(default_factory=dict)
+    # Empty by default — an installed bot must not carry another bot's MCP
+    # servers along. See docs/패키징-경계.md.
+    mcp_servers: Mapping[str, McpServerSpec] = field(default_factory=dict)
 
     @property
     def paths(self) -> StatePaths:
@@ -93,6 +140,11 @@ class Profile:
 
         state_dir = Path(str(data.get("state_dir") or f"~/.{name}")).expanduser()
         fallback = data.get("fallback_engine")
+        mcp_servers_block = data.get("mcp_servers") or {}
+        mcp_servers = {
+            str(server_name): McpServerSpec.from_dict(str(server_name), server_data)
+            for server_name, server_data in mcp_servers_block.items()
+        }
 
         return cls(
             name=str(name),
@@ -109,6 +161,7 @@ class Profile:
             owner_dm=str(data.get("owner_dm", "")),
             plugins=tuple(data.get("plugins") or ()),
             settings_override=dict(data.get("settings") or {}),
+            mcp_servers=mcp_servers,
         )
 
     @staticmethod
@@ -130,6 +183,9 @@ class Profile:
                 problems.append(f"{label} 엔진 실행 파일이 없다: {spec.binary}")
         if self.fallback_engine and self.fallback_engine.type == self.primary_engine.type:
             problems.append("폴백 엔진이 1차 엔진과 같은 종류다")
+        for server in self.mcp_servers.values():
+            if server.cwd is not None and server.cwd.is_absolute() and not server.cwd.exists():
+                problems.append(f"MCP 서버 {server.name} 의 cwd 가 없다: {server.cwd}")
         return problems
 
     def _engines(self) -> list[tuple[str, EngineSpec]]:

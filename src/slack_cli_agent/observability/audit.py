@@ -7,13 +7,49 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Mapping
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from ..storage.database import Database
 from ..storage.repository import SqliteRepository
 
-REQUEST_KIND = "request"
+
+class IncidentKind(str, Enum):
+    """Every kind string written to the `audit` table's `kind` column.
+
+    Single source for these strings — pipeline.py, publisher.py, and
+    metrics.py all read from here instead of repeating the literal, so a
+    rename can't leave one caller writing a kind nothing reads back.
+    """
+
+    REQUEST = "request"
+    SPLIT = "split"
+    SPLIT_BROKEN = "split_broken"
+    BLOCKS_REJECTED = "blocks_rejected"
+    POST_FAILED = "post_failed"
+    LATE_ADDENDUM = "late_addendum"
+    WRONG_ADDRESSEE = "wrong_addressee"
+    REWRITE_LOSS = "rewrite_loss"
+    SILENT = "silent"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+REQUEST_KIND = IncidentKind.REQUEST.value
+
+# Kinds that count as an "incident" for the reliability/quality rollups —
+# REQUEST is excluded since it's the baseline traffic, not an incident.
+INCIDENT_KINDS: tuple[IncidentKind, ...] = tuple(k for k in IncidentKind if k is not IncidentKind.REQUEST)
+
+# Every row `record()` writes always carries a kind (see `line` below), so
+# this only guards a hand-edited or otherwise corrupted row.
+_DEFAULT_KIND_FOR_MISSING = IncidentKind.REQUEST.value
+
+
+def normalize_kind(kind: str | None) -> str:
+    return kind if kind else _DEFAULT_KIND_FOR_MISSING
 
 
 class AuditLog(SqliteRepository):
@@ -39,9 +75,9 @@ class AuditLog(SqliteRepository):
         self._execute(
             "INSERT INTO audit (at, kind, channel, thread_ts, payload) "
             "VALUES (?, ?, ?, ?, ?)",
-            (at, kind, channel, thread_ts, json.dumps(fields, ensure_ascii=False)),
+            (at, str(kind), channel, thread_ts, json.dumps(fields, ensure_ascii=False)),
         )
-        line = {"kind": kind, "channel": channel, "thread_ts": thread_ts, "at": at}
+        line = {"kind": str(kind), "channel": channel, "thread_ts": thread_ts, "at": at}
         line.update(fields)
         self._append_jsonl(line)
 

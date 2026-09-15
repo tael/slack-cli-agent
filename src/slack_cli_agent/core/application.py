@@ -46,6 +46,7 @@ from ..engine.base import Engine, EngineRequest, EngineResponse
 from ..engine.claude import ClaudeEngine
 from ..engine.codex import CodexEngine
 from ..engine.environment import create_environment_policy
+from ..engine.gemini import GeminiEngine
 from ..engine.registry import EngineRegistry
 from ..engine.runner import (
     DirectInvoker,
@@ -238,6 +239,7 @@ class Application:
         self._pipeline: RequestPipeline | None = None
         self._access_policy: AccessPolicy | None = None
         self._tool_policy: ToolPolicy | None = None
+        self._audit: AuditLog | None = None
         self._queue: SqliteJobQueue | None = None
         self._reactions: ReactionMarker | None = None
         self._publisher: MessagePublisher | None = None
@@ -283,6 +285,7 @@ class Application:
         registry = EngineRegistry()
         registry.register(ClaudeEngine)
         registry.register(CodexEngine)
+        registry.register(GeminiEngine)
         return registry
 
     @property
@@ -433,6 +436,13 @@ class Application:
             self._reactions = ReactionMarker(self._client)
         return self._reactions
 
+    def audit(self) -> AuditLog:
+        """One instance shared by the pipeline and the publisher. Separate
+        instances would split the same run across two jsonl handles."""
+        if self._audit is None:
+            self._audit = AuditLog(self._database, self._profile.paths.audit_log)
+        return self._audit
+
     def publisher(self) -> MessagePublisher:
         if self._publisher is None:
             blocks = BlockBuilder(self._profile.display_name)
@@ -444,6 +454,7 @@ class Application:
                 verifier=SplitVerifier(self._settings),
                 blocks=blocks,
                 bot_display_name=self._profile.display_name,
+                audit=self.audit().record,
             )
         return self._publisher
 
@@ -500,7 +511,7 @@ class Application:
                 invoker=self.engine_invoker,
                 guard_pipeline=self._guards(),
                 publisher=self.publisher(),
-                audit=AuditLog(self._database, self._profile.paths.audit_log),
+                audit=self.audit(),
                 channels=self._channels,
                 default_workdir=self._profile.work_root,
                 owner_user_id=self._profile.owner_user_id,

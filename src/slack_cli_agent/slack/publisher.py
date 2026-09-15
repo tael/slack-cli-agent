@@ -21,6 +21,7 @@ from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.channel_kind import is_direct_message_channel
 from slack_cli_agent.core.errors import SlackError
 from slack_cli_agent.core.markers import ELAPSED_MODEL_LINE
+from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.render.blocks import BlockBuilder
 from slack_cli_agent.render.markdown import MarkdownConverter
 from slack_cli_agent.render.splitter import ContentSplitter
@@ -78,7 +79,7 @@ class MessagePublisher:
             problems = self._verifier.verify_chunks(separated, chunks)
             if problems:
                 self._audit(
-                    kind="split_broken", channel=channel, thread_ts=thread_ts,
+                    kind=IncidentKind.SPLIT_BROKEN.value, channel=channel, thread_ts=thread_ts,
                     problems=problems, total=len(text),
                     sizes=[len(c) for c in chunks],
                 )
@@ -119,7 +120,7 @@ class MessagePublisher:
             except Exception as exc:
                 if rich and self._verifier.blocks_rejected(exc):
                     self._audit(
-                        kind="blocks_rejected", channel=channel,
+                        kind=IncidentKind.BLOCKS_REJECTED.value, channel=channel,
                         thread_ts=thread_ts, error=str(exc), body=part[:2000],
                     )
                     plain = {k: v for k, v in kwargs.items() if k != "blocks"}
@@ -135,7 +136,7 @@ class MessagePublisher:
                         exc = retry_exc
 
                 self._audit(
-                    kind="post_failed", channel=channel, thread_ts=thread_ts,
+                    kind=IncidentKind.POST_FAILED.value, channel=channel, thread_ts=thread_ts,
                     sent=sent, total=len(chunks), error=str(exc),
                 )
                 if sent:
@@ -161,7 +162,7 @@ class MessagePublisher:
 
         if rich and len(chunks) > 1:
             self._audit(
-                kind="split", channel=channel, thread_ts=thread_ts,
+                kind=IncidentKind.SPLIT.value, channel=channel, thread_ts=thread_ts,
                 total=len(text), sizes=[len(c) for c in chunks],
             )
         return parent_ts
