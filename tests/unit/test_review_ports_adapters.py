@@ -46,6 +46,7 @@ class FakeSlackClient:
         self.permalink_exc = permalink_exc
         self.permalink_calls: list[dict[str, Any]] = []
         self.replies_result: Mapping[str, Any] = {"messages": []}
+        self.replies_exc: Exception | None = None
         self.replies_calls: list[dict[str, Any]] = []
 
     def conversations_history(self, **kwargs: Any) -> Mapping[str, Any]:
@@ -56,6 +57,8 @@ class FakeSlackClient:
 
     def conversations_replies(self, **kwargs: Any) -> Mapping[str, Any]:
         self.replies_calls.append(kwargs)
+        if self.replies_exc:
+            raise self.replies_exc
         return self.replies_result
 
     def chat_getPermalink(self, **kwargs: Any) -> Mapping[str, Any]:
@@ -110,52 +113,45 @@ def test_slack_message_lookup_satisfies_protocol() -> None:
 
 
 def test_find_calls_slack_with_correct_args() -> None:
-    msg = {"text": "hi"}
-    client = FakeSlackClient(history_result={"messages": [msg]})
+    msg = {"ts": "111.222", "text": "hi"}
+    client = FakeSlackClient()
+    client.replies_result = {"messages": [msg]}
     lookup = SlackMessageLookup(client)
 
     result = lookup.find("C1", "111.222")
 
     assert result == msg
-    assert client.history_calls == [
-        {"channel": "C1", "latest": "111.222", "oldest": "111.222", "inclusive": True, "limit": 1}
-    ]
+    assert client.replies_calls == [{"channel": "C1", "ts": "111.222", "limit": 1}]
 
 
-def test_find_falls_back_to_replies_for_thread_messages() -> None:
-    """conversations.history 는 스레드 답글을 안 돌려준다."""
-    client = FakeSlackClient(history_result={"messages": []})
+def test_find_uses_replies_so_thread_replies_are_found() -> None:
+    """conversations.history 는 스레드 답글을 안 돌려준다. 점검 이모지는 대개 답글에 달린다."""
+    client = FakeSlackClient()
     client.replies_result = {"messages": [{"ts": "1.0"}, {"ts": "111.222", "text": "답글"}]}
     lookup = SlackMessageLookup(client)
 
     assert lookup.find("C1", "111.222") == {"ts": "111.222", "text": "답글"}
-    assert client.replies_calls == [{"channel": "C1", "ts": "111.222", "limit": 200}]
-
-
-def test_find_does_not_call_replies_when_history_has_it() -> None:
-    client = FakeSlackClient(history_result={"messages": [{"ts": "111.222"}]})
-    lookup = SlackMessageLookup(client)
-
-    assert lookup.find("C1", "111.222") == {"ts": "111.222"}
-    assert client.replies_calls == []
+    assert client.history_calls == []
 
 
 def test_find_returns_none_when_messages_empty() -> None:
-    client = FakeSlackClient(history_result={"messages": []})
+    client = FakeSlackClient()
     lookup = SlackMessageLookup(client)
 
     assert lookup.find("C1", "111.222") is None
 
 
 def test_find_returns_none_when_messages_key_missing() -> None:
-    client = FakeSlackClient(history_result={})
+    client = FakeSlackClient()
+    client.replies_result = {}
     lookup = SlackMessageLookup(client)
 
     assert lookup.find("C1", "111.222") is None
 
 
 def test_find_returns_none_and_logs_on_exception(caplog: pytest.LogCaptureFixture) -> None:
-    client = FakeSlackClient(history_exc=RuntimeError("network fail"))
+    client = FakeSlackClient()
+    client.replies_exc = RuntimeError("network fail")
     lookup = SlackMessageLookup(client)
 
     with caplog.at_level(logging.WARNING):

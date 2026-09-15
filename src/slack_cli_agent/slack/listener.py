@@ -15,7 +15,6 @@ be named): no config, or answer_unaddressed off, means the bot must be named.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -24,9 +23,6 @@ from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import BotIdentity
 from slack_cli_agent.slack.message_kind import MessageKind
-from slack_cli_agent.slack.message_lookup import SlackMessageLookup
-
-log = logging.getLogger(__name__)
 
 
 class EventListener:
@@ -36,12 +32,8 @@ class EventListener:
         channel_registry: ChannelRegistry,
         gate: ResponseGate,
         identity: BotIdentity,
-        message_lookup: Any | None = None,
     ) -> None:
         self._client = client
-        # Same lookup the review tasks use; a second copy here is how the
-        # thread-reply fallback ended up in only one of them.
-        self._message_lookup = message_lookup or SlackMessageLookup(client)
         self._channels = channel_registry
         self._gate = gate
         # Self-message detection and mention matching must use the
@@ -125,38 +117,9 @@ class EventListener:
         item = event.get("item") or {}
         if item.get("type") != "message":
             return None
-        channel = item.get("channel") or ""
-        ts = item.get("ts") or ""
-        if not self._reacted_to_own_reply(event, channel, ts):
+        if self._identity.user_id and event.get("item_user") != self._identity.user_id:
             return None
         if self._identity.user_id and event.get("user") == self._identity.user_id:
             return None
-        return reaction, channel, ts, event.get("user") or ""
-
-    def _reacted_to_own_reply(self, event: Mapping[str, Any], channel: str, ts: str) -> bool:
-        """Whether the reacted-to message is this bot's own reply.
-
-        Replies posted with a username override are stored as
-        subtype=bot_message, which has no `user` field, so Slack sends
-        reaction_added without item_user. Comparing item_user alone
-        dropped every review reaction. Falling back to fetching the
-        message keeps the display name override and costs one call,
-        only for emojis already known to be review triggers.
-        """
-        if not self._identity.user_id:
-            return True
-        item_user = event.get("item_user")
-        if item_user:
-            return bool(item_user == self._identity.user_id)
-        message = self._message_lookup.find(channel, ts)
-        if message is None:
-            log.info("점검 리액션 무시: 대상 메시지를 못 찾았다 %s:%s", channel, ts)
-            return False
-        mine = self._identity.is_self(message)
-        if not mine:
-            log.info(
-                "점검 리액션 무시: 이 봇의 답변이 아니다 %s:%s bot_id=%s user=%s",
-                channel, ts, message.get("bot_id"), message.get("user"),
-            )
-        return mine
+        return reaction, item.get("channel") or "", item.get("ts") or "", event.get("user") or ""
 
