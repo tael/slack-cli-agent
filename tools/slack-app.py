@@ -8,16 +8,20 @@ access 토큰은 12시간이면 만료되므로 매 호출 전에 자동으로 �
     tools/slack-app.py validate <ws> <매니페스트파일>
     tools/slack-app.py create   <ws> <매니페스트파일>
     tools/slack-app.py get     <ws> <app_id>
+    tools/slack-app.py icon    <ws> <app_id> <PNG파일>
     tools/slack-app.py update  <ws> <app_id> <매니페스트파일>
     tools/slack-app.py list    <ws>
 
-브라우저가 필요한 것은 세 가지뿐이다 - 워크스페이스 설치 승인, 앱 수준
-토큰(xapp) 발급, 아이콘 올리기. 나머지는 전부 이 스크립트로 된다.
+브라우저가 필요한 것은 두 가지뿐이다 - 워크스페이스 설치 승인과 앱 수준
+토큰(xapp) 발급. 아이콘은 apps.icon.set 으로 올라간다(512px 에서 2000px
+정사각). 나머지는 전부 이 스크립트로 된다.
 """
 
 from __future__ import annotations
 
 import json
+import mimetypes
+import secrets
 import sys
 import urllib.parse
 import urllib.request
@@ -34,6 +38,34 @@ def _post(method: str, data: dict[str, str], token: str | None = None) -> dict:
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     with urllib.request.urlopen(req, timeout=30) as res:
+        return json.loads(res.read().decode())
+
+
+def multipart_body(fields: dict[str, str], file_field: str, path: Path) -> tuple[bytes, str]:
+    """multipart/form-data 본문을 만든다. 줄바꿈은 CRLF 여야 한다."""
+    boundary = secrets.token_hex(16)
+    parts: list[bytes] = []
+    for name, value in fields.items():
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n".encode()
+        )
+    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}";'
+        f' filename="{path.name}"\r\nContent-Type: {mime}\r\n\r\n'.encode()
+    )
+    parts.append(path.read_bytes())
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
+def _post_file(method: str, fields: dict[str, str], path: Path, token: str) -> dict:
+    body, content_type = multipart_body(fields, "file", path)
+    req = urllib.request.Request(API + method, data=body)
+    req.add_header("Content-type", content_type)
+    req.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(req, timeout=60) as res:
         return json.loads(res.read().decode())
 
 
@@ -91,6 +123,12 @@ def main(argv: list[str]) -> None:
         if not out.get("ok"):
             _fail(out)
         print(json.dumps(out["manifest"], ensure_ascii=False, indent=2))
+        return
+    if cmd == "icon":
+        out = _post_file("apps.icon.set", {"app_id": argv[3]}, Path(argv[4]), token)
+        if not out.get("ok"):
+            _fail(out)
+        print("아이콘을 올렸다")
         return
     if cmd == "update":
         manifest = Path(argv[4]).read_text(encoding="utf-8")
