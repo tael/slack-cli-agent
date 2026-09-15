@@ -92,6 +92,13 @@ class MessagePublisher:
         else:
             chunks = self._splitter.chunk(self._markdown.to_mrkdwn(text))
 
+        # An empty body makes split_for_blocks() return nothing, and the send
+        # loop below then does nothing at all — indistinguishable from a
+        # successful post. The caller decides what to do; this only records it.
+        if not any(chunk.strip() for chunk in chunks):
+            log.warning("빈 본문이라 게시하지 않았다 : 채널 %s, 스레드 %s", channel, thread_ts or "없음")
+            return None
+
         # Empty means "no thread yet", same as None. Leaving "" in would
         # never take the res["ts"] branch below, so the caller gets "" back
         # and later chunks post at top level instead of under the first.
