@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Protocol, TextIO, runtime_checkable
 
 from .config.channel import ChannelRegistry
-from .config.paths import StatePaths
+from .config.paths import StatePaths, default_profile_dirs, default_profile_write_dir
 from .config.profile import Profile
 from .core.errors import AgentError
 from .core.lifecycle import GracefulShutdown, SignalRegister
@@ -51,6 +51,13 @@ class CliCommand(ABC):
         pass
 
 
+def _search_dirs(given: list[str] | None) -> list[Path]:
+    """One resolution for every command that takes --profile-dir (sca-jl4.3)."""
+    if given:
+        return [Path(p).expanduser() for p in given]
+    return list(default_profile_dirs())
+
+
 class ProfileAwareCommand(CliCommand):
     """Shared `--profile`/`--profile-dir` handling.
 
@@ -64,7 +71,10 @@ class ProfileAwareCommand(CliCommand):
             "--profile-dir",
             action="append",
             default=None,
-            help="프로필 파일(<이름>.json)을 찾을 디렉터리. 여러 번 줄 수 있다. 기본은 현재 디렉터리",
+            help=(
+                "프로필 파일(<이름>.json)을 찾을 디렉터리. 여러 번 줄 수 있다. "
+                "기본은 $SLACK_CLI_AGENT_PROFILE_DIR, 사용자 설정 디렉터리, 현재 디렉터리 순"
+            ),
         )
         self.add_command_arguments(parser)
 
@@ -73,7 +83,7 @@ class ProfileAwareCommand(CliCommand):
         """Command-specific arguments; leave the body empty if there are none."""
 
     def execute(self, args: argparse.Namespace, stdout: TextIO) -> int:
-        search_dirs = [Path(p) for p in (args.profile_dir or [Path.cwd()])]
+        search_dirs = _search_dirs(args.profile_dir)
         profile = Profile.load(args.profile, search_dirs)
         return self.execute_with_profile(profile, args, stdout)
 
@@ -205,7 +215,10 @@ class InitCommand(CliCommand):
         parser.add_argument(
             "--profile-dir",
             default=None,
-            help="프로필 파일(<이름>.json)을 만들 디렉터리. 기본은 현재 디렉터리",
+            help=(
+                "프로필 파일(<이름>.json)을 만들 디렉터리. "
+                "기본은 $SLACK_CLI_AGENT_PROFILE_DIR 의 첫 경로, 없으면 사용자 설정 디렉터리"
+            ),
         )
         parser.add_argument(
             "--state-dir",
@@ -215,7 +228,9 @@ class InitCommand(CliCommand):
 
     def execute(self, args: argparse.Namespace, stdout: TextIO) -> int:
         name = args.name
-        profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd()
+        profile_dir = (
+            Path(args.profile_dir).expanduser() if args.profile_dir else default_profile_write_dir()
+        )
         state_dir = (
             Path(args.state_dir).expanduser() if args.state_dir else StatePaths.for_bot(name).root
         )
@@ -460,13 +475,16 @@ class WebCommand(CliCommand):
             "--profile-dir",
             action="append",
             default=None,
-            help="프로필 파일(<이름>.json)을 찾을 디렉터리. 여러 번 줄 수 있다. 기본은 현재 디렉터리",
+            help=(
+                "프로필 파일(<이름>.json)을 찾을 디렉터리. 여러 번 줄 수 있다. "
+                "기본은 $SLACK_CLI_AGENT_PROFILE_DIR, 사용자 설정 디렉터리, 현재 디렉터리 순"
+            ),
         )
         parser.add_argument("--port", type=int, default=8787, help="열 포트. 기본 8787")
         parser.add_argument("--open", action="store_true", help="브라우저도 함께 연다")
 
     def execute(self, args: argparse.Namespace, stdout: TextIO) -> int:
-        search_dirs = [Path(p) for p in (args.profile_dir or [Path.cwd()])]
+        search_dirs = _search_dirs(args.profile_dir)
         server = self._factory(search_dirs, args.port)
         server.start()
         url = f"http://127.0.0.1:{server.port}/"
