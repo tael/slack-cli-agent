@@ -36,6 +36,8 @@ class _ChatLevelCommand(AdminCommand):
 
 class ChatActiveCommand(_ChatLevelCommand):
     name: ClassVar[str] = "chat_active"
+    usage: ClassVar[str] = "말수 많게"
+    description: ClassVar[str] = "이 채널에서 더 자주 나선다"
     _aliases = ("말수 많게", "적극 모드", "말 많이", "수다 모드")
     _level = "active"
     _notice_key = NoticeKey.CHAT_ACTIVE
@@ -43,6 +45,8 @@ class ChatActiveCommand(_ChatLevelCommand):
 
 class ChatNormalCommand(_ChatLevelCommand):
     name: ClassVar[str] = "chat_normal"
+    usage: ClassVar[str] = "말수 보통"
+    description: ClassVar[str] = "이 채널의 말수를 기본으로 되돌린다"
     _aliases = ("말수 보통", "기본 말수")
     _level = "normal"
     _notice_key = NoticeKey.CHAT_NORMAL
@@ -50,6 +54,8 @@ class ChatNormalCommand(_ChatLevelCommand):
 
 class ChatQuietCommand(_ChatLevelCommand):
     name: ClassVar[str] = "chat_quiet"
+    usage: ClassVar[str] = "말수 적게"
+    description: ClassVar[str] = "이 채널에서 덜 나선다"
     _aliases = ("말수 적게", "조용 모드", "조용히")
     _level = "quiet"
     _notice_key = NoticeKey.CHAT_QUIET
@@ -57,6 +63,8 @@ class ChatQuietCommand(_ChatLevelCommand):
 
 class CoachModeCommand(AdminCommand):
     name: ClassVar[str] = "coach_mode"
+    usage: ClassVar[str] = "코치 모드"
+    description: ClassVar[str] = "이 채널을 에이전트 코치 형식으로 바꾼다"
 
     def __init__(self, notices: NoticeCatalog) -> None:
         self._notices = notices
@@ -74,6 +82,8 @@ class CoachModeCommand(AdminCommand):
 
 class ApiModeCommand(AdminCommand):
     name: ClassVar[str] = "api_mode"
+    usage: ClassVar[str] = "api 모드"
+    description: ClassVar[str] = "이 채널을 연동 API 문의 응답 형식으로 바꾼다"
 
     def __init__(self, notices: NoticeCatalog) -> None:
         self._notices = notices
@@ -88,6 +98,8 @@ class ApiModeCommand(AdminCommand):
 
 class DefaultModeCommand(AdminCommand):
     name: ClassVar[str] = "default_mode"
+    usage: ClassVar[str] = "기본 모드"
+    description: ClassVar[str] = "이 채널을 일반 응답 형식으로 되돌린다"
 
     def __init__(self, notices: NoticeCatalog) -> None:
         self._notices = notices
@@ -102,6 +114,8 @@ class DefaultModeCommand(AdminCommand):
 
 class ChannelUnregisterCommand(AdminCommand):
     name: ClassVar[str] = "channel_unregister"
+    usage: ClassVar[str] = "채널 해제"
+    description: ClassVar[str] = "지금 이 채널을 응답 목록에서 뺀다"
 
     def __init__(self, notices: NoticeCatalog) -> None:
         self._notices = notices

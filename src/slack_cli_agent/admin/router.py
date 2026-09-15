@@ -17,6 +17,19 @@ class AdminRouter:
     def __init__(self, commands: Sequence[AdminCommand]) -> None:
         self._commands = tuple(commands)
 
+    def help_text(self) -> str:
+        """Command listing built from the registered commands.
+
+        A hardcoded listing went stale — 15 commands were wired and the
+        help named 3 (2026-09-15), so the rest were undiscoverable.
+        """
+        lines = [
+            f"- {c.usage} : {c.description}"
+            for c in self._commands
+            if c.usage and c.description
+        ]
+        return "\n".join(lines)
+
     def dispatch(self, text: str, ctx: AdminContext) -> AdminResult | None:
         """Returns None when nothing matches, so the caller falls through to
         a normal request. A match with insufficient permission returns a
@@ -34,5 +47,5 @@ class AdminRouter:
             # Filled in here rather than by every call site building context,
             # so no call site can forget it and break the command's argument
             # parsing.
-            return command.execute(replace(ctx, text=text))
+            return command.execute(replace(ctx, text=text, help_text=self.help_text()))
         return None

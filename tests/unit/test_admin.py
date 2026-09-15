@@ -9,10 +9,12 @@ import pytest
 
 from slack_cli_agent.admin.command import AdminCommand, AdminContext, AdminResult
 from slack_cli_agent.admin.commands import ChannelListCommand, EngineStatusCommand, HelpCommand
+from slack_cli_agent.admin.defaults import default_admin_commands
 from slack_cli_agent.admin.router import AdminRouter
 from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import Profile
+from slack_cli_agent.observability.notices import NoticeCatalog
 
 
 def make_profile(tmp_path: Path) -> Profile:
@@ -74,6 +76,8 @@ class TestAdminResult:
 
 class _EchoCommand(AdminCommand):
     name = "echo"
+    usage = "에코"
+    description = "말한 것을 그대로 돌려준다"
     required_trust = TrustLevel.TRUSTED
 
     def matches(self, text: str) -> bool:
@@ -124,6 +128,24 @@ class TestHelpCommand:
     def test_봇_표시이름이_들어간다(self, tmp_path: Path) -> None:
         result = HelpCommand().execute(make_context(tmp_path))
         assert "예시봇" in result.message
+
+    def test_등록된_명령을_전부_안내한다(self, tmp_path: Path) -> None:
+        """안내가 고정 문구면 명령을 추가해도 안 보인다. 실제로 등록된 것을 낸다."""
+        router = AdminRouter([HelpCommand(), _EchoCommand()])
+        result = router.dispatch("도움말", make_context(tmp_path))
+        assert result is not None
+        assert "에코" in result.message
+        assert "말한 것을 그대로 돌려준다" in result.message
+
+
+class TestApplicationHelpCoverage:
+    def test_안내에_실제_명령이_전부_있다(self, tmp_path: Path) -> None:
+        """관리 명령을 새로 넣고 안내에 안 넣으면 사용자는 그것을 모른다."""
+        commands = default_admin_commands(NoticeCatalog())
+        result = AdminRouter(commands).dispatch("도움말", make_context(tmp_path))
+        assert result is not None
+        for command in commands:
+            assert command.usage in result.message, command.name
 
 
 # ---------------------------------------------------------------------------

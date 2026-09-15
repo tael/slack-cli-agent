@@ -31,6 +31,9 @@ class AdminContext:
     commands with inline arguments (like revert) need it.
     """
 
+    help_text: str = ""
+    """Command list, filled in by the router. Only HelpCommand reads it."""
+
 
 @dataclass(frozen=True)
 class AdminResult:
@@ -44,6 +47,11 @@ class AdminResult:
 class AdminCommand(ABC):
     name: ClassVar[str]
     required_trust: ClassVar[TrustLevel] = TrustLevel.OWNER
+
+    #: What the user types, and what it does. The help listing is built
+    #: from these, so a command added without them can't be discovered.
+    usage: ClassVar[str] = ""
+    description: ClassVar[str] = ""
 
     @abstractmethod
     def matches(self, text: str) -> bool:

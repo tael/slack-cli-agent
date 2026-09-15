@@ -1,9 +1,4 @@
-"""Core admin commands.
-
-Only ships commands with no company-specific dependency. Chat-level, coach
-mode, and learning commands need channel-config writes and a batch-learning
-module that don't exist in this scope yet; they move here once those land.
-"""
+"""Core admin commands."""
 
 from __future__ import annotations
 
@@ -12,22 +7,24 @@ from typing import Any, ClassVar
 
 from .command import AdminCommand, AdminContext, AdminResult
 
-_HELP_TEXT = (
-    "관리 명령 목록 :\n"
-    "- 채널 목록 : 지금 응답하는 채널을 보여준다\n"
-    "- 엔진 상태 : 지금 어느 실행기로 도는지 보여준다\n"
-    "- 도움말 : 이 안내를 보여준다"
-)
-
 
 class HelpCommand(AdminCommand):
     name: ClassVar[str] = "help"
+    usage: ClassVar[str] = "도움말"
+    description: ClassVar[str] = "이 안내를 보여준다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("도움말", "help", "명령어")
 
     def execute(self, ctx: AdminContext) -> AdminResult:
-        return AdminResult(message=f"*{ctx.profile.display_name} 관리 명령*\n\n{_HELP_TEXT}")
+        return AdminResult(
+            message=(
+                f"*{ctx.profile.display_name} 관리 명령*\n"
+                "소유자만 쓸 수 있습니다.\n\n"
+                f"{ctx.help_text}\n\n"
+                "새 채널은 초대 후 소유자가 부르면 자동 등록됩니다."
+            )
+        )
 
 
 class ChannelListCommand(AdminCommand):
@@ -38,6 +35,8 @@ class ChannelListCommand(AdminCommand):
     """
 
     name: ClassVar[str] = "channel_list"
+    usage: ClassVar[str] = "채널 목록"
+    description: ClassVar[str] = "지금 응답하는 채널을 보여준다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("채널 목록", "채널목록", "채널 리스트")
@@ -63,6 +62,8 @@ class EngineStatusCommand(AdminCommand):
     """
 
     name: ClassVar[str] = "engine_status"
+    usage: ClassVar[str] = "엔진 상태"
+    description: ClassVar[str] = "지금 어느 실행기로 도는지, 전환 승인 여부를 보여준다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("엔진 상태", "엔진상태", "엔진")
