@@ -45,12 +45,18 @@ class FakeSlackClient:
         self.permalink_result = permalink_result or {}
         self.permalink_exc = permalink_exc
         self.permalink_calls: list[dict[str, Any]] = []
+        self.replies_result: Mapping[str, Any] = {"messages": []}
+        self.replies_calls: list[dict[str, Any]] = []
 
     def conversations_history(self, **kwargs: Any) -> Mapping[str, Any]:
         self.history_calls.append(kwargs)
         if self.history_exc:
             raise self.history_exc
         return self.history_result
+
+    def conversations_replies(self, **kwargs: Any) -> Mapping[str, Any]:
+        self.replies_calls.append(kwargs)
+        return self.replies_result
 
     def chat_getPermalink(self, **kwargs: Any) -> Mapping[str, Any]:
         self.permalink_calls.append(kwargs)
@@ -114,6 +120,24 @@ def test_find_calls_slack_with_correct_args() -> None:
     assert client.history_calls == [
         {"channel": "C1", "latest": "111.222", "oldest": "111.222", "inclusive": True, "limit": 1}
     ]
+
+
+def test_find_falls_back_to_replies_for_thread_messages() -> None:
+    """conversations.history 는 스레드 답글을 안 돌려준다."""
+    client = FakeSlackClient(history_result={"messages": []})
+    client.replies_result = {"messages": [{"ts": "1.0"}, {"ts": "111.222", "text": "답글"}]}
+    lookup = SlackMessageLookup(client)
+
+    assert lookup.find("C1", "111.222") == {"ts": "111.222", "text": "답글"}
+    assert client.replies_calls == [{"channel": "C1", "ts": "111.222", "limit": 200}]
+
+
+def test_find_does_not_call_replies_when_history_has_it() -> None:
+    client = FakeSlackClient(history_result={"messages": [{"ts": "111.222"}]})
+    lookup = SlackMessageLookup(client)
+
+    assert lookup.find("C1", "111.222") == {"ts": "111.222"}
+    assert client.replies_calls == []
 
 
 def test_find_returns_none_when_messages_empty() -> None:

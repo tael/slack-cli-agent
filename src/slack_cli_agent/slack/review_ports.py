@@ -15,32 +15,15 @@ accepted).
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 from typing import Any
 
+from slack_cli_agent.slack.message_lookup import SlackMessageLookup
 from slack_cli_agent.slack.publisher import MessagePublisher
 from slack_cli_agent.slack.transcript import TranscriptBuilder
 
 logger = logging.getLogger(__name__)
 
-
-class SlackMessageLookup:
-    """MessageLookupPort implementation."""
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-
-    def find(self, channel: str, ts: str) -> Mapping[str, Any] | None:
-        try:
-            resp = self._client.conversations_history(
-                channel=channel, latest=ts, oldest=ts, inclusive=True, limit=1
-            )
-        except Exception as exc:  # noqa: BLE001 - log the failure instead of swallowing it silently
-            logger.warning("메시지 조회 실패: channel=%s ts=%s error=%s", channel, ts, exc)
-            return None
-
-        messages = (resp or {}).get("messages") or []
-        return messages[0] if messages else None
+__all__ = ["ReviewPublisher", "SlackMessageLookup", "SlackPermalinks", "ThreadTranscriptPort"]
 
 
 class ThreadTranscriptPort:
