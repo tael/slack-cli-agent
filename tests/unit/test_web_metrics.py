@@ -20,8 +20,10 @@ from slack_cli_agent.storage.database import Database
 from slack_cli_agent.web import metrics as metrics_module
 from slack_cli_agent.web.metrics import MetricsCollector
 
+# bots 는 뺐다. 봇 명부는 /api/bots 가 낸다 - 지표는 봇 하나만 보므로
+# 여기 담으면 선택줄에 봇이 1개만 나온다.
 TOP_LEVEL_KEYS = {
-    "generated_at", "window_days", "bot", "bots", "snapshot", "last_answer_kst",
+    "generated_at", "window_days", "bot", "snapshot", "last_answer_kst",
     "channels", "responsiveness", "reliability", "quality", "usage", "followup",
     "tools", "queue_wait", "usage_block", "session_total",
 }
@@ -170,18 +172,22 @@ class Test최상위_키:
         assert result["generated_at"] == "2020-01-01T00:00:00+09:00"
 
 
-class Test스냅샷_20초_규칙:
-    def test_20초_이내면_상태를_안다(self, tmp_path: Path) -> None:
+class Test스냅샷_신선도_규칙:
+    """기준은 health_interval_sec(기본 30초)의 2.5배다. 봇이 그 주기로
+    스냅샷을 다시 쓰므로 주기보다 짧은 기준을 쓰면 매 주기 일부 구간이
+    '상태 모름' 으로 보인다."""
+
+    def test_한_주기_안이면_상태를_안다(self, tmp_path: Path) -> None:
         profile = make_profile(tmp_path)
         write_snapshot(profile, {"written_at": 1_000.0, "pid": 123})
-        collector = MetricsCollector(profile, now=lambda: 1_015.0)
+        collector = MetricsCollector(profile, now=lambda: 1_035.0)
         snapshot = collector.collect(days=7)["snapshot"]
         assert snapshot["available"] is True
 
-    def test_20초_넘으면_상태_모름이다(self, tmp_path: Path) -> None:
+    def test_두_주기_넘게_안_쓰면_상태_모름이다(self, tmp_path: Path) -> None:
         profile = make_profile(tmp_path)
         write_snapshot(profile, {"written_at": 1_000.0, "pid": 123})
-        collector = MetricsCollector(profile, now=lambda: 1_021.0)
+        collector = MetricsCollector(profile, now=lambda: 1_200.0)
         snapshot = collector.collect(days=7)["snapshot"]
         assert snapshot["available"] is False
         assert "지났다" in str(snapshot["reason"])

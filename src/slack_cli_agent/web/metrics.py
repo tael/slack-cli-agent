@@ -33,8 +33,10 @@ from ..storage.database import Database
 
 KST = timezone(timedelta(hours=9))
 
-# Snapshot is written every 5s; three missed cycles means the writer is gone.
-SNAPSHOT_STALE_SEC = 20
+# The snapshot is rewritten every health_interval_sec. A threshold shorter than
+# that period marks every bot stale for part of each cycle, so the bar is
+# derived from the profile and allows two missed writes.
+SNAPSHOT_STALE_CYCLES = 2.5
 SLOW_SEC = 300
 
 CCUSAGE_BIN = "/opt/homebrew/bin/ccusage"
@@ -63,7 +65,6 @@ NOT_APPLICABLE_REASONS: dict[str, str] = {
     "followup.same_user_repeat": _NO_USER_ID,
     "tools": "감사 기록에 도구 호출 이름이 없다",
     "channels[].context_tokens": "세션 맥락 크기 계측은 이 수집기 범위 밖이다",
-    "bots": "이 수집기는 프로필 하나만 받아 다른 봇 목록을 낼 수 없다",
 }
 CODEX_USAGE_BLOCK_REASON = "Codex 세션 기록 스캔은 이 수집기 범위 밖이다"
 
@@ -107,6 +108,48 @@ def _epoch_from_iso(text: object) -> float | None:
         return None
 
 
+def snapshot_stale_after(profile: Profile) -> float:
+    settings = RuntimeSettings().override(profile.settings_override)
+    return settings.health_interval_sec * SNAPSHOT_STALE_CYCLES
+
+
+def read_snapshot(path: Path, now: float, stale_after: float) -> dict[str, object]:
+    """워커가 남긴 상태 스냅샷을 읽는다. 명부와 지표가 같이 쓴다."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"available": False, "reason": "스냅샷 파일 없음"}
+    if not isinstance(data, dict):
+        return {"available": False, "reason": "스냅샷 파일 없음"}
+    written_at = data.get("written_at")
+    if not isinstance(written_at, (int, float)):
+        return {"available": False, "reason": "스냅샷 파일 없음"}
+    age = now - written_at
+    result: dict[str, object] = dict(data)
+    result["age_sec"] = round(age, 1)
+    available = age <= stale_after
+    result["available"] = available
+    if not available:
+        result["reason"] = f"스냅샷이 {int(age)}초 지났다"
+    return result
+
+
+def bot_row(profile: Profile, snapshot: Mapping[str, object]) -> dict[str, object]:
+    """봇 선택줄 한 줄. 프로필의 고정값과 스냅샷의 현재값을 합친다."""
+    return {
+        "name": profile.name,
+        "display_name": profile.display_name,
+        "engine": profile.primary_engine.type,
+        "available": bool(snapshot.get("available")),
+        "reason": snapshot.get("reason"),
+        "pid": snapshot.get("pid"),
+        "uptime_sec": snapshot.get("uptime_sec"),
+        "inflight": snapshot.get("inflight"),
+        "queued_total": snapshot.get("queued_total"),
+        "shutting_down": bool(snapshot.get("shutting_down")),
+    }
+
+
 class MetricsCollector:
     def __init__(self, profile: Profile, *, now: Callable[[], float] = time.time) -> None:
         self._profile = profile
@@ -119,7 +162,7 @@ class MetricsCollector:
         db.migrate()
         cutoff = now - days * 86400
 
-        snapshot = self._read_snapshot(paths.state_snapshot, now)
+        snapshot = read_snapshot(paths.state_snapshot, now, snapshot_stale_after(self._profile))
         requests, incident_counts = self._read_requests(db, cutoff)
         first_seen = self._kind_first_seen_map(db)
         field_first_seen = self._usage_field_first_seen(db)
@@ -134,7 +177,6 @@ class MetricsCollector:
             "generated_at": _kst(now),
             "window_days": days,
             "bot": self._bot_fields(field_first_seen),
-            "bots": [self._bot_row(snapshot)],
             "snapshot": snapshot,
             "last_answer_kst": latest or None,
             "channels": self._channel_rows(requests, channels, sessions, queued_by_channel, now),
@@ -150,25 +192,6 @@ class MetricsCollector:
         }
 
     # --- 원천 읽기 -----------------------------------------------------
-
-    def _read_snapshot(self, path: Path, now: float) -> dict[str, object]:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {"available": False, "reason": "스냅샷 파일 없음"}
-        if not isinstance(data, dict):
-            return {"available": False, "reason": "스냅샷 파일 없음"}
-        written_at = data.get("written_at")
-        if not isinstance(written_at, (int, float)):
-            return {"available": False, "reason": "스냅샷 파일 없음"}
-        age = now - written_at
-        result: dict[str, object] = dict(data)
-        result["age_sec"] = round(age, 1)
-        available = age <= SNAPSHOT_STALE_SEC
-        result["available"] = available
-        if not available:
-            result["reason"] = f"스냅샷이 {int(age)}초 지났다"
-        return result
 
     def _read_requests(
         self, db: Database, cutoff: float
@@ -304,19 +327,6 @@ class MetricsCollector:
             "not_applicable": not_applicable,
         }
 
-    def _bot_row(self, snapshot: Mapping[str, object]) -> dict[str, object]:
-        return {
-            "name": self._profile.name,
-            "display_name": self._profile.display_name,
-            "engine": self._profile.primary_engine.type,
-            "available": bool(snapshot.get("available")),
-            "reason": snapshot.get("reason"),
-            "pid": snapshot.get("pid"),
-            "uptime_sec": snapshot.get("uptime_sec"),
-            "inflight": snapshot.get("inflight"),
-            "queued_total": snapshot.get("queued_total"),
-            "shutting_down": bool(snapshot.get("shutting_down")),
-        }
 
     def _responsiveness(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, object]:
         times = sorted(
