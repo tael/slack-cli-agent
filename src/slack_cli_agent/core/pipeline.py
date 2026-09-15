@@ -64,6 +64,7 @@ class RequestPipeline:
         slow_reporter: SlowRequestReporter | None = None,
         # Optional to avoid an extra Slack lookup where it's not needed.
         participants: Callable[[str, str], tuple[tuple[str, str], ...]] | None = None,
+        linked_threads: Callable[[str, str], str] | None = None,
         # Optional to avoid an extra Slack lookup where it's not needed.
         late_addendum: LateAddendumChecker | None = None,
         # Shared with the caller so both the late-addendum check and the queue see
@@ -96,6 +97,7 @@ class RequestPipeline:
         self._mention_table = mention_table
         self._slow_reporter = slow_reporter
         self._participants = participants
+        self._linked_threads = linked_threads
         self._late_addendum = late_addendum
         self._consumption = consumption
         self._watch_queue = watch_queue
@@ -306,7 +308,21 @@ class RequestPipeline:
             transcript = self._transcript.thread_transcript(
                 ctx.channel, ctx.thread_ts, ctx.ts, scope=scope,
             )
-        return self._transcript.with_history(transcript, ctx.text)
+        tagged = ctx.text
+        note = self._linked_thread_note(ctx)
+        if note:
+            tagged = f"{tagged}\n\n{note}"
+        return self._transcript.with_history(transcript, tagged)
+
+    def _linked_thread_note(self, ctx: RequestContext) -> str:
+        # A lookup failure just omits this from the prompt; it must not block the reply.
+        if self._linked_threads is None:
+            return ""
+        try:
+            return self._linked_threads(ctx.text, ctx.channel)
+        except Exception as exc:  # noqa: BLE001 — a lookup failure must not block the reply, just omit this from the prompt
+            log.warning("링크된 스레드를 읽지 못했다 : %s", exc)
+            return ""
 
     def _compose_system_prompt(
         self,
