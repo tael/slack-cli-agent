@@ -1160,6 +1160,13 @@ class Test폴백엔진연결:
         assert "engine_runner.run(" not in 본문
         assert "engine_invoker.invoke(" in 본문
 
+    def test_학습_배치도_같은_부품을_쓴다(self, app: Application) -> None:
+        """부품을 만든 것과 조립이 그것을 넘기는 것은 다르다. 여기서 raw
+        runner 나 새 DirectInvoker 를 넘기면 학습만 폴백 밖으로 빠진다.
+        """
+        분석기 = app.learning_batch()._builder._analyzer
+        assert 분석기._invoker is app.engine_invoker
+
     def test_같은_부품을_되풀이_쓴다(self, app: Application) -> None:
         assert app.engine_invoker is app.engine_invoker
         app.close()

@@ -12,8 +12,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from ..core.result import Outcome
-from ..engine.base import Engine, EngineRequest
-from ..engine.runner import EngineRunner
+from ..engine.base import CallOrigin, EngineRequest
+from ..engine.runner import EngineInvoker
 from .decoder import ChannelAnalysisResult, ProposalDecoder
 from .proposal import LearningProposal
 
@@ -56,12 +56,17 @@ _REACTIONS_LIMIT = 15000
 
 
 class ProposalAnalyzer:
-    """Sends one channel's history to the engine and parses the proposal."""
+    """Sends one channel's history to the engine and parses the proposal.
+
+    Goes through EngineInvoker rather than EngineRunner so this path gets the
+    same fallback routing as a normal request. Calling the runner directly
+    skipped FallbackEngine.run() entirely, so a usage limit hit during the
+    learning batch never switched engines or recorded state (sca-dyb.9).
+    """
 
     def __init__(
         self,
-        engine: Engine,
-        runner: EngineRunner,
+        invoker: EngineInvoker,
         *,
         model: str,
         effort: str,
@@ -69,8 +74,7 @@ class ProposalAnalyzer:
         bot_name: str,
         decoder: ProposalDecoder | None = None,
     ) -> None:
-        self._engine = engine
-        self._runner = runner
+        self._invoker = invoker
         self._model = model
         self._effort = effort
         self._workdir = workdir
@@ -91,14 +95,16 @@ class ProposalAnalyzer:
         request = EngineRequest(
             prompt=body,
             system_prompt=system_prompt,
-            session_id=self._engine.new_session_id(),
+            session_id=None,
             resume=False,
             model=self._model,
             effort=self._effort,
             workdir=self._workdir,
             allowed_tools=("Read",),
         )
-        response = self._runner.run(self._engine, request)
+        # Nobody is waiting on the nightly batch, so it must not spend the
+        # fallback's recovery probe that an interactive request needs.
+        response = self._invoker.invoke(request, CallOrigin.BACKGROUND)
         if not response.ok:
             return Outcome.unknown(response.failure_reason or "분석 실행에 실패했다")
 
