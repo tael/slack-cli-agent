@@ -75,11 +75,8 @@ class ClaudeEngine(Engine):
                 failure_reason="nonzero_exit",
             )
 
-        try:
-            payload = json.loads(stdout)
-        except (json.JSONDecodeError, TypeError):
-            payload = None
-        if not isinstance(payload, Mapping):
+        payload = self._result_event(stdout)
+        if payload is None:
             return EngineResponse(
                 ok=False, body="처리에 실패했습니다.", session_id=None, model_actual=None,
                 elapsed=0.0, turns=None, usage=None,
@@ -116,6 +113,24 @@ class ClaudeEngine(Engine):
             ok=True, body=body, session_id=session_id, model_actual=model_actual,
             elapsed=0.0, turns=turns, usage=usage, raw=dict(payload), failure_reason=None,
         )
+
+    @staticmethod
+    def _result_event(stdout: str) -> Mapping[str, Any] | None:
+        """The CLI emits either a single result object or an array of events
+        ending in one (confirmed 2026-09-15). Both shapes carry the same keys
+        on the result itself.
+        """
+        try:
+            payload = json.loads(stdout)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if isinstance(payload, Mapping):
+            return payload
+        if isinstance(payload, list):
+            for event in reversed(payload):
+                if isinstance(event, Mapping) and event.get("type") == "result":
+                    return event
+        return None
 
     def detect_usage_limit(self, response: EngineResponse) -> UsageLimit | None:
         info = response.raw.get("usage_limit") if isinstance(response.raw, Mapping) else None
