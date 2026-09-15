@@ -140,3 +140,28 @@ class TestProposalBuilder:
         proposal = builder.build("2026-09-14", {"공지": "기록1"})
         assert proposal.channel_knowledge == {}
         assert "공지" in proposal.note
+
+
+class TestAnalyzer가_디코더를_쓰는가:
+    """디코더를 만든 것과 analyzer 가 그것을 쓰는 것은 다르다.
+    여기 없으면 디코더 시험 22건이 전부 통과하는 채로 배치는 옛 파서로 돈다.
+    """
+
+    def _분석기(self, stdout: str, tmp_path: Path) -> ProposalAnalyzer:
+        return ProposalAnalyzer(
+            FakeEngine(), make_runner(json.dumps({"result": stdout})),
+            model="m", effort="low", workdir=tmp_path, bot_name="봇",
+        )
+
+    def test_앞뒤에_설명이_붙어도_제안을_읽는다(self, tmp_path: Path) -> None:
+        제안 = json.dumps({"writing_style": ["짧게"], "channel_facts": [],
+                          "corrections": [], "note": ""}, ensure_ascii=False)
+        본문 = f"분석 결과입니다.\n\n{제안}\n\n이상입니다."
+        outcome = self._분석기(본문, tmp_path).analyze_channel("2026-09-16", "공지", "기록", [])
+        assert outcome.is_found
+        assert outcome.value().writing_style == ("짧게",)
+
+    def test_배열_자리에_문자열이_오면_판정_불가다(self, tmp_path: Path) -> None:
+        본문 = '{"writing_style": "짧게 써라", "channel_facts": [], "corrections": [], "note": ""}'
+        outcome = self._분석기(본문, tmp_path).analyze_channel("2026-09-16", "공지", "기록", [])
+        assert outcome.kind is OutcomeKind.UNKNOWN

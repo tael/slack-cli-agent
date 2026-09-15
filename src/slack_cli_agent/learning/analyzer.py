@@ -8,15 +8,18 @@ later channels.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 
 from ..core.result import Outcome
 from ..engine.base import Engine, EngineRequest
 from ..engine.runner import EngineRunner
+from .decoder import ChannelAnalysisResult, ProposalDecoder
 from .proposal import LearningProposal
+
+# Re-exported: the result type moved to .decoder along with the shape checking
+# that produces it, and existing imports read it from here.
+__all__ = ["ChannelAnalysisResult", "ProposalAnalyzer", "ProposalBuilder"]
 
 _PROMPT_TEMPLATE = """아래는 슬랙봇 <<봇>>가 오늘 <<채널>> 채널에서 낸 응답과, 그 뒤에 사람이 남긴 말이다.
 
@@ -52,16 +55,6 @@ _ARCHIVE_LIMIT = 60000
 _REACTIONS_LIMIT = 15000
 
 
-@dataclass(frozen=True)
-class ChannelAnalysisResult:
-    """Result of analyzing a single channel."""
-
-    writing_style: tuple[str, ...] = ()
-    channel_facts: tuple[str, ...] = ()
-    corrections: tuple[str, ...] = ()
-    note: str = ""
-
-
 class ProposalAnalyzer:
     """Sends one channel's history to the engine and parses the proposal."""
 
@@ -74,6 +67,7 @@ class ProposalAnalyzer:
         effort: str,
         workdir: Path,
         bot_name: str,
+        decoder: ProposalDecoder | None = None,
     ) -> None:
         self._engine = engine
         self._runner = runner
@@ -81,6 +75,7 @@ class ProposalAnalyzer:
         self._effort = effort
         self._workdir = workdir
         self._bot_name = bot_name
+        self._decoder = decoder or ProposalDecoder()
 
     def analyze_channel(
         self,
@@ -107,24 +102,7 @@ class ProposalAnalyzer:
         if not response.ok:
             return Outcome.unknown(response.failure_reason or "분석 실행에 실패했다")
 
-        match = re.search(r"\{.*\}", response.body, re.DOTALL)
-        if not match:
-            return Outcome.unknown("제안 형식이 맞지 않다")
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return Outcome.unknown("제안 JSON 파싱에 실패했다")
-        if not isinstance(data, Mapping):
-            return Outcome.unknown("제안 형식이 맞지 않다")
-
-        return Outcome.found(
-            ChannelAnalysisResult(
-                writing_style=tuple(data.get("writing_style") or ()),
-                channel_facts=tuple(data.get("channel_facts") or ()),
-                corrections=tuple(data.get("corrections") or ()),
-                note=str(data.get("note") or ""),
-            )
-        )
+        return self._decoder.decode(response.body)
 
     def _build_body(
         self,
