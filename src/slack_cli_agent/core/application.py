@@ -38,6 +38,7 @@ from ..admin.learning_commands import (
 from ..admin.router import AdminRouter
 from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
+from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelRegistry
 from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
@@ -236,6 +237,7 @@ class Application:
         self._ingress: IngressService | None = None
         self._pipeline: RequestPipeline | None = None
         self._access_policy: AccessPolicy | None = None
+        self._tool_policy: ToolPolicy | None = None
         self._queue: SqliteJobQueue | None = None
         self._reactions: ReactionMarker | None = None
         self._publisher: MessagePublisher | None = None
@@ -373,6 +375,14 @@ class Application:
             self._access_policy = AccessPolicy(self._profile, self._channels, extensions)
         return self._access_policy
 
+    def tool_policy(self) -> ToolPolicy:
+        if self._tool_policy is None:
+            extensions = [e for p in self._plugins for e in p.access_extensions()]
+            self._tool_policy = ToolPolicy(
+                self._settings.base_tools, self._settings.owner_tools, extensions,
+            )
+        return self._tool_policy
+
     def _prompt_sections(self) -> list[PromptSection]:
         sections: list[PromptSection] = [
             PersonaSection(),
@@ -505,6 +515,7 @@ class Application:
                 consumption=self.consumption,
                 watch_queue=self.watch_jobs(),
                 response_archive=self.response_archive(),
+                tool_policy=self.tool_policy(),
             )
         return self._pipeline
 
