@@ -26,7 +26,7 @@ where = ["src"]
 "slack_cli_agent.web" = ["assets/*.html"]
 # Default prompts so a freshly installed bot can boot before an operator has
 # written any org-specific prompt files under the state directory.
-"slack_cli_agent.assets" = ["prompts/*.md"]
+"slack_cli_agent.assets" = ["prompts/*.md", "*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
