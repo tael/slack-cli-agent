@@ -71,7 +71,9 @@ class CodexEngine(Engine):
 
     def build_command(self, request: EngineRequest) -> list[str]:
         binary = str(self.spec.binary)
-        sandbox = str(self.spec.options.get("sandbox", "read-only"))
+        # The bot is meant to read and write freely; a profile can still narrow
+        # this with options.sandbox.
+        sandbox = str(self.spec.options.get("sandbox", "danger-full-access"))
         cmd: list[str] = [binary, "exec"]
         if request.resume:
             cmd.append("resume")

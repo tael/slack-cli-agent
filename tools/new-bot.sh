@@ -41,7 +41,10 @@ print(json.dumps({
   "display_information": {"name": display, "description": f"{display} 에이전트", "background_color": "#1b2a3a"},
   "features": {
     "bot_user": {"display_name": name, "always_online": True},
-    "assistant_view": {"assistant_description": "슬랙 안에서 조사와 작업을 맡는 에이전트입니다.", "suggested_prompts": []},
+    # agent_view 가 에이전트 경험을 켠다. 옛 이름 assistant_view 로 만들면
+    # 앱이 에이전트가 안 되고, 슬랙 Agents 페이지에서 손으로 켜야 한다.
+    "agent_view": {"agent_description": f"{display} 입니다. 슬랙 안에서 조사와 작업을 맡습니다.",
+                   "suggested_prompts": []},
   },
   "oauth_config": {"scopes": {"bot": [
     "app_mentions:read","channels:history","groups:history","im:history","mpim:history","reactions:read",
@@ -56,11 +59,14 @@ print(json.dumps({
 }, ensure_ascii=False))
 PY
 
-echo "== 2. 앱 생성"
+echo "== 2. 매니페스트 점검"
+"$REPO/tools/slack-app.py" validate "$BOT_WORKSPACE" /tmp/$NAME-manifest.json
+
+echo "== 3. 앱 생성"
 APP_ID=$("$REPO/tools/slack-app.py" create "$BOT_WORKSPACE" /tmp/$NAME-manifest.json)
 echo "  app_id=$APP_ID"
 
-echo "== 3. 상태 디렉터리"
+echo "== 4. 상태 디렉터리"
 D="$HOME/.$NAME"
 mkdir -p "$D/persona/knowledge" "$D/prompts" "$D/logs" "/Users/Shared/$NAME-work"
 case "$ENGINE" in
@@ -99,7 +105,7 @@ cat > "$D/persona/PERSONA.md" <<EOF
 - 확인하지 않은 것을 확인한 것처럼 말하지 않는다. 모르면 모른다고 한다
 EOF
 
-echo "== 4. 프로필"
+echo "== 5. 프로필"
 python3 - "$NAME" "$DISPLAY" "$ENGINE" "$MODEL" "$BIN" "$REPO" \
          "$BOT_OWNER_USER_ID" "$BOT_TROUBLESHOOT_CHANNEL" <<'PY'
 import json, sys
@@ -115,13 +121,11 @@ data = {
                "base_tools": ["Read", "Grep", "Glob"],
                "owner_tools": ["Write", "Edit", "Bash", "NotebookEdit", "WebFetch", "WebSearch"]},
 }
-if engine == "codex":
-    data["primary_engine"]["options"] = {"sandbox": "read-only", "network": False}
 open(f"{repo}/profiles/{name}.json", "w", encoding="utf-8").write(
     json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 PY
 
-echo "== 5. venv"
+echo "== 6. venv"
 python3 -m venv "$D/venv"
 "$D/venv/bin/pip" -q install -e "$REPO"
 
