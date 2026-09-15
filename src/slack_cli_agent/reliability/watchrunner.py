@@ -88,6 +88,14 @@ class WatchJobChecker:
             return
 
         if response.ok and WATCH_DONE_TAG in response.body:
+            # Done wins over still, same as the original bot.py:6788. What the
+            # original doesn't do is record the contradiction or strip the still
+            # tag, so the raw marker ended up in the posted body.
+            if WATCH_STILL_TAG in response.body:
+                log.warning(
+                    "감시 확인 응답의 태그가 모순된다. 완료로 처리한다 : 작업 %d, 확인 %d회",
+                    job.id, job.checks,
+                )
             self._finish(job, response.body)
             return
 
@@ -110,19 +118,30 @@ class WatchJobChecker:
         # A reply that is nothing but the done tag leaves an empty body, and an
         # empty body posts nothing at all. The job is marked done either way, so
         # without this the watch just disappears from the thread.
-        body = raw_body.replace(WATCH_DONE_TAG, "").strip() or _bare_done_report()
+        body = _strip_tags(raw_body) or _bare_done_report()
         config = self._channels.get(job.channel)
         rich = bool(config and config.rich)
         try:
             self._publisher.post(job.channel, job.thread_ts, body, rich)
         except Exception as exc:  # noqa: BLE001 — a post failure shouldn't block marking done, or the same report reposts next round
-            log.error("감시 완료 보고 발송 실패 : %s", exc)
+            log.error("감시 완료 보고 발송 실패 : 작업 %d, 채널 %s, %s", job.id, job.channel, exc)
 
         if self._reactions is not None and job.msg_ts:
             self._reactions.remove(job.channel, job.msg_ts, WATCH_MARK_EMOJI)
             self._reactions.mark_done(job.channel, job.msg_ts)
 
         self._queue.mark_done(job.id)
+
+
+def _strip_tags(raw_body: str) -> str:
+    """Removes every control tag. These are an engine-to-bot protocol and must
+    not reach a channel, so the still tag is stripped too even though the done
+    branch is the only caller.
+    """
+    body = raw_body
+    for tag in (WATCH_DONE_TAG, WATCH_STILL_TAG):
+        body = body.replace(tag, "")
+    return body.strip()
 
 
 def _bare_done_report() -> str:
