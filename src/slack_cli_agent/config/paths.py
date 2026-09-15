@@ -2,8 +2,61 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+PROFILE_DIR_ENV = "SLACK_CLI_AGENT_PROFILE_DIR"
+_APP_DIR_NAME = "slack-cli-agent"
+
+
+def _env_dirs(env: Mapping[str, str]) -> tuple[Path, ...]:
+    raw = env.get(PROFILE_DIR_ENV, "")
+    return tuple(Path(part).expanduser() for part in raw.split(os.pathsep) if part)
+
+
+def user_profile_dir(env: Mapping[str, str] | None = None, home: Path | None = None) -> Path:
+    """Where an installed bot keeps its profiles.
+
+    XDG says a relative XDG_CONFIG_HOME must be ignored, so it falls back to
+    ~/.config in that case. The `profiles/` leaf matches the layout the repo
+    already uses for profile files.
+    """
+    env = os.environ if env is None else env
+    home = home or Path.home()
+    configured = Path(env.get("XDG_CONFIG_HOME", "")).expanduser()
+    base = configured if configured.is_absolute() else home / ".config"
+    return base / _APP_DIR_NAME / "profiles"
+
+
+def default_profile_dirs(
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    cwd: Path | None = None,
+) -> tuple[Path, ...]:
+    """Search order used by every command that takes --profile-dir.
+
+    The environment wins so one machine can run several bots, the user config
+    directory is what an installed bot uses, and the current directory stays
+    last so running from a checkout keeps working (sca-jl4.3).
+    """
+    env = os.environ if env is None else env
+    ordered = (*_env_dirs(env), user_profile_dir(env, home), cwd or Path.cwd())
+    seen: list[Path] = []
+    for path in ordered:
+        if path not in seen:
+            seen.append(path)
+    return tuple(seen)
+
+
+def default_profile_write_dir(
+    env: Mapping[str, str] | None = None, home: Path | None = None
+) -> Path:
+    """Where `init` puts a new profile: the first place the search will look."""
+    env = os.environ if env is None else env
+    configured = _env_dirs(env)
+    return configured[0] if configured else user_profile_dir(env, home)
 
 
 @dataclass(frozen=True)
