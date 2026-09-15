@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from ..config.channel import ChannelConfig, ChannelRegistry
-from ..config.profile import Profile
+from ..config.profile import Profile, validate_profile_name
 from ..core.errors import ConfigError
 
 
@@ -20,13 +20,17 @@ class ProfileEditor:
         return Profile.discover(self._search_dirs)
 
     def read(self, name: str) -> dict[str, object]:
-        path = self._find(name)
+        path = self._find(validate_profile_name(name))
         if path is None:
             raise ConfigError(f"프로필 {name} 을 찾지 못했다")
         return dict(json.loads(path.read_text(encoding="utf-8")))
 
     def save(self, name: str, data: Mapping[str, object]) -> list[str]:
         errors: list[str] = []
+        try:
+            name = validate_profile_name(name)
+        except ConfigError as e:
+            return [str(e)]
         try:
             profile = Profile.from_dict(data)
         except ConfigError as e:

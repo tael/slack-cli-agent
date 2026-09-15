@@ -23,9 +23,10 @@ from typing import Any, ClassVar, Protocol, TextIO, runtime_checkable
 
 from .config.channel import ChannelRegistry
 from .config.paths import StatePaths, default_profile_dirs, default_profile_write_dir
-from .config.profile import Profile
-from .core.errors import AgentError
+from .config.profile import Profile, validate_profile_name
+from .core.errors import AgentError, ConfigError
 from .core.lifecycle import GracefulShutdown, SignalRegister
+from .core.secrets import contains_secret, redact
 from .preflight.check import PreflightContext
 from .preflight.checks import (
     EngineBinaryCheck,
@@ -35,6 +36,7 @@ from .preflight.checks import (
     WorkdirCheck,
 )
 from .preflight.runner import PreflightRunner
+from .slack.credentials import CredentialResolver, resolver_for
 from .storage.database import Database
 
 
@@ -227,13 +229,22 @@ class InitCommand(CliCommand):
         )
 
     def execute(self, args: argparse.Namespace, stdout: TextIO) -> int:
-        name = args.name
+        name = validate_profile_name(args.name)
         profile_dir = (
             Path(args.profile_dir).expanduser() if args.profile_dir else default_profile_write_dir()
         )
         state_dir = (
             Path(args.state_dir).expanduser() if args.state_dir else StatePaths.for_bot(name).root
         )
+        # state_dir goes into the profile JSON verbatim, so this is the same
+        # rule Profile.from_dict applies — enforced before the write rather
+        # than at every print below (코덱스 리뷰).
+        for label, value in (
+            ("--profile-dir", str(profile_dir)),
+            ("--state-dir", str(state_dir)),
+        ):
+            if contains_secret(value):
+                raise ConfigError(f"{label} 에 토큰이 들어 있다 : {redact(value)}")
 
         created: list[str] = []
         skipped: list[str] = []
@@ -276,20 +287,31 @@ class InitCommand(CliCommand):
         print(file=stdout)
         print("다음에 채워야 할 값", file=stdout)
         print(f"- {profile_path} 의 owner_user_id, troubleshoot_channel, primary_engine", file=stdout)
-        print("- 환경변수 SLACK_BOT_TOKEN, SLACK_APP_TOKEN", file=stdout)
+        print(
+            f"- 슬랙 토큰. 환경변수 SLACK_BOT_TOKEN, SLACK_APP_TOKEN 이나 "
+            f"{paths.credentials} 에 넣는다",
+            file=stdout,
+        )
+        print("  자격 파일은 권한을 600 으로 두고, 다음 기동부터 적용된다", file=stdout)
         print(f"- {paths.prompts} 아래 조직 고유 프롬프트. 없으면 패키지 기본 프롬프트를 쓴다", file=stdout)
         return 0
 
 
-ApplicationFactory = Callable[[Profile], Any]
+ApplicationFactory = Callable[[Profile, CredentialResolver], Any]
 """Produces an application object exposing `ingress()`, `gateway()`,
-`worker(worker_id=...)`, `channel_ids()`, and `close()`."""
+`worker(worker_id=...)`, `channel_ids()`, and `close()`.
+
+Takes the resolver rather than building one: each resolver caches the
+credentials file on its own, so a command that already read a token would
+otherwise get the rest from a second read of a file that may have changed
+(코덱스 리뷰).
+"""
 
 
-def _default_application(profile: Profile) -> Any:
+def _default_application(profile: Profile, resolver: CredentialResolver) -> Any:
     from .core.application import Application  # lazy import; the Slack SDK only gets pulled in here
 
-    return Application.from_profile(profile)
+    return Application.from_profile(profile, resolver=resolver)
 
 
 class IngressCommand(ProfileAwareCommand):
@@ -303,19 +325,25 @@ class IngressCommand(ProfileAwareCommand):
         parser.add_argument(
             "--app-token",
             default=None,
-            help="슬랙 앱 토큰. 없으면 환경변수 SLACK_APP_TOKEN 을 쓴다",
+            help=(
+                "슬랙 앱 토큰. 없으면 환경변수 SLACK_APP_TOKEN, 그다음 자격 파일을 쓴다. "
+                "셸 이력에 남으므로 일회성 진단용이다"
+            ),
         )
 
     def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
-        token = args.app_token or os.environ.get("SLACK_APP_TOKEN")
+        resolver = resolver_for(profile)
+        token = resolver.app_token(args.app_token)
         if not token:
             print(
-                "앱 토큰이 없다. --app-token 인자나 환경변수 SLACK_APP_TOKEN 을 채워야 기동한다",
+                "앱 토큰이 없다. --app-token 인자, 환경변수 SLACK_APP_TOKEN, "
+                f"또는 {redact(str(profile.credentials_file or profile.paths.credentials))} "
+                "를 채워야 기동한다",
                 file=stdout,
             )
             return 2
 
-        app = self._factory(profile)
+        app = self._factory(profile, resolver)
         try:
             gateway = app.gateway()
             app.ingress().register(gateway)
@@ -356,7 +384,7 @@ class WorkerCommand(ProfileAwareCommand):
         parser.set_defaults(catch_up=True)
 
     def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
-        app = self._factory(profile)
+        app = self._factory(profile, resolver_for(profile))
         worker = app.worker(worker_id=args.worker_id)
         # Waits for in-flight work on shutdown; without this, SIGTERM kills the
         # process mid-request and the job stays stuck in the queue until the
@@ -414,7 +442,7 @@ class LearnCommand(ProfileAwareCommand):
         )
 
     def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
-        app = self._factory(profile)
+        app = self._factory(profile, resolver_for(profile))
         try:
             report = app.learning_batch().run(args.day)
         finally:

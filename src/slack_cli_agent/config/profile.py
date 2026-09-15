@@ -3,16 +3,47 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ..core.errors import ConfigError
+from ..core.secrets import contains_secret, redact
 from .paths import StatePaths
 
 # 저장소에 올리는 견본 프로필. 실제 봇이 아니므로 검색에서 뺀다.
 EXAMPLE_SUFFIX = ".example.json"
+
+# The profile may point at a credentials file but never hold a token itself.
+# .gitignore only reduces accidental commits; it does not stop a forced add, a
+# copy, a backup, or the web console reading and rewriting the profile
+# (sca-jl4.4).
+_SECRET_KEY_SUFFIX = "_token"
+_SECRET_KEY_NAME = "token"
+# mcp_servers.<id>.env is a documented pass-through to a third-party process
+# that has no other way to receive its own credentials, so key names are not
+# checked inside it. Slack-shaped values still are (sca-jl4.4).
+_SECRET_KEY_EXEMPT_BLOCK = "mcp_servers"
+
+
+# A profile name becomes a filename. Anything outside this set either escapes
+# the search directory or carries something that must not be written to disk.
+_PROFILE_NAME_RE = re.compile(r"[\w.-]+", re.UNICODE)
+
+
+def validate_profile_name(name: str) -> str:
+    """Every entry point that turns a name into `<name>.json` goes through
+    here — the CLI, and the web console which takes it straight from a URL
+    (코덱스 리뷰)."""
+    if not name:
+        raise ConfigError("프로필 이름이 비어 있다")
+    if not _PROFILE_NAME_RE.fullmatch(name) or name.startswith(".") or ".." in name:
+        raise ConfigError(f"프로필 이름에 쓸 수 없는 문자가 있다 : {redact(name)}")
+    if contains_secret(name):
+        raise ConfigError(f"프로필 이름에 토큰이 들어 있다 : {redact(name)}")
+    return name
 
 
 @dataclass(frozen=True)
@@ -111,6 +142,8 @@ class Profile:
     # Empty by default — an installed bot must not carry another bot's MCP
     # servers along. See docs/패키징-경계.md.
     mcp_servers: Mapping[str, McpServerSpec] = field(default_factory=dict)
+    # Path only. Defaults to StatePaths.credentials when unset.
+    credentials_file: Path | None = None
 
     @property
     def paths(self) -> StatePaths:
@@ -136,21 +169,32 @@ class Profile:
             for path in Path(base).glob("*.json"):
                 if path.name.endswith(EXAMPLE_SUFFIX):
                     continue
-                found.add(path.stem)
+                # A file placed by hand can carry anything. load() would
+                # reject such a name anyway, so listing it only exposes it
+                # in the web console (코덱스 리뷰).
+                try:
+                    found.add(validate_profile_name(path.stem))
+                except ConfigError:
+                    continue
         return sorted(found)
 
     @classmethod
     def load(cls, name: str, search_paths: Sequence[Path]) -> Profile:
         """Finds `<name>.json` on search_paths in order and uses the first match."""
+        name = validate_profile_name(name)
         for base in search_paths:
             candidate = base / f"{name}.json"
             if candidate.is_file():
                 return cls.from_dict(json.loads(candidate.read_text(encoding="utf-8")))
-        searched = ", ".join(str(p) for p in search_paths)
-        raise ConfigError(f"프로필 {name} 을 찾지 못했다. 검색 경로: {searched}")
+        # Redacted here too: this runs before any profile is read, so the
+        # value check cannot have seen these strings (코덱스 리뷰).
+        searched = ", ".join(redact(str(p)) for p in search_paths)
+        raise ConfigError(f"프로필 {redact(name)} 을 찾지 못했다. 검색 경로: {searched}")
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Profile:
+        cls._reject_secrets(data)
+
         name = data.get("name")
         if not name:
             raise ConfigError("프로필에 name 이 없다")
@@ -160,6 +204,16 @@ class Profile:
             raise ConfigError("프로필에 primary_engine 블록이 없다")
 
         state_dir = Path(str(data.get("state_dir") or f"~/.{name}")).expanduser()
+        credentials_file = data.get("credentials_file")
+        if credentials_file:
+            credentials_file = Path(str(credentials_file)).expanduser()
+            # Rejected here, not when the resolver is built: the web console
+            # saves profiles and would otherwise store an unbootable one
+            # (코덱스 리뷰).
+            if not credentials_file.is_absolute():
+                raise ConfigError(
+                    f"credentials_file 은 절대경로여야 한다 : {redact(str(credentials_file))}"
+                )
         fallback = data.get("fallback_engine")
         mcp_servers_block = data.get("mcp_servers") or {}
         mcp_servers = {
@@ -180,10 +234,51 @@ class Profile:
             owner_user_id=str(data.get("owner_user_id", "")),
             troubleshoot_channel=str(data.get("troubleshoot_channel", "")),
             owner_dm=str(data.get("owner_dm", "")),
+            credentials_file=credentials_file or None,
             plugins=tuple(data.get("plugins") or ()),
             settings_override=dict(data.get("settings") or {}),
             mcp_servers=mcp_servers,
         )
+
+    @staticmethod
+    def _reject_secrets(data: Mapping[str, Any]) -> None:
+        """Nested blocks are walked too: `settings` is kept verbatim, so a
+        top-level-only check let {"settings": {"bot_token": ...}} through
+        (코덱스 리뷰). The offending key is not echoed — a token pasted as a
+        key would print itself.
+        """
+        for path, reason in Profile._secret_findings(data, (), check_keys=True):
+            raise ConfigError(
+                f"프로필에 토큰을 넣을 수 없다. credentials_file 로 자격 파일을 가리켜라 : "
+                f"{redact(path) or '최상위'} 의 {reason}"
+            )
+
+    @staticmethod
+    def _secret_findings(
+        node: Any, path: tuple[str, ...], *, check_keys: bool
+    ) -> Iterator[tuple[str, str]]:
+        if isinstance(node, str):
+            if contains_secret(node):
+                yield ".".join(path[:-1]), "값"
+            return
+        if isinstance(node, Mapping):
+            for key, value in node.items():
+                text = str(key)
+                low = text.lower()
+                # Lowercased: SLACK_BOT_TOKEN is the real environment variable
+                # name and is easy to copy in as-is (코덱스 리뷰).
+                if check_keys and (low.endswith(_SECRET_KEY_SUFFIX) or low == _SECRET_KEY_NAME):
+                    yield ".".join(path), "키 이름"
+                    continue
+                if contains_secret(text):
+                    yield ".".join(path), "키 이름"
+                    continue
+                nested = check_keys and not (not path and text == _SECRET_KEY_EXEMPT_BLOCK)
+                yield from Profile._secret_findings(value, (*path, text), check_keys=nested)
+            return
+        if isinstance(node, Sequence) and not isinstance(node, (str, bytes)):
+            for item in node:
+                yield from Profile._secret_findings(item, path, check_keys=check_keys)
 
     @staticmethod
     def _under(data: Mapping[str, Any], key: str, state_dir: Path, name: str) -> Path:
