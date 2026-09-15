@@ -92,7 +92,10 @@ class MessagePublisher:
         else:
             chunks = self._splitter.chunk(self._markdown.to_mrkdwn(text))
 
-        parent_ts = None if is_direct_message_channel(channel) else thread_ts
+        # Empty means "no thread yet", same as None. Leaving "" in would
+        # never take the res["ts"] branch below, so the caller gets "" back
+        # and later chunks post at top level instead of under the first.
+        parent_ts = None if is_direct_message_channel(channel) else (thread_ts or None)
         sent = 0
         for idx, part in enumerate(chunks):
             kwargs: dict[str, Any] = {"channel": channel, "username": self._bot_display_name}
