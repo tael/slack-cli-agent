@@ -18,23 +18,8 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any
 
-from ..admin.channel_commands import (
-    ApiModeCommand,
-    ChannelUnregisterCommand,
-    ChatActiveCommand,
-    ChatNormalCommand,
-    ChatQuietCommand,
-    CoachModeCommand,
-    DefaultModeCommand,
-)
 from ..admin.command import AdminContext
-from ..admin.commands import ChannelListCommand, EngineStatusCommand, HelpCommand
-from ..admin.engine_commands import EngineApproveCommand, EngineDenyCommand
-from ..admin.learning_commands import (
-    LearningApplyCommand,
-    LearningRevertCommand,
-    LearningShowCommand,
-)
+from ..admin.defaults import default_admin_commands
 from ..admin.router import AdminRouter
 from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
@@ -829,23 +814,7 @@ class Application:
         )
 
     def _admin_router(self) -> AdminRouter:
-        commands = [
-            HelpCommand(),
-            ChannelListCommand(),
-            EngineStatusCommand(),
-            EngineApproveCommand(),
-            EngineDenyCommand(),
-            ChatActiveCommand(self._notices),
-            ChatNormalCommand(self._notices),
-            ChatQuietCommand(self._notices),
-            CoachModeCommand(self._notices),
-            ApiModeCommand(self._notices),
-            DefaultModeCommand(self._notices),
-            ChannelUnregisterCommand(self._notices),
-            LearningShowCommand(),
-            LearningApplyCommand(),
-            LearningRevertCommand(),
-        ]
+        commands = default_admin_commands(self._notices)
         commands.extend(c for p in self._plugins for c in p.admin_commands())
         return AdminRouter(commands)
 

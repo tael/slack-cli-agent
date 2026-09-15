@@ -30,6 +30,8 @@ def _service(ctx: AdminContext) -> LearningService:
 
 class LearningShowCommand(AdminCommand):
     name: ClassVar[str] = "learning_show"
+    usage: ClassVar[str] = "학습 제안"
+    description: ClassVar[str] = "최근 배치가 만든 지식 갱신안을 보여준다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("학습 제안", "학습제안", "배운 거")
@@ -40,6 +42,8 @@ class LearningShowCommand(AdminCommand):
 
 class LearningApplyCommand(AdminCommand):
     name: ClassVar[str] = "learning_apply"
+    usage: ClassVar[str] = "학습 반영"
+    description: ClassVar[str] = "그 갱신안을 지식 파일에 반영한다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("학습 반영", "학습반영", "배운 거 반영")
@@ -57,6 +61,8 @@ class LearningRevertCommand(AdminCommand):
     """
 
     name: ClassVar[str] = "learning_revert"
+    usage: ClassVar[str] = "학습 되돌리기 YYYY-MM-DD"
+    description: ClassVar[str] = "그날 반영한 줄만 지운다"
 
     def matches(self, text: str) -> bool:
         return text.strip().startswith(("학습 되돌리기", "학습되돌리기"))
