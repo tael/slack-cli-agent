@@ -161,13 +161,13 @@ class TestChannelListCommand:
     def test_등록된_채널을_나열한다(self, tmp_path: Path) -> None:
         channels_path = tmp_path / "channels.json"
         channels_path.write_text(
-            json.dumps({"C1": {"mode": "api_helpdesk", "chat": "active"}}),
+            json.dumps({"C1": {"mode": "agent_coach", "chat": "active"}}),
             encoding="utf-8",
         )
         ctx = make_context(tmp_path, channels_path=channels_path)
         result = ChannelListCommand().execute(ctx)
         assert "C1" in result.message
-        assert "API 안내" in result.message
+        assert "코치" in result.message
         assert "많음" in result.message
 
 

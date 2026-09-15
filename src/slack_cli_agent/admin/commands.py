@@ -27,6 +27,11 @@ class HelpCommand(AdminCommand):
         )
 
 
+# Channel mode as the user sees it. The stored value is a code-internal
+# name and shouldn't reach the user.
+_MODE_LABELS = {"": "기본", "agent_coach": "코치", "private": "비공개"}
+
+
 class ChannelListCommand(AdminCommand):
     """Lists channels currently being responded to.
 
@@ -47,9 +52,9 @@ class ChannelListCommand(AdminCommand):
             return AdminResult(message="*응답 중인 채널*\n\n등록된 채널이 없습니다.")
         lines = ["*응답 중인 채널*"]
         for channel_id, cfg in configs.items():
-            mode = "API 안내" if cfg.mode == "api_helpdesk" else "기본"
             chat = {"active": "많음", "quiet": "적음"}.get(cfg.chat, "보통")
             lines.append(f"- {cfg.name or channel_id}")
+            mode = _MODE_LABELS.get(cfg.mode, cfg.mode or "기본")
             lines.append(f"  - 응답 형식 : {mode}, 말수 : {chat}")
         return AdminResult(message="\n".join(lines))
 
