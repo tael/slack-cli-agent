@@ -991,3 +991,25 @@ class Test엔진호출부품:
         request = object()
         assert FallbackInvoker(폴백대역()).invoke(request) == "전환된 응답"
         assert 부른것 == [request]
+
+
+class TestUsage직렬화:
+    """audit 기록은 JSON 한 줄이다. Usage 가 JSON 에 못 담는 타입을 내면 그 요청
+    기록 전체가 사라지고, 실제로 요청 자체가 실패했다(sca-kwv).
+    """
+
+    def test_audit용_dict는_json으로_바로_직렬화된다(self) -> None:
+        usage = Usage.from_native({"input_tokens": 3}, {"input_tokens": "input_tokens"})
+        assert json.loads(json.dumps(usage.as_audit_dict()))["input_tokens"] == 3
+
+    def test_판정_불가_필드가_목록으로_남는다(self) -> None:
+        usage = Usage.from_native({"input_tokens": 3}, {"input_tokens": "input_tokens"})
+        기록 = usage.as_audit_dict()
+        assert sorted(기록["unavailable"]) == ["cache_creation_tokens", "cache_read_tokens", "output_tokens"]
+
+    def test_판정_불가가_없으면_빈_목록이다(self) -> None:
+        usage = Usage.from_native(
+            dict.fromkeys(("input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens"), 1),
+            {n: n for n in ("input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens")},
+        )
+        assert usage.as_audit_dict()["unavailable"] == []
