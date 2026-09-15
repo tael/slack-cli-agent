@@ -663,72 +663,13 @@ class TestEventListener:
         self_reaction = {**good, "user": "U_BOT"}
         assert listener.from_reaction(self_reaction, allowed) is None
 
-    def test_item_user_가_없으면_메시지를_조회해_내_답변인지_본다(
-        self, gate: ResponseGate
-    ) -> None:
-        """username 오버라이드로 올린 답변은 subtype=bot_message 라 user 필드가 없다.
-
-        그러면 reaction_added 에 item_user 가 안 담기고, 점검 이모지가 전부
-        걸러진다. 그 경우 메시지를 조회해 bot_id 로 판정한다.
-        """
+    def test_item_user_가_없으면_받지_않는다(self, gate: ResponseGate) -> None:
+        """실제 reaction_added 에는 item_user 가 담긴다. 없는 이벤트를 받아들이면
+        아무 메시지에나 점검이 발동한다."""
         registry = ChannelRegistry(Path("/nonexistent.json"))
         client = FakeWebClient()
-        client.queue_history({"messages": [{"bot_id": "B_BOT", "ts": "1.0"}]})
         listener = EventListener(client, registry, gate, identity=fake_identity())
-        allowed = frozenset({POSTMORTEM_EMOJI})
         event = {"reaction": POSTMORTEM_EMOJI,
-                 "item": {"type": "message", "channel": "C1", "ts": "1.0"},
-                 "user": "U1"}
-        assert listener.from_reaction(event, allowed) == (POSTMORTEM_EMOJI, "C1", "1.0", "U1")
-
-    def test_item_user_가_없고_다른_봇_답변이면_받지_않는다(
-        self, gate: ResponseGate
-    ) -> None:
-        registry = ChannelRegistry(Path("/nonexistent.json"))
-        client = FakeWebClient()
-        client.queue_history({"messages": [{"bot_id": "B_OTHER", "ts": "1.0"}]})
-        listener = EventListener(client, registry, gate, identity=fake_identity())
-        allowed = frozenset({POSTMORTEM_EMOJI})
-        event = {"reaction": POSTMORTEM_EMOJI,
-                 "item": {"type": "message", "channel": "C1", "ts": "1.0"},
-                 "user": "U1"}
-        assert listener.from_reaction(event, allowed) is None
-
-    def test_메시지_조회가_실패하면_받지_않는다(self, gate: ResponseGate) -> None:
-        """조회 실패를 내 답변으로 읽으면 아무 메시지에나 점검이 발동한다."""
-        registry = ChannelRegistry(Path("/nonexistent.json"))
-        client = FakeWebClient()
-        client.queue_history({"messages": []})
-        listener = EventListener(client, registry, gate, identity=fake_identity())
-        allowed = frozenset({POSTMORTEM_EMOJI})
-        event = {"reaction": POSTMORTEM_EMOJI,
-                 "item": {"type": "message", "channel": "C1", "ts": "1.0"},
-                 "user": "U1"}
-        assert listener.from_reaction(event, allowed) is None
-
-    def test_스레드_답글은_replies_로_찾는다(self, gate: ResponseGate) -> None:
-        """conversations_history 는 스레드 답글을 안 돌려준다. 점검 이모지는 대개 답글에 달린다."""
-        registry = ChannelRegistry(Path("/nonexistent.json"))
-        client = FakeWebClient()
-        client.queue_history({"messages": []})
-        client.set_replies_response({
-            "messages": [{"bot_id": "B_BOT", "ts": "1.0"}, {"bot_id": "B_BOT", "ts": "2.0"}]
-        })
-        listener = EventListener(client, registry, gate, identity=fake_identity())
-        allowed = frozenset({POSTMORTEM_EMOJI})
-        event = {"reaction": POSTMORTEM_EMOJI,
-                 "item": {"type": "message", "channel": "C1", "ts": "2.0"},
-                 "user": "U1"}
-        assert listener.from_reaction(event, allowed) == (POSTMORTEM_EMOJI, "C1", "2.0", "U1")
-
-    def test_허용되지_않은_이모지는_메시지를_조회하지_않는다(
-        self, gate: ResponseGate
-    ) -> None:
-        """조회 비용이 관심 없는 리액션마다 나가면 안 된다."""
-        registry = ChannelRegistry(Path("/nonexistent.json"))
-        client = FakeWebClient()
-        listener = EventListener(client, registry, gate, identity=fake_identity())
-        event = {"reaction": "thumbsup",
                  "item": {"type": "message", "channel": "C1", "ts": "1.0"},
                  "user": "U1"}
         assert listener.from_reaction(event, frozenset({POSTMORTEM_EMOJI})) is None
