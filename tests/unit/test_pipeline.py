@@ -19,7 +19,14 @@ from slack_cli_agent.config.channel import ChannelConfig
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.pipeline import RequestPipeline
-from slack_cli_agent.engine.base import Engine, EngineRequest, EngineResponse, Usage
+from slack_cli_agent.engine.base import (
+    NO_DETAIL,
+    Engine,
+    EngineRequest,
+    EngineResponse,
+    FailureDetail,
+    Usage,
+)
 from slack_cli_agent.engine.runner import DirectInvoker
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard, RerunRequest
 from slack_cli_agent.guard.mentions import AddresseeGuard
@@ -371,10 +378,10 @@ def ok_response(body: str = "답변입니다", session_id: str = "sess-1") -> En
     )
 
 
-def fail_response(reason: str = "nonzero_exit") -> EngineResponse:
+def fail_response(reason: str = "nonzero_exit", detail: FailureDetail = NO_DETAIL) -> EngineResponse:
     return EngineResponse(
         ok=False, body="실패", session_id=None, model_actual=None,
-        elapsed=0.5, turns=None, usage=None, failure_reason=reason,
+        elapsed=0.5, turns=None, usage=None, failure_reason=reason, failure_detail=detail,
     )
 
 
@@ -436,6 +443,25 @@ class Test엔진실패:
 
         assert len(deps["audit"].records) == 1
         assert deps["audit"].records[0]["ok"] is False
+
+    def test_실패_진단값이_감사에_남는다(self, tmp_path: Path) -> None:
+        """사유만 남기면 무엇이 잘못됐는지 기록에서 알 수 없다(sca-dyb.14)."""
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("nonzero_exit", FailureDetail(exit_code=137))] * 2,
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert deps["audit"].records[0]["failure_detail"] == "exit_code=137"
+
+    def test_진단값이_없으면_감사_항목도_없다(self, tmp_path: Path) -> None:
+        """빈 값을 넣으면 기록마다 뜻 없는 항목이 하나씩 는다."""
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("nonzero_exit")] * 2, tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert "failure_detail" not in deps["audit"].records[0]
 
     def test_실패해도_사용자는_남고_턴_수는_모름으로_남는다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(

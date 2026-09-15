@@ -104,8 +104,9 @@ class WatchJobChecker:
         # wording because they need different fixes.
         if not response.ok:
             log.warning(
-                "감시 확인 엔진 실패 : 작업 %d, 확인 %d회, 사유 %s, 응답 %d자",
-                job.id, job.checks, response.failure_reason or "미상", len(response.body),
+                "감시 확인 엔진 실패 : 작업 %d, 확인 %d회, 사유 %s, 진단 %s, 응답 %d자",
+                job.id, job.checks, response.failure_reason or "미상",
+                str(response.failure_detail) or "없음", len(response.body),
             )
         elif WATCH_STILL_TAG not in response.body:
             log.warning(

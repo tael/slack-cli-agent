@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config.profile import McpServerSpec
-from .base import Engine, EngineRequest, EngineResponse, Usage, UsageLimit
+from .base import Engine, EngineRequest, EngineResponse, FailureDetail, Usage, UsageLimit
 
 # sca-dyb.4 — confirmed 2026-09-16 against the real CLI's turn.completed
 # event: Codex doesn't use Claude's cache_read_input_tokens/
@@ -141,7 +141,7 @@ class CodexEngine(Engine):
                 ok=False, body="Codex 실행에 실패했습니다.", session_id=None,
                 model_actual=None, elapsed=0.0, turns=None, usage=None,
                 raw={"stdout": stdout, "stderr": stderr, "returncode": returncode},
-                failure_reason="nonzero_exit",
+                failure_reason="nonzero_exit", failure_detail=FailureDetail(exit_code=returncode),
             )
         try:
             thread_id, text, usage_data, tool_errors = self._parse_jsonl(stdout)
@@ -150,6 +150,7 @@ class CodexEngine(Engine):
                 ok=False, body="Codex 응답 형식을 읽지 못했습니다.", session_id=None,
                 model_actual=None, elapsed=0.0, turns=None, usage=None,
                 raw={"stdout": stdout}, failure_reason="bad_json",
+                failure_detail=FailureDetail(stdout_chars=len(stdout)),
             )
 
         body = (text or "").strip()
@@ -164,6 +165,7 @@ class CodexEngine(Engine):
                 model_actual=None, elapsed=0.0, turns=None,
                 usage=usage, raw=raw,
                 failure_reason="empty_response",
+                failure_detail=FailureDetail(tool_errors=len(tool_errors)),
             )
         return EngineResponse(
             ok=True, body=body, session_id=thread_id, model_actual=None, elapsed=0.0,
