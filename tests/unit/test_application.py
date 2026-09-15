@@ -219,6 +219,12 @@ class TestWiring:
         """InlineTaskSpawner 가 들어가면 점검이 소켓 처리기를 막는다."""
         assert isinstance(app.ingress()._spawn, ThreadTaskSpawner)
 
+    def test_워커_서비스에_기동_되짚기가_있다(self, app: Application) -> None:
+        """재기동 중에 온 멘션은 이벤트도 장애 기록도 안 남는다. 기동 때 한 번 훑지
+        않으면 그 요청은 아무 절차로도 안 잡힌다."""
+        group = app.worker_services(app.worker())
+        assert "startup_catchup" in group.runner_names
+
     def test_접수기와_워커가_같은_큐를_쓴다(self, app: Application) -> None:
         ingress = app.ingress()
         worker = app.worker()

@@ -101,6 +101,7 @@ from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
 from ..reliability.outage import OutageTracker
 from ..reliability.pending_report import PendingReportStore
+from ..reliability.startup import StartupCatchup
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
 from ..reliability.watchrunner import WatchJobChecker, watch_check_prompt
 from ..render.blocks import BlockBuilder
@@ -1066,6 +1067,23 @@ class Application:
             name="catchup_retry",
         )
 
+    def startup_catchup_runner(self, worker: Worker) -> PeriodicRunner:
+        """Sweeps once at start and once more after the freshness grace period.
+
+        The interval is that grace plus a margin, so the second pass sees the
+        mentions the first one skipped for being too recent.
+        """
+        catchup = StartupCatchup(lambda: self._startup_catchup_tick(worker))
+        return PeriodicRunner(
+            catchup.tick,
+            self._settings.catchup_grace_sec + 5,
+            name="startup_catchup",
+        )
+
+    def _startup_catchup_tick(self, worker: Worker) -> None:
+        report = worker.catch_up(self.channel_ids())
+        log.info("기동 되짚기: 다시 처리한 요청 %d건", len(report.missed))
+
     def outage_tracker(self) -> OutageTracker:
         # cached — recreating it each tick would lose the previous result
         # needed to detect a recovery
@@ -1139,6 +1157,7 @@ class Application:
                 self.state_snapshot_runner(),
                 self.watch_runner(),
                 self.job_purge_runner(),
+                self.startup_catchup_runner(worker),
                 self.catchup_retry_runner(worker),
                 self.pending_report_runner(),
                 self.learning_batch_runner(),
