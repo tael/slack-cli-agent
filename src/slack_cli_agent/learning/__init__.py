@@ -1,8 +1,9 @@
 """Learning proposals: generate, render, apply, and revert."""
 
-from .analyzer import ChannelAnalysisResult, ProposalAnalyzer, ProposalBuilder
+from .analyzer import ProposalAnalyzer, ProposalBuilder
 from .apply import LearningApplier, LearningReverter
 from .batch import BatchReport, LearningBatch
+from .decoder import ChannelAnalysisResult, ProposalDecoder
 from .proposal import LearningProposal, ProposalStore
 from .reactions import ReactionCollector
 from .render import ProposalRenderer
@@ -20,6 +21,7 @@ __all__ = [
     "LearningService",
     "ProposalAnalyzer",
     "ProposalBuilder",
+    "ProposalDecoder",
     "ProposalRenderer",
     "ProposalStore",
     "ReactionCollector",
