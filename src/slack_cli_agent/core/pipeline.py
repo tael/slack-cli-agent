@@ -73,6 +73,7 @@ class RequestPipeline:
         # Without this the engine gets an empty tool list, which for the Claude
         # CLI means no tools at all.
         tool_policy: ToolPolicy | None = None,
+        readable_dirs: tuple[Path, ...] = (),
         # Feeds the learning batch — without it, that batch has nothing to read.
         response_archive: ResponseArchive | None = None,
         now: Callable[[], float] = time.time,
@@ -99,6 +100,7 @@ class RequestPipeline:
         self._consumption = consumption
         self._watch_queue = watch_queue
         self._tool_policy = tool_policy
+        self._readable_dirs = readable_dirs
         self._response_archive = response_archive
         self._now = now
         self._monotonic = monotonic
@@ -163,6 +165,10 @@ class RequestPipeline:
     def tool_policy(self) -> ToolPolicy | None:
         return self._tool_policy
 
+    @property
+    def readable_dirs(self) -> tuple[Path, ...]:
+        return self._readable_dirs
+
     def _allowed_tools(
         self, principal: Principal, prompt: str, config: ChannelConfig | None
     ) -> tuple[str, ...]:
@@ -207,6 +213,7 @@ class RequestPipeline:
             effort=effort,
             workdir=workdir,
             allowed_tools=self._allowed_tools(principal, ctx.text, config),
+            readable_dirs=self._readable_dirs,
             trust_level=principal.trust,
         )
         response = self._invoker.invoke(request)
@@ -249,7 +256,7 @@ class RequestPipeline:
         body, watch_desc = self._apply_guards(body, ctx, principal, request, decision, previous_body)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich) or ""
-        self._archive_response(ctx, channel_slug, body, response)
+        self._archive_response(ctx, channel_slug, body, response, elapsed)
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage)
         if watch_desc and self._register_watch(ctx, principal, watch_desc):
@@ -260,7 +267,7 @@ class RequestPipeline:
         return HandleOutcome(ok=True, posted_ts=posted_ts)
 
     def _archive_response(
-        self, ctx: RequestContext, channel_slug: str, body: str, response: EngineResponse
+        self, ctx: RequestContext, channel_slug: str, body: str, response: EngineResponse, elapsed: float,
     ) -> None:
         # The message is already sent; an archive failure must not flip this to a failure.
         if self._response_archive is None:
@@ -273,7 +280,11 @@ class RequestPipeline:
                 question=ctx.text,
                 body=body,
                 ok=True,
-                elapsed_sec=response.elapsed,
+                # Pipeline-measured wall-clock time, same value the audit log
+                # records — not response.elapsed, which some engines (codex)
+                # never fill in (always 0.0), leaving the archive at 0.0초 while
+                # the audit log showed the real duration.
+                elapsed_sec=elapsed,
                 turns=response.turns,
             )
         except Exception:

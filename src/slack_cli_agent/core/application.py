@@ -527,6 +527,7 @@ class Application:
                 watch_queue=self.watch_jobs(),
                 response_archive=self.response_archive(),
                 tool_policy=self.tool_policy(),
+                readable_dirs=(self._profile.paths.persona, self._profile.paths.prompts),
             )
         return self._pipeline
 
