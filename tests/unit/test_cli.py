@@ -71,6 +71,34 @@ class TestPreflightCommand:
         assert code == 1
         assert "기동 불가" in out.getvalue()
 
+    def test_명령_옵션이_점검에_실제로_닿는다(self, tmp_path: Path) -> None:
+        """Suite 가 두 값을 쓰는 것과 명령이 그 값을 넘기는 것은 다르다.
+        누락하거나 뒤바꿔 넘겨도 Suite 단위 시험은 통과한다 (코덱스 리뷰).
+        """
+        profiles = tmp_path / "profiles"
+        state_dir = tmp_path.parent / "outside_home_state2"
+        work_root = state_dir / "work"
+        work_root.mkdir(parents=True)
+        write_profile(profiles, state_dir, work_root=str(work_root))
+        out = io.StringIO()
+        code = SlackCliAgent().run(
+            [
+                "preflight", "--profile", "example", "--profile-dir", str(profiles),
+                "--required-prompt", "없는프롬프트",
+                "--extra-workdir", "없는하위자리",
+            ],
+            stdout=out,
+        )
+        줄 = {
+            line.split(" : ")[0].split("] ")[-1]: line
+            for line in out.getvalue().splitlines() if " : " in line
+        }
+        assert code == 1
+        # 어느 점검이 어느 값을 보는지까지 본다. 포함 여부만 단언하면 두 옵션을
+        # 뒤바꿔 넘겨도 통과한다 (뮤테이션으로 확인).
+        assert "없는프롬프트" in 줄["prompt_files"]
+        assert "없는하위자리" in 줄["workdir"]
+
     def test_점검_결과가_이름과_함께_한_줄씩_나온다(self, tmp_path: Path) -> None:
         profiles = tmp_path / "profiles"
         write_profile(
