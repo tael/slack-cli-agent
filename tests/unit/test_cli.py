@@ -1036,3 +1036,27 @@ class TestWebCommand:
             ["web", "--profile-dir", str(profiles), "--port", "9001"], stdout=io.StringIO()
         )
         assert received == [9001]
+
+
+class Test로그수준:
+    """파이썬 기본 루트 로거는 WARNING 이라 log.info 가 전부 버려진다.
+    설정이 어디에도 없어서, 만들어 둔 기동 성공 로그가 운영에서 한 줄도
+    안 나왔다(2026-09-15 실측). 시험은 caplog 이 수준을 올려서 통과한다 —
+    그래서 시험만으로는 못 잡는다."""
+
+    def test_기동하면_INFO_가_출력된다(self, capsys) -> None:
+        import logging
+
+        from slack_cli_agent.cli import configure_logging
+
+        root = logging.getLogger()
+        before_level, before_handlers = root.level, list(root.handlers)
+        try:
+            root.handlers.clear()
+            configure_logging()
+            logging.getLogger("아무모듈").info("정보 한 줄")
+            assert root.level <= logging.INFO
+            assert root.handlers, "핸들러가 없으면 아무 데도 안 나간다"
+        finally:
+            root.setLevel(before_level)
+            root.handlers[:] = before_handlers
