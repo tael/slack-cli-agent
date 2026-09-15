@@ -724,3 +724,33 @@ class Test남지_않는_사유:
         assert not_applicable
         for reason in not_applicable.values():
             assert isinstance(reason, str) and reason
+
+
+class Test연결_정리:
+    """지표 조회는 요청마다 DB 연결을 연다. 안 닫으면 콘솔이 5초마다
+    폴링하면서 핸들이 늘어난다. 2026-09-15 에 5시간 만에 state.db 핸들
+    127개가 열린 채로 콘솔이 응답을 못 하게 됐다."""
+
+    def test_collect_가_끝나면_연결을_닫는다(self, tmp_path: Path, monkeypatch) -> None:
+        opened: list[object] = []
+        closed: list[object] = []
+
+        real_close = metrics_module.Database.close
+
+        def spy_close(self: object) -> None:
+            closed.append(self)
+            real_close(self)  # type: ignore[arg-type]
+
+        real_init = metrics_module.Database.__init__
+
+        def spy_init(self: object, path: Path) -> None:
+            opened.append(self)
+            real_init(self, path)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(metrics_module.Database, "__init__", spy_init)
+        monkeypatch.setattr(metrics_module.Database, "close", spy_close)
+
+        MetricsCollector(make_profile(tmp_path), now=lambda: 1_000.0).collect(days=7)
+
+        assert opened, "collect 가 DB 를 열지 않았다"
+        assert closed == opened, "연 만큼 닫지 않았다"
