@@ -555,8 +555,7 @@ class Application:
             paths = self._profile.paths
             archive = self.response_archive()
             analyzer = ProposalAnalyzer(
-                self.engine,
-                self.engine_runner,
+                self.engine_invoker,
                 model=self._settings.learning_model,
                 effort=self._settings.learning_effort,
                 workdir=self._profile.work_root,
