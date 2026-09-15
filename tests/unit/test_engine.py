@@ -838,6 +838,37 @@ class TestFallbackEngine:
         runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
         return FallbackEngine(primary, secondary, switcher, runner), primary, secondary, switcher
 
+    def test_전환_뒤_2차로_도는_요청은_2차_형식의_세션_id를_받는다(self, tmp_path: Path) -> None:
+        """세션 ID 형식은 그 요청을 실제로 받는 CLI 의 것이다(sca-56y 계열)."""
+        fallback, primary, secondary, switcher = self._fallback(tmp_path)
+        primary.new_session_id = lambda: "1차-형식"  # type: ignore[method-assign]
+        secondary.new_session_id = lambda: "2차-형식"  # type: ignore[method-assign]
+        switcher.begin_switch("weekly limit", engine_name="codex")
+        switcher.approve()
+
+        fallback.run(request(session_id=None))
+
+        assert [r.session_id for r in secondary.built] == ["2차-형식"]
+
+    def test_복구_프로브가_1차로_돌면_1차_형식의_세션_id를_받는다(self, tmp_path: Path) -> None:
+        """라우팅은 run() 안에서 정해진다. 요청 전에 id 를 먼저 꺼내면 2차
+        상태에서 꺼낸 값이 1차 프로브로 흘러 그 CLI 가 거부한다.
+        """
+        ok = EngineResponse(ok=True, body="복구", session_id=None, model_actual=None,
+                            elapsed=0, turns=None, usage=None)
+        fallback, primary, secondary, switcher = self._fallback(tmp_path, primary_response=ok)
+        primary.new_session_id = lambda: "1차-형식"  # type: ignore[method-assign]
+        secondary.new_session_id = lambda: "2차-형식"  # type: ignore[method-assign]
+        switcher.begin_switch("weekly limit", engine_name="codex")
+        switcher.approve()
+        fallback._active = secondary
+        switcher.mark_probed(0.0)
+
+        fallback.run(request(session_id=None))
+
+        assert [r.session_id for r in primary.built] == ["1차-형식"]
+        assert secondary.built == []
+
     def test_평소에는_1차_엔진으로_돈다(self, tmp_path: Path) -> None:
         ok_response = EngineResponse(ok=True, body="1차 응답", session_id="s1",
                                      model_actual=None, elapsed=0, turns=None, usage=None)
@@ -1013,3 +1044,36 @@ class TestUsage직렬화:
             {n: n for n in ("input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens")},
         )
         assert usage.as_audit_dict()["unavailable"] == []
+
+
+class Test실행_시점에_세션_id를_만든다:
+    """세션 ID 형식은 그것을 받는 CLI 의 것이다. 어느 엔진이 이번 요청을
+    실행하는지는 실행 직전에야 정해지므로(폴백 전환·복구 프로브), 발급도
+    그 자리에서 한다. 호출자가 미리 만들면 형식이 어긋나도 드러나지 않는다(sca-56y).
+    """
+
+    def _runner(self) -> EngineRunner:
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            return FakeCompleted(stdout="", returncode=0)
+
+        return EngineRunner(SETTINGS, subprocess_runner=fake_subprocess,
+                            environment_policy=통과정책())
+
+    def test_비워_보내면_그_엔진이_만든_값이_채워진다(self, tmp_path: Path) -> None:
+        engine = RecordingEngine(codex_profile(tmp_path), SETTINGS)
+        self._runner().run(engine, request(session_id=None))
+        assert [r.session_id for r in engine.built] == ["fake-session"]
+
+    def test_이미_있는_값은_덮어쓰지_않는다(self, tmp_path: Path) -> None:
+        """resume 은 기존 세션을 이어받는 것이라 그 id 를 바꾸면 대화가 끊긴다."""
+        engine = RecordingEngine(codex_profile(tmp_path), SETTINGS)
+        self._runner().run(engine, request(session_id="기존-세션", resume=True))
+        assert [r.session_id for r in engine.built] == ["기존-세션"]
+
+    @pytest.mark.parametrize("빈값", [None, ""])
+    def test_아직_안_정해졌으면_명령_조립이_막힌다(self, 빈값: str | None) -> None:
+        """엔진을 EngineRunner 없이 직접 부르면 형식을 아는 자리를 건너뛴 것이다.
+        빈 문자열도 같다 — CLI 에는 빈 인자로 도착해 추적이 더 어렵다.
+        """
+        with pytest.raises(ValueError):
+            request(session_id=빈값).require_session_id()

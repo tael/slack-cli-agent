@@ -46,7 +46,10 @@ class EngineRequest:
 
     prompt: str
     system_prompt: str
-    session_id: str
+    #: None means the engine that ends up running this mints one. Which engine
+    #: that is isn't settled until EngineRunner.run(), so callers can't pick the
+    #: format themselves (sca-56y).
+    session_id: str | None
     resume: bool
     model: str
     effort: str
@@ -54,6 +57,19 @@ class EngineRequest:
     readable_dirs: tuple[Path, ...] = ()
     allowed_tools: tuple[str, ...] = ()
     trust_level: TrustLevel = TrustLevel.GENERAL
+
+    def require_session_id(self) -> str:
+        """For build_command, which only ever runs after EngineRunner filled it in.
+
+        Raising rather than minting one here: this class doesn't know which
+        engine is running, and guessing the format is what broke the watch
+        check in the first place (sca-56y).
+        """
+        # Empty counts as missing: an empty --session-id reaches the CLI as a
+        # present-but-blank argument, which is harder to trace than a raise.
+        if not self.session_id:
+            raise ValueError("세션 ID 가 아직 정해지지 않았습니다. EngineRunner.run 을 거쳐야 합니다.")
+        return self.session_id
 
 
 _USAGE_FIELDS: tuple[str, ...] = (
