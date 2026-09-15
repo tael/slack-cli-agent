@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -922,34 +922,74 @@ class Test느린요청보고_첨부값:
         pipeline.handle(make_ctx())
         assert reporter.metas[0].usage is usage
 
-    def test_엔진이_비정상_종료하면_출력_꼬리를_넘긴다(self) -> None:
+    def test_엔진_원문이_보고_객체의_어느_필드에도_안_담긴다(self) -> None:
+        """stdout 은 엔진 응답 본문이라 요청 채널의 대화, 엔진이 읽은 파일,
+        링크된 스레드 내용이 들어갈 수 있다. 느린 요청 보고는 그것을 다른
+        채널에 게시하므로 A 채널 내용이 B 채널로 넘어간다(sca-r25).
+
+        필드를 하나씩 지우는 대신 원문이 보고 객체에 들어갈 자리 자체를
+        없앤다. 그래서 이 시험은 특정 필드가 아니라 모든 필드를 훑는다 —
+        나중에 필드가 늘어도 같은 누출을 잡는다.
+        """
+        표식 = "누출표식9931"
         reporter = FakeSlowReporter()
         response = replace(
             fail_response("usage_limit"),
-            raw={"stdout": "표준 출력 내용", "stderr": "표준 오류 내용"},
+            raw={"stdout": f"읽은 파일 내용 {표식}", "stderr": f"오류 {표식}"},
         )
         pipeline, _ = build_pipeline(responses=[response], slow_reporter=reporter)
         pipeline.handle(make_ctx())
         meta = reporter.metas[0]
-        assert "표준 출력 내용" in (meta.stdout_tail or "")
-        assert "표준 오류 내용" in (meta.stderr_tail or "")
+        담긴값 = {f.name: str(getattr(meta, f.name)) for f in fields(meta)}
+        새는필드 = [이름 for 이름, 값 in 담긴값.items() if 표식 in 값]
+        assert 새는필드 == [], 담긴값
 
-    def test_정상_종료면_출력_꼬리가_비어_있다(self) -> None:
-        """정상 종료 경로에는 그 키가 없다. 빈 문자열을 채워 넣으면 보고에
-        내용 없는 블록이 나간다."""
-        reporter = FakeSlowReporter()
-        pipeline, _ = build_pipeline(responses=[ok_response()], slow_reporter=reporter)
-        pipeline.handle(make_ctx())
-        meta = reporter.metas[0]
-        assert meta.stdout_tail is None
-        assert meta.stderr_tail is None
+    def test_실제_게시_본문에도_원문이_안_나온다(self) -> None:
+        """위 시험의 관찰 지점은 중간 객체다. formatter 나 reporter 가 나중에
+        다른 경로로 원문을 받아 게시하는 회귀는 거기서 안 잡힌다. 그래서 최종
+        게시 문자열도 따로 본다.
+        """
+        from slack_cli_agent.observability.slow_report import (
+            ElapsedDiagnostician,
+            SlowReportFormatter,
+            SlowRequestReporter,
+            TimeBreakdownCalculator,
+        )
 
-    def test_출력_꼬리가_원본과_같은_길이로_잘린다(self) -> None:
-        reporter = FakeSlowReporter()
-        response = replace(fail_response("usage_limit"), raw={"stdout": "가" * 5000})
-        pipeline, _ = build_pipeline(responses=[response], slow_reporter=reporter)
+        표식 = "누출표식9931"
+
+        class 기록게시자:
+            def __init__(self) -> None:
+                self.posts: list[str] = []
+
+            def post(self, channel: str, thread_ts: Any, text: str, rich: bool) -> str | None:
+                self.posts.append(text)
+                return "ts-1"
+
+        class 빈기록:
+            def events(self, session_id: str):
+                return []
+
+        게시자 = 기록게시자()
+        settings = RuntimeSettings(slow_report_sec=0.0)
+        보고기 = SlowRequestReporter(
+            publisher=게시자,
+            calculator=TimeBreakdownCalculator(settings.assumed_tokens_per_sec),
+            diagnostician=ElapsedDiagnostician(settings.sleep_gap_suspect_sec),
+            formatter=SlowReportFormatter(settings.assumed_tokens_per_sec),
+            settings=settings,
+            troubleshoot_channel="TS",
+            readers=lambda engine: 빈기록(),
+        )
+        response = replace(
+            fail_response("usage_limit"),
+            raw={"stdout": f"읽은 파일 내용 {표식}", "stderr": f"오류 {표식}"},
+        )
+        pipeline, _ = build_pipeline(responses=[response], slow_reporter=보고기)
         pipeline.handle(make_ctx())
-        assert len(reporter.metas[0].stdout_tail or "") <= 800
+
+        assert 게시자.posts, "보고가 아예 안 나가면 이 시험은 아무것도 안 본다"
+        assert not any(표식 in 본문 for 본문 in 게시자.posts), 게시자.posts
 
 
 class Test함께있는사람:

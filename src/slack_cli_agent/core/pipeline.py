@@ -25,7 +25,7 @@ from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard
 from ..observability.audit import AuditLog, IncidentKind
 from ..observability.response_archive import ResponseArchive
-from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter, tail_output
+from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter
 from ..prompt.composer import SystemPromptComposer
 from ..prompt.sections import SILENT_MARK, CompositionContext
 from ..reliability.watchjobs import WatchJobPort
@@ -155,10 +155,6 @@ class RequestPipeline:
                     channel_name=config.name if config else ctx.channel,
                     text=ctx.text,
                     usage=response.usage,
-                    # None rather than "" for a missing key, so the report doesn't
-                    # render an empty block.
-                    stdout_tail=tail_output(response.raw.get("stdout")) or None,
-                    stderr_tail=tail_output(response.raw.get("stderr")) or None,
                 )
             )
         except Exception:
