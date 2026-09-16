@@ -315,11 +315,13 @@ class Test진행_표시_어댑터:
     def test_표시는_원_스레드에_붙는다(self, tmp_path: Path) -> None:
         받은인자: list[tuple[str, str, str]] = []
 
+        def 기록하는_싱크(channel: str, thread_ts: str, user: str) -> _수집싱크:
+            받은인자.append((channel, thread_ts, user))
+            return _수집싱크()
+
         coordinator = ProgressCoordinator(
             settings=RuntimeSettings(),
-            sink_factory=lambda channel, thread_ts, user: (
-                받은인자.append((channel, thread_ts, user)) or _수집싱크()
-            ),
+            sink_factory=기록하는_싱크,
             log_dir=tmp_path,
         )
         표시 = ReviewProgressDisplay(coordinator, _채널들(progress=True))

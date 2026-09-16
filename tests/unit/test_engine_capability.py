@@ -258,13 +258,12 @@ class Test보장을_감사에_남긴다:
 
 class Test폴백은_실제로_도는_엔진의_보장을_낸다:
     def _폴백(self, tmp_path: Path) -> FallbackEngine:
+        from engine_support import named
         from test_engine import RecordingEngine, 통과정책
 
         프로필 = claude_profile(tmp_path)
         일차 = ClaudeEngine(프로필, SETTINGS)
-        이차 = RecordingEngine(프로필, SETTINGS)
-        이차.name = "gemini"
-        이차.capabilities = GeminiEngine.capabilities
+        이차 = named(RecordingEngine, "gemini", capabilities=GeminiEngine.capabilities)(프로필, SETTINGS)
         runner = EngineRunner(SETTINGS, environment_policy=통과정책())
         return FallbackEngine(일차, 이차, EngineSwitcher(tmp_path / "engine_state.json"), runner)
 
