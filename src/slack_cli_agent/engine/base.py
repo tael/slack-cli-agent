@@ -78,6 +78,13 @@ class EngineRequest:
     readable_dirs: tuple[Path, ...] = ()
     allowed_tools: tuple[str, ...] = ()
     trust_level: TrustLevel = TrustLevel.GENERAL
+    #: Where this engine should append the name of each tool it starts, for
+    #: the progress display. None means this request has no display — either
+    #: the channel has it off, or no one is watching the file. How the file
+    #: gets written is per-engine (claude uses a PreToolUse hook); an engine
+    #: with no equivalent ignores this and the display shows its opening
+    #: line only, rather than failing the request.
+    progress_log: Path | None = None
 
     def require_session_id(self) -> str:
         """For build_command, which only ever runs after EngineRunner filled it in.

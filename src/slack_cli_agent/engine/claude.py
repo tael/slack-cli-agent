@@ -26,11 +26,15 @@ enough to keep one bot's skills out of another's session.
 from __future__ import annotations
 
 import json
+import shlex
+import sys
 import uuid
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from ..config.profile import McpServerSpec
+from ..observability.progress_hook import HOOK_SCRIPT
 from .base import (
     ElapsedSource,
     Engine,
@@ -58,6 +62,30 @@ _USAGE_KEY_MAP: Mapping[str, str] = {
     "cache_creation_tokens": "cache_creation_input_tokens",
     "cache_read_tokens": "cache_read_input_tokens",
 }
+
+
+def progress_hook_settings(log_path: Path) -> dict[str, Any]:
+    """A settings fragment registering the tool-start hook for one request.
+
+    Goes in through --settings as JSON rather than into the bot's engine
+    home: the log path differs per request, and a file in the home would
+    be read by every concurrently running request, including ones in a
+    channel with progress off.
+
+    The interpreter is this process's own (sys.executable) because the
+    engine's environment is a minimal allowlist (engine/environment.py) —
+    a bare "python3" would depend on whatever that PATH happens to hold.
+    """
+    command = " ".join(
+        shlex.quote(part) for part in (sys.executable, str(HOOK_SCRIPT), str(log_path))
+    )
+    return {
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "*", "hooks": [{"type": "command", "command": command}]}
+            ]
+        }
+    }
 
 
 def _claude_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, Any]:
@@ -114,6 +142,11 @@ class ClaudeEngine(Engine):
             cmd += [
                 "--mcp-config", json.dumps({"mcpServers": mcp_servers}, ensure_ascii=False),
                 "--strict-mcp-config",
+            ]
+        if request.progress_log is not None:
+            cmd += [
+                "--settings",
+                json.dumps(progress_hook_settings(request.progress_log), ensure_ascii=False),
             ]
         cmd += ["--append-system-prompt", request.system_prompt]
         cmd += (["--resume", request.require_session_id()] if request.resume

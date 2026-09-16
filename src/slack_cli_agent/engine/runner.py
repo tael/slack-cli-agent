@@ -274,6 +274,10 @@ class FallbackEngine(Engine):
             model=None, effort=request.effort,
             workdir=request.workdir, readable_dirs=request.readable_dirs,
             allowed_tools=request.allowed_tools, trust_level=request.trust_level,
+            # Same request with the same person waiting on it. Dropping this
+            # would leave the already-open progress display stuck on its
+            # opening line for the whole fallback turn.
+            progress_log=request.progress_log,
         )
         return self.runner.run(self.secondary, fallback_request)
 
