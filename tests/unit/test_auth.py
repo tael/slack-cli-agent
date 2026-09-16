@@ -7,7 +7,7 @@ from pathlib import Path
 
 from slack_cli_agent.auth.policy import OWNER_EFFORT_MIN, AccessExtension, AccessPolicy
 from slack_cli_agent.auth.principal import Principal, TrustLevel
-from slack_cli_agent.auth.tools import ToolPolicy
+from slack_cli_agent.auth.tools import READ_ONLY_TOOLS, SKILL_TOOL, ToolPolicy
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import Profile
 
@@ -180,6 +180,46 @@ class TestAccessExtension:
 class TestToolPolicy:
     BASE = ("Read", "Grep")
     OWNER_EXTRA = ("Bash", "Edit")
+
+    def test_읽기전용은_기본_도구에_있어도_쓰기_도구를_뺀다(self, tmp_path: Path) -> None:
+        """'읽기 전용' 이 빼는 것은 소유자 추가분과 확장분뿐이었다. 프로필이
+        settings.base_tools 에 Bash 를 넣으면 조회만 해야 하는 턴에도 그대로
+        들어갔다(sca-gy0)."""
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", {}))
+        principal = policy.principal_for("D1", OWNER)
+        tools = ToolPolicy(("Read", "Bash", "Grep", "Write", "Edit"), self.OWNER_EXTRA)
+        assert tools.tools_for(principal, readonly=True) == "Read,Grep"
+
+    def test_읽기전용이_아니면_기본_도구를_그대로_둔다(self, tmp_path: Path) -> None:
+        """거르는 자리는 읽기 전용 턴뿐이다. 일반 턴의 도구를 줄이면 답을 못 한다."""
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", {}))
+        principal = policy.principal_for("C1", STRANGER)
+        tools = ToolPolicy(("Read", "Bash"), self.OWNER_EXTRA)
+        assert tools.tools_for(principal) == "Read,Bash"
+
+    def test_모르는_도구는_읽기_전용으로_치지_않는다(self, tmp_path: Path) -> None:
+        """MCP 도구처럼 이름만 보고는 판단할 수 없는 것이 들어온다. 허용목록에
+        없으면 뺀다 — 목록을 부정형으로 두면 새 쓰기 도구가 조용히 통과한다."""
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", {}))
+        principal = policy.principal_for("D1", OWNER)
+        tools = ToolPolicy(("Read", "mcp__github__create_pull_request"), self.OWNER_EXTRA)
+        assert tools.tools_for(principal, readonly=True) == "Read"
+
+    def test_읽기전용_턴에는_스킬을_안_붙인다(self, tmp_path: Path) -> None:
+        """스킬은 무엇이든 실행할 수 있어 읽기 전용 보장을 깬다."""
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", {}))
+        principal = policy.principal_for("D1", OWNER)
+        tools = ToolPolicy(self.BASE, self.OWNER_EXTRA)
+        붙은것 = tools.tool_list_for(principal, readonly=True, skills_enabled=True)
+        assert SKILL_TOOL not in 붙은것
+
+    def test_읽기전용에서_전부_걸러지면_빈_목록이_아니다(self, tmp_path: Path) -> None:
+        """claude 는 빈 허용목록을 '도구 없음' 으로 읽는다. 아무것도 못 하는
+        턴이 되면 점검이 통째로 실패한다(sca-0ab 와 같은 계열)."""
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", {}))
+        principal = policy.principal_for("D1", OWNER)
+        tools = ToolPolicy(("Bash", "Write"), self.OWNER_EXTRA)
+        assert tools.tool_list_for(principal, readonly=True) == READ_ONLY_TOOLS
 
     def test_읽기전용이면_기본_도구만_붙는다(self, tmp_path: Path) -> None:
         policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", {}))
