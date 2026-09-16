@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 from slack_cli_agent.web.console import WebConsole
 
@@ -83,13 +84,14 @@ class Test조립:
         res = console.router().handle("GET", "/api/channels/example", {}, None)
 
         assert res.status == 200
-        assert [row["channel_id"] for row in res.body] == ["C9"]  # type: ignore[union-attr,index]
+        rows = cast(list[dict[str, Any]], res.body)
+        assert [row["channel_id"] for row in rows] == ["C9"]
 
     def test_지표를_그_봇의_프로필로_모은다(self, tmp_path: Path) -> None:
         console = make_console(tmp_path)
         res = console.router().handle("GET", "/api/state/example", {"days": "1"}, None)
         assert res.status == 200
-        assert res.body["bot"]["name"] == "example"  # type: ignore[index,call-overload]
+        assert cast(dict[str, Any], res.body)["bot"]["name"] == "example"
 
     def test_봇_명부가_모든_프로필을_낸다(self, tmp_path: Path) -> None:
         """봇 선택줄이 이것을 쓴다. 지표 응답은 선택된 봇 하나만 담는다."""

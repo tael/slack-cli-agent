@@ -9,7 +9,7 @@ API 실물을 부르지 않는다 — 분석은 시험용 분석기를 주입한
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -112,7 +112,7 @@ class Recorder:
         return self._result
 
 
-def make_clock(moment: datetime) -> object:
+def make_clock(moment: datetime) -> Callable[[], datetime]:
     return lambda: moment
 
 
