@@ -14,6 +14,7 @@ from ..admin.command import AdminContext
 from ..admin.router import AdminRouter
 from ..jobs.ports import JobQueue
 from ..reliability.dedup import DeduplicationTracker
+from ..slack.assistant import AssistantPanel
 from ..slack.attachments import AttachmentStore
 from ..slack.gateway import SlackGateway
 from ..slack.listener import EventListener
@@ -52,6 +53,9 @@ class IngressService:
         # Retry cap for a failed job; 0 means unlimited. Takes just this value rather
         # than the whole settings object since ingress doesn't need anything else from it.
         job_max_attempts: int = 0,
+        # None means this bot has no agent panel wiring; the event is then
+        # neither subscribed to nor handled.
+        assistant: AssistantPanel | None = None,
     ) -> None:
         self._listener = listener
         self._dedup = dedup
@@ -65,17 +69,25 @@ class IngressService:
         self._on_reaction = on_reaction
         self._spawn = spawn
         self._job_max_attempts = job_max_attempts
+        self._assistant = assistant
 
     def register(self, gateway: SlackGateway) -> None:
         gateway.on("app_mention", self.handle_app_mention)
         gateway.on("message", self.handle_message)
         gateway.on("reaction_added", self.handle_reaction)
+        if self._assistant is not None:
+            gateway.on("assistant_thread_started", self.handle_assistant_thread_started)
 
     def handle_app_mention(self, event: Mapping[str, Any]) -> None:
         self._process(self._listener.from_app_mention(event), event)
 
     def handle_message(self, event: Mapping[str, Any]) -> None:
         self._process(self._listener.from_message(event), event)
+
+    def handle_assistant_thread_started(self, event: Mapping[str, Any]) -> None:
+        if self._assistant is None:
+            return
+        self._assistant.thread_started(event)
 
     def handle_reaction(self, event: Mapping[str, Any]) -> None:
         # Caught here so one bad event doesn't stop future reaction events from being handled.

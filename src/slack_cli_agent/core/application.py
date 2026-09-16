@@ -119,6 +119,7 @@ from ..review.stale_reporter import StaleReviewReporter
 from ..review.trace import DebugTraceTask
 from ..session.manager import SessionManager
 from ..session.store import SqliteSessionStore
+from ..slack.assistant import DEFAULT_GREETING, AssistantPanel
 from ..slack.attachments import AttachmentStore, DownloadResult
 from ..slack.credentials import CredentialResolver, resolver_for
 from ..slack.download import HttpDownloader
@@ -992,6 +993,12 @@ class Application:
                 # failed jobs get resurrected via re-registration; capping attempts
                 # keeps a permanently-failing request from reviving on every redelivery
                 job_max_attempts=self._settings.job_max_attempts,
+                assistant=AssistantPanel(
+                    client=self._client,
+                    reply=self._reply,
+                    greeting=self._profile.agent_greeting or DEFAULT_GREETING,
+                    prompts=self._profile.agent_prompts,
+                ),
             )
         return self._ingress
 

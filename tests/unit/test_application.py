@@ -1448,6 +1448,33 @@ class Test학습쌓기자리연결:
         assert composer._knowledge._learned_dir == app.profile.paths.learned
 
 
+class Test에이전트패널연결:
+    """패널을 만드는 것과 접수기가 그 이벤트를 받는 것은 다르다(sca-kos.7)."""
+
+    def test_접수기가_패널을_받는다(self, app: Application) -> None:
+        assert app.ingress()._assistant is not None
+
+    def test_프로필의_안내_문구를_쓴다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        profile = write_profile(tmp_path, agent_greeting="신지입니다. 무엇을 도와드릴까요?")
+        application = Application(profile, client)
+        assert application.ingress()._assistant._greeting == "신지입니다. 무엇을 도와드릴까요?"
+        application.close()
+
+    def test_안내_문구가_없으면_기본_문구를_쓴다(self, app: Application) -> None:
+        from slack_cli_agent.slack.assistant import DEFAULT_GREETING
+
+        assert app.ingress()._assistant._greeting == DEFAULT_GREETING
+
+    def test_프로필의_제안_프롬프트를_쓴다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        profile = write_profile(
+            tmp_path, agent_prompts=[{"title": "오늘 할 일", "message": "오늘 할 일을 알려줘"}],
+        )
+        application = Application(profile, client)
+        prompts = application.ingress()._assistant._prompts
+        assert [p.title for p in prompts] == ["오늘 할 일"]
+        application.close()
+
+
 class Test플러그인엔진등록:
     """플러그인이 더한 엔진이 실제로 조립에 들어가는가.
 

@@ -131,6 +131,23 @@ class McpServerSpec:
 
 
 @dataclass(frozen=True)
+class AgentPrompt:
+    """One suggested prompt in the agent panel. `title` is the button label,
+    `message` is what gets sent when it is pressed."""
+
+    title: str
+    message: str
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> AgentPrompt:
+        title = str(data.get("title") or "").strip()
+        message = str(data.get("message") or "").strip() or title
+        if not title:
+            raise ConfigError("제안 프롬프트에 title 이 없다")
+        return cls(title=title, message=message)
+
+
+@dataclass(frozen=True)
 class Profile:
     name: str
     display_name: str
@@ -145,6 +162,10 @@ class Profile:
     troubleshoot_channel: str
     owner_dm: str = ""
     plugins: tuple[str, ...] = ()
+    #: Agent panel greeting. Empty means post nothing when a panel thread opens.
+    agent_greeting: str = ""
+    #: Agent panel suggested prompts. Empty leaves whatever the app manifest declares.
+    agent_prompts: tuple[AgentPrompt, ...] = ()
     settings_override: Mapping[str, Any] = field(default_factory=dict)
     # Empty by default — an installed bot must not carry another bot's MCP
     # servers along. See docs/패키징-경계.md.
@@ -268,6 +289,10 @@ class Profile:
             owner_dm=str(data.get("owner_dm", "")),
             credentials_file=credentials_file or None,
             plugins=tuple(data.get("plugins") or ()),
+            agent_greeting=str(data.get("agent_greeting") or ""),
+            agent_prompts=tuple(
+                AgentPrompt.from_dict(p) for p in (data.get("agent_prompts") or ())
+            ),
             settings_override=dict(data.get("settings") or {}),
             mcp_servers=mcp_servers,
         )

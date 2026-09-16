@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from identity_support import fake_identity
@@ -162,6 +163,7 @@ def make_ingress(
     reactions_seen: list[tuple[str, str, str, str]] | None = None,
     job_max_attempts: int = 0,
     spawn: TaskSpawner | None = None,
+    assistant: Any = None,
 ) -> IngressService:
     profile = make_profile(tmp_path)
     channels = ChannelRegistry(Path("/nonexistent.json"))
@@ -202,6 +204,7 @@ def make_ingress(
         allowed_reactions=frozenset({"dango"}),
         on_reaction=on_reaction,
         spawn=spawn if spawn is not None else InlineTaskSpawner(),
+        assistant=assistant,
         job_max_attempts=job_max_attempts,
     )
 
@@ -412,6 +415,41 @@ class TestRegister:
         gateway.dispatch("app_mention", mention_event())
 
         assert len(queue.enqueued) == 1
+
+
+class Test에이전트패널:
+    """상단바 에이전트 패널에서 스레드를 열면 오는 이벤트다(sca-kos.7).
+
+    구독만 하고 분배에 안 걸면 패널이 빈 채로 열린다.
+    """
+
+    def test_register_뒤_에이전트_스레드_시작이_패널로_간다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        본것: list[dict] = []
+
+        class Fake패널:
+            def thread_started(self, event):
+                본것.append(dict(event))
+
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, assistant=Fake패널(),
+        )
+        gateway = SlackGateway(client=FakeWebClient())
+        ingress.register(gateway)
+
+        gateway.dispatch("assistant_thread_started", {"assistant_thread": {"channel_id": "D1"}})
+
+        assert 본것 == [{"assistant_thread": {"channel_id": "D1"}}]
+
+    def test_패널이_없으면_아무_일도_하지_않는다(self, listener, admin_router, tmp_path) -> None:
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router, tmp_path=tmp_path,
+        )
+        gateway = SlackGateway(client=FakeWebClient())
+        ingress.register(gateway)
+        gateway.dispatch("assistant_thread_started", {"assistant_thread": {"channel_id": "D1"}})
 
 
 class TestResilience:
