@@ -45,7 +45,7 @@ def 생성된plist(tmp_path: Path) -> dict[str, Any]:
     )
     가짜.chmod(0o755)
 
-    결과 = subprocess.run(  # noqa: PLW1510 - 종료코드를 시험이 직접 본다
+    결과 = subprocess.run(
         ["/bin/bash", str(등록기), "testbot"],
         capture_output=True,
         text=True,
@@ -163,7 +163,7 @@ class Test재등록:
         )
         가짜.chmod(0o755)
 
-        결과 = subprocess.run(  # noqa: PLW1510 - 종료코드를 시험이 직접 본다
+        결과 = subprocess.run(
             ["/bin/bash", str(등록기), "testbot"],
             capture_output=True,
             text=True,
@@ -231,7 +231,7 @@ exit 0
             encoding="utf-8",
         )
         가짜.chmod(0o755)
-        return subprocess.run(  # noqa: PLW1510 - 종료코드를 시험이 직접 본다
+        return subprocess.run(
             ["/bin/bash", str(등록기), "testbot"],
             capture_output=True,
             text=True,
@@ -282,7 +282,7 @@ class Test등록이_실패하면_그렇게_끝난다:
             encoding="utf-8",
         )
         가짜.chmod(0o755)
-        return subprocess.run(  # noqa: PLW1510 - 종료코드를 시험이 직접 본다
+        return subprocess.run(
             ["/bin/bash", str(등록기), "testbot"],
             capture_output=True,
             text=True,

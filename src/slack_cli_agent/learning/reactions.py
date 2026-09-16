@@ -51,7 +51,7 @@ class ReactionCollector:
         for ts in self._thread_timestamps(text):
             try:
                 messages = self._threads.read_thread(channel_id, ts, self._limit)
-            except Exception:  # noqa: BLE001, S112 — one thread failing shouldn't stop the whole batch
+            except Exception:  # noqa: BLE001 — one thread failing shouldn't stop the whole batch
                 continue
             reactions.extend(self._reactions_in_thread(channel_name, ts, messages))
         return reactions

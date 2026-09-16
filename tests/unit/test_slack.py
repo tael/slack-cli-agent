@@ -1034,7 +1034,7 @@ class Test감시표식도_정리_대상이다:
         """복구 스캔이 보는 집합과 최종 표식이 지우는 집합은 다르다. 전자를
         넓히면 감시 위임 건이 복구 대상으로 다시 실행된다."""
         assert WATCH_MARK_EMOJI not in UNFINISHED_EMOJI
-        assert STALE_ON_SETTLE == UNFINISHED_EMOJI | {WATCH_MARK_EMOJI}
+        assert UNFINISHED_EMOJI | {WATCH_MARK_EMOJI} == STALE_ON_SETTLE
 
 
 class Test감시표식_제거_실패는_운영_로그에_남는다:

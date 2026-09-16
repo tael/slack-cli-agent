@@ -505,7 +505,7 @@ class Test한_채널만_실패한_날:
                 self.works = False
 
             def apply(self, proposal):
-                return {name: 1 for name in proposal.channel_knowledge} if self.works else {}
+                return dict.fromkeys(proposal.channel_knowledge, 1) if self.works else {}
 
         반영기 = 늦는반영기()
         self.시계 = 가변시계(datetime(2026, 9, 14, 10, 0, tzinfo=UTC))

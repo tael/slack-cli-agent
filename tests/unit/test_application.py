@@ -1430,18 +1430,17 @@ class Test폴백엔진연결:
                 # 클로드 CLI 는 한도 소진을 종료 코드 1 과 stdout JSON 으로 낸다.
                 본문 = json.dumps({"result": "5-hour limit reached", "api_error_status": 429})
                 return subprocess.CompletedProcess(args=cmd, returncode=1, stdout=본문, stderr="")
-            else:
-                본문 = "\n".join(
-                    [
-                        json.dumps({"type": "thread.started", "thread_id": "th-1"}),
-                        json.dumps(
-                            {
-                                "type": "item.completed",
-                                "item": {"type": "agent_message", "text": "2차 답변"},
-                            }
-                        ),
-                    ]
-                )
+            본문 = "\n".join(
+                [
+                    json.dumps({"type": "thread.started", "thread_id": "th-1"}),
+                    json.dumps(
+                        {
+                            "type": "item.completed",
+                            "item": {"type": "agent_message", "text": "2차 답변"},
+                        }
+                    ),
+                ]
+            )
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=본문, stderr="")
 
         엔진.runner._run = 대역  # type: ignore[attr-defined]
