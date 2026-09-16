@@ -118,6 +118,7 @@ from ..review.format import FormatReviewTask
 from ..review.ledger import ReviewLedger
 from ..review.postmortem import PostmortemTask
 from ..review.records import AnswerRecordFinder
+from ..review.stale_reporter import StaleReviewReporter
 from ..review.trace import DebugTraceTask
 from ..session.manager import SessionManager
 from ..session.store import SqliteSessionStore
@@ -259,6 +260,7 @@ class Application:
         self._learning_progress: ProgressStore | None = None
         self._catchup_service: CatchupService | None = None
         self._pending_report: PendingReportStore | None = None
+        self._review_ledger_instance: ReviewLedger | None = None
         self._outage_tracker: OutageTracker | None = None
         self._connection_epochs: SqliteConnectionEpochs | None = None
         self._transcript_reader_cache: dict[str, SessionTranscriptReader] = {}
@@ -970,15 +972,35 @@ class Application:
     def allowed_reactions(self) -> frozenset[str]:
         return frozenset(self.review_tasks())
 
+    def review_ledger(self) -> ReviewLedger:
+        if self._review_ledger_instance is None:
+            self._review_ledger_instance = ReviewLedger(
+                self._database,
+                # 점검은 엔진을 두 번까지 부른다(구분선 누락 재시도).
+                # 그보다 짧게 잡으면 도는 점검을 중복 실행한다.
+                stale_after_sec=self._settings.request_timeout_sec * 2,
+            )
+        return self._review_ledger_instance
+
+    def stale_review_reporter(self) -> StaleReviewReporter:
+        return StaleReviewReporter(
+            self.review_ledger(),
+            ReviewPublisher(self.publisher()),
+            self._profile.troubleshoot_channel,
+        )
+
+    def stale_review_runner(self) -> PeriodicRunner:
+        # 기동 시 1회로는 부족하다 — 점검이 중단되는 계기는 재기동만이 아니다.
+        return PeriodicRunner(
+            self.stale_review_reporter().sweep,
+            self._settings.stale_review_sweep_interval_sec,
+            name="stale_review",
+        )
+
     def review_tasks(self) -> dict[str, ReviewTask]:
         if self._review_tasks is None:
             shared = {
-                "ledger": ReviewLedger(
-                    self._database,
-                    # 점검은 엔진을 두 번까지 부른다(구분선 누락 재시도).
-                    # 그보다 짧게 잡으면 도는 점검을 중복 실행한다.
-                    stale_after_sec=self._settings.request_timeout_sec * 2,
-                ),
+                "ledger": self.review_ledger(),
                 "message_lookup": SlackMessageLookup(self._client),
                 "transcript": ThreadTranscriptPort(self._transcript_builder()),
                 "answer_finder": AnswerRecordFinder(self._database),
@@ -1304,6 +1326,7 @@ class Application:
                 self.roster_refresher(),
                 self.attachment_cleanup_runner(),
                 self.pending_report_runner(),
+                self.stale_review_runner(),
             ],
             name="ingress",
         )

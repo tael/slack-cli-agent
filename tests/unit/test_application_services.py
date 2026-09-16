@@ -67,6 +67,7 @@ RUNNER_ARGS: dict[str, Any] = {
     "startup_catchup_runner": lambda app: (app.worker(),),
     "connection_catchup_runner": lambda app: (app.worker(),),
     "pending_report_runner": lambda app: (),
+    "stale_review_runner": lambda app: (),
     "learning_batch_runner": lambda app: (),
 }
 
@@ -101,6 +102,7 @@ class Test묶음구성:
             "roster",
             "attachment_cleanup",
             "pending_report",
+            "stale_review",
         }
 
     def test_워커_묶음은_상태기록과_감시와_정리와_캐치업을_띄운다(self, app: Application) -> None:
