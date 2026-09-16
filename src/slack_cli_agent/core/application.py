@@ -132,6 +132,7 @@ from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption
 from ..slack.linked_threads import LinkedThreadReader
 from ..slack.listener import EventListener
 from ..slack.names import DisplayNameResolver
+from ..slack.owner_only_audit import OwnerOnlyChannelAudit
 from ..slack.participants import ThreadParticipants
 from ..slack.progress import (
     FallbackProgressSink,
@@ -1193,6 +1194,46 @@ class Application:
             )
         return self._roster_refresher
 
+    def owner_only_audit_runner(self) -> PeriodicRunner:
+        """소유자 전용 선언과 실제 멤버가 어긋나는지 본다. ingress 에만 둔다 -
+        워커는 여러 개가 돌 수 있어 같은 경고가 여러 번 나간다."""
+        audit = OwnerOnlyChannelAudit(
+            channels=sorted(self._settings.owner_only_channels),
+            owner_user_id=self._profile.owner_user_id,
+            list_members=self._channel_members,
+            # 슬랙 멤버 목록은 봇도 사용자 ID 로 준다. 사람인지는 users.info 의
+            # is_bot 으로만 갈린다.
+            is_bot=self._is_bot_user,
+            notify=self._notify_owner if self._profile.owner_user_id else None,
+        )
+        return PeriodicRunner(
+            audit.check,
+            self._settings.owner_only_audit_interval_sec,
+            name="owner_only_audit",
+        )
+
+    def _channel_members(self, channel: str) -> list[str]:
+        members: list[str] = []
+        cursor = ""
+        while True:
+            response = self.client().conversations_members(
+                channel=channel, limit=200, cursor=cursor or None
+            )
+            members.extend(response.get("members", []))
+            cursor = (response.get("response_metadata") or {}).get("next_cursor") or ""
+            if not cursor:
+                return members
+
+    def _is_bot_user(self, user_id: str) -> bool:
+        # 조회가 안 되면 봇으로 본다. 사람으로 보면 조회 실패가 곧 위반 경고가
+        # 되어, 고칠 것이 없는데 매 주기 알림이 나간다.
+        try:
+            user = self.client().users_info(user=user_id).get("user") or {}
+        except Exception as exc:  # noqa: BLE001 — 한 사람의 조회 실패가 점검을 끊으면 안 된다
+            log.warning("사용자 조회 실패, 봇으로 본다 : %s : %s", user_id, exc)
+            return True
+        return bool(user.get("is_bot") or user.get("id") == "USLACKBOT")
+
     def connection_watch(self) -> SocketErrorWatch:
         """SocketErrorWatch is a logging.Handler; attaching it to loggers is
         assembly's job, not the watch's own — without this, socket drops go
@@ -1373,6 +1414,7 @@ class Application:
             [
                 self.health_runner(restart),
                 self.roster_refresher(),
+                self.owner_only_audit_runner(),
                 self.attachment_cleanup_runner(),
                 self.pending_report_runner(),
                 self.stale_review_runner(),

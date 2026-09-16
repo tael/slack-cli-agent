@@ -63,6 +63,7 @@ RUNNER_ARGS: dict[str, Any] = {
     "watch_runner": lambda app: (),
     "state_snapshot_runner": lambda app: (),
     "roster_refresher": lambda app: (),
+    "owner_only_audit_runner": lambda app: (),
     "attachment_cleanup_runner": lambda app: (),
     "watch_result_cleanup_runner": lambda app: (),
     "health_runner": lambda app: (lambda 사유: None,),
@@ -103,6 +104,7 @@ class Test묶음구성:
         assert set(app.ingress_services(lambda 사유: None).runner_names) == {
             "health",
             "roster",
+            "owner_only_audit",
             "attachment_cleanup",
             "pending_report",
             "stale_review",
