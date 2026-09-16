@@ -25,6 +25,7 @@ from .checks import (
     McpServerCheck,
     OwnerSettingsInertCheck,
     ProfilePermissionCheck,
+    ProfileUnknownKeysCheck,
     PromptFileCheck,
     ToolAllowlistEnforcementCheck,
     UsageCheckCommandCheck,
@@ -68,6 +69,9 @@ class PreflightSuite:
             # 있다. 그 사실을 설정 시점에 알리는 것이 목적이다.
             ToolAllowlistEnforcementCheck(),
             UsageCheckCommandCheck(),
+            # fatal=False: 오타 하나로 봇을 못 뜨게 하지 않는다. 미설정과
+            # 오타가 같은 모습이 되는 것을 기동 시점에 알리는 것이 목적이다.
+            ProfileUnknownKeysCheck(),
             ChannelUserToolsCheck(),
             # 표기가 안 풀리면 MCP 서버는 빈 자격으로 인증 실패만 낸다. 기동에서 막는다.
             McpCredentialCheck(),

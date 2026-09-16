@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from slack_cli_agent.config.profile import KNOWN_KEYS as PROFILE_KNOWN_KEYS
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.core.errors import ConfigError
 from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
@@ -25,6 +26,7 @@ from slack_cli_agent.preflight.checks import (
     McpServerCheck,
     OwnerSettingsInertCheck,
     ProfilePermissionCheck,
+    ProfileUnknownKeysCheck,
     PromptFileCheck,
     ToolAllowlistEnforcementCheck,
     WorkdirCheck,
@@ -618,6 +620,7 @@ class TestPreflightSuite:
             "profile_permissions",
             "tool_allowlist_enforcement",
             "usage_check_command",
+            "profile_unknown_keys",
             "channel_user_tools",
             "mcp_credentials",
         ]
@@ -704,6 +707,7 @@ class TestPreflightSuite:
             "[통과] profile_permissions : 좋음\n"
             "[통과] tool_allowlist_enforcement : 좋음\n"
             "[통과] usage_check_command : 좋음\n"
+            "[통과] profile_unknown_keys : 좋음\n"
             "[통과] channel_user_tools : 좋음\n"
             "[통과] mcp_credentials : 좋음\n"
             "기동 불가\n"
@@ -1005,3 +1009,77 @@ class TestChannelUserToolsCheck:
 
         assert result.ok is False
         assert "U012ABC" in result.detail
+
+
+class TestProfileUnknownKeysCheck:
+    """한 글자 틀린 키는 기동을 막지 않고 그 기능만 끈다. 미설정과 오타가 같은
+    모습이 되는 것을 기동 시점에 드러낸다 (sca-4dr)."""
+
+    def write(self, tmp_path: Path, data: dict) -> Profile:
+        base = {
+            "name": "example",
+            "primary_engine": {
+                "type": "claude",
+                "binary": str(tmp_path / "claude_bin"),
+                "model": "m",
+            },
+            "owner_user_id": "U1",
+            "troubleshoot_channel": "C1",
+            "state_dir": str(tmp_path / "state"),
+        }
+        base.update(data)
+        (tmp_path / "example.json").write_text(json.dumps(base), encoding="utf-8")
+        return Profile.load("example", [tmp_path])
+
+    def test_모르는_최상위_키를_알린다(self, tmp_path: Path) -> None:
+        profile = self.write(tmp_path, {"owner_dm_id": "D1"})
+        result = ProfileUnknownKeysCheck().run(PreflightContext(profile=profile))
+        assert result.ok is False
+        assert result.fatal is False
+        assert "owner_dm_id" in result.detail
+
+    def test_settings_블록의_모르는_키도_알린다(self, tmp_path: Path) -> None:
+        """sca-39c 가 이 모양이었다. owner_only_channels 를 단수로 쓰면 느린 요청
+        보고가 조용히 꺼진다."""
+        profile = self.write(tmp_path, {"settings": {"owner_only_channel": ["C1"]}})
+        result = ProfileUnknownKeysCheck().run(PreflightContext(profile=profile))
+        assert result.ok is False
+        assert "owner_only_channel" in result.detail
+        assert "settings" in result.detail
+
+    def test_아는_키만_있으면_통과한다(self, tmp_path: Path) -> None:
+        profile = self.write(
+            tmp_path, {"owner_dm": "D1", "settings": {"owner_only_channels": ["C1"]}}
+        )
+        result = ProfileUnknownKeysCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
+
+    def test_파일에서_온_프로필이_아니면_판정하지_않는다(self, tmp_path: Path) -> None:
+        """웹 콘솔이 메모리에서 만든 프로필에는 읽을 원본이 없다. 없는 것을
+        키 없음으로 읽으면 거짓 경고가 된다."""
+        result = ProfileUnknownKeysCheck().run(PreflightContext(profile=make_profile(tmp_path)))
+        assert result.ok is True
+
+    def test_원본을_못_읽으면_판정하지_않는다(self, tmp_path: Path) -> None:
+        profile = self.write(tmp_path, {})
+        (tmp_path / "example.json").unlink()
+        result = ProfileUnknownKeysCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
+
+    def test_표준_점검_목록에_들어_있다(self) -> None:
+        names = [check.name for check in PreflightSuite().checks]
+        assert ProfileUnknownKeysCheck.name in names
+
+
+class TestProfileKnownKeys:
+    def test_from_dict_가_읽는_키가_전부_들어_있다(self) -> None:
+        """KNOWN_KEYS 가 from_dict 와 어긋나면 이 점검이 정상 설정을 오타로
+        보고한다. 키를 더할 때 두 곳을 같이 고치게 한다."""
+        import inspect
+        import re as _re
+
+        source = inspect.getsource(Profile.from_dict) + inspect.getsource(Profile._under)
+        read = set(_re.findall(r'data\.get\(\s*"([a-z_]+)"', source))
+        read |= set(_re.findall(r'_under\(data,\s*"([a-z_]+)"', source))
+        assert read, "from_dict 에서 읽는 키를 하나도 못 찾았다"
+        assert read <= PROFILE_KNOWN_KEYS

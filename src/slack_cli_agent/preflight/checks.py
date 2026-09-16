@@ -17,6 +17,8 @@ from typing import ClassVar
 
 from ..auth.policy import EFFORT_LEVELS, OWNER_EFFORT_MIN
 from ..config.channel import ChannelRegistry
+from ..config.profile import KNOWN_KEYS as PROFILE_KNOWN_KEYS
+from ..config.settings import RuntimeSettings
 from ..core.errors import ConfigError
 from ..engine.capability import ToolRestriction
 from ..engine.environment import registry
@@ -170,6 +172,47 @@ class UsageCheckCommandCheck(PreflightCheck):
                 fatal=False,
             )
         return CheckResult(ok=True, detail="사용량 확인 명령 점검 통과")
+
+
+class ProfileUnknownKeysCheck(PreflightCheck):
+    """Warns about profile keys the code never reads.
+
+    `from_dict` takes the keys it knows and drops the rest, and
+    `RuntimeSettings.override` ignores unknown `settings` keys the same way.
+    A key that is one character off therefore boots fine with its feature
+    off, which looks exactly like not configuring it at all -- sca-39c was
+    that shape. `fatal=False`: a typo is not a reason to keep the bot down
+    (sca-4dr).
+    """
+
+    name: ClassVar[str] = "profile_unknown_keys"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        source = ctx.profile.source_file
+        if source is None:
+            return CheckResult(ok=True, detail="파일에서 읽은 프로필이 아니다")
+        try:
+            data = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # The profile in hand parsed once already, so this is a file that
+            # changed or went away since. Boot is not the place to judge it.
+            return CheckResult(ok=True, detail=f"프로필 원본을 다시 읽지 못했다 : {source}")
+        if not isinstance(data, dict):
+            return CheckResult(ok=True, detail="프로필 원본이 객체가 아니다")
+        unknown = [key for key in sorted(data) if key not in PROFILE_KNOWN_KEYS]
+        settings_block = data.get("settings")
+        if isinstance(settings_block, dict):
+            known_settings = set(RuntimeSettings.__dataclass_fields__)
+            unknown += [
+                f"settings.{key}" for key in sorted(settings_block) if key not in known_settings
+            ]
+        if unknown:
+            return CheckResult(
+                ok=False,
+                detail="프로필에서 코드가 안 읽는 키가 있다 : " + ", ".join(unknown),
+                fatal=False,
+            )
+        return CheckResult(ok=True, detail="프로필 키 점검 통과")
 
 
 class OwnerSettingsInertCheck(PreflightCheck):

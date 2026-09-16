@@ -29,6 +29,19 @@ _SECRET_KEY_NAME = "token"
 _SECRET_KEY_EXEMPT_BLOCK = "mcp_servers"
 
 
+KNOWN_KEYS = frozenset(
+    {
+        "name", "display_name", "primary_engine", "fallback_engine",
+        "state_dir", "work_root", "data_dir", "attach_dir", "launch_label",
+        "owner_user_id", "troubleshoot_channel", "owner_dm", "credentials_file",
+        "plugins", "usage_check_command", "agent_greeting", "agent_prompts",
+        "settings", "mcp_servers",
+    }
+)
+"""Top-level keys `from_dict` reads. Anything else is dropped, so a mistyped
+key turns its feature off while boot still succeeds (sca-4dr)."""
+
+
 # A profile name becomes a filename. Anything outside this set either escapes
 # the search directory or carries something that must not be written to disk.
 _PROFILE_NAME_RE = re.compile(r"[\w.-]+", re.UNICODE)
