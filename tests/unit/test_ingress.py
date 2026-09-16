@@ -52,10 +52,18 @@ class FakeWebClient:
 class FakeJobQueue:
     """JobQueue 계약 중 enqueue 만 이 시험에 필요하다."""
 
-    def __init__(self, *, enqueue_result: bool = True, raise_on_enqueue: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        enqueue_result: bool = True,
+        raise_on_enqueue: bool = False,
+        blocked: bool = False,
+    ) -> None:
         self.enqueued: list[RequestContext] = []
         self._enqueue_result = enqueue_result
         self._raise_on_enqueue = raise_on_enqueue
+        # 같은 스레드에 먼저 들어온 미완료 작업이 있는 상태를 흉내낸다.
+        self._blocked = blocked
         # 등록 때 함께 넘어온 재시도 상한. 접수가 이 값을 안 넘기면
         # 실패로 끝난 건이 재전달돼도 되살아나지 않는다.
         self.enqueue_limits: list[int] = []
@@ -81,6 +89,9 @@ class FakeJobQueue:
 
     def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult:
         raise NotImplementedError
+
+    def blocked_on_thread(self, thread_ts: str, message_ts: str) -> bool:
+        return self._blocked
 
     def pending(self, limit: int = 50) -> list[Job]:
         raise NotImplementedError
@@ -239,8 +250,37 @@ class TestQueueing:
 
 
 class TestReactionMark:
-    def test_큐에_새로_들어가면_대기_표식이_달린다(self, listener, admin_router, tmp_path) -> None:
+    def test_큐에_새로_들어가면_접수_표식이_달린다(self, listener, admin_router, tmp_path) -> None:
         queue = FakeJobQueue()
+        client = FakeWebClient()
+        reactions = ReactionMarker(client)
+        ingress = make_ingress(
+            listener=listener, queue=queue, reactions=reactions,
+            admin_router=admin_router, tmp_path=tmp_path,
+        )
+
+        ingress.handle_app_mention(mention_event())
+
+        assert client.reaction_add_calls == [("C1", "1.0", "eyes")]
+
+    def test_앞선_요청이_없으면_대기_표식을_안_단다(self, listener, admin_router, tmp_path) -> None:
+        """모래시계가 무조건 달리면 눈과 항상 같이 떠서 대기를 뜻하지 못한다."""
+        queue = FakeJobQueue(blocked=False)
+        client = FakeWebClient()
+        reactions = ReactionMarker(client)
+        ingress = make_ingress(
+            listener=listener, queue=queue, reactions=reactions,
+            admin_router=admin_router, tmp_path=tmp_path,
+        )
+
+        ingress.handle_app_mention(mention_event())
+
+        assert ("C1", "1.0", "hourglass") not in client.reaction_add_calls
+
+    def test_같은_스레드에_앞선_요청이_있으면_대기_표식이_달린다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        queue = FakeJobQueue(blocked=True)
         client = FakeWebClient()
         reactions = ReactionMarker(client)
         ingress = make_ingress(

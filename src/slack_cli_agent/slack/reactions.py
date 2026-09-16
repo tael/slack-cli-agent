@@ -1,7 +1,7 @@
 """Manages status reaction emoji.
 
-    eyes              received, processing
-    hourglass         waiting on an earlier request to finish
+    eyes              being handled now
+    hourglass         queued behind an earlier request on the same thread
     white_check_mark  answered
     x                 failed
     zipper_mouth_face chose not to answer
@@ -60,18 +60,23 @@ class ReactionMarker:
         self.remove(channel, ts, "eyes")
 
     def mark_waiting(self, channel: str, ts: str) -> None:
+        """Only for a request that can't start yet. eyes and hourglass are
+        mutually exclusive — adding this unconditionally put both on every
+        request, which left hourglass meaning nothing."""
         self.add(channel, ts, "hourglass")
+
+    def clear_waiting(self, channel: str, ts: str) -> None:
+        """The wait is over — the request is being handled now."""
+        self.remove(channel, ts, "hourglass")
 
     def _settle(self, channel: str, ts: str, mark: str) -> None:
         """Clears unfinished marks and applies the final one.
 
-        Two unfinished marks exist because intake and processing run
-        as separate processes — intake sets hourglass, processing
-        sets eyes. Clearing only eyes would leave hourglass on a
-        finished request, making it look still pending. Doesn't clear
-        the mark being applied itself — x doubles as an unfinished
-        mark, and clearing then re-adding it would cost an extra
-        Slack call for nothing.
+        Clears hourglass as well as eyes: a request that finished while
+        still carrying the queued mark would look pending forever if the
+        worker never got to clear it. Doesn't clear the mark being
+        applied itself — x doubles as an unfinished mark, and clearing
+        then re-adding it would cost an extra Slack call for nothing.
         """
         for stale in UNFINISHED_EMOJI:
             if stale != mark:
