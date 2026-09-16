@@ -86,3 +86,70 @@ class Test묶음내용:
         with group:
             pass
         assert group.runner_names == ()
+
+
+class Test죽은실행기를드러낸다:
+    """PeriodicRunner 의 순회는 Exception 만 잡는다. 그 밖의 BaseException 이
+    나면 그 스레드만 끝나고 프로세스는 계속 산다. 그 주기 작업이 멈춘 것과
+    아무 일도 없던 것이 로그에서 구분되지 않는다 (sca-2g0).
+    """
+
+    def test_아직_안_띄웠으면_전부_죽은_것으로_본다(self) -> None:
+        group = ServiceGroup([make_runner("가")], name="시험")
+
+        assert group.dead_runners() == ("가",)
+
+    def test_띄운_뒤에는_죽은_것이_없다(self) -> None:
+        group = ServiceGroup([make_runner("가"), make_runner("나")], name="시험")
+        with group:
+            assert group.dead_runners() == ()
+
+    def test_스레드가_끝난_실행기를_이름으로_알려준다(self) -> None:
+        죽는다 = PeriodicRunner(lambda: None, 3600.0, name="죽는다")
+        산다 = make_runner("산다")
+        group = ServiceGroup([죽는다, 산다], name="시험")
+        with group:
+            죽는다.stop()
+            죽는다.join(timeout=2.0)
+
+            assert group.dead_runners() == ("죽는다",)
+
+    def test_감시_주기를_주면_죽은_것을_알린다(self) -> None:
+        알림: list[str] = []
+        죽는다 = PeriodicRunner(lambda: None, 3600.0, name="죽는다")
+        group = ServiceGroup(
+            [죽는다], name="시험", watch_interval_sec=3600.0, notify=알림.append
+        )
+        with group:
+            죽는다.stop()
+            죽는다.join(timeout=2.0)
+            group.check_alive()
+
+        assert len(알림) == 1
+        assert "죽는다" in 알림[0]
+
+    def test_같은_상태면_다시_알리지_않는다(self) -> None:
+        알림: list[str] = []
+        죽는다 = PeriodicRunner(lambda: None, 3600.0, name="죽는다")
+        group = ServiceGroup(
+            [죽는다], name="시험", watch_interval_sec=3600.0, notify=알림.append
+        )
+        with group:
+            죽는다.stop()
+            죽는다.join(timeout=2.0)
+            group.check_alive()
+            group.check_alive()
+
+        assert len(알림) == 1
+
+    def test_감시_주기를_주면_감시_실행기도_함께_뜬다(self) -> None:
+        group = ServiceGroup([make_runner("가")], name="시험", watch_interval_sec=3600.0)
+        with group:
+            assert "시험_watch" in group.runner_names
+            # 이름만 보면 안 띄운 것과 구분되지 않는다. 스레드를 본다.
+            assert group._watch is not None and group._watch.is_running()
+
+    def test_감시_주기가_없으면_감시_실행기를_안_만든다(self) -> None:
+        group = ServiceGroup([make_runner("가")], name="시험")
+        with group:
+            assert group.runner_names == ("가",)
