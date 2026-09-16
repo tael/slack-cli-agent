@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from slack_cli_agent.engine.base import EngineResponse
+from slack_cli_agent.observability.audit import REVIEW_KIND
 from slack_cli_agent.review.ledger import ReviewLedger
 
 log = logging.getLogger(__name__)
@@ -108,6 +109,15 @@ class EngineCaller(Protocol):
 
 
 @runtime_checkable
+class ReviewAuditPort(Protocol):
+    """AuditLog.record's shape. Reviews spend minutes per engine call and
+    none of it was recorded, so there was no way to tell what timeout the
+    engine actually needs (sca-fy5)."""
+
+    def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None: ...
+
+
+@runtime_checkable
 class ReviewProgressPort(Protocol):
     """Shows that the review is running, for the length of the engine call.
 
@@ -147,6 +157,7 @@ class ReviewTask(ABC):
         engine: EngineCaller,
         troubleshoot_channel: str,
         progress: ReviewProgressPort | None = None,
+        audit: ReviewAuditPort | None = None,
     ) -> None:
         self._ledger = ledger
         self._message_lookup = message_lookup
@@ -158,6 +169,7 @@ class ReviewTask(ABC):
         self._engine = engine
         self._troubleshoot_channel = troubleshoot_channel
         self._progress = progress
+        self._audit = audit
 
     @abstractmethod
     def build_prompt(self, target: ReviewTarget, *, transcript: str, flagged: str, question: str) -> str: ...
@@ -240,6 +252,28 @@ class ReviewTask(ABC):
         else:
             display.__exit__(None, None, None)
 
+    def _record_run(self, target: ReviewTarget, response: EngineResponse, *, attempt: str) -> None:
+        """Best effort by contract: a review that already ran must not be
+        lost because its record could not be written."""
+        if self._audit is None:
+            return
+        try:
+            self._audit.record(
+                REVIEW_KIND,
+                channel=target.channel,
+                target_ts=target.ts,
+                review_kind=self.log_name,
+                attempt=attempt,
+                engine=response.engine,
+                model=response.model_actual or "",
+                elapsed=response.elapsed,
+                ok=response.ok,
+                turns=response.turns,
+                failure=response.failure_reason or "",
+            )
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            log.warning("점검 실행 기록을 남기지 못했다 : %s", exc)
+
     def _execute(self, target: ReviewTarget) -> None:
         msg = self._message_lookup.find(target.channel, target.ts)
         if msg is None:
@@ -260,6 +294,7 @@ class ReviewTask(ABC):
         # accept one today (sca-k6s).
         with self._progress_display(target, thread_ts) as progress_log:
             response = self._engine.run(prompt, None, False, progress_log)
+        self._record_run(target, response, attempt="main")
 
         link = self._permalinks.permalink(target.channel, target.ts)
         header = self.build_header(target, record, link)
@@ -280,6 +315,7 @@ class ReviewTask(ABC):
             # Resume the session the engine actually used. Without an ID there
             # is nothing to continue, so the response goes out as it came.
             retry = self._engine.run(self.missing_split_prompt(), response.session_id, True)
+            self._record_run(target, retry, attempt="split_retry")
             if retry.ok and marker in retry.body:
                 body = retry.body
 
