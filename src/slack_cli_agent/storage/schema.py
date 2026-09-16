@@ -171,6 +171,21 @@ not the same watch.
 """
 
 
+V7_WATCH_JOB_PENDING_REPORT_SQL = """
+ALTER TABLE watch_jobs ADD COLUMN pending_report TEXT NOT NULL DEFAULT '';
+"""
+"""Holds a completion report whose Slack post failed.
+
+Marking a job done and having its report delivered are two different events.
+Tying them to one flag meant a failed post closed the job with the report
+still unsent, and the watched message already carried the done mark -- so the
+reader saw it finish and waited for a result that never came (sca-dlv).
+
+Empty means nothing is owed. The column carries the report body, which can
+hold Slack conversations or file contents, so it stays out of logs and audit.
+"""
+
+
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
@@ -178,6 +193,7 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (4, "소켓 연결 세대 원장 추가", _statements(V4_CONNECTION_EPOCHS_SQL)),
     (5, "감시 작업에 실행 자리와 결과 파일 이름 추가", _statements(V5_WATCH_JOB_RUN_SQL)),
     (6, "메시지당 활성 감시를 하나로 제한", _statements(V6_WATCH_JOB_ACTIVE_UNIQUE_SQL)),
+    (7, "감시 완료 보고의 미발송분 보관", _statements(V7_WATCH_JOB_PENDING_REPORT_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

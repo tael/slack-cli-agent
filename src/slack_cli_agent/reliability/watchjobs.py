@@ -50,6 +50,16 @@ class WatchJob:
     """Identifies this job's result file. Empty means the caller pinned none."""
 
 
+@dataclass(frozen=True)
+class PendingReport:
+    """A completion report whose post failed and still owes delivery."""
+
+    job_id: int
+    channel: str
+    thread_ts: str
+    body: str
+
+
 @runtime_checkable
 class ActiveWatchPort(Protocol):
     """What the worker needs. WatchJobPort satisfies it."""
@@ -95,6 +105,15 @@ class WatchJobPort(Protocol):
     def active_watch(self, channel: str, msg_ts: str) -> bool:
         """Whether that message is being watched right now. reclaim reads this
         to pick the mark (sca-o1e)."""
+
+    def hold_report(self, job_id: int, body: str) -> None:
+        """Keeps a completion report whose post failed, for a later retry."""
+
+    def release_report(self, job_id: int) -> None:
+        """Drops a held report once it has actually been posted."""
+
+    def pending_reports(self) -> list[PendingReport]:
+        """Reports still owed, oldest first."""
 
 
 class WatchJobQueue(SqliteRepository):
@@ -173,6 +192,31 @@ class WatchJobQueue(SqliteRepository):
 
     def mark_done(self, job_id: int) -> None:
         self._execute("UPDATE watch_jobs SET done = 1 WHERE id = ?", (job_id,))
+
+    def hold_report(self, job_id: int, body: str) -> None:
+        self._execute(
+            "UPDATE watch_jobs SET pending_report = ? WHERE id = ?", (body, job_id)
+        )
+
+    def release_report(self, job_id: int) -> None:
+        self._execute(
+            "UPDATE watch_jobs SET pending_report = '' WHERE id = ?", (job_id,)
+        )
+
+    def pending_reports(self) -> list[PendingReport]:
+        rows = self._fetch_all(
+            "SELECT id, channel, thread_ts, pending_report FROM watch_jobs "
+            "WHERE pending_report != '' ORDER BY id"
+        )
+        return [
+            PendingReport(
+                job_id=int(row["id"]),
+                channel=str(row["channel"]),
+                thread_ts=str(row["thread_ts"]),
+                body=str(row["pending_report"]),
+            )
+            for row in rows
+        ]
 
     def expired(self, now: float, max_age: float, max_checks: int | None = None) -> list[WatchJob]:
         sql = f"SELECT {_SELECT_COLUMNS} FROM watch_jobs WHERE done = 0 AND ((? - created_at) >= ?"
