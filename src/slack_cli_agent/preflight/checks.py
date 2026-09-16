@@ -142,6 +142,34 @@ class OwnerSettingsInertCheck(PreflightCheck):
         return CheckResult(ok=True, detail="소유자에게 적용되는 채널 설정 점검 통과")
 
 
+class ProfilePermissionCheck(PreflightCheck):
+    """Warns when a profile carrying MCP credentials is readable past its owner.
+
+    Tokens are rejected at load time, so a plain profile has nothing to
+    hide -- warning on those would put a permanent warning on every bot
+    whose profile lives in a repository. An MCP server's `env`/`headers`
+    is the case the load check cannot see into, and only that one is
+    judged here. `fatal=False`: a chmod fixes it, taking the bot down does not.
+    """
+
+    name: ClassVar[str] = "profile_permissions"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        path = ctx.profile.source_file
+        if path is None or not path.is_file():
+            return CheckResult(ok=True, detail="읽어 온 프로필 파일이 없다")
+        if not any(spec.env or spec.headers for spec in ctx.profile.mcp_servers.values()):
+            return CheckResult(ok=True, detail="프로필에 가릴 값이 없다")
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if mode & _SHARED_BITS:
+            return CheckResult(
+                ok=False,
+                detail=f"프로필을 소유자 밖에서도 읽을 수 있다 : {path} ({mode:o}) - chmod 600 으로 바꾼다",
+                fatal=False,
+            )
+        return CheckResult(ok=True, detail="프로필 파일 권한 점검 통과")
+
+
 class McpServerCheck(PreflightCheck):
     """Checks that MCP servers can boot right now.
 
