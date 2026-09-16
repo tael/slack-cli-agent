@@ -456,3 +456,63 @@ class Test동봉_자산으로_조립한_결과:
 
         assert ".watch-out/fixed-run-id.out" in 본문
         assert "<<WATCH_RUN_ID>>" not in 본문
+
+
+class Test학습지식을_함께_싣는다:
+    """사람이 쓴 지식과 학습이 쌓은 지식은 다른 디렉터리에 있다(sca-jl4.5).
+
+    갈라 두기만 하고 로더가 한쪽만 보면 학습 결과가 프롬프트에서 사라진다.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _디렉터리(self, tmp_path: Path) -> None:
+        for name in ("knowledge", "learned"):
+            (tmp_path / name).mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _로더(tmp_path: Path) -> KnowledgeLoader:
+        return KnowledgeLoader(
+            tmp_path / "없음.md",
+            tmp_path / "knowledge",
+            learned_dir=tmp_path / "learned",
+        )
+
+    def test_학습이_쌓은_공통_파일도_싣는다(self, tmp_path: Path) -> None:
+        write(tmp_path / "learned" / "_writing-style.md", "학습이 쌓은 문체")
+        assert "학습이 쌓은 문체" in self._로더(tmp_path).knowledge_text("")
+
+    def test_학습이_쌓은_채널_파일도_싣는다(self, tmp_path: Path) -> None:
+        write(tmp_path / "learned" / "잡담.md", "학습이 쌓은 채널 사실")
+        assert "학습이 쌓은 채널 사실" in self._로더(tmp_path).knowledge_text("잡담")
+
+    def test_이름이_같아도_두_출처를_모두_싣는다(self, tmp_path: Path) -> None:
+        """파일을 갈랐으니 같은 이름이 양쪽에 있는 것이 정상이다."""
+        write(tmp_path / "knowledge" / "잡담.md", "사람이 쓴 것")
+        write(tmp_path / "learned" / "잡담.md", "학습이 쌓은 것")
+        text = self._로더(tmp_path).knowledge_text("잡담")
+        assert "사람이 쓴 것" in text
+        assert "학습이 쌓은 것" in text
+
+    def test_학습이_쌓은_것임을_밝힌다(self, tmp_path: Path) -> None:
+        """출처를 안 밝히면 사람이 확정한 것과 같은 무게로 읽힌다."""
+        write(tmp_path / "learned" / "잡담.md", "학습이 쌓은 것")
+        text = self._로더(tmp_path).knowledge_text("잡담")
+        assert "학습" in text.split("학습이 쌓은 것")[0]
+
+    def test_사람이_쓴_것이_먼저_온다(self, tmp_path: Path) -> None:
+        write(tmp_path / "knowledge" / "잡담.md", "사람이 쓴 것")
+        write(tmp_path / "learned" / "잡담.md", "학습이 쌓은 것")
+        text = self._로더(tmp_path).knowledge_text("잡담")
+        assert text.index("사람이 쓴 것") < text.index("학습이 쌓은 것")
+
+    def test_학습_디렉터리를_안_주면_예전대로_동작한다(self, tmp_path: Path) -> None:
+        write(tmp_path / "knowledge" / "잡담.md", "사람이 쓴 것")
+        loader = KnowledgeLoader(tmp_path / "없음.md", tmp_path / "knowledge")
+        assert "사람이 쓴 것" in loader.knowledge_text("잡담")
+
+    def test_학습_공통_파일도_when_표기를_따른다(self, tmp_path: Path) -> None:
+        """사람 것과 다른 규칙으로 실으면 같은 표기가 자리마다 다르게 동작한다."""
+        write(tmp_path / "learned" / "_배포.md", "<!-- when: 배포 -->\n배포 지식")
+        loader = self._로더(tmp_path)
+        assert "배포 지식" not in loader.knowledge_text("", prompt="잡담 얘기")
+        assert "배포 지식" in loader.knowledge_text("", prompt="배포 얘기")

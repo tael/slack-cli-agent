@@ -22,8 +22,8 @@ def _service(ctx: AdminContext) -> LearningService:
     paths = StatePaths(ctx.profile.state_dir)
     return LearningService(
         store=ProposalStore(paths.proposals),
-        applier=LearningApplier(paths.knowledge, ctx.profile.display_name),
-        reverter=LearningReverter(paths.knowledge),
+        applier=LearningApplier(paths.learned, ctx.profile.display_name),
+        reverter=LearningReverter(paths.learned),
         renderer=ProposalRenderer(),
     )
 

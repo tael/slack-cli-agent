@@ -27,6 +27,22 @@ class Test경로계약:
         assert paths.proposals == paths.root / "proposals"
         assert paths.knowledge == paths.persona / "knowledge"
 
+    def test_학습이_쌓는_자리는_사람이_쓰는_자리와_다르다(self, tmp_path: Path) -> None:
+        """같은 파일에 두 출처가 섞이면 한쪽 갱신이 다른 쪽을 덮어쓴다(sca-jl4.5)."""
+        paths = StatePaths.for_bot("testbot", home=tmp_path)
+        assert paths.learned == paths.persona / "learned"
+        assert paths.learned != paths.knowledge
+
+    def test_관리_명령의_적용과_되돌리기가_학습_자리를_본다(self, tmp_path: Path) -> None:
+        """적용은 학습 자리에 쓰는데 되돌리기가 사람 자리를 보면 되돌려지지 않는다."""
+        from slack_cli_agent.admin.learning_commands import _service
+
+        ctx = 맥락(tmp_path)
+        service = _service(ctx)
+        paths = StatePaths(ctx.profile.state_dir)
+        assert service._applier._dir == paths.learned
+        assert service._reverter._dir == paths.learned
+
 
 def 맥락(tmp_path: Path, text: str = "") -> AdminContext:
     from slack_cli_agent.auth.principal import Principal, TrustLevel

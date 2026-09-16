@@ -316,12 +316,22 @@ class MetricsCollector:
         return {str(row["channel"]): int(row["n"]) for row in rows}
 
     def _count_corrections(self) -> int | None:
-        path = self._profile.paths.knowledge / "_corrections.md"
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            return None
-        return sum(1 for line in text.splitlines() if line.startswith("- "))
+        """Counts both directories. New lines go to `learned`, but a bot that ran
+        before the two sources were split still has its old ones under
+        `knowledge`; reading only one would drop the count at that date
+        (sca-jl4.5).
+        """
+        paths = self._profile.paths
+        found = False
+        total = 0
+        for directory in (paths.knowledge, paths.learned):
+            try:
+                text = (directory / "_corrections.md").read_text(encoding="utf-8")
+            except OSError:
+                continue
+            found = True
+            total += sum(1 for line in text.splitlines() if line.startswith("- "))
+        return total if found else None
 
     # --- 지표 계산 -------------------------------------------------------
 

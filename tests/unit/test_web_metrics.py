@@ -766,3 +766,28 @@ class Test연결_정리:
 
         assert opened, "collect 가 DB 를 열지 않았다"
         assert closed == opened, "연 만큼 닫지 않았다"
+
+
+class Test정정지식두자리:
+    """사람이 쓰는 자리와 학습이 쌓는 자리를 갈랐다(sca-jl4.5).
+
+    새 줄은 학습 자리에 쌓이므로 사람 자리만 세면 그 날짜에서 수치가 끊긴다.
+    """
+
+    def test_두_자리의_항목을_더한다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        for directory, text in (
+            (profile.paths.knowledge, "- 옛 정정\n"),
+            (profile.paths.learned, "- 새 정정\n- 또 하나\n"),
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "_corrections.md").write_text(text, encoding="utf-8")
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        assert collector.collect(days=7)["quality"]["corrections"] == 3
+
+    def test_학습_자리만_있어도_센다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        profile.paths.learned.mkdir(parents=True, exist_ok=True)
+        (profile.paths.learned / "_corrections.md").write_text("- 새 정정\n", encoding="utf-8")
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        assert collector.collect(days=7)["quality"]["corrections"] == 1
