@@ -544,3 +544,19 @@ class Test끝난연결세대정리:
     def test_보존_기간이_캐치업_유예보다_길다(self, app: Application) -> None:
         """세대를 지우면 그 구간의 공백 회수 근거가 사라진다."""
         assert app._settings.epoch_retention_sec > app._settings.catchup_grace_sec
+
+
+class Test소유자전용점검이실제로조회한다:
+    """조립 지점만 보는 시험은 client 가 property 인지 함수인지를 안 본다.
+    운영에서는 매 주기 'WebClient' object is not callable 로 끝났다 (sca-3n0)."""
+
+    def test_멤버_조회가_슬랙까지_나간다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        profile = write_profile(tmp_path, settings={"owner_only_channels": ["C1"]})
+        app = Application(profile, client)
+        app.owner_only_audit_runner()._task()
+        assert [name for name, _ in client.calls if name == "conversations_members"]
+
+    def test_봇_판정이_슬랙까지_나간다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        app = Application(write_profile(tmp_path), client)
+        app._is_bot_user("U1")
+        assert [name for name, _ in client.calls if name == "users_info"]
