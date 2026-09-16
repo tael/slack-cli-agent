@@ -15,15 +15,55 @@ accepted).
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Protocol
 
+from slack_cli_agent.config.channel import ChannelConfig
+from slack_cli_agent.observability.progress import ProgressCoordinator
+from slack_cli_agent.review.base import ReviewTarget
 from slack_cli_agent.slack.message_lookup import SlackMessageLookup
 from slack_cli_agent.slack.publisher import MessagePublisher
 from slack_cli_agent.slack.transcript import TranscriptBuilder
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ReviewPublisher", "SlackMessageLookup", "SlackPermalinks", "ThreadTranscriptPort"]
+__all__ = [
+    "ReviewProgressDisplay",
+    "ReviewPublisher",
+    "SlackMessageLookup",
+    "SlackPermalinks",
+    "ThreadTranscriptPort",
+]
+
+
+class ChannelLookup(Protocol):
+    def get(self, channel: str) -> ChannelConfig | None: ...
+
+
+class ReviewProgressDisplay:
+    """ReviewProgressPort implementation, reusing the request pipeline's coordinator.
+
+    The display goes in the thread the reaction was added to, not the
+    troubleshoot channel the report lands in: that thread is where the
+    person who asked for the review is looking. Whether it appears at all
+    is the source channel's own `progress` setting, same as a chat request.
+    """
+
+    def __init__(self, coordinator: ProgressCoordinator, channels: ChannelLookup) -> None:
+        self._coordinator = coordinator
+        self._channels = channels
+
+    @contextmanager
+    def display(self, target: ReviewTarget, thread_ts: str) -> Iterator[Path | None]:
+        config = self._channels.get(target.channel)
+        log_path = self._coordinator.log_path_for(config, target.channel, target.ts)
+        # by_user is the reactor, which is who Slack's streaming API needs as
+        # the recipient -- the review was asked for by them, not by the author
+        # of the message being reviewed.
+        with self._coordinator.session(target.channel, thread_ts, target.by_user, log_path):
+            yield log_path
 
 
 class ThreadTranscriptPort:

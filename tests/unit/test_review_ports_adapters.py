@@ -11,17 +11,24 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from slack_cli_agent.config.channel import ChannelConfig
+from slack_cli_agent.config.settings import RuntimeSettings
+from slack_cli_agent.observability.progress import ProgressCoordinator
 from slack_cli_agent.review.base import (
     MessageLookupPort,
     PermalinkPort,
     PublisherPort,
+    ReviewProgressPort,
+    ReviewTarget,
     TranscriptPort,
 )
 from slack_cli_agent.slack.review_ports import (
+    ReviewProgressDisplay,
     ReviewPublisher,
     SlackMessageLookup,
     SlackPermalinks,
@@ -265,3 +272,82 @@ def test_post_returns_publisher_result_as_is() -> None:
     publisher2 = FakePublisher(result="P42")
     port2 = ReviewPublisher(publisher2)
     assert port2.post("C1", "999.000", "본문", rich=True) == "P42"
+
+
+class Test진행_표시_어댑터:
+    """점검이 도는 동안 원 스레드에 진행 표시를 띄운다(sca-tfd).
+
+    표시 자리는 결과가 올라가는 트러블슈팅 채널이 아니라 사용자가 리액션을
+    붙인 원 스레드다 - 사용자가 보고 있는 곳이 거기다.
+    """
+
+    def _coordinator(self, tmp_path: Path, sink: Any) -> ProgressCoordinator:
+        return ProgressCoordinator(
+            settings=RuntimeSettings(),
+            sink_factory=lambda channel, thread_ts, user: sink,
+            log_dir=tmp_path,
+        )
+
+    def test_Protocol_을_만족한다(self, tmp_path: Path) -> None:
+        표시 = ReviewProgressDisplay(
+            self._coordinator(tmp_path, _수집싱크()), _채널들(progress=True)
+        )
+        assert isinstance(표시, ReviewProgressPort)
+
+    def test_진행이_켜진_채널이면_로그_경로를_내고_표시를_연다(self, tmp_path: Path) -> None:
+        싱크 = _수집싱크()
+        표시 = ReviewProgressDisplay(self._coordinator(tmp_path, 싱크), _채널들(progress=True))
+        대상 = ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True)
+        with 표시.display(대상, "100.0") as 경로:
+            assert 경로 is not None
+            assert 경로.parent == tmp_path
+        assert 싱크.opened == 1
+        assert 싱크.closed == 1
+
+    def test_진행이_꺼진_채널이면_아무것도_안_띄운다(self, tmp_path: Path) -> None:
+        싱크 = _수집싱크()
+        표시 = ReviewProgressDisplay(self._coordinator(tmp_path, 싱크), _채널들(progress=False))
+        대상 = ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True)
+        with 표시.display(대상, "100.0") as 경로:
+            assert 경로 is None
+        assert 싱크.opened == 0
+
+    def test_표시는_원_스레드에_붙는다(self, tmp_path: Path) -> None:
+        받은인자: list[tuple[str, str, str]] = []
+
+        coordinator = ProgressCoordinator(
+            settings=RuntimeSettings(),
+            sink_factory=lambda channel, thread_ts, user: (
+                받은인자.append((channel, thread_ts, user)) or _수집싱크()
+            ),
+            log_dir=tmp_path,
+        )
+        표시 = ReviewProgressDisplay(coordinator, _채널들(progress=True))
+        대상 = ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True)
+        with 표시.display(대상, "100.0"):
+            pass
+        assert 받은인자 == [("C1", "100.0", "U2")]
+
+
+class _수집싱크:
+    def __init__(self) -> None:
+        self.opened = 0
+        self.closed = 0
+        self.lines: list[str] = []
+
+    def open(self, text: str) -> None:
+        self.opened += 1
+
+    def append(self, lines: Any) -> None:
+        self.lines.extend(lines)
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+class _채널들:
+    def __init__(self, *, progress: bool) -> None:
+        self._config = ChannelConfig(channel_id="C1", name="채널", progress=progress)
+
+    def get(self, channel: str) -> ChannelConfig | None:
+        return self._config

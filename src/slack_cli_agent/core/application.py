@@ -106,6 +106,7 @@ from ..reliability.outage import OutageTracker
 from ..reliability.pending_report import PendingReportStore
 from ..reliability.startup import StartupCatchup
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
+from ..reliability.watchresult import WatchOutcome, WatchResultReader
 from ..reliability.watchrunner import WatchJobChecker, watch_check_prompt
 from ..render.blocks import BlockBuilder
 from ..render.markdown import MarkdownConverter
@@ -146,6 +147,7 @@ from ..slack.reactions import (
     ReactionMarker,
 )
 from ..slack.review_ports import (
+    ReviewProgressDisplay,
     ReviewPublisher,
     SlackMessageLookup,
     SlackPermalinks,
@@ -735,6 +737,7 @@ class Application:
         return WatchJobChecker(
             queue=self.watch_jobs(),
             run_check=self._watch_run_check,
+            results=WatchResultReader(),
             publisher=self.publisher(),
             channels=self._channels,
             settings=self._settings,
@@ -804,7 +807,7 @@ class Application:
             return False
         return True
 
-    def _watch_run_check(self, job: WatchJob) -> EngineResponse:
+    def _watch_run_check(self, job: WatchJob, outcome: WatchOutcome) -> EngineResponse:
         """Runs the check with a fresh session ID — the check happens well
         after registration, so the original conversation session may have
         expired, and resuming a dead session would just fail. Trust level is
@@ -818,7 +821,9 @@ class Application:
             is_direct_message=is_direct_message_channel(job.channel),
         )
         config = self._channels.get(job.channel)
-        prompt = watch_check_prompt(job.condition)
+        workdir = _watch_workdir(job, config, self._profile.work_root)
+        결과파일 = WatchResultReader().path_for(str(workdir), job.run_id)
+        prompt = watch_check_prompt(job.condition, outcome, str(결과파일) if 결과파일 else "")
         system_prompt = self._composer().compose(CompositionContext(
             principal=principal,
             prompt=prompt,
@@ -839,7 +844,7 @@ class Application:
             resume=False,
             model=self.access_policy.model_for(principal),
             effort=self.access_policy.effort_for(principal, prompt),
-            workdir=_watch_workdir(job, config, self._profile.work_root),
+            workdir=workdir,
             # readonly: the check only looks. Owner extras and Skill would let
             # this turn start new work, which `watch_check_prompt` forbids.
             # Left empty before, and claude turns an empty list into
@@ -982,6 +987,9 @@ class Application:
                 "publisher": ReviewPublisher(self.publisher()),
                 "engine": self._review_engine(),
                 "troubleshoot_channel": self._profile.troubleshoot_channel,
+                # 점검은 몇 분이 걸린다. 표시가 없으면 도는 것과 죽은 것이
+                # 사용자에게 같아 보인다(sca-tfd).
+                "progress": ReviewProgressDisplay(self.progress(), self._channels),
             }
             paths = self._profile.paths
             owner_name = self._names.resolve(self._profile.owner_user_id)
