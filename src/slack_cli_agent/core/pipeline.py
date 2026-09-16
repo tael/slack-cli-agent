@@ -14,10 +14,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
-from ..config.channel import ChannelConfig, ChannelRegistry
+from ..config.channel import ChannelConfig
 from ..engine.base import NO_DETAIL, Engine, EngineRequest, EngineResponse, FailureDetail, Usage
 from ..engine.runner import EngineInvoker
 from ..guard.base import GuardContext
@@ -25,7 +24,7 @@ from ..guard.mentions import AddresseeGuard
 from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard
-from ..observability.audit import AuditLog, IncidentKind
+from ..observability.audit import IncidentKind
 from ..observability.progress import ProgressCoordinator
 from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter
@@ -36,10 +35,15 @@ from ..reliability.watchresult import WatchResultReader
 from ..session.manager import SessionDecision, SessionManager
 from ..session.ports import SessionKey, SessionScope
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
-from ..slack.publisher import MessagePublisher
-from ..slack.reactions import ReactionMarker
-from ..slack.transcript import TranscriptBuilder
 from .context import RequestContext
+from .pipeline_ports import (
+    AccessPolicyPort,
+    AuditPort,
+    ChannelLookupPort,
+    PublisherPort,
+    ReactionPort,
+    TranscriptPort,
+)
 from .ports import HandleOutcome
 
 log = logging.getLogger(__name__)
@@ -57,8 +61,8 @@ class RequestPipeline:
     def __init__(
         self,
         *,
-        access_policy: AccessPolicy,
-        transcript_builder: TranscriptBuilder,
+        access_policy: AccessPolicyPort,
+        transcript_builder: TranscriptPort,
         prompt_composer: PromptComposer,
         session_manager: SessionManager,
         engine: Engine,
@@ -66,12 +70,12 @@ class RequestPipeline:
         # FallbackEngine.run(), so a usage-limit hit wouldn't trigger the fallback switch.
         invoker: EngineInvoker,
         guard_pipeline: GuardPipeline,
-        publisher: MessagePublisher,
-        audit: AuditLog,
-        channels: ChannelRegistry,
+        publisher: PublisherPort,
+        audit: AuditPort,
+        channels: ChannelLookupPort,
         default_workdir: Path,
         owner_user_id: str = "",
-        reactions: ReactionMarker | None = None,
+        reactions: ReactionPort | None = None,
         name_resolver: Callable[[str], str] = lambda user_id: user_id,
         mention_table: Callable[[], Mapping[str, str]] = dict,
         slow_reporter: SlowRequestReporter | None = None,
@@ -186,7 +190,7 @@ class RequestPipeline:
             log.exception("느린 요청 보고에 실패했다")
 
     @property
-    def audit(self) -> AuditLog:
+    def audit(self) -> AuditPort:
         return self._audit
 
     @property
