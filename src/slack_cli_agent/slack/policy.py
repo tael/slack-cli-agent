@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from slack_cli_agent.config.channel import ChannelConfig
+from slack_cli_agent.config.channel import CHAT_DEFAULT, ChannelConfig
 from slack_cli_agent.slack.gate import ResponseGate
 
 
@@ -41,9 +41,21 @@ class ResponsePolicy:
     def answers(
         self, config: ChannelConfig | None, text: str, thread: ThreadState
     ) -> bool:
-        """Whether to answer this particular message."""
+        """Whether to answer this particular message.
+
+        The `chat` level moves the bar. `normal` is the default and the
+        behaviour every channel had before this setting was read here, so
+        a channel that never set `chat` sees no change.
+
+            quiet   only a reply to the bot's own question
+            normal  a thread the bot is already in, if the message wants an answer
+            active  any thread in the channel, same message filter
+        """
         if not self.considers(config):
             return False
-        if not thread.joined:
+        level = config.chat if config else CHAT_DEFAULT
+        if level == "quiet":
+            return thread.bot_asked
+        if level != "active" and not thread.joined:
             return False
         return self._gate.worth_answering(text, thread.bot_asked)
