@@ -298,6 +298,7 @@ def build_pipeline(
     tool_policy: Any = None,
     readable_dirs: tuple[Path, ...] = (),
     now: Any = None,
+    new_run_id: Any = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -340,6 +341,8 @@ def build_pipeline(
         extra_kwargs["readable_dirs"] = readable_dirs
     if now is not None:
         extra_kwargs["now"] = now
+    if new_run_id is not None:
+        extra_kwargs["new_run_id"] = new_run_id
 
     pipeline = RequestPipeline(
         access_policy=access,
@@ -1281,6 +1284,68 @@ class Test감시등록:
         저장값 = Path(큐.enqueued[0]["workdir"])
         assert 저장값.is_absolute()
         assert deps["runner"].calls[0].workdir == 저장값
+
+    def test_결과파일이름을_코드가_발급해_프롬프트와_등록에_같이_쓴다(self, tmp_path: Path) -> None:
+        """모델이 이름을 정하면 두 감시가 같은 파일을 쓸 수 있고, 확인 턴도
+        어느 파일을 볼지 모른다 (sca-17p)."""
+        큐 = Fake감시큐()
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="네\n\n[[WATCH: 작업 상태]]")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+            new_run_id=lambda: "fixed-run-id",
+        )
+        pipeline.handle(make_ctx())
+
+        assert deps["composer"].contexts[0].watch_run_id == "fixed-run-id"
+        assert 큐.enqueued[0]["run_id"] == "fixed-run-id"
+
+    def test_요청마다_다른_이름을_발급한다(self, tmp_path: Path) -> None:
+        """고정값을 내면 동시에 도는 감시 두 건이 같은 파일에 쓴다."""
+        큐 = Fake감시큐()
+        번호 = iter(["첫", "둘"])
+        pipeline, _deps = build_pipeline(
+            responses=[
+                ok_response(body="네\n\n[[WATCH: 하나]]"),
+                ok_response(body="네\n\n[[WATCH: 둘]]"),
+            ],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+            new_run_id=lambda: next(번호),
+        )
+        pipeline.handle(make_ctx(ts="1700000001.000100"))
+        pipeline.handle(make_ctx(ts="1700000002.000200"))
+
+        assert [항목["run_id"] for 항목 in 큐.enqueued] == ["첫", "둘"]
+
+    def test_새_세션_재시도는_새_이름을_받는다(self, tmp_path: Path) -> None:
+        """첫 호출이 이미 백그라운드 명령을 띄운 뒤 실패했을 수 있다. 같은
+        이름으로 재시도하면 두 프로세스가 한 파일에 쓴다 (코덱스 검토)."""
+        큐 = Fake감시큐()
+        번호 = iter(["첫", "둘"])
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("timeout"), ok_response(body="네\n\n[[WATCH: 작업]]")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+            new_run_id=lambda: next(번호),
+        )
+        pipeline.handle(make_ctx())
+
+        assert [맥락.watch_run_id for 맥락 in deps["composer"].contexts] == ["첫", "둘"]
+        assert 큐.enqueued[0]["run_id"] == "둘"
+
+    def test_기본_생성기는_요청마다_다른_값을_낸다(self, tmp_path: Path) -> None:
+        """주입한 값의 전달만 보면 기본 생성기가 상수로 회귀해도 안 걸린다."""
+        큐 = Fake감시큐()
+        pipeline, _deps = build_pipeline(
+            responses=[
+                ok_response(body="네\n\n[[WATCH: 하나]]"),
+                ok_response(body="네\n\n[[WATCH: 둘]]"),
+            ],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(ts="1700000001.000100"))
+        pipeline.handle(make_ctx(ts="1700000002.000200"))
+
+        이름들 = [항목["run_id"] for 항목 in 큐.enqueued]
+        assert all(이름들) and len(set(이름들)) == 2
 
     def test_요청자권한이_함께저장된다(self, tmp_path: Path) -> None:
         """확인 프롬프트를 어느 권한으로 실행할지가 등록 시점에 정해진다."""
