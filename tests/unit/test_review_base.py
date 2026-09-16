@@ -86,6 +86,17 @@ class FakeEngine:
         return self._responses.pop(0)
 
 
+class FakeAudit:
+    def __init__(self, fail: bool = False) -> None:
+        self.rows: list[tuple[str, dict[str, Any]]] = []
+        self._fail = fail
+
+    def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None:
+        if self._fail:
+            raise RuntimeError("기록 실패")
+        self.rows.append((kind, {"channel": channel, "thread_ts": thread_ts, **fields}))
+
+
 class FakeReviewProgress:
     """진행 표시 port 대역. 실제 것은 슬랙에 글을 올렸다 지운다."""
 
@@ -141,12 +152,13 @@ class Rig:
     engine: FakeEngine
     message_lookup: FakeMessageLookup
     task: ReviewTask
+    audit: FakeAudit
 
 
 _MISSING = object()
 
 
-def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, progress=None) -> Rig:
+def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, progress=None, audit=None) -> Rig:
     ledger = ReviewLedger(database)
     reactions = FakeReactions()
     publisher = FakePublisher()
@@ -154,6 +166,7 @@ def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, prog
     message_lookup = FakeMessageLookup(
         {"thread_ts": "100.0", "text": "지목한 답변"} if msg is _MISSING else msg
     )
+    audit = audit or FakeAudit()
     task = FakeReviewTask(
         ledger=ledger,
         message_lookup=message_lookup,
@@ -165,8 +178,9 @@ def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, prog
         engine=engine,
         troubleshoot_channel="TS",
         progress=progress,
+        audit=audit,
     )
-    return Rig(ledger, reactions, publisher, engine, message_lookup, task)
+    return Rig(ledger, reactions, publisher, engine, message_lookup, task, audit)
 
 
 class Test중복실행방지:
@@ -356,3 +370,44 @@ class Test세션ID는엔진이정한다:
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
         assert len(rig.engine.calls) == 1
         assert "구분선없는본문" in rig.publisher.posts[0][2]
+
+
+class Test점검_실행_기록:
+    """sca-fy5 — 점검은 엔진을 몇 분씩 쓰는데 audit 에 한 줄도 안 남았다.
+    소요 분포가 없으면 제한시간을 어떻게 잡을지 정할 근거가 없다."""
+
+    def test_엔진_호출마다_소요와_결과를_남긴다(self, database) -> None:
+        rig = make_rig(database)
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        [(kind, fields)] = rig.audit.rows
+        assert kind == "review"
+        assert fields["review_kind"] == "fake_kind"
+        assert fields["channel"] == "C1"
+        assert fields["target_ts"] == "1.1"
+        assert fields["elapsed"] == 1.0
+        assert fields["ok"] is True
+        assert fields["attempt"] == "main"
+
+    def test_실패한_호출도_사유와_함께_남긴다(self, database) -> None:
+        response = EngineResponse(
+            ok=False, body="시간 초과", session_id=None, model_actual=None,
+            elapsed=900.0, turns=None, usage=None, failure_reason="timeout", engine="gemini",
+        )
+        rig = make_rig(database, engine_responses=[response])
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        [(_, fields)] = rig.audit.rows
+        assert fields["ok"] is False
+        assert fields["failure"] == "timeout"
+        assert fields["elapsed"] == 900.0
+        assert fields["engine"] == "gemini"
+
+    def test_기록이_실패해도_점검은_끝난다(self, database) -> None:
+        rig = make_rig(database, audit=FakeAudit(fail=True))
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert rig.ledger.find("fake_kind", "C1", "1.1").status == "완료"
+
+    def test_기록기가_없어도_돈다(self, database) -> None:
+        rig = make_rig(database)
+        rig.task._audit = None
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert rig.ledger.find("fake_kind", "C1", "1.1").status == "완료"
