@@ -24,8 +24,6 @@ from slack_cli_agent.config.channel import ChannelConfig
 from slack_cli_agent.observability.progress import ProgressCoordinator
 from slack_cli_agent.review.base import ReviewTarget
 from slack_cli_agent.slack.message_lookup import SlackMessageLookup
-from slack_cli_agent.slack.publisher import MessagePublisher
-from slack_cli_agent.slack.transcript import TranscriptBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +64,16 @@ class ReviewProgressDisplay:
             yield log_path
 
 
+class ThreadTranscriptBuilder(Protocol):
+    """What ThreadTranscriptPort needs. TranscriptBuilder satisfies it."""
+
+    def thread_transcript(self, channel: str, thread_ts: str, before_ts: str | None) -> str: ...
+
+
 class ThreadTranscriptPort:
     """TranscriptPort implementation, absorbing TranscriptBuilder's signature differences."""
 
-    def __init__(self, builder: TranscriptBuilder) -> None:
+    def __init__(self, builder: ThreadTranscriptBuilder) -> None:
         self._builder = builder
 
     def transcript(self, channel: str, thread_ts: str) -> str:
@@ -99,10 +103,16 @@ class SlackPermalinks:
         return (resp or {}).get("permalink") or ""
 
 
+class ThreadMessagePublisher(Protocol):
+    """What ReviewPublisher needs. MessagePublisher satisfies it."""
+
+    def post(self, channel: str, thread_ts: str, text: str, *, rich: bool) -> str | None: ...
+
+
 class ReviewPublisher:
     """PublisherPort implementation, absorbing MessagePublisher's optional thread_ts."""
 
-    def __init__(self, publisher: MessagePublisher) -> None:
+    def __init__(self, publisher: ThreadMessagePublisher) -> None:
         self._publisher = publisher
 
     def post(self, channel: str, thread_ts: str | None, text: str, *, rich: bool) -> str | None:
