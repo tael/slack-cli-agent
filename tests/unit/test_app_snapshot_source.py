@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from slack_cli_agent.core.lifecycle import InflightCounter
 from slack_cli_agent.observability.app_snapshot import ApplicationSnapshotSource
 
@@ -36,7 +38,7 @@ class FakeWatchJobs:
 
 
 def make_source(**overrides):
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "inflight": InflightCounter(),
         "queue": FakeQueue(3),
         "socket_watch": FakeSocketWatch(),

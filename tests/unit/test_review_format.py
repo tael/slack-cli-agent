@@ -12,12 +12,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from slack_cli_agent.review.base import ReviewTarget
 from slack_cli_agent.review.format import FormatReviewTask
 
 
 def make_task(**overrides) -> FormatReviewTask:
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "ledger": None,
         "message_lookup": None,
         "transcript": None,
