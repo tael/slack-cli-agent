@@ -89,6 +89,10 @@ class RuntimeSettings:
     # already-answered message as unanswered and reply to it twice.
     job_retention_sec: float = 7 * 86400
     job_purge_interval_sec: float = 3600
+    #: 끝난 연결 세대를 남겨 두는 기간. 캐치업 유예보다 길어야 한다 -- 세대를
+    #: 지우면 그 구간의 공백을 회수할 근거가 사라진다 (sca-zb9).
+    epoch_retention_sec: float = 7 * 86400
+    epoch_purge_interval_sec: float = 3600
     # A process running for days keeps receiving new attachments after
     # boot, so cleanup can't be a one-time pass at startup.
     attachment_cleanup_interval_sec: float = 3600

@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import inspect
 import logging
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,7 @@ def runner_factory_names() -> list[str]:
 
 RUNNER_ARGS: dict[str, Any] = {
     "job_purge_runner": lambda app: (),
+    "epoch_purge_runner": lambda app: (),
     "watch_runner": lambda app: (),
     "state_snapshot_runner": lambda app: (),
     "roster_refresher": lambda app: (),
@@ -121,6 +123,7 @@ class Test묶음구성:
             "watch_jobs",
             "watch_result_cleanup",
             "job_purge",
+            "epoch_purge",
             "startup_catchup",
             "connection_catchup",
             "catchup_retry",
@@ -520,3 +523,24 @@ class Test묶음자기감시:
         group = app.ingress_services(lambda 사유: None)
 
         assert group._notify is not None  # type: ignore[attr-defined]
+
+
+class Test끝난연결세대정리:
+    """purge_done 을 부르는 자리가 없어 원장이 상한 없이 늘었다 (sca-zb9)."""
+
+    def test_보존_기간을_지나서_부른다(self, app: Application) -> None:
+        불린값: list[float] = []
+
+        def 기록(older_than: float) -> int:
+            불린값.append(older_than)
+            return 0
+
+        app.connection_epochs().purge_done = 기록  # type: ignore[method-assign]
+        app._purge_done_epochs()
+        assert 불린값
+        기대 = time.time() - app._settings.epoch_retention_sec
+        assert abs(불린값[0] - 기대) < 5
+
+    def test_보존_기간이_캐치업_유예보다_길다(self, app: Application) -> None:
+        """세대를 지우면 그 구간의 공백 회수 근거가 사라진다."""
+        assert app._settings.epoch_retention_sec > app._settings.catchup_grace_sec
