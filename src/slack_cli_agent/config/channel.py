@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..core.errors import ConfigError
+
 KNOWN_KEYS = frozenset(
     {
         "name", "mode", "workdir", "model", "effort", "persona", "knowledge",
@@ -127,12 +129,22 @@ class ChannelRegistry:
 
     def _read_raw(self) -> dict[str, Any]:
         """Reads the file as-is; unknown keys must survive, so this can't
-        just parse straight into ChannelConfig."""
+        just parse straight into ChannelConfig.
+
+        A file that exists but can't be read raises. The callers replace the
+        whole file, so reading a broken one as empty would drop every other
+        channel's settings on the next command (sca-zvk). A missing file is
+        different — that is the first registration.
+        """
+        if not self._path.exists():
+            return {}
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        return dict(raw) if isinstance(raw, Mapping) else {}
+        except (OSError, ValueError) as exc:
+            raise ConfigError(f"채널 설정을 읽지 못해 쓰기를 멈춘다 : {self._path} : {exc}") from exc
+        if not isinstance(raw, Mapping):
+            raise ConfigError(f"채널 설정의 최상위가 사전이 아니다 : {self._path}")
+        return dict(raw)
 
     def _write_raw(self, raw: Mapping[str, Any]) -> None:
         """Writes to a temp file and replaces atomically, so a reader never
