@@ -20,7 +20,13 @@ from slack_cli_agent.auth.policy import OWNER_EFFORT_MIN
 from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
-from slack_cli_agent.engine.base import Engine, EngineRequest, EngineResponse, UsageLimit
+from slack_cli_agent.engine.base import (
+    CallOrigin,
+    Engine,
+    EngineRequest,
+    EngineResponse,
+    UsageLimit,
+)
 from slack_cli_agent.engine.runner import DirectInvoker, EngineInvoker, EngineRunner
 from slack_cli_agent.review.base import EngineCaller
 from slack_cli_agent.review.engine_adapter import ReviewEngineCaller
@@ -66,9 +72,12 @@ class FakeInvoker(EngineInvoker):
     def __init__(self, response: EngineResponse) -> None:
         self._response = response
         self.calls: list[EngineRequest] = []
+        self.origins: list[CallOrigin] = []
 
-    def invoke(self, request: EngineRequest) -> EngineResponse:
+    def invoke(self, request: EngineRequest,
+               origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse:
         self.calls.append(request)
+        self.origins.append(origin)
         return self._response
 
 
@@ -139,7 +148,7 @@ class TestEngineRequest조립:
     def test_주입받은_invoker로_실행한다(self) -> None:
         """실행기를 직접 받아 엔진을 고르지 않는다. 어느 엔진을 쓸지는 조립이 정한다."""
         profile = make_profile()
-        engine = FakeEngine(profile, None)
+        engine = FakeEngine(profile, RuntimeSettings())
         invoker = DirectInvoker(EngineRunner(RuntimeSettings()), engine)
         caller, _ = make_caller(profile=profile, invoker=invoker)
         assert caller._invoker is invoker
