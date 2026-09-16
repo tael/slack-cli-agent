@@ -20,7 +20,8 @@ from ..core.lifecycle import InflightCounter
 from ..core.ports import HandleOutcome, RequestHandler
 from ..jobs.heartbeat import WorkerHeartbeat
 from ..jobs.ports import JobQueue, ReclaimResult
-from ..reliability.catchup import CatchupReport, CatchupService, RetryStatus
+from ..reliability.catchup import CatchupReport, RetryStatus
+from ..reliability.ports import CatchupPort
 from ..reliability.watchjobs import WatchJobPort
 
 _Mark = Callable[[str, str], None]
@@ -36,7 +37,7 @@ class Worker:
         queue: JobQueue,
         handler: RequestHandler,
         heartbeat: WorkerHeartbeat,
-        catchup: CatchupService,
+        catchup: CatchupPort,
         markers: ReactionMarker,
         settings: RuntimeSettings,
         worker_id: str = "worker",
