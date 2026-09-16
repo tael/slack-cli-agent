@@ -18,6 +18,7 @@ from typing import TextIO
 from ..config.profile import Profile
 from .check import CheckResult, PreflightCheck, PreflightContext
 from .checks import (
+    ChannelUserToolsCheck,
     EngineBinaryCheck,
     EngineHomeCredentialCheck,
     McpCredentialCheck,
@@ -67,6 +68,7 @@ class PreflightSuite:
             # 있다. 그 사실을 설정 시점에 알리는 것이 목적이다.
             ToolAllowlistEnforcementCheck(),
             UsageCheckCommandCheck(),
+            ChannelUserToolsCheck(),
             # 표기가 안 풀리면 MCP 서버는 빈 자격으로 인증 실패만 낸다. 기동에서 막는다.
             McpCredentialCheck(),
         )
