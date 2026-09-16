@@ -6,6 +6,7 @@ import dataclasses
 import json
 import subprocess
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from slack_cli_agent.engine.base import (
 )
 from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
+from slack_cli_agent.engine.environment import EngineEnvironmentPolicy
 from slack_cli_agent.engine.gemini import GeminiEngine
 from slack_cli_agent.engine.registry import EngineRegistry
 from slack_cli_agent.engine.runner import EngineRunner, FallbackEngine
@@ -828,10 +830,13 @@ class RecordingEngine(Engine):
         return None
 
 
-class 통과정책:
+class 통과정책(EngineEnvironmentPolicy):
     """격리 자체를 보지 않는 시험용 — 받은 환경을 그대로 돌려준다."""
 
-    def build(self, source_env):
+    def __init__(self) -> None:
+        super().__init__("test")
+
+    def _base_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
         return dict(source_env)
 
 

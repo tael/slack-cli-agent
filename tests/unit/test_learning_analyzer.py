@@ -18,6 +18,8 @@ from slack_cli_agent.learning.analyzer import ProposalAnalyzer, ProposalBuilder
 from slack_cli_agent.learning.progress import FailureKind
 from slack_cli_agent.learning.proposal import LearningProposal
 
+from test_engine import 통과정책
+
 
 class FakeEngine(Engine):
     """subprocess 를 실제로 부르지 않고 정해 둔 stdout 을 그대로 파싱하는 엔진."""
@@ -62,10 +64,6 @@ class FakeEngine(Engine):
 def make_runner(stdout: str, returncode: int = 0) -> EngineRunner:
     def fake_subprocess(cmd, cwd, timeout, env=None):
         return SimpleNamespace(stdout=stdout, stderr="", returncode=returncode)
-
-    class 통과정책:
-        def build(self, source_env):
-            return dict(source_env)
 
     settings = SimpleNamespace(request_timeout_sec=10)
     return EngineRunner(settings, subprocess_runner=fake_subprocess, environment_policy=통과정책())
