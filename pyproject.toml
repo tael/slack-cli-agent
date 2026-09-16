@@ -57,7 +57,10 @@ explicit_package_bases = true
 # collide with the installed package. Test helpers are imported by bare name
 # (`from preflight_support import ...`), the way pytest puts the test
 # directory on sys.path.
-mypy_path = "src:tests/unit"
+# tests is listed too: helpers shared across tests/unit and tests/shadow
+# live directly under tests/, which pytest puts on sys.path because
+# tests/conftest.py is there.
+mypy_path = "src:tests:tests/unit"
 
 # Annotation-requiring rules are off by default and turned back on for the
 # package below. They cannot be scoped the other way round: mypy only accepts

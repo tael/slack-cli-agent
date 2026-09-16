@@ -29,7 +29,7 @@ from ..observability.audit import AuditLog, IncidentKind
 from ..observability.progress import ProgressCoordinator
 from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter
-from ..prompt.composer import SystemPromptComposer
+from ..prompt.composer import PromptComposer
 from ..prompt.sections import SILENT_MARK, CompositionContext
 from ..reliability.watchjobs import WatchJobPort
 from ..reliability.watchresult import WatchResultReader
@@ -59,7 +59,7 @@ class RequestPipeline:
         *,
         access_policy: AccessPolicy,
         transcript_builder: TranscriptBuilder,
-        prompt_composer: SystemPromptComposer,
+        prompt_composer: PromptComposer,
         session_manager: SessionManager,
         engine: Engine,
         # Not the raw runner — calling EngineRunner.run() directly would skip
