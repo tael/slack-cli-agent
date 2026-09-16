@@ -170,6 +170,21 @@ class TestChannelListCommand:
         assert "코치" in result.message
         assert "많음" in result.message
 
+    def test_호명_정책과_세션_단위를_같이_보여준다(self, tmp_path: Path) -> None:
+        """어느 채널이 멘션 없이 답하는지 슬랙에서 확인할 방법이 없었다."""
+        channels_path = tmp_path / "channels.json"
+        channels_path.write_text(
+            json.dumps({
+                "C1": {"answer_unaddressed": True, "session_scope": "channel"},
+                "C2": {},
+            }),
+            encoding="utf-8",
+        )
+        ctx = make_context(tmp_path, channels_path=channels_path)
+        result = ChannelListCommand().execute(ctx)
+        assert "호명 : 없어도 답함, 세션 : 채널" in result.message
+        assert "호명 : 불러야 답함, 세션 : 스레드" in result.message
+
 
 # ---------------------------------------------------------------------------
 # EngineStatusCommand
