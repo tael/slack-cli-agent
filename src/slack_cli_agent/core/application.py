@@ -259,6 +259,7 @@ class Application:
         # 각 정리 작업의 연속 0건 횟수와 누적 삭제 수를 이 프로세스가 사는
         # 동안 들고 있는다. 매번 새로 만들면 그 수가 늘 1 로 보인다.
         self._job_purge_log = SweepLog("끝난 작업")
+        self._epoch_purge_log = SweepLog("끝난 연결 세대")
         self._watch_result_log = SweepLog("감시 결과 파일")
         self._attachment_log = SweepLog("첨부")
         self._attachments: AttachmentStore | None = None
@@ -746,6 +747,23 @@ class Application:
     def _purge_finished_jobs(self) -> None:
         removed = self.queue().purge_finished(time.time() - self._settings.job_retention_sec)
         self._job_purge_log.record(removed)
+
+    def epoch_purge_runner(self) -> PeriodicRunner:
+        """Closed connection epochs are only a record of a gap already caught
+        up, but purge_done had no caller at all, so the table only grew
+        (sca-zb9).
+        """
+        return PeriodicRunner(
+            self._purge_done_epochs,
+            self._settings.epoch_purge_interval_sec,
+            name="epoch_purge",
+        )
+
+    def _purge_done_epochs(self) -> None:
+        removed = self.connection_epochs().purge_done(
+            time.time() - self._settings.epoch_retention_sec
+        )
+        self._epoch_purge_log.record(removed)
 
     def watch_jobs(self) -> WatchJobQueue:
         # cached and shared so registration, checking, and status reporting all
@@ -1468,6 +1486,7 @@ class Application:
                 self.watch_runner(),
                 self.watch_result_cleanup_runner(),
                 self.job_purge_runner(),
+                self.epoch_purge_runner(),
                 self.startup_catchup_runner(worker),
                 self.connection_catchup_runner(worker),
                 self.catchup_retry_runner(worker),

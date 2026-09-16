@@ -329,3 +329,33 @@ class Test시각기준:
         원장.record_connection(ConnectionKind.INITIAL)
         기록 = 원장.pending()[0].connected_at
         assert abs(기록 - time.time()) < 5.0
+
+
+class Test끝난세대정리:
+    """purge_done 은 정의만 있고 부르는 자리도 시험도 없었다. 원장이 상한 없이
+    늘어난다 (sca-zb9)."""
+
+    def 세대하나(self, 원장, 시계, at: float) -> None:
+        시계.now = at
+        세대 = 원장.record_connection(ConnectionKind.RECONNECT)
+        원장.claim("worker", lease_sec=60.0)
+        원장.complete((세대.generation,))
+
+    def test_보존_기간이_지난_끝난_세대를_지운다(self, 원장, 시계):
+        self.세대하나(원장, 시계, 1000.0)
+        지운수 = 원장.purge_done(older_than=2000.0)
+        assert 지운수 == 1
+        assert 원장.reconnect_timestamps() == ()
+
+    def test_보존_기간_안의_세대는_남긴다(self, 원장, 시계):
+        self.세대하나(원장, 시계, 3000.0)
+        assert 원장.purge_done(older_than=2000.0) == 0
+        assert 원장.reconnect_timestamps() == (3000.0,)
+
+    def test_아직_안_끝난_세대는_지우지_않는다(self, 원장, 시계):
+        """점유되지 않은 세대를 지우면 그 구간의 공백 회수 근거가 사라진다."""
+        시계.now = 1000.0
+        원장.record_connection(ConnectionKind.RECONNECT)
+        시계.now = 9000.0
+        assert 원장.purge_done(older_than=8000.0) == 0
+        assert [e.generation for e in 원장.pending()] == [1]
