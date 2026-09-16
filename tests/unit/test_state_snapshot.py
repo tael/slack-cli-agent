@@ -21,9 +21,10 @@ class FakeSource:
 
     def __init__(self) -> None:
         self.inflight = 0
-        self.queued = {}
-        self.socket_errors = []
-        self.socket_reconnects = []
+        self.queued: dict[str, int] = {}
+        # None 은 이 프로세스가 소켓을 못 본다는 뜻이다(sca-qi5.3)
+        self.socket_errors: list[float] | None = []
+        self.socket_reconnects: list[float] = []
         self.catchup_pending = 0
         self.watch_jobs: int | None = 0
         self.shutting_down = False

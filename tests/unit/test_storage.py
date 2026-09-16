@@ -101,14 +101,14 @@ class TestWAL전환:
     def test_이미_WAL_이면_다시_설정하지_않는다(self, tmp_path: Path) -> None:
         db = Database(tmp_path / "state.db")
         conn = FakeConn(mode="wal")
-        db._enable_wal(conn)
+        db._enable_wal(conn)  # type: ignore[arg-type]
         assert "PRAGMA journal_mode=WAL" not in conn.executed
 
     def test_잠금이면_다시_시도한다(self, tmp_path: Path) -> None:
         잔_시간: list[float] = []
         db = Database(tmp_path / "state.db", sleep=잔_시간.append)
         conn = FakeConn(mode="delete", fail_times=2)
-        db._enable_wal(conn)
+        db._enable_wal(conn)  # type: ignore[arg-type]
         assert conn.mode == "wal"
         assert len(잔_시간) == 2
 
@@ -116,7 +116,7 @@ class TestWAL전환:
         db = Database(tmp_path / "state.db", sleep=lambda _: None)
         conn = FakeConn(mode="delete", fail_times=99)
         with pytest.raises(sqlite3.OperationalError):
-            db._enable_wal(conn)
+            db._enable_wal(conn)  # type: ignore[arg-type]
 
 
 class TestTransaction:
