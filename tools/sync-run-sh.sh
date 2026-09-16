@@ -7,7 +7,9 @@
 # 그대로 들고 있어, 차단 표식 같은 공통 동작이 그 봇들에는 없다 (sca-y4q).
 #
 # 이전 판은 run.sh.bak 으로 남긴다. 봇마다 손으로 고친 것이 있을 수 있어
-# 덮기 전에 대조할 수 있어야 한다.
+# 덮기 전에 대조할 수 있어야 한다. 렌더 결과가 이미 같으면 아무것도 하지 않는다
+# - 두 번째 동기화가 run.sh.bak 을 동기화된 판으로 덮으면 손으로 고친 원본이
+# 사라진다 (코덱스 리뷰).
 set -e
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 [ $# -eq 0 ] && { sed -n '2,12p' "$0"; exit 2; }
@@ -21,9 +23,14 @@ from pathlib import Path
 p = Path('$REPO/profiles/$NAME.json')
 print(json.loads(p.read_text(encoding='utf-8')).get('display_name', '$NAME') if p.is_file() else '$NAME')
 ")
+  RENDERED=$(sed -e "s|__NAME__|$NAME|g" -e "s|__DISPLAY__|$DISPLAY|g" -e "s|__REPO__|$REPO|g" \
+    "$REPO/tools/templates/run.sh")
+  if [ -f "$D/run.sh" ] && [ "$RENDERED" = "$(cat "$D/run.sh")" ]; then
+    echo "$NAME : 이미 같다. 건드리지 않았다"
+    continue
+  fi
   [ -f "$D/run.sh" ] && cp "$D/run.sh" "$D/run.sh.bak"
-  sed -e "s|__NAME__|$NAME|g" -e "s|__DISPLAY__|$DISPLAY|g" -e "s|__REPO__|$REPO|g" \
-    "$REPO/tools/templates/run.sh" > "$D/run.sh"
+  printf '%s\n' "$RENDERED" > "$D/run.sh"
   chmod +x "$D/run.sh"
   echo "$NAME : 갱신했다. 이전 판은 $D/run.sh.bak"
 done
