@@ -1456,6 +1456,8 @@ class Application:
                 self.stale_review_runner(),
             ],
             name="ingress",
+            watch_interval_sec=self._settings.service_watch_interval_sec,
+            notify=self._notify_owner if self._profile.owner_user_id else None,
         )
 
     def worker_services(self, worker: Worker) -> ServiceGroup:
@@ -1473,6 +1475,8 @@ class Application:
                 self.learning_batch_runner(),
             ],
             name="worker",
+            watch_interval_sec=self._settings.service_watch_interval_sec,
+            notify=self._notify_owner if self._profile.owner_user_id else None,
         )
 
     def self_restarter(self, exit_process: Callable[[int], None] | None = None) -> SelfRestarter:

@@ -298,6 +298,9 @@ class FakeRefresher:
     def join(self, timeout: float | None = None) -> None:
         return None
 
+    def is_running(self) -> bool:
+        return self.start_calls > self.stop_calls
+
 
 class FakeApplication:
     """IngressCommand/WorkerCommand 가 기대하는 계약만 흉내 낸 이중체."""
