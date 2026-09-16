@@ -379,6 +379,18 @@ class TestReviewReactions:
         for task in app.review_tasks().values():
             assert task._audit is app.audit()
 
+    def test_새_세션_ID_를_엔진이_발급한다(self, app: Application) -> None:
+        """세션 ID 형식은 엔진마다 다르다. 밖에서 만들면 지금 세 엔진이 모두
+        UUID 를 받아 우연히 맞을 뿐이고, 형식이 다른 엔진이 들어오면 일반
+        대화가 sca-56y 와 같은 방식으로 깨진다(sca-k6s)."""
+        from slack_cli_agent.session.ports import SessionKey
+
+        app.engine.new_session_id = lambda: "엔진이-만든-아이디"  # type: ignore[method-assign]
+        결정 = app.pipeline()._sessions.resolve(
+            SessionKey(scope="thread", key="C1:1.1"), app.engine.name
+        )
+        assert 결정.session_id == "엔진이-만든-아이디"
+
     def test_워커에_감시_큐가_연결된다(self, app: Application) -> None:
         """안 꽂으면 reclaim 이 감시 중인 메시지에 대기 표식을 덧붙인다(sca-o1e)."""
         assert app.worker()._watch_jobs is app.watch_jobs()
