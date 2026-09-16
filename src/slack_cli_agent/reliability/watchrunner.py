@@ -13,7 +13,6 @@ import time
 from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
-from ..config.channel import ChannelRegistry
 from ..config.settings import RuntimeSettings
 from ..engine.base import EngineResponse
 from ..guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG
@@ -22,12 +21,30 @@ from ..observability.audit import (
     WATCH_CHECKED_KIND,
     WATCH_FINISHED_KIND,
 )
-from ..slack.publisher import MessagePublisher
 from ..slack.reactions import ReactionMarker
 from .watchjobs import WatchJob, WatchJobPort
 from .watchresult import WatchOutcome, WatchResultReader
 
 log = logging.getLogger(__name__)
+
+
+class RichFlag(Protocol):
+    """Only field the completion report reads off a channel config."""
+
+    @property
+    def rich(self) -> bool: ...
+
+
+class WatchChannelLookup(Protocol):
+    """What the checker needs. ChannelRegistry satisfies it."""
+
+    def get(self, channel_id: str) -> RichFlag | None: ...
+
+
+class WatchReportPublisher(Protocol):
+    """What the checker needs. MessagePublisher satisfies it."""
+
+    def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None: ...
 
 _TERMINAL = (WatchOutcome.SUCCEEDED, WatchOutcome.FAILED)
 
@@ -83,8 +100,8 @@ class WatchJobChecker:
         # None keeps the old tag-only judgement. Rows registered before the
         # result file was pinned have nothing to read either way.
         results: WatchResultReader | None = None,
-        publisher: MessagePublisher,
-        channels: ChannelRegistry,
+        publisher: WatchReportPublisher,
+        channels: WatchChannelLookup,
         settings: RuntimeSettings,
         reactions: ReactionMarker | None = None,
         # Return value is ignored here; object rather than None since some

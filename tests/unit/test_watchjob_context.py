@@ -11,14 +11,21 @@ import pytest
 
 from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+from slack_cli_agent.storage.database import Database
+
+
+class 시계달린큐(WatchJobQueue):
+    """시험이 시각을 앞으로 돌릴 수 있게 그 dict 를 큐에 달아 둔다.
+    실물에 없는 속성이라 인스턴스에 덮어쓰면 타입 검사가 못 본다."""
+
+    def __init__(self, database: Database) -> None:
+        self.시각 = {"값": 1000.0}
+        super().__init__(database, now=lambda: self.시각["값"])
 
 
 @pytest.fixture
-def 큐(database):
-    시각 = {"값": 1000.0}
-    q = WatchJobQueue(database, now=lambda: 시각["값"])
-    q.시각 = 시각
-    return q
+def 큐(database: Database) -> 시계달린큐:
+    return 시계달린큐(database)
 
 
 class Test등록맥락보존:
