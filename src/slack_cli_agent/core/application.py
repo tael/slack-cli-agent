@@ -745,6 +745,9 @@ class Application:
             settings=self._settings,
             reactions=self.reactions(),
             notify_owner=self._notify_owner if self._profile.owner_user_id else None,
+            # checks/last_run are current state only. Without this there is no
+            # record that a watch ever ran (sca-j3d).
+            audit=self.audit(),
         )
 
     def watch_result_cleanup_runner(self) -> PeriodicRunner:

@@ -16,6 +16,11 @@ import pytest
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import NO_DETAIL, EngineResponse, FailureDetail
 from slack_cli_agent.guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG
+from slack_cli_agent.observability.audit import (
+    WATCH_ABANDONED_KIND,
+    WATCH_CHECKED_KIND,
+    WATCH_FINISHED_KIND,
+)
 from slack_cli_agent.reliability.watchjobs import WatchJob, WatchJobQueue
 from slack_cli_agent.reliability.watchrunner import WatchJobChecker
 
@@ -85,7 +90,7 @@ def 설정(**overrides: Any) -> RuntimeSettings:
 
 
 def 체커(*, 큐, run_check, 발행=None, 채널목록=None, 설정값=None, 리액션=None, notify_owner=None,
-        판정기=None):
+        판정기=None, 감사=None):
     return WatchJobChecker(
         queue=큐,
         run_check=run_check,
@@ -95,6 +100,7 @@ def 체커(*, 큐, run_check, 발행=None, 채널목록=None, 설정값=None, �
         settings=설정값 or 설정(),
         reactions=리액션,
         notify_owner=notify_owner,
+        audit=감사,
         now=lambda: 큐.시각["값"],
     )
 
@@ -815,3 +821,126 @@ class Test큐를_먼저_닫는다:
     def test_포기_경로는_표식_전에_큐가_닫혀_있다(self, 큐) -> None:
         큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
         assert self._표식시점의_큐상태(큐, 포기=True) == [[]]
+
+
+class 가짜감사:
+    def __init__(self) -> None:
+        self.기록: list[tuple[str, dict[str, Any]]] = []
+
+    def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None:
+        self.기록.append((kind, {"channel": channel, "thread_ts": thread_ts, **fields}))
+
+
+class 터지는감사:
+    def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None:
+        raise RuntimeError("기록 실패")
+
+
+class Test감시실행기록:
+    """checks 와 last_run 은 현재 상태일 뿐이라 '감시가 돌아 본 기록이 없다' 가
+    성립했다(sca-7cj, sca-j3d). 조건과 응답 본문은 슬랙 대화나 파일 내용을
+    담을 수 있어 넣지 않는다.
+    """
+
+    def test_확인_한_회차가_남는다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        감사 = 가짜감사()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"아직입니다 {WATCH_STILL_TAG}"),
+            감사=감사,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        종류 = [kind for kind, _ in 감사.기록]
+        assert WATCH_CHECKED_KIND in 종류
+        기록 = dict(감사.기록)[WATCH_CHECKED_KIND]
+        assert 기록["watch_job_id"] == 1
+        assert 기록["ok"] is True
+        assert 기록["channel"] == "C1"
+
+    def test_기록에_조건과_본문을_안_담는다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "비밀조건입니다", msg_ts="222.2")
+        감사 = 가짜감사()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"비밀본문입니다 {WATCH_STILL_TAG}"),
+            감사=감사,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        적힌것 = str(감사.기록)
+        assert "비밀조건입니다" not in 적힌것
+        assert "비밀본문입니다" not in 적힌것
+
+    def test_완료가_별도_종류로_남는다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        감사 = 가짜감사()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            감사=감사,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert WATCH_FINISHED_KIND in [kind for kind, _ in 감사.기록]
+
+    def test_포기가_별도_종류로_남는다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        감사 = 가짜감사()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="안 불린다"),
+            설정값=설정(watch_job_max_age_sec=10.0), 감사=감사,
+        )
+        큐.시각["값"] = 9999.0
+        c.check_once()
+
+        기록 = dict(감사.기록)
+        assert WATCH_ABANDONED_KIND in 기록
+        assert 기록[WATCH_ABANDONED_KIND]["watch_job_id"] == 1
+
+    def test_엔진_예외는_종류만_남기고_메시지를_안_남긴다(self, 큐) -> None:
+        def 터진다(job, outcome):
+            raise RuntimeError("비밀예외메시지")
+
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        감사 = 가짜감사()
+        c = 체커(큐=큐, run_check=터진다, 감사=감사)
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        기록 = dict(감사.기록)[WATCH_CHECKED_KIND]
+        assert 기록["exception_type"] == "RuntimeError"
+        assert "비밀예외메시지" not in str(감사.기록)
+        assert 기록["ok"] is False
+
+    def test_기록이_실패해도_감시는_계속_돈다(self, 큐) -> None:
+        """이미 끝난 감시를 기록 실패로 잃으면 안 된다."""
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행, 감사=터지는감사(),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역
+        assert 큐.due(3000.0, 0.0) == []
+
+    def test_감사를_안_주면_그대로_돈다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역
