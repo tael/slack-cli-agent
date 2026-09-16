@@ -60,6 +60,8 @@ class FakeSlackClient:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         # 실제 슬랙은 conversations.open 에 DM 방 ID 를 돌려준다
         self.open_channel = "D_FAKE"
+        self.channel_names: dict[str, str] = {}
+        self.channel_info_error = ""
 
     def _record(self, name: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append((name, kwargs))
@@ -76,6 +78,12 @@ class FakeSlackClient:
 
     def users_info(self, **kwargs: Any) -> dict[str, Any]:
         return self._record("users_info", **kwargs)
+
+    def conversations_info(self, **kwargs: Any) -> dict[str, Any]:
+        self._record("conversations_info", **kwargs)
+        if self.channel_info_error:
+            raise RuntimeError(self.channel_info_error)
+        return {"channel": {"name": self.channel_names.get(str(kwargs.get("channel", "")), "")}}
 
     def __getattr__(self, name: str) -> Any:
         def call(**kwargs: Any) -> dict[str, Any]:
