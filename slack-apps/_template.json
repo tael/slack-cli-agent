@@ -58,7 +58,8 @@
         "message.groups",
         "message.im",
         "message.mpim",
-        "reaction_added"
+        "reaction_added",
+        "assistant_thread_started"
       ]
     },
     "interactivity": {
