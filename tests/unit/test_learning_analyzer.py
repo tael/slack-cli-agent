@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from engine_support import named
 from test_engine import 통과정책
 
 from slack_cli_agent.engine.base import Engine, EngineRequest, EngineResponse
@@ -255,8 +256,7 @@ class Test학습도_같은_호출부품을_쓴다:
         from slack_cli_agent.engine.runner import FallbackEngine, FallbackInvoker
         from slack_cli_agent.engine.switcher import EngineSwitcher
 
-        primary, secondary = FakeEngine(), FakeEngine()
-        secondary.name = "2차"
+        primary, secondary = FakeEngine(), named(FakeEngine, "2차")()
         runner = make_runner(analysis_stdout(channel_facts=["사실"]))
         switcher = EngineSwitcher(tmp_path / "engine_state.json")
         switcher.begin_switch("weekly limit", engine_name="2차")

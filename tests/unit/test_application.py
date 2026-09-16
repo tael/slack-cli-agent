@@ -549,7 +549,7 @@ class TestRoster:
         client = FakeSlackClient()
         app = Application.from_profile(write_profile(tmp_path), client=client)
         app.roster_refresher()
-        assert not any(name == "users_list" for name, _, _ in client.calls)
+        assert not any(name == "users_list" for name, _ in client.calls)
 
     def test_close가_갱신기를_정지시킨다(self, tmp_path: Path) -> None:
         """정지시키지 않으면 데몬 스레드가 프로세스 종료까지 슬랙을 계속 호출한다."""
@@ -923,10 +923,11 @@ class Test감시확인연결:
         monkeypatch.setattr(
             type(app.engine), "new_session_id", lambda self: "엔진이-만든-값",
         )
-        monkeypatch.setattr(
-            type(app.engine), "build_command",
-            lambda self, request: 받은요청.append(request) or ["true"],
-        )
+        def 기록하고_참을_낸다(self: Any, request: Any) -> list[str]:
+            받은요청.append(request)
+            return ["true"]
+
+        monkeypatch.setattr(type(app.engine), "build_command", 기록하고_참을_낸다)
 
         app._watch_run_check(WatchJob(
             id=1, channel="C1", thread_ts="1.1", condition="배포 확인",

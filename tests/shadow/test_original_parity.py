@@ -14,6 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from engine_support import named
+
 from slack_cli_agent.auth.policy import EFFORT_LEVELS, OWNER_EFFORT_MIN
 from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.channel import CHAT_DEFAULT
@@ -476,10 +478,8 @@ class TestEngineProbe_타임아웃:
         probe_ok = EngineResponse(ok=True, body="OK", session_id=None,
                                   model_actual=None, elapsed=0, turns=None, usage=None)
         profile = _profile(tmp_path)
-        primary = RecordingEngine(profile, SETTINGS, response=limit_response)
-        primary.name = "claude"
-        secondary = RecordingEngine(profile, SETTINGS, response=probe_ok)
-        secondary.name = "codex"
+        primary = named(RecordingEngine, "claude")(profile, SETTINGS, response=limit_response)
+        secondary = named(RecordingEngine, "codex")(profile, SETTINGS, response=probe_ok)
         switcher = EngineSwitcher(tmp_path / "engine_state.json")
 
         seen_timeouts: list[Any] = []

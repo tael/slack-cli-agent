@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from engine_support import named
 
 from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.profile import Profile
@@ -911,10 +912,8 @@ class TestEngineRunner:
 class TestFallbackEngine:
     def _fallback(self, tmp_path: Path, primary_response=None, secondary_response=None):
         profile = codex_profile(tmp_path)
-        primary = RecordingEngine(profile, SETTINGS, response=primary_response)
-        primary.name = "claude"
-        secondary = RecordingEngine(profile, SETTINGS, response=secondary_response)
-        secondary.name = "codex"
+        primary = named(RecordingEngine, "claude")(profile, SETTINGS, response=primary_response)
+        secondary = named(RecordingEngine, "codex")(profile, SETTINGS, response=secondary_response)
         switcher = EngineSwitcher(tmp_path / "engine_state.json")
         calls: list[Any] = []
 
