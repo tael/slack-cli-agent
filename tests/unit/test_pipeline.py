@@ -1000,7 +1000,9 @@ class Test느린요청보고_첨부값:
                 return []
 
         게시자 = 기록게시자()
-        settings = RuntimeSettings(slow_report_sec=0.0)
+        # 보고는 소유자 전용 채널에만 나간다(sca-dh6). 여기서 안 넣으면
+        # 게시가 0건이 되고 이 시험은 아무것도 안 본다.
+        settings = RuntimeSettings(slow_report_sec=0.0, owner_only_channels=frozenset({"TS"}))
         보고기 = SlowRequestReporter(
             publisher=게시자,
             calculator=TimeBreakdownCalculator(settings.assumed_tokens_per_sec),
