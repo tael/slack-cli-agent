@@ -108,6 +108,39 @@ class TestClaim:
         assert len(claimed) == 1
 
 
+class TestBlockedOnThread:
+    """`claim_next` 가 같은 thread_ts 를 직렬화하므로, 그 스레드에 미완료 작업이
+    하나라도 더 있으면 이 작업은 바로 시작하지 못한다."""
+
+    def test_자기_혼자면_막히지_않는다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.1", "T1"))
+        assert queue.blocked_on_thread("T1", "1.1") is False
+
+    def test_같은_스레드에_대기_작업이_있으면_막힌다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.1", "T1"))
+        queue.enqueue(ctx("1.2", "T1"))
+        assert queue.blocked_on_thread("T1", "1.2") is True
+
+    def test_같은_스레드에_실행중_작업이_있으면_막힌다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.1", "T1"))
+        queue.claim_next("w1")
+        queue.enqueue(ctx("1.2", "T1"))
+        assert queue.blocked_on_thread("T1", "1.2") is True
+
+    def test_다른_스레드의_작업은_막지_않는다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.1", "T1"))
+        queue.enqueue(ctx("2.1", "T2"))
+        assert queue.blocked_on_thread("T2", "2.1") is False
+
+    def test_끝난_작업은_막지_않는다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.1", "T1"))
+        first = queue.claim_next("w1")
+        assert first is not None
+        queue.complete(first.id, ok=True)
+        queue.enqueue(ctx("1.2", "T1"))
+        assert queue.blocked_on_thread("T1", "1.2") is False
+
+
 class TestPersistence:
     def test_재기동해도_대기_작업이_남는다(self, database) -> None:
         SqliteJobQueue(database).enqueue(ctx("1.1"))

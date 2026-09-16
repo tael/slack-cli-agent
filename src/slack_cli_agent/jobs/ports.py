@@ -75,6 +75,15 @@ class JobQueue(Protocol):
         the state transition must happen in one transaction.
         """
 
+    def blocked_on_thread(self, thread_ts: str, message_ts: str) -> bool:
+        """Whether another unfinished job would run before this one.
+
+        Mirrors `claim_next`'s serialization: a job can't be claimed while
+        any other QUEUED or RUNNING job shares its thread_ts. Callers use
+        this to tell "waiting on an earlier request" apart from "about to
+        start", which are otherwise indistinguishable at enqueue time.
+        """
+
     def pending(self, limit: int = 50) -> list[Job]:
         """Queued jobs, oldest first."""
 
