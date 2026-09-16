@@ -30,6 +30,14 @@ class IncidentKind(str, Enum):
     #: One engine call made by a review task. Baseline traffic like REQUEST;
     #: its elapsed value is what timeout decisions are read from.
     REVIEW = "review"
+    #: One round of the watch queue touching one job. Baseline traffic:
+    #: checks/last_run only hold current state, so without this there is no
+    #: record that a watch ever ran (sca-j3d).
+    WATCH_CHECKED = "watch_checked"
+    #: A watch that reported and left the queue. Baseline traffic.
+    WATCH_FINISHED = "watch_finished"
+    #: A watch dropped on the age limit without its work ever finishing.
+    WATCH_ABANDONED = "watch_abandoned"
     SPLIT = "split"
     SPLIT_BROKEN = "split_broken"
     BLOCKS_REJECTED = "blocks_rejected"
@@ -45,6 +53,9 @@ class IncidentKind(str, Enum):
 
 REQUEST_KIND = IncidentKind.REQUEST.value
 REVIEW_KIND = IncidentKind.REVIEW.value
+WATCH_CHECKED_KIND = IncidentKind.WATCH_CHECKED.value
+WATCH_FINISHED_KIND = IncidentKind.WATCH_FINISHED.value
+WATCH_ABANDONED_KIND = IncidentKind.WATCH_ABANDONED.value
 
 # Kinds that count as an "incident" for the reliability/quality rollups —
 # REQUEST is excluded since it's the baseline traffic, not an incident.
@@ -52,6 +63,8 @@ BASELINE_KINDS: tuple[IncidentKind, ...] = (
     IncidentKind.REQUEST,
     IncidentKind.CAPABILITY,
     IncidentKind.REVIEW,
+    IncidentKind.WATCH_CHECKED,
+    IncidentKind.WATCH_FINISHED,
 )
 #: Read by metrics.py as well -- a kind that is baseline here must not be
 #: tallied as an incident there.

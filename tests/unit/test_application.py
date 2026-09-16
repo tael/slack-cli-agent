@@ -379,6 +379,10 @@ class TestReviewReactions:
         for task in app.review_tasks().values():
             assert task._audit is app.audit()
 
+    def test_감시_확인기에_감사가_연결된다(self, app: Application) -> None:
+        """부품만 만들면 감시가 돌아 본 기록이 한 줄도 안 남는다(sca-j3d)."""
+        assert app.watch_checker()._audit is app.audit()
+
     def test_엔진_실행기에_감사가_연결된다(self, app: Application) -> None:
         """부품만 만들면 보장 기록이 한 줄도 안 남는다(sca-dyb.15 2단계)."""
         assert app.engine_runner._audit is app.audit()
