@@ -104,13 +104,13 @@ def _claude_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, A
         if server.is_remote:
             entry = {"type": "http", "url": server.url}
             if server.headers:
-                entry["headers"] = dict(server.headers)
+                entry["headers"] = server.resolved_headers()
         else:
             entry = {"command": server.command}
             if server.args:
                 entry["args"] = list(server.args)
             if server.env:
-                entry["env"] = dict(server.env)
+                entry["env"] = server.resolved_env()
             if server.cwd:
                 entry["cwd"] = str(server.cwd)
         servers[name] = entry
