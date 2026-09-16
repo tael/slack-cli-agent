@@ -82,7 +82,48 @@ class ProfileAwareCommand(CliCommand):
         return self.execute_with_profile(profile, args, stdout)
 
     @abstractmethod
-    def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
+    def execute_with_profile(
+        self, profile: Profile, args: argparse.Namespace, stdout: TextIO
+    ) -> int:
+        pass
+
+
+#: Boot refused for a config reason. sysexits.h EX_CONFIG. run.sh turns this
+#: into a block marker and the plist's PathState stops the restart loop; if
+#: the two ever disagree the gate blocks but the restarts continue (sca-y4q).
+BLOCKED_EXIT = 78
+
+
+class PreflightGatedServiceCommand(ProfileAwareCommand):
+    """Boot gate for the long-running services.
+
+    Subclasses implement `run_service` only. The gate runs before anything a
+    service would touch — no application, no gateway, no signal handler — so a
+    misconfigured profile refuses to boot rather than failing per request.
+
+    The suite is injected so a test can state the verdict it wants without
+    building a profile that happens to pass every real check.
+    """
+
+    def __init__(
+        self, preflight_suite_factory: Callable[[], PreflightSuite] = PreflightSuite
+    ) -> None:
+        self._preflight_suite_factory = preflight_suite_factory
+
+    def execute_with_profile(
+        self, profile: Profile, args: argparse.Namespace, stdout: TextIO
+    ) -> int:
+        suite = self._preflight_suite_factory()
+        report = suite.run(profile)
+        # Printed on the way through as well: if only failures were logged, a
+        # single old failure line would read as the state of everything after it.
+        suite.report_to(report, stdout)
+        if not report.bootable:
+            return BLOCKED_EXIT
+        return self.run_service(profile, args, stdout)
+
+    @abstractmethod
+    def run_service(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
         pass
 
 
@@ -110,13 +151,16 @@ class PreflightCommand(ProfileAwareCommand):
             help="작업 자리 점검에 추가로 넣을 하위 디렉터리 이름. 여러 번 줄 수 있다",
         )
 
-    def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
+    def execute_with_profile(
+        self, profile: Profile, args: argparse.Namespace, stdout: TextIO
+    ) -> int:
         suite = PreflightSuite(
-            required_prompts=args.required_prompt, extra_workdirs=args.extra_workdir,
+            required_prompts=args.required_prompt,
+            extra_workdirs=args.extra_workdir,
         )
         report = suite.run(profile)
         suite.report_to(report, stdout)
-        return 0 if report.bootable else 1
+        return 0 if report.bootable else BLOCKED_EXIT
 
 
 class MigrateCommand(ProfileAwareCommand):
@@ -128,7 +172,9 @@ class MigrateCommand(ProfileAwareCommand):
     def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
         return
 
-    def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
+    def execute_with_profile(
+        self, profile: Profile, args: argparse.Namespace, stdout: TextIO
+    ) -> int:
         db = Database(profile.paths.database)
         try:
             before = int(db.connect().execute("PRAGMA user_version").fetchone()[0])
@@ -143,14 +189,15 @@ class MigrateCommand(ProfileAwareCommand):
 
 
 class ChannelsCommand(ProfileAwareCommand):
-
     name: ClassVar[str] = "channels"
     help: ClassVar[str] = "등록된 채널 목록을 본다"
 
     def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
         return
 
-    def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
+    def execute_with_profile(
+        self, profile: Profile, args: argparse.Namespace, stdout: TextIO
+    ) -> int:
         registry = ChannelRegistry(profile.paths.channels)
         channels = registry.all()
         if not channels:
@@ -161,7 +208,18 @@ class ChannelsCommand(ProfileAwareCommand):
         return 0
 
 
-def _profile_skeleton(name: str, state_dir: Path) -> dict[str, Any]:
+def default_work_root(name: str) -> Path:
+    """Where the engine runs, outside $HOME.
+
+    A work directory under $HOME pulls the user's global instructions into
+    every turn, so the boot gate refuses it. The default has to satisfy that
+    or a fresh install is blocked before its first request; new-bot.sh uses
+    the same location (sca-xay).
+    """
+    return Path("/Users/Shared") / f"{name}-work"
+
+
+def _profile_skeleton(name: str, state_dir: Path, work_root: Path) -> dict[str, Any]:
     return {
         "name": name,
         "display_name": name,
@@ -171,6 +229,7 @@ def _profile_skeleton(name: str, state_dir: Path) -> dict[str, Any]:
             "model": "",
         },
         "state_dir": str(state_dir),
+        "work_root": str(work_root),
         "owner_user_id": "",
         "troubleshoot_channel": "",
         "plugins": [],
@@ -189,7 +248,11 @@ class InitCommand(CliCommand):
     help: ClassVar[str] = "프로필 뼈대와 상태 디렉터리 구조를 만든다"
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--name", required=True, help="봇 이름. 프로필 파일 이름과 상태 디렉터리 기본값에 쓰인다")
+        parser.add_argument(
+            "--name",
+            required=True,
+            help="봇 이름. 프로필 파일 이름과 상태 디렉터리 기본값에 쓰인다",
+        )
         parser.add_argument(
             "--profile-dir",
             default=None,
@@ -203,6 +266,11 @@ class InitCommand(CliCommand):
             default=None,
             help="상태 디렉터리 경로. 기본은 ~/.<이름>",
         )
+        parser.add_argument(
+            "--work-root",
+            default=None,
+            help="엔진이 도는 작업 자리. 홈 밖이어야 한다. 기본은 /Users/Shared/<이름>-work",
+        )
 
     def execute(self, args: argparse.Namespace, stdout: TextIO) -> int:
         name = validate_profile_name(args.name)
@@ -212,12 +280,14 @@ class InitCommand(CliCommand):
         state_dir = (
             Path(args.state_dir).expanduser() if args.state_dir else StatePaths.for_bot(name).root
         )
+        work_root = Path(args.work_root).expanduser() if args.work_root else default_work_root(name)
         # state_dir goes into the profile JSON verbatim, so this is the same
         # rule Profile.from_dict applies — enforced before the write rather
         # than at every print below (코덱스 리뷰).
         for label, value in (
             ("--profile-dir", str(profile_dir)),
             ("--state-dir", str(state_dir)),
+            ("--work-root", str(work_root)),
         ):
             if contains_secret(value):
                 raise ConfigError(f"{label} 에 토큰이 들어 있다 : {redact(value)}")
@@ -230,7 +300,9 @@ class InitCommand(CliCommand):
         if profile_path.exists():
             skipped.append(f"프로필 파일 : {profile_path}")
         else:
-            skeleton = json.dumps(_profile_skeleton(name, state_dir), ensure_ascii=False, indent=2)
+            skeleton = json.dumps(
+                _profile_skeleton(name, state_dir, work_root), ensure_ascii=False, indent=2
+            )
             profile_path.write_text(skeleton + "\n", encoding="utf-8")
             created.append(f"프로필 파일 : {profile_path}")
 
@@ -241,6 +313,9 @@ class InitCommand(CliCommand):
             ("페르소나 디렉터리", paths.persona),
             ("축적 지식 디렉터리", paths.knowledge),
             ("엔진 디렉터리", paths.engine_dir),
+            # Created, not just written into the profile: the gate checks the
+            # directory exists, so a path alone still blocks boot.
+            ("작업 자리", work_root),
         ):
             if path.is_dir():
                 skipped.append(f"{label} : {path}")
@@ -262,14 +337,19 @@ class InitCommand(CliCommand):
 
         print(file=stdout)
         print("다음에 채워야 할 값", file=stdout)
-        print(f"- {profile_path} 의 owner_user_id, troubleshoot_channel, primary_engine", file=stdout)
+        print(
+            f"- {profile_path} 의 owner_user_id, troubleshoot_channel, primary_engine", file=stdout
+        )
         print(
             f"- 슬랙 토큰. 환경변수 SLACK_BOT_TOKEN, SLACK_APP_TOKEN 이나 "
             f"{paths.credentials} 에 넣는다",
             file=stdout,
         )
         print("  자격 파일은 권한을 600 으로 두고, 다음 기동부터 적용된다", file=stdout)
-        print(f"- {paths.prompts} 아래 조직 고유 프롬프트. 없으면 패키지 기본 프롬프트를 쓴다", file=stdout)
+        print(
+            f"- {paths.prompts} 아래 조직 고유 프롬프트. 없으면 패키지 기본 프롬프트를 쓴다",
+            file=stdout,
+        )
         return 0
 
 
@@ -290,11 +370,16 @@ def _default_application(profile: Profile, resolver: CredentialResolver) -> Any:
     return Application.from_profile(profile, resolver=resolver)
 
 
-class IngressCommand(ProfileAwareCommand):
+class IngressCommand(PreflightGatedServiceCommand):
     name: ClassVar[str] = "ingress"
     help: ClassVar[str] = "슬랙 이벤트 접수 프로세스를 띄운다"
 
-    def __init__(self, application_factory: ApplicationFactory | None = None) -> None:
+    def __init__(
+        self,
+        application_factory: ApplicationFactory | None = None,
+        preflight_suite_factory: Callable[[], PreflightSuite] = PreflightSuite,
+    ) -> None:
+        super().__init__(preflight_suite_factory)
         self._factory = application_factory or _default_application
 
     def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
@@ -307,7 +392,7 @@ class IngressCommand(ProfileAwareCommand):
             ),
         )
 
-    def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
+    def run_service(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
         resolver = resolver_for(profile)
         token = resolver.app_token(args.app_token)
         if not token:
@@ -335,7 +420,7 @@ class IngressCommand(ProfileAwareCommand):
         return 0
 
 
-class WorkerCommand(ProfileAwareCommand):
+class WorkerCommand(PreflightGatedServiceCommand):
     name: ClassVar[str] = "worker"
     help: ClassVar[str] = "작업 큐를 소비하는 워커 프로세스를 띄운다"
 
@@ -343,7 +428,9 @@ class WorkerCommand(ProfileAwareCommand):
         self,
         application_factory: ApplicationFactory | None = None,
         signal_register: SignalRegister = signal.signal,
+        preflight_suite_factory: Callable[[], PreflightSuite] = PreflightSuite,
     ) -> None:
+        super().__init__(preflight_suite_factory)
         self._factory = application_factory or _default_application
         # Injected so tests don't install a handler on the real process's signals.
         self._signal_register = signal_register
@@ -359,7 +446,7 @@ class WorkerCommand(ProfileAwareCommand):
         )
         parser.set_defaults(catch_up=True)
 
-    def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
+    def run_service(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
         app = self._factory(profile, resolver_for(profile))
         worker = app.worker(worker_id=args.worker_id)
         # Waits for in-flight work on shutdown; without this, SIGTERM kills the
@@ -417,7 +504,9 @@ class LearnCommand(ProfileAwareCommand):
             help="분석할 날짜(YYYY-MM-DD). 안 주면 오늘을 분석한다",
         )
 
-    def execute_with_profile(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
+    def execute_with_profile(
+        self, profile: Profile, args: argparse.Namespace, stdout: TextIO
+    ) -> int:
         app = self._factory(profile, resolver_for(profile))
         try:
             report = app.learning_batch().run(args.day)
