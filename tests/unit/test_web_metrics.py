@@ -8,6 +8,7 @@ None 이나 not_applicable 사유로 낸다. 0 으로 채우지 않는다.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -693,7 +694,7 @@ class Test사용량_블록:
         def fake_run(*args: object, **kwargs: object) -> FakeCompleted:
             return FakeCompleted()
 
-        monkeypatch.setattr(metrics_module.subprocess, "run", fake_run)
+        monkeypatch.setattr(subprocess, "run", fake_run)
         profile = make_profile(tmp_path, engine="claude")
         collector = MetricsCollector(profile, now=lambda: 1_000.0)
         usage_block = collector.collect(days=7)["usage_block"]
@@ -747,20 +748,20 @@ class Test연결_정리:
         opened: list[object] = []
         closed: list[object] = []
 
-        real_close = metrics_module.Database.close
+        real_close = Database.close
 
         def spy_close(self: object) -> None:
             closed.append(self)
             real_close(self)  # type: ignore[arg-type]
 
-        real_init = metrics_module.Database.__init__
+        real_init = Database.__init__
 
         def spy_init(self: object, path: Path) -> None:
             opened.append(self)
             real_init(self, path)  # type: ignore[arg-type]
 
-        monkeypatch.setattr(metrics_module.Database, "__init__", spy_init)
-        monkeypatch.setattr(metrics_module.Database, "close", spy_close)
+        monkeypatch.setattr(Database, "__init__", spy_init)
+        monkeypatch.setattr(Database, "close", spy_close)
 
         MetricsCollector(make_profile(tmp_path), now=lambda: 1_000.0).collect(days=7)
 
