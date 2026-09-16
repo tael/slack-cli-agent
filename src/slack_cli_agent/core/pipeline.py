@@ -138,7 +138,6 @@ class RequestPipeline:
             # came from; a frozenset serialization error cost a whole
             # investigation for exactly that (sca-btw).
             log.exception("요청 처리 실패 : %s %s", ctx.channel, ctx.ts)
-            self._mark_failed(ctx)
             self._record_best_effort(ctx, failure)
             return HandleOutcome(ok=False, failure=failure)
 
@@ -298,7 +297,6 @@ class RequestPipeline:
                 ok=False, usage=None, turns=response.turns, failure=failure,
                 failure_detail=response.failure_detail,
             )
-            self._mark_failed(ctx)
             return HandleOutcome(ok=False, failure=failure)
 
         # Only adopt the engine's session ID after success — resuming from a
@@ -313,7 +311,6 @@ class RequestPipeline:
         if response.body.strip() == SILENT_MARK:
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage, turns=response.turns)
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
-            self._mark_silent(ctx)
             return HandleOutcome(ok=True, silent=True)
 
         body, previous_body = self._absorb_late_addendum(ctx, scope, decision, request, response)
@@ -325,14 +322,11 @@ class RequestPipeline:
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage, turns=response.turns)
         watch_desc = watch_desc or self._watch_desc_for_launched(workdir, run_id)
         watching = bool(watch_desc) and self._register_watch(ctx, principal, watch_desc, workdir, run_id)
-        if watching:
-            # Not "done" — marking it done would exclude it from catch-up recovery.
-            self._mark_watch(ctx)
-        else:
-            self._mark_done(ctx)
-        # Reported so the worker settles on the same mark. It marks every ok
-        # outcome done otherwise, which overwrote the watch mark set here and
-        # put the message back in the done state this branch avoids (sca-5sb).
+        # The final mark belongs to the worker: it owns queue completion and the
+        # buried-message groups, and marking here too duplicated the Slack call
+        # and let the worker's done mark overwrite the watch mark (sca-5sb,
+        # sca-t1g). watching=True keeps the message out of the done state, which
+        # would exclude it from catch-up recovery.
         return HandleOutcome(ok=True, posted_ts=posted_ts, watching=watching)
 
     def _archive_response(
@@ -635,21 +629,9 @@ class RequestPipeline:
         if self._reactions is not None:
             self._reactions.mark_processing(ctx.channel, ctx.ts)
 
-    def _mark_done(self, ctx: RequestContext) -> None:
-        if self._reactions is not None:
-            self._reactions.mark_done(ctx.channel, ctx.ts)
 
-    def _mark_failed(self, ctx: RequestContext) -> None:
-        if self._reactions is not None:
-            self._reactions.mark_failed(ctx.channel, ctx.ts)
 
-    def _mark_silent(self, ctx: RequestContext) -> None:
-        if self._reactions is not None:
-            self._reactions.mark_silent(ctx.channel, ctx.ts)
 
-    def _mark_watch(self, ctx: RequestContext) -> None:
-        if self._reactions is not None:
-            self._reactions.mark_watch(ctx.channel, ctx.ts)
 
 
 def _watch_desc_of(result: Any) -> str:
