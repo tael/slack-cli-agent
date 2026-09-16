@@ -42,8 +42,10 @@ from slack_cli_agent.engine.transcript import (
     NullTranscriptReader,
 )
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard
+from slack_cli_agent.learning.analyzer import ProposalAnalyzer
 from slack_cli_agent.learning.batch import BatchReport
 from slack_cli_agent.plugin.base import BotPlugin
+from slack_cli_agent.prompt.composer import SystemPromptComposer
 from slack_cli_agent.prompt.sections import CompositionContext, PromptSection, RosterSection
 from slack_cli_agent.reliability.connection import ConnectionKind
 from slack_cli_agent.reliability.watchresult import WatchOutcome
@@ -66,6 +68,14 @@ class FakeSlackClient:
         if name == "chat_postMessage":
             return {"ok": True, "ts": "1.1"}
         return {"ok": True}
+
+    # 시험이 갈아 끼우는 두 개는 이름을 드러낸다. __getattr__ 로만 두면
+    # 없는 이름을 갈아 끼워도 아무 표시가 없다.
+    def auth_test(self, **kwargs: Any) -> dict[str, Any]:
+        return self._record("auth_test", **kwargs)
+
+    def users_info(self, **kwargs: Any) -> dict[str, Any]:
+        return self._record("users_info", **kwargs)
 
     def __getattr__(self, name: str) -> Any:
         def call(**kwargs: Any) -> dict[str, Any]:
@@ -294,13 +304,13 @@ class TestNameWiring:
     """
 
     def test_이름_조회기가_파이프라인에_들어간다(self, app: Application, client: FakeSlackClient) -> None:
-        client.users_info = lambda user: {  # type: ignore[method-assign]
+        client.users_info = lambda user: {  # type: ignore[method-assign, assignment, misc]
             "user": {"profile": {"real_name": "홍길동"}, "name": "gildong"}
         }
         assert app.pipeline()._name_resolver("U_ASKER") == "홍길동"
 
     def test_이름표가_파이프라인에_들어간다(self, app: Application, client: FakeSlackClient) -> None:
-        client.users_info = lambda user: {  # type: ignore[method-assign]
+        client.users_info = lambda user: {  # type: ignore[method-assign, assignment, misc]
             "user": {"profile": {"real_name": "홍길동"}, "name": "gildong"}
         }
         app.names.resolve("U_ASKER")
@@ -308,7 +318,7 @@ class TestNameWiring:
 
     def test_소유자_이름이_미리_등록된다(self, app: Application, client: FakeSlackClient) -> None:
         """소유자는 조회 전에도 이름표에 있어야 한다. 원본도 그랬다."""
-        client.users_info = lambda user: {  # type: ignore[method-assign]
+        client.users_info = lambda user: {  # type: ignore[method-assign, assignment, misc]
             "user": {"profile": {"real_name": "주인"}, "name": "owner"}
         }
         assert app.names.resolve("U_OWNER") == "주인"
@@ -325,7 +335,9 @@ class TestPlugins:
         section = MarkerSection()
         plugin = MarkerPlugin(RecordingGuard(), section, MarkerExtension())
         application = Application(profile, client, plugins=[plugin])
-        assert section in application.pipeline()._composer._sections
+        composer = application.pipeline()._composer
+        assert isinstance(composer, SystemPromptComposer)
+        assert section in composer._sections
 
     def test_플러그인_권한_확장이_정책에_들어간다(self, profile: Profile, client: FakeSlackClient) -> None:
         extension = MarkerExtension()
@@ -493,7 +505,7 @@ class TestHealth:
         def boom(**kwargs: Any) -> dict:
             raise RuntimeError("연결 실패")
 
-        client.auth_test = boom  # type: ignore[method-assign]
+        client.auth_test = boom  # type: ignore[method-assign, assignment, misc]
         monitor = app.health_monitor(lambda reason: None)
         assert monitor.check().kind.name == "DOWN"
         app.close()
@@ -898,9 +910,12 @@ class Test감시확인연결:
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
         app._composer = lambda: _프롬프트조립대역()  # type: ignore[method-assign]
         받은: list[Any] = []
-        app.engine_invoker.invoke = (  # type: ignore[method-assign]
-            lambda request, origin=CallOrigin.INTERACTIVE: 받은.append(origin)
-        )
+
+        def 호출자를_기록한다(request: Any, origin: CallOrigin = CallOrigin.INTERACTIVE) -> Any:
+            받은.append(origin)
+            return None
+
+        app.engine_invoker.invoke = 호출자를_기록한다  # type: ignore[method-assign, assignment]
 
         app._watch_run_check(WatchJob(
             id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
@@ -1035,7 +1050,7 @@ class Test자기메시지판정:
 
     @staticmethod
     def _신원을준다(client: FakeSlackClient, user_id: str = "U_ME", bot_id: str = "B_ME") -> None:
-        client.auth_test = lambda **kwargs: {  # type: ignore[method-assign]
+        client.auth_test = lambda **kwargs: {  # type: ignore[method-assign, assignment, misc]
             "ok": True, "user_id": user_id, "bot_id": bot_id,
         }
 
@@ -1061,7 +1076,7 @@ class Test자기메시지판정:
             client.calls.append(("auth_test", kwargs))
             raise RuntimeError("조회 실패")
 
-        client.auth_test = boom  # type: ignore[method-assign]
+        client.auth_test = boom  # type: ignore[method-assign, assignment, misc]
 
     def test_신원을_모르면_어떤_봇의_말도_이봇의_말로_보지_않는다(
         self, app: Application, client: FakeSlackClient
@@ -1095,7 +1110,7 @@ class Test자기메시지판정:
                 raise RuntimeError("조회 실패")
             return {"ok": True, "user_id": "U_ME", "bot_id": "B_ME"}
 
-        client.auth_test = auth_test  # type: ignore[method-assign]
+        client.auth_test = auth_test  # type: ignore[method-assign, assignment, misc]
         application = Application(profile, client, clock=lambda: 시각[0])
         assert application._is_self_message({"bot_id": "B_ME"}) is False
 
@@ -1146,7 +1161,7 @@ class Test신원판정연결:
     def test_봇자신의_판정도_같은_신원을_쓴다(self, app: Application) -> None:
         """판정 근거가 부품마다 다르면 같은 메시지에 서로 다른 답이 나온다."""
         client = app._client
-        client.auth_test = lambda **kwargs: {  # type: ignore[method-assign]
+        client.auth_test = lambda **kwargs: {  # type: ignore[method-assign, assignment, misc]
             "ok": True, "user_id": "U_ME", "bot_id": "B_ME",
         }
         assert app._is_self_message({"bot_id": "B_OTHER"}) is False
@@ -1331,6 +1346,7 @@ class Test폴백엔진연결:
         runner 나 새 DirectInvoker 를 넘기면 학습만 폴백 밖으로 빠진다.
         """
         분석기 = app.learning_batch()._builder._analyzer
+        assert isinstance(분석기, ProposalAnalyzer)
         assert 분석기._invoker is app.engine_invoker
 
     def test_학습_일정이_미완료_날짜를_볼_수_있다(self, app: Application) -> None:
@@ -1358,13 +1374,16 @@ class Test폴백엔진연결:
         비워 보내면 실행기가 그 엔진의 spec.model 로 채운다(sca-dyb.10).
         """
         분석기 = app.learning_batch()._builder._analyzer
+        assert isinstance(분석기, ProposalAnalyzer)
         assert 분석기._model is None
 
     def test_학습_모델을_정하면_그대로_간다(self, tmp_path: Path, client: FakeSlackClient) -> None:
         from dataclasses import replace
         application = Application(self._폴백있는프로필(tmp_path), client)
         application._settings = replace(application._settings, learning_model="정한모델")
-        assert application.learning_batch()._builder._analyzer._model == "정한모델"
+        분석기 = application.learning_batch()._builder._analyzer
+        assert isinstance(분석기, ProposalAnalyzer)
+        assert 분석기._model == "정한모델"
         application.close()
 
     def test_같은_부품을_되풀이_쓴다(self, app: Application) -> None:
@@ -1457,6 +1476,7 @@ class Test학습쌓기자리연결:
 
     def test_프롬프트_구성이_학습_자리도_읽는다(self, app: Application) -> None:
         composer = app._composer()
+        assert isinstance(composer, SystemPromptComposer)
         assert composer._knowledge._learned_dir == app.profile.paths.learned
 
 
@@ -1528,7 +1548,7 @@ class Test플러그인엔진등록:
             def build_command(self, request: Any) -> list[str]:
                 return ["true"]
 
-            def parse(self, raw: str) -> Any:
+            def parse(self, stdout: str, stderr: str, returncode: int) -> Any:
                 raise NotImplementedError
 
         class 엔진플러그인(BotPlugin):
