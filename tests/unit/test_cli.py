@@ -1076,7 +1076,7 @@ class TestWorker끝난작업정리:
     """
 
     @staticmethod
-    def _돌린다(tmp_path: Path, worker: FakeWorker) -> int:
+    def _돌린다(tmp_path: Path, worker: FakeWorker) -> FakeApplication:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=worker)
@@ -1089,22 +1089,19 @@ class TestWorker끝난작업정리:
                 )
             ]
         )
-        code = cli.run(
+        cli.run(
             ["worker", "--profile", "example", "--profile-dir", str(profiles)],
             stdout=io.StringIO(),
         )
-        TestWorker끝난작업정리.app = app
-        return code
+        return app
 
     def test_기동하면_정리를_시작한다(self, tmp_path: Path) -> None:
-        worker = FakeWorker(stop_after_run_once=1)
-        self._돌린다(tmp_path, worker)
-        assert self.app.purge_runner_.start_calls == 1
+        app = self._돌린다(tmp_path, FakeWorker(stop_after_run_once=1))
+        assert app.purge_runner_.start_calls == 1
 
     def test_끝날때_정리를_멈춘다(self, tmp_path: Path) -> None:
-        worker = FakeWorker(stop_after_run_once=1)
-        self._돌린다(tmp_path, worker)
-        assert self.app.purge_runner_.stop_calls == 1
+        app = self._돌린다(tmp_path, FakeWorker(stop_after_run_once=1))
+        assert app.purge_runner_.stop_calls == 1
 
 
 class Test주기실행기를묶음으로띄운다:
