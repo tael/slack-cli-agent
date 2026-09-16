@@ -379,6 +379,10 @@ class TestReviewReactions:
         for task in app.review_tasks().values():
             assert task._audit is app.audit()
 
+    def test_워커에_감시_큐가_연결된다(self, app: Application) -> None:
+        """안 꽂으면 reclaim 이 감시 중인 메시지에 대기 표식을 덧붙인다(sca-o1e)."""
+        assert app.worker()._watch_jobs is app.watch_jobs()
+
     def test_감시_확인기에_감사가_연결된다(self, app: Application) -> None:
         """부품만 만들면 감시가 돌아 본 기록이 한 줄도 안 남는다(sca-j3d)."""
         assert app.watch_checker()._audit is app.audit()

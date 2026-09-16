@@ -946,6 +946,8 @@ class Application:
             settings=self._settings,
             worker_id=worker_id,
             inflight=self.inflight,
+            # reclaim picks the mark from this (sca-o1e).
+            watch_jobs=self.watch_jobs(),
         )
 
     def _admin_router(self) -> AdminRouter:

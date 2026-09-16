@@ -194,3 +194,16 @@ class Test활성감시멱등:
         ).fetchone()[0]
         assert 남은수 == 1
         assert db.connect().execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+    def test_활성_감시가_있는지_묻는다(self, database) -> None:
+        """reclaim 이 표식을 고를 때 이 값을 본다(sca-o1e)."""
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        job_id = q.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        assert q.active_watch("C1", "222.2") is True
+        assert q.active_watch("C1", "333.3") is False
+        assert q.active_watch("C2", "222.2") is False
+
+        q.mark_done(job_id)
+        assert q.active_watch("C1", "222.2") is False
