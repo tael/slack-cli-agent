@@ -70,6 +70,10 @@ class RuntimeSettings:
     usage_check_interval_sec: float = 3600
     usage_check_timeout_sec: float = 60
 
+    #: 주기 실행기 스레드가 살아 있는지 보는 주기. 죽는 일은 드물지만 죽으면
+    #: 그 작업이 프로세스 수명 내내 멈춘다.
+    service_watch_interval_sec: float = 300
+
     late_rewrite_min_ratio: float = 0.6
     late_rewrite_min_chars: int = 200
 

@@ -499,3 +499,24 @@ class Test사용량확인실행기:
         app.usage_check_runner()._task()  # type: ignore[attr-defined]
 
         assert 기록 == []
+
+
+class Test묶음자기감시:
+    """주기 실행기 스레드가 끝나도 프로세스는 계속 산다. 그것을 보는 자리가
+    묶음에 붙어 있는가 (sca-2g0).
+    """
+
+    def test_접수_묶음에_감시_주기가_붙는다(self, app: Application) -> None:
+        group = app.ingress_services(lambda 사유: None)
+
+        assert group._watch_interval_sec > 0  # type: ignore[attr-defined]
+
+    def test_워커_묶음에도_붙는다(self, app: Application) -> None:
+        group = app.worker_services(app.worker())
+
+        assert group._watch_interval_sec > 0  # type: ignore[attr-defined]
+
+    def test_소유자가_있으면_알림_경로가_붙는다(self, app: Application) -> None:
+        group = app.ingress_services(lambda 사유: None)
+
+        assert group._notify is not None  # type: ignore[attr-defined]
