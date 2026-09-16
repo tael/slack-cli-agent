@@ -51,6 +51,12 @@ class WatchJob:
 
 
 @runtime_checkable
+class ActiveWatchPort(Protocol):
+    """What the worker needs. WatchJobPort satisfies it."""
+
+    def active_watch(self, channel: str, msg_ts: str) -> bool: ...
+
+
 class WatchJobPort(Protocol):
     def enqueue(
         self,
