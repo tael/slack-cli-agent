@@ -108,7 +108,10 @@ class TestUsage:
     def test_사전이_아니면_숫자는_전부_0이다(self) -> None:
         key_map = {"input_tokens": "in"}
         assert equivalent_values(Usage.from_native(None, key_map), Usage())
-        assert equivalent_values(Usage.from_native("문자열", key_map), Usage())
+        assert equivalent_values(
+            Usage.from_native("문자열", key_map),  # type: ignore[arg-type]
+            Usage(),
+        )
 
     def test_누락된_키는_0으로_채운다(self) -> None:
         key_map = {"input_tokens": "input_tokens"}
@@ -122,7 +125,10 @@ class TestUsage:
             {"input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens"}
         )
         assert Usage.from_native(None, {"input_tokens": "in"}).unavailable == expected
-        assert Usage.from_native("문자열", {"input_tokens": "in"}).unavailable == expected
+        assert Usage.from_native(
+            "문자열",  # type: ignore[arg-type]
+            {"input_tokens": "in"},
+        ).unavailable == expected
 
     def test_unavailable이_다르면_동등비교가_실패한다(self) -> None:
         """코덱스 리뷰 지적 2번 — 판정 불가는 값만큼 중요한 상태라 동등비교에서
@@ -148,7 +154,8 @@ class TestUsage:
     )
     def test_equivalent_values는_숫자가_다르면_False다(self, field_name: str) -> None:
         """네 필드 중 하나만 빼먹고 비교하면 그 필드의 매핑 오류를 시험이 못 본다."""
-        assert not equivalent_values(Usage(**{field_name: 1}), Usage())
+        값: dict[str, Any] = {field_name: 1}
+        assert not equivalent_values(Usage(**값), Usage())
 
     def test_고유_키_맵으로_공통_어휘로_번역한다(self) -> None:
         key_map = {
@@ -203,7 +210,7 @@ class TestEngineRequestResponse:
 class TestEngineABC:
     def test_직접_인스턴스화할_수_없다(self) -> None:
         with pytest.raises(TypeError):
-            Engine(profile=None, settings=SETTINGS)  # type: ignore[abstract]
+            Engine(profile=None, settings=SETTINGS)  # type: ignore[abstract, arg-type]
 
     def test_기본_메서드는_빈_값을_돌려준다(self, tmp_path: Path) -> None:
         profile = claude_profile(tmp_path)
@@ -892,7 +899,7 @@ class TestEngineRunner:
         profile = claude_profile(tmp_path)
         engine_response = EngineResponse(
             ok=True, body="답", session_id=None, model_actual=None,
-            elapsed=9.9, turns=None, usage=None, elapsed_source="engine",
+            elapsed=9.9, turns=None, usage=None, elapsed_source=ElapsedSource.ENGINE,
         )
         engine = RecordingEngine(profile, SETTINGS, response=engine_response)
 
@@ -1084,8 +1091,11 @@ class Test엔진환경격리:
             seen["env"] = env
             return FakeCompleted(stdout="{}", returncode=0)
 
-        class 고정정책:
-            def build(self, source_env):
+        class 고정정책(EngineEnvironmentPolicy):
+            def __init__(self) -> None:
+                super().__init__("testbot")
+
+            def _base_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
                 return {"PATH": "/usr/bin", "BOT_PROFILE": "testbot"}
 
         runner = EngineRunner(
@@ -1134,35 +1144,45 @@ class Test엔진호출부품:
     소진 때 대체 엔진 전환과 상태 기록이 일어나지 않는다.
     """
 
-    def test_직접실행은_실행기를_거친다(self) -> None:
+    def test_직접실행은_실행기를_거친다(self, tmp_path: Path) -> None:
         from slack_cli_agent.engine.runner import DirectInvoker
 
-        부른것: list[tuple[object, object]] = []
+        부른것: list[tuple[Any, Any]] = []
+        응답 = EngineResponse(ok=True, body="답", session_id=None, model_actual=None,
+                             elapsed=0, turns=None, usage=None)
 
         class 실행기대역:
-            def run(self, engine, request, timeout_sec=None):
+            def run(self, engine: Engine, request: EngineRequest,
+                    timeout_sec: float | None = None) -> EngineResponse:
                 부른것.append((engine, request))
-                return "응답"
+                return 응답
 
-        engine = object()
-        request = object()
-        assert DirectInvoker(실행기대역(), engine).invoke(request) == "응답"
-        assert 부른것 == [(engine, request)]
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        요청 = request()
+        # 대역은 EngineRunner 를 상속하지 않는다. run 하나만 쓰는 위임 확인이다.
+        invoker = DirectInvoker(실행기대역(), engine)  # type: ignore[arg-type]
+        assert invoker.invoke(요청) is 응답
+        assert 부른것 == [(engine, 요청)]
 
     def test_폴백실행은_엔진자신의_run_을_부른다(self) -> None:
         """실행기를 거치면 전환 판정이 건너뛰어진다."""
         from slack_cli_agent.engine.runner import FallbackInvoker
 
-        부른것: list[object] = []
+        부른것: list[Any] = []
+        응답 = EngineResponse(ok=True, body="전환된 답", session_id=None, model_actual=None,
+                             elapsed=0, turns=None, usage=None)
 
         class 폴백대역:
-            def run(self, request, origin=None):
+            def run(self, request: EngineRequest,
+                    origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse:
                 부른것.append(request)
-                return "전환된 응답"
+                return 응답
 
-        request = object()
-        assert FallbackInvoker(폴백대역()).invoke(request) == "전환된 응답"
-        assert 부른것 == [request]
+        요청 = request()
+        # 대역은 FallbackEngine 을 상속하지 않는다. run 하나만 쓰는 위임 확인이다.
+        invoker = FallbackInvoker(폴백대역())  # type: ignore[arg-type]
+        assert invoker.invoke(요청) is 응답
+        assert 부른것 == [요청]
 
 
 class TestUsage직렬화:
