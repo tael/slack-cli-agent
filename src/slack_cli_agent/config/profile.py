@@ -12,6 +12,7 @@ from typing import Any
 from ..core.errors import ConfigError
 from ..core.secrets import contains_secret, redact
 from .paths import StatePaths
+from .secret_ref import resolve_mapping
 
 # 저장소에 올리는 견본 프로필. 실제 봇이 아니므로 검색에서 뺀다.
 EXAMPLE_SUFFIX = ".example.json"
@@ -121,6 +122,12 @@ class McpServerSpec:
     @property
     def is_remote(self) -> bool:
         return bool(self.url)
+
+    def resolved_env(self, *, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+        return resolve_mapping(self.env, where=f"MCP 서버 {self.name}", environ=environ)
+
+    def resolved_headers(self, *, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+        return resolve_mapping(self.headers, where=f"MCP 서버 {self.name}", environ=environ)
 
 
 @dataclass(frozen=True)

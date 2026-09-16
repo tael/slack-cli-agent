@@ -83,13 +83,13 @@ def _agy_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, Any]
         if server.is_remote:
             entry = {"serverUrl": server.url}
             if server.headers:
-                entry["headers"] = dict(server.headers)
+                entry["headers"] = server.resolved_headers()
         else:
             entry = {"command": server.command}
             if server.args:
                 entry["args"] = list(server.args)
             if server.env:
-                entry["env"] = dict(server.env)
+                entry["env"] = server.resolved_env()
             if server.cwd:
                 entry["cwd"] = str(server.cwd)
         if server.disabled:

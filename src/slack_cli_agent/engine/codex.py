@@ -80,7 +80,7 @@ def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec]) -> list[str
                 args += ["-c", f"{prefix}.args={json.dumps(list(server.args))}"]
             if server.cwd:
                 args += ["-c", f"{prefix}.cwd={CodexEngine._toml_string(str(server.cwd))}"]
-        for key, value in server.env.items():
+        for key, value in server.resolved_env().items():
             args += ["-c", f"{prefix}.env.{key}={CodexEngine._toml_string(value)}"]
         if server.disabled_tools:
             args += ["-c", f"{prefix}.disabled_tools={json.dumps(list(server.disabled_tools))}"]
