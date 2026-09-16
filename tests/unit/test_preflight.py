@@ -618,6 +618,7 @@ class TestPreflightSuite:
             "profile_permissions",
             "tool_allowlist_enforcement",
             "usage_check_command",
+            "channel_user_tools",
             "mcp_credentials",
         ]
 
@@ -703,6 +704,7 @@ class TestPreflightSuite:
             "[통과] profile_permissions : 좋음\n"
             "[통과] tool_allowlist_enforcement : 좋음\n"
             "[통과] usage_check_command : 좋음\n"
+            "[통과] channel_user_tools : 좋음\n"
             "[통과] mcp_credentials : 좋음\n"
             "기동 불가\n"
         )
@@ -955,3 +957,51 @@ class TestUsageCheckCommandCheck:
         result = UsageCheckCommandCheck().run(PreflightContext(profile=profile))
 
         assert result.ok is True
+
+
+class TestChannelUserToolsCheck:
+    """사용자별 추가 허용 도구 표의 키를 잘못 적으면 그 사람에게 도구가 안
+    붙는데 로그도 오류도 없다 (sca-34o). 도구 이름 자체는 엔진마다 달라 여기서
+    보지 않는다.
+    """
+
+    def _check(self):  # type: ignore[no-untyped-def]
+        from slack_cli_agent.preflight.checks import ChannelUserToolsCheck
+
+        return ChannelUserToolsCheck()
+
+    def test_표가_없으면_통과한다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        write_channels(profile, {"C1": {"name": "잡담방"}})
+
+        assert self._check().run(PreflightContext(profile=profile)).ok is True
+
+    def test_사용자_ID_형식이면_통과한다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        write_channels(
+            profile, {"C1": {"name": "잡담방", "user_tools": {"U012ABC": ["Bash(a.sh:*)"]}}}
+        )
+
+        assert self._check().run(PreflightContext(profile=profile)).ok is True
+
+    def test_사용자_ID_형식이_아니면_경고한다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        write_channels(
+            profile, {"C1": {"name": "잡담방", "user_tools": {"김태일": ["Bash(a.sh:*)"]}}}
+        )
+
+        result = self._check().run(PreflightContext(profile=profile))
+
+        assert result.ok is False
+        assert result.fatal is False
+        assert "김태일" in result.detail
+        assert "잡담방" in result.detail
+
+    def test_도구_목록이_비면_경고한다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        write_channels(profile, {"C1": {"name": "잡담방", "user_tools": {"U012ABC": []}}})
+
+        result = self._check().run(PreflightContext(profile=profile))
+
+        assert result.ok is False
+        assert "U012ABC" in result.detail

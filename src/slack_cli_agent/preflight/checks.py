@@ -113,6 +113,33 @@ class EngineBinaryCheck(PreflightCheck):
         return CheckResult(ok=True, detail="엔진 실행 파일 점검 통과")
 
 
+#: Slack user IDs start with U (person) or W (Enterprise Grid person).
+_USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{6,}$")
+
+
+class ChannelUserToolsCheck(PreflightCheck):
+    """Warns about a per-user tool table nobody would notice is broken.
+
+    A mistyped key grants nothing and logs nothing — the person just never
+    gets the tool. Tool names themselves aren't checked: what counts as a
+    valid one differs per engine (sca-34o).
+    """
+
+    name: ClassVar[str] = "channel_user_tools"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        bad: list[str] = []
+        for config in ChannelRegistry(ctx.profile.paths.channels).all().values():
+            for user, tools in sorted(config.user_tools.items()):
+                if not _USER_ID_RE.match(user):
+                    bad.append(f"{config.name} user_tools 키가 사용자 ID 형식이 아니다 : {user}")
+                elif not tools:
+                    bad.append(f"{config.name} user_tools 의 도구 목록이 비어 있다 : {user}")
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad), fatal=False)
+        return CheckResult(ok=True, detail="채널 사용자별 도구 표 점검 통과")
+
+
 class UsageCheckCommandCheck(PreflightCheck):
     """Checks the operator's usage check command can actually be run.
 
