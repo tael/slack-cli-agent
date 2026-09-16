@@ -101,22 +101,45 @@ class SlackStreamingProgressSink:
     """
 
     def __init__(
-        self, client: Any, channel: str, thread_ts: str, bot_display_name: str = "",
+        self,
+        client: Any,
+        channel: str,
+        thread_ts: str,
+        *,
+        team_id: str,
+        user_id: str,
+        bot_display_name: str = "",
     ) -> None:
         # chat.startStream takes thread_ts as required, and MessagePublisher.post's
         # rule is that a DM has no thread to reply in. Streaming into one would
         # put the progress display somewhere the answer never goes.
         if is_direct_message_channel(channel) or not thread_ts:
             raise ProgressStreamUnavailable(f"스트리밍할 스레드가 없다 : {channel}")
+        # Both recipient ids are required by the API, not optional as the SDK
+        # signature suggests — a missing one comes back as
+        # missing_recipient_team_id / missing_recipient_user_id (confirmed
+        # 2026-09-16 against the real API). Checked here so an identity lookup
+        # that hasn't resolved yet costs a switch rather than a rejected request
+        # every tick.
+        if not team_id or not user_id:
+            raise ProgressStreamUnavailable(
+                f"스트리밍 수신자를 모른다 : team={team_id!r} user={user_id!r}"
+            )
         self._client = client
         self._channel = channel
         self._thread_ts = thread_ts
+        self._team_id = team_id
+        self._user_id = user_id
         self._bot_display_name = bot_display_name
         self._ts: str | None = None
 
     def open(self, text: str) -> None:
         kwargs: dict[str, Any] = {
-            "channel": self._channel, "thread_ts": self._thread_ts, "markdown_text": text,
+            "channel": self._channel,
+            "thread_ts": self._thread_ts,
+            "markdown_text": text,
+            "recipient_team_id": self._team_id,
+            "recipient_user_id": self._user_id,
         }
         if self._bot_display_name:
             kwargs["username"] = self._bot_display_name
