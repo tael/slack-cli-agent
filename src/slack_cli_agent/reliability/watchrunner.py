@@ -11,11 +11,17 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from typing import Any, Protocol, runtime_checkable
 
 from ..config.channel import ChannelRegistry
 from ..config.settings import RuntimeSettings
 from ..engine.base import EngineResponse
 from ..guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG
+from ..observability.audit import (
+    WATCH_ABANDONED_KIND,
+    WATCH_CHECKED_KIND,
+    WATCH_FINISHED_KIND,
+)
 from ..slack.publisher import MessagePublisher
 from ..slack.reactions import ReactionMarker
 from .watchjobs import WatchJob, WatchJobPort
@@ -24,6 +30,13 @@ from .watchresult import WatchOutcome, WatchResultReader
 log = logging.getLogger(__name__)
 
 _TERMINAL = (WatchOutcome.SUCCEEDED, WatchOutcome.FAILED)
+
+
+@runtime_checkable
+class WatchAuditPort(Protocol):
+    """AuditLog.record's shape."""
+
+    def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None: ...
 
 
 def watch_check_prompt(description: str, outcome: WatchOutcome = WatchOutcome.UNKNOWN,
@@ -77,6 +90,9 @@ class WatchJobChecker:
         # Return value is ignored here; object rather than None since some
         # callers care whether the send succeeded.
         notify_owner: Callable[[str], object] | None = None,
+        # checks and last_run hold current state only, so without this there is
+        # no record that a watch ever ran (sca-j3d).
+        audit: WatchAuditPort | None = None,
         now: Callable[[], float] = time.time,
     ) -> None:
         self._queue = queue
@@ -87,6 +103,7 @@ class WatchJobChecker:
         self._settings = settings
         self._reactions = reactions
         self._notify_owner = notify_owner
+        self._audit = audit
         self._now = now
 
     def check_once(self) -> None:
@@ -103,6 +120,7 @@ class WatchJobChecker:
                 self._notify_owner(_give_up_report(job))
             self._queue.mark_done(job.id)
             self._settle_mark(job, failed=True)
+            self._record(WATCH_ABANDONED_KIND, job, age_sec=now - job.created_at)
 
         for job in self._queue.due(now, self._settings.watch_job_min_gap_sec):
             if job.id in given_up_ids:
@@ -119,10 +137,22 @@ class WatchJobChecker:
 
         try:
             response = self._run_check(job, outcome)
-        except Exception:
+        except Exception as exc:
             log.exception("감시 확인 중 오류 : 작업 %d, 확인 %d회", job.id, job.checks)
             self._queue.mark_checked(job.id, now)
+            # The message can carry a path or a command; only the type is safe.
+            self._record(
+                WATCH_CHECKED_KIND, job, ok=False, exception_type=type(exc).__name__,
+                outcome=outcome.name,
+            )
             return
+
+        self._record(
+            WATCH_CHECKED_KIND, job, ok=response.ok, outcome=outcome.name,
+            engine=response.engine, model=response.model_actual or "",
+            elapsed=response.elapsed, turns=response.turns,
+            failure=response.failure_reason or "", body_len=len(response.body),
+        )
 
         if outcome in _TERMINAL:
             # The exit status decided this, not the reply. A failed engine call
@@ -208,6 +238,22 @@ class WatchJobChecker:
 
         self._queue.mark_done(job.id)
         self._settle_mark(job, failed=False)
+        self._record(WATCH_FINISHED_KIND, job, outcome=outcome.name)
+
+    def _record(self, kind: str, job: WatchJob, **fields: Any) -> None:
+        """Best effort by contract: a watch that already ran must not be lost
+        because its record could not be written. The condition and the response
+        body can carry Slack conversations or file contents, so neither goes in.
+        """
+        if self._audit is None:
+            return
+        try:
+            self._audit.record(
+                kind, channel=job.channel, thread_ts=job.thread_ts,
+                watch_job_id=job.id, checks=job.checks, **fields,
+            )
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            log.warning("감시 실행 기록을 남기지 못했다 : %s", exc)
 
 
 def _strip_tags(raw_body: str) -> str:
