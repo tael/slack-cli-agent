@@ -10,7 +10,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -20,9 +21,19 @@ log = logging.getLogger(__name__)
 
 
 class Database:
-    def __init__(self, path: Path) -> None:
+    #: PRAGMA journal_mode=WAL rewrites the file header and needs the
+    #: database to itself. Two processes opening the same brand-new file at
+    #: once collide there, and rei's first boot spent the whole busy timeout
+    #: waiting before ingress died (sca-fly). Each failed attempt can spend
+    #: that whole timeout, so the retry count stays small -- boot must not
+    #: hang for minutes on a database nobody is going to release.
+    WAL_ATTEMPTS: int = 3
+    WAL_RETRY_SEC: float = 0.5
+
+    def __init__(self, path: Path, *, sleep: Callable[[float], None] = time.sleep) -> None:
         self._path = path
         self._local = threading.local()
+        self._sleep = sleep
 
     @property
     def path(self) -> Path:
@@ -38,11 +49,29 @@ class Database:
             # select-then-update atomic.
             conn = sqlite3.connect(self._path, timeout=30, isolation_level=None)
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=30000")
+            self._enable_wal(conn)
             conn.execute("PRAGMA foreign_keys=ON")
             self._local.conn = conn
         return conn
+
+    def _enable_wal(self, conn: sqlite3.Connection) -> None:
+        """Skips the change when the file is already WAL -- that is every
+        boot after the first, and it is the only case the busy timeout
+        cannot help with."""
+        if str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal":
+            return
+        for attempt in range(1, self.WAL_ATTEMPTS + 1):
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                return
+            except sqlite3.OperationalError as exc:
+                if attempt == self.WAL_ATTEMPTS:
+                    raise
+                log.warning(
+                    "WAL 전환이 잠금으로 실패했다. 같은 DB 를 여는 다른 프로세스가 있다 : %s", exc
+                )
+                self._sleep(self.WAL_RETRY_SEC * attempt)
 
     def migrate(self) -> int:
         conn = self.connect()
