@@ -35,6 +35,17 @@ class ReviewRecord:
     report: str = ""
 
 
+@dataclass(frozen=True)
+class StaleReview:
+    """A "진행" row whose deadline passed, meaning nobody is running it now."""
+
+    kind: str
+    channel: str
+    target_ts: str
+    at: float
+    record: ReviewRecord
+
+
 class ReviewLedger(SqliteRepository):
 
     #: How long a "진행" row blocks a retry. Must exceed the longest a review
@@ -65,6 +76,28 @@ class ReviewLedger(SqliteRepository):
         if self._parse(row["result"]).status == IN_PROGRESS:
             return self._now() - float(row["at"]) < self._stale_after_sec
         return True
+
+    def stale_in_progress(self) -> list[StaleReview]:
+        deadline = self._now() - self._stale_after_sec
+        rows = self._fetch_all(
+            "SELECT kind, channel, target_ts, at, result FROM reviews WHERE at <= ? ORDER BY at",
+            (deadline,),
+        )
+        found = []
+        for row in rows:
+            record = self._parse(row["result"])
+            if record.status != IN_PROGRESS:
+                continue
+            found.append(
+                StaleReview(
+                    kind=str(row["kind"]),
+                    channel=str(row["channel"]),
+                    target_ts=str(row["target_ts"]),
+                    at=float(row["at"]),
+                    record=record,
+                )
+            )
+        return found
 
     def begin(self, kind: str, channel: str, target_ts: str, *, by: str) -> None:
         self._store(kind, channel, target_ts, ReviewRecord(status=IN_PROGRESS, by=by))

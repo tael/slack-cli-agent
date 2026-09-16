@@ -83,6 +83,8 @@ class RuntimeSettings:
     # a short lease would let a second worker grab a span still in progress.
     catchup_lease_sec: float = 600
     pending_report_flush_interval_sec: float = 30
+    # 중단된 점검을 훑는 주기. 이미 죽은 점검이라 급하지 않고, 원장 조회 한 번이다.
+    stale_review_sweep_interval_sec: float = 600
     # How often to check whether the learning batch should run. The check
     # itself is just a file read; schedule.py decides the actual daily run.
     learning_batch_interval_sec: float = 600

@@ -374,6 +374,16 @@ class TestReviewReactions:
         assert isinstance(표시, ReviewProgressPort), 표시
         assert isinstance(표시, ReviewProgressDisplay), 표시
 
+    def test_중단된_점검_보고기가_접수기_서비스에_들어간다(self, app: Application) -> None:
+        """부품만 만들면 아무도 안 부른다(sca-9bq)."""
+        이름들 = app.ingress_services(lambda 사유: None).runner_names
+        assert "stale_review" in 이름들
+
+    def test_보고기와_점검이_같은_원장을_본다(self, app: Application) -> None:
+        """따로 만들면 중단 판정 기한이 갈려 도는 점검을 중단으로 알린다."""
+        보고기 = app.stale_review_reporter()
+        assert 보고기._ledger is app.review_tasks()["dango"]._ledger
+
     def test_모르는_이모지는_아무_점검도_부르지_않는다(self, app: Application) -> None:
         app.on_reaction("thumbsup", "C_ONE", "1.0", "U_OWNER")
 
