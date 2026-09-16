@@ -74,3 +74,27 @@ def test_Application_이_설정의_도구를_정책으로_조립한다(tmp_path)
     assert policy.tool_list_for(owner) == ("Read", "Grep", "Write", "Edit")
     # 정책을 만든 것과 파이프라인에 넘긴 것은 다르다
     assert app.pipeline().tool_policy is policy
+
+
+def test_Application_이_채널별_사용자_도구를_정책에_연결한다(tmp_path) -> None:
+    """표를 읽는 코드가 있어도 조립이 안 붙으면 채널 설정이 아무 효과가 없다."""
+    import json
+
+    from test_application import FakeSlackClient, write_profile
+
+    from slack_cli_agent.auth.principal import Principal, TrustLevel
+    from slack_cli_agent.core.application import Application
+
+    profile = write_profile(tmp_path, settings={"base_tools": ["Read"], "owner_tools": []})
+    profile.paths.channels.parent.mkdir(parents=True, exist_ok=True)
+    profile.paths.channels.write_text(
+        json.dumps({"C1": {"user_tools": {"U1": ["Bash(ops_ctl.sh:*)"]}}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    app = Application(profile, FakeSlackClient())
+
+    general = Principal(
+        user_id="U1", channel="C1", trust=TrustLevel.GENERAL, is_direct_message=False
+    )
+
+    assert app.tool_policy().tool_list_for(general) == ("Read", "Bash(ops_ctl.sh:*)")
