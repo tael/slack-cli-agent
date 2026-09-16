@@ -27,6 +27,9 @@ class IncidentKind(str, Enum):
     #: What the request required of the engine and what that engine actually
     #: enforces. Baseline traffic like REQUEST, not an incident.
     CAPABILITY = "capability"
+    #: One engine call made by a review task. Baseline traffic like REQUEST;
+    #: its elapsed value is what timeout decisions are read from.
+    REVIEW = "review"
     SPLIT = "split"
     SPLIT_BROKEN = "split_broken"
     BLOCKS_REJECTED = "blocks_rejected"
@@ -41,10 +44,15 @@ class IncidentKind(str, Enum):
 
 
 REQUEST_KIND = IncidentKind.REQUEST.value
+REVIEW_KIND = IncidentKind.REVIEW.value
 
 # Kinds that count as an "incident" for the reliability/quality rollups —
 # REQUEST is excluded since it's the baseline traffic, not an incident.
-BASELINE_KINDS: tuple[IncidentKind, ...] = (IncidentKind.REQUEST, IncidentKind.CAPABILITY)
+BASELINE_KINDS: tuple[IncidentKind, ...] = (
+    IncidentKind.REQUEST,
+    IncidentKind.CAPABILITY,
+    IncidentKind.REVIEW,
+)
 #: Read by metrics.py as well -- a kind that is baseline here must not be
 #: tallied as an incident there.
 BASELINE_KIND_VALUES: frozenset[str] = frozenset(k.value for k in BASELINE_KINDS)

@@ -1012,6 +1012,9 @@ class Application:
                 # 점검은 몇 분이 걸린다. 표시가 없으면 도는 것과 죽은 것이
                 # 사용자에게 같아 보인다(sca-tfd).
                 "progress": ReviewProgressDisplay(self.progress(), self._channels),
+                # 점검 한 건이 엔진을 몇 분씩 쓴다. 남기지 않으면 제한시간을
+                # 어떻게 잡을지 정할 근거가 없다(sca-fy5).
+                "audit": self.audit(),
             }
             paths = self._profile.paths
             owner_name = self._names.resolve(self._profile.owner_user_id)
