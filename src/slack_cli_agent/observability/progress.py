@@ -261,8 +261,9 @@ class ProgressSession:
             log.debug("진행 표시 실패 : %s", exc)
 
 
-#: Builds the sink for one request, given its channel and thread.
-SinkFactory = Callable[[str, str], ProgressSink]
+#: Builds the sink for one request, given its channel, thread and the user
+#: who asked. The user is what Slack's streaming API takes as the recipient.
+SinkFactory = Callable[[str, str, str], ProgressSink]
 
 
 class ProgressCoordinator:
@@ -295,7 +296,9 @@ class ProgressCoordinator:
         return self._log_dir / f"{channel}-{ts}.log"
 
     @contextmanager
-    def session(self, channel: str, thread_ts: str, log_path: Path | None) -> Generator[None]:
+    def session(
+        self, channel: str, thread_ts: str, user: str, log_path: Path | None,
+    ) -> Generator[None]:
         """Runs progress display for the duration of the block.
 
         A None log_path means the caller decided this request has no
@@ -306,7 +309,7 @@ class ProgressCoordinator:
             yield
             return
         try:
-            sink = self._sink_factory(channel, thread_ts)
+            sink = self._sink_factory(channel, thread_ts, user)
         except Exception as exc:  # noqa: BLE001 - see ProgressSink
             log.debug("진행 표시를 열지 못했다 : %s", exc)
             yield

@@ -134,7 +134,7 @@ class TestProgressCoordinator:
     def _coordinator(self, tmp_path: Path, sink: Any) -> ProgressCoordinator:
         return ProgressCoordinator(
             settings=RuntimeSettings(progress_tick_sec=0.01),
-            sink_factory=lambda channel, thread_ts: sink,
+            sink_factory=lambda channel, thread_ts, user: sink,
             log_dir=tmp_path,
         )
 
@@ -157,14 +157,14 @@ class TestProgressCoordinator:
     def test_로그_경로가_없으면_표시를_열지_않는다(self, tmp_path: Path) -> None:
         sink = FakeSink()
         coordinator = self._coordinator(tmp_path, sink)
-        with coordinator.session("C1", "1.0", None):
+        with coordinator.session("C1", "1.0", "U1", None):
             pass
         assert sink.opened == []
 
     def test_로그_경로가_있으면_구간_동안_표시가_열린다(self, tmp_path: Path) -> None:
         sink = FakeSink()
         coordinator = self._coordinator(tmp_path, sink)
-        with coordinator.session("C1", "1.0", tmp_path / "s.log"):
+        with coordinator.session("C1", "1.0", "U1", tmp_path / "s.log"):
             assert sink.opened == [START_TEXT]
             assert sink.closed == 0
         assert sink.closed == 1
@@ -172,7 +172,7 @@ class TestProgressCoordinator:
     def test_구간_안에서_예외가_나도_표시를_닫는다(self, tmp_path: Path) -> None:
         sink = FakeSink()
         coordinator = self._coordinator(tmp_path, sink)
-        with pytest.raises(RuntimeError), coordinator.session("C1", "1.0", tmp_path / "s.log"):
+        with pytest.raises(RuntimeError), coordinator.session("C1", "1.0", "U1", tmp_path / "s.log"):
             raise RuntimeError("엔진 실패")
         assert sink.closed == 1
 
@@ -193,6 +193,11 @@ class FakeClient:
     def chat_startStream(self, **kwargs: Any) -> dict[str, str]:
         if self._fail_stream == "start":
             raise RuntimeError("스트리밍 권한 없음")
+        # 실물이 인자 부족을 missing_recipient_team_id 로 거부한다(2026-09-16 실측).
+        # 대역이 그냥 받아 주면 그 회귀를 시험이 못 본다
+        for required in ("recipient_team_id", "recipient_user_id"):
+            if not kwargs.get(required):
+                raise RuntimeError(f"missing_{required}")
         self.started.append(kwargs)
         return {"ts": "333.444"}
 
@@ -271,9 +276,14 @@ class TestSlackProgressSink:
         assert client.updated == [] and client.deleted == []
 
 
-def _streaming(client: FakeClient, channel: str = "C1") -> FallbackProgressSink:
+def _streaming(
+    client: FakeClient, channel: str = "C1", team_id: str = "T_TEAM", user_id: str = "U_ASK",
+) -> FallbackProgressSink:
     return FallbackProgressSink(
-        lambda: SlackStreamingProgressSink(client, channel, "1.0", "이카리 신지"),
+        lambda: SlackStreamingProgressSink(
+            client, channel, "1.0",
+            team_id=team_id, user_id=user_id, bot_display_name="이카리 신지",
+        ),
         lambda: SlackProgressSink(client, channel, "1.0", "이카리 신지"),
     )
 
@@ -281,7 +291,10 @@ def _streaming(client: FakeClient, channel: str = "C1") -> FallbackProgressSink:
 class TestSlackStreamingProgressSink:
     def test_시작한_스레드에_새_줄만_덧붙인다(self) -> None:
         client = FakeClient()
-        sink = SlackStreamingProgressSink(client, "C1", "1.0", "이카리 신지")
+        sink = SlackStreamingProgressSink(
+            client, "C1", "1.0", team_id="T_TEAM", user_id="U_ASK",
+            bot_display_name="이카리 신지",
+        )
         sink.open(START_TEXT)
         sink.append(["파일 읽는 중"])
         sink.append(["명령 실행 중"])
@@ -295,11 +308,13 @@ class TestSlackStreamingProgressSink:
     def test_DM_은_스트리밍하지_않는다(self) -> None:
         # chat.startStream 은 thread_ts 가 필수인데 DM 에는 답을 달 스레드가 없다
         with pytest.raises(ProgressStreamUnavailable):
-            SlackStreamingProgressSink(FakeClient(), "D1", "1.0")
+            SlackStreamingProgressSink(
+                FakeClient(), "D1", "1.0", team_id="T_TEAM", user_id="U_ASK",
+            )
 
     def test_끝나면_스트림을_닫고_표시를_지운다(self) -> None:
         client = FakeClient()
-        sink = SlackStreamingProgressSink(client, "C1", "1.0")
+        sink = SlackStreamingProgressSink(client, "C1", "1.0", team_id="T_TEAM", user_id="U_ASK")
         sink.open(START_TEXT)
         sink.close()
         assert client.stopped == [{"channel": "C1", "ts": "333.444"}]
@@ -307,7 +322,7 @@ class TestSlackStreamingProgressSink:
 
     def test_열지_못했으면_덧붙이지도_닫지도_않는다(self) -> None:
         client = FakeClient()
-        sink = SlackStreamingProgressSink(client, "C1", "1.0")
+        sink = SlackStreamingProgressSink(client, "C1", "1.0", team_id="T_TEAM", user_id="U_ASK")
         sink.append([IDLE_TEXT])
         sink.close()
         assert client.appended == [] and client.stopped == [] and client.deleted == []
@@ -363,3 +378,19 @@ class TestFallbackProgressSink:
         sink.open(START_TEXT)
         sink.close()
         assert client.deleted == [{"channel": "C1", "ts": "333.444"}]
+
+    def test_수신자_팀과_사용자를_함께_보낸다(self) -> None:
+        # 실물이 둘 다 없으면 missing_recipient_* 로 거부한다
+        client = FakeClient()
+        sink = _streaming(client)
+        sink.open(START_TEXT)
+        assert client.started[0]["recipient_team_id"] == "T_TEAM"
+        assert client.started[0]["recipient_user_id"] == "U_ASK"
+
+    def test_수신자를_모르면_요청을_보내지_않고_고쳐_쓰기로_연다(self) -> None:
+        # 신원 조회가 아직 안 끝난 경우다. 매 틱 거부될 요청을 보내지 않는다
+        client = FakeClient()
+        sink = _streaming(client, team_id="")
+        sink.open(START_TEXT)
+        assert client.started == []
+        assert client.posted[0]["text"] == START_TEXT

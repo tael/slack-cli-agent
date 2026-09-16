@@ -41,6 +41,11 @@ class BotIdentity(ABC):
 
     @property
     @abstractmethod
+    def team_id(self) -> str:
+        """이 봇이 붙은 워크스페이스. chat.startStream 이 수신자 팀으로 요구한다."""
+
+    @property
+    @abstractmethod
     def known(self) -> bool: ...
 
     @abstractmethod
@@ -71,6 +76,7 @@ class SlackBotIdentity(BotIdentity):
         self._retry_interval_sec = retry_interval_sec
         self._user_id = ""
         self._bot_id = ""
+        self._team_id = ""
         self._attempted_at: float | None = None
 
     @property
@@ -82,6 +88,11 @@ class SlackBotIdentity(BotIdentity):
     def bot_id(self) -> str:
         self._load()
         return self._bot_id
+
+    @property
+    def team_id(self) -> str:
+        self._load()
+        return self._team_id
 
     @property
     def known(self) -> bool:
@@ -143,3 +154,4 @@ class SlackBotIdentity(BotIdentity):
             info = {}
         self._user_id = str(info.get("user_id") or "")
         self._bot_id = str(info.get("bot_id") or "")
+        self._team_id = str(info.get("team_id") or "")
