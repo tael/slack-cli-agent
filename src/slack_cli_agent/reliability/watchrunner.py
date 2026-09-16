@@ -144,6 +144,27 @@ class WatchJobChecker:
                 continue
             self._check_one(job, now)
 
+        self._retry_held_reports()
+
+    def _retry_held_reports(self) -> None:
+        """Posts reports whose earlier send failed. No engine call: the check
+        already ran and only the delivery is outstanding.
+        """
+        for held in self._queue.pending_reports():
+            if self._post_report(held.job_id, held.channel, held.thread_ts, held.body):
+                self._queue.release_report(held.job_id)
+
+    def _post_report(self, job_id: int, channel: str, thread_ts: str, body: str) -> bool:
+        config = self._channels.get(channel)
+        try:
+            self._publisher.post(channel, thread_ts, body, bool(config and config.rich))
+        except Exception as exc:  # noqa: BLE001 — a post failure must not stop the job from being marked done
+            # The body can carry Slack conversations or file contents, so the
+            # log gets the identifiers only.
+            log.error("감시 완료 보고 발송 실패 : 작업 %d, 채널 %s, %s", job_id, channel, exc)
+            return False
+        return True
+
     def _check_one(self, job: WatchJob, now: float) -> None:
         outcome = self._outcome_of(job)
         if outcome is WatchOutcome.RUNNING:
@@ -246,12 +267,11 @@ class WatchJobChecker:
         # empty body posts nothing at all. The job is marked done either way, so
         # without this the watch just disappears from the thread.
         body = _strip_tags(raw_body) or _bare_done_report(outcome)
-        config = self._channels.get(job.channel)
-        rich = bool(config and config.rich)
-        try:
-            self._publisher.post(job.channel, job.thread_ts, body, rich)
-        except Exception as exc:  # noqa: BLE001 — a post failure shouldn't block marking done, or the same report reposts next round
-            log.error("감시 완료 보고 발송 실패 : 작업 %d, 채널 %s, %s", job.id, job.channel, exc)
+        if not self._post_report(job.id, job.channel, job.thread_ts, body):
+            # Marking done still happens -- rerunning the check would spend
+            # another engine call on work already finished. The report is kept
+            # so the next round retries only the send (sca-dlv).
+            self._queue.hold_report(job.id, body)
 
         self._queue.mark_done(job.id)
         self._settle_mark(job, failed=False)

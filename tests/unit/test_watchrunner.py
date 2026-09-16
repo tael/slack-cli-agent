@@ -963,3 +963,109 @@ class Test감시실행기록:
         c.check_once()
 
         assert 발행.게시내역
+
+
+class Test보고재발송:
+    """발송 실패로 보고가 사라지는 것을 막는다(sca-dlv).
+
+    작업 완료와 보고 발송 완료는 다른 사건이다. 둘을 한 표식으로 묶으면
+    발송이 실패한 회차에 작업까지 닫혀 보고가 영영 안 나간다. 원 메시지에는
+    완료 표식이 달리므로 사람은 끝난 줄 알고 결과를 기다린다.
+    """
+
+    def test_발송이_실패하면_보고를_남긴다(self, 큐: 시계달린큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포 끝났다 {WATCH_DONE_TAG}"),
+            발행=가짜발행(실패=True),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        남은보고 = 큐.pending_reports()
+        assert [(r.channel, r.thread_ts) for r in 남은보고] == [("C1", "111.1")]
+        assert "배포 끝났다" in 남은보고[0].body
+
+    def test_다음_회차에_그_보고만_다시_보낸다(self, 큐: 시계달린큐) -> None:
+        """엔진을 다시 부르지 않는다. 확인은 이미 끝났고 남은 것은 발송뿐이다."""
+        큐.enqueue("C1", "111.1", "배포 확인")
+        호출: list[Any] = []
+        발행 = 가짜발행(실패=True)
+        c = 체커(
+            큐=큐,
+            run_check=기록하고_응답(호출, 응답(ok=True, body=f"배포 끝났다 {WATCH_DONE_TAG}")),
+            발행=발행,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        assert len(호출) == 1
+
+        발행.실패 = False
+        큐.시각["값"] = 3000.0
+        c.check_once()
+
+        assert len(호출) == 1
+        assert [(게시[0], 게시[1]) for 게시 in 발행.게시내역] == [("C1", "111.1")]
+        assert "배포 끝났다" in 발행.게시내역[0][2]
+
+    def test_보내고_나면_다시_안_보낸다(self, 큐: 시계달린큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행(실패=True)
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포 끝났다 {WATCH_DONE_TAG}"),
+            발행=발행,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        발행.실패 = False
+        큐.시각["값"] = 3000.0
+        c.check_once()
+        큐.시각["값"] = 4000.0
+        c.check_once()
+
+        assert len(발행.게시내역) == 1
+        assert 큐.pending_reports() == []
+
+    def test_재발송도_실패하면_그대로_남는다(self, 큐: 시계달린큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포 끝났다 {WATCH_DONE_TAG}"),
+            발행=가짜발행(실패=True),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        큐.시각["값"] = 3000.0
+        c.check_once()
+
+        assert len(큐.pending_reports()) == 1
+
+    def test_발송에_성공하면_남기지_않는다(self, 큐: 시계달린큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포 끝났다 {WATCH_DONE_TAG}"),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 큐.pending_reports() == []
+
+    def test_채널의_rich_설정을_재발송에도_그대로_쓴다(self, 큐: 시계달린큐) -> None:
+        """재발송이 평문으로 나가면 같은 보고가 회차마다 다른 모양이 된다."""
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행(실패=True)
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포 끝났다 {WATCH_DONE_TAG}"),
+            발행=발행, 채널목록=가짜채널목록({"C1": 가짜채널설정(rich=True)}),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        발행.실패 = False
+        큐.시각["값"] = 3000.0
+        c.check_once()
+
+        assert 발행.게시내역[0][3] is True
