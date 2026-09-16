@@ -57,7 +57,7 @@ class SplitVerifier:
         parts: list[str] = []
         buf: list[str] = []
         for line in text.replace(SPLIT_MARKER, "").split("\n"):
-            if buf and len("\n".join(buf + [line])) > limit:
+            if buf and len("\n".join([*buf, line])) > limit:
                 parts.append("\n".join(buf))
                 buf = []
             buf.append(line)

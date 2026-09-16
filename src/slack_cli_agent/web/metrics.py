@@ -14,6 +14,7 @@ than filled with 0 or an estimate.
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
 import subprocess
 import time
@@ -372,10 +373,8 @@ class MetricsCollector:
         for r in requests:
             stamp = r.get("ts_kst")
             if isinstance(stamp, str) and stamp:
-                try:
+                with contextlib.suppress(ValueError):
                     by_hour[datetime.fromisoformat(stamp).hour] += 1
-                except ValueError:
-                    pass
 
         return {
             "count": len(times),

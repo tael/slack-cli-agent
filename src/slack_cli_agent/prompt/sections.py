@@ -293,7 +293,8 @@ class WatchSection(PromptSection):
 
 
 class PresentPeopleSection(PromptSection):
-    """Lists who's present in the conversation: whoever has spoken, plus anyone mentioned (a mention notifies them and the thread is open, so treat them as present too).
+    """Lists who's present: whoever has spoken, plus anyone mentioned. A mention
+    notifies them and the thread is open, so treat them as present too.
 
     Skipped for just two people — that's where someone could get talked about as if absent.
     """

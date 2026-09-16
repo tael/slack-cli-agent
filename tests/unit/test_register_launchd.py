@@ -185,7 +185,8 @@ class Test재등록:
     def test_bootstrap_시점에_그_역할의_표식이_이미_없다(self, tmp_path: Path) -> None:
         _, 기록 = self._돌린다(tmp_path)
         줄들 = [
-            l for l in 기록.read_text(encoding="utf-8").splitlines() if l.startswith("bootstrap")
+            줄 for 줄 in 기록.read_text(encoding="utf-8").splitlines()
+            if 줄.startswith("bootstrap")
         ]
         assert 줄들 == ["bootstrap ingress 표식없음", "bootstrap worker 표식없음"]
 

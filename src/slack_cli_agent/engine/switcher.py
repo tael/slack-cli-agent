@@ -12,6 +12,7 @@ the original's 2026-09-11 decision.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from collections.abc import Mapping
@@ -42,10 +43,8 @@ class EngineSwitcher:
         )
 
     def clear(self) -> None:
-        try:
+        with contextlib.suppress(OSError):
             self._path.unlink()
-        except OSError:
-            pass
 
     def is_switched(self) -> bool:
         return bool(self.load().get("engine"))

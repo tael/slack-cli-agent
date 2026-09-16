@@ -12,8 +12,6 @@ from pathlib import Path
 
 import pytest
 
-NOW = datetime(2026, 9, 14, 10, 0, tzinfo=UTC)
-
 from slack_cli_agent.learning.decoder import ChannelAnalysisResult
 from slack_cli_agent.learning.progress import (
     MAX_ATTEMPTS,
@@ -23,6 +21,7 @@ from slack_cli_agent.learning.progress import (
     ProgressStore,
 )
 
+NOW = datetime(2026, 9, 14, 10, 0, tzinfo=UTC)
 DAY = "2026-09-14"
 
 
