@@ -217,6 +217,19 @@ class GeminiEngine(Engine):
                 failure_detail=FailureDetail(code=status), elapsed_source=elapsed_source,
             )
 
+        # 2026-09-17 실측 — agy 는 실패에 exit 1 과 status=ERROR 를 함께 낸다.
+        # status 만 보던 탓에 여기만 종료코드를 실패 판정에 안 썼다(sca-e9a).
+        # 조건을 더하는 것이지 status 를 대체하는 것이 아니다: 권한 거부는
+        # exit 0 으로 나므로 위의 status 판정이 그대로 그 경로를 잡는다.
+        if returncode != 0:
+            return EngineResponse(
+                ok=False, body="처리에 실패했습니다.", session_id=session_id, model_actual=None,
+                elapsed=elapsed, turns=turns, usage=usage, raw=raw,
+                failure_reason="nonzero_exit",
+                failure_detail=FailureDetail(exit_code=returncode, stdout_chars=len(stdout)),
+                elapsed_source=elapsed_source,
+            )
+
         body = str(payload.get("response") or "").strip()
         if not body:
             return EngineResponse(
