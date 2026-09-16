@@ -5,36 +5,15 @@
 
 from __future__ import annotations
 
-import html
 import json
-import re
 from typing import Any
 
 from slack_cli_agent.observability.audit import REQUEST_KIND
+from slack_cli_agent.slack.text import clean_excerpt
 from slack_cli_agent.storage.database import Database
 from slack_cli_agent.storage.repository import SqliteRepository
 
 _LOOKBACK_LIMIT = 4000
-
-_LINK_LABEL = re.compile(r"<([^<>|]+)\|([^<>]+)>")
-_BRACKET = re.compile(r"<([^<>]+)>")
-
-
-def clean_excerpt(text: str | None) -> str | None:
-    # Slack's event API HTML-escapes text and already-rendered links come
-    # as `<url|label>`; re-pasting that verbatim would double-wrap in
-    # angle brackets. Unescape entities, keep only the link label, and
-    # strip remaining brackets until nothing changes.
-    if not text:
-        return text
-    out = html.unescape(text)
-    out = _LINK_LABEL.sub(r"\2", out)
-    prev = None
-    while prev != out:
-        prev = out
-        out = _BRACKET.sub(r"\1", out)
-    return out
-
 
 class AnswerRecordFinder(SqliteRepository):
     def __init__(self, database: Database) -> None:
