@@ -121,3 +121,76 @@ class Test실행자리컬럼:
 
         작업 = WatchJobQueue(db).due(now=200.0, min_gap=0.0)
         assert [(항목.workdir, 항목.run_id) for 항목 in 작업] == [("", "")]
+
+
+class Test활성감시멱등:
+    """파이프라인이 감시 행을 만든 뒤 워커가 원 작업을 완료하기 전에 죽으면,
+    reclaim 이 그 작업을 다시 큐에 넣고 재실행이 감시 행을 하나 더 만든다.
+    같은 작업에 감시가 둘 붙어 완료 보고가 두 번 나간다(sca-efe).
+    """
+
+    def test_같은_메시지에_활성_감시가_둘_안_생긴다(self, database) -> None:
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        첫번째 = q.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        두번째 = q.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+
+        assert 두번째 == 첫번째
+        assert len(q.due(2000.0, 0.0)) == 1
+
+    def test_완료된_뒤에는_다시_등록된다(self, database) -> None:
+        """같은 메시지에 새 감시를 다는 것 자체는 막지 않는다. 앞 건이 끝난
+        뒤라면 중복 보고가 안 난다."""
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        첫번째 = q.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        q.mark_done(첫번째)
+        두번째 = q.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+
+        assert 두번째 != 첫번째
+        assert len(q.due(2000.0, 0.0)) == 1
+
+    def test_표식_대상이_없으면_제약을_안_건다(self, database) -> None:
+        """msg_ts 가 빈 행은 어느 메시지도 안 가리키므로 같은 것으로 볼 수 없다."""
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        assert q.enqueue("C1", "111.1", "가") != q.enqueue("C1", "111.1", "나")
+        assert len(q.due(2000.0, 0.0)) == 2
+
+    def test_다른_채널은_따로_센다(self, database) -> None:
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        q.enqueue("C1", "111.1", "가", msg_ts="222.2")
+        q.enqueue("C2", "111.1", "나", msg_ts="222.2")
+        assert len(q.due(2000.0, 0.0)) == 2
+
+    def test_이미_중복이_있는_DB도_올라간다(self, tmp_path) -> None:
+        """운영 DB 에 이미 중복 행이 있으면 제약을 그대로 걸 수 없다. 올리다
+        실패하면 봇이 기동을 못 한다."""
+        경로 = tmp_path / "v5.db"
+        연결 = sqlite3.connect(경로)
+        for 단계 in MIGRATIONS[:5]:
+            for 문장 in 단계[2]:
+                연결.execute(문장)
+        연결.execute("PRAGMA user_version = 5")
+        for _ in range(2):
+            연결.execute(
+                "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at, "
+                "last_run, done, msg_ts) VALUES ('C1', '111.1', '배포', 1000.0, NULL, 0, '222.2')"
+            )
+        연결.commit()
+        연결.close()
+
+        from slack_cli_agent.storage.database import Database
+
+        db = Database(경로)
+        db.migrate()
+        남은수 = db.connect().execute(
+            "SELECT COUNT(*) FROM watch_jobs WHERE done = 0"
+        ).fetchone()[0]
+        assert 남은수 == 1
+        assert db.connect().execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION

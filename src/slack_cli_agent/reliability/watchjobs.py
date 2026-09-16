@@ -10,6 +10,7 @@ and can't recompute values tied to that original request.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ from typing import Any, Protocol, runtime_checkable
 from ..auth.principal import TrustLevel
 from ..storage.database import Database
 from ..storage.repository import SqliteRepository
+
+log = logging.getLogger(__name__)
 
 _SELECT_COLUMNS = (
     "id, channel, thread_ts, condition, created_at, last_run, "
@@ -103,14 +106,27 @@ class WatchJobQueue(SqliteRepository):
         cursor = self._execute(
             "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at, "
             "last_run, done, msg_ts, checks, trust_level, extra, workdir, run_id) "
-            "VALUES (?, ?, ?, ?, NULL, 0, ?, 0, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, NULL, 0, ?, 0, ?, ?, ?, ?) "
+            "ON CONFLICT DO NOTHING",
             (
                 channel, thread_ts, condition, self._now(),
                 msg_ts, int(trust), _dump_extra(extra), workdir, run_id,
             ),
         )
-        assert cursor.lastrowid is not None  # sqlite always sets this on a successful INSERT
-        return cursor.lastrowid
+        if cursor.rowcount:
+            assert cursor.lastrowid is not None  # sqlite always sets this on a successful INSERT
+            return cursor.lastrowid
+        # The partial unique index rejected it: this message already has an
+        # active watch. A rerun after a crash must not add a second one, which
+        # would report twice (sca-efe).
+        existing = self._fetch_one(
+            "SELECT id FROM watch_jobs WHERE done = 0 AND channel = ? AND msg_ts = ?",
+            (channel, msg_ts),
+        )
+        if existing is None:  # pragma: no cover - the index is the only rejection path
+            raise RuntimeError(f"감시 작업을 넣지도 찾지도 못했다 : {channel} {msg_ts}")
+        log.info("이 메시지에는 활성 감시가 이미 있다. 그것을 그대로 쓴다 : %s %s", channel, msg_ts)
+        return int(existing["id"])
 
     def due(self, now: float, min_gap: float, max_checks: int | None = None) -> list[WatchJob]:
         sql = (
