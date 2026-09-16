@@ -28,7 +28,12 @@ from .core.errors import AgentError, ConfigError
 from .core.lifecycle import GracefulShutdown, SignalRegister
 from .core.secrets import contains_secret, redact
 from .preflight.suite import PreflightSuite
-from .slack.credentials import CredentialResolver, resolver_for
+from .slack.credentials import (
+    APP_TOKEN_ENV,
+    BOT_TOKEN_ENV,
+    CredentialResolver,
+    resolver_for,
+)
 from .storage.database import Database
 
 
@@ -105,10 +110,40 @@ class PreflightGatedServiceCommand(ProfileAwareCommand):
     building a profile that happens to pass every real check.
     """
 
+    #: Slack tokens this role cannot work without. Checked at the gate rather
+    #: than where they're used: a worker without a bot token assembles fine and
+    #: only fails at its first Slack call, which looks to launchd like a
+    #: healthy process and never triggers a restart (sca-q2k).
+    required_tokens: ClassVar[tuple[str, ...]] = ()
+
     def __init__(
         self, preflight_suite_factory: Callable[[], PreflightSuite] = PreflightSuite
     ) -> None:
         self._preflight_suite_factory = preflight_suite_factory
+        self._resolver_cache: CredentialResolver | None = None
+
+    def resolver(self, profile: Profile) -> CredentialResolver:
+        """One resolver per run: it reads the credentials file once, so two of
+        them could take the two tokens from different versions of that file."""
+        if self._resolver_cache is None:
+            self._resolver_cache = resolver_for(profile)
+        return self._resolver_cache
+
+    def check_tokens(self, profile: Profile, args: argparse.Namespace) -> None:
+        resolver = self.resolver(profile)
+        읽는법 = {
+            "bot": ("봇 토큰", BOT_TOKEN_ENV, resolver.bot_token),
+            "app": ("앱 토큰", APP_TOKEN_ENV, resolver.app_token),
+        }
+        given = {"app": getattr(args, "app_token", None)}
+        for name in self.required_tokens:
+            label, env_name, read = 읽는법[name]
+            if not read(given.get(name)):
+                raise ConfigError(
+                    f"{label}이 없다. 환경변수 {env_name} 또는 "
+                    f"{redact(str(profile.credentials_file or profile.paths.credentials))} "
+                    "를 채워야 기동한다"
+                )
 
     def execute_with_profile(
         self, profile: Profile, args: argparse.Namespace, stdout: TextIO
@@ -123,6 +158,9 @@ class PreflightGatedServiceCommand(ProfileAwareCommand):
         stdout.flush()
         if not report.bootable:
             return BLOCKED_EXIT
+        # After the suite, so a profile that is broken in several ways reports
+        # every check before stopping at the credentials.
+        self.check_tokens(profile, args)
         return self.run_service(profile, args, stdout)
 
     @abstractmethod
@@ -395,18 +433,11 @@ class IngressCommand(PreflightGatedServiceCommand):
             ),
         )
 
-    def run_service(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
-        resolver = resolver_for(profile)
-        token = resolver.app_token(args.app_token)
-        if not token:
-            print(
-                "앱 토큰이 없다. --app-token 인자, 환경변수 SLACK_APP_TOKEN, "
-                f"또는 {redact(str(profile.credentials_file or profile.paths.credentials))} "
-                "를 채워야 기동한다",
-                file=stdout,
-            )
-            return 2
+    required_tokens: ClassVar[tuple[str, ...]] = ("app", "bot")
 
+    def run_service(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
+        resolver = self.resolver(profile)
+        token = resolver.app_token(args.app_token)
         app = self._factory(profile, resolver)
         try:
             gateway = app.gateway()
@@ -449,8 +480,10 @@ class WorkerCommand(PreflightGatedServiceCommand):
         )
         parser.set_defaults(catch_up=True)
 
+    required_tokens: ClassVar[tuple[str, ...]] = ("bot",)
+
     def run_service(self, profile: Profile, args: argparse.Namespace, stdout: TextIO) -> int:
-        app = self._factory(profile, resolver_for(profile))
+        app = self._factory(profile, self.resolver(profile))
         worker = app.worker(worker_id=args.worker_id)
         # Waits for in-flight work on shutdown; without this, SIGTERM kills the
         # process mid-request and the job stays stuck in the queue until the

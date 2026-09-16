@@ -172,9 +172,13 @@ class Test점검과_토큰이_같이_없으면:
         assert "기동 불가" in out.getvalue()
         assert "앱 토큰이 없다" not in out.getvalue()
 
-    def test_점검을_통과하면_토큰_누락은_2_다(self, tmp_path: Path) -> None:
-        """설정은 맞는데 토큰만 없는 것은 재기동으로 풀릴 수 있어 차단 대상이
-        아니다. 78 을 내면 표식이 남아 사람이 지워야 한다."""
+    def test_점검을_통과해도_토큰_누락은_차단이다(self, tmp_path: Path) -> None:
+        """2026-09-17 에 뒤집었다(sca-q2k).
+
+        앞서는 토큰 누락을 재기동으로 풀릴 수 있는 것으로 보고 2 로 뒀다.
+        토큰은 사람이 파일에 쓰기 전에는 저절로 생기지 않으므로 그 사이
+        launchd 가 무한히 재기동한다. 표식을 지우는 손이 한 번 더 드는 대신
+        재기동이 멈추고 사유가 파일로 남는다 - tools/unblock.sh 로 지운다."""
         명령 = IngressCommand(
             application_factory=lambda profile, resolver: pytest.fail("토큰 없이 기동했다"),
             preflight_suite_factory=lambda: 고정Suite(bootable=True),
@@ -184,7 +188,7 @@ class Test점검과_토큰이_같이_없으면:
             ["ingress", "--profile", "example", "--profile-dir", str(_프로필(tmp_path))],
             stdout=out,
         )
-        assert code == 2
+        assert code == BLOCKED_EXIT
         assert "앱 토큰이 없다" in out.getvalue()
 
 
@@ -298,3 +302,90 @@ class Test설정_오류는_차단_코드로_끝낸다:
             stdout=io.StringIO(),
         )
         assert code == 2
+
+
+class Test자격은_게이트에서_확인한다:
+    """자격이 없으면 기동 전에 막는다(sca-q2k).
+
+    워커는 봇 토큰이 없어도 조립까지 지나가고 첫 슬랙 호출에서야 실패했다.
+    그 실패는 요청마다 나므로 launchd 는 정상 기동으로 보고 재기동하지 않는다 -
+    봇은 떠 있는데 아무 일도 못 하는 상태가 이어진다.
+    """
+
+    def _프로필(self, tmp_path: Path) -> Path:
+        profiles = tmp_path / "profiles"
+        profiles.mkdir(parents=True)
+        (profiles / "example.json").write_text(
+            json.dumps(
+                {
+                    "name": "example",
+                    "state_dir": str(tmp_path / "state"),
+                    "primary_engine": {"type": "claude", "binary": "/bin/echo", "model": "m"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return profiles
+
+    def test_워커는_봇_토큰이_없으면_차단_코드로_끝낸다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+        불렀나: list[str] = []
+        명령 = WorkerCommand(
+            application_factory=lambda profile, resolver: 불렀나.append("조립"),
+            preflight_suite_factory=lambda: 고정Suite(bootable=True),
+            signal_register=lambda *args: None,
+        )
+        out = io.StringIO()
+        code = SlackCliAgent([명령]).run(
+            ["worker", "--profile", "example", "--profile-dir", str(self._프로필(tmp_path))],
+            stdout=out,
+        )
+        assert code == BLOCKED_EXIT, out.getvalue()
+        assert 불렀나 == [], "토큰이 없으면 조립까지 가면 안 된다"
+        assert "봇 토큰" in out.getvalue()
+
+    def test_접수기는_앱_토큰이_없으면_차단_코드로_끝낸다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SLACK_APP_TOKEN", raising=False)
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-있음")
+        불렀나: list[str] = []
+        명령 = IngressCommand(
+            application_factory=lambda profile, resolver: 불렀나.append("조립"),
+            preflight_suite_factory=lambda: 고정Suite(bootable=True),
+        )
+        out = io.StringIO()
+        code = SlackCliAgent([명령]).run(
+            ["ingress", "--profile", "example", "--profile-dir", str(self._프로필(tmp_path))],
+            stdout=out,
+        )
+        assert code == BLOCKED_EXIT, out.getvalue()
+        assert 불렀나 == []
+
+    def test_자격이_다_있으면_조립까지_간다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """막는 것만 시험하면 항상 막는 구현도 통과한다."""
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-있음")
+        조립했다: list[str] = []
+
+        def factory(profile: Profile, resolver: object) -> object:
+            조립했다.append("조립")
+            raise KeyboardInterrupt
+
+        명령 = WorkerCommand(
+            application_factory=factory,
+            preflight_suite_factory=lambda: 고정Suite(bootable=True),
+            signal_register=lambda *args: None,
+        )
+        with pytest.raises(KeyboardInterrupt):
+            SlackCliAgent([명령]).run(
+                [
+                    "worker", "--profile", "example",
+                    "--profile-dir", str(self._프로필(tmp_path)),
+                ],
+                stdout=io.StringIO(),
+            )
+        assert 조립했다 == ["조립"]
