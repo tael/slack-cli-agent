@@ -20,6 +20,7 @@ from .check import CheckResult, PreflightCheck, PreflightContext
 from .checks import (
     EngineBinaryCheck,
     EngineHomeCredentialCheck,
+    McpCredentialCheck,
     McpServerCheck,
     OwnerSettingsInertCheck,
     ProfilePermissionCheck,
@@ -60,6 +61,8 @@ class PreflightSuite:
             OwnerSettingsInertCheck(),
             # fatal=False for the same reason: a chmod fixes it, taking the bot down does not.
             ProfilePermissionCheck(),
+            # 표기가 안 풀리면 MCP 서버는 빈 자격으로 인증 실패만 낸다. 기동에서 막는다.
+            McpCredentialCheck(),
         )
 
     @property

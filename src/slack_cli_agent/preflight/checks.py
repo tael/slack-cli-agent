@@ -142,6 +142,29 @@ class OwnerSettingsInertCheck(PreflightCheck):
         return CheckResult(ok=True, detail="소유자에게 적용되는 채널 설정 점검 통과")
 
 
+class McpCredentialCheck(PreflightCheck):
+    """Checks that every ${env:...}/${file:...} in an MCP server resolves now.
+
+    Resolution happens when the engine command is built, so an unresolved
+    reference would surface as one failed request at a time rather than as
+    a configuration problem (sca-dn4).
+    """
+
+    name: ClassVar[str] = "mcp_credentials"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        bad: list[str] = []
+        for server in ctx.profile.mcp_servers.values():
+            for resolve in (server.resolved_env, server.resolved_headers):
+                try:
+                    resolve()
+                except ConfigError as exc:
+                    bad.append(str(exc))
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="MCP 자격 표기 점검 통과")
+
+
 class ProfilePermissionCheck(PreflightCheck):
     """Warns when a profile carrying MCP credentials is readable past its owner.
 
