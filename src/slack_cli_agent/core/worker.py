@@ -21,6 +21,7 @@ from ..core.ports import HandleOutcome, RequestHandler
 from ..jobs.heartbeat import WorkerHeartbeat
 from ..jobs.ports import JobQueue, ReclaimResult
 from ..reliability.catchup import CatchupReport, CatchupService, RetryStatus
+from ..reliability.watchjobs import WatchJobPort
 
 _Mark = Callable[[str, str], None]
 from ..slack.reactions import ReactionMarker
@@ -42,12 +43,16 @@ class Worker:
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         inflight: InflightCounter | None = None,
+        # reclaim picks the mark from this: a watched message put back in the
+        # queue would otherwise read as waiting while its watch runs (sca-o1e).
+        watch_jobs: WatchJobPort | None = None,
     ) -> None:
         self._queue = queue
         self._handler = handler
         self._heartbeat = heartbeat
         self._catchup = catchup
         self._markers = markers
+        self._watch_jobs = watch_jobs
         self._settings = settings
         self._worker_id = worker_id
         self._now = now
@@ -163,8 +168,14 @@ class Worker:
     def reclaim(self) -> ReclaimResult:
         result = self._heartbeat.reclaim_stale()
         for context in result.requeued:
-            # Back to queued, so the mark goes back to queued too.
+            # Back to queued, so the mark goes back to queued too -- unless a
+            # watch is already running on that message.
             self._markers.clear_processing(context.channel, context.ts)
+            if self._watch_jobs is not None and self._watch_jobs.active_watch(
+                context.channel, context.ts
+            ):
+                self._markers.mark_watch(context.channel, context.ts)
+                continue
             self._markers.mark_waiting(context.channel, context.ts)
         for context in result.failed:
             self._markers.mark_failed(context.channel, context.ts)
