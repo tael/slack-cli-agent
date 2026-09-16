@@ -28,10 +28,7 @@ from ..config.channel import ChannelConfig, ChannelRegistry
 from ..config.profile import EngineSpec, Profile
 from ..config.settings import RuntimeSettings
 from ..engine.base import CallOrigin, Engine, EngineRequest, EngineResponse
-from ..engine.claude import ClaudeEngine
-from ..engine.codex import CodexEngine
-from ..engine.gemini import GeminiEngine
-from ..engine.registry import EngineRegistry
+from ..engine.registry import EngineRegistry, default_registry
 from ..engine.runner import (
     DirectInvoker,
     EngineInvoker,
@@ -305,11 +302,7 @@ class Application:
 
     @staticmethod
     def _default_registry() -> EngineRegistry:
-        registry = EngineRegistry()
-        registry.register(ClaudeEngine)
-        registry.register(CodexEngine)
-        registry.register(GeminiEngine)
-        return registry
+        return default_registry()
 
     @property
     def engine_registry(self) -> EngineRegistry:

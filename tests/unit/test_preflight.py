@@ -26,9 +26,11 @@ from slack_cli_agent.preflight.checks import (
     OwnerSettingsInertCheck,
     ProfilePermissionCheck,
     PromptFileCheck,
+    ToolAllowlistEnforcementCheck,
     WorkdirCheck,
 )
 from slack_cli_agent.preflight.runner import PreflightRunner
+from slack_cli_agent.preflight.suite import PreflightSuite
 
 
 def make_profile(tmp_path: Path, **overrides) -> Profile:
@@ -623,6 +625,7 @@ class TestPreflightSuite:
             "prompt_files",
             "owner_settings_inert",
             "profile_permissions",
+            "tool_allowlist_enforcement",
             "mcp_credentials",
         ]
 
@@ -706,6 +709,7 @@ class TestPreflightSuite:
             "[통과] prompt_files : 좋음\n"
             "[통과] owner_settings_inert : 좋음\n"
             "[통과] profile_permissions : 좋음\n"
+            "[통과] tool_allowlist_enforcement : 좋음\n"
             "[통과] mcp_credentials : 좋음\n"
             "기동 불가\n"
         )
@@ -834,3 +838,68 @@ class Test검사_목록_주입:
         import preflight_support
 
         assert "_checks" not in inspect.getsource(preflight_support)
+
+
+# ---------------------------------------------------------------------------
+# ToolAllowlistEnforcementCheck — 허용목록을 강제하지 못하는 엔진을 기동 때 알린다
+
+
+class TestToolAllowlistEnforcementCheck:
+    """도구 허용목록은 엔진마다 실효가 다르다(sca-dyb.11).
+
+    호출자는 모든 엔진에 같은 목록을 만들어 넘기지만 강제하는 것은 클로드뿐이다.
+    코덱스는 샌드박스라는 다른 축이고 제미나이는 아무것도 강제하지 않는다. 요청마다
+    감사에 남기면 그 봇에서는 매 요청이 같은 사실을 반복하므로, 설정 시점에 한 번
+    알린다.
+    """
+
+    def test_클로드는_허용목록을_강제하므로_통과한다(self, tmp_path: Path) -> None:
+        result = ToolAllowlistEnforcementCheck().run(
+            PreflightContext(profile=make_profile(tmp_path))
+        )
+        assert result.ok is True
+
+    def test_제미나이는_아무것도_강제하지_않는다고_알린다(self, tmp_path: Path) -> None:
+        profile = make_profile(
+            tmp_path,
+            primary_engine={"type": "gemini", "binary": str(tmp_path / "agy"), "model": "m"},
+        )
+        result = ToolAllowlistEnforcementCheck().run(PreflightContext(profile=profile))
+        assert result.ok is False
+        assert result.fatal is False
+        assert "gemini" in result.detail
+        assert "none" in result.detail
+
+    def test_코덱스는_샌드박스라는_다른_축임을_알린다(self, tmp_path: Path) -> None:
+        profile = make_profile(
+            tmp_path,
+            primary_engine={"type": "codex", "binary": str(tmp_path / "codex"), "model": "m"},
+        )
+        result = ToolAllowlistEnforcementCheck().run(PreflightContext(profile=profile))
+        assert result.ok is False
+        assert "coarse_sandbox" in result.detail
+
+    def test_2차_엔진도_함께_본다(self, tmp_path: Path) -> None:
+        """한도 소진 뒤에는 2차 엔진이 같은 요청을 받는다. 그때 허용목록이
+        풀리는 것을 켤 때 알아야 한다."""
+        profile = make_profile(
+            tmp_path,
+            fallback_engine={"type": "codex", "binary": str(tmp_path / "codex"), "model": "m"},
+        )
+        result = ToolAllowlistEnforcementCheck().run(PreflightContext(profile=profile))
+        assert result.ok is False
+        assert "2차" in result.detail
+
+    def test_모르는_엔진이면_판정하지_않는다(self, tmp_path: Path) -> None:
+        """플러그인이 더한 엔진은 이 목록에 없다. 없는 것을 강제 없음으로 읽으면
+        거짓 경고가 된다."""
+        profile = make_profile(
+            tmp_path,
+            primary_engine={"type": "플러그인엔진", "binary": str(tmp_path / "x"), "model": "m"},
+        )
+        result = ToolAllowlistEnforcementCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
+
+    def test_표준_점검_목록에_들어_있다(self) -> None:
+        names = [check.name for check in PreflightSuite().checks]
+        assert ToolAllowlistEnforcementCheck.name in names
