@@ -14,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from ..auth.principal import TrustLevel as TrustLevel
+from ..auth.principal import TrustLevel
 from ..core.errors import ConfigError
 from .capability import EngineCapabilities, ExecutionRequirements
 from .environment import EngineEnvironmentPolicy, create_environment_policy

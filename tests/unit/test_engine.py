@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.errors import ConfigError
@@ -22,7 +23,6 @@ from slack_cli_agent.engine.base import (
     EngineRequest,
     EngineResponse,
     FailureDetail,
-    TrustLevel,
     Usage,
     UsageLimit,
     equivalent_values,
