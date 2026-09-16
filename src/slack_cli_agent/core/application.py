@@ -965,7 +965,12 @@ class Application:
     def review_tasks(self) -> dict[str, ReviewTask]:
         if self._review_tasks is None:
             shared = {
-                "ledger": ReviewLedger(self._database),
+                "ledger": ReviewLedger(
+                    self._database,
+                    # 점검은 엔진을 두 번까지 부른다(구분선 누락 재시도).
+                    # 그보다 짧게 잡으면 도는 점검을 중복 실행한다.
+                    stale_after_sec=self._settings.request_timeout_sec * 2,
+                ),
                 "message_lookup": SlackMessageLookup(self._client),
                 "transcript": ThreadTranscriptPort(self._transcript_builder()),
                 "answer_finder": AnswerRecordFinder(self._database),
