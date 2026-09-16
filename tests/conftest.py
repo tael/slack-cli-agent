@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -36,7 +37,7 @@ sys.addaudithook(_guard)
 
 
 @pytest.fixture(autouse=True)
-def isolate_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def isolate_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """홈을 임시 경로로 바꾼다. 저장소와 파이썬 설치 경로만 예외로 둔다."""
     repo = str(Path(__file__).resolve().parents[1])
     _ALLOWED_PREFIXES[:] = [repo, str(tmp_path), sys.prefix, sys.base_prefix]
