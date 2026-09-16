@@ -15,6 +15,7 @@ from slack_cli_agent.slack.app_registry import (
     AppRegistry,
     AuditFinding,
     audit,
+    read_bot_token,
 )
 
 
@@ -106,3 +107,28 @@ class Test감사:
 
 def _던진다(entry: AppEntry) -> list[str]:
     raise RuntimeError("조회 실패")
+
+
+class Test봇토큰읽기:
+    """app ID 를 잃어버린 봇은 자기 봇 토큰으로 되찾을 수 있다. 토큰 자리는
+    봇마다 다르다 - 옛 형태(.slack_bot_token)와 credentials.json 둘 다 있다."""
+
+    def test_옛_형태_파일에서_읽는다(self, tmp_path: Path) -> None:
+        (tmp_path / ".slack_bot_token").write_text("xoxb-옛것\n", encoding="utf-8")
+        assert read_bot_token(tmp_path) == "xoxb-옛것"
+
+    def test_credentials_json_에서_읽는다(self, tmp_path: Path) -> None:
+        (tmp_path / "credentials.json").write_text(
+            json.dumps({"bot_token": "xoxb-새것"}), encoding="utf-8")
+        assert read_bot_token(tmp_path) == "xoxb-새것"
+
+    def test_둘_다_있으면_옛_형태를_쓴다(self, tmp_path: Path) -> None:
+        """run.sh 가 그 순서로 환경변수를 넘긴다. 여기서 다른 것을 고르면
+        실제로 도는 봇과 다른 앱을 조회하게 된다."""
+        (tmp_path / ".slack_bot_token").write_text("xoxb-옛것", encoding="utf-8")
+        (tmp_path / "credentials.json").write_text(
+            json.dumps({"bot_token": "xoxb-새것"}), encoding="utf-8")
+        assert read_bot_token(tmp_path) == "xoxb-옛것"
+
+    def test_아무_데도_없으면_빈_문자열이다(self, tmp_path: Path) -> None:
+        assert read_bot_token(tmp_path) == ""
