@@ -119,3 +119,47 @@ class Test조회:
         )
         rec = ledger.find("postmortem", "C1", "111.1")
         assert rec == ReviewRecord(status="")
+
+
+class Test중단된_점검_찾기:
+    """프로세스가 재기동되면 도는 점검이 죽고 진행 행만 남는다(sca-9bq).
+
+    24cccf2 로 그 행이 재시도를 영구히 막던 것은 고쳤지만, 사용자는 여전히
+    죽은 것을 모르고 기다린다. 알리려면 먼저 찾을 수 있어야 한다.
+    """
+
+    def _원장(self, database, 시각: dict) -> ReviewLedger:
+        return ReviewLedger(database, now=lambda: 시각["값"], stale_after_sec=100.0)
+
+    def test_기한을_넘긴_진행_행을_돌려준다(self, database) -> None:
+        시각 = {"값": 1000.0}
+        led = self._원장(database, 시각)
+        led.begin("postmortem", "C1", "111.1", by="U1")
+        시각["값"] = 1101.0
+        중단 = led.stale_in_progress()
+        assert [(s.kind, s.channel, s.target_ts, s.record.by) for s in 중단] == [
+            ("postmortem", "C1", "111.1", "U1")
+        ]
+
+    def test_아직_기한_안인_진행_행은_빼놓는다(self, database) -> None:
+        """도는 중인 점검을 중단으로 알리면 거짓 경보가 된다."""
+        시각 = {"값": 1000.0}
+        led = self._원장(database, 시각)
+        led.begin("postmortem", "C1", "111.1", by="U1")
+        시각["값"] = 1099.0
+        assert led.stale_in_progress() == []
+
+    def test_완료_행은_아무리_오래돼도_안_나온다(self, database) -> None:
+        시각 = {"값": 1000.0}
+        led = self._원장(database, 시각)
+        led.complete("postmortem", "C1", "111.1", by="U1")
+        시각["값"] = 99999.0
+        assert led.stale_in_progress() == []
+
+    def test_중단_시각을_함께_돌려준다(self, database) -> None:
+        """알림에 언제부터 멈춰 있었는지를 적으려면 필요하다."""
+        시각 = {"값": 1000.0}
+        led = self._원장(database, 시각)
+        led.begin("debug_trace", "C1", "111.1", by="U1")
+        시각["값"] = 1200.0
+        assert led.stale_in_progress()[0].at == 1000.0
