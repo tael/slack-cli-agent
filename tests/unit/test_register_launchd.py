@@ -34,8 +34,14 @@ def 생성된plist(tmp_path: Path) -> dict[str, Any]:
     bin_dir = tmp_path / "가짜bin"
     bin_dir.mkdir()
     가짜 = bin_dir / "launchctl"
+    # print 는 113(서비스 없음)을 낸다. bootout 뒤 사라짐을 기다리는 쪽이
+    # 여기서 멈추지 않게 한다.
     가짜.write_text(
-        '#!/bin/bash\necho "launchctl $*" >> "$HOME/launchctl.log"\nexit 0\n', encoding="utf-8"
+        "#!/bin/bash\n"
+        'echo "launchctl $*" >> "$HOME/launchctl.log"\n'
+        '[ "$1" = print ] && exit 113\n'
+        "exit 0\n",
+        encoding="utf-8",
     )
     가짜.chmod(0o755)
 
@@ -149,6 +155,9 @@ class Test재등록:
             f"else\n"
             f'  echo "$1 $2" >> "{기록}"\n'
             f"fi\n"
+            # print 는 113(서비스 없음). bootout 완료를 기다리는 쪽이 여기서
+            # 멈추지 않게 한다.
+            '[ "$1" = print ] && exit 113\n'
             "exit 0\n",
             encoding="utf-8",
         )
@@ -185,3 +194,111 @@ class Test재등록:
         본문 = 기록.read_text(encoding="utf-8")
         assert "bootstrap worker" in 본문
         assert "bootstrap ingress" in 본문
+
+
+class Test기존서비스가_사라질_때까지_기다린다:
+    """`bootout` 은 비동기다. 프로세스가 아직 남은 채 같은 레이블로
+    `bootstrap` 하면 `5: Input/output error` 로 실패하고, bootout 은 이미
+    끝났으므로 그 역할이 도메인에서 사라진 채로 남는다.
+
+    2026-09-16 에 shinji.worker 가 실제로 그렇게 사라졌다 (sca-fca).
+    """
+
+    def _돌린다(self, tmp_path: Path, *, 남아있는_횟수: int) -> subprocess.CompletedProcess[str]:
+        (tmp_path / "Library" / "LaunchAgents").mkdir(parents=True)
+        (tmp_path / ".testbot").mkdir()
+        bin_dir = tmp_path / "가짜bin"
+        bin_dir.mkdir()
+        가짜 = bin_dir / "launchctl"
+        # bootout 뒤 print 가 몇 번은 "아직 있다" 를 돌려준다. 그 사이에
+        # bootstrap 을 부르면 기록에 남아 시험이 검출한다.
+        가짜.write_text(
+            f"""#!/bin/bash
+LOG="$HOME/launchctl.log"
+CNT="$HOME/print.count"
+echo "$1" >> "$LOG"
+case "$1" in
+  print)
+    n=$(cat "$CNT" 2>/dev/null || echo 0)
+    echo $((n + 1)) > "$CNT"
+    [ "$n" -lt {남아있는_횟수} ] && exit 0
+    exit 113
+    ;;
+  bootout) echo 0 > "$CNT" ;;
+esac
+exit 0
+""",
+            encoding="utf-8",
+        )
+        가짜.chmod(0o755)
+        return subprocess.run(  # noqa: PLW1510 - 종료코드를 시험이 직접 본다
+            ["/bin/bash", str(등록기), "testbot"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=dict(
+                os.environ,
+                HOME=str(tmp_path),
+                PATH=f"{bin_dir}:{os.environ['PATH']}",
+                REGISTER_SETTLE_SEC="0",
+                BOOTOUT_POLL_SEC="0.05",
+            ),
+        )
+
+    def test_아직_남아있으면_bootstrap_을_부르지_않는다(self, tmp_path: Path) -> None:
+        결과 = self._돌린다(tmp_path, 남아있는_횟수=3)
+        기록 = (tmp_path / "launchctl.log").read_text(encoding="utf-8").split()
+        # bootout -> print 가 사라짐을 확인 -> bootstrap 순서여야 한다.
+        assert 결과.returncode == 0, 결과.stderr
+        첫bootstrap = 기록.index("bootstrap")
+        확인횟수 = 기록[:첫bootstrap].count("print")
+        assert 확인횟수 >= 3, 기록
+
+    def test_바로_사라지면_기다리지_않는다(self, tmp_path: Path) -> None:
+        결과 = self._돌린다(tmp_path, 남아있는_횟수=0)
+        기록 = (tmp_path / "launchctl.log").read_text(encoding="utf-8").split()
+        assert 결과.returncode == 0, 결과.stderr
+        assert 기록[:3] == ["bootout", "print", "bootstrap"], 기록
+
+
+class Test등록이_실패하면_그렇게_끝난다:
+    """bootstrap 실패를 0 으로 삼키면 등록되지 않은 서비스를 등록됐다고
+    읽는다. 이번 사고에서 실제로 그 상태가 됐다 (sca-fca).
+    """
+
+    def _돌린다(self, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+        (tmp_path / "Library" / "LaunchAgents").mkdir(parents=True)
+        (tmp_path / ".testbot").mkdir()
+        bin_dir = tmp_path / "가짜bin"
+        bin_dir.mkdir()
+        가짜 = bin_dir / "launchctl"
+        가짜.write_text(
+            "#!/bin/bash\n"
+            'echo "$1" >> "$HOME/launchctl.log"\n'
+            '[ "$1" = print ] && exit 113\n'
+            # launchd 가 내는 것과 같은 실패.
+            '[ "$1" = bootstrap ] && { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        가짜.chmod(0o755)
+        return subprocess.run(  # noqa: PLW1510 - 종료코드를 시험이 직접 본다
+            ["/bin/bash", str(등록기), "testbot"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=dict(
+                os.environ,
+                HOME=str(tmp_path),
+                PATH=f"{bin_dir}:{os.environ['PATH']}",
+                REGISTER_SETTLE_SEC="0",
+            ),
+        )
+
+    def test_종료코드가_0_이_아니다(self, tmp_path: Path) -> None:
+        assert self._돌린다(tmp_path).returncode != 0
+
+    def test_어느_역할이_등록되지_않았는지_말한다(self, tmp_path: Path) -> None:
+        결과 = self._돌린다(tmp_path)
+        assert "등록되지 않았다" in 결과.stderr
+        assert "testbot.ingress" in 결과.stderr
