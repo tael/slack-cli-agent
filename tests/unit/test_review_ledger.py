@@ -13,34 +13,40 @@ import pytest
 from review_support import recorded
 
 from slack_cli_agent.review.ledger import ReviewLedger, ReviewRecord
+from slack_cli_agent.storage.database import Database
+
+
+class 시계달린원장(ReviewLedger):
+    """시험이 시간을 앞으로 밀 수 있게 시계를 함께 담는다."""
+
+    def __init__(self, database: Database) -> None:
+        self.시각 = 1000.0
+        super().__init__(database, now=lambda: self.시각)
 
 
 @pytest.fixture
-def ledger(database) -> ReviewLedger:
-    시각 = {"값": 1000.0}
-    led = ReviewLedger(database, now=lambda: 시각["값"])
-    led._시각 = 시각
-    return led
+def ledger(database) -> 시계달린원장:
+    return 시계달린원장(database)
 
 
 class Test중복방지:
-    def test_등록전에는점검안된것이다(self, ledger: ReviewLedger) -> None:
+    def test_등록전에는점검안된것이다(self, ledger: 시계달린원장) -> None:
         assert ledger.is_reviewed("postmortem", "C1", "111.1") is False
 
-    def test_시작하면점검한것으로본다(self, ledger: ReviewLedger) -> None:
+    def test_시작하면점검한것으로본다(self, ledger: 시계달린원장) -> None:
         ledger.begin("postmortem", "C1", "111.1", by="U1")
         assert ledger.is_reviewed("postmortem", "C1", "111.1") is True
 
-    def test_완료해도점검한것이다(self, ledger: ReviewLedger) -> None:
+    def test_완료해도점검한것이다(self, ledger: 시계달린원장) -> None:
         ledger.complete("postmortem", "C1", "111.1", by="U1", link="L", report="R")
         assert ledger.is_reviewed("postmortem", "C1", "111.1") is True
 
-    def test_종류가다르면같은대상도별개다(self, ledger: ReviewLedger) -> None:
+    def test_종류가다르면같은대상도별개다(self, ledger: 시계달린원장) -> None:
         """부검을 했어도 서식 점검은 아직 안 한 것이다."""
         ledger.complete("postmortem", "C1", "111.1", by="U1")
         assert ledger.is_reviewed("format_review", "C1", "111.1") is False
 
-    def test_채널이다르면같은ts도별개다(self, ledger: ReviewLedger) -> None:
+    def test_채널이다르면같은ts도별개다(self, ledger: 시계달린원장) -> None:
         ledger.complete("postmortem", "C1", "111.1", by="U1")
         assert ledger.is_reviewed("postmortem", "C2", "111.1") is False
 
@@ -54,21 +60,21 @@ class Test중단된건의재시도:
     2026-09-16 에 레이에서 실제로 났다.
     """
 
-    def test_진행중인건은아직막는다(self, ledger: ReviewLedger) -> None:
+    def test_진행중인건은아직막는다(self, ledger: 시계달린원장) -> None:
         """정말 돌고 있는 점검을 두 번 돌리면 답이 두 벌 올라간다."""
         ledger.begin("postmortem", "C1", "111.1", by="U1")
-        ledger._시각["값"] += 60.0
+        ledger.시각 += 60.0
         assert ledger.is_reviewed("postmortem", "C1", "111.1") is True
 
-    def test_오래된진행은다시할수있다(self, ledger: ReviewLedger) -> None:
+    def test_오래된진행은다시할수있다(self, ledger: 시계달린원장) -> None:
         ledger.begin("postmortem", "C1", "111.1", by="U1")
-        ledger._시각["값"] += ReviewLedger.DEFAULT_STALE_SEC + 1
+        ledger.시각 += ReviewLedger.DEFAULT_STALE_SEC + 1
         assert ledger.is_reviewed("postmortem", "C1", "111.1") is False
 
-    def test_완료는시간이지나도막는다(self, ledger: ReviewLedger) -> None:
+    def test_완료는시간이지나도막는다(self, ledger: 시계달린원장) -> None:
         """이미 답을 낸 건이다. 오래됐다고 다시 부검하면 같은 보고가 또 올라간다."""
         ledger.complete("postmortem", "C1", "111.1", by="U1", link="L", report="R")
-        ledger._시각["값"] += ReviewLedger.DEFAULT_STALE_SEC + 1
+        ledger.시각 += ReviewLedger.DEFAULT_STALE_SEC + 1
         assert ledger.is_reviewed("postmortem", "C1", "111.1") is True
 
     def test_기한은조립할때정한다(self, database) -> None:
@@ -81,38 +87,38 @@ class Test중단된건의재시도:
 
 
 class Test재시도:
-    def test_지우면다시점검안된것이된다(self, ledger: ReviewLedger) -> None:
+    def test_지우면다시점검안된것이된다(self, ledger: 시계달린원장) -> None:
         """중단된 건은 리액션을 다시 붙이면 재시도할 수 있어야 한다."""
         ledger.begin("postmortem", "C1", "111.1", by="U1")
         ledger.drop("postmortem", "C1", "111.1")
         assert ledger.is_reviewed("postmortem", "C1", "111.1") is False
 
-    def test_없는것을지워도예외가안난다(self, ledger: ReviewLedger) -> None:
+    def test_없는것을지워도예외가안난다(self, ledger: 시계달린원장) -> None:
         ledger.drop("postmortem", "C1", "111.1")
 
 
 class Test조회:
-    def test_등록전에는None이다(self, ledger: ReviewLedger) -> None:
+    def test_등록전에는None이다(self, ledger: 시계달린원장) -> None:
         assert ledger.find("postmortem", "C1", "111.1") is None
 
-    def test_시작상태를읽는다(self, ledger: ReviewLedger) -> None:
+    def test_시작상태를읽는다(self, ledger: 시계달린원장) -> None:
         ledger.begin("postmortem", "C1", "111.1", by="U1")
         rec = recorded(ledger, "postmortem", "C1", "111.1")
         assert rec == ReviewRecord(status="진행", by="U1")
 
-    def test_완료상태를읽는다(self, ledger: ReviewLedger) -> None:
+    def test_완료상태를읽는다(self, ledger: 시계달린원장) -> None:
         ledger.complete("format_review", "C1", "111.1", by="U2", link="L1", report="R1")
         rec = recorded(ledger, "format_review", "C1", "111.1")
         assert rec == ReviewRecord(status="완료", by="U2", link="L1", report="R1")
 
-    def test_완료가시작을덮는다(self, ledger: ReviewLedger) -> None:
+    def test_완료가시작을덮는다(self, ledger: 시계달린원장) -> None:
         """같은 (kind, channel, target_ts) 는 최신 상태 하나만 남는다."""
         ledger.begin("postmortem", "C1", "111.1", by="U1")
         ledger.complete("postmortem", "C1", "111.1", by="U1", link="L", report="R")
         rec = recorded(ledger, "postmortem", "C1", "111.1")
         assert rec.status == "완료"
 
-    def test_깨진값이면빈상태로본다(self, database, ledger: ReviewLedger) -> None:
+    def test_깨진값이면빈상태로본다(self, database, ledger: 시계달린원장) -> None:
         """사람이 손댔거나 옛 판이 남긴 값이 JSON 이 아닐 수 있다."""
         ledger.begin("postmortem", "C1", "111.1", by="U1")
         database.connect().execute(

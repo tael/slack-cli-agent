@@ -15,8 +15,9 @@ from types import SimpleNamespace
 from engine_support import named
 from test_engine import 통과정책
 
+from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import Engine, EngineRequest, EngineResponse
-from slack_cli_agent.engine.runner import DirectInvoker, EngineRunner
+from slack_cli_agent.engine.runner import DirectInvoker, EngineInvoker, EngineRunner
 from slack_cli_agent.learning.analyzer import ProposalAnalyzer, ProposalBuilder
 from slack_cli_agent.learning.progress import FailureKind
 from slack_cli_agent.learning.proposal import LearningProposal
@@ -28,9 +29,9 @@ class FakeEngine(Engine):
     name = "fake"
 
     def __init__(self, failure_reason: str = "nonzero_exit") -> None:
-        # Engine.__init__ 은 profile/settings 를 요구하지만 이 테스트는 안 쓴다.
-        self.profile = None
-        self.settings = None
+        # Engine.__init__ 은 profile/settings 를 요구하지만 이 시험은 안 쓴다.
+        self.profile = None  # type: ignore[assignment]
+        self.settings = None  # type: ignore[assignment]
         self.built_requests: list[EngineRequest] = []
         self._failure_reason = failure_reason
 
@@ -66,7 +67,7 @@ def make_runner(stdout: str, returncode: int = 0) -> EngineRunner:
     def fake_subprocess(cmd, cwd, timeout, env=None):
         return SimpleNamespace(stdout=stdout, stderr="", returncode=returncode)
 
-    settings = SimpleNamespace(request_timeout_sec=10)
+    settings = RuntimeSettings(request_timeout_sec=10)
     return EngineRunner(settings, subprocess_runner=fake_subprocess, environment_policy=통과정책())
 
 
@@ -228,8 +229,9 @@ class Test학습도_같은_호출부품을_쓴다:
 
         받은: list[object] = []
 
-        class 기록실행부품:
-            def invoke(self, request, origin=CallOrigin.INTERACTIVE):
+        class 기록실행부품(EngineInvoker):
+            def invoke(self, request: EngineRequest,
+                       origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse:
                 받은.append(origin)
                 return EngineResponse(
                     ok=True, session_id=None, model_actual=None,

@@ -16,7 +16,7 @@ def jsonl_path(tmp_path):
 
 
 @pytest.fixture
-def audit_log(database, jsonl_path) -> AuditLog:
+def audit_log(database, jsonl_path) -> tuple[AuditLog, dict[str, float]]:
     clock = {"now": 1_700_000_000.0}
     return AuditLog(database, jsonl_path, now=lambda: clock["now"]), clock
 
@@ -116,10 +116,10 @@ class TestAuditLogRecordRequest:
 
 class TestIncidentKind:
     def test_새_사건_종류가_문자열_리터럴과_같다(self) -> None:
-        assert IncidentKind.LATE_ADDENDUM == "late_addendum"
-        assert IncidentKind.WRONG_ADDRESSEE == "wrong_addressee"
-        assert IncidentKind.REWRITE_LOSS == "rewrite_loss"
-        assert IncidentKind.SILENT == "silent"
+        assert IncidentKind.LATE_ADDENDUM.value == "late_addendum"
+        assert IncidentKind.WRONG_ADDRESSEE.value == "wrong_addressee"
+        assert IncidentKind.REWRITE_LOSS.value == "rewrite_loss"
+        assert IncidentKind.SILENT.value == "silent"
 
     def test_기록에_그대로_쓸_수_있다(self, audit_log) -> None:
         log, _clock = audit_log
