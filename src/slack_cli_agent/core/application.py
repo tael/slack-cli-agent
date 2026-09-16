@@ -385,7 +385,7 @@ class Application:
         """No policy is pinned here: the runner asks each Engine for its own, so a
         fallback turn runs under the secondary's home rather than the primary's.
         """
-        return EngineRunner(self._settings)
+        return EngineRunner(self._settings, audit=self.audit())
 
     @property
     def access_policy(self) -> AccessPolicy:

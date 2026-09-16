@@ -26,6 +26,9 @@ from slack_cli_agent.engine.capability import (
 from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
 from slack_cli_agent.engine.gemini import GeminiEngine
+from slack_cli_agent.engine.runner import CAPABILITY_KIND, EngineRunner, FallbackEngine
+from slack_cli_agent.engine.switcher import EngineSwitcher
+from slack_cli_agent.observability.audit import INCIDENT_KINDS, IncidentKind
 
 SETTINGS = RuntimeSettings()
 
@@ -152,3 +155,126 @@ class Test선언_누락을_막는다:
     def test_모든_엔진이_보장을_선언한다(self, engine_cls: type) -> None:
         """선언이 없으면 대조가 조용히 통과해 강제가 사라진다."""
         assert isinstance(engine_cls.capabilities, EngineCapabilities), engine_cls
+
+
+# ---------------------------------------------------------------------------
+# 2단계 — 요구와 실제 보장을 감사에 기록한다. 아직 차단하지 않는다.
+
+
+class _감사:
+    def __init__(self) -> None:
+        self.기록: list[tuple[str, dict[str, Any]]] = []
+
+    def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None:
+        self.기록.append((kind, fields))
+
+
+class Test보장을_감사에_남긴다:
+    def _돌린다(self, tmp_path: Path, 감사: _감사, **요청: Any) -> None:
+        from test_engine import FakeCompleted, RecordingEngine, 통과정책
+
+        엔진 = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        runner = EngineRunner(
+            SETTINGS,
+            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(
+                stdout="답변", returncode=0
+            ),
+            environment_policy=통과정책(),
+            audit=감사,
+        )
+        runner.run(엔진, request(**요청))
+
+    def test_모든_요청의_요구와_실제_보장을_남긴다(self, tmp_path: Path) -> None:
+        감사 = _감사()
+        self._돌린다(
+            tmp_path,
+            감사,
+            requirements=ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
+        )
+        [(kind, 필드)] = 감사.기록
+        assert kind == CAPABILITY_KIND
+        assert 필드["required"]["tool_restriction"] == "exact_allowlist"
+        assert 필드["actual"]["tool_restriction"] == "none"
+        assert 필드["engine"] == "fake"
+
+    def test_못_맞춘_축을_함께_남긴다(self, tmp_path: Path) -> None:
+        """기록만 보고 3단계에서 무엇이 막힐지 미리 셀 수 있어야 한다."""
+        감사 = _감사()
+        self._돌린다(
+            tmp_path,
+            감사,
+            requirements=ExecutionRequirements(
+                tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+                instruction_boundary=InstructionBoundary.NATIVE,
+            ),
+        )
+        assert 감사.기록[0][1]["unmet"] == ["tool_restriction", "instruction_boundary"]
+
+    def test_요구가_없어도_실제_보장은_남는다(self, tmp_path: Path) -> None:
+        """0건이 요구 없음인지 기록 자체가 안 도는 것인지 구분돼야 한다."""
+        감사 = _감사()
+        self._돌린다(tmp_path, 감사)
+        [(_, 필드)] = 감사.기록
+        assert 필드["required"] == {}
+        assert 필드["unmet"] == []
+
+    def test_아직_아무것도_막지_않는다(self, tmp_path: Path) -> None:
+        from test_engine import FakeCompleted, RecordingEngine, 통과정책
+
+        엔진 = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        runner = EngineRunner(
+            SETTINGS,
+            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(
+                stdout="답변", returncode=0
+            ),
+            environment_policy=통과정책(),
+            audit=_감사(),
+        )
+        응답 = runner.run(
+            엔진,
+            request(
+                requirements=ExecutionRequirements(
+                    tool_restriction=ToolRestriction.EXACT_ALLOWLIST
+                )
+            ),
+        )
+        assert 응답.ok is True
+
+    def test_감사가_없어도_실행은_그대로다(self, tmp_path: Path) -> None:
+        from test_engine import FakeCompleted, RecordingEngine, 통과정책
+
+        엔진 = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        runner = EngineRunner(
+            SETTINGS,
+            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(
+                stdout="답변", returncode=0
+            ),
+            environment_policy=통과정책(),
+        )
+        assert runner.run(엔진, request()).ok is True
+
+
+class Test폴백은_실제로_도는_엔진의_보장을_낸다:
+    def _폴백(self, tmp_path: Path) -> FallbackEngine:
+        from test_engine import RecordingEngine, 통과정책
+
+        프로필 = claude_profile(tmp_path)
+        일차 = ClaudeEngine(프로필, SETTINGS)
+        이차 = RecordingEngine(프로필, SETTINGS)
+        이차.name = "gemini"
+        이차.capabilities = GeminiEngine.capabilities
+        runner = EngineRunner(SETTINGS, environment_policy=통과정책())
+        return FallbackEngine(일차, 이차, EngineSwitcher(tmp_path / "engine_state.json"), runner)
+
+    def test_이차로_넘어가면_이차의_보장을_돌려준다(self, tmp_path: Path) -> None:
+        """대리가 자기 기본값을 돌려주면 폴백 턴의 기록이 전부 거짓이 된다."""
+        폴백 = self._폴백(tmp_path)
+        assert 폴백.capabilities_for(request()) == ClaudeEngine.capabilities
+        폴백._active = 폴백.secondary
+        assert 폴백.capabilities_for(request()) == GeminiEngine.capabilities
+
+
+class Test감사_종류:
+    def test_보장_기록은_사고로_세지_않는다(self) -> None:
+        """기준 통행량이라 사고 집계에 들어가면 사고율이 전부 바뀐다."""
+        assert IncidentKind.CAPABILITY not in INCIDENT_KINDS
