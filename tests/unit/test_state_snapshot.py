@@ -36,7 +36,7 @@ class FakeSource:
         return dict(self.queued)
 
     def socket_error_timestamps(self):
-        return list(self.socket_errors)
+        return None if self.socket_errors is None else list(self.socket_errors)
 
     def socket_reconnect_timestamps(self):
         return list(self.socket_reconnects)
@@ -157,3 +157,27 @@ class TestStateSnapshotWriter:
         path = tmp_path / "no-such-dir" / "state.json"
         writer = StateSnapshotWriter(path, StateSnapshotBuilder(source))
         writer.write()  # 예외 없이 끝나야 한다
+
+
+class Test측정_불가와_0을_구분한다:
+    """스냅샷을 쓰는 프로세스에 소켓이 없으면 오류 건수는 0 이 아니라 미계측이다.
+
+    소켓은 접수기 프로세스에만 있는데 스냅샷은 워커가 쓴다. 0 으로 적으면
+    "오류가 없었다" 와 "셀 수 없었다" 가 같은 값이 된다(sca-qi5.3).
+    """
+
+    def test_오류_이력이_None이면_건수도_None이다(self) -> None:
+        source = FakeSource()
+        source.socket_errors = None
+        snapshot = StateSnapshotBuilder(source, now=lambda: 1_100.0).build()
+        assert snapshot["socket_errors_3min"] is None
+        assert snapshot["socket_errors_total"] is None
+
+    def test_재연결_이력은_그대로_센다(self) -> None:
+        """재연결은 접수기가 원장에 적어 워커도 셀 수 있다."""
+        source = FakeSource()
+        source.socket_errors = None
+        source.socket_reconnects = [1_000.0, 1_050.0]
+        snapshot = StateSnapshotBuilder(source, now=lambda: 1_100.0).build()
+        assert snapshot["socket_reconnects_total"] == 2
+        assert snapshot["socket_reconnects_3min"] == 2

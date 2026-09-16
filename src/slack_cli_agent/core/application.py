@@ -901,7 +901,11 @@ class Application:
         return ApplicationSnapshotSource(
             inflight=self.inflight,
             queue=self.queue(),
-            socket_watch=self.connection_watch(),
+            # The snapshot is written by the worker, which has no socket. Its
+            # own log watch would count zero forever and that reads as "no
+            # errors" (sca-qi5.3). Reconnects come from the ledger ingress writes.
+            socket_watch=None,
+            connection_epochs=self.connection_epochs(),
             watch_jobs=self.watch_jobs(),
             is_shutting_down=lambda: self._shutting_down,
             started_at=self._started_at,
