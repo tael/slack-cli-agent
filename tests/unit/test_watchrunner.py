@@ -80,10 +80,12 @@ def 설정(**overrides: Any) -> RuntimeSettings:
     return RuntimeSettings().override(overrides)
 
 
-def 체커(*, 큐, run_check, 발행=None, 채널목록=None, 설정값=None, 리액션=None, notify_owner=None):
+def 체커(*, 큐, run_check, 발행=None, 채널목록=None, 설정값=None, 리액션=None, notify_owner=None,
+        판정기=None):
     return WatchJobChecker(
         queue=큐,
         run_check=run_check,
+        results=판정기,
         publisher=발행 or 가짜발행(),
         channels=채널목록 or 가짜채널목록(),
         settings=설정값 or 설정(),
@@ -98,7 +100,7 @@ class Test완료처리:
         큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
         발행 = 가짜발행()
         c = 체커(
-            큐=큐, run_check=lambda job: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
             발행=발행,
         )
         큐.시각["값"] = 2000.0
@@ -113,7 +115,7 @@ class Test완료처리:
         발행 = 가짜발행()
         c = 체커(
             큐=큐,
-            run_check=lambda job: 응답(ok=True, body=f"결과 문구\n{WATCH_DONE_TAG}"),
+            run_check=lambda job, outcome: 응답(ok=True, body=f"결과 문구\n{WATCH_DONE_TAG}"),
             발행=발행,
         )
         큐.시각["값"] = 2000.0
@@ -125,7 +127,7 @@ class Test완료처리:
         큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
         리액션 = 가짜리액션()
         c = 체커(
-            큐=큐, run_check=lambda job: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
             리액션=리액션,
         )
         큐.시각["값"] = 2000.0
@@ -138,7 +140,7 @@ class Test완료처리:
         큐.enqueue("C1", "111.1", "배포 확인")  # msg_ts 기본값 ""
         리액션 = 가짜리액션()
         c = 체커(
-            큐=큐, run_check=lambda job: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
             리액션=리액션,
         )
         큐.시각["값"] = 2000.0
@@ -151,7 +153,7 @@ class Test완료처리:
         큐.enqueue("C1", "111.1", "배포 확인")
         발행 = 가짜발행()
         c = 체커(
-            큐=큐, run_check=lambda job: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
             발행=발행, 채널목록=가짜채널목록({"C1": 가짜채널설정(rich=True)}),
         )
         큐.시각["값"] = 2000.0
@@ -164,7 +166,7 @@ class Test완료처리:
         발행 = 가짜발행(실패=True)
         리액션 = 가짜리액션()
         c = 체커(
-            큐=큐, run_check=lambda job: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
             발행=발행, 리액션=리액션,
         )
         큐.시각["값"] = 2000.0
@@ -185,7 +187,7 @@ class Test빈완료보고:
     def test_본문이_태그뿐이면_기본_문구로_올린다(self, 큐) -> None:
         큐.enqueue("C1", "111.1", "민감할 수 있는 감시 조건")
         발행 = 가짜발행()
-        c = 체커(큐=큐, run_check=lambda job: 응답(ok=True, body=WATCH_DONE_TAG), 발행=발행)
+        c = 체커(큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=WATCH_DONE_TAG), 발행=발행)
         큐.시각["값"] = 2000.0
         c.check_once()
 
@@ -199,7 +201,7 @@ class Test빈완료보고:
     def test_공백만_있어도_기본_문구로_올린다(self, 큐) -> None:
         큐.enqueue("C1", "111.1", "배포 확인")
         발행 = 가짜발행()
-        c = 체커(큐=큐, run_check=lambda job: 응답(ok=True, body=f"  \n {WATCH_DONE_TAG}\n "), 발행=발행)
+        c = 체커(큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"  \n {WATCH_DONE_TAG}\n "), 발행=발행)
         큐.시각["값"] = 2000.0
         c.check_once()
 
@@ -208,7 +210,7 @@ class Test빈완료보고:
     def test_본문이_있으면_그대로_올린다(self, 큐) -> None:
         큐.enqueue("C1", "111.1", "배포 확인")
         발행 = 가짜발행()
-        c = 체커(큐=큐, run_check=lambda job: 응답(ok=True, body=f"끝났습니다 {WATCH_DONE_TAG}"), 발행=발행)
+        c = 체커(큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝났습니다 {WATCH_DONE_TAG}"), 발행=발행)
         큐.시각["값"] = 2000.0
         c.check_once()
 
@@ -228,7 +230,7 @@ class Test태그가둘다있을때:
         발행 = 가짜발행()
         c = 체커(
             큐=큐,
-            run_check=lambda job: 응답(ok=True, body=f"{WATCH_STILL_TAG} 끝났습니다 {WATCH_DONE_TAG}"),
+            run_check=lambda job, outcome: 응답(ok=True, body=f"{WATCH_STILL_TAG} 끝났습니다 {WATCH_DONE_TAG}"),
             발행=발행,
         )
         큐.시각["값"] = 2000.0
@@ -243,7 +245,7 @@ class Test태그가둘다있을때:
         큐.enqueue("C1", "111.1", "배포 확인")
         c = 체커(
             큐=큐,
-            run_check=lambda job: 응답(ok=True, body=f"{WATCH_STILL_TAG}{WATCH_DONE_TAG}"),
+            run_check=lambda job, outcome: 응답(ok=True, body=f"{WATCH_STILL_TAG}{WATCH_DONE_TAG}"),
         )
         큐.시각["값"] = 2000.0
         with caplog.at_level(logging.WARNING):
@@ -257,7 +259,7 @@ class Test태그가둘다있을때:
 
     def test_완료_태그만_있으면_기록이_안_남는다(self, 큐, caplog) -> None:
         큐.enqueue("C1", "111.1", "배포 확인")
-        c = 체커(큐=큐, run_check=lambda job: 응답(ok=True, body=f"끝 {WATCH_DONE_TAG}"))
+        c = 체커(큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝 {WATCH_DONE_TAG}"))
         큐.시각["값"] = 2000.0
         with caplog.at_level(logging.WARNING):
             c.check_once()
@@ -269,7 +271,7 @@ class Test미완료처리:
         작업_id = 큐.enqueue("C1", "111.1", "배포 확인")
         발행 = 가짜발행()
         c = 체커(
-            큐=큐, run_check=lambda job: 응답(ok=True, body=f"아직 {WATCH_STILL_TAG}"),
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"아직 {WATCH_STILL_TAG}"),
             발행=발행,
         )
         큐.시각["값"] = 2000.0
@@ -283,7 +285,7 @@ class Test미완료처리:
 
     def test_엔진응답이실패해도예외없이확인횟수가갱신된다(self, 큐) -> None:
         큐.enqueue("C1", "111.1", "배포 확인")
-        c = 체커(큐=큐, run_check=lambda job: 응답(ok=False, body=""))
+        c = 체커(큐=큐, run_check=lambda job, outcome: 응답(ok=False, body=""))
         큐.시각["값"] = 2000.0
         c.check_once()  # 예외가 안 나면 통과
 
@@ -293,7 +295,7 @@ class Test미완료처리:
         큐.enqueue("C1", "111.1", "실패할 건")
         큐.enqueue("C1", "111.2", "정상 확인될 건")
 
-        def run_check(job: WatchJob) -> EngineResponse:
+        def run_check(job: WatchJob, outcome: Any) -> EngineResponse:
             if job.condition == "실패할 건":
                 raise RuntimeError("엔진 오류")
             return 응답(ok=True, body=f"아직 {WATCH_STILL_TAG}")
@@ -313,7 +315,7 @@ class Test게시실패기록:
         큐.enqueue("C1", "111.1", "민감할 수 있는 감시 조건")
         c = 체커(
             큐=큐,
-            run_check=lambda job: 응답(ok=True, body=f"끝 {WATCH_DONE_TAG}"),
+            run_check=lambda job, outcome: 응답(ok=True, body=f"끝 {WATCH_DONE_TAG}"),
             발행=가짜발행(실패=True),
         )
         큐.시각["값"] = 2000.0
@@ -334,7 +336,7 @@ class Test확인실패진단:
 
     def test_엔진실패는_원인과_작업식별자를_남긴다(self, 큐, caplog) -> None:
         작업_id = 큐.enqueue("C1", "111.1", "배포 확인")
-        c = 체커(큐=큐, run_check=lambda job: 응답(ok=False, body="", failure_reason="timeout"))
+        c = 체커(큐=큐, run_check=lambda job, outcome: 응답(ok=False, body="", failure_reason="timeout"))
         큐.시각["값"] = 2000.0
         with caplog.at_level("WARNING"):
             c.check_once()
@@ -350,7 +352,7 @@ class Test확인실패진단:
         명령을 손으로 재구성해야 했다(sca-dyb.14).
         """
         큐.enqueue("C1", "111.1", "배포 확인")
-        c = 체커(큐=큐, run_check=lambda job: 응답(
+        c = 체커(큐=큐, run_check=lambda job, outcome: 응답(
             ok=False, body="", failure_reason="nonzero_exit", failure_detail=FailureDetail(exit_code=137)))
         큐.시각["값"] = 2000.0
         with caplog.at_level("WARNING"):
@@ -360,7 +362,7 @@ class Test확인실패진단:
 
     def test_태그누락은_엔진실패와_다른_문구로_남는다(self, 큐, caplog) -> None:
         큐.enqueue("C1", "111.1", "배포 확인")
-        c = 체커(큐=큐, run_check=lambda job: 응답(ok=True, body="그냥 답했다"))
+        c = 체커(큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="그냥 답했다"))
         큐.시각["값"] = 2000.0
         with caplog.at_level("WARNING"):
             c.check_once()
@@ -371,7 +373,7 @@ class Test확인실패진단:
 
     def test_응답본문과_감시조건은_로그에_안_남는다(self, 큐, caplog) -> None:
         큐.enqueue("C1", "111.1", "xoxb-비밀토큰-조건")
-        c = 체커(큐=큐, run_check=lambda job: 응답(ok=True, body="xoxb-비밀토큰-본문"))
+        c = 체커(큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="xoxb-비밀토큰-본문"))
         큐.시각["값"] = 2000.0
         with caplog.at_level("WARNING"):
             c.check_once()
@@ -383,7 +385,7 @@ class Test확인실패진단:
         큐.enqueue("C1", "111.1", "배포 확인")
         c = 체커(
             큐=큐,
-            run_check=lambda job: 응답(ok=False, body="xoxb-비밀토큰-본문", failure_reason="timeout"),
+            run_check=lambda job, outcome: 응답(ok=False, body="xoxb-비밀토큰-본문", failure_reason="timeout"),
         )
         큐.시각["값"] = 2000.0
         with caplog.at_level("WARNING"):
@@ -395,7 +397,7 @@ class Test확인실패진단:
         큐.enqueue("C1", "111.1", "끝난 건")
         큐.enqueue("C1", "111.2", "진행중인 건")
 
-        def run_check(job: WatchJob) -> EngineResponse:
+        def run_check(job: WatchJob, outcome: Any) -> EngineResponse:
             태그 = WATCH_DONE_TAG if job.condition == "끝난 건" else WATCH_STILL_TAG
             return 응답(ok=True, body=f"보고 {태그}")
 
@@ -409,7 +411,7 @@ class Test확인실패진단:
     def test_run_check_예외는_작업식별자와_추적을_남긴다(self, 큐, caplog) -> None:
         작업_id = 큐.enqueue("C1", "111.1", "터지는 건")
 
-        def run_check(job: WatchJob) -> EngineResponse:
+        def run_check(job: WatchJob, outcome: Any) -> EngineResponse:
             raise RuntimeError("엔진 오류")
 
         c = 체커(큐=큐, run_check=run_check)
@@ -427,7 +429,7 @@ class Test포기처리:
         통지내역: list[str] = []
         c = 체커(
             큐=큐,
-            run_check=lambda job: 응답(ok=True, body=f"아직 {WATCH_STILL_TAG}"),
+            run_check=lambda job, outcome: 응답(ok=True, body=f"아직 {WATCH_STILL_TAG}"),
             notify_owner=통지내역.append,
             설정값=설정(watch_job_max_age_sec=500.0),
         )
@@ -442,7 +444,7 @@ class Test포기처리:
     def test_notify_owner가없어도포기대상이완료로표시된다(self, 큐) -> None:
         큐.enqueue("C1", "111.1", "오래된 건")
         c = 체커(
-            큐=큐, run_check=lambda job: 응답(ok=True, body=f"아직 {WATCH_STILL_TAG}"),
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"아직 {WATCH_STILL_TAG}"),
             설정값=설정(watch_job_max_age_sec=500.0),
         )
         큐.시각["값"] = 2000.0
@@ -455,7 +457,7 @@ class Test포기처리:
         큐.enqueue("C1", "111.1", "오래된 건")
         불린횟수 = {"값": 0}
 
-        def run_check(job: WatchJob) -> EngineResponse:
+        def run_check(job: WatchJob, outcome: Any) -> EngineResponse:
             불린횟수["값"] += 1
             return 응답(ok=True, body=f"아직 {WATCH_STILL_TAG}")
 
@@ -467,3 +469,218 @@ class Test포기처리:
         c.check_once()
 
         assert 불린횟수["값"] == 0
+
+
+class 고정판정기:
+    """결과 파일을 만들지 않고 판정을 바로 말한다. 파일 배치를 세우면 그
+    배치가 맞는지가 시험의 주제가 돼 버린다."""
+
+    def __init__(self, outcome) -> None:
+        self._outcome = outcome
+        self.받은인자: list[tuple[str, str]] = []
+
+    def read(self, workdir: str, run_id: str):
+        self.받은인자.append((workdir, run_id))
+        return self._outcome
+
+
+class Test결과파일로_완료를_가른다:
+    """지금까지는 모델이 완료 태그를 붙였는지만 봤다. 성공과 실패를 못 가르고,
+    태그를 잘못 붙이면 그대로 완료가 됐다 (sca-17p).
+    """
+
+    def _호출기록(self):
+        호출: list[Any] = []
+
+        def run_check(job, outcome):
+            호출.append((job, outcome))
+            return 응답(ok=True, body="결과 문구")
+
+        return 호출, run_check
+
+    def test_진행_중이면_엔진을_안_부른다(self, 큐) -> None:
+        """확인 한 번이 엔진 호출 한 번이다. 안 끝난 것을 물어볼 이유가 없다."""
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
+        호출, run_check = self._호출기록()
+        c = 체커(큐=큐, run_check=run_check, 판정기=고정판정기(WatchOutcome.RUNNING))
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 호출 == []
+        # 확인 횟수는 엔진에 물어본 횟수다. 안 물어본 것을 세면 확인 상한이
+        # 진행 중인 작업을 먼저 소진시킨다.
+        assert [작업.checks for 작업 in 큐.due(now=99999.0, min_gap=0.0)] == [0]
+
+    def test_성공으로_끝났으면_태그가_없어도_완료다(self, 큐) -> None:
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="배포됐습니다"),
+            발행=발행, 판정기=고정판정기(WatchOutcome.SUCCEEDED),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", False)]
+        assert 큐.due(now=99999.0, min_gap=0.0) == []
+
+    def test_실패로_끝났어도_완료다(self, 큐) -> None:
+        """실패도 끝난 것이다. 재확인을 계속하면 확인 상한까지 엔진을 부른다."""
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="실패했습니다"),
+            발행=발행, 판정기=고정판정기(WatchOutcome.FAILED),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "실패했습니다", False)]
+        assert 큐.due(now=99999.0, min_gap=0.0) == []
+
+    def test_판정_결과를_확인턴에_넘긴다(self, 큐) -> None:
+        """성공과 실패는 보고 문구가 다르다. 그 구분을 확인 턴이 알아야 한다."""
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
+        호출, run_check = self._호출기록()
+        c = 체커(큐=큐, run_check=run_check, 판정기=고정판정기(WatchOutcome.FAILED))
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert [결과 for _작업, 결과 in 호출] == [WatchOutcome.FAILED]
+
+    def test_판정_불가면_예전대로_태그로_가른다(self, 큐) -> None:
+        """이 컬럼이 생기기 전에 등록된 건은 볼 파일이 없다."""
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="아직입니다 " + WATCH_STILL_TAG),
+            발행=발행, 판정기=고정판정기(WatchOutcome.UNKNOWN),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == []
+        assert [작업.checks for 작업 in 큐.due(now=99999.0, min_gap=0.0)] == [1]
+
+    def test_판정기가_없으면_예전대로_돈다(self, 큐) -> None:
+        """판정기를 안 준 조립에서도 감시가 계속 돌아야 한다."""
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"끝 {WATCH_DONE_TAG}"),
+            발행=발행,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "끝", False)]
+
+
+class Test종료_상태가_포기보다_앞선다:
+    """포기를 먼저 처리하면 이미 끝난 작업도 완료 보고 없이 사라진다. 종료
+    상태를 읽었다면 그것이 시각보다 우선이다 (코덱스 검토).
+    """
+
+    def test_만료_시각이_지나도_끝난_건은_보고한다(self, 큐) -> None:
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
+        발행 = 가짜발행()
+        통지: list[str] = []
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="배포됐습니다"),
+            발행=발행, 판정기=고정판정기(WatchOutcome.SUCCEEDED),
+            설정값=설정(watch_job_max_age_sec=10.0), notify_owner=통지.append,
+        )
+        큐.시각["값"] = 99999.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", False)]
+        assert 통지 == []
+
+    def test_아직_안_끝난_건은_예전대로_포기한다(self, 큐) -> None:
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
+        통지: list[str] = []
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="무시"),
+            판정기=고정판정기(WatchOutcome.RUNNING),
+            설정값=설정(watch_job_max_age_sec=10.0), notify_owner=통지.append,
+        )
+        큐.시각["값"] = 99999.0
+        c.check_once()
+
+        assert len(통지) == 1
+        assert 큐.due(now=99999.0, min_gap=0.0) == []
+
+
+class Test실패로_끝난_건의_기본_보고:
+    """보고가 비었을 때 '끝났습니다' 만 쓰면 실패가 성공처럼 읽힌다."""
+
+    def test_보고가_비면_실패였다고_쓴다(self, 큐) -> None:
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="   "),
+            발행=발행, 판정기=고정판정기(WatchOutcome.FAILED),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        본문 = 발행.게시내역[0][2]
+        assert "실패" in 본문
+
+
+class Test실제_결과_파일로_판정한다:
+    """고정 판정기로만 보면 Reader 와 체커 사이의 인자 순서가 뒤집혀도 안
+    걸린다. 파일을 실제로 두고 끝까지 돌린다 (코덱스 검토).
+    """
+
+    def test_표식이_찍힌_파일이_있으면_태그_없이_완료된다(self, 큐, tmp_path) -> None:
+        from slack_cli_agent.reliability.watchresult import WatchResultReader
+
+        결과 = tmp_path / ".watch-out"
+        결과.mkdir()
+        (결과 / "r1.out").write_text("다 됐다\n__SCA_WATCH_EXIT__=0\n", encoding="utf-8")
+        큐.enqueue("C1", "111.1", "배포 확인", workdir=str(tmp_path), run_id="r1")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="배포됐습니다"),
+            발행=발행, 판정기=WatchResultReader(),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", False)]
+
+    def test_표식이_없으면_엔진을_안_부른다(self, 큐, tmp_path) -> None:
+        from slack_cli_agent.reliability.watchresult import WatchResultReader
+
+        결과 = tmp_path / ".watch-out"
+        결과.mkdir()
+        (결과 / "r1.out").write_text("진행 중\n", encoding="utf-8")
+        큐.enqueue("C1", "111.1", "배포 확인", workdir=str(tmp_path), run_id="r1")
+        호출: list[Any] = []
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 호출.append(job) or 응답(ok=True, body="x"),
+            판정기=WatchResultReader(),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 호출 == []
