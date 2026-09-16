@@ -16,8 +16,9 @@ from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ports import HandleOutcome
 from slack_cli_agent.guard.watch import WATCH_MARK_EMOJI
 from slack_cli_agent.jobs.heartbeat import WorkerHeartbeat
+from slack_cli_agent.jobs.ports import ReclaimResult
 from slack_cli_agent.jobs.queue import SqliteJobQueue
-from slack_cli_agent.reliability.catchup import CatchupReport
+from slack_cli_agent.reliability.catchup import CatchupReport, RetryStatus
 from slack_cli_agent.slack.reactions import SILENT_MARK_EMOJI, ReactionMarker
 
 
@@ -67,14 +68,14 @@ class FakeCatchup:
     report: CatchupReport
     calls: list[tuple[list[str], float]] = field(default_factory=list)
 
-    retry_statuses: list = field(default_factory=list)
+    retry_statuses: list[RetryStatus] = field(default_factory=list)
     retry_calls: int = 0
 
     def sweep(self, channels: list[str], window: float) -> CatchupReport:
         self.calls.append((channels, window))
         return self.report
 
-    def retry_pending(self) -> list:
+    def retry_pending(self) -> list[RetryStatus]:
         self.retry_calls += 1
         return self.retry_statuses
 
@@ -96,9 +97,9 @@ class FakeSlackClient:
 class FakeReclaimQueue:
     """reclaim_stale 호출만 기록하는 대역. test_jobs.py 의 FakeQueue 와 같은 역할."""
 
-    result: object
+    result: ReclaimResult
 
-    def reclaim_stale(self, deadline: float, max_attempts: int):
+    def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult:
         return self.result
 
 
@@ -314,7 +315,6 @@ class TestHeartbeat:
 class TestReclaim:
     def test_되돌려진_작업과_실패한_작업의_표식을_각각_되돌린다(self, database) -> None:
         from slack_cli_agent.core.worker import Worker
-        from slack_cli_agent.jobs.ports import ReclaimResult
 
         requeued_ctx = ctx("1.1")
         failed_ctx = ctx("2.1")
@@ -327,7 +327,7 @@ class TestReclaim:
         markers = ReactionMarker(client)
 
         worker = Worker(
-            queue=fake_queue,
+            queue=SqliteJobQueue(database),
             handler=FakeHandler(),
             heartbeat=heartbeat,
             catchup=FakeCatchup(CatchupReport(missed=[], skipped=[], unchecked_channels=[])),
@@ -349,7 +349,6 @@ class TestReclaim:
         """감시가 걸린 채로 대기 표식을 붙이면 그 메시지는 감시 중이면서 대기
         중으로 보인다(sca-o1e)."""
         from slack_cli_agent.core.worker import Worker
-        from slack_cli_agent.jobs.ports import ReclaimResult
 
         class 감시대역:
             def active_watch(self, channel: str, msg_ts: str) -> bool:
@@ -361,7 +360,7 @@ class TestReclaim:
         client = FakeSlackClient()
 
         worker = Worker(
-            queue=fake_queue,
+            queue=SqliteJobQueue(database),
             handler=FakeHandler(),
             heartbeat=WorkerHeartbeat(fake_queue, settings),
             catchup=FakeCatchup(CatchupReport(missed=[], skipped=[], unchecked_channels=[])),
@@ -376,7 +375,6 @@ class TestReclaim:
 
     def test_감시가_없으면_그대로_대기_표식이다(self, database) -> None:
         from slack_cli_agent.core.worker import Worker
-        from slack_cli_agent.jobs.ports import ReclaimResult
 
         class 감시없음:
             def active_watch(self, channel: str, msg_ts: str) -> bool:
@@ -387,7 +385,7 @@ class TestReclaim:
         client = FakeSlackClient()
 
         worker = Worker(
-            queue=fake_queue,
+            queue=SqliteJobQueue(database),
             handler=FakeHandler(),
             heartbeat=WorkerHeartbeat(fake_queue, settings),
             catchup=FakeCatchup(CatchupReport(missed=[], skipped=[], unchecked_channels=[])),

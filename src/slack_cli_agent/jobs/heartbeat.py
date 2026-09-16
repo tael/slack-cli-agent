@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 
 from ..config.settings import RuntimeSettings
-from .ports import JobQueue, ReclaimResult
+from .ports import ReclaimResult, StaleJobReclaimer
 
 log = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 class WorkerHeartbeat:
     def __init__(
         self,
-        queue: JobQueue,
+        queue: StaleJobReclaimer,
         settings: RuntimeSettings,
         now: Callable[[], float] = time.time,
     ) -> None:

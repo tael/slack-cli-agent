@@ -39,6 +39,17 @@ class ReclaimResult:
 
 
 @runtime_checkable
+class StaleJobReclaimer(Protocol):
+    """The one method WorkerHeartbeat needs. JobQueue satisfies it.
+
+    Declared separately so the heartbeat isn't typed against the whole queue
+    surface it never touches.
+    """
+
+    def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult: ...
+
+
+@runtime_checkable
 class JobQueue(Protocol):
     def enqueue(self, ctx: RequestContext, max_attempts: int = 0) -> bool:
         """True if newly inserted, False if this channel/message already has a job.
