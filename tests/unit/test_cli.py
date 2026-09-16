@@ -159,12 +159,13 @@ class TestPreflightCommand:
         assert "engine_home_credentials" in out.getvalue()
         assert "auth.json" in out.getvalue()
 
-    def test_프로필을_못_찾으면_알리고_2를_돌려준다(self, tmp_path: Path) -> None:
+    def test_프로필을_못_찾으면_알리고_차단_코드를_돌려준다(self, tmp_path: Path) -> None:
+        """설정 오류라 재기동으로 안 풀린다. 자세한 것은 test_cli_boot_gate.py (sca-q2k)."""
         out = io.StringIO()
         code = SlackCliAgent().run(
             ["preflight", "--profile", "없는프로필", "--profile-dir", str(tmp_path)], stdout=out
         )
-        assert code == 2
+        assert code == BLOCKED_EXIT
         assert "없는프로필" in out.getvalue()
 
 

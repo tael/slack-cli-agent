@@ -632,7 +632,17 @@ class SlackCliAgent:
         command = self._commands[args.command]
         try:
             return command.execute(args, stdout)
+        except ConfigError as exc:
+            # Same code the gate uses: a config error is not fixed by starting
+            # again, so it has to reach run.sh as a block rather than a crash
+            # (sca-q2k). Profile loading happens before the gate runs, so this
+            # is the only place that can classify it.
+            print(f"오류 : {exc}", file=stdout)
+            stdout.flush()
+            return BLOCKED_EXIT
         except AgentError as exc:
+            # Everything else (Slack unreachable, engine failure) may well pass
+            # on the next try, so it stays a plain failure and launchd retries.
             print(f"오류 : {exc}", file=stdout)
             return 2
 
