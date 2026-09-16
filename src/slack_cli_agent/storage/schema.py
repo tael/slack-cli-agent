@@ -147,12 +147,37 @@ run_id   identifier for this job's result file. The column lands here; the
 """
 
 
+V6_WATCH_JOB_ACTIVE_UNIQUE_SQL = """
+UPDATE watch_jobs SET done = 1 WHERE done = 0 AND msg_ts != '' AND id NOT IN (
+  SELECT MIN(id) FROM watch_jobs WHERE done = 0 AND msg_ts != ''
+  GROUP BY channel, msg_ts
+);
+CREATE UNIQUE INDEX idx_watch_jobs_active ON watch_jobs(channel, msg_ts)
+  WHERE done = 0 AND msg_ts != '';
+"""
+"""At most one active watch per message.
+
+The pipeline writes the watch row before the worker completes the original
+job. A death in that window puts the job back in the queue and the rerun
+registers a second watch for the same message, so the completion report goes
+out twice (sca-efe).
+
+The UPDATE runs first: an existing database can already hold duplicates, and
+creating the index on top of them would fail and leave the bot unable to
+start. The oldest active row is the one kept.
+
+msg_ts = '' is excluded -- those rows point at no message, so two of them are
+not the same watch.
+"""
+
+
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
     (3, "감시 작업에 표식 대상·확인 횟수·권한 추가", _statements(V3_WATCH_JOB_CONTEXT_SQL)),
     (4, "소켓 연결 세대 원장 추가", _statements(V4_CONNECTION_EPOCHS_SQL)),
     (5, "감시 작업에 실행 자리와 결과 파일 이름 추가", _statements(V5_WATCH_JOB_RUN_SQL)),
+    (6, "메시지당 활성 감시를 하나로 제한", _statements(V6_WATCH_JOB_ACTIVE_UNIQUE_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
