@@ -25,6 +25,7 @@ enough to keep one bot's skills out of another's session.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import shlex
 import sys
@@ -43,6 +44,12 @@ from .base import (
     FailureDetail,
     Usage,
     UsageLimit,
+)
+from .capability import (
+    EngineCapabilities,
+    ExecutionIsolation,
+    InstructionBoundary,
+    ToolRestriction,
 )
 
 # Same hint list as the original bot.py's usage_limit_message().
@@ -112,6 +119,21 @@ def _claude_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, A
 
 class ClaudeEngine(Engine):
     name = "claude"
+
+    # --allowedTools overrides settings.json's allow rules, and the system prompt
+    # is its own flag. There is no filesystem sandbox: read-only is held by the
+    # tool list, which is the tool axis rather than this one.
+    capabilities = EngineCapabilities(
+        tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+        execution_isolation=ExecutionIsolation.NONE,
+        instruction_boundary=InstructionBoundary.NATIVE,
+    )
+
+    def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
+        if request.allowed_tools:
+            return self.capabilities
+        # An empty --allowedTools is not a restriction the caller placed.
+        return dataclasses.replace(self.capabilities, tool_restriction=ToolRestriction.NONE)
 
     def build_command(self, request: EngineRequest) -> list[str]:
         # Don't pass --max-budget-usd. A subscription OAuth token
