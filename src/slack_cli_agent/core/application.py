@@ -63,6 +63,7 @@ from ..learning.schedule import DailyBatchSchedule
 from ..observability.app_snapshot import ApplicationSnapshotSource
 from ..observability.audit import AuditLog
 from ..observability.notices import NoticeCatalog
+from ..observability.progress import ProgressCoordinator
 from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import (
     ElapsedDiagnostician,
@@ -132,6 +133,7 @@ from ..slack.linked_threads import LinkedThreadReader
 from ..slack.listener import EventListener
 from ..slack.names import DisplayNameResolver
 from ..slack.participants import ThreadParticipants
+from ..slack.progress import SlackProgressSink
 from ..slack.publisher import MessagePublisher
 from ..slack.reactions import (
     DEBUG_TRACE_EMOJI,
@@ -245,6 +247,7 @@ class Application:
         self._health_runner: PeriodicRunner | None = None
         self._attachments: AttachmentStore | None = None
         self._response_archive: ResponseArchive | None = None
+        self._progress: ProgressCoordinator | None = None
         self._learning_batch: LearningBatch | None = None
         self._proposals: ProposalStore | None = None
         self._learning_progress: ProgressStore | None = None
@@ -475,6 +478,19 @@ class Application:
             )
         return self._publisher
 
+    def progress(self) -> ProgressCoordinator:
+        """Progress display, built for every bot. Which channels actually get
+        one is the `progress` flag in channels.json, read per request."""
+        if self._progress is None:
+            self._progress = ProgressCoordinator(
+                settings=self._settings,
+                sink_factory=lambda channel, thread_ts: SlackProgressSink(
+                    self._client, channel, thread_ts, self._profile.display_name,
+                ),
+                log_dir=self._profile.paths.progress,
+            )
+        return self._progress
+
     def _transcript_builder(self) -> TranscriptBuilder:
         return TranscriptBuilder(
             client=self._client,
@@ -562,6 +578,7 @@ class Application:
                 response_archive=self.response_archive(),
                 tool_policy=self.tool_policy(),
                 readable_dirs=self.readable_dirs,
+                progress=self.progress(),
             )
         return self._pipeline
 

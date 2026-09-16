@@ -146,6 +146,15 @@ class StatePaths:
     def engine_settings(self, engine_type: str) -> Path:
         return self.engine_dir / f"settings-{engine_type}.json"
 
+    @property
+    def progress(self) -> Path:
+        """One log per in-flight request, written by the engine's own tool hook.
+
+        Kept out of engine_dir: that directory is an engine's home, and a
+        file appearing inside it is read by the CLI as configuration.
+        """
+        return self.root / "progress"
+
     def ensure(self) -> None:
-        for path in (self.root, self.prompts, self.persona, self.engine_dir):
+        for path in (self.root, self.prompts, self.persona, self.engine_dir, self.progress):
             path.mkdir(parents=True, exist_ok=True)

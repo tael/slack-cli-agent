@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard
 from ..observability.audit import AuditLog, IncidentKind
+from ..observability.progress import ProgressCoordinator
 from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter
 from ..prompt.composer import SystemPromptComposer
@@ -77,6 +79,9 @@ class RequestPipeline:
         readable_dirs: tuple[Path, ...] = (),
         # Feeds the learning batch — without it, that batch has nothing to read.
         response_archive: ResponseArchive | None = None,
+        # Shows which step is running while the engine works. None means no
+        # display at all; with one, each channel's `progress` setting decides.
+        progress: ProgressCoordinator | None = None,
         now: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -104,6 +109,7 @@ class RequestPipeline:
         self._tool_policy = tool_policy
         self._readable_dirs = readable_dirs
         self._response_archive = response_archive
+        self._progress = progress
         self._now = now
         self._monotonic = monotonic
 
@@ -185,6 +191,12 @@ class RequestPipeline:
             principal, prompt=prompt, skills_enabled=bool(config and config.skills),
         )
 
+    def _progress_session(self, ctx: RequestContext, log_path: Path | None) -> AbstractContextManager[None]:
+        """The progress display for this request, or a pass-through when it has none."""
+        if self._progress is None or log_path is None:
+            return nullcontext()
+        return self._progress.session(ctx.channel, ctx.thread_ts, log_path)
+
     def _handle(self, ctx: RequestContext) -> HandleOutcome:
         start = self._now()
         # Wall clock alone can't distinguish "actually slow" from "device slept".
@@ -211,6 +223,10 @@ class RequestPipeline:
             ctx, principal, channel_mode, channel_slug, rich, chat_level
         )
 
+        progress_log = (
+            self._progress.log_path_for(config, ctx.channel, ctx.ts)
+            if self._progress is not None else None
+        )
         request = EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
@@ -222,16 +238,23 @@ class RequestPipeline:
             allowed_tools=self._allowed_tools(principal, ctx.text, config),
             readable_dirs=self._readable_dirs,
             trust_level=principal.trust,
+            progress_log=progress_log,
         )
-        response = self._invoker.invoke(request)
-
-        if not response.ok and self._sessions.should_retry_with_new_session(
-            response.failure_reason or ""
-        ):
-            decision = self._sessions.reset(key, engine=self._engine.name)
-            prompt = self._build_prompt(ctx, scope, decision)
-            request = replace(request, session_id=decision.session_id, resume=False, prompt=prompt)
+        # Covers the retry too: a new-session retry is the same wait for the
+        # person watching, and closing the display between the two attempts
+        # would read as the request having finished.
+        with self._progress_session(ctx, progress_log):
             response = self._invoker.invoke(request)
+
+            if not response.ok and self._sessions.should_retry_with_new_session(
+                response.failure_reason or ""
+            ):
+                decision = self._sessions.reset(key, engine=self._engine.name)
+                prompt = self._build_prompt(ctx, scope, decision)
+                request = replace(
+                    request, session_id=decision.session_id, resume=False, prompt=prompt
+                )
+                response = self._invoker.invoke(request)
 
         elapsed = self._now() - start
         # Called once here, before branching into success/failure/silent — calling
