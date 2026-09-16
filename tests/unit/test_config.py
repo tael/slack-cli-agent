@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -258,7 +259,7 @@ class Test설정항목이살아있다:
 
     #: 아직 읽는 자리가 없는 항목. 비워 두는 것이 정상이고, 더할 때는 그 사유가
     #: 되는 이슈 번호를 함께 적는다.
-    미결 = {"max_concurrent"}  # sca-si6
+    미결: ClassVar[set[str]] = {"max_concurrent"}  # sca-si6
 
     def 읽히지_않는_항목(self) -> set[str]:
         import ast
