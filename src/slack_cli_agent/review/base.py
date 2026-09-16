@@ -8,14 +8,19 @@ thread).
 
 from __future__ import annotations
 
+import logging
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from slack_cli_agent.engine.base import EngineResponse
 from slack_cli_agent.review.ledger import ReviewLedger
+
+log = logging.getLogger(__name__)
 
 # Shared by all review kinds so the split marker can't drift out of sync between them.
 REVIEW_SPLIT = "===상세==="
@@ -98,7 +103,29 @@ class EngineCaller(Protocol):
     # Assembling the EngineRequest (workdir, model, effort, system prompt) belongs to the
     # wiring layer that knows about Profile/RuntimeSettings; this package only passes the
     # prompt and session id through.
-    def run(self, prompt: str, session_id: str, resume: bool) -> EngineResponse: ...
+    def run(
+        self, prompt: str, session_id: str, resume: bool, progress_log: Path | None = None
+    ) -> EngineResponse: ...
+
+
+@runtime_checkable
+class ReviewProgressPort(Protocol):
+    """Shows that the review is running, for the length of the engine call.
+
+    A review takes minutes -- measured at 4 for claude and past the 900s
+    limit for gemini (sca-tfd). Without this the only signal is the eyes
+    reaction, so a review that is working looks the same as one that is not.
+
+    `display` yields the log path the engine's tool hook should write to;
+    the display reads that same file. Yielding None means no display for
+    this target, and the engine then runs without a hook.
+
+    Cosmetic by contract: the review must finish even when this fails.
+    """
+
+    def display(
+        self, target: ReviewTarget, thread_ts: str
+    ) -> AbstractContextManager[Path | None]: ...
 
 
 class ReviewTask(ABC):
@@ -120,6 +147,7 @@ class ReviewTask(ABC):
         publisher: PublisherPort,
         engine: EngineCaller,
         troubleshoot_channel: str,
+        progress: ReviewProgressPort | None = None,
     ) -> None:
         self._ledger = ledger
         self._message_lookup = message_lookup
@@ -130,6 +158,7 @@ class ReviewTask(ABC):
         self._publisher = publisher
         self._engine = engine
         self._troubleshoot_channel = troubleshoot_channel
+        self._progress = progress
 
     @abstractmethod
     def build_prompt(self, target: ReviewTarget, *, transcript: str, flagged: str, question: str) -> str: ...
@@ -183,6 +212,35 @@ class ReviewTask(ABC):
                 rich=True,
             )
 
+    @contextmanager
+    def _progress_display(self, target: ReviewTarget, thread_ts: str) -> Iterator[Path | None]:
+        """Falls back to no display rather than failing the review.
+
+        Only the entry is guarded: a display that breaks after it opened
+        leaves its own line behind, which is a cosmetic problem, while
+        stopping the review here would lose work already paid for.
+        """
+        if self._progress is None:
+            yield None
+            return
+        try:
+            display: AbstractContextManager[Path | None] = self._progress.display(
+                target, thread_ts
+            )
+            entered = display.__enter__()
+        except Exception as exc:  # noqa: BLE001 - see ReviewProgressPort
+            log.debug("진행 표시를 열지 못했다 : %s", exc)
+            with nullcontext(None) as 없음:
+                yield 없음
+            return
+        try:
+            yield entered
+        except BaseException as exc:
+            if not display.__exit__(type(exc), exc, exc.__traceback__):
+                raise
+        else:
+            display.__exit__(None, None, None)
+
     def _execute(self, target: ReviewTarget) -> None:
         msg = self._message_lookup.find(target.channel, target.ts)
         if msg is None:
@@ -199,7 +257,8 @@ class ReviewTask(ABC):
 
         prompt = self.build_prompt(target, transcript=transcript, flagged=flagged, question=question)
         session_id = str(uuid.uuid4())
-        response = self._engine.run(prompt, session_id, False)
+        with self._progress_display(target, thread_ts) as progress_log:
+            response = self._engine.run(prompt, session_id, False, progress_log)
 
         link = self._permalinks.permalink(target.channel, target.ts)
         header = self.build_header(target, record, link)
