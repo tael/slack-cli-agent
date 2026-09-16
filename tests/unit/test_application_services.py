@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import inspect
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.core.application import Application
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.periodic import PeriodicRunner
+from slack_cli_agent.core.usage_check import CommandResult
 
 
 @pytest.fixture
@@ -65,6 +67,7 @@ RUNNER_ARGS: dict[str, Any] = {
     "state_snapshot_runner": lambda app: (),
     "roster_refresher": lambda app: (),
     "owner_only_audit_runner": lambda app: (),
+    "usage_check_runner": lambda app: (),
     "attachment_cleanup_runner": lambda app: (),
     "watch_result_cleanup_runner": lambda app: (),
     "health_runner": lambda app: (lambda 사유: None,),
@@ -106,6 +109,7 @@ class Test묶음구성:
             "health",
             "roster",
             "owner_only_audit",
+            "usage_check",
             "attachment_cleanup",
             "pending_report",
             "stale_review",
@@ -454,3 +458,44 @@ class Test링크된스레드채널명:
 
         조회 = [call for call in client.calls if call[0] == "conversations_info"]
         assert len(조회) == 1
+
+
+class Test사용량확인실행기:
+    """운영자가 건 사용량 확인 명령이 주기로 도는가.
+
+    판정과 알림은 그 명령이 한다. 여기서 보는 것은 명령이 실제로 불리는가와,
+    설정이 없을 때 아무것도 안 부르는가다.
+    """
+
+    def test_프로필에_명령이_있으면_그_명령을_부른다(
+        self, tmp_path: Path, client: FakeSlackClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        profile = write_profile(tmp_path, usage_check_command=["usage.py", "--check"])
+        app = Application(profile, client)
+        기록: list[Sequence[str]] = []
+
+        def run(command: Sequence[str], timeout_sec: float) -> CommandResult:
+            기록.append(command)
+            return CommandResult(returncode=0, stdout="", stderr="")
+
+        app._usage_check_run = run
+
+        app.usage_check_runner()._task()  # type: ignore[attr-defined]
+
+        assert 기록 == [("usage.py", "--check")]
+
+    def test_명령이_없으면_아무것도_부르지_않는다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        app = Application(write_profile(tmp_path), client)
+        기록: list[Sequence[str]] = []
+
+        def run(command: Sequence[str], timeout_sec: float) -> CommandResult:
+            기록.append(command)
+            return CommandResult(returncode=0, stdout="", stderr="")
+
+        app._usage_check_run = run
+
+        app.usage_check_runner()._task()  # type: ignore[attr-defined]
+
+        assert 기록 == []
