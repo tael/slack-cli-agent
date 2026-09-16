@@ -26,7 +26,7 @@ OWNER_EFFORT_MIN = "medium"
 DEFAULT_EFFORT = "medium"
 
 
-class AccessExtension(ABC):
+class AccessExtension(ABC):  # noqa: B024 — 확장점이다. 기본이 no-op 이라 강제할 메서드가 없다
     """Extension point for company-specific permission logic. No-op by
     default, so not extending changes nothing."""
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from slack_cli_agent.reliability.startup import StartupCatchup
 
 
@@ -46,10 +48,8 @@ def test_캐치업이_실패해도_횟수를_쓴다() -> None:
 
     catchup = StartupCatchup(boom)
     for _ in range(5):
-        try:
+        with contextlib.suppress(RuntimeError):
             catchup.tick()
-        except RuntimeError:
-            pass
     assert len(calls) == 2
 
 

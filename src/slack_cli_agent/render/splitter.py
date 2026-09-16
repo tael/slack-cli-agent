@@ -103,7 +103,7 @@ class ContentSplitter:
             head = lines[:2]
             out, cur = [], list(head)
             for row in lines[2:]:
-                if len(cur) > 2 and len("\n".join(cur + [row])) > limit:
+                if len(cur) > 2 and len("\n".join([*cur, row])) > limit:
                     out.append("\n".join(cur))
                     cur = list(head)
                 cur.append(row)
@@ -116,7 +116,7 @@ class ContentSplitter:
             body = lines[1:-1] if lines[-1].strip().startswith("```") else lines[1:]
             out, cur = [], [fence]
             for row in body:
-                if len(cur) > 1 and len("\n".join(cur + [row, "```"])) > limit:
+                if len(cur) > 1 and len("\n".join([*cur, row, "```"])) > limit:
                     cur.append("```")
                     out.append("\n".join(cur))
                     cur = [fence]
@@ -128,7 +128,7 @@ class ContentSplitter:
         if lines[0].strip().startswith(">"):
             out, cur = [], []
             for row in lines:
-                if cur and len("\n".join(cur + [row])) > limit:
+                if cur and len("\n".join([*cur, row])) > limit:
                     out.append("\n".join(cur))
                     cur = []
                 cur.append(row)
@@ -139,7 +139,7 @@ class ContentSplitter:
         if len(lines) > 1:
             out, cur = [], []
             for row in lines:
-                if cur and len("\n".join(cur + [row])) > limit:
+                if cur and len("\n".join([*cur, row])) > limit:
                     out.append("\n".join(cur))
                     cur = []
                 cur.append(row)
@@ -195,7 +195,7 @@ class ContentSplitter:
                 if not seg.strip():
                     continue
                 for piece in self.fit_chunk(seg, room):
-                    if buf and len("\n".join(buf + [piece])) > limit:
+                    if buf and len("\n".join([*buf, piece])) > limit:
                         flush()
                     buf.append(piece)
         flush(final=True)
@@ -207,7 +207,7 @@ class ContentSplitter:
         # Merges small leftover fragments (e.g. the last few rows of a split table)
         # into the previous chunk, but leaves explicit marker splits alone.
         out: list[str] = []
-        for part, by_marker in zip(parts, forced):
+        for part, by_marker in zip(parts, forced, strict=True):
             joinable = out and not by_marker and (len(part) < floor or len(out[-1]) < floor)
             if joinable and len(out[-1]) + len(part) + 1 <= limit:
                 out[-1] = out[-1] + "\n" + part

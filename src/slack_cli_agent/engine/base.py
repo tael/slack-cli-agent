@@ -357,7 +357,7 @@ class Engine(ABC):
         """This request's actual guarantee. Default: the class declaration."""
         return self.capabilities
 
-    def prepare(self, request: EngineRequest) -> None:
+    def prepare(self, request: EngineRequest) -> None:  # noqa: B027 — 기본이 아무것도 안 하는 것이다. 추상으로 두면 필요 없는 엔진까지 빈 정의를 쓰게 된다
         """Side effects the engine needs before running, e.g. writing its
         own config file. Separate from build_command() so building a
         command stays free of filesystem writes. Default: nothing."""

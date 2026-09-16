@@ -34,7 +34,9 @@
   말한다. 주석 규칙과 무관하다
 - 설계 근거처럼 긴 설명이 필요하면 `docs/` 에 둔다. 코드 안에 두지 않는다
 - 비유와 의인화를 쓰지 않는다
-- 시험은 `python3 -m pytest tests -n 4`. 린트는 `uvx ruff check src tests`,
+- 시험은 `python3 -m pytest tests -n 4`. 린트는 `uvx ruff check src tests`
+  (켤 규칙은 pyproject 의 `[tool.ruff.lint] select` 에 적어 뒀다 - 안 적으면
+  ruff 판이 올라갈 때마다 강제되는 것이 바뀐다),
   타입은 `uvx mypy src`. 시험 쪽까지 보려면 `uvx --with pytest mypy src tests`
   로 pytest 를 넣어야 한다 - 안 넣으면 pytest 를 못 찾아 fixture 표기가 전부
   풀리고 없는 오류가 200건 넘게 더 나온다(2026-09-17 실측 517 대 263). 시험
