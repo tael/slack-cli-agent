@@ -22,7 +22,7 @@ from ..jobs.heartbeat import WorkerHeartbeat
 from ..jobs.ports import JobQueue, ReclaimResult
 from ..reliability.catchup import CatchupReport, RetryStatus
 from ..reliability.ports import CatchupPort
-from ..reliability.watchjobs import WatchJobPort
+from ..reliability.watchjobs import ActiveWatchPort
 
 _Mark = Callable[[str, str], None]
 from ..slack.reactions import ReactionMarker
@@ -46,7 +46,7 @@ class Worker:
         inflight: InflightCounter | None = None,
         # reclaim picks the mark from this: a watched message put back in the
         # queue would otherwise read as waiting while its watch runs (sca-o1e).
-        watch_jobs: WatchJobPort | None = None,
+        watch_jobs: ActiveWatchPort | None = None,
     ) -> None:
         self._queue = queue
         self._handler = handler

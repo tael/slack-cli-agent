@@ -8,14 +8,23 @@ read_thread exists at all.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from slack_cli_agent.core.errors import HistoryUnavailable
-from slack_cli_agent.slack.history import HistoryReader as RealHistoryReader
+
+
+class ChannelHistoryReader(Protocol):
+    """What this adapter needs. slack.history.HistoryReader satisfies it."""
+
+    def slack_ts(self, value: Any) -> str: ...
+
+    def read_history(self, channel: str, oldest: str, limit: int) -> list[dict[str, Any]]: ...
+
+    def wait_history_slot(self) -> None: ...
 
 
 class SlackHistoryPort:
-    def __init__(self, reader: RealHistoryReader, client: Any) -> None:
+    def __init__(self, reader: ChannelHistoryReader, client: Any) -> None:
         self._reader = reader
         self._client = client
 
