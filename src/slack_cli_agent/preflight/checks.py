@@ -69,13 +69,15 @@ class WorkdirCheck(PreflightCheck):
         self._extra_dirs = tuple(extra_dirs or ())
 
     def run(self, ctx: PreflightContext) -> CheckResult:
-        home = str(Path.home())
+        # Compared as paths, not strings: a string prefix reads
+        # /Users/taelkim-work as living inside /Users/taelkim (sca-2wt).
+        home = Path.home().resolve()
         targets = [ctx.profile.work_root, *(ctx.profile.work_root / d for d in self._extra_dirs)]
         bad: list[str] = []
         for target in targets:
             if not target.is_dir():
                 bad.append(f"작업 자리가 없다 : {target}")
-            elif str(target).startswith(home):
+            elif target.resolve().is_relative_to(home):
                 bad.append(f"작업 자리가 홈 안에 있다 : {target}")
             elif (target / "CLAUDE.md").exists():
                 bad.append(f"작업 자리에 CLAUDE.md 가 있다 : {target / 'CLAUDE.md'}")
@@ -223,9 +225,7 @@ class EngineHomeCredentialCheck(PreflightCheck):
         return CheckResult(ok=True, detail="엔진 홈 자격 점검 통과")
 
     @staticmethod
-    def _missing(
-        label: str, home_dir: Path, credentials: tuple[tuple[str, str], ...]
-    ) -> list[str]:
+    def _missing(label: str, home_dir: Path, credentials: tuple[tuple[str, str], ...]) -> list[str]:
         bad: list[str] = []
         for relative, source in credentials:
             path = home_dir / relative

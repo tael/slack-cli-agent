@@ -414,3 +414,16 @@ class Test표식을_옮기다_실패하는_경우:
         # 표식도 임시 파일도 없다. 표식이 없으니 재기동은 계속되고,
         # 그 사실은 위 stderr 로만 드러난다.
         assert list((봇 / "preflight-blocked").iterdir()) == []
+
+
+class Test표식이_가리키는_로그:
+    """게이트는 점검 결과를 stdout 에 낸다. launchd 는 stdout 과 stderr 를 다른
+    파일로 가르므로, 표식이 err 로그만 가리키면 복구하는 사람이 빈 파일을 보고
+    원인을 못 찾는다 (코덱스 리뷰).
+    """
+
+    def test_점검_결과가_있는_쪽을_가리킨다(self, tmp_path: Path) -> None:
+        봇 = _봇자리(tmp_path, 종료코드=78)
+        _실행(_wrapper(tmp_path, 봇), tmp_path, "worker")
+        표식내용 = _표식(봇, "worker").read_text(encoding="utf-8")
+        assert "worker.out.log" in 표식내용

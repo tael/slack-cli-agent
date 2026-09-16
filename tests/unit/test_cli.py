@@ -12,8 +12,10 @@ import signal
 from pathlib import Path
 
 import pytest
+from preflight_support import 통과하는_suite
 
 from slack_cli_agent.cli import (
+    BLOCKED_EXIT,
     IngressCommand,
     LearnCommand,
     ServerLike,
@@ -36,8 +38,21 @@ MINIMAL_PROFILE = {
 
 
 def write_profile(profiles_dir: Path, state_dir: Path, name: str = "example", **overrides) -> Path:
+    """기동 게이트를 통과하는 프로필을 쓴다.
+
+    worker 와 ingress 는 기동 전에 실제 PreflightSuite 를 돈다(sca-xay). 작업
+    자리를 만들지 않으면 그 시험들이 전부 78 로 막혀, 무엇을 보려던 시험인지와
+    무관하게 같은 이유로 실패한다. 게이트 자체를 보는 시험은 대역 suite 를
+    주입하므로 여기에 기대지 않는다.
+    """
     profiles_dir.mkdir(parents=True, exist_ok=True)
     data = {**MINIMAL_PROFILE, "state_dir": str(state_dir), **overrides}
+    if "work_root" not in data:
+        # conftest 가 HOME 을 tmp_path 로 바꾸므로 그 아래 자리는 WorkdirCheck 가
+        # 막는다. 시험별 tmp_path 의 형제 자리에 둔다 - 홈 밖이고 겹치지 않는다.
+        기준 = Path(state_dir).parent
+        data["work_root"] = str(기준.parent / f"{기준.name}-work")
+    Path(data["work_root"]).mkdir(parents=True, exist_ok=True)
     path = profiles_dir / f"{name}.json"
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
@@ -57,7 +72,9 @@ class TestPreflightCommand:
         assert code == 0
         assert "기동 가능" in out.getvalue()
 
-    def test_실행_파일이_없으면_1을_돌려준다(self, tmp_path: Path) -> None:
+    def test_실행_파일이_없으면_78을_돌려준다(self, tmp_path: Path) -> None:
+        """사람이 돌린 점검도 기동 게이트와 같은 코드를 낸다. 두 경로가 다른
+        코드를 내면 run.sh 가 무엇을 표식으로 삼을지 갈린다 (sca-xay)."""
         profiles = tmp_path / "profiles"
         write_profile(
             profiles,
@@ -68,7 +85,7 @@ class TestPreflightCommand:
         code = SlackCliAgent().run(
             ["preflight", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
         )
-        assert code == 1
+        assert code == BLOCKED_EXIT
         assert "기동 불가" in out.getvalue()
 
     def test_명령_옵션이_점검에_실제로_닿는다(self, tmp_path: Path) -> None:
@@ -83,17 +100,24 @@ class TestPreflightCommand:
         out = io.StringIO()
         code = SlackCliAgent().run(
             [
-                "preflight", "--profile", "example", "--profile-dir", str(profiles),
-                "--required-prompt", "없는프롬프트",
-                "--extra-workdir", "없는하위자리",
+                "preflight",
+                "--profile",
+                "example",
+                "--profile-dir",
+                str(profiles),
+                "--required-prompt",
+                "없는프롬프트",
+                "--extra-workdir",
+                "없는하위자리",
             ],
             stdout=out,
         )
         줄 = {
             line.split(" : ")[0].split("] ")[-1]: line
-            for line in out.getvalue().splitlines() if " : " in line
+            for line in out.getvalue().splitlines()
+            if " : " in line
         }
-        assert code == 1
+        assert code == BLOCKED_EXIT
         # 어느 점검이 어느 값을 보는지까지 본다. 포함 여부만 단언하면 두 옵션을
         # 뒤바꿔 넘겨도 통과한다 (뮤테이션으로 확인).
         assert "없는프롬프트" in 줄["prompt_files"]
@@ -131,7 +155,7 @@ class TestPreflightCommand:
         code = SlackCliAgent().run(
             ["preflight", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
         )
-        assert code == 1
+        assert code == BLOCKED_EXIT
         assert "engine_home_credentials" in out.getvalue()
         assert "auth.json" in out.getvalue()
 
@@ -304,7 +328,12 @@ class FakeApplication:
         self.worker_services_calls += 1
         self.worker_services_arg = worker
         return ServiceGroup(
-            [self.snapshot_runner, self.watch_runner_, self.purge_runner_, self.catchup_retry_runner_],
+            [
+                self.snapshot_runner,
+                self.watch_runner_,
+                self.purge_runner_,
+                self.catchup_retry_runner_,
+            ],
             name="worker",
         )
 
@@ -367,9 +396,24 @@ class TestIngressRosterRefresh:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                IngressCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         cli.run(
-            ["ingress", "--profile", "example", "--profile-dir", str(profiles), "--app-token", "xapp-토큰"],
+            [
+                "ingress",
+                "--profile",
+                "example",
+                "--profile-dir",
+                str(profiles),
+                "--app-token",
+                "xapp-토큰",
+            ],
             stdout=io.StringIO(),
         )
         assert app.roster_refresher().start_calls == 1
@@ -381,7 +425,14 @@ class TestIngressRosterRefresh:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                IngressCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         code = cli.run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles)],
             stdout=io.StringIO(),
@@ -401,14 +452,31 @@ class TestIngressConnectionWatch:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                IngressCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         cli.run(
-            ["ingress", "--profile", "example", "--profile-dir", str(profiles), "--app-token", "xapp-토큰"],
+            [
+                "ingress",
+                "--profile",
+                "example",
+                "--profile-dir",
+                str(profiles),
+                "--app-token",
+                "xapp-토큰",
+            ],
             stdout=io.StringIO(),
         )
         assert app.connection_watch_calls == 1
 
-    def test_토큰이_없으면_감시를_켜지_않는다(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_토큰이_없으면_감시를_켜지_않는다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """토큰이 없으면 기동 자체를 안 하므로 감시도 안 켠다.
 
         켜 두면 로거에 핸들러만 붙고 그 프로세스는 곧 끝난다.
@@ -417,7 +485,14 @@ class TestIngressConnectionWatch:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                IngressCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         code = cli.run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles)],
             stdout=io.StringIO(),
@@ -455,7 +530,10 @@ class FakeWorker:
     def run_once(self) -> bool:
         self.run_once_calls += 1
         self.calls.append("run_once")
-        if self._stop_after_run_once is not None and self.run_once_calls >= self._stop_after_run_once:
+        if (
+            self._stop_after_run_once is not None
+            and self.run_once_calls >= self._stop_after_run_once
+        ):
             raise KeyboardInterrupt
         return True
 
@@ -473,7 +551,14 @@ class TestIngressCommand:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                IngressCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         out = io.StringIO()
         code = cli.run(
             [
@@ -495,10 +580,25 @@ class TestIngressCommand:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                IngressCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         out = io.StringIO()
         cli.run(
-            ["ingress", "--profile", "example", "--profile-dir", str(profiles), "--app-token", "xapp-토큰"],
+            [
+                "ingress",
+                "--profile",
+                "example",
+                "--profile-dir",
+                str(profiles),
+                "--app-token",
+                "xapp-토큰",
+            ],
             stdout=out,
         )
         assert app.gateway_calls == 1
@@ -510,7 +610,14 @@ class TestIngressCommand:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                IngressCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         out = io.StringIO()
         code = cli.run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
@@ -525,7 +632,14 @@ class TestIngressCommand:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                IngressCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         out = io.StringIO()
         code = cli.run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
@@ -538,7 +652,14 @@ class TestIngressCommand:
         write_profile(profiles, tmp_path / "state")
         gateway = FakeGateway(raise_on_start=RuntimeError("연결 실패"))
         app = FakeApplication(gateway=gateway)
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                IngressCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         out = io.StringIO()
         with pytest.raises(RuntimeError):
             cli.run(
@@ -563,7 +684,14 @@ class TestWorkerCommand:
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker(stop_after_run_once=1)
         app = FakeApplication(worker=worker)
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         out = io.StringIO()
         code = cli.run(
             ["worker", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
@@ -577,7 +705,14 @@ class TestWorkerCommand:
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker()
         app = FakeApplication(worker=worker)
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         out = io.StringIO()
         code = cli.run(
             ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"], stdout=out
@@ -596,7 +731,14 @@ class TestWorkerCommand:
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker()
         app = FakeApplication(worker=worker, channel_ids=["C1", "C2"])
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         cli.run(
             ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"],
             stdout=io.StringIO(),
@@ -609,9 +751,24 @@ class TestWorkerCommand:
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker()
         app = FakeApplication(worker=worker, channel_ids=["C1", "C2"])
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         cli.run(
-            ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once", "--no-catch-up"],
+            [
+                "worker",
+                "--profile",
+                "example",
+                "--profile-dir",
+                str(profiles),
+                "--once",
+                "--no-catch-up",
+            ],
             stdout=io.StringIO(),
         )
         assert worker.catch_up_calls == []
@@ -621,7 +778,14 @@ class TestWorkerCommand:
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker(stop_after_run_once=2)
         app = FakeApplication(worker=worker)
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         out = io.StringIO()
         code = cli.run(
             ["worker", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
@@ -635,9 +799,18 @@ class TestWorkerCommand:
         write_profile(profiles, tmp_path / "state")
         worker = FakeWorker()
         app = FakeApplication(worker=worker)
-        cli = SlackCliAgent([WorkerCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         out = io.StringIO()
-        cli.run(["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"], stdout=out)
+        cli.run(
+            ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"], stdout=out
+        )
         assert worker.shutdown_calls == 1
         assert app.close_calls == 1
 
@@ -656,6 +829,7 @@ class TestWorkerCommand종료신호:
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=worker)
         command = WorkerCommand(
+            preflight_suite_factory=통과하는_suite,
             application_factory=lambda profile, _resolver: app,
             signal_register=lambda sig, handler: registered.append((sig, handler)),
         )
@@ -717,6 +891,7 @@ class TestWorkerCommand상태기록:
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=FakeWorker(stop_after_run_once=1))
         command = WorkerCommand(
+            preflight_suite_factory=통과하는_suite,
             application_factory=lambda profile, _resolver: app,
             signal_register=lambda sig, handler: None,
         )
@@ -734,6 +909,7 @@ class TestWorkerCommand상태기록:
         app = FakeApplication(worker=FakeWorker(stop_after_run_once=1))
         registered: list = []
         command = WorkerCommand(
+            preflight_suite_factory=통과하는_suite,
             application_factory=lambda profile, _resolver: app,
             signal_register=lambda sig, handler: registered.append(handler),
         )
@@ -755,6 +931,7 @@ class TestWorkerCommand감시확인:
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=FakeWorker(stop_after_run_once=1))
         command = WorkerCommand(
+            preflight_suite_factory=통과하는_suite,
             application_factory=lambda profile, _resolver: app,
             signal_register=lambda sig, handler: None,
         )
@@ -770,6 +947,7 @@ class TestWorkerCommand감시확인:
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=FakeWorker())
         command = WorkerCommand(
+            preflight_suite_factory=통과하는_suite,
             application_factory=lambda profile, _resolver: app,
             signal_register=lambda sig, handler: None,
         )
@@ -792,7 +970,14 @@ class TestIngress연결점검주기:
     def _기동한다(tmp_path: Path, app: FakeApplication, token: bool = True) -> int:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
-        cli = SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)])
+        cli = SlackCliAgent(
+            [
+                IngressCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
         argv = ["ingress", "--profile", "example", "--profile-dir", str(profiles)]
         if token:
             argv += ["--app-token", "xapp-토큰"]
@@ -838,12 +1023,15 @@ class TestWorker빈큐대기:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=worker)
-        cli = SlackCliAgent([
-            WorkerCommand(
-                application_factory=lambda profile, _resolver: app,
-                signal_register=lambda signum, handler: None,
-            )
-        ])
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                    signal_register=lambda signum, handler: None,
+                )
+            ]
+        )
         argv = ["worker", "--profile", "example", "--profile-dir", str(profiles)]
         if once:
             argv.append("--once")
@@ -879,12 +1067,15 @@ class TestWorker끝난작업정리:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=worker)
-        cli = SlackCliAgent([
-            WorkerCommand(
-                application_factory=lambda profile, _resolver: app,
-                signal_register=lambda signum, handler: None,
-            )
-        ])
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                    signal_register=lambda signum, handler: None,
+                )
+            ]
+        )
         code = cli.run(
             ["worker", "--profile", "example", "--profile-dir", str(profiles)],
             stdout=io.StringIO(),
@@ -914,8 +1105,23 @@ class Test주기실행기를묶음으로띄운다:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication()
-        SlackCliAgent([IngressCommand(application_factory=lambda profile, _resolver: app)]).run(
-            ["ingress", "--profile", "example", "--profile-dir", str(profiles), "--app-token", "xapp-토큰"],
+        SlackCliAgent(
+            [
+                IngressCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        ).run(
+            [
+                "ingress",
+                "--profile",
+                "example",
+                "--profile-dir",
+                str(profiles),
+                "--app-token",
+                "xapp-토큰",
+            ],
             stdout=io.StringIO(),
         )
         assert app.ingress_services_calls == 1
@@ -924,12 +1130,15 @@ class Test주기실행기를묶음으로띄운다:
         profiles = tmp_path / "profiles"
         write_profile(profiles, tmp_path / "state")
         app = FakeApplication(worker=FakeWorker())
-        SlackCliAgent([
-            WorkerCommand(
-                application_factory=lambda profile, _resolver: app,
-                signal_register=lambda signum, handler: None,
-            )
-        ]).run(
+        SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                    signal_register=lambda signum, handler: None,
+                )
+            ]
+        ).run(
             ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"],
             stdout=io.StringIO(),
         )
@@ -1001,8 +1210,12 @@ class TestLearnCommand:
 
     def test_알림을_못_보냈으면_그_사실을_출력한다(self, tmp_path: Path) -> None:
         report = BatchReport(
-            day="2026-09-14", ran=True, reason="", proposal=None,
-            applied={"잡담": 2}, notified=False,
+            day="2026-09-14",
+            ran=True,
+            reason="",
+            proposal=None,
+            applied={"잡담": 2},
+            notified=False,
         )
         code, _, _, text = self._run(tmp_path, report)
         assert code == 0

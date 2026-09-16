@@ -71,7 +71,8 @@ if [ "$CODE" = "$BLOCKED_EXIT" ]; then
     echo "역할      $ROLE"
     echo "종료코드  $CODE (EX_CONFIG - 설정 오류로 기동을 멈췄다)"
     echo "명령      $D/run.sh $*"
-    echo "로그      $D/logs/$ROLE.err.log 에 사유가 있다"
+    echo "점검결과  $D/logs/$ROLE.out.log 에 어느 점검이 막았는지 있다"
+    echo "오류      $D/logs/$ROLE.err.log"
     echo
     echo "고친 뒤 이 파일을 지우고 다시 띄운다:"
     echo "  $D/run.sh preflight"
