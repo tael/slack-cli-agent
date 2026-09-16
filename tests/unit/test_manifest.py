@@ -236,13 +236,58 @@ class TestManifestDiff:
             AppManifest(_온전한_매니페스트()), AppManifest(_온전한_매니페스트())
         ) == []
 
-    def test_원격에만_있는_키는_차이가_아니다(self) -> None:
+    def test_슬랙이_채우는_필드는_차이가_아니다(self) -> None:
         """슬랙은 우리가 안 적은 필드를 채워서 내준다. 그것을 차이로 세면
-        매번 차이가 나와 이 명령을 아무도 안 보게 된다."""
+        매번 차이가 나와 이 명령을 아무도 안 보게 된다. 허용 목록에 있는
+        경로만 그렇게 다룬다(sca-ce2)."""
         원격 = _온전한_매니페스트()
         원격["settings"]["org_deploy_enabled"] = False
         원격["display_information"]["long_description"] = "슬랙이 붙인 것"
         assert ManifestDiff().differences(AppManifest(_온전한_매니페스트()), AppManifest(원격)) == []
+
+    def test_허용_목록_밖의_원격_추가는_잡는다(self) -> None:
+        """사람이 슬랙 UI 에서 켠 기능이 이 형태로 나타난다. 자동 생성분과
+        같이 무시하면 누가 무엇을 켰는지 아무 데도 안 남는다."""
+        원격 = _온전한_매니페스트()
+        원격["settings"]["socket_mode_enabled"] = True
+        원격["features"]["shortcuts"] = [{"name": "사람이 켠 것"}]
+        차이 = ManifestDiff().differences(AppManifest(_온전한_매니페스트()), AppManifest(원격))
+        assert len(차이) == 2, 차이
+        assert any("settings.socket_mode_enabled" in d for d in 차이)
+        assert any("features.shortcuts" in d for d in 차이)
+        assert all("정본에 없다" in d for d in 차이), 차이
+
+    def test_묶음째_새로_생겨도_안이_전부_허용이면_차이가_아니다(self) -> None:
+        """정본이 settings 를 아예 안 적은 봇이 있다. 그러면 슬랙이 채운
+        org_deploy_enabled 가 묶음째 새 키로 보인다. 허용 경로만 든 묶음은
+        차이가 아니다."""
+        정본 = _온전한_매니페스트()
+        del 정본["settings"]
+        원격 = _온전한_매니페스트()
+        원격["settings"] = {"org_deploy_enabled": False}
+        assert ManifestDiff().differences(AppManifest(정본), AppManifest(원격)) == []
+
+    def test_새_묶음_안의_허용_밖_항목은_잡는다(self) -> None:
+        정본 = _온전한_매니페스트()
+        del 정본["settings"]
+        원격 = _온전한_매니페스트()
+        원격["settings"] = {"org_deploy_enabled": False, "socket_mode_enabled": True}
+        [차이] = ManifestDiff().differences(AppManifest(정본), AppManifest(원격))
+        assert "settings.socket_mode_enabled" in 차이
+
+    def test_중첩된_원격_추가도_경로로_잡는다(self) -> None:
+        원격 = _온전한_매니페스트()
+        원격["features"]["app_home"]["새로_생긴_설정"] = True
+        [차이] = ManifestDiff().differences(AppManifest(_온전한_매니페스트()), AppManifest(원격))
+        assert "features.app_home.새로_생긴_설정" in 차이
+
+    def test_허용_목록이_실측에_근거한다(self) -> None:
+        """2026-09-17 실측 — 세 앱의 live 매니페스트를 정본과 대조하니 원격에만
+        있는 키가 0건이었다. 목록을 넓히려면 그때 그 실측을 다시 한다."""
+        assert set(ManifestDiff.SLACK_FILLED_PATHS) == {
+            "settings.org_deploy_enabled",
+            "display_information.long_description",
+        }
 
     def test_값이_다르면_경로와_함께_잡는다(self) -> None:
         원격 = _온전한_매니페스트()

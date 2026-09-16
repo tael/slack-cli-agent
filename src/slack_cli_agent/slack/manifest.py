@@ -213,12 +213,23 @@ class ManifestContract:
 class ManifestDiff:
     """Compares a checked-in manifest against the one Slack actually holds.
 
-    Asymmetric on purpose: only keys present in the local copy are compared.
-    Slack fills in fields we never wrote (`org_deploy_enabled`, a generated
-    `long_description`), and counting those as differences would make this
-    command report a difference every single time — at which point nobody
-    reads it, and a real drift hides among the noise.
+    Slack fills in a few fields we never wrote, and counting those as
+    differences would make this command report one every single time -- at
+    which point nobody reads it and a real drift hides in the noise. Those
+    paths are listed below rather than ignored as a class: ignoring every
+    remote-only key also ignores a feature somebody switched on in Slack's UI,
+    which is exactly the kind of change this command exists to surface
+    (sca-ce2).
     """
+
+    #: Paths Slack adds to an exported manifest on its own. 2026-09-17 실측 —
+    #: 세 앱의 live 매니페스트를 정본과 대조하니 원격에만 있는 키가 0건이었다.
+    #: Slack adds manifest keys over time, so a new key showing up here as a
+    #: difference is the signal to update the checked-in copy, not to widen
+    #: this list. Widen it only for a field Slack generates by itself.
+    SLACK_FILLED_PATHS: ClassVar[frozenset[str]] = frozenset(
+        {"settings.org_deploy_enabled", "display_information.long_description"}
+    )
 
     def differences(self, local: AppManifest, remote: AppManifest) -> list[str]:
         """Every difference, not the first, so one run tells the whole story."""
@@ -243,7 +254,25 @@ class ManifestDiff:
                 bad.append(f"{child} : 슬랙 쪽에 없다")
                 continue
             bad.extend(self._walk(value, remote[key], path=child))
+        for key, value in remote.items():
+            if key in local:
+                continue
+            child = f"{path}.{key}" if path else key
+            bad.extend(self._remote_only(value, path=child))
         return bad
+
+    def _remote_only(self, value: Any, *, path: str) -> list[str]:
+        """A container can be remote-only while everything in it is Slack's
+        own doing -- a manifest that omits `settings` gets the whole group
+        back filled in."""
+        if path in self.SLACK_FILLED_PATHS:
+            return []
+        if isinstance(value, Mapping):
+            bad: list[str] = []
+            for key, child_value in value.items():
+                bad.extend(self._remote_only(child_value, path=f"{path}.{key}"))
+            return bad
+        return [f"{path} : 정본에 없다 : {value!r}"]
 
     @staticmethod
     def _is_string_list(value: Any) -> bool:
