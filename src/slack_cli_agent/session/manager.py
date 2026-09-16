@@ -32,6 +32,9 @@ class SessionDecision:
 
 
 def _default_new_session_id() -> str:
+    """Only for callers that build a manager without an engine. Real wiring
+    passes the engine's own generator -- a format this side invents is a guess
+    about what that engine accepts (sca-k6s)."""
     return str(uuid.uuid4())
 
 
@@ -41,6 +44,7 @@ class SessionManager:
         store: SessionStore,
         settings: RuntimeSettings,
         now: Callable[[], float] = time.time,
+        # The engine's own generator. See _default_new_session_id.
         new_session_id: Callable[[], str] = _default_new_session_id,
     ) -> None:
         self._store = store

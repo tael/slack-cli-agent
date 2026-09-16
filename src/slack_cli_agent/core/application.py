@@ -571,7 +571,13 @@ class Application:
                 access_policy=self.access_policy,
                 transcript_builder=self._transcript_builder(),
                 prompt_composer=self._composer(),
-                session_manager=SessionManager(SqliteSessionStore(self._database), self._settings),
+                session_manager=SessionManager(
+                    SqliteSessionStore(self._database),
+                    self._settings,
+                    # Session ID format is per engine. Minting it out here made
+                    # all three happen to agree on UUID (sca-k6s).
+                    new_session_id=self.engine.new_session_id,
+                ),
                 engine=self.engine,
                 invoker=self.engine_invoker,
                 guard_pipeline=self._guards(),
