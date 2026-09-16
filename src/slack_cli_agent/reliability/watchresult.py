@@ -50,6 +50,24 @@ class WatchResultReader:
             return None
         return Path(workdir) / self._result_dir / f"{run_id}.out"
 
+    def launched(self, workdir: str, run_id: str) -> bool:
+        """Whether the background work for this run_id was actually started.
+
+        The result file is the evidence: the shell redirection creates it the
+        moment nohup runs, so its presence means the work started. The script
+        file comes one step earlier — having only that means nohup failed or
+        the engine stopped halfway, and registering then leaves a watch nobody
+        can ever finish (codex review).
+
+        Registration used to depend on the engine emitting a watch tag, so work
+        that ran without one finished with nobody reading its exit status
+        (sca-pq5).
+        """
+        path = self.path_for(workdir, run_id)
+        if path is None:
+            return False
+        return path.is_file()
+
     def read(self, workdir: str, run_id: str) -> WatchOutcome:
         path = self.path_for(workdir, run_id)
         if path is None:
