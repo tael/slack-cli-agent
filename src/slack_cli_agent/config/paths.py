@@ -100,8 +100,18 @@ class StatePaths:
 
     @property
     def knowledge(self) -> Path:
-        """Per-channel knowledge files; applying a learning proposal appends a line here."""
+        """Per-channel knowledge files a human writes and edits."""
         return self.persona / "knowledge"
+
+    @property
+    def learned(self) -> Path:
+        """Where the learning batch appends. Separate from `knowledge` because a
+        human editing a file and a batch appending to it clobber each other, and
+        because a machine-written line carries less weight than a written one
+        (sca-jl4.5). File names match `knowledge`: `_*.md` common, `<channel>.md`
+        per channel.
+        """
+        return self.persona / "learned"
 
     @property
     def skills(self) -> Path:

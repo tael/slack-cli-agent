@@ -1433,6 +1433,21 @@ class Test폴백엔진연결:
         application.close()
 
 
+class Test학습쌓기자리연결:
+    """사람이 쓰는 자리와 학습이 쌓는 자리를 갈랐다(sca-jl4.5).
+
+    조립이 예전 자리를 그대로 넘기면 파일은 갈라 뒀는데 실제 쓰기는 사람 자리로
+    계속 간다. 로더가 학습 자리를 못 받으면 반대로 쌓인 것이 프롬프트에서 빠진다.
+    """
+
+    def test_학습_적용이_학습_자리에_쓴다(self, app: Application) -> None:
+        assert app.learning_batch()._applier._dir == app.profile.paths.learned
+
+    def test_프롬프트_구성이_학습_자리도_읽는다(self, app: Application) -> None:
+        composer = app._composer()
+        assert composer._knowledge._learned_dir == app.profile.paths.learned
+
+
 class Test플러그인엔진등록:
     """플러그인이 더한 엔진이 실제로 조립에 들어가는가.
 

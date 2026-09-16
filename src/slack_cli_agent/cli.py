@@ -352,7 +352,8 @@ class InitCommand(CliCommand):
             ("상태 디렉터리", paths.root),
             ("프롬프트 디렉터리", paths.prompts),
             ("페르소나 디렉터리", paths.persona),
-            ("축적 지식 디렉터리", paths.knowledge),
+            ("사람이 쓰는 지식 디렉터리", paths.knowledge),
+            ("학습이 쌓는 지식 디렉터리", paths.learned),
             ("엔진 디렉터리", paths.engine_dir),
             # Created, not just written into the profile: the gate checks the
             # directory exists, so a path alone still blocks boot.
