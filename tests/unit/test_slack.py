@@ -968,9 +968,49 @@ class TestAttachmentStore:
             downloader=lambda url, token: DownloadResult("image/png", b"x"),
             keep_hours=1,
         )
-        store.cleanup(now=old_time + 3600 * 2)
+        지운수 = store.cleanup(now=old_time + 3600 * 2)
         assert not old_file.exists()
         assert not sub.exists()
+        assert 지운수 == 1
+
+    def test_cleanup은_지운_건수를_돌려준다(self, tmp_path: Path) -> None:
+        """건수를 안 돌려주면 0건과 안 돈 것이 로그에서 같아 보인다(sca-mf6)."""
+        attach_dir = tmp_path / "attach"
+        attach_dir.mkdir(parents=True)
+        store = AttachmentStore(
+            attach_dir=attach_dir,
+            token_provider=lambda: "x",
+            downloader=lambda url, token: DownloadResult("image/png", b"x"),
+            keep_hours=1,
+        )
+        assert store.cleanup(now=1_700_000_000.0) == 0
+
+    def test_cleanup은_실패를_삼키지_않고_기록한다(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """조용히 pass 하면 권한 문제로 한 번도 못 지운 상태가 정상과 같아 보인다."""
+        import os
+
+        attach_dir = tmp_path / "attach"
+        sub = attach_dir / "1700000000.0"
+        sub.mkdir(parents=True)
+        오래된파일 = sub / "old.png"
+        오래된파일.write_bytes(b"x")
+        os.utime(오래된파일, (0, 0))
+        # 부모 디렉터리에 쓰기 권한이 없으면 unlink 가 실패한다.
+        sub.chmod(0o500)
+        store = AttachmentStore(
+            attach_dir=attach_dir,
+            token_provider=lambda: "x",
+            downloader=lambda url, token: DownloadResult("image/png", b"x"),
+            keep_hours=1,
+        )
+        try:
+            with caplog.at_level(logging.WARNING):
+                assert store.cleanup(now=3600 * 2) == 0
+        finally:
+            sub.chmod(0o700)
+        assert [r for r in caplog.records if "첨부" in r.getMessage()]
 
 
 class Test완료_표식은_미완료_표식을_전부_지운다:
