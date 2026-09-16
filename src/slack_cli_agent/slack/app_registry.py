@@ -71,7 +71,7 @@ class AppRegistry:
 
     def is_configured(self) -> bool:
         """Whether the registry file exists at all. Zero entries from a file
-        that exists is an accident, not an empty install (sca-1qr)."""
+        that exists is an accident, not an empty install (sca-hr8)."""
         return self._path.exists()
 
     def _load(self) -> dict[str, dict[str, str]]:
