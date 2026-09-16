@@ -101,3 +101,19 @@ def audit(
         if differences:
             findings.append(AuditFinding(name=entry.name, differences=differences))
     return findings
+
+
+def read_bot_token(state_dir: Path) -> str:
+    """봇 토큰을 상태 디렉터리에서 읽는다. 없으면 빈 문자열이다.
+
+    tools/templates/run.sh 와 같은 순서로 본다 — 옛 형태(.slack_bot_token)가
+    있으면 그것이 실제로 도는 봇의 토큰이다.
+    """
+    old = state_dir / ".slack_bot_token"
+    if old.is_file():
+        return old.read_text(encoding="utf-8").strip()
+    try:
+        data = json.loads((state_dir / "credentials.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return str(data.get("bot_token", "")) if isinstance(data, dict) else ""
