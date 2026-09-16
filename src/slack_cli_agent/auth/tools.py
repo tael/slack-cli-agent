@@ -1,6 +1,6 @@
 """Decides which tools a request gets.
 
-    readonly (postmortem/debug trace)   base tools only
+    readonly (postmortem/debug trace)   known read-only tools only
     owner                                base + owner extras
     an extension applies                 base + whatever the extension adds
     otherwise                            base tools only
@@ -11,12 +11,21 @@ isn't aside (postmortem/debug/format-check) and the channel has it enabled.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 
 from .policy import AccessExtension
 from .principal import Principal, TrustLevel
 
 SKILL_TOOL = "Skill"
+
+log = logging.getLogger(__name__)
+
+#: Tools a read-only turn may use. An allowlist rather than a list of write
+#: tools: a new write tool, or an MCP tool whose name says nothing about what
+#: it does, would pass a denylist silently (sca-gy0). Used as the fallback too,
+#: since claude reads an empty --allowedTools as "no tools at all" (sca-0ab).
+READ_ONLY_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob", "WebFetch", "WebSearch")
 
 
 class ToolPolicy:
@@ -39,10 +48,12 @@ class ToolPolicy:
         aside: bool = False,
         skills_enabled: bool = False,
     ) -> tuple[str, ...]:
-        tools: list[str] = list(self._base_tools)
         if readonly:
-            pass
-        elif principal.trust is TrustLevel.OWNER:
+            # Skill is left off as well -- it can run anything, which is the
+            # same hole in a different place.
+            return self._readonly_tools()
+        tools: list[str] = list(self._base_tools)
+        if principal.trust is TrustLevel.OWNER:
             tools += self._owner_tools
         else:
             for ext in self._extensions:
@@ -51,6 +62,13 @@ class ToolPolicy:
         if not aside and skills_enabled:
             tools.append(SKILL_TOOL)
         return tuple(tools)
+
+    def _readonly_tools(self) -> tuple[str, ...]:
+        kept = tuple(name for name in self._base_tools if name in READ_ONLY_TOOLS)
+        dropped = tuple(name for name in self._base_tools if name not in READ_ONLY_TOOLS)
+        if dropped:
+            log.warning("읽기 전용 턴에서 뺀 도구 : %s", ", ".join(dropped))
+        return kept or READ_ONLY_TOOLS
 
     def tools_for(
         self,
