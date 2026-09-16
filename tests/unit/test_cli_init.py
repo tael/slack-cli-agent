@@ -47,6 +47,8 @@ class TestInitCommand:
         assert (state_dir / "prompts").is_dir()
         assert (state_dir / "persona").is_dir()
         assert (state_dir / "persona" / "knowledge").is_dir()
+        # 사람이 쓰는 자리와 학습이 쌓는 자리를 갈랐다(sca-jl4.5)
+        assert (state_dir / "persona" / "learned").is_dir()
         assert (state_dir / "engine").is_dir()
 
     def test_이미_있는_프로필_파일은_덮지_않는다(self, tmp_path: Path) -> None:

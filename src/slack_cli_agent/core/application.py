@@ -426,7 +426,9 @@ class Application:
         library = PromptLibrary(
             paths.prompts, placeholders={"OWNER_MENTION": f"<@{self._profile.owner_user_id}>"}
         )
-        knowledge = KnowledgeLoader(paths.persona / "PERSONA.md", paths.knowledge)
+        knowledge = KnowledgeLoader(
+            paths.persona / "PERSONA.md", paths.knowledge, learned_dir=paths.learned,
+        )
         return SystemPromptComposer(library, knowledge, self._prompt_sections())
 
     def _guards(self) -> GuardPipeline:
@@ -630,7 +632,7 @@ class Application:
                 builder=ProposalBuilder(analyzer),
                 store=self._proposal_store(),
                 progress=self._learning_progress_store(),
-                applier=LearningApplier(paths.knowledge, self._profile.display_name),
+                applier=LearningApplier(paths.learned, self._profile.display_name),
                 renderer=ProposalRenderer(),
                 notify=self._notify_owner,
                 clock=lambda: datetime.now(KST),
