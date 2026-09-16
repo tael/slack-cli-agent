@@ -12,13 +12,13 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from test_engine import 통과정책
+
 from slack_cli_agent.engine.base import Engine, EngineRequest, EngineResponse
 from slack_cli_agent.engine.runner import DirectInvoker, EngineRunner
 from slack_cli_agent.learning.analyzer import ProposalAnalyzer, ProposalBuilder
 from slack_cli_agent.learning.progress import FailureKind
 from slack_cli_agent.learning.proposal import LearningProposal
-
-from test_engine import 통과정책
 
 
 class FakeEngine(Engine):
