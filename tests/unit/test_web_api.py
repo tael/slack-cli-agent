@@ -88,6 +88,7 @@ def make_router(
     channels: dict[str, FakeChannelEditor] | None = None,
     prompts: dict[str, FakeFileEditor] | None = None,
     knowledge: dict[str, FakeFileEditor] | None = None,
+    learned: dict[str, FakeFileEditor] | None = None,
     metrics: dict[str, FakeMetrics] | None = None,
     roster: FakeRoster | None = None,
 ) -> ApiRouter:
@@ -95,6 +96,7 @@ def make_router(
     channels = channels if channels is not None else {}
     prompts = prompts if prompts is not None else {}
     knowledge = knowledge if knowledge is not None else {}
+    learned = learned if learned is not None else {}
     metrics = metrics if metrics is not None else {}
     roster = roster if roster is not None else FakeRoster([])
     return ApiRouter(
@@ -102,6 +104,7 @@ def make_router(
         channels_for=lambda bot: channels[bot],
         prompts_for=lambda bot: prompts[bot],
         knowledge_for=lambda bot: knowledge[bot],
+        learned_for=lambda bot: learned[bot],
         metrics_for=lambda bot: metrics[bot],
         roster=roster,
     )
@@ -349,3 +352,38 @@ class Test빈_본문_저장:
 
         assert res.status == 400
         assert "빈 본문은 저장하지 않는다" in str(res.body)
+
+
+class Test학습지식경로:
+    """학습이 쌓는 자리는 사람이 쓰는 자리와 갈라졌다(sca-jl4.5).
+
+    콘솔이 사람 자리만 열면 학습이 잘못 쌓은 줄을 지울 방법이 없어진다. 가르기
+    전에는 같은 파일이라 지울 수 있었다.
+    """
+
+    def test_목록을_준다(self) -> None:
+        router = make_router(learned={"mametchi": FakeFileEditor({"잡담": "쌓인 것"})})
+        res = router.handle("GET", "/api/learned/mametchi", {}, None)
+        assert res.status == 200
+        assert res.body == ["잡담"]
+
+    def test_내용을_준다(self) -> None:
+        router = make_router(learned={"mametchi": FakeFileEditor({"잡담": "쌓인 것"})})
+        res = router.handle("GET", "/api/learned/mametchi/잡담", {}, None)
+        assert res.status == 200
+        assert res.body == {"name": "잡담", "text": "쌓인 것"}
+
+    def test_고쳐_쓸_수_있다(self) -> None:
+        editor = FakeFileEditor({"잡담": "쌓인 것"})
+        router = make_router(learned={"mametchi": editor})
+        res = router.handle("PUT", "/api/learned/mametchi/잡담", {}, {"text": "고친 것"})
+        assert res.status == 200
+        assert editor.read("잡담") == "고친 것"
+
+    def test_사람_자리와_다른_목록이다(self) -> None:
+        router = make_router(
+            knowledge={"mametchi": FakeFileEditor({"사람것": ""})},
+            learned={"mametchi": FakeFileEditor({"학습것": ""})},
+        )
+        assert router.handle("GET", "/api/knowledge/mametchi", {}, None).body == ["사람것"]
+        assert router.handle("GET", "/api/learned/mametchi", {}, None).body == ["학습것"]
