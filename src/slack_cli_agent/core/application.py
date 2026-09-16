@@ -1266,7 +1266,7 @@ class Application:
         members: list[str] = []
         cursor = ""
         while True:
-            response = self.client().conversations_members(
+            response = self.client.conversations_members(
                 channel=channel, limit=200, cursor=cursor or None
             )
             members.extend(response.get("members", []))
@@ -1278,7 +1278,7 @@ class Application:
         # 조회가 안 되면 봇으로 본다. 사람으로 보면 조회 실패가 곧 위반 경고가
         # 되어, 고칠 것이 없는데 매 주기 알림이 나간다.
         try:
-            user = self.client().users_info(user=user_id).get("user") or {}
+            user = self.client.users_info(user=user_id).get("user") or {}
         except Exception as exc:  # noqa: BLE001 — 한 사람의 조회 실패가 점검을 끊으면 안 된다
             log.warning("사용자 조회 실패, 봇으로 본다 : %s : %s", user_id, exc)
             return True
