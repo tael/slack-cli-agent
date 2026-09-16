@@ -62,6 +62,10 @@ class RuntimeSettings:
 
     roster_refresh_sec: float = 12 * 3600
 
+    #: owner_only_channels 선언과 실제 멤버를 대조하는 주기. 사람이 채널에
+    #: 들어오는 일은 드물어 자주 볼 이유가 없고, 조회는 채널마다 한 번이다.
+    owner_only_audit_interval_sec: float = 6 * 3600
+
     late_rewrite_min_ratio: float = 0.6
     late_rewrite_min_chars: int = 200
 
