@@ -28,7 +28,12 @@ from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
 from ..core.channel_kind import is_direct_message_channel
 from ..jobs.ports import JobStatus
-from ..observability.audit import REQUEST_KIND, IncidentKind, normalize_kind
+from ..observability.audit import (
+    BASELINE_KIND_VALUES,
+    REQUEST_KIND,
+    IncidentKind,
+    normalize_kind,
+)
 from ..storage.database import Database
 
 KST = timezone(timedelta(hours=9))
@@ -208,9 +213,10 @@ class MetricsCollector:
         """Reads every audit row in the window once and splits it by kind.
 
         Request-kind rows go through the same payload parsing as before;
-        every other kind is only tallied by name — the quality/reliability
+        incident kinds are only tallied by name — the quality/reliability
         rollups need counts, not payload fields, and a bad payload there
-        shouldn't hide that the incident happened at all.
+        shouldn't hide that the incident happened at all. Baseline kinds
+        other than REQUEST are neither parsed nor tallied.
         """
         rows = db.connect().execute(
             "SELECT at, kind, channel, thread_ts, payload FROM audit"
@@ -222,7 +228,8 @@ class MetricsCollector:
         for row in rows:
             kind = normalize_kind(row["kind"])
             if kind != REQUEST_KIND:
-                incidents[kind] += 1
+                if kind not in BASELINE_KIND_VALUES:
+                    incidents[kind] += 1
                 continue
             try:
                 payload = json.loads(row["payload"])
