@@ -24,6 +24,8 @@ from slack_cli_agent.config.paths import (
     default_profile_write_dir,
     user_profile_dir,
 )
+from slack_cli_agent.config.profile import Profile
+from slack_cli_agent.core.errors import ConfigError
 
 
 class Test검색_경로_순서:
@@ -182,6 +184,46 @@ class Test진입점_조립:
             command.execute(args, io.StringIO())
         assert 검색경로[0] == tmp_path / "프로필"
         assert 검색경로[-1] == tmp_path
+
+
+class Test읽기_실패는_어느_파일인지_알려준다:
+    """설치 직후 사람이 처음 만나는 오류다. 파일을 못 짚으면 고칠 자리를 모른다.
+
+    2026-09-17 실측 - init 이 만든 뼈대는 model 이 비어 있어 그대로는 안 읽힌다.
+    그때 나오던 문구가 "엔진 설정에 model 가 없다" 뿐이라, 프로필 파일이 여러
+    검색 경로에 흩어져 있으면 어느 것을 고쳐야 하는지 알 수 없었다.
+    """
+
+    def test_값이_빠지면_프로필_경로를_함께_낸다(self, tmp_path: Path) -> None:
+        경로 = tmp_path / "봇.json"
+        경로.write_text(
+            json.dumps({"name": "봇", "primary_engine": {"type": "claude", "binary": "/bin/echo"}}),
+            encoding="utf-8",
+        )
+        with pytest.raises(ConfigError) as 잡힌것:
+            Profile.load("봇", [tmp_path])
+        문구 = str(잡힌것.value)
+        assert str(경로) in 문구, 문구
+        assert "model" in 문구, 문구
+
+    def test_JSON_이_깨졌으면_ConfigError_로_낸다(self, tmp_path: Path) -> None:
+        """지금은 JSONDecodeError 가 그대로 올라와 역추적이 통째로 찍힌다."""
+        경로 = tmp_path / "봇.json"
+        경로.write_text("{", encoding="utf-8")
+        with pytest.raises(ConfigError) as 잡힌것:
+            Profile.load("봇", [tmp_path])
+        assert str(경로) in str(잡힌것.value)
+
+    def test_깨진_프로필로_preflight_를_돌리면_역추적이_아니라_한_줄로_막힌다(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "봇.json").write_text("{", encoding="utf-8")
+        out = io.StringIO()
+        결과 = SlackCliAgent().run(
+            ["preflight", "--profile", "봇", "--profile-dir", str(tmp_path)], stdout=out
+        )
+        assert 결과 != 0
+
 
 
 def _뼈대(state_dir: Path) -> dict[str, object]:
