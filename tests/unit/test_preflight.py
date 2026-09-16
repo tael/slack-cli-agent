@@ -50,7 +50,6 @@ def make_executable(path: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
-# ---------------------------------------------------------------------------
 # check.py — 계약 자체
 
 
@@ -70,7 +69,6 @@ class TestPreflightCheckContract:
             PreflightCheck()  # type: ignore[abstract]
 
 
-# ---------------------------------------------------------------------------
 # PromptFileCheck
 
 
@@ -107,7 +105,6 @@ class TestPromptFileCheck:
         assert result.ok is True
 
 
-# ---------------------------------------------------------------------------
 # WorkdirCheck
 
 
@@ -168,7 +165,6 @@ class TestWorkdirCheck:
         assert result.ok is True
 
 
-# ---------------------------------------------------------------------------
 # EngineBinaryCheck
 
 
@@ -218,7 +214,6 @@ class TestEngineBinaryCheck:
         assert "2차" in result.detail
 
 
-# ---------------------------------------------------------------------------
 # McpServerCheck — 이식 대상. mcp_ready() 본문 특성화
 
 
@@ -360,7 +355,6 @@ class TestMcpServerCheck:
         assert result.ok is True
 
 
-# ---------------------------------------------------------------------------
 # PreflightRunner
 
 
@@ -410,7 +404,6 @@ class TestPreflightRunner:
         assert len(report.results) == 3
 
 
-# ---------------------------------------------------------------------------
 # OwnerSettingsInertCheck — 이식 대상. 원본 warn_inert_owner_settings() 특성화
 
 
@@ -472,7 +465,6 @@ class TestOwnerSettingsInertCheck:
         assert result.ok is True
 
 
-# ---------------------------------------------------------------------------
 # EngineHomeCredentialCheck
 
 
@@ -604,7 +596,6 @@ class TestEngineHomeCredentialCheck:
         assert 결과.ok
 
 
-# ---------------------------------------------------------------------------
 # suite.py — 표준 점검 목록을 한 자리에
 
 
@@ -840,7 +831,6 @@ class Test검사_목록_주입:
         assert "_checks" not in inspect.getsource(preflight_support)
 
 
-# ---------------------------------------------------------------------------
 # ToolAllowlistEnforcementCheck — 허용목록을 강제하지 못하는 엔진을 기동 때 알린다
 
 

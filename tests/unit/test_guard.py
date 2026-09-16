@@ -16,7 +16,6 @@ from slack_cli_agent.guard.pipeline import GuardPipeline, PipelineResult
 from slack_cli_agent.guard.rewrite import RewriteLossGuard
 from slack_cli_agent.guard.watch import PROMISE_WITHOUT_WATCH_RE, WATCH_RE, WatchPromiseGuard
 
-# ---------------------------------------------------------------------------
 # base.py — 계약 자체
 
 
@@ -53,7 +52,6 @@ class TestGuardContext:
         assert ctx.is_rewrite_retry is False
 
 
-# ---------------------------------------------------------------------------
 # mentions.py — PlainMentionGuard (원본 fix_plain_mentions 이식)
 
 
@@ -104,7 +102,6 @@ class TestPlainMentionGuard:
         assert result.body == body
 
 
-# ---------------------------------------------------------------------------
 # mentions.py — AddresseeGuard (원본 guard_wrong_addressee 이식 + 발신 문구 결합)
 
 
@@ -144,7 +141,6 @@ class TestAddresseeGuard:
         assert result.body == body
 
 
-# ---------------------------------------------------------------------------
 # rewrite.py — RewriteLossGuard (원본 late_rewrite_lost_content 이식 + 병합)
 
 
@@ -185,7 +181,6 @@ class TestRewriteLossGuard:
         assert result.body == after
 
 
-# ---------------------------------------------------------------------------
 # watch.py — WatchPromiseGuard (원본 WATCH_RE·PROMISE_WITHOUT_WATCH_RE 이식)
 
 
@@ -236,7 +231,6 @@ class TestWatchPromiseGuard:
         assert PROMISE_WITHOUT_WATCH_RE.search("배포 후 반영되면 말씀드릴게요.") is not None
 
 
-# ---------------------------------------------------------------------------
 # pipeline.py — GuardPipeline
 
 
@@ -282,7 +276,6 @@ class TestGuardPipeline:
         assert result.rerun.guard_name == "watch_promise"
 
 
-# ---------------------------------------------------------------------------
 # dropline.py — ConfiguredLineDropGuard (원본 drop_vooster 이식, 문구는 설정으로 받는다)
 
 

@@ -109,9 +109,7 @@ class FakePublisher:
         return self.result
 
 
-# ---------------------------------------------------------------------------
 # SlackMessageLookup
-# ---------------------------------------------------------------------------
 
 
 def test_slack_message_lookup_satisfies_protocol() -> None:
@@ -168,9 +166,7 @@ def test_find_returns_none_and_logs_on_exception(caplog: pytest.LogCaptureFixtur
     assert "network fail" in caplog.text
 
 
-# ---------------------------------------------------------------------------
 # ThreadTranscriptPort
-# ---------------------------------------------------------------------------
 
 
 def test_thread_transcript_port_satisfies_protocol() -> None:
@@ -199,9 +195,7 @@ def test_transcript_returns_empty_and_logs_on_exception(caplog: pytest.LogCaptur
     assert "boom" in caplog.text
 
 
-# ---------------------------------------------------------------------------
 # SlackPermalinks
-# ---------------------------------------------------------------------------
 
 
 def test_slack_permalinks_satisfies_protocol() -> None:
@@ -233,9 +227,7 @@ def test_permalink_returns_empty_string_when_missing() -> None:
     assert port.permalink("C1", "333.444") == ""
 
 
-# ---------------------------------------------------------------------------
 # ReviewPublisher
-# ---------------------------------------------------------------------------
 
 
 def test_review_publisher_satisfies_protocol() -> None:
