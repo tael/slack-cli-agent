@@ -162,6 +162,8 @@ class Profile:
     troubleshoot_channel: str
     owner_dm: str = ""
     plugins: tuple[str, ...] = ()
+    #: Operator-supplied usage check command. Empty means the check is off.
+    usage_check_command: tuple[str, ...] = ()
     #: Agent panel greeting. Empty means post nothing when a panel thread opens.
     agent_greeting: str = ""
     #: Agent panel suggested prompts. Empty leaves whatever the app manifest declares.
@@ -289,6 +291,7 @@ class Profile:
             owner_dm=str(data.get("owner_dm", "")),
             credentials_file=credentials_file or None,
             plugins=tuple(data.get("plugins") or ()),
+            usage_check_command=tuple(str(part) for part in (data.get("usage_check_command") or ())),
             agent_greeting=str(data.get("agent_greeting") or ""),
             agent_prompts=tuple(
                 AgentPrompt.from_dict(p) for p in (data.get("agent_prompts") or ())

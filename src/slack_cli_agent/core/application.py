@@ -169,6 +169,7 @@ from .services import ServiceGroup
 from .spawn import ThreadTaskSpawner
 from .sweeplog import SweepLog
 from .timezones import KST
+from .usage_check import UsageCheck, run_command
 from .worker import Worker
 
 log = logging.getLogger(__name__)
@@ -227,6 +228,7 @@ class Application:
         self._channels = ChannelRegistry(profile.paths.channels)
         self._names = DisplayNameResolver(client)
         self._channel_name_resolver: ChannelNameResolver | None = None
+        self._usage_check_run = run_command
         self._notices = NoticeCatalog()
         # Pre-send recheck and the send queue must see the same consumption
         # record, or the recheck absorbs a message the queue then resends.
@@ -1225,6 +1227,20 @@ class Application:
             name="owner_only_audit",
         )
 
+    def usage_check_runner(self) -> PeriodicRunner:
+        """운영자가 건 사용량 확인 명령을 주기로 돌린다. ingress 에만 둔다 -
+        워커마다 돌면 같은 알림이 여러 번 나간다."""
+        check = UsageCheck(
+            self._profile.usage_check_command,
+            self._usage_check_run,
+            timeout_sec=self._settings.usage_check_timeout_sec,
+        )
+        return PeriodicRunner(
+            check.check_once,
+            self._settings.usage_check_interval_sec,
+            name="usage_check",
+        )
+
     def _channel_members(self, channel: str) -> list[str]:
         members: list[str] = []
         cursor = ""
@@ -1431,6 +1447,7 @@ class Application:
                 self.health_runner(restart),
                 self.roster_refresher(),
                 self.owner_only_audit_runner(),
+                self.usage_check_runner(),
                 self.attachment_cleanup_runner(),
                 self.pending_report_runner(),
                 self.stale_review_runner(),
