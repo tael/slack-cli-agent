@@ -76,6 +76,9 @@ class Worker:
         context = job.context
         with self._lock:
             self._running[job.id] = context
+        # The wait is over, so the queued mark gives way to the processing one.
+        # Leaving it on would put both marks on every request at once.
+        self._markers.clear_waiting(context.channel, context.ts)
         self._markers.mark_processing(context.channel, context.ts)
 
         stop_event = threading.Event()
@@ -142,8 +145,9 @@ class Worker:
     def reclaim(self) -> ReclaimResult:
         result = self._heartbeat.reclaim_stale()
         for context in result.requeued:
-            # Back to pending — clear the "processing" mark so the next attempt starts clean.
-            self._markers.remove(context.channel, context.ts, "eyes")
+            # Back to queued, so the mark goes back to queued too.
+            self._markers.clear_processing(context.channel, context.ts)
+            self._markers.mark_waiting(context.channel, context.ts)
         for context in result.failed:
             self._markers.mark_failed(context.channel, context.ts)
         return result
@@ -202,4 +206,5 @@ class Worker:
             self._running.clear()
         for job_id, context in running:
             self._queue.requeue(job_id)
-            self._markers.remove(context.channel, context.ts, "eyes")
+            self._markers.clear_processing(context.channel, context.ts)
+            self._markers.mark_waiting(context.channel, context.ts)

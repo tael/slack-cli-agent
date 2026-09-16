@@ -152,6 +152,22 @@ class SqliteJobQueue(SqliteRepository):
 
         return ReclaimResult(requeued=requeued, failed=failed)
 
+    def blocked_on_thread(self, thread_ts: str, message_ts: str) -> bool:
+        """True if another unfinished job on this thread_ts would be claimed first.
+
+        Scoped by thread_ts alone, matching claim_next — scoping it by channel
+        too would report "free to start" for a job that claim_next still blocks.
+        """
+        row = self._fetch_one(
+            """
+            SELECT 1 FROM jobs
+             WHERE thread_ts = ? AND message_ts != ? AND status IN (?, ?)
+             LIMIT 1
+            """,
+            (thread_ts, message_ts, JobStatus.QUEUED.value, JobStatus.RUNNING.value),
+        )
+        return row is not None
+
     def pending(self, limit: int = 50) -> list[Job]:
         rows = self._fetch_all(
             """

@@ -198,6 +198,12 @@ class TestReactionMarker:
         marker.clear_processing("C1", "1.0")
         assert client.reaction_remove_calls == [("C1", "1.0", "eyes")]
 
+    def test_clear_waiting은_모래시계_표식을_뗀다(self) -> None:
+        client = FakeWebClient()
+        marker = ReactionMarker(client)
+        marker.clear_waiting("C1", "1.0")
+        assert client.reaction_remove_calls == [("C1", "1.0", "hourglass")]
+
     def test_mark_done은_미완료_표식을_떼고_체크를_단다(self) -> None:
         client = FakeWebClient()
         marker = ReactionMarker(client)

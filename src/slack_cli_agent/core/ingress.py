@@ -110,13 +110,26 @@ class IngressService:
             ctx = self._merge_attachments(ctx, event)
 
             if not self._queue.enqueue(ctx, max_attempts=self._job_max_attempts):
-                # Already queued — don't mark it waiting twice.
+                # Already queued — don't mark it twice.
                 return
-            self._reactions.mark_waiting(ctx.channel, ctx.ts)
+            self._mark_accepted(ctx)
         except Exception:
             channel = ctx.channel if ctx is not None else event.get("channel")
             ts = ctx.ts if ctx is not None else event.get("ts")
             log.exception("요청 접수 실패: %s:%s", channel, ts)
+
+    def _mark_accepted(self, ctx: RequestContext) -> None:
+        """One mark, not both: hourglass if it has to wait, eyes if not.
+
+        The queue serializes per thread_ts, so a request waits exactly when
+        another unfinished job already holds its thread. Asked after enqueue so
+        this request's own row is in the table and can be excluded by ts.
+        Marking both made hourglass meaningless — every request carried it.
+        """
+        if self._queue.blocked_on_thread(ctx.thread_ts, ctx.ts):
+            self._reactions.mark_waiting(ctx.channel, ctx.ts)
+        else:
+            self._reactions.mark_processing(ctx.channel, ctx.ts)
 
     def _merge_attachments(
         self, ctx: RequestContext, event: Mapping[str, Any]

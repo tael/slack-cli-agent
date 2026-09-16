@@ -162,6 +162,15 @@ class TestRunOnceSuccess:
         assert ("add", "C1", "1.1", "eyes") in client.calls
         assert ("add", "C1", "1.1", "white_check_mark") in client.calls
 
+    def test_작업을_잡으면_대기_표식을_뗀다(self, database) -> None:
+        """접수 때 달린 모래시계가 남아 있으면 처리 중인데도 대기로 보인다."""
+        worker, queue, client = make_worker(database=database)
+        queue.enqueue(ctx("1.1"))
+
+        worker.run_once()
+
+        assert ("remove", "C1", "1.1", "hourglass") in client.calls
+
 
 class TestRunOnceFailure:
     def test_실패면_완료가_False와_사유로_불리고_x_표식이_남는다(self, database) -> None:
@@ -263,7 +272,9 @@ class TestReclaim:
 
         assert result.requeued == [requeued_ctx]
         assert result.failed == [failed_ctx]
+        # 큐로 되돌아갔으니 표식도 대기로 되돌린다
         assert ("remove", "C1", "1.1", "eyes") in client.calls
+        assert ("add", "C1", "1.1", "hourglass") in client.calls
         assert ("add", "C1", "2.1", "x") in client.calls
 
 
@@ -360,6 +371,7 @@ class TestShutdown:
 
         assert queue.counts() == {"QUEUED": 1}
         assert ("remove", "C1", "1.1", "eyes") in client.calls
+        assert ("add", "C1", "1.1", "hourglass") in client.calls
 
         release.set()
         thread.join(timeout=2)
