@@ -185,11 +185,31 @@ class Profile:
         for base in search_paths:
             candidate = base / f"{name}.json"
             if candidate.is_file():
-                return cls.from_dict(json.loads(candidate.read_text(encoding="utf-8")))
+                return cls._read(candidate)
         # Redacted here too: this runs before any profile is read, so the
         # value check cannot have seen these strings (코덱스 리뷰).
         searched = ", ".join(redact(str(p)) for p in search_paths)
         raise ConfigError(f"프로필 {redact(name)} 을 찾지 못했다. 검색 경로: {searched}")
+
+    @classmethod
+    def _read(cls, path: Path) -> Profile:
+        """Names the file in every failure.
+
+        `from_dict` only sees the parsed dict, so its messages say what is
+        wrong but not where. With several search paths that is not enough to
+        find the file to edit -- the profile `init` writes needs values filled
+        in, and that error is the first one a fresh install hits.
+        """
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise ConfigError(f"프로필 파일을 읽지 못했다 : {path}") from exc
+        except json.JSONDecodeError as exc:
+            raise ConfigError(f"프로필 파일이 올바른 JSON 이 아니다 : {path} ({exc})") from exc
+        try:
+            return cls.from_dict(data)
+        except ConfigError as exc:
+            raise ConfigError(f"{exc} : {path}") from exc
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Profile:
