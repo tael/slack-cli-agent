@@ -11,9 +11,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
-from slack_cli_agent.engine.base import EngineRequest, TrustLevel
+from slack_cli_agent.engine.base import EngineRequest
 from slack_cli_agent.engine.capability import InstructionBoundary
 from slack_cli_agent.engine.gemini import UNTRUSTED_INPUT_MARK, GeminiEngine
 

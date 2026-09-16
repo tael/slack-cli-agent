@@ -20,9 +20,10 @@ from typing import Any
 
 import pytest
 
+from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
-from slack_cli_agent.engine.base import Engine, EngineRequest, TrustLevel
+from slack_cli_agent.engine.base import Engine, EngineRequest
 from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
 from slack_cli_agent.engine.environment import create_environment_policy
