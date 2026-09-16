@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
 
@@ -92,6 +93,32 @@ class WatchResultReader:
         if status is None:
             return WatchOutcome.RUNNING
         return WatchOutcome.SUCCEEDED if status == 0 else WatchOutcome.FAILED
+
+
+    def cleanup(self, workdir: str, *, older_than_sec: float, now: float | None = None) -> int:
+        """Deletes result and script files older than older_than_sec, returning
+        how many went.
+
+        A run_id is issued per request, so work that started without a watch tag
+        or whose registration failed leaves both files behind with nobody
+        reading them (sca-y6g). The cut must stay above watch_job_max_age_sec:
+        a job still in the queue needs its result file.
+        """
+        if not workdir:
+            return 0
+        cut = (now if now is not None else time.time()) - older_than_sec
+        removed = 0
+        try:
+            for path in (Path(workdir) / self._result_dir).glob("*"):
+                if not path.is_file() or path.suffix not in (".out", ".sh"):
+                    continue
+                if path.stat().st_mtime >= cut:
+                    continue
+                path.unlink()
+                removed += 1
+        except OSError as exc:
+            _LOGGER.warning("감시 결과 파일을 정리하지 못했다 : %s (%s)", workdir, exc)
+        return removed
 
 
 def background_command(command: str, run_id: str, out_dir: str = ".watch-out") -> str:
