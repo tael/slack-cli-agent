@@ -37,6 +37,10 @@ class CompositionContext:
     # The watch check turn only looks; it must not get the registration
     # guidance, which tells the engine how to start new work (sca-ejy).
     watch_check: bool = False
+    watch_run_id: str = ""
+    """Result file name for this turn's background work, issued by the code.
+    Empty means no name was minted, and the guidance that names it is left
+    out — an unfilled slot would reach the engine as a literal (sca-17p)."""
     postmortem: bool = False
     debug_trace: bool = False
     format_review: bool = False
@@ -275,9 +279,17 @@ class WatchSection(PromptSection):
     def applies_to(self, ctx: CompositionContext) -> bool:
         return not ctx.aside
 
+    RUN_ID_SLOT = "<<WATCH_RUN_ID>>"
+
     def render(self, ctx: CompositionContext) -> str:
-        name = "WATCH_CHECK_NOTE" if ctx.watch_check else "WATCH_NOTE"
-        return ctx._library_or_raise().text(name)
+        library = ctx._library_or_raise()
+        if ctx.watch_check:
+            return library.text("WATCH_CHECK_NOTE")
+        text = library.text("WATCH_NOTE")
+        if ctx.watch_run_id:
+            background = library.text("WATCH_BACKGROUND_NOTE", keep_slots=("WATCH_RUN_ID",))
+            text += "\n\n" + background.replace(self.RUN_ID_SLOT, ctx.watch_run_id)
+        return text
 
 
 class PresentPeopleSection(PromptSection):
