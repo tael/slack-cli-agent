@@ -468,8 +468,13 @@ class TestSlackGateway:
         assert received == [("a", event), ("b", event)]
 
     def test_등록되지_않은_이벤트타입은_아무_일도_하지_않는다(self) -> None:
+        """다른 타입의 핸들러가 관찰 지점이다. 부작용의 부재만 보면 아무것도
+        안 부르는 구현과 전부 부르는 구현이 같아 보인다."""
         gateway = SlackGateway(client=FakeWebClient())
-        gateway.dispatch("reaction_added", {"reaction": "dango"})  # 예외 없음
+        받은것: list[dict] = []
+        gateway.on("app_mention", 받은것.append)
+        gateway.dispatch("reaction_added", {"reaction": "dango"})
+        assert 받은것 == []
 
     def test_핸들러_개수를_센다(self) -> None:
         gateway = SlackGateway(client=FakeWebClient())
@@ -489,9 +494,15 @@ class TestSlackGatewayConnection:
         assert received == [{"type": "app_mention", "channel": "C1"}]
 
     def test_event_가_없는_payload_는_아무_일도_하지_않는다(self) -> None:
+        """타입이 빈 문자열인 핸들러까지 걸어 둔다. 빈 event 를 타입 "" 로
+        분배하는 구현이면 여기서 걸린다."""
         gateway = SlackGateway(client=FakeWebClient())
+        받은것: list[dict] = []
+        gateway.on("app_mention", 받은것.append)
+        gateway.on("", 받은것.append)
         gateway.handle_events_api({})
         gateway.handle_events_api({"event": {}})
+        assert 받은것 == []
 
     def test_핸들러_예외가_밖으로_나가지_않고_기록된다(
         self, caplog: pytest.LogCaptureFixture
