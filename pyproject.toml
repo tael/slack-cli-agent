@@ -27,6 +27,10 @@ where = ["src"]
 # Default prompts so a freshly installed bot can boot before an operator has
 # written any org-specific prompt files under the state directory.
 "slack_cli_agent.assets" = ["prompts/*.md", "*.png"]
+# Marks the package as typed. Without it mypy treats every import of this
+# package from outside src/ as untyped, so the test suite could not be
+# type-checked at all (sca-rzk).
+"slack_cli_agent" = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -45,6 +49,38 @@ target-version = "py311"
 [tool.mypy]
 python_version = "3.11"
 strict = true
+# tests/conftest.py and tests/real_cli/conftest.py share a module name, which
+# stops the check before it starts unless paths map to modules by directory.
+explicit_package_bases = true
+# src is listed so files under it map to `slack_cli_agent.*` rather than
+# `src.slack_cli_agent.*`, which would not match the override below and would
+# collide with the installed package. Test helpers are imported by bare name
+# (`from preflight_support import ...`), the way pytest puts the test
+# directory on sys.path.
+mypy_path = "src:tests/unit"
+
+# Annotation-requiring rules are off by default and turned back on for the
+# package below. They cannot be scoped the other way round: mypy only accepts
+# whole components as wildcards, so there is no pattern matching `test_*`, and
+# the helper modules above have no package prefix to match on either (sca-rzk).
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disallow_any_generics = false
+warn_return_any = false
+warn_unused_ignores = false
+
+# Tests stay loose on annotations. What they must still catch is a fake whose
+# signature drifted from the real one - that shows up as arg-type or
+# attr-defined, which are on everywhere.
+[[tool.mypy.overrides]]
+module = ["slack_cli_agent.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_any_generics = true
+warn_return_any = true
+warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
 module = [
