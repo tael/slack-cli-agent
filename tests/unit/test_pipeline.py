@@ -409,12 +409,16 @@ class Test엔진성공:
         assert len(deps["audit"].records) == 1
         assert deps["audit"].records[0]["ok"] is True
 
-    def test_완료_표식을_단다(self, tmp_path: Path) -> None:
+    def test_처리중_표식만_달고_최종_표식은_워커에_맡긴다(self, tmp_path: Path) -> None:
+        """최종 표식은 워커가 단다. 둘 다 달면 슬랙 호출이 겹치고 감시 표식이
+        완료 표식으로 덮인다(sca-t1g)."""
         pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
-        pipeline.handle(make_ctx())
+        outcome = pipeline.handle(make_ctx())
 
-        assert ("processing", "C1", "1700000001.000100") in deps["reactions"].events
-        assert ("done", "C1", "1700000001.000100") in deps["reactions"].events
+        assert deps["reactions"].events == [("processing", "C1", "1700000001.000100")]
+        assert outcome.ok is True
+        assert outcome.watching is False
+        assert outcome.silent is False
 
     def test_감사_기록에_사용자와_턴_수가_담긴다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
@@ -476,13 +480,15 @@ class Test엔진실패:
         assert record["user"] == "U1"
         assert record["turns"] is None
 
-    def test_실패_표식을_단다(self, tmp_path: Path) -> None:
+    def test_실패를_표식이_아니라_결과로_알린다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(
             responses=[fail_response("usage_limit")], tmp_path=tmp_path,
         )
-        pipeline.handle(make_ctx())
+        outcome = pipeline.handle(make_ctx())
 
-        assert ("failed", "C1", "1700000001.000100") in deps["reactions"].events
+        assert "failed" not in [이름 for 이름, _채널, _ts in deps["reactions"].events]
+        assert outcome.ok is False
+        assert outcome.failure
 
 
 class Test예외처리:
@@ -516,13 +522,14 @@ class Test예외처리:
         assert record["user"] == "U1"
         assert record.get("turns") is None
 
-    def test_예외가_나도_실패_표식을_단다(self, tmp_path: Path) -> None:
+    def test_예외가_나도_실패를_결과로_알린다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(
             responses=[ok_response()], composer=_Explodes(), tmp_path=tmp_path,
         )
-        pipeline.handle(make_ctx())
+        outcome = pipeline.handle(make_ctx())
 
-        assert ("failed", "C1", "1700000001.000100") in deps["reactions"].events
+        assert "failed" not in [이름 for 이름, _채널, _ts in deps["reactions"].events]
+        assert outcome.ok is False
 
 
 class Test세션이어받기실패:
@@ -612,15 +619,16 @@ class Test침묵:
         assert outcome.posted_ts == ""
         assert not deps["publisher"].posted
 
-    def test_침묵_표식을_단다(self, tmp_path: Path) -> None:
+    def test_침묵을_표식이_아니라_결과로_알린다(self, tmp_path: Path) -> None:
         from slack_cli_agent.prompt.sections import SILENT_MARK
 
         pipeline, deps = build_pipeline(
             responses=[ok_response(body=SILENT_MARK)], tmp_path=tmp_path,
         )
-        pipeline.handle(make_ctx())
+        outcome = pipeline.handle(make_ctx())
 
-        assert ("silent", "C1", "1700000001.000100") in deps["reactions"].events
+        assert "silent" not in [이름 for 이름, _채널, _ts in deps["reactions"].events]
+        assert outcome.silent is True
 
     def test_침묵도_감사에_남는다(self, tmp_path: Path) -> None:
         from slack_cli_agent.prompt.sections import SILENT_MARK
@@ -1360,31 +1368,32 @@ class Test감시등록:
 
         assert 큐.enqueued[0]["trust"] is TrustLevel.OWNER
 
-    def test_등록되면_완료표식이아니라_감시표식을단다(self, tmp_path: Path) -> None:
-        """완료 표식을 달면 미완료 복구 대상에서 빠져 캐치업이 다시 보지 않는다."""
+    def test_등록되면_감시중이라고_결과에_적는다(self, tmp_path: Path) -> None:
+        """워커가 이 값으로 감시 표식을 고른다. 완료 표식을 달면 미완료 복구
+        대상에서 빠져 캐치업이 다시 보지 않는다."""
         큐 = Fake감시큐()
         pipeline, deps = build_pipeline(
             responses=[ok_response(body="네\n\n[[WATCH: 작업 상태]]")],
             guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
         )
-        pipeline.handle(make_ctx())
+        outcome = pipeline.handle(make_ctx())
 
+        assert outcome.watching is True
         종류 = [이름 for 이름, _채널, _ts in deps["reactions"].events]
-        assert "watch" in 종류
+        assert "watch" not in 종류
         assert "done" not in 종류
 
-    def test_감시태그가없으면_등록도표식도없다(self, tmp_path: Path) -> None:
+    def test_감시태그가없으면_등록도_감시중_표시도_없다(self, tmp_path: Path) -> None:
         큐 = Fake감시큐()
         pipeline, deps = build_pipeline(
             responses=[ok_response(body="그냥 답변입니다")],
             guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
         )
-        pipeline.handle(make_ctx())
+        outcome = pipeline.handle(make_ctx())
 
         assert 큐.enqueued == []
-        종류 = [이름 for 이름, _채널, _ts in deps["reactions"].events]
-        assert "watch" not in 종류
-        assert "done" in 종류
+        assert outcome.watching is False
+        assert "watch" not in [이름 for 이름, _채널, _ts in deps["reactions"].events]
 
     def test_큐를안주면_태그가있어도_그대로완료처리된다(self, tmp_path: Path) -> None:
         """큐 없이 조립한 경우다. 등록만 안 할 뿐 발신은 그대로 끝나야 한다."""
@@ -1583,24 +1592,23 @@ class Test띄운_작업은_태그가_없어도_등록된다:
             guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
             new_run_id=lambda: "고정아이디",
         )
-        pipeline.handle(make_ctx())
+        outcome = pipeline.handle(make_ctx())
 
         assert [작업["run_id"] for 작업 in 큐.enqueued] == ["고정아이디"]
-        종류 = [이름 for 이름, _채널, _ts in deps["reactions"].events]
-        assert "watch" in 종류
-        assert "done" not in 종류
+        assert outcome.watching is True
+        assert "watch" not in [이름 for 이름, _채널, _ts in deps["reactions"].events]
 
     def test_흔적이_없으면_그대로_완료다(self, tmp_path: Path) -> None:
         큐 = Fake감시큐()
-        pipeline, deps = build_pipeline(
+        pipeline, _deps = build_pipeline(
             responses=[ok_response(body="그냥 답변입니다")],
             guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
             new_run_id=lambda: "고정아이디",
         )
-        pipeline.handle(make_ctx())
+        outcome = pipeline.handle(make_ctx())
 
         assert 큐.enqueued == []
-        assert "done" in [이름 for 이름, _채널, _ts in deps["reactions"].events]
+        assert outcome.watching is False
 
     def test_태그와_흔적이_둘_다여도_한_번만_등록한다(self, tmp_path: Path) -> None:
         """두 번 등록되면 같은 결과 파일에 감시가 둘 붙어 보고도 둘 나간다."""
