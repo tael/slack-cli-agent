@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -66,6 +67,7 @@ def prompts_dir(tmp_path: Path) -> Path:
         "mechanism_note": "구조공개 안내",
         "watch_note": "지켜보기 안내",
         "watch_check_note": "확인만 하는 안내",
+        "watch_background_note": "결과 파일 <<WATCH_RUN_ID>> 안내",
         "chat_guide_normal": "보통 채널 안내",
     }.items():
         write(d / f"{name}.md", body)
@@ -362,6 +364,7 @@ class TestPromptLibraryDefaultsFallback:
             "MECHANISM_NOTE",
             "WATCH_NOTE",
             "WATCH_CHECK_NOTE",
+            "WATCH_BACKGROUND_NOTE",
             "CHAT_GUIDE_ACTIVE",
             "CHAT_GUIDE_NORMAL",
             "CHAT_GUIDE_QUIET",
@@ -395,3 +398,61 @@ class Test감시_확인_턴의_안내:
         본문 = self._조립(library, knowledge, watch_check=True)
         assert "확인만 하는 안내" in 본문
         assert "지켜보기 안내" not in 본문
+
+
+class Test감시_결과_파일_안내:
+    """결과 파일 이름을 모델이 정하면 두 감시가 같은 파일을 쓸 수 있고, 확인
+    턴이 어느 파일을 볼지도 코드가 모른다. 이름은 코드가 발급해 프롬프트에
+    적어 준다 (sca-17p).
+    """
+
+    def _조립(self, library: PromptLibrary, knowledge: KnowledgeLoader, **overrides: Any) -> str:
+        composer = SystemPromptComposer(library, knowledge, base_sections())
+        return composer.compose(CompositionContext(principal=OWNER, **overrides))
+
+    def test_발급된_이름이_안내에_들어간다(
+        self, library: PromptLibrary, knowledge: KnowledgeLoader
+    ) -> None:
+        본문 = self._조립(library, knowledge, watch_run_id="9f3a2b1c")
+
+        assert "결과 파일 9f3a2b1c 안내" in 본문
+
+    def test_이름이_없으면_그_안내를_안_준다(
+        self, library: PromptLibrary, knowledge: KnowledgeLoader
+    ) -> None:
+        """미치환 슬롯이 그대로 프롬프트에 나가면 모델이 그 문자열을 파일
+        이름으로 쓴다."""
+        본문 = self._조립(library, knowledge)
+
+        assert "결과 파일" not in 본문
+        assert "WATCH_RUN_ID" not in 본문
+
+    def test_확인_턴에는_안_준다(
+        self, library: PromptLibrary, knowledge: KnowledgeLoader
+    ) -> None:
+        """확인 턴은 새 백그라운드 작업을 띄우지 않는다."""
+        본문 = self._조립(library, knowledge, watch_check=True, watch_run_id="9f3a2b1c")
+
+        assert "결과 파일" not in 본문
+
+
+class Test동봉_자산으로_조립한_결과:
+    """축소 fixture 로만 보면 슬롯 오타나 실제 자산의 경로 변경을 못 잡는다.
+    최종 프롬프트에 그 파일 경로가 실제로 들어가는지 본다 (코덱스 검토).
+    """
+
+    def test_결과_파일_경로가_그대로_들어간다(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "prompts"
+        state_dir.mkdir()
+        composer = SystemPromptComposer(
+            PromptLibrary(state_dir),
+            KnowledgeLoader(tmp_path / "없음.md", tmp_path / "knowledge"),
+            base_sections(),
+        )
+
+        본문 = composer.compose(
+            CompositionContext(principal=OWNER, watch_run_id="fixed-run-id")
+        )
+
+        assert ".watch-out/fixed-run-id.out" in 본문
+        assert "<<WATCH_RUN_ID>>" not in 본문

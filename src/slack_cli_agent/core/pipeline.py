@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
@@ -84,6 +85,8 @@ class RequestPipeline:
         progress: ProgressCoordinator | None = None,
         now: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
+        # Injected so a test can state the name instead of matching a uuid.
+        new_run_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
     ) -> None:
         self._access = access_policy
         self._transcript = transcript_builder
@@ -96,6 +99,7 @@ class RequestPipeline:
         self._audit = audit
         self._channels = channels
         self._default_workdir = default_workdir
+        self._new_run_id = new_run_id
         self._owner_user_id = owner_user_id
         self._reactions = reactions
         self._name_resolver = name_resolver
@@ -220,9 +224,14 @@ class RequestPipeline:
         key = self._session_key(ctx, scope)
         decision = self._sessions.resolve(key, engine=self._engine.name)
 
+        # Minted before the turn so the prompt can name the exact result file.
+        # Leaving the name to the engine lets two watches share one file, and
+        # then the check turn has no file to look at (sca-17p).
+        run_id = self._new_run_id()
+
         prompt = self._build_prompt(ctx, scope, decision)
         system_prompt = self._compose_system_prompt(
-            ctx, principal, channel_mode, channel_slug, rich, chat_level
+            ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id
         )
 
         progress_log = (
@@ -253,8 +262,15 @@ class RequestPipeline:
             ):
                 decision = self._sessions.reset(key, engine=self._engine.name)
                 prompt = self._build_prompt(ctx, scope, decision)
+                # A fresh name: the first attempt may already have launched the
+                # background command, and reusing the name puts two processes
+                # on one result file (codex review).
+                run_id = self._new_run_id()
                 request = replace(
-                    request, session_id=decision.session_id, resume=False, prompt=prompt
+                    request, session_id=decision.session_id, resume=False, prompt=prompt,
+                    system_prompt=self._compose_system_prompt(
+                        ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id
+                    ),
                 )
                 response = self._invoker.invoke(request)
 
@@ -295,7 +311,7 @@ class RequestPipeline:
         self._archive_response(ctx, channel_slug, body, response, elapsed)
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage, turns=response.turns)
-        if watch_desc and self._register_watch(ctx, principal, watch_desc, workdir):
+        if watch_desc and self._register_watch(ctx, principal, watch_desc, workdir, run_id):
             # Not "done" — marking it done would exclude it from catch-up recovery.
             self._mark_watch(ctx)
         else:
@@ -363,6 +379,7 @@ class RequestPipeline:
         channel_slug: str,
         rich: bool,
         chat_level: str,
+        run_id: str = "",
     ) -> str:
         is_owner = principal.trust is TrustLevel.OWNER
         asker_name = "" if is_owner else (self._name_resolver(ctx.user) or ctx.user)
@@ -377,6 +394,7 @@ class RequestPipeline:
             unaddressed=ctx.unaddressed,
             chat_level=chat_level,
             people=self._present_people(ctx),
+            watch_run_id=run_id,
         )
         return self._composer.compose(composition_ctx)
 
@@ -489,7 +507,8 @@ class RequestPipeline:
             )
 
     def _register_watch(
-        self, ctx: RequestContext, principal: Principal, description: str, workdir: Path
+        self, ctx: RequestContext, principal: Principal, description: str,
+        workdir: Path, run_id: str,
     ) -> bool:
         if self._watch_queue is None:
             return False
@@ -501,6 +520,7 @@ class RequestPipeline:
                 # config can change in between, and the result of the work sits
                 # under the directory the request actually ran in (sca-6zt).
                 workdir=str(workdir),
+                run_id=run_id,
             )
         except Exception as exc:  # noqa: BLE001 — the answer is already sent; a retry on this failure would double-post it
             log.warning("감시 등록 실패 : %s", exc)
