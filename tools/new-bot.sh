@@ -64,6 +64,11 @@ echo "== 3. 앱 생성"
 APP_ID=$("$REPO/tools/slack-app.py" create "$BOT_WORKSPACE" /tmp/$NAME-manifest.json)
 echo "  app_id=$APP_ID"
 
+echo "== 3-1. 레지스트리"
+# app_id 를 여기서 안 적으면 그 뒤로 아무 데도 없다. 매니페스트 일일 감사가
+# 전체 봇을 돌려면 이 값이 있어야 한다 (sca-4eo).
+"$REPO/tools/slack-app.py" register "$BOT_WORKSPACE" "$APP_ID" "$NAME" "$REPO/slack-apps/$NAME.json"
+
 echo "== 4. 아이콘"
 "$REPO/tools/slack-app.py" icon "$BOT_WORKSPACE" "$APP_ID" "$ICON"
 
