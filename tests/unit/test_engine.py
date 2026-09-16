@@ -285,6 +285,35 @@ class TestClaudeEngineBuildCommand:
         assert cmd[cmd.index("--model") + 1] == "claude-opus-5"
         assert cmd[cmd.index("--effort") + 1] == "high"
 
+    def test_진행_로그가_없으면_settings를_안_붙인다(self, tmp_path: Path) -> None:
+        profile = claude_profile(tmp_path)
+        engine = ClaudeEngine(profile, SETTINGS)
+        assert "--settings" not in engine.build_command(request())
+
+    def test_진행_로그가_있으면_도구_시작_훅을_등록한다(self, tmp_path: Path) -> None:
+        import sys
+
+        profile = claude_profile(tmp_path)
+        engine = ClaudeEngine(profile, SETTINGS)
+        log_path = tmp_path / "progress" / "C1-1.0.log"
+        cmd = engine.build_command(request(progress_log=log_path))
+        loaded = json.loads(cmd[cmd.index("--settings") + 1])
+        hooks = loaded["hooks"]["PreToolUse"][0]["hooks"]
+        assert len(hooks) == 1
+        # 엔진 환경은 최소 허용 목록이라 PATH 의 python3 에 기댈 수 없다
+        assert hooks[0]["command"].startswith(sys.executable)
+
+    def test_공백이_든_경로도_한_인자로_전달된다(self, tmp_path: Path) -> None:
+        import shlex
+
+        profile = claude_profile(tmp_path)
+        engine = ClaudeEngine(profile, SETTINGS)
+        log_path = tmp_path / "빈 칸 있는 경로" / "C1-1.0.log"
+        cmd = engine.build_command(request(progress_log=log_path))
+        loaded = json.loads(cmd[cmd.index("--settings") + 1])
+        command = loaded["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        assert shlex.split(command)[-1] == str(log_path)
+
 
 class TestClaudeEngineNewSessionId:
     def test_uuid_형식을_돌려준다(self, tmp_path: Path) -> None:
