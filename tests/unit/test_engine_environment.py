@@ -269,7 +269,7 @@ class TestCreateEnvironmentPolicy:
             create_environment_policy("unknown", profile_name="examplebot", home_dir=None)
 
     def test_unknown_engine_name_lists_known_engines_in_error(self):
-        with pytest.raises(ConfigError, match="codex.*claude|claude.*codex"):
+        with pytest.raises(ConfigError, match=r"codex.*claude|claude.*codex"):
             create_environment_policy("unknown", profile_name="examplebot", home_dir=None)
 
 

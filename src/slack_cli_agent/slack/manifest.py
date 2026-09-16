@@ -66,7 +66,7 @@ class AppManifest:
         text = text.replace("__DISPLAY__", display).replace("__NAME__", name)
         # A slot left behind means the template grew a placeholder this method
         # doesn't know, and it would reach Slack verbatim as the app's name.
-        leftover = [slot for slot in cls._placeholders(text)]
+        leftover = list(cls._placeholders(text))
         if leftover:
             raise ValueError(
                 f"템플릿에 채우지 못한 자리가 남았다 : {', '.join(leftover)} — "

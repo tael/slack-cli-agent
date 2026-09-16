@@ -88,7 +88,7 @@ def test_미완료로_남은_날은_이틀이_지나도_다시_후보가_된다(
     """
     schedule = DailyBatchSchedule(
         clock=_clock("2026-09-16 23:30"), run_hour=22,
-        is_done=lambda day: day not in {"2026-09-14"},
+        is_done=lambda day: day != "2026-09-14",
         unsettled_days=lambda: ("2026-09-14",),
     )
     assert schedule.due_day() == "2026-09-14"

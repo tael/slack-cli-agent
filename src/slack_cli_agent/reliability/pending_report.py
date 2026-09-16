@@ -8,6 +8,7 @@ unsent report is kept.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
@@ -79,10 +80,8 @@ class PendingReportStore:
         # If a newer report was saved in the meantime, keep that one instead
         # — this is a single slot, so only the most recent report survives.
         if self._path.exists():
-            try:
+            with contextlib.suppress(OSError):
                 claimed.unlink()
-            except OSError:
-                pass
             return
         try:
             claimed.rename(self._path)

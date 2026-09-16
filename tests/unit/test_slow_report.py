@@ -609,18 +609,21 @@ class TestUsageRowBuilder세션행:
         return UsageRowBuilder(owner_only_channels=frozenset({"TS"}), session_context=고정계산기())
 
     def test_한도를_알면_비율을_적는다(self) -> None:
-        rows = self._builder(100_000, 200_000).build(None, "TS", reader=FakeTranscriptReader([]), session_id="s1", model="m")
+        rows = self._builder(100_000, 200_000).build(
+            None, "TS", reader=FakeTranscriptReader([]), session_id="s1", model="m")
         assert rows[1][0] == "세션"
         assert "100k/200k" in rows[1][1]
         assert "50퍼센트" in rows[1][1]
 
     def test_한도를_모르면_비율을_안_적는다(self) -> None:
-        rows = self._builder(100_000, None).build(None, "TS", reader=FakeTranscriptReader([]), session_id="s1", model="m")
+        rows = self._builder(100_000, None).build(
+            None, "TS", reader=FakeTranscriptReader([]), session_id="s1", model="m")
         assert "퍼센트" not in rows[1][1]
         assert "한도 미상" in rows[1][1]
 
     def test_사용량을_못_읽으면_사유를_적는다(self) -> None:
-        rows = self._builder(None, 200_000).build(None, "TS", reader=FakeTranscriptReader([]), session_id="s1", model="m")
+        rows = self._builder(None, 200_000).build(
+            None, "TS", reader=FakeTranscriptReader([]), session_id="s1", model="m")
         assert "조회 실패" in rows[1][1]
 
     def test_소유자_전용_채널이_아니면_세션_행도_안_낸다(self) -> None:

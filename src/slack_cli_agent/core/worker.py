@@ -23,9 +23,9 @@ from ..jobs.ports import JobQueue, ReclaimResult
 from ..reliability.catchup import CatchupReport, RetryStatus
 from ..reliability.ports import CatchupPort
 from ..reliability.watchjobs import ActiveWatchPort
+from ..slack.reactions import ReactionMarker
 
 _Mark = Callable[[str, str], None]
-from ..slack.reactions import ReactionMarker
 
 log = logging.getLogger(__name__)
 
