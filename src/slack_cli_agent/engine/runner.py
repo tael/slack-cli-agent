@@ -176,10 +176,16 @@ class EngineInvoker(ABC):
                origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse: ...
 
 
+class EngineRunPort(Protocol):
+    """What DirectInvoker needs. EngineRunner satisfies it."""
+
+    def run(self, engine: Engine, request: EngineRequest) -> EngineResponse: ...
+
+
 class DirectInvoker(EngineInvoker):
     """No fallback configured — runs that one engine via the runner."""
 
-    def __init__(self, runner: EngineRunner, engine: Engine) -> None:
+    def __init__(self, runner: EngineRunPort, engine: Engine) -> None:
         self._runner = runner
         self._engine = engine
 

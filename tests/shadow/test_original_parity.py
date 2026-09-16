@@ -29,6 +29,7 @@ from slack_cli_agent.engine.base import (
 )
 from slack_cli_agent.engine.runner import EngineRunner, FallbackEngine
 from slack_cli_agent.engine.switcher import EngineSwitcher
+from slack_cli_agent.engine.transcript import SessionTranscriptReader, TranscriptEvent
 from slack_cli_agent.guard.watch import (
     PROMISE_WITHOUT_WATCH_RE,
     WATCH_DONE_TAG,
@@ -47,7 +48,7 @@ from slack_cli_agent.reliability.health import SOCKET_ERROR_WINDOW_SEC
 from slack_cli_agent.render.blocks import SPLIT_MARKER, BlockBuilder
 from slack_cli_agent.render.splitter import ATOMIC_HEADS
 from slack_cli_agent.review.base import REVIEW_SPLIT
-from slack_cli_agent.slack.attachments import AttachmentStore
+from slack_cli_agent.slack.attachments import AttachmentStore, DownloadResult
 from slack_cli_agent.slack.gate import ASKED_BACK, REACTION_MAX_LEN, ResponseGate
 from slack_cli_agent.slack.reactions import (
     DEBUG_TRACE_EMOJI,
@@ -243,7 +244,7 @@ class Test첨부_저장_상수:
     def _store(self, tmp_path: Path) -> AttachmentStore:
         return AttachmentStore(
             attach_dir=tmp_path, token_provider=lambda: "tok",
-            downloader=lambda url, token: None,  # type: ignore[return-value]
+            downloader=lambda url, token: DownloadResult(content_type="text/plain", data=b""),
         )
 
     def test_최대_첨부_파일_수가_5다(self, tmp_path: Path) -> None:
@@ -518,8 +519,8 @@ class Test사용량_노출_규칙:
         """원본 bot.py:3400 근처 `session_context()` 의 한도 None 경로다.
         표에 없는 모델에 임의 한도를 쓰면 소진 임박 판정이 틀린다.
         """
-        class 빈기록:
-            def read(self, session_id: str) -> list:
+        class 빈기록(SessionTranscriptReader):
+            def read(self, session_id: str) -> list[TranscriptEvent]:
                 return []
 
         calculator = SessionContextCalculator(context_limit={})

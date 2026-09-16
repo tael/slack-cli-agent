@@ -105,7 +105,8 @@ class Test조립:
         res = console.router().handle("GET", "/api/bots", {}, None)
 
         assert res.status == 200
-        assert [row["name"] for row in res.body] == ["another", "example"]  # type: ignore[union-attr,index]
+        assert isinstance(res.body, list)
+        assert [row["name"] for row in res.body] == ["another", "example"]
 
     def test_프로필을_저장하면_파일이_바뀐다(self, tmp_path: Path) -> None:
         console = make_console(tmp_path)
