@@ -32,6 +32,7 @@ from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter
 from ..prompt.composer import SystemPromptComposer
 from ..prompt.sections import SILENT_MARK, CompositionContext
 from ..reliability.watchjobs import WatchJobPort
+from ..reliability.watchresult import WatchResultReader
 from ..session.manager import SessionDecision, SessionManager
 from ..session.ports import SessionKey, SessionScope
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
@@ -42,6 +43,15 @@ from .context import RequestContext
 from .ports import HandleOutcome
 
 log = logging.getLogger(__name__)
+
+LAUNCHED_WATCH_DESC = "코드가 발급한 이름으로 띄운 백그라운드 작업"
+"""Watch description for work launched without a tag.
+
+Fixed on purpose. The description is interpolated into the check turn's
+prompt as an instruction, so putting the request text there would let a
+sentence in it become that turn's instruction. What the work did comes from
+the result file, not from here (codex review).
+"""
 
 class RequestPipeline:
     def __init__(
@@ -87,6 +97,7 @@ class RequestPipeline:
         monotonic: Callable[[], float] = time.monotonic,
         # Injected so a test can state the name instead of matching a uuid.
         new_run_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
+        watch_results: WatchResultReader | None = None,
     ) -> None:
         self._access = access_policy
         self._transcript = transcript_builder
@@ -100,6 +111,7 @@ class RequestPipeline:
         self._channels = channels
         self._default_workdir = default_workdir
         self._new_run_id = new_run_id
+        self._watch_results = watch_results or WatchResultReader()
         self._owner_user_id = owner_user_id
         self._reactions = reactions
         self._name_resolver = name_resolver
@@ -311,6 +323,7 @@ class RequestPipeline:
         self._archive_response(ctx, channel_slug, body, response, elapsed)
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage, turns=response.turns)
+        watch_desc = watch_desc or self._watch_desc_for_launched(workdir, run_id)
         if watch_desc and self._register_watch(ctx, principal, watch_desc, workdir, run_id):
             # Not "done" — marking it done would exclude it from catch-up recovery.
             self._mark_watch(ctx)
@@ -505,6 +518,15 @@ class RequestPipeline:
                 IncidentKind.REWRITE_LOSS.value, channel=ctx.channel, thread_ts=ctx.thread_ts,
                 before_chars=loss.get("before_chars"), after_chars=loss.get("after_chars"),
             )
+
+    def _watch_desc_for_launched(self, workdir: Path, run_id: str) -> str:
+        """What to watch when the engine launched background work but emitted
+        no tag. Registration used to depend on that tag, so work that ran
+        without one finished with nobody reading its exit status (sca-pq5).
+        """
+        if not self._watch_results.launched(str(workdir), run_id):
+            return ""
+        return LAUNCHED_WATCH_DESC
 
     def _register_watch(
         self, ctx: RequestContext, principal: Principal, description: str,

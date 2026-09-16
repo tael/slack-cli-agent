@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -222,3 +223,49 @@ class Test표식_문자열이_프롬프트와_같다:
             / "src/slack_cli_agent/assets/prompts/watch_background_note.md"
         ).read_text(encoding="utf-8")
         assert MARKER_PREFIX in 본문
+
+
+class Test띄웠는지_판정:
+    """감시 등록은 모델이 태그를 붙이는지에 달려 있었다. 실측 2026-09-17 에
+    백그라운드는 띄우고 태그를 안 내서, 작업이 끝나고 종료 상태까지 남았는데
+    스레드에 아무 보고도 안 갔다. 파일 존재는 사실이고 태그는 협조다 (sca-pq5).
+
+    증거로 쓰는 것은 결과 파일 하나다. 셸 리다이렉션이 nohup 실행 즉시 그
+    파일을 만들기 때문에, 그것이 있다는 것은 작업이 떴다는 뜻이다. 스크립트
+    파일은 그 앞 단계라, 그것만 있으면 nohup 이 실패했거나 모델이 중간에
+    멈춘 것이다 (코덱스 검토).
+    """
+
+    def test_결과_파일이_있으면_띄운_것이다(self, 작업디렉터리, 리더) -> None:
+        자리 = Path(작업디렉터리) / ".watch-out"
+        자리.mkdir()
+        (자리 / "9f3a2b.out").write_text("", encoding="utf-8")
+        assert 리더.launched(작업디렉터리, "9f3a2b") is True
+
+    def test_스크립트만_있으면_안_띄운_것이다(self, 작업디렉터리, 리더) -> None:
+        """등록하면 결과 파일이 영영 안 생겨 24시간 뒤 포기 알림만 나간다."""
+        자리 = Path(작업디렉터리) / ".watch-out"
+        자리.mkdir()
+        (자리 / "9f3a2b.sh").write_text("sleep 50\n", encoding="utf-8")
+        assert 리더.launched(작업디렉터리, "9f3a2b") is False
+
+    def test_아무것도_없으면_안_띄운_것이다(self, 작업디렉터리, 리더) -> None:
+        assert 리더.launched(작업디렉터리, "9f3a2b") is False
+
+    def test_다른_이름의_파일은_세지_않는다(self, 작업디렉터리, 리더) -> None:
+        """이름을 코드가 발급하는 이유다. 남의 결과를 내 것으로 읽으면 안 된다."""
+        자리 = Path(작업디렉터리) / ".watch-out"
+        자리.mkdir()
+        (자리 / "다른이름.out").write_text("", encoding="utf-8")
+        assert 리더.launched(작업디렉터리, "9f3a2b") is False
+
+    def test_디렉터리는_결과_파일이_아니다(self, 작업디렉터리, 리더) -> None:
+        """exists 는 디렉터리에도 참이다. 읽을 수 없는 것을 증거로 쓰지 않는다."""
+        자리 = Path(작업디렉터리) / ".watch-out" / "9f3a2b.out"
+        자리.mkdir(parents=True)
+        assert 리더.launched(작업디렉터리, "9f3a2b") is False
+
+    def test_쓸_수_없는_이름은_False다(self, 작업디렉터리, 리더) -> None:
+        assert 리더.launched(작업디렉터리, "../evil") is False
+        assert 리더.launched(작업디렉터리, "") is False
+        assert 리더.launched("", "9f3a2b") is False
