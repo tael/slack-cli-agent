@@ -15,7 +15,7 @@ from collections.abc import Callable
 from ..config.channel import ChannelRegistry
 from ..config.settings import RuntimeSettings
 from ..engine.base import EngineResponse
-from ..guard.watch import WATCH_DONE_TAG, WATCH_MARK_EMOJI, WATCH_STILL_TAG
+from ..guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG
 from ..slack.publisher import MessagePublisher
 from ..slack.reactions import ReactionMarker
 from .watchjobs import WatchJob, WatchJobPort
@@ -102,6 +102,7 @@ class WatchJobChecker:
             if self._notify_owner is not None:
                 self._notify_owner(_give_up_report(job))
             self._queue.mark_done(job.id)
+            self._settle_mark(job, failed=True)
 
         for job in self._queue.due(now, self._settings.watch_job_min_gap_sec):
             if job.id in given_up_ids:
@@ -164,6 +165,28 @@ class WatchJobChecker:
             )
         self._queue.mark_checked(job.id, now)
 
+    def _settle_mark(self, job: WatchJob, *, failed: bool) -> None:
+        """Applies the final mark. The watch mark comes off inside that call —
+        `STALE_ON_SETTLE` covers it — so there is no separate removal here to
+        fail on its own and leave mag next to the final mark (sca-3p6).
+
+        The give-up path goes through here too: its report only reaches the
+        owner, so a message left marked reads as still being watched while the
+        queue no longer has it. The original bot.py leaves the mark on.
+
+        Callers close the queue first. Reactions are cosmetic, and an exception
+        here must not put the job back in line for another owner report.
+        """
+        if self._reactions is None or not job.msg_ts:
+            return
+        try:
+            if failed:
+                self._reactions.mark_failed(job.channel, job.msg_ts)
+            else:
+                self._reactions.mark_done(job.channel, job.msg_ts)
+        except Exception as exc:  # noqa: BLE001 — cosmetic; see module docstring
+            log.error("감시 표식 정리 실패 : 작업 %d, 채널 %s, %s", job.id, job.channel, exc)
+
     def _outcome_of(self, job: WatchJob) -> WatchOutcome:
         if self._results is None:
             return WatchOutcome.UNKNOWN
@@ -183,11 +206,8 @@ class WatchJobChecker:
         except Exception as exc:  # noqa: BLE001 — a post failure shouldn't block marking done, or the same report reposts next round
             log.error("감시 완료 보고 발송 실패 : 작업 %d, 채널 %s, %s", job.id, job.channel, exc)
 
-        if self._reactions is not None and job.msg_ts:
-            self._reactions.remove(job.channel, job.msg_ts, WATCH_MARK_EMOJI)
-            self._reactions.mark_done(job.channel, job.msg_ts)
-
         self._queue.mark_done(job.id)
+        self._settle_mark(job, failed=False)
 
 
 def _strip_tags(raw_body: str) -> str:

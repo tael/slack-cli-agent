@@ -15,7 +15,7 @@ import pytest
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import NO_DETAIL, EngineResponse, FailureDetail
-from slack_cli_agent.guard.watch import WATCH_DONE_TAG, WATCH_MARK_EMOJI, WATCH_STILL_TAG
+from slack_cli_agent.guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG
 from slack_cli_agent.reliability.watchjobs import WatchJob, WatchJobQueue
 from slack_cli_agent.reliability.watchrunner import WatchJobChecker
 
@@ -68,12 +68,16 @@ class 가짜발행:
 class 가짜리액션:
     제거내역: list[tuple[str, str, str]] = field(default_factory=list)
     완료내역: list[tuple[str, str]] = field(default_factory=list)
+    실패내역: list[tuple[str, str]] = field(default_factory=list)
 
     def remove(self, channel: str, ts: str, name: str) -> None:
         self.제거내역.append((channel, ts, name))
 
     def mark_done(self, channel: str, ts: str) -> None:
         self.완료내역.append((channel, ts))
+
+    def mark_failed(self, channel: str, ts: str) -> None:
+        self.실패내역.append((channel, ts))
 
 
 def 설정(**overrides: Any) -> RuntimeSettings:
@@ -123,7 +127,9 @@ class Test완료처리:
 
         assert WATCH_DONE_TAG not in 발행.게시내역[0][2]
 
-    def test_완료시감시표식을떼고완료표식을단다(self, 큐) -> None:
+    def test_완료시완료표식하나로정리한다(self, 큐) -> None:
+        """감시 표식을 여기서 따로 떼지 않는다. mark_done 이 부르는 _settle 이
+        미완료 표식과 함께 감시 표식도 뗀다 (sca-3p6)."""
         큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
         리액션 = 가짜리액션()
         c = 체커(
@@ -133,7 +139,7 @@ class Test완료처리:
         큐.시각["값"] = 2000.0
         c.check_once()
 
-        assert 리액션.제거내역 == [("C1", "222.2", WATCH_MARK_EMOJI)]
+        assert 리액션.제거내역 == []
         assert 리액션.완료내역 == [("C1", "222.2")]
 
     def test_msg_ts가비어있으면리액션을건드리지않는다(self, 큐) -> None:
@@ -684,3 +690,128 @@ class Test실제_결과_파일로_판정한다:
         c.check_once()
 
         assert 호출 == []
+
+
+class Test포기한_건의_표식:
+    """포기 경로는 소유자에게만 알린다. 원 메시지에 감시 표식이 남으면 채널
+    쪽에서는 아직 지켜보는 중으로 보인다. 큐에는 없다 (sca-3p6).
+
+    원본 bot.py 는 포기 경로에서 이모지를 안 건드린다. 여기서 다르게 하는
+    이유가 이것이다.
+    """
+
+    def test_실패_표식_하나로_정리한다(self, 큐) -> None:
+        """실제 ReactionMarker.remove 는 슬랙 예외를 삼킨다. 감시 표식을 따로
+        떼면 그 호출이 조용히 실패한 뒤에도 실패 표식이 달려 mag 와 x 가 함께
+        남는다. 떼는 일은 _settle 한 곳에만 둔다."""
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        리액션 = 가짜리액션()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="무시"),
+            리액션=리액션, 설정값=설정(watch_job_max_age_sec=10.0),
+            notify_owner=lambda 본문: None,
+        )
+        큐.시각["값"] = 99999.0
+        c.check_once()
+
+        assert 리액션.제거내역 == []
+        assert 리액션.실패내역 == [("C1", "222.2")]
+        assert 리액션.완료내역 == []
+
+    def test_표식_대상_메시지가_없으면_아무것도_안_한다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        리액션 = 가짜리액션()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="무시"),
+            리액션=리액션, 설정값=설정(watch_job_max_age_sec=10.0),
+            notify_owner=lambda 본문: None,
+        )
+        큐.시각["값"] = 99999.0
+        c.check_once()
+
+        assert 리액션.제거내역 == []
+        assert 리액션.실패내역 == []
+
+    def test_리액션이_터져도_한_번만_알린다(self, 큐) -> None:
+        """표식 정리보다 큐 완료가 먼저다. 순서가 뒤집히면 예외가 완료를
+        건너뛰어 다음 회차가 같은 건을 다시 포기 보고한다."""
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+
+        class 터지는리액션(가짜리액션):
+            def mark_failed(self, channel: str, ts: str) -> None:
+                raise RuntimeError("리액션 실패")
+
+        통지: list[str] = []
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="무시"),
+            리액션=터지는리액션(), 설정값=설정(watch_job_max_age_sec=10.0),
+            notify_owner=통지.append,
+        )
+        큐.시각["값"] = 99999.0
+        c.check_once()
+        c.check_once()
+
+        assert len(통지) == 1
+        assert 큐.due(now=99999.0, min_gap=0.0) == []
+
+
+class Test완료_경로의_리액션_장애:
+    """완료 보고를 올린 뒤 표식 정리가 터져도 큐는 닫혀야 한다. 안 닫으면
+    다음 회차가 같은 보고를 스레드에 다시 올린다 (sca-3p6 코덱스 검토)."""
+
+    def test_완료_표식이_터져도_보고가_한_번만_나간다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+
+        class 터지는리액션(가짜리액션):
+            def mark_done(self, channel: str, ts: str) -> None:
+                raise RuntimeError("리액션 실패")
+
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
+            리액션=터지는리액션(), 발행=발행,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        c.check_once()
+
+        assert len(발행.게시내역) == 1
+        assert 큐.due(now=99999.0, min_gap=0.0) == []
+
+
+class Test큐를_먼저_닫는다:
+    """표식 정리가 예외를 삼키므로 순서가 뒤바뀌어도 지금은 결과가 같다. 그
+    방어가 하나 깨졌을 때를 대비해 순서 자체를 고정한다 — `except Exception`
+    은 BaseException 을 안 잡고, 표식 정리에 호출이 하나 더 붙을 수도 있다.
+    """
+
+    def _표식시점의_큐상태(self, 큐, *, 포기: bool) -> list:
+        기록: list = []
+
+        class 엿보는리액션(가짜리액션):
+            def mark_done(그, channel: str, ts: str) -> None:
+                기록.append(큐.due(now=99999.0, min_gap=0.0))
+                super().mark_done(channel, ts)
+
+            def mark_failed(그, channel: str, ts: str) -> None:
+                기록.append(큐.due(now=99999.0, min_gap=0.0))
+                super().mark_failed(channel, ts)
+
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
+            리액션=엿보는리액션(),
+            설정값=설정(watch_job_max_age_sec=10.0) if 포기 else None,
+            notify_owner=(lambda 본문: None) if 포기 else None,
+        )
+        큐.시각["값"] = 99999.0 if 포기 else 2000.0
+        c.check_once()
+        return 기록
+
+    def test_완료_경로는_표식_전에_큐가_닫혀_있다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        assert self._표식시점의_큐상태(큐, 포기=False) == [[]]
+
+    def test_포기_경로는_표식_전에_큐가_닫혀_있다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        assert self._표식시점의_큐상태(큐, 포기=True) == [[]]
