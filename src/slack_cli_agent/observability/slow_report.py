@@ -512,11 +512,26 @@ class SlowRequestReporter:
         self._settings = settings
         self._troubleshoot_channel = troubleshoot_channel
         self._usage_row_builder = usage_row_builder or UsageRowBuilder(settings.owner_only_channels)
+        # The report carries the request text, the channel name and the session
+        # id. Outside an owner-only channel that reaches everyone in it, so the
+        # decision is made here at assembly rather than per post -- a config
+        # mistake should be visible at startup, not only in what stops arriving.
+        self._owner_only = (
+            not troubleshoot_channel or troubleshoot_channel in settings.owner_only_channels
+        )
+        if not self._owner_only:
+            log.warning(
+                "느린 요청 보고를 끕니다 : 트러블슈팅 채널 %s 이 소유자 전용이 아닙니다. "
+                "settings 의 owner_only_channels 에 넣으면 보고가 다시 나갑니다.",
+                troubleshoot_channel,
+            )
 
     def maybe_report(self, meta: SlowRequestMeta) -> str | None:
         if meta.elapsed_wall < self._settings.slow_report_sec:
             return None
         if not self._troubleshoot_channel:
+            return None
+        if not self._owner_only:
             return None
 
         try:
