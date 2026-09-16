@@ -24,6 +24,8 @@ class NoticeKey(str, Enum):
     CHAT_NORMAL = "chat_normal"
     CHAT_QUIET = "chat_quiet"
     CHANNEL_UNREGISTERED = "channel_unregistered"
+    UNADDRESSED_ON = "unaddressed_on"
+    UNADDRESSED_OFF = "unaddressed_off"
 
 
 DEFAULT_NOTICES: Mapping[NoticeKey, str] = {
@@ -41,6 +43,8 @@ DEFAULT_NOTICES: Mapping[NoticeKey, str] = {
     NoticeKey.CHAT_NORMAL: "말수를 기본으로 되돌렸어요.",
     NoticeKey.CHAT_QUIET: "용건 있을 때만 나설게요.",
     NoticeKey.CHANNEL_UNREGISTERED: "{name} 을 목록에서 뺐습니다.\n다시 부르시면 등록됩니다.",
+    NoticeKey.UNADDRESSED_ON: "이 채널에서는 이름을 안 불러도 답합니다.\n제가 이미 낀 스레드에서만 나섭니다.",
+    NoticeKey.UNADDRESSED_OFF: "이제 이름을 불러야 답합니다.",
 }
 
 
