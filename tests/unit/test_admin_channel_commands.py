@@ -14,6 +14,8 @@ from slack_cli_agent.admin.channel_commands import (
     ChatQuietCommand,
     CoachModeCommand,
     DefaultModeCommand,
+    UnaddressedOffCommand,
+    UnaddressedOnCommand,
 )
 from slack_cli_agent.admin.command import AdminContext
 from slack_cli_agent.auth.principal import Principal, TrustLevel
@@ -97,6 +99,45 @@ class TestChatCommandsAreMutuallyExclusive:
         cmd = ChatActiveCommand(NoticeCatalog())
         assert cmd.matches("말수 보통") is False
         assert cmd.matches("말수 적게") is False
+
+
+# ---------------------------------------------------------------------------
+# 호명 정책
+
+
+class TestUnaddressedOnCommand:
+    @pytest.mark.parametrize("text", ["끼어들기 허용", "끼어들기허용", "호명 없이 응답", "멘션 없이 응답"])
+    def test_별칭을_받는다(self, text: str) -> None:
+        assert UnaddressedOnCommand(NoticeCatalog()).matches(text) is True
+
+    def test_실행하면_answer_unaddressed가_켜진다(self, tmp_path: Path) -> None:
+        ctx = make_context(tmp_path)
+        result = UnaddressedOnCommand(NoticeCatalog()).execute(ctx)
+        assert read_channel(tmp_path)["answer_unaddressed"] is True
+        assert result.handled is True
+        assert result.message
+
+
+class TestUnaddressedOffCommand:
+    @pytest.mark.parametrize("text", ["멘션 전용", "멘션전용", "호명 전용", "불러야 답해"])
+    def test_별칭을_받는다(self, text: str) -> None:
+        assert UnaddressedOffCommand(NoticeCatalog()).matches(text) is True
+
+    def test_이미_켜진_채널도_꺼진다(self, tmp_path: Path) -> None:
+        """값을 지우지 않고 False 로 명시해야 한다. 키를 지우면 기본값 판정에 기댄다."""
+        channels_path = tmp_path / "channels.json"
+        channels_path.write_text(
+            json.dumps({"C1": {"answer_unaddressed": True}}), encoding="utf-8"
+        )
+        ctx = make_context(tmp_path, channels_path=channels_path)
+        UnaddressedOffCommand(NoticeCatalog()).execute(ctx)
+        assert json.loads(channels_path.read_text(encoding="utf-8"))["C1"]["answer_unaddressed"] is False
+
+
+class TestUnaddressedCommandsAreMutuallyExclusive:
+    def test_허용_명령은_전용_문구를_안_받는다(self) -> None:
+        assert UnaddressedOnCommand(NoticeCatalog()).matches("멘션 전용") is False
+        assert UnaddressedOffCommand(NoticeCatalog()).matches("끼어들기 허용") is False
 
 
 # ---------------------------------------------------------------------------
