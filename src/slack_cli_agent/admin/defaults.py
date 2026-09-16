@@ -14,6 +14,8 @@ from .channel_commands import (
     ChatQuietCommand,
     CoachModeCommand,
     DefaultModeCommand,
+    UnaddressedOffCommand,
+    UnaddressedOnCommand,
 )
 from .command import AdminCommand
 from .commands import ChannelListCommand, EngineStatusCommand, HelpCommand
@@ -31,6 +33,8 @@ def default_admin_commands(notices: NoticeCatalog) -> list[AdminCommand]:
         ChatActiveCommand(notices),
         ChatNormalCommand(notices),
         ChatQuietCommand(notices),
+        UnaddressedOnCommand(notices),
+        UnaddressedOffCommand(notices),
         CoachModeCommand(notices),
         DefaultModeCommand(notices),
         ChannelUnregisterCommand(notices),
