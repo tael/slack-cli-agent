@@ -1065,7 +1065,6 @@ class JsonStore(Generic[T]):
       engine_state.json              엔진 전환 상태
       state.db                       기계 상태 — 큐·세션·감사·부검·지켜보기
       audit.jsonl                    감사 기록 사본. 외부 도구가 읽는다
-      bot.pid
 
 `.gitignore` 에 넣을 것 —
 
