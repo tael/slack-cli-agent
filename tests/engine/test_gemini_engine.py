@@ -385,3 +385,54 @@ class TestKeychainLink:
 
         assert not existing.is_symlink()
         assert (existing / "login.keychain-db").read_text(encoding="utf-8") == "실물"
+
+
+class Test설정파일을바꿀것이없으면안쓴다:
+    """학습 배치는 운영상 읽기 전용이다. prepare 가 매번 파일을 다시 쓰면 그
+    의미와 어긋나고, 같은 홈을 보는 실행이 겹칠 때 서로의 파일을 덮는다
+    (sca-dyb.13).
+    """
+
+    def test_두_번째_prepare_는_settings_json_을_다시_쓰지_않는다(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        engine = _engine(tmp_path, home_dir=home)
+        engine.prepare(_request())
+        path = home / ".gemini" / "antigravity-cli" / "settings.json"
+        before = path.stat().st_mtime_ns
+
+        engine.prepare(_request())
+
+        assert path.stat().st_mtime_ns == before
+
+    def test_값이_달라지면_다시_쓴다(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        engine = _engine(tmp_path, home_dir=home)
+        engine.prepare(_request())
+        path = home / ".gemini" / "antigravity-cli" / "settings.json"
+        기존 = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({"colorScheme": "dark"}), encoding="utf-8")
+
+        engine.prepare(_request())
+
+        새것 = json.loads(path.read_text(encoding="utf-8"))
+        assert 새것["colorScheme"] == "dark"
+        for key, value in 기존.items():
+            assert 새것[key] == value
+
+    def test_두_번째_prepare_는_mcp_설정을_다시_쓰지_않는다(self, tmp_path: Path) -> None:
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        profile = Profile.from_dict({
+            "name": "gemini-test",
+            "primary_engine": {"type": "gemini", "binary": "agy", "model": "gemini-3.8-flash"},
+            "state_dir": str(tmp_path / "state"),
+            "mcp_servers": {"도구": {"command": "도구-서버"}},
+        })
+        engine = GeminiEngine(profile, RuntimeSettings())
+        engine.prepare(_request(workdir=workdir))
+        path = workdir / ".agents" / "mcp_config.json"
+        before = path.stat().st_mtime_ns
+
+        engine.prepare(_request(workdir=workdir))
+
+        assert path.stat().st_mtime_ns == before
