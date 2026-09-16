@@ -13,7 +13,8 @@ from pathlib import Path
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import EngineRequest, TrustLevel
-from slack_cli_agent.engine.gemini import GeminiEngine
+from slack_cli_agent.engine.capability import InstructionBoundary
+from slack_cli_agent.engine.gemini import UNTRUSTED_INPUT_MARK, GeminiEngine
 
 
 def _profile(tmp_path: Path, home_dir: Path | None = None) -> Profile:
@@ -112,6 +113,20 @@ class TestArgumentOrder:
         cmd = engine.build_command(_request(system_prompt="지침-X", prompt="본문-Y"))
         prompt_arg = cmd[-1]
         assert prompt_arg.index("지침-X") < prompt_arg.index("본문-Y")
+
+    def test_비신뢰_입력_앞에_경계_표시가_붙는다(self, tmp_path: Path) -> None:
+        """agy 에는 시스템 프롬프트 플래그가 없어 지침과 입력이 한 문자열로 간다.
+        채널 기록은 비신뢰 입력이라 어디부터가 입력인지 표시라도 있어야 한다
+        (sca-dyb.12). 이것은 강제가 아니라 표시이며 capability 도 그렇게 말한다."""
+        engine = _engine(tmp_path)
+        cmd = engine.build_command(_request(system_prompt="지침-X", prompt="본문-Y"))
+        prompt_arg = cmd[-1]
+        assert prompt_arg.index("지침-X") < prompt_arg.index(UNTRUSTED_INPUT_MARK)
+        assert prompt_arg.index(UNTRUSTED_INPUT_MARK) < prompt_arg.index("본문-Y")
+
+    def test_경계가_표시뿐임을_capability_가_말한다(self, tmp_path: Path) -> None:
+        engine = _engine(tmp_path)
+        assert engine.capabilities.instruction_boundary is InstructionBoundary.PROMPT_ONLY
 
     def test_dangerously_skip_permissions가_들어간다(self, tmp_path: Path) -> None:
         engine = _engine(tmp_path)

@@ -115,12 +115,14 @@ class Test엔진별_선언:
         엔진 = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
         assert 엔진.capabilities_for(request()).execution_isolation is ExecutionIsolation.NONE
 
-    def test_agy_는_아무것도_보장하지_않는다(self, tmp_path: Path) -> None:
+    def test_agy_는_도구도_격리도_보장하지_않는다(self, tmp_path: Path) -> None:
+        """신뢰 경계만 표시 수준이다 - 한 -p 문자열 안에 표식을 넣을 뿐이라
+        강제가 아니다(sca-dyb.12)."""
         엔진 = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
         보장 = 엔진.capabilities_for(request(model="gemini-3.8-flash"))
         assert 보장.tool_restriction is ToolRestriction.NONE
         assert 보장.execution_isolation is ExecutionIsolation.NONE
-        assert 보장.instruction_boundary is InstructionBoundary.UNAVAILABLE
+        assert 보장.instruction_boundary is InstructionBoundary.PROMPT_ONLY
 
     def test_codex_기본은_전체_접근이라_격리가_없다(self, tmp_path: Path) -> None:
         엔진 = CodexEngine(codex_profile(tmp_path), SETTINGS)
