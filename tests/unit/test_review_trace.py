@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from review_support import recorded
+
 from slack_cli_agent.review.base import ReviewTarget
 from slack_cli_agent.review.trace import DebugTraceTask
 
@@ -177,5 +179,5 @@ class Test중복방지:
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True)
         task.run(target)
         assert len(engine.calls) == 1
-        rec = ledger.find("debug_trace", "C1", "1.1")
+        rec = recorded(ledger, "debug_trace", "C1", "1.1")
         assert rec.status == "완료"

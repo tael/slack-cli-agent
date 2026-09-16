@@ -88,6 +88,7 @@ class TestProposalAnalyzer:
         outcome = analyzer.analyze_channel("2026-09-14", "공지", "기록 본문", [])
         assert outcome.ok
         result = outcome.result
+        assert result is not None
         assert result.channel_facts == ("9월 회의는 매주 화요일이다",)
         assert result.writing_style == ("문장을 짧게 써라",)
 
@@ -203,6 +204,7 @@ class TestAnalyzer가_디코더를_쓰는가:
         본문 = f"분석 결과입니다.\n\n{제안}\n\n이상입니다."
         outcome = self._분석기(본문, tmp_path).analyze_channel("2026-09-16", "공지", "기록", [])
         assert outcome.ok
+        assert outcome.result is not None
         assert outcome.result.writing_style == ("짧게",)
 
     def test_배열_자리에_문자열이_오면_판정_불가다(self, tmp_path: Path) -> None:

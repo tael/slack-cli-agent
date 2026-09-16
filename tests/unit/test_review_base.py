@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from review_support import recorded
+
 from slack_cli_agent.engine.base import EngineResponse
 from slack_cli_agent.review.base import ReviewTarget, ReviewTask, as_table, cell, model_effort_cell
 from slack_cli_agent.review.ledger import ReviewLedger
@@ -208,7 +210,7 @@ class Test정상흐름:
     def test_완료기록을남긴다(self, database) -> None:
         rig = make_rig(database)
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
-        rec = rig.ledger.find("fake_kind", "C1", "1.1")
+        rec = recorded(rig.ledger, "fake_kind", "C1", "1.1")
         assert rec.status == "완료"
         assert rec.by == "U2"
 
@@ -304,13 +306,13 @@ class Test점검이_도는_동안_진행_신호를_낸다:
         rig = make_rig(database)
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
         assert rig.engine.progress_logs == [None]
-        assert rig.ledger.find("fake_kind", "C1", "1.1").status == "완료"
+        assert recorded(rig.ledger, "fake_kind", "C1", "1.1").status == "완료"
 
     def test_진행_표시가_실패해도_점검은_끝낸다(self, database) -> None:
         """표시는 꾸밈이다. 그것 때문에 점검이 중단되면 안 된다."""
         rig = make_rig(database, progress=FakeReviewProgress(fail=True))
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
-        assert rig.ledger.find("fake_kind", "C1", "1.1").status == "완료"
+        assert recorded(rig.ledger, "fake_kind", "C1", "1.1").status == "완료"
 
 
 class 재시도하는Task(FakeReviewTask):
@@ -404,10 +406,10 @@ class Test점검_실행_기록:
     def test_기록이_실패해도_점검은_끝난다(self, database) -> None:
         rig = make_rig(database, audit=FakeAudit(fail=True))
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
-        assert rig.ledger.find("fake_kind", "C1", "1.1").status == "완료"
+        assert recorded(rig.ledger, "fake_kind", "C1", "1.1").status == "완료"
 
     def test_기록기가_없어도_돈다(self, database) -> None:
         rig = make_rig(database)
         rig.task._audit = None
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
-        assert rig.ledger.find("fake_kind", "C1", "1.1").status == "완료"
+        assert recorded(rig.ledger, "fake_kind", "C1", "1.1").status == "완료"
