@@ -989,14 +989,28 @@ shadow 대조에도 쓴다.
     persona             페르소나 파일
     knowledge           지식 파일 목록
     trusted_users       이 채널에서 신뢰하는 사용자
-    answer_unaddressed  호명 없는 메시지에도 답하는가. 원본 mention_only 의 반대다
+    answer_unaddressed  호명 없는 메시지에도 답하는가. 원본 mention_only 의 반대다.
+                        슬랙에서 「끼어들기 허용」 · 「멘션 전용」 으로 바꾼다
     name                슬랙에서 조회한 채널 이름. 없으면 채널 ID
     session_scope       대화를 잇는 단위. thread(기본) 또는 channel
     disclose_mechanism  구조 공개 허용
     skills              Skill 도구 개방
     light_context       맥락을 줄여 넘기는가
     rich                실행 모델 표기 등 상세 출력
-    chat                채널 대화량. 기본 normal
+    chat                채널 대화량. 기본 normal. 프롬프트 문구와 응답 판정 양쪽에 쓴다
+
+#### 호명 없는 스레드 답글의 판정
+
+`slack/policy.py` 의 `ResponsePolicy` 한 곳에서 정한다. 리스너는 사실만 모아
+넘긴다 — 채널 설정과 스레드 상태(봇이 이미 말했는가, 그 말이 되물음이었는가).
+
+    answer_unaddressed 꺼짐   안 받는다. 등록 안 된 채널도 같다
+    chat=quiet              봇이 되물은 답만 받는다
+    chat=normal             봇이 낀 스레드에서 ResponseGate 를 통과한 말만
+    chat=active             봇이 안 낀 스레드도 같은 기준으로 받는다
+
+`considers` 는 채널 설정만 본다. 스레드 조회가 슬랙 API 호출이라 그 앞에서
+거르려고 나눠 둔 것이다.
 
 **여기 없는 키는 `extra` 에 보존되고 플러그인이 읽는다.** 원본의 `org_admins`
 가 그 예다 — 조직 전용 판정이라 코어 필드로 올리지 않는다.
