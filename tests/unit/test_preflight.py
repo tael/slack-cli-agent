@@ -700,3 +700,58 @@ class TestRunner예외처리:
         report = runner.run_all(PreflightContext(profile=make_profile(tmp_path)))
         assert len(report.results) == 2
         assert report.results[1].ok is True
+
+
+class Test검사_목록_주입:
+    """대역이 _checks 를 덮어쓰지 않게 공개 주입 지점을 연다(sca-mb7).
+
+    검사 목록만 갈아 끼우고 판정과 출력은 진짜 것을 그대로 쓰는 것이 목적이다.
+    private 이름을 덮으면 Suite 내부 저장 방식이 바뀔 때 대역이 조용히 깨진다.
+    """
+
+    def _프로필(self, tmp_path: Path) -> Profile:
+        return Profile.from_dict(
+            {
+                "name": "example",
+                "primary_engine": {"type": "claude", "binary": "claude", "model": "m"},
+                "owner_user_id": "U1",
+                "troubleshoot_channel": "C1",
+                "state_dir": str(tmp_path / "state"),
+            }
+        )
+
+    def test_주입한_검사만_돈다(self, tmp_path: Path) -> None:
+        from preflight_support import 고정점검
+
+        from slack_cli_agent.preflight.suite import PreflightSuite
+
+        suite = PreflightSuite(checks=(고정점검(ok=True),))
+        assert [c.name for c in suite.checks] == ["고정"]
+        assert suite.run(self._프로필(tmp_path)).bootable is True
+
+    def test_주입해도_판정과_출력은_진짜_것을_쓴다(self, tmp_path: Path) -> None:
+        import io
+
+        from preflight_support import 고정점검
+
+        from slack_cli_agent.preflight.suite import PreflightSuite
+
+        suite = PreflightSuite(checks=(고정점검(ok=False),))
+        보고 = suite.run(self._프로필(tmp_path))
+        출력 = io.StringIO()
+        suite.report_to(보고, 출력)
+        assert "[실패] 고정" in 출력.getvalue()
+        assert "기동 불가" in 출력.getvalue()
+
+    def test_안_주입하면_표준_검사를_쓴다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.preflight.suite import PreflightSuite
+
+        assert len(PreflightSuite().checks) > 1
+
+    def test_대역이_private_이름을_안_건드린다(self) -> None:
+        """이 시험이 곧 재발 방지다 — 덮어쓰기로 되돌아가면 여기서 걸린다."""
+        import inspect
+
+        import preflight_support
+
+        assert "_checks" not in inspect.getsource(preflight_support)
