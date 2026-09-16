@@ -8,16 +8,28 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Sequence
 from types import TracebackType
-from typing import Self
-
-from slack_cli_agent.core.periodic import PeriodicRunner
+from typing import Protocol, Self, runtime_checkable
 
 log = logging.getLogger(__name__)
 
 
+@runtime_checkable
+class Runnable(Protocol):
+    """What ServiceGroup needs from a runner. Runnable satisfies it."""
+
+    @property
+    def name(self) -> str: ...
+
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+    def join(self, timeout: float | None = None) -> None: ...
+
+
 class ServiceGroup:
-    def __init__(self, runners: Iterable[PeriodicRunner], *, name: str) -> None:
-        self._runners: tuple[PeriodicRunner, ...] = tuple(runners)
+    def __init__(self, runners: Iterable[Runnable], *, name: str) -> None:
+        self._runners: tuple[Runnable, ...] = tuple(runners)
         self._name = name
 
     @property
@@ -25,7 +37,7 @@ class ServiceGroup:
         return self._name
 
     @property
-    def runners(self) -> Sequence[PeriodicRunner]:
+    def runners(self) -> Sequence[Runnable]:
         return self._runners
 
     @property
@@ -35,7 +47,7 @@ class ServiceGroup:
     def start(self) -> None:
         # If one fails partway, stop what already started before re-raising — otherwise
         # those threads keep calling external APIs for the rest of the process's life.
-        started: list[PeriodicRunner] = []
+        started: list[Runnable] = []
         try:
             for runner in self._runners:
                 runner.start()
