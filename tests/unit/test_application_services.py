@@ -18,6 +18,8 @@ from test_application import FakeSlackClient, write_profile
 
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.core.application import Application
+from slack_cli_agent.core.context import RequestContext
+from slack_cli_agent.core.periodic import PeriodicRunner
 
 
 @pytest.fixture
@@ -132,10 +134,12 @@ class Test묶음구성:
 class Test묶음이실제로기동한다:
     def test_with_로_열면_전부_돌고_나오면_멈춘다(self, app: Application, monkeypatch: Any) -> None:
         with app.worker_services(app.worker()) as 묶음:
-            assert all(러너.is_running() for 러너 in 묶음.runners)
-        for 러너 in 묶음.runners:
+            러너들 = [러너 for 러너 in 묶음.runners if isinstance(러너, PeriodicRunner)]
+            assert 러너들 and len(러너들) == len(묶음.runners)
+            assert all(러너.is_running() for 러너 in 러너들)
+        for 러너 in 러너들:
             러너.join(timeout=2.0)
-        assert not any(러너.is_running() for 러너 in 묶음.runners)
+        assert not any(러너.is_running() for 러너 in 러너들)
 
 
 class Test첨부정리:
@@ -327,7 +331,12 @@ class Test복구보고:
         워커 = app.worker()
         워커.retry_catchup = list  # type: ignore[method-assign]
         워커.catch_up = lambda channels, window_sec=None: CatchupReport(  # type: ignore[method-assign]
-            missed=[object(), object()], skipped=[], unchecked_channels=[]
+            missed=[
+                RequestContext(channel="C1", user="U1", ts="1.1", thread_ts="1.1", text="안녕"),
+                RequestContext(channel="C1", user="U1", ts="1.2", thread_ts="1.2", text="또"),
+            ],
+            skipped=[],
+            unchecked_channels=[],
         )
         app._slack_reachable = lambda: 닿는다[0]  # type: ignore[method-assign]
         러너 = app.catchup_retry_runner(워커)
