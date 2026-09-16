@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,7 +23,9 @@ from slack_cli_agent.observability.audit import (
     WATCH_FINISHED_KIND,
 )
 from slack_cli_agent.reliability.watchjobs import WatchJob, WatchJobQueue
+from slack_cli_agent.reliability.watchresult import WatchOutcome
 from slack_cli_agent.reliability.watchrunner import WatchJobChecker
+from slack_cli_agent.storage.database import Database
 
 
 def 응답(
@@ -36,12 +39,18 @@ def 응답(
     )
 
 
+class 시계달린큐(WatchJobQueue):
+    """시험이 시각을 앞으로 돌릴 수 있게 그 dict 를 큐에 달아 둔다.
+    실물에 없는 속성이라 인스턴스에 덮어쓰면 타입 검사가 못 본다."""
+
+    def __init__(self, database: Database) -> None:
+        self.시각 = {"값": 1000.0}
+        super().__init__(database, now=lambda: self.시각["값"])
+
+
 @pytest.fixture
-def 큐(database):
-    시각 = {"값": 1000.0}
-    q = WatchJobQueue(database, now=lambda: 시각["값"])
-    q.시각 = 시각
-    return q
+def 큐(database: Database) -> 시계달린큐:
+    return 시계달린큐(database)
 
 
 @dataclass
@@ -87,6 +96,16 @@ class 가짜리액션:
 
 def 설정(**overrides: Any) -> RuntimeSettings:
     return RuntimeSettings().override(overrides)
+
+
+def 기록하고_응답(
+    기록: list[Any], 응답값: EngineResponse
+) -> Callable[[WatchJob, WatchOutcome], EngineResponse]:
+    def run(job: WatchJob, outcome: WatchOutcome) -> EngineResponse:
+        기록.append(job)
+        return 응답값
+
+    return run
 
 
 def 체커(*, 큐, run_check, 발행=None, 채널목록=None, 설정값=None, 리액션=None, notify_owner=None,
@@ -689,7 +708,7 @@ class Test실제_결과_파일로_판정한다:
         호출: list[Any] = []
         c = 체커(
             큐=큐,
-            run_check=lambda job, outcome: 호출.append(job) or 응답(ok=True, body="x"),
+            run_check=기록하고_응답(호출, 응답(ok=True, body="x")),
             판정기=WatchResultReader(),
         )
         큐.시각["값"] = 2000.0
