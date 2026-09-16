@@ -8,7 +8,10 @@ app ID 가 어느 정본에 대응하는지가 어딘가에 있어야 한다.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+
+import pytest
 
 from slack_cli_agent.slack.app_registry import (
     AppEntry,
@@ -132,3 +135,43 @@ class Test봇토큰읽기:
 
     def test_아무_데도_없으면_빈_문자열이다(self, tmp_path: Path) -> None:
         assert read_bot_token(tmp_path) == ""
+
+
+class Test없음과못읽음을가른다:
+    """0건이 부재인지 사고인지 구분되지 않으면 감사가 조용히 통과한다.
+    지금 세 봇이 등록돼 있으므로 0건은 부재가 아니다 (sca-1qr).
+    """
+
+    def test_파일이_없으면_설정된_적이_없다(self, tmp_path: Path) -> None:
+        assert AppRegistry(tmp_path / "없다.json").is_configured() is False
+
+    def test_파일이_있으면_설정된_것으로_본다(self, tmp_path: Path) -> None:
+        path = tmp_path / "registry.json"
+        path.write_text("{}", encoding="utf-8")
+
+        assert AppRegistry(path).is_configured() is True
+
+    def test_망가진_파일은_경고를_남긴다(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path = tmp_path / "registry.json"
+        path.write_text("{망가짐", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING):
+            assert AppRegistry(path).entries() == []
+
+        assert str(path) in caplog.text
+
+    def test_없는_파일은_경고를_안_남긴다(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            AppRegistry(tmp_path / "없다.json").entries()
+
+        assert caplog.text == ""
+
+    def test_경로를_드러낸다(self, tmp_path: Path) -> None:
+        """감사가 어느 파일이 비었는지 사람에게 말할 수 있어야 한다."""
+        path = tmp_path / "registry.json"
+
+        assert AppRegistry(path).path == path
