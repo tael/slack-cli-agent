@@ -4,10 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
+from typing import Protocol
 
 from .knowledge import KnowledgeLoader
 from .library import PromptLibrary
 from .sections import AuthoritySection, CompositionContext, PromptSection, SlackFormatSection
+
+
+class PromptComposer(Protocol):
+    """What callers need from the composer. SystemPromptComposer satisfies it."""
+
+    def compose(self, ctx: CompositionContext) -> str: ...
 
 
 class SystemPromptComposer:

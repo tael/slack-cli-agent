@@ -73,7 +73,7 @@ from ..observability.slow_report import (
 from ..observability.state_snapshot import StateSnapshotBuilder, StateSnapshotWriter
 from ..plugin.base import BotPlugin
 from ..plugin.loader import PluginLoader
-from ..prompt.composer import SystemPromptComposer
+from ..prompt.composer import PromptComposer, SystemPromptComposer
 from ..prompt.knowledge import KnowledgeLoader
 from ..prompt.library import PromptLibrary
 from ..prompt.linked_threads import LinkedThreadNote
@@ -422,7 +422,7 @@ class Application:
         sections.extend(s for p in self._plugins for s in p.prompt_sections())
         return sections
 
-    def _composer(self) -> SystemPromptComposer:
+    def _composer(self) -> PromptComposer:
         paths = self._profile.paths
         library = PromptLibrary(
             paths.prompts, placeholders={"OWNER_MENTION": f"<@{self._profile.owner_user_id}>"}
