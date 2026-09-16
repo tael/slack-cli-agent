@@ -11,11 +11,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 #: 설정 토큰이 있는 자리. 레지스트리도 소유자만 읽는다.
+log = logging.getLogger(__name__)
+
 DEFAULT_REGISTRY_PATH = Path.home() / ".slack-app-config" / "registry.json"
 
 
@@ -41,6 +44,10 @@ class AppRegistry:
     def __init__(self, path: Path | None = None) -> None:
         self._path = path or DEFAULT_REGISTRY_PATH
 
+    @property
+    def path(self) -> Path:
+        return self._path
+
     def entries(self) -> list[AppEntry]:
         return [self._entry(name, row) for name, row in sorted(self._load().items())]
 
@@ -62,12 +69,20 @@ class AppRegistry:
         )
         self._path.chmod(0o600)
 
+    def is_configured(self) -> bool:
+        """Whether the registry file exists at all. Zero entries from a file
+        that exists is an accident, not an empty install (sca-1qr)."""
+        return self._path.exists()
+
     def _load(self) -> dict[str, dict[str, str]]:
         # A missing file means no bot has been created yet, and a hand-edited
         # broken one must not stop the sweep over every other bot.
+        if not self._path.exists():
+            return {}
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as exc:
+            log.warning("앱 레지스트리를 읽지 못했다 : %s : %s", self._path, exc)
             return {}
         if not isinstance(data, dict):
             return {}
