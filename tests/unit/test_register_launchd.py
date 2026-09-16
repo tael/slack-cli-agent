@@ -34,14 +34,22 @@ def 생성된plist(tmp_path: Path) -> dict[str, Any]:
     bin_dir = tmp_path / "가짜bin"
     bin_dir.mkdir()
     가짜 = bin_dir / "launchctl"
-    가짜.write_text("#!/bin/bash\necho \"launchctl $*\" >> \"$HOME/launchctl.log\"\nexit 0\n", encoding="utf-8")
+    가짜.write_text(
+        '#!/bin/bash\necho "launchctl $*" >> "$HOME/launchctl.log"\nexit 0\n', encoding="utf-8"
+    )
     가짜.chmod(0o755)
 
     결과 = subprocess.run(  # noqa: PLW1510 - 종료코드를 시험이 직접 본다
         ["/bin/bash", str(등록기), "testbot"],
-        capture_output=True, text=True, timeout=60,
-        env=dict(os.environ, HOME=str(tmp_path), PATH=f"{bin_dir}:{os.environ['PATH']}",
-                 REGISTER_SETTLE_SEC="0"),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=dict(
+            os.environ,
+            HOME=str(tmp_path),
+            PATH=f"{bin_dir}:{os.environ['PATH']}",
+            REGISTER_SETTLE_SEC="0",
+        ),
     )
     assert 결과.returncode == 0, 결과.stderr
 
@@ -50,7 +58,12 @@ def 생성된plist(tmp_path: Path) -> dict[str, Any]:
         path = tmp_path / "Library" / "LaunchAgents" / f"local.testbot.{role}.plist"
         assert path.is_file(), f"{role} plist 가 없다"
         # 문자열 grep 이 아니라 구조로 본다. 형태가 깨진 plist 도 grep 은 통과한다.
-        assert subprocess.run(["plutil", "-lint", str(path)], capture_output=True, check=False).returncode == 0
+        assert (
+            subprocess.run(
+                ["plutil", "-lint", str(path)], capture_output=True, check=False
+            ).returncode
+            == 0
+        )
         나온것[role] = plistlib.loads(path.read_bytes())
     나온것["_home"] = str(tmp_path)  # type: ignore[assignment]
     return 나온것
@@ -101,10 +114,18 @@ class Test기존설정유지:
 
 
 class Test재등록:
-    def test_bootstrap_전에_그_역할의_표식을_지운다(self, tmp_path: Path) -> None:
-        """표식을 둔 채 재등록하면 방금 고친 설정으로도 봇이 안 뜬다.
-        역할별로 각각 지운다 - 둘을 한꺼번에 미리 지우면 재등록이 중간에
-        실패했을 때 다른 역할이 의도치 않게 살아난다 (코덱스 리뷰)."""
+    """표식을 둔 채 재등록하면 방금 고친 설정으로도 봇이 안 뜬다. 그런데
+    지우는 시점이 중요하다 - 둘을 한꺼번에 미리 지우면 재등록이 중간에
+    실패했을 때 다른 역할이 의도치 않게 살아난다 (코덱스 리뷰).
+    """
+
+    @staticmethod
+    def _돌린다(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Path]:
+        """가짜 launchctl 이 호출 순서를 기록하게 해서 돌린다.
+
+        표식이 사라졌다는 것만 보면 bootstrap 보다 먼저 지웠는지, 아예 순서가
+        뒤바뀌었는지 구별되지 않는다. 그래서 삭제 자취도 같은 기록에 남긴다.
+        """
         (tmp_path / "Library" / "LaunchAgents").mkdir(parents=True)
         표식자리 = tmp_path / ".testbot" / "preflight-blocked"
         표식자리.mkdir(parents=True)
@@ -113,15 +134,54 @@ class Test재등록:
 
         bin_dir = tmp_path / "가짜bin"
         bin_dir.mkdir()
+        기록 = tmp_path / "호출.log"
         가짜 = bin_dir / "launchctl"
-        가짜.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        가짜.write_text(
+            "#!/bin/bash\n"
+            # bootstrap 이 불릴 때 그 역할의 표식이 이미 없어야 한다. 그
+            # 사실을 호출 시점에 그대로 기록한다.
+            f'if [ "$1" = "bootstrap" ]; then\n'
+            f'  role=$(basename "$3" .plist)\n'
+            f"  role=${{role##*.}}\n"
+            # 셸 변수 이름은 ASCII 여야 한다. 한글 이름은 bash 가 명령으로 읽는다.
+            f'  if [ -f "{표식자리}/$role" ]; then state=표식있음; else state=표식없음; fi\n'
+            f'  echo "bootstrap $role $state" >> "{기록}"\n'
+            f"else\n"
+            f'  echo "$1 $2" >> "{기록}"\n'
+            f"fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
         가짜.chmod(0o755)
 
-        subprocess.run(  # noqa: PLW1510 - 종료코드를 시험이 직접 본다
-            ["/bin/bash", str(등록기), "testbot"], capture_output=True, text=True, timeout=60,
-            env=dict(os.environ, HOME=str(tmp_path), PATH=f"{bin_dir}:{os.environ['PATH']}",
-                 REGISTER_SETTLE_SEC="0"),
+        결과 = subprocess.run(  # noqa: PLW1510 - 종료코드를 시험이 직접 본다
+            ["/bin/bash", str(등록기), "testbot"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=dict(
+                os.environ,
+                HOME=str(tmp_path),
+                PATH=f"{bin_dir}:{os.environ['PATH']}",
+                REGISTER_SETTLE_SEC="0",
+            ),
         )
+        return 결과, 기록
 
-        assert not (표식자리 / "worker").exists()
-        assert not (표식자리 / "ingress").exists()
+    def test_등록기가_성공으로_끝난다(self, tmp_path: Path) -> None:
+        """실패한 실행의 부작용을 보고 통과를 선언하지 않는다."""
+        결과, _ = self._돌린다(tmp_path)
+        assert 결과.returncode == 0, 결과.stderr
+
+    def test_bootstrap_시점에_그_역할의_표식이_이미_없다(self, tmp_path: Path) -> None:
+        _, 기록 = self._돌린다(tmp_path)
+        줄들 = [
+            l for l in 기록.read_text(encoding="utf-8").splitlines() if l.startswith("bootstrap")
+        ]
+        assert 줄들 == ["bootstrap ingress 표식없음", "bootstrap worker 표식없음"]
+
+    def test_두_역할_모두_bootstrap_까지_간다(self, tmp_path: Path) -> None:
+        _, 기록 = self._돌린다(tmp_path)
+        본문 = 기록.read_text(encoding="utf-8")
+        assert "bootstrap worker" in 본문
+        assert "bootstrap ingress" in 본문
