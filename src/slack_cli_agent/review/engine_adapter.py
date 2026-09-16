@@ -40,7 +40,9 @@ class ReviewEngineCaller:
         self._effort = effort or OWNER_EFFORT_MIN
         self._allowed_tools = tuple(allowed_tools)
 
-    def run(self, prompt: str, session_id: str, resume: bool) -> EngineResponse:
+    def run(
+        self, prompt: str, session_id: str, resume: bool, progress_log: Path | None = None
+    ) -> EngineResponse:
         request = EngineRequest(
             prompt=prompt,
             system_prompt=self._system_prompt,
@@ -52,5 +54,6 @@ class ReviewEngineCaller:
             readable_dirs=self._readable_dirs,
             allowed_tools=self._allowed_tools,
             trust_level=TrustLevel.OWNER,
+            progress_log=progress_log,
         )
         return self._invoker.invoke(request)

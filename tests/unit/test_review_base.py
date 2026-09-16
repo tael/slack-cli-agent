@@ -11,8 +11,10 @@ as_table/cell 의 기대값은 원본 as_table()/cell() 을 AST 추출해 실제
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.engine.base import EngineResponse
@@ -74,10 +76,34 @@ class FakeEngine:
     def __init__(self, responses: list[EngineResponse]) -> None:
         self._responses = list(responses)
         self.calls: list[tuple[str, str, bool]] = []
+        self.progress_logs: list[Path | None] = []
 
-    def run(self, prompt: str, session_id: str, resume: bool) -> EngineResponse:
+    def run(
+        self, prompt: str, session_id: str, resume: bool, progress_log: Path | None = None
+    ) -> EngineResponse:
         self.calls.append((prompt, session_id, resume))
+        self.progress_logs.append(progress_log)
         return self._responses.pop(0)
+
+
+class FakeReviewProgress:
+    """진행 표시 port 대역. 실제 것은 슬랙에 글을 올렸다 지운다."""
+
+    def __init__(self, log_path: Path | None = Path("/tmp/진행.log"), fail: bool = False) -> None:
+        self._log_path = log_path
+        self._fail = fail
+        self.opened: list[tuple[str, str]] = []
+        self.closed = 0
+
+    @contextmanager
+    def display(self, target: ReviewTarget, thread_ts: str) -> Iterator[Path | None]:
+        if self._fail:
+            raise RuntimeError("진행 표시를 열지 못했다")
+        self.opened.append((target.channel, thread_ts))
+        try:
+            yield self._log_path
+        finally:
+            self.closed += 1
 
 
 def _ok_response(body: str) -> EngineResponse:
@@ -120,7 +146,7 @@ class Rig:
 _MISSING = object()
 
 
-def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None) -> Rig:
+def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, progress=None) -> Rig:
     ledger = ReviewLedger(database)
     reactions = FakeReactions()
     publisher = FakePublisher()
@@ -138,6 +164,7 @@ def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None) -> R
         publisher=publisher,
         engine=engine,
         troubleshoot_channel="TS",
+        progress=progress,
     )
     return Rig(ledger, reactions, publisher, engine, message_lookup, task)
 
@@ -235,3 +262,38 @@ class Test표조립도우미:
 
     def test_model_effort_cell은값이없으면물음표다(self) -> None:
         assert model_effort_cell(None) == "? / ?"
+
+
+class Test점검이_도는_동안_진행_신호를_낸다:
+    """경단을 붙이면 눈 이모지만 붙고 결과까지 아무 신호가 없었다(sca-tfd).
+
+    실측으로 신지는 4분, 레이는 900초 제한을 넘겼다. 그 사이 사용자에게는
+    작동하지 않는 것과 구분되지 않는다.
+    """
+
+    def test_엔진을_부르는_동안_진행_표시를_연다(self, database) -> None:
+        진행 = FakeReviewProgress()
+        rig = make_rig(database, progress=진행)
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert 진행.opened == [("C1", "100.0")]
+        assert 진행.closed == 1
+
+    def test_진행_표시가_정한_로그_경로를_엔진에_넘긴다(self, database) -> None:
+        """엔진의 도구 훅이 그 파일에 쓰고, 진행 표시가 그 파일을 읽는다.
+        두 경로가 다르면 표시가 '작업 중' 에서 멈춘다."""
+        진행 = FakeReviewProgress(log_path=Path("/tmp/특정.log"))
+        rig = make_rig(database, progress=진행)
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert rig.engine.progress_logs == [Path("/tmp/특정.log")]
+
+    def test_진행_표시가_없으면_로그_경로_없이_그대로_돈다(self, database) -> None:
+        rig = make_rig(database)
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert rig.engine.progress_logs == [None]
+        assert rig.ledger.find("fake_kind", "C1", "1.1").status == "완료"
+
+    def test_진행_표시가_실패해도_점검은_끝낸다(self, database) -> None:
+        """표시는 꾸밈이다. 그것 때문에 점검이 중단되면 안 된다."""
+        rig = make_rig(database, progress=FakeReviewProgress(fail=True))
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert rig.ledger.find("fake_kind", "C1", "1.1").status == "완료"

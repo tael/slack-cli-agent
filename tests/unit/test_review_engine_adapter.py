@@ -186,3 +186,17 @@ class Test실패응답:
         assert response.ok is False
         assert response.body == "한도 초과"
         assert response is failure
+
+
+class Test진행_로그_전달:
+    """점검도 진행 표시를 받는다(sca-tfd). 엔진의 도구 훅이 이 파일에 쓴다."""
+
+    def test_받은_경로를_요청에_넣는다(self) -> None:
+        caller, invoker = make_caller()
+        caller.run("프롬프트", "세션1", False, Path("/tmp/진행.log"))
+        assert invoker.calls[0].progress_log == Path("/tmp/진행.log")
+
+    def test_안_주면_진행_로그가_없다(self) -> None:
+        caller, invoker = make_caller()
+        caller.run("프롬프트", "세션1", False)
+        assert invoker.calls[0].progress_log is None

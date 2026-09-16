@@ -45,7 +45,9 @@ from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard
 from slack_cli_agent.learning.batch import BatchReport
 from slack_cli_agent.plugin.base import BotPlugin
 from slack_cli_agent.prompt.sections import CompositionContext, PromptSection, RosterSection
-from slack_cli_agent.review.base import ReviewTarget
+from slack_cli_agent.reliability.watchresult import WatchOutcome
+from slack_cli_agent.review.base import ReviewProgressPort, ReviewTarget
+from slack_cli_agent.slack.review_ports import ReviewProgressDisplay
 
 
 class FakeSlackClient:
@@ -364,6 +366,13 @@ class TestReviewReactions:
         assert called[0].channel == "C_ONE"
         assert called[0].ts == "1.0"
         assert called[0].by_user == "U_OWNER"
+
+    def test_점검에_진행_표시가_연결된다(self, app: Application) -> None:
+        """부품만 만들고 조립에 안 물리면 점검은 여전히 아무 신호도 안 낸다(sca-tfd)."""
+        task = app.review_tasks()["dango"]
+        표시 = task._progress
+        assert isinstance(표시, ReviewProgressPort), 표시
+        assert isinstance(표시, ReviewProgressDisplay), 표시
 
     def test_모르는_이모지는_아무_점검도_부르지_않는다(self, app: Application) -> None:
         app.on_reaction("thumbsup", "C_ONE", "1.0", "U_OWNER")
@@ -780,7 +789,7 @@ class Test감시확인연결:
         app._watch_run_check(WatchJob(
             id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
             created_at=0.0, last_run=None, trust=TrustLevel.OWNER,
-        ))
+        ), WatchOutcome.UNKNOWN)
 
         assert 보낸요청[0].trust_level is TrustLevel.OWNER
 
@@ -804,7 +813,7 @@ class Test감시확인연결:
         app._watch_run_check(WatchJob(
             id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
             created_at=0.0, last_run=None,
-        ))
+        ), WatchOutcome.UNKNOWN)
 
         assert 보낸요청[0].resume is False
         assert 보낸요청[0].prompt.find("배포 확인") >= 0
@@ -827,7 +836,7 @@ class Test감시확인연결:
         app._watch_run_check(WatchJob(
             id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
             created_at=0.0, last_run=None,
-        ))
+        ), WatchOutcome.UNKNOWN)
 
         assert 받은 == [CallOrigin.BACKGROUND]
 
@@ -853,7 +862,7 @@ class Test감시확인연결:
         app._watch_run_check(WatchJob(
             id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
             created_at=0.0, last_run=None,
-        ))
+        ), WatchOutcome.UNKNOWN)
 
         assert 받은요청[0].session_id == "엔진이-만든-값"
 
@@ -880,7 +889,7 @@ class Test감시확인연결:
         app._watch_run_check(WatchJob(
             id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
             created_at=0.0, last_run=None,
-        ))
+        ), WatchOutcome.UNKNOWN)
 
         assert "Read" in 보낸요청[0].allowed_tools
 
@@ -905,7 +914,7 @@ class Test감시확인연결:
         app._watch_run_check(WatchJob(
             id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
             created_at=0.0, last_run=None, trust=TrustLevel.OWNER,
-        ))
+        ), WatchOutcome.UNKNOWN)
 
         assert "Bash" not in 보낸요청[0].allowed_tools
         assert "Skill" not in 보낸요청[0].allowed_tools
@@ -929,7 +938,7 @@ class Test감시확인연결:
         app._watch_run_check(WatchJob(
             id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
             created_at=0.0, last_run=None,
-        ))
+        ), WatchOutcome.UNKNOWN)
 
         assert 보낸요청[0].readable_dirs == app.pipeline().readable_dirs
 
@@ -1558,7 +1567,7 @@ class Test감시확인턴의_조립맥락:
         app._watch_run_check(WatchJob(
             id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
             created_at=0.0, last_run=None, trust=TrustLevel.OWNER,
-        ))
+        ), WatchOutcome.UNKNOWN)
 
         assert 조립.받은맥락 and 조립.받은맥락[0].watch_check is True
 
@@ -1576,6 +1585,8 @@ class Test감시확인턴의_실행자리:
     """
 
     def _요청을_잡는다(self, tmp_path: Path, monkeypatch: Any, job: Any) -> Any:
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
         잡은요청: list[Any] = []
 
         def 기록(self: Any, engine: Any, request: Any) -> None:
@@ -1583,7 +1594,7 @@ class Test감시확인턴의_실행자리:
 
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
         monkeypatch.setattr(EngineRunner, "run", 기록)
-        app._watch_run_check(job)
+        app._watch_run_check(job, WatchOutcome.UNKNOWN)
         return 잡은요청[0]
 
     def _작업(self, **overrides: Any) -> Any:
@@ -1611,6 +1622,39 @@ class Test감시확인턴의_실행자리:
         요청 = self._요청을_잡는다(tmp_path, monkeypatch, self._작업())
 
         assert str(요청.workdir) not in ("", ".")
+
+
+class Test감시체커_배선:
+    """부품을 만든 것과 조립에 연결한 것은 다르다. 확인 콜백의 시그니처가
+    바뀌었는데 조립을 안 고치면 단위 시험은 전부 통과하고 운영에서만 죽는다.
+    """
+
+    def test_판정기가_주입된다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.reliability.watchresult import WatchResultReader
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+
+        assert isinstance(app.watch_checker()._results, WatchResultReader)
+
+    def test_확인_콜백이_판정_결과를_받는다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """조립된 콜백을 체커가 부르는 형태 그대로 부른다."""
+        from slack_cli_agent.reliability.watchjobs import WatchJob
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        잡은프롬프트: list[str] = []
+        monkeypatch.setattr(
+            EngineRunner, "run",
+            lambda self, engine, request: 잡은프롬프트.append(request.prompt),
+        )
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        작업 = WatchJob(
+            id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
+            created_at=0.0, last_run=None, workdir=str(tmp_path), run_id="r1",
+        )
+
+        app.watch_checker()._run_check(작업, WatchOutcome.FAILED)
+
+        assert 잡은프롬프트 and "실패로 끝났다" in 잡은프롬프트[0]
 
 
 def _소유자() -> Any:
