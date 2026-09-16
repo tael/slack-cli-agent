@@ -55,6 +55,10 @@ class RuntimeSettings:
     watch_check_interval_sec: float = 300
     watch_job_min_gap_sec: float = 300
     watch_job_max_age_sec: float = 24 * 3600
+    #: Must stay above watch_job_max_age_sec: a job still in the queue needs
+    #: its result file. Orphans only appear when registration never happened.
+    watch_result_retain_sec: float = 48 * 3600
+    watch_result_cleanup_interval_sec: float = 3600
 
     roster_refresh_sec: float = 12 * 3600
 
