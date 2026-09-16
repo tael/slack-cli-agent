@@ -71,6 +71,11 @@ class WatchJobPort(Protocol):
     def mark_checked(self, job_id: int, at: float) -> None:
         """Updates `last_run` and increments the check count."""
 
+    def mark_polled(self, job_id: int, at: float) -> None:
+        """Updates `last_run` only. A round that read the exit status and found
+        the work still running never asked the engine, and counting it would
+        spend the check limit on turns that cost nothing."""
+
     def mark_done(self, job_id: int) -> None:
         """Marks a job complete, excluding it from `due` and `expired`."""
 
@@ -127,6 +132,9 @@ class WatchJobQueue(SqliteRepository):
             "UPDATE watch_jobs SET last_run = ?, checks = checks + 1 WHERE id = ?",
             (at, job_id),
         )
+
+    def mark_polled(self, job_id: int, at: float) -> None:
+        self._execute("UPDATE watch_jobs SET last_run = ? WHERE id = ?", (at, job_id))
 
     def mark_done(self, job_id: int) -> None:
         self._execute("UPDATE watch_jobs SET done = 1 WHERE id = ?", (job_id,))

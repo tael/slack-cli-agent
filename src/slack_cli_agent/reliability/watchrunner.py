@@ -19,11 +19,32 @@ from ..guard.watch import WATCH_DONE_TAG, WATCH_MARK_EMOJI, WATCH_STILL_TAG
 from ..slack.publisher import MessagePublisher
 from ..slack.reactions import ReactionMarker
 from .watchjobs import WatchJob, WatchJobPort
+from .watchresult import WatchOutcome, WatchResultReader
 
 log = logging.getLogger(__name__)
 
+_TERMINAL = (WatchOutcome.SUCCEEDED, WatchOutcome.FAILED)
 
-def watch_check_prompt(description: str) -> str:
+
+def watch_check_prompt(description: str, outcome: WatchOutcome = WatchOutcome.UNKNOWN,
+                       result_path: str = "") -> str:
+    """The prompt for one check turn.
+
+    When the code already knows the work finished, the turn only writes the
+    report — asking it to judge again would let a wrong tag override a read
+    exit status. Only the undecidable case still goes through the tags.
+    """
+    if outcome in (WatchOutcome.SUCCEEDED, WatchOutcome.FAILED):
+        결과 = "성공으로" if outcome is WatchOutcome.SUCCEEDED else "실패로"
+        어디 = f"결과 파일 : {result_path}\n\n" if result_path else ""
+        return (
+            f"다음 백그라운드 작업이 {결과} 끝났다. 끝났는지는 이미 확인했으니 다시 판단하지 "
+            "말고, 결과를 알리는 보고 문구만 평소 답변 형식으로 써라.\n\n"
+            f"지켜보던 작업 : {description}\n\n"
+            f"{어디}"
+            "결과 파일이 있으면 읽고 무엇이 어떻게 됐는지 옮겨 적어라. 조회만 하고 새로 "
+            "시키지 않는다."
+        )
     return (
         "다음 백그라운드 작업이 끝났는지 지금 확인해라. 조회만 하고 새로 시키지 않는다.\n\n"
         f"지켜보는 작업 : {description}\n\n"
@@ -45,7 +66,10 @@ class WatchJobChecker:
         self,
         *,
         queue: WatchJobPort,
-        run_check: Callable[[WatchJob], EngineResponse],
+        run_check: Callable[[WatchJob, WatchOutcome], EngineResponse],
+        # None keeps the old tag-only judgement. Rows registered before the
+        # result file was pinned have nothing to read either way.
+        results: WatchResultReader | None = None,
         publisher: MessagePublisher,
         channels: ChannelRegistry,
         settings: RuntimeSettings,
@@ -57,6 +81,7 @@ class WatchJobChecker:
     ) -> None:
         self._queue = queue
         self._run_check = run_check
+        self._results = results
         self._publisher = publisher
         self._channels = channels
         self._settings = settings
@@ -69,6 +94,10 @@ class WatchJobChecker:
 
         given_up_ids: set[int] = set()
         for job in self._queue.expired(now, self._settings.watch_job_max_age_sec):
+            # An exit status already read outranks the clock: giving up on work
+            # that finished drops its report and tells the owner it never ended.
+            if self._outcome_of(job) in _TERMINAL:
+                continue
             given_up_ids.add(job.id)
             if self._notify_owner is not None:
                 self._notify_owner(_give_up_report(job))
@@ -80,11 +109,31 @@ class WatchJobChecker:
             self._check_one(job, now)
 
     def _check_one(self, job: WatchJob, now: float) -> None:
+        outcome = self._outcome_of(job)
+        if outcome is WatchOutcome.RUNNING:
+            # Nothing to ask: every check is an engine call, and the work has
+            # not written its exit status yet.
+            self._queue.mark_polled(job.id, now)
+            return
+
         try:
-            response = self._run_check(job)
+            response = self._run_check(job, outcome)
         except Exception:
             log.exception("감시 확인 중 오류 : 작업 %d, 확인 %d회", job.id, job.checks)
             self._queue.mark_checked(job.id, now)
+            return
+
+        if outcome in _TERMINAL:
+            # The exit status decided this, not the reply. A failed engine call
+            # still leaves the job open so the report gets another attempt.
+            if response.ok:
+                self._finish(job, response.body, outcome)
+            else:
+                log.warning(
+                    "감시 완료 보고 생성 실패 : 작업 %d, 확인 %d회, 사유 %s",
+                    job.id, job.checks, response.failure_reason or "미상",
+                )
+                self._queue.mark_checked(job.id, now)
             return
 
         if response.ok and WATCH_DONE_TAG in response.body:
@@ -115,11 +164,18 @@ class WatchJobChecker:
             )
         self._queue.mark_checked(job.id, now)
 
-    def _finish(self, job: WatchJob, raw_body: str) -> None:
+    def _outcome_of(self, job: WatchJob) -> WatchOutcome:
+        if self._results is None:
+            return WatchOutcome.UNKNOWN
+        return self._results.read(job.workdir, job.run_id)
+
+    def _finish(
+        self, job: WatchJob, raw_body: str, outcome: WatchOutcome = WatchOutcome.UNKNOWN
+    ) -> None:
         # A reply that is nothing but the done tag leaves an empty body, and an
         # empty body posts nothing at all. The job is marked done either way, so
         # without this the watch just disappears from the thread.
-        body = _strip_tags(raw_body) or _bare_done_report()
+        body = _strip_tags(raw_body) or _bare_done_report(outcome)
         config = self._channels.get(job.channel)
         rich = bool(config and config.rich)
         try:
@@ -145,14 +201,21 @@ def _strip_tags(raw_body: str) -> str:
     return body.strip()
 
 
-def _bare_done_report() -> str:
+def _bare_done_report(outcome: WatchOutcome = WatchOutcome.UNKNOWN) -> str:
     """Deliberately omits job.condition. The condition can carry content pulled
     from a linked thread or a file, and this goes to a channel thread — unlike
     the give-up report, which goes to the owner alone. The thread itself says
     what was being watched.
+
+    A failed exit with an empty report would otherwise read as success.
     """
+    머리 = (
+        "*지켜보던 작업이 실패로 끝났습니다*"
+        if outcome is WatchOutcome.FAILED
+        else "*지켜보던 작업이 끝났습니다*"
+    )
     return (
-        "*지켜보던 작업이 끝났습니다*\n\n"
+        f"{머리}\n\n"
         "확인 응답에 내용이 없어 결과를 옮기지 못했습니다. 직접 확인이 필요합니다."
     )
 
