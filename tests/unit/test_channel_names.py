@@ -88,3 +88,63 @@ def test_호출_가능하다() -> None:
     resolver = ChannelNameResolver(client, _configured({}))
 
     assert resolver("C1") == "일반"
+
+
+class Test캐시만료:
+    """실패를 프로세스 수명 내내 들고 있으면 잠깐의 rate limit 이 그 채널을
+    ID 표기로 굳힌다. 이름이 바뀐 경우도 같다 (sca-ops).
+    """
+
+    def _resolver(self, client: _FakeSlackClient, 시각: list[float]) -> ChannelNameResolver:
+        return ChannelNameResolver(
+            client,
+            _configured({}),
+            now=lambda: 시각[0],
+            ttl_sec=3600.0,
+            failure_ttl_sec=60.0,
+        )
+
+    def test_실패는_짧은_만료_뒤_다시_조회한다(self) -> None:
+        시각 = [0.0]
+        client = _FakeSlackClient({})
+        resolver = self._resolver(client, 시각)
+
+        assert resolver.resolve("C1") == ""
+        시각[0] = 61.0
+        client._names["C1"] = "일반"
+
+        assert resolver.resolve("C1") == "일반"
+        assert client.call_count == 2
+
+    def test_실패는_만료_전에는_다시_조회하지_않는다(self) -> None:
+        시각 = [0.0]
+        client = _FakeSlackClient({})
+        resolver = self._resolver(client, 시각)
+
+        resolver.resolve("C1")
+        시각[0] = 59.0
+        resolver.resolve("C1")
+
+        assert client.call_count == 1
+
+    def test_성공은_긴_만료_뒤_다시_조회한다(self) -> None:
+        시각 = [0.0]
+        client = _FakeSlackClient({"C1": "옛이름"})
+        resolver = self._resolver(client, 시각)
+
+        assert resolver.resolve("C1") == "옛이름"
+        시각[0] = 3601.0
+        client._names["C1"] = "새이름"
+
+        assert resolver.resolve("C1") == "새이름"
+
+    def test_성공은_만료_전에는_다시_조회하지_않는다(self) -> None:
+        시각 = [0.0]
+        client = _FakeSlackClient({"C1": "일반"})
+        resolver = self._resolver(client, 시각)
+
+        resolver.resolve("C1")
+        시각[0] = 3599.0
+        resolver.resolve("C1")
+
+        assert client.call_count == 1
