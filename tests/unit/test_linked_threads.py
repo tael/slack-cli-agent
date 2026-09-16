@@ -170,10 +170,11 @@ class Test엔진무관_전달:
     @pytest.mark.parametrize("engine_type", ["claude", "codex", "gemini"])
     @pytest.mark.parametrize("resume", [False, True])
     def test_링크_본문이_실행_명령에_들어간다(self, tmp_path, engine_type: str, resume: bool):
+        from slack_cli_agent.auth.principal import TrustLevel
         from slack_cli_agent.config.profile import Profile
         from slack_cli_agent.config.settings import RuntimeSettings
         from slack_cli_agent.core.application import Application
-        from slack_cli_agent.engine.base import EngineRequest, TrustLevel
+        from slack_cli_agent.engine.base import EngineRequest
 
         마크 = "----- 링크된 스레드 : 테스트 -----"
         profile = Profile.from_dict({

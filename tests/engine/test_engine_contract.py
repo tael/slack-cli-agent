@@ -14,10 +14,11 @@ from typing import Any, NamedTuple
 
 import pytest
 
+from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.errors import ConfigError
-from slack_cli_agent.engine.base import Engine, EngineRequest, TrustLevel, Usage
+from slack_cli_agent.engine.base import Engine, EngineRequest, Usage
 from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
 from slack_cli_agent.engine.gemini import GeminiEngine

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.auth.policy import EFFORT_LEVELS, OWNER_EFFORT_MIN
+from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.channel import CHAT_DEFAULT
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -22,7 +23,6 @@ from slack_cli_agent.engine.base import (
     Engine,
     EngineRequest,
     EngineResponse,
-    TrustLevel,
     UsageLimit,
 )
 from slack_cli_agent.engine.runner import EngineRunner, FallbackEngine
