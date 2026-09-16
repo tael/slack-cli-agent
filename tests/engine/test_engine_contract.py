@@ -320,7 +320,7 @@ class TestEngineContract:
 def _allowed_tools_params() -> list[Any]:
     params = []
     for fx in ENGINE_FIXTURES:
-        marks = ()
+        marks: tuple[Any, ...] = ()
         if fx.allowed_tools_xfail_reason:
             marks = (pytest.mark.xfail(strict=True, reason=fx.allowed_tools_xfail_reason),)
         params.append(pytest.param(fx, id=fx.id, marks=marks))

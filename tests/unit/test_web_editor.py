@@ -140,8 +140,8 @@ class TestProfileEditorSave:
         calls: list[tuple[Path, Path]] = []
         real_replace = os.replace
 
-        def spy_replace(src: object, dst: object) -> None:
-            calls.append((Path(src), Path(dst)))  # type: ignore[arg-type]
+        def spy_replace(src: str | Path, dst: str | Path) -> None:
+            calls.append((Path(src), Path(dst)))
             real_replace(src, dst)
 
         monkeypatch.setattr(os, "replace", spy_replace)

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -357,7 +358,7 @@ class TestReactionEvent:
     ) -> None:
         """점검은 엔진 호출이라 몇 분이 걸린다. 그 자리에서 돌리면 그동안
         소켓 이벤트를 하나도 못 받는다."""
-        spawned: list[tuple[str, object]] = []
+        spawned: list[tuple[str, Callable[[], None]]] = []
 
         class RecordingSpawner(TaskSpawner):
             def spawn(self, name, work):
