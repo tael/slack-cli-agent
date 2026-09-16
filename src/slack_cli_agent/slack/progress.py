@@ -1,11 +1,19 @@
-"""Shows progress as one Slack message that gets rewritten as steps finish.
+"""Shows progress as one Slack message while the engine runs.
 
-Post-then-update rather than the streaming API (chat.startStream /
-appendStream): streaming is only granted to apps with the assistant
-feature turned on, so a bot without it would get an error on every
-request and show nothing at all. chat.update needs only the chat:write
-this bot already has for its answers, which makes this the implementation
-that works for every bot — the point of keeping it behind ProgressSink.
+Two implementations, picked at runtime rather than by config:
+
+- SlackStreamingProgressSink uses chat.startStream / appendStream, which
+  appends deltas instead of rewriting the whole message. Slack grants
+  these only to apps with the agent feature turned on, and only into a
+  thread.
+- SlackProgressSink posts once and rewrites with chat.update. It needs
+  only the chat:write this bot already has for its answers, so it works
+  for every bot.
+
+FallbackProgressSink runs the first and drops to the second the moment it
+raises — a bot without the agent feature fails on the very first call, and
+that failure must not be the difference between showing progress and
+showing nothing.
 
 The placeholder is deleted when the request finishes, so the thread ends
 up holding the answer alone. A failed delete leaves the last step line
@@ -16,10 +24,11 @@ as an answer.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from ..core.channel_kind import is_direct_message_channel
+from ..observability.progress import ProgressSink
 
 log = logging.getLogger(__name__)
 
@@ -72,3 +81,125 @@ class SlackProgressSink:
             self._client.chat_delete(channel=self._channel, ts=ts)
         except Exception as exc:  # noqa: BLE001 - a leftover progress line is worse reported than raised
             log.debug("진행 표시 삭제 실패 : %s:%s, %s", self._channel, ts, exc)
+
+
+class ProgressStreamUnavailable(RuntimeError):
+    """Raised when this request has nowhere to stream into.
+
+    Separate from an API failure: it is decided before any call goes out,
+    so FallbackProgressSink switches without spending a request.
+    """
+
+
+class SlackStreamingProgressSink:
+    """One request's progress stream. Not reusable across requests.
+
+    chat.appendStream sends only the new lines, so there is no MAX_LINES
+    equivalent here — the rewrite sink needs one because it resends the
+    whole text every tick and Slack rejects a message over 4000
+    characters.
+    """
+
+    def __init__(
+        self, client: Any, channel: str, thread_ts: str, bot_display_name: str = "",
+    ) -> None:
+        # chat.startStream takes thread_ts as required, and MessagePublisher.post's
+        # rule is that a DM has no thread to reply in. Streaming into one would
+        # put the progress display somewhere the answer never goes.
+        if is_direct_message_channel(channel) or not thread_ts:
+            raise ProgressStreamUnavailable(f"스트리밍할 스레드가 없다 : {channel}")
+        self._client = client
+        self._channel = channel
+        self._thread_ts = thread_ts
+        self._bot_display_name = bot_display_name
+        self._ts: str | None = None
+
+    def open(self, text: str) -> None:
+        kwargs: dict[str, Any] = {
+            "channel": self._channel, "thread_ts": self._thread_ts, "markdown_text": text,
+        }
+        if self._bot_display_name:
+            kwargs["username"] = self._bot_display_name
+        response = self._client.chat_startStream(**kwargs)
+        self._ts = response["ts"]
+
+    def append(self, lines: Sequence[str]) -> None:
+        # Same reason as the rewrite sink: no ts means open() failed.
+        if self._ts is None:
+            return
+        self._client.chat_appendStream(
+            channel=self._channel, ts=self._ts, markdown_text="\n" + "\n".join(lines),
+        )
+
+    def close(self) -> None:
+        if self._ts is None:
+            return
+        ts, self._ts = self._ts, None
+        # Stop first: deleting a live stream leaves Slack holding an open
+        # one, and the delete is what the thread's final shape depends on.
+        for call, what in ((self._client.chat_stopStream, "종료"),
+                           (self._client.chat_delete, "삭제")):
+            try:
+                call(channel=self._channel, ts=ts)
+            except Exception as exc:  # noqa: BLE001 - a leftover line is worse reported than raised
+                log.debug("진행 스트림 %s 실패 : %s:%s, %s", what, self._channel, ts, exc)
+
+
+class FallbackProgressSink:
+    """Streams progress, and switches to the rewrite sink once streaming fails.
+
+    The switch is remembered for the rest of the request: streaming is
+    granted per app, so a failure on the first call is a failure on every
+    call after, and retrying each tick would cost one rejected request per
+    tick. Lines shown so far are replayed into the new sink, so the switch
+    doesn't lose what the person was already reading.
+    """
+
+    def __init__(
+        self,
+        primary_factory: Callable[[], ProgressSink],
+        fallback_factory: Callable[[], ProgressSink],
+    ) -> None:
+        self._fallback_factory = fallback_factory
+        self._lines: list[str] = []
+        self._streaming = True
+        try:
+            self._sink: ProgressSink = primary_factory()
+        except Exception as exc:  # noqa: BLE001 - see ProgressSink
+            log.debug("진행 스트리밍을 쓸 수 없다, 고쳐 쓰기로 연다 : %s", exc)
+            self._sink = fallback_factory()
+            self._streaming = False
+
+    def open(self, text: str) -> None:
+        self._lines = [text]
+        self._attempt(lambda sink: sink.open(text))
+
+    def append(self, lines: Sequence[str]) -> None:
+        self._lines.extend(lines)
+        self._attempt(lambda sink: sink.append(list(lines)))
+
+    def close(self) -> None:
+        # No fallback at close: there is nothing left to show, and a failed
+        # teardown is already tolerated by ProgressSession.
+        self._sink.close()
+
+    def _attempt(self, action: Callable[[ProgressSink], None]) -> None:
+        try:
+            action(self._sink)
+            return
+        except Exception as exc:
+            # 고쳐 쓰기까지 실패한 것은 표시가 아니라 슬랙 쪽 문제다.
+            # ProgressSession 이 삼키므로 요청은 그대로 답한다.
+            if not self._streaming:
+                raise
+            log.info("진행 스트리밍 실패, 고쳐 쓰기로 전환 : %s", exc)
+        self._switch()
+
+    def _switch(self) -> None:
+        self._streaming = False
+        failed, self._sink = self._sink, self._fallback_factory()
+        try:
+            failed.close()
+        except Exception as exc:  # noqa: BLE001 - see ProgressSink
+            log.debug("스트리밍 표시 정리 실패 : %s", exc)
+        self._sink.open("\n".join(self._lines))

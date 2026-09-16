@@ -133,7 +133,11 @@ from ..slack.linked_threads import LinkedThreadReader
 from ..slack.listener import EventListener
 from ..slack.names import DisplayNameResolver
 from ..slack.participants import ThreadParticipants
-from ..slack.progress import SlackProgressSink
+from ..slack.progress import (
+    FallbackProgressSink,
+    SlackProgressSink,
+    SlackStreamingProgressSink,
+)
 from ..slack.publisher import MessagePublisher
 from ..slack.reactions import (
     DEBUG_TRACE_EMOJI,
@@ -484,8 +488,13 @@ class Application:
         if self._progress is None:
             self._progress = ProgressCoordinator(
                 settings=self._settings,
-                sink_factory=lambda channel, thread_ts: SlackProgressSink(
-                    self._client, channel, thread_ts, self._profile.display_name,
+                sink_factory=lambda channel, thread_ts: FallbackProgressSink(
+                    lambda: SlackStreamingProgressSink(
+                        self._client, channel, thread_ts, self._profile.display_name,
+                    ),
+                    lambda: SlackProgressSink(
+                        self._client, channel, thread_ts, self._profile.display_name,
+                    ),
                 ),
                 log_dir=self._profile.paths.progress,
             )
