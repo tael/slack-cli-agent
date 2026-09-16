@@ -75,11 +75,11 @@ class FakePublisher:
 class FakeEngine:
     def __init__(self, responses: list[EngineResponse]) -> None:
         self._responses = list(responses)
-        self.calls: list[tuple[str, str, bool]] = []
+        self.calls: list[tuple[str, str | None, bool]] = []
         self.progress_logs: list[Path | None] = []
 
     def run(
-        self, prompt: str, session_id: str, resume: bool, progress_log: Path | None = None
+        self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None
     ) -> EngineResponse:
         self.calls.append((prompt, session_id, resume))
         self.progress_logs.append(progress_log)
@@ -297,3 +297,62 @@ class Test점검이_도는_동안_진행_신호를_낸다:
         rig = make_rig(database, progress=FakeReviewProgress(fail=True))
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
         assert rig.ledger.find("fake_kind", "C1", "1.1").status == "완료"
+
+
+class 재시도하는Task(FakeReviewTask):
+    def retry_on_missing_split(self) -> bool:
+        return True
+
+    def missing_split_prompt(self) -> str:
+        return "구분선을 넣어 다시 써라"
+
+
+def _재시도_rig(database, 응답들) -> Rig:
+    rig = make_rig(database, engine_responses=응답들)
+    rig.task.__class__ = 재시도하는Task
+    return rig
+
+
+class Test세션ID는엔진이정한다:
+    """세션 ID 형식은 그 요청을 실제로 받는 CLI 의 것이다(sca-k6s).
+
+    지금은 클로드·코덱스·제미나이가 모두 하이픈 포함 UUID 를 받아 우연히
+    맞는다. 형식이 다른 엔진이 들어오면 CLI 종료코드로만 실패가 나서 로그로는
+    원인이 안 보인다.
+    """
+
+    def test_점검은_세션_ID_를_직접_만들지_않는다(self, database) -> None:
+        rig = make_rig(database)
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert rig.engine.calls[0][1] is None
+
+    def test_재시도는_1차가_실제로_쓴_세션을_이어간다(self, database) -> None:
+        """엔진이 정한 ID 를 안 받아 오면 재시도가 다른 대화로 간다."""
+        rig = _재시도_rig(
+            database,
+            [
+                EngineResponse(
+                    ok=True, body="구분선없는본문", session_id="엔진이-정한-id",
+                    model_actual=None, elapsed=1.0, turns=1, usage=None,
+                ),
+                _ok_response("요약===상세===상세내용"),
+            ],
+        )
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        _, 재시도_세션, 이어가기 = rig.engine.calls[1]
+        assert (재시도_세션, 이어가기) == ("엔진이-정한-id", True)
+
+    def test_1차가_세션_ID_를_안_주면_재시도하지_않는다(self, database) -> None:
+        """이어갈 대상이 없는데 이어가기로 부르면 다른 대화에 붙거나 실패한다."""
+        rig = _재시도_rig(
+            database,
+            [
+                EngineResponse(
+                    ok=True, body="구분선없는본문", session_id=None,
+                    model_actual=None, elapsed=1.0, turns=1, usage=None,
+                ),
+            ],
+        )
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert len(rig.engine.calls) == 1
+        assert "구분선없는본문" in rig.publisher.posts[0][2]
