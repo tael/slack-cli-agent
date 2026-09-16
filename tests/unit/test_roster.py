@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -219,6 +220,32 @@ class TestRosterBuilderFailurePolicy:
 
         assert count == 0
         assert output.read_text(encoding="utf-8") == "기존 내용"
+
+    def test_조회는_됐는데_규칙에_다_걸리면_그렇게_적는다(self, tmp_path: Path, caplog: Any) -> None:
+        """sca-4pf — 신지·아스카가 매 기동에 이 경고를 낸다. 2026-09-17 실측으로
+        users.list 는 17명을 돌려주고 그중 핸들 형식에 맞는 사람이 0명이었다.
+        조회 실패와 같은 문구를 쓰면 스코프나 네트워크를 의심하게 된다."""
+        output = tmp_path / "roster.md"
+        client = _FakeSlackClient(pages=[_page([_member(handle="tael", real_name="홍길동")])])
+        builder = RosterBuilder(client, output, now=lambda: 1_700_000_000.0)
+
+        with caplog.at_level(logging.WARNING):
+            assert builder.refresh() == 0
+
+        [기록] = [r.getMessage() for r in caplog.records]
+        assert "1명" in 기록
+        assert "0명" in 기록
+
+    def test_응답_자체가_비면_다른_문구를_쓴다(self, tmp_path: Path, caplog: Any) -> None:
+        output = tmp_path / "roster.md"
+        client = _FakeSlackClient(pages=[_page([])])
+        builder = RosterBuilder(client, output, now=lambda: 1_700_000_000.0)
+
+        with caplog.at_level(logging.WARNING):
+            assert builder.refresh() == 0
+
+        [기록] = [r.getMessage() for r in caplog.records]
+        assert "조회 결과가 비었다" in 기록
 
     def test_출력_디렉터리가_없으면_스스로_만든다(self, tmp_path: Path) -> None:
         output = tmp_path / "nested" / "roster.md"
