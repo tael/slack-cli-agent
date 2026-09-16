@@ -11,7 +11,7 @@ import pytest
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.jobs.heartbeat import WorkerHeartbeat
-from slack_cli_agent.jobs.ports import JobQueue, JobStatus, ReclaimResult
+from slack_cli_agent.jobs.ports import Job, JobQueue, JobStatus, ReclaimResult
 from slack_cli_agent.jobs.queue import SqliteJobQueue
 
 
@@ -24,6 +24,13 @@ def ctx(ts: str, thread: str = "", channel: str = "C1") -> RequestContext:
 @pytest.fixture
 def queue(database) -> SqliteJobQueue:
     return SqliteJobQueue(database)
+
+
+def claim(queue: SqliteJobQueue, worker: str) -> Job:
+    """claim_next 가 None 을 내면 그 자리에서 실패시킨다."""
+    job = queue.claim_next(worker)
+    assert job is not None
+    return job
 
 
 class TestContract:
@@ -69,7 +76,7 @@ class TestClaim:
         for index in range(3):
             queue.enqueue(ctx(f"{index}.0", f"T{index}"))
             time.sleep(0.001)
-        assert [queue.claim_next(f"w{i}").context.ts for i in range(3)] == [
+        assert [claim(queue, f"w{i}").context.ts for i in range(3)] == [
             "0.0", "1.0", "2.0"
         ]
 
@@ -78,12 +85,12 @@ class TestClaim:
 
     def test_잡으면_시도_횟수가_증가한다(self, queue: SqliteJobQueue) -> None:
         queue.enqueue(ctx("1.1"))
-        assert queue.claim_next("w1").attempts == 1
+        assert claim(queue, "w1").attempts == 1
 
     def test_실패로_끝나도_그_스레드가_풀린다(self, queue: SqliteJobQueue) -> None:
         queue.enqueue(ctx("1.1", "T1"))
         queue.enqueue(ctx("1.2", "T1"))
-        first = queue.claim_next("w1")
+        first = claim(queue, "w1")
         queue.complete(first.id, ok=False, failure="엔진 오류")
         assert queue.claim_next("w2") is not None
 
@@ -149,19 +156,19 @@ class TestPersistence:
 
     def test_실행_중_되돌리면_다시_나온다(self, queue: SqliteJobQueue) -> None:
         queue.enqueue(ctx("1.1"))
-        job = queue.claim_next("w1")
+        job = claim(queue, "w1")
         queue.requeue(job.id)
         assert queue.claim_next("w2") is not None
 
     def test_완료된_작업은_다시_안_나온다(self, queue: SqliteJobQueue) -> None:
         queue.enqueue(ctx("1.1"))
-        queue.complete(queue.claim_next("w1").id, ok=True)
+        queue.complete(claim(queue, "w1").id, ok=True)
         assert queue.claim_next("w2") is None
         assert queue.counts() == {JobStatus.COMPLETED.value: 1}
 
     def test_끝난_지_오래된_작업을_지운다(self, queue: SqliteJobQueue) -> None:
         queue.enqueue(ctx("1.1"))
-        queue.complete(queue.claim_next("w1").id, ok=True)
+        queue.complete(claim(queue, "w1").id, ok=True)
         assert queue.purge_finished(before=time.time() + 1) == 1
         assert queue.counts() == {}
 
@@ -187,7 +194,7 @@ class TestReclaim:
 
     def test_갱신한_작업은_정체로_보지_않는다(self, queue: SqliteJobQueue) -> None:
         queue.enqueue(ctx("1.1"))
-        job = queue.claim_next("w1")
+        job = claim(queue, "w1")
         queue.heartbeat(job.id)
         assert queue.reclaim_stale(deadline=time.time() - 1, max_attempts=3).total == 0
 

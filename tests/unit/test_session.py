@@ -10,6 +10,13 @@ from slack_cli_agent.session.ports import SessionKey, SessionRecord, SessionScop
 from slack_cli_agent.session.store import SqliteSessionStore
 
 
+def stored(store: SessionStore, session_key: SessionKey) -> SessionRecord:
+    """get 이 None 을 내면 그 자리에서 실패시킨다."""
+    record = store.get(session_key)
+    assert record is not None
+    return record
+
+
 def key(scope: str = SessionScope.THREAD, k: str = "T1") -> SessionKey:
     return SessionKey(scope=scope, key=k)
 
@@ -59,8 +66,8 @@ class TestSqliteSessionStoreGetPut:
             scope=SessionScope.CHANNEL, key="C1", session_id="sid-channel", engine="claude",
             created_at=100.0, last_seen_ts="", updated_at=100.0,
         ))
-        assert store.get(key(SessionScope.THREAD, "C1")).session_id == "sid-thread"
-        assert store.get(key(SessionScope.CHANNEL, "C1")).session_id == "sid-channel"
+        assert stored(store, key(SessionScope.THREAD, "C1")).session_id == "sid-thread"
+        assert stored(store, key(SessionScope.CHANNEL, "C1")).session_id == "sid-channel"
 
 
 class TestSqliteSessionStoreTouch:
@@ -207,7 +214,7 @@ class TestSessionManagerTouch:
             created_at=clock["now"], last_seen_ts="", updated_at=clock["now"],
         ))
         mgr.touch(key(), "1234.5678")
-        assert store.get(key()).last_seen_ts == "1234.5678"
+        assert stored(store, key()).last_seen_ts == "1234.5678"
 
 
 class TestSessionManagerReset:
@@ -221,7 +228,7 @@ class TestSessionManagerReset:
         assert decision.resume is False
         assert decision.rebuild_full is True
         assert decision.session_id == "new-sid-1"
-        assert store.get(key()).session_id == "new-sid-1"
+        assert stored(store, key()).session_id == "new-sid-1"
 
 
 class TestSessionManagerRetryPolicy:
@@ -281,7 +288,7 @@ class TestSqliteSessionStoreReassignSessionId:
             actual_session_id="real-sid", now=200.0,
         )
         assert ok is False
-        assert store.get(key()).session_id == "tmp-sid"
+        assert stored(store, key()).session_id == "tmp-sid"
 
     def test_없는_키면_거짓을_돌려준다(self, store: SqliteSessionStore) -> None:
         ok = store.reassign_session_id(
