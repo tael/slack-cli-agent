@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..auth.principal import TrustLevel
 from ..core.errors import ConfigError
+from .capability import EngineCapabilities
 from .environment import EngineEnvironmentPolicy, create_environment_policy
 
 if TYPE_CHECKING:
@@ -294,6 +295,11 @@ class Engine(ABC):
 
     name: ClassVar[str] = ""
 
+    #: What this engine can enforce at best. The actual guarantee for one
+    #: request is capabilities_for() -- codex's sandbox comes from profile
+    #: options, and claude's allowlist only holds if the request has one.
+    capabilities: ClassVar[EngineCapabilities] = EngineCapabilities()
+
     def __init__(self, profile: Profile, settings: RuntimeSettings) -> None:
         self.profile = profile
         self.settings = settings
@@ -342,6 +348,10 @@ class Engine(ABC):
         would point the secondary's CLI at the primary's home.
         """
         return create_environment_policy(self.name, self.profile.name, self.spec.home_dir)
+
+    def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
+        """This request's actual guarantee. Default: the class declaration."""
+        return self.capabilities
 
     def prepare(self, request: EngineRequest) -> None:
         """Side effects the engine needs before running, e.g. writing its

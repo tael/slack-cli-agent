@@ -34,6 +34,7 @@ point it at an arbitrary bot-owned directory.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import uuid
 from collections.abc import Mapping, Sequence
@@ -42,6 +43,12 @@ from typing import Any
 
 from ..config.profile import McpServerSpec
 from .base import Engine, EngineRequest, EngineResponse, FailureDetail, Usage, UsageLimit
+from .capability import (
+    EngineCapabilities,
+    ExecutionIsolation,
+    InstructionBoundary,
+    ToolRestriction,
+)
 
 # sca-dyb.4 — confirmed 2026-09-16 against the real CLI's turn.completed
 # event: Codex doesn't use Claude's cache_read_input_tokens/
@@ -80,8 +87,37 @@ def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec]) -> list[str
     return args
 
 
+#: options.sandbox values that mean something is actually enforced.
+_SANDBOX_ISOLATION = {
+    "read-only": ExecutionIsolation.READONLY_SANDBOX,
+    "workspace-write": ExecutionIsolation.WORKSPACE_WRITE,
+}
+
+
 class CodexEngine(Engine):
     name = "codex"
+
+    # developer_instructions is a separate field from the prompt. Isolation is
+    # whatever options.sandbox says, which the default (danger-full-access)
+    # turns off entirely -- hence capabilities_for below.
+    capabilities = EngineCapabilities(
+        tool_restriction=ToolRestriction.COARSE_SANDBOX,
+        execution_isolation=ExecutionIsolation.READONLY_SANDBOX,
+        instruction_boundary=InstructionBoundary.NATIVE,
+    )
+
+    def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
+        sandbox = str(self.spec.options.get("sandbox", "danger-full-access"))
+        isolation = _SANDBOX_ISOLATION.get(sandbox, ExecutionIsolation.NONE)
+        return dataclasses.replace(
+            self.capabilities,
+            execution_isolation=isolation,
+            tool_restriction=(
+                ToolRestriction.COARSE_SANDBOX
+                if isolation is not ExecutionIsolation.NONE
+                else ToolRestriction.NONE
+            ),
+        )
 
     def build_command(self, request: EngineRequest) -> list[str]:
         binary = str(self.spec.binary)

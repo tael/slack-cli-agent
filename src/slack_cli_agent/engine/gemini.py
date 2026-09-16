@@ -51,6 +51,12 @@ from .base import (
     Usage,
     UsageLimit,
 )
+from .capability import (
+    EngineCapabilities,
+    ExecutionIsolation,
+    InstructionBoundary,
+    ToolRestriction,
+)
 
 _VALID_EFFORTS = frozenset({"low", "medium", "high"})
 _MODEL_EFFORT_SUFFIXES = ("high", "medium", "low")
@@ -114,6 +120,15 @@ def _split_model_suffix(model: str) -> tuple[str, str | None]:
 
 class GeminiEngine(Engine):
     name = "gemini"
+
+    # --dangerously-skip-permissions is always passed (headless mode auto-denies
+    # otherwise), so nothing is restricted. system_prompt and prompt go into one
+    # -p string, which leaves no boundary between instructions and untrusted input.
+    capabilities = EngineCapabilities(
+        tool_restriction=ToolRestriction.NONE,
+        execution_isolation=ExecutionIsolation.NONE,
+        instruction_boundary=InstructionBoundary.UNAVAILABLE,
+    )
 
     def prepare(self, request: EngineRequest) -> None:
         self._ensure_settings_file(self.spec.home_dir)
