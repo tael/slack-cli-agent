@@ -1647,3 +1647,32 @@ class Test띄운_작업은_태그가_없어도_등록된다:
         assert "rm -rf" not in 조건
         assert "무시하고" not in 조건
         assert 조건
+
+
+class Test감시_위임을_결과로_알린다:
+    """표식을 정하는 자리가 파이프라인과 워커 둘이다. 워커는 ok 인 결과를
+    전부 완료로 표시하므로, 감시 위임을 결과에 담지 않으면 여기서 단 감시
+    표식이 곧바로 덮인다 (sca-5sb)."""
+
+    def test_등록되면_watching이_참이다(self, tmp_path: Path) -> None:
+        pipeline, _deps = build_pipeline(
+            responses=[ok_response(body="네\n\n[[WATCH: 배포 상태]]")],
+            guards=[WatchPromiseGuard()], watch_queue=Fake감시큐(), tmp_path=tmp_path,
+        )
+        assert pipeline.handle(make_ctx()).watching is True
+
+    def test_등록이_없으면_watching이_거짓이다(self, tmp_path: Path) -> None:
+        pipeline, _deps = build_pipeline(
+            responses=[ok_response(body="그냥 답변입니다")],
+            guards=[WatchPromiseGuard()], watch_queue=Fake감시큐(), tmp_path=tmp_path,
+        )
+        assert pipeline.handle(make_ctx()).watching is False
+
+    def test_등록에_실패하면_watching이_거짓이다(self, tmp_path: Path) -> None:
+        """큐가 터졌으면 아무도 지켜보지 않는다. 감시 표식을 남기면 그 메시지는
+        영영 미완료로 남는다."""
+        pipeline, _deps = build_pipeline(
+            responses=[ok_response(body="네\n\n[[WATCH: 배포 상태]]")],
+            guards=[WatchPromiseGuard()], watch_queue=Fake감시큐(fail=True), tmp_path=tmp_path,
+        )
+        assert pipeline.handle(make_ctx()).watching is False

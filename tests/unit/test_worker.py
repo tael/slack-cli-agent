@@ -14,10 +14,11 @@ from dataclasses import dataclass, field
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ports import HandleOutcome
+from slack_cli_agent.guard.watch import WATCH_MARK_EMOJI
 from slack_cli_agent.jobs.heartbeat import WorkerHeartbeat
 from slack_cli_agent.jobs.queue import SqliteJobQueue
 from slack_cli_agent.reliability.catchup import CatchupReport
-from slack_cli_agent.slack.reactions import ReactionMarker
+from slack_cli_agent.slack.reactions import SILENT_MARK_EMOJI, ReactionMarker
 
 
 def ctx(ts: str, thread: str = "", channel: str = "C1") -> RequestContext:
@@ -210,6 +211,72 @@ class TestRunOnceSilent:
         assert queue.counts() == {"COMPLETED": 1}
         assert ("add", "C1", "1.1", "zipper_mouth_face") in client.calls
         assert ("add", "C1", "1.1", "white_check_mark") not in client.calls
+
+
+class TestRunOnceWatch:
+    """감시 큐에 넘긴 요청은 완료가 아니다. 워커가 완료 표식을 달면 채널에서
+    끝난 것으로 보이고, catchup.already_handled 가 DONE_EMOJI 로 판정하므로
+    복구 스캔에서도 빠진다. 파이프라인이 감시 표식을 달아도 워커가 그 뒤에
+    덮어썼다 — 실측 2026-09-17, 슬랙 1789576179.299509 (sca-5sb).
+    """
+
+    def test_감시로_넘긴_요청은_감시_표식이_남는다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=True, watching=True))
+        worker, queue, client = make_worker(database=database, handler=handler)
+        queue.enqueue(ctx("1.1"))
+
+        worker.run_once()
+
+        assert ("add", "C1", "1.1", WATCH_MARK_EMOJI) in client.calls
+        assert ("add", "C1", "1.1", "white_check_mark") not in client.calls
+
+    def test_큐에서는_완료로_빠진다(self, database) -> None:
+        """표식만 미완료다. 큐에 남기면 워커가 같은 요청을 다시 처리한다."""
+        handler = FakeHandler(outcome=HandleOutcome(ok=True, watching=True))
+        worker, queue, _client = make_worker(database=database, handler=handler)
+        queue.enqueue(ctx("1.1"))
+
+        worker.run_once()
+
+        assert queue.counts() == {"COMPLETED": 1}
+
+    def test_침묵이_감시보다_우선한다(self, database) -> None:
+        """답을 안 하기로 한 요청은 지켜볼 것도 없다."""
+        handler = FakeHandler(outcome=HandleOutcome(ok=True, silent=True, watching=True))
+        worker, queue, client = make_worker(database=database, handler=handler)
+        queue.enqueue(ctx("1.1"))
+
+        worker.run_once()
+
+        assert ("add", "C1", "1.1", SILENT_MARK_EMOJI) in client.calls
+        assert ("add", "C1", "1.1", WATCH_MARK_EMOJI) not in client.calls
+
+    def test_묻힌_건에는_감시_표식을_안_단다(self, database) -> None:
+        """감시 작업은 대표 메시지의 ts 하나만 저장하고 완료 때도 그것만
+        정리한다. 묻힌 건에 mag 를 달면 아무도 떼지 않아 영구히 남고, 캐치업이
+        그것을 미완료로 보아 그 스레드를 다시 집는다 (코덱스 검토)."""
+        handler = FakeHandler(outcome=HandleOutcome(ok=True, watching=True))
+        worker, queue, client = make_worker(database=database, handler=handler)
+        대표 = ctx("1.1")
+        묻힌 = ctx("1.2", "1.1")
+        worker._skip_groups[대표.key] = [묻힌]
+        queue.enqueue(대표)
+
+        worker.run_once()
+
+        assert ("add", "C1", "1.1", WATCH_MARK_EMOJI) in client.calls
+        assert ("add", "C1", "1.2", "white_check_mark") in client.calls
+        assert ("add", "C1", "1.2", WATCH_MARK_EMOJI) not in client.calls
+
+    def test_실패하면_감시_표식을_안_단다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=False, failure="터짐", watching=True))
+        worker, queue, client = make_worker(database=database, handler=handler)
+        queue.enqueue(ctx("1.1"))
+
+        worker.run_once()
+
+        assert ("add", "C1", "1.1", "x") in client.calls
+        assert ("add", "C1", "1.1", WATCH_MARK_EMOJI) not in client.calls
 
 
 class TestHeartbeat:
