@@ -50,6 +50,18 @@ class Test조립:
         assert res.status == 200
         assert res.body == ["persona"]
 
+    def test_학습이_쌓은_파일은_다른_자리에서_읽는다(self, tmp_path: Path) -> None:
+        """사람 자리만 열면 학습이 잘못 쌓은 줄을 지울 수 없다(sca-jl4.5)."""
+        console = make_console(tmp_path)
+        learned = tmp_path / "state" / "persona" / "learned"
+        learned.mkdir(parents=True)
+        (learned / "잡담.md").write_text("쌓인 것", encoding="utf-8")
+
+        res = console.router().handle("GET", "/api/learned/example", {}, None)
+
+        assert res.body == ["잡담"]
+        assert console.router().handle("GET", "/api/knowledge/example", {}, None).body == []
+
     def test_지식_편집기는_페르소나_아래를_본다(self, tmp_path: Path) -> None:
         console = make_console(tmp_path)
         knowledge = tmp_path / "state" / "persona" / "knowledge"

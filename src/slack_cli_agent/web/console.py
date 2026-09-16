@@ -29,6 +29,7 @@ class WebConsole:
             channels_for=lambda bot: ChannelEditor(ChannelRegistry(self._profile(bot).paths.channels)),
             prompts_for=lambda bot: FileEditor(self._profile(bot).paths.prompts),
             knowledge_for=lambda bot: FileEditor(self._profile(bot).paths.knowledge),
+            learned_for=lambda bot: FileEditor(self._profile(bot).paths.learned),
             metrics_for=lambda bot: MetricsCollector(self._profile(bot)),
             roster=self._roster,
         )

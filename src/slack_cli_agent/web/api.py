@@ -64,6 +64,7 @@ class ApiRouter:
         channels_for: Callable[[str], ChannelsPort],
         prompts_for: Callable[[str], FilesPort],
         knowledge_for: Callable[[str], FilesPort],
+        learned_for: Callable[[str], FilesPort],
         metrics_for: Callable[[str], MetricsPort],
         roster: RosterPort,
     ) -> None:
@@ -71,6 +72,9 @@ class ApiRouter:
         self._channels_for = channels_for
         self._prompts_for = prompts_for
         self._knowledge_for = knowledge_for
+        # Separate from knowledge: the learning batch appends here and a human
+        # only ever removes a wrong line (sca-jl4.5).
+        self._learned_for = learned_for
         self._metrics_for = metrics_for
         self._roster = roster
 
@@ -134,6 +138,16 @@ class ApiRouter:
                 return self._get_file(bot, name, self._knowledge_for)
             if method == "PUT":
                 return self._put_file(bot, name, body, self._knowledge_for)
+            return _METHOD_NOT_ALLOWED
+        if head == "learned" and len(rest) == 1:
+            (bot,) = rest
+            return self._require(method, "GET", lambda: self._get_names(bot, self._learned_for))
+        if head == "learned" and len(rest) == 2:
+            bot, name = rest
+            if method == "GET":
+                return self._get_file(bot, name, self._learned_for)
+            if method == "PUT":
+                return self._put_file(bot, name, body, self._learned_for)
             return _METHOD_NOT_ALLOWED
         if head == "state" and len(rest) == 1:
             (bot,) = rest
