@@ -37,6 +37,18 @@ MINIMAL_PROFILE = {
 }
 
 
+@pytest.fixture(autouse=True)
+def 자격을_환경에_둔다(monkeypatch: pytest.MonkeyPatch) -> None:
+    """워커와 접수기는 게이트에서 토큰을 본다(sca-q2k).
+
+    이 파일의 시험은 대부분 토큰이 아니라 다른 것을 본다. 토큰이 없으면 전부
+    같은 이유로 78 에서 멈춰 무엇을 보려던 시험인지가 사라진다. 없는 경우를
+    보는 시험은 각자 delenv 로 지운다.
+    """
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-시험")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-시험")
+
+
 def write_profile(profiles_dir: Path, state_dir: Path, name: str = "example", **overrides) -> Path:
     """기동 게이트를 통과하는 프로필을 쓴다.
 
@@ -438,7 +450,7 @@ class TestIngressRosterRefresh:
             ["ingress", "--profile", "example", "--profile-dir", str(profiles)],
             stdout=io.StringIO(),
         )
-        assert code == 2
+        assert code == BLOCKED_EXIT
         assert app.roster_refresher().start_calls == 0
 
 
@@ -498,7 +510,7 @@ class TestIngressConnectionWatch:
             ["ingress", "--profile", "example", "--profile-dir", str(profiles)],
             stdout=io.StringIO(),
         )
-        assert code == 2
+        assert code == BLOCKED_EXIT
         assert app.connection_watch_calls == 0
 
 
@@ -604,7 +616,7 @@ class TestIngressCommand:
         )
         assert app.gateway_calls == 1
 
-    def test_토큰이_없으면_시작하지_않고_2를_돌려준다(
+    def test_토큰이_없으면_시작하지_않고_차단_코드를_돌려준다(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("SLACK_APP_TOKEN", raising=False)
@@ -623,7 +635,7 @@ class TestIngressCommand:
         code = cli.run(
             ["ingress", "--profile", "example", "--profile-dir", str(profiles)], stdout=out
         )
-        assert code == 2
+        assert code == BLOCKED_EXIT
         assert app._gateway.start_calls == []
 
     def test_환경변수만_있어도_기동한다(
@@ -1007,7 +1019,7 @@ class TestIngress연결점검주기:
     ) -> None:
         monkeypatch.delenv("SLACK_APP_TOKEN", raising=False)
         app = FakeApplication()
-        assert self._기동한다(tmp_path, app, token=False) == 2
+        assert self._기동한다(tmp_path, app, token=False) == BLOCKED_EXIT
         assert app.health_runner_.start_calls == 0
 
 

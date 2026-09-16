@@ -773,7 +773,8 @@ class Test명령_안내:
             ),
             encoding="utf-8",
         )
-        _자격파일(tmp_path / "state" / "credentials.json", app_token="파일앱")
+        # 봇 토큰도 넣는다 - 접수기는 게이트에서 둘 다 본다(sca-q2k).
+        _자격파일(tmp_path / "state" / "credentials.json", bot_token="파일봇", app_token="파일앱")
         받은: list[str] = []
 
         class 가짜게이트웨이:
