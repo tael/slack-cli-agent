@@ -92,14 +92,20 @@ class AttachmentStore:
             )
         return saved
 
-    def cleanup(self, now: float | None = None) -> None:
+    def cleanup(self, now: float | None = None) -> int:
+        """지운 파일 수를 돌려준다. 건수가 없으면 0건과 아예 안 돈 것이
+        로그에서 같아 보인다(sca-mf6)."""
         cut = (now if now is not None else time.time()) - self._keep_hours * 3600
+        removed = 0
         try:
             for p in self._attach_dir.glob("*/*"):
                 if p.is_file() and p.stat().st_mtime < cut:
                     p.unlink()
+                    removed += 1
             for d in self._attach_dir.glob("*"):
                 if d.is_dir() and not any(d.iterdir()):
                     d.rmdir()
-        except OSError:
-            pass
+        except OSError as exc:
+            # 조용히 넘기면 권한 문제로 한 번도 못 지운 상태가 정상과 같아 보인다.
+            log.warning("첨부 정리 실패 : %s", exc)
+        return removed

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -161,10 +162,24 @@ class Test첨부정리:
 
     def test_정리_실행기가_저장소의_정리를_부른다(self, app: Application, tmp_path: Path) -> None:
         불린다: list[bool] = []
-        app.attachments().cleanup = lambda now=None: 불린다.append(True)  # type: ignore[method-assign]
+
+        def 정리(now: float | None = None) -> int:
+            불린다.append(True)
+            return 0
+
+        app.attachments().cleanup = 정리  # type: ignore[method-assign]
         러너 = app.attachment_cleanup_runner()
         러너._task()  # 한 회차만 돌린다
         assert 불린다 == [True]
+
+    def test_정리_건수가_0이어도_로그에_남는다(
+        self, app: Application, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """0건과 아예 안 돈 것이 로그에서 갈려야 한다(sca-mf6)."""
+        app.attachments().cleanup = lambda now=None: 0  # type: ignore[method-assign]
+        with caplog.at_level(logging.INFO):
+            app.attachment_cleanup_runner()._task()
+        assert any("첨부" in r.getMessage() for r in caplog.records)
 
     def test_정리_실행기가_접수_묶음에_들어_있다(self, app: Application) -> None:
         assert "attachment_cleanup" in app.ingress_services(lambda 사유: None).runner_names
