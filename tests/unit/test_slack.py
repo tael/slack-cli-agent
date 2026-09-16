@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -159,7 +160,8 @@ class TestHistoryReader:
         msgs = reader.read_history("C1", "0.000000", 40)
         assert msgs == [{"ts": "1", "text": "hi"}]
         # 재시도 사이에 history_read_pause_sec 만큼 쉰다
-        assert clock.sleeps.count(pytest.approx(settings.history_read_pause_sec)) >= 1
+        쉰횟수 = sum(1 for 초 in clock.sleeps if 초 == pytest.approx(settings.history_read_pause_sec))
+        assert 쉰횟수 >= 1
 
     def test_기록조회_상한만큼_다_비면_판정불가_예외를_낸다(
         self, settings: RuntimeSettings
@@ -460,7 +462,7 @@ class Test빈본문게시:
 class TestSlackGateway:
     def test_등록한_핸들러_전부에게_이벤트를_분배한다(self) -> None:
         gateway = SlackGateway(client=FakeWebClient())
-        received: list[dict] = []
+        received: list[tuple[str, Mapping[str, Any]]] = []
         gateway.on("app_mention", lambda e: received.append(("a", e)))
         gateway.on("app_mention", lambda e: received.append(("b", e)))
         event = {"channel": "C1"}
@@ -471,7 +473,7 @@ class TestSlackGateway:
         """다른 타입의 핸들러가 관찰 지점이다. 부작용의 부재만 보면 아무것도
         안 부르는 구현과 전부 부르는 구현이 같아 보인다."""
         gateway = SlackGateway(client=FakeWebClient())
-        받은것: list[dict] = []
+        받은것: list[Mapping[str, Any]] = []
         gateway.on("app_mention", 받은것.append)
         gateway.dispatch("reaction_added", {"reaction": "dango"})
         assert 받은것 == []
@@ -488,7 +490,7 @@ class TestSlackGatewayConnection:
 
     def test_events_api_payload_를_이벤트_타입으로_분배한다(self) -> None:
         gateway = SlackGateway(client=FakeWebClient())
-        received: list[dict] = []
+        received: list[Mapping[str, Any]] = []
         gateway.on("app_mention", received.append)
         gateway.handle_events_api({"event": {"type": "app_mention", "channel": "C1"}})
         assert received == [{"type": "app_mention", "channel": "C1"}]
@@ -497,7 +499,7 @@ class TestSlackGatewayConnection:
         """타입이 빈 문자열인 핸들러까지 걸어 둔다. 빈 event 를 타입 "" 로
         분배하는 구현이면 여기서 걸린다."""
         gateway = SlackGateway(client=FakeWebClient())
-        받은것: list[dict] = []
+        받은것: list[Mapping[str, Any]] = []
         gateway.on("app_mention", 받은것.append)
         gateway.on("", 받은것.append)
         gateway.handle_events_api({})
@@ -509,7 +511,7 @@ class TestSlackGatewayConnection:
     ) -> None:
         """한 이벤트의 실패로 소켓 연결이 끊기면 그 뒤 요청이 전부 사라진다."""
 
-        def boom(event: dict) -> None:
+        def boom(event: Mapping[str, Any]) -> None:
             raise RuntimeError("핸들러 실패")
 
         gateway = SlackGateway(client=FakeWebClient())
