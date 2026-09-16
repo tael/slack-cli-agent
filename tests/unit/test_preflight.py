@@ -21,6 +21,7 @@ from slack_cli_agent.preflight.check import CheckResult, PreflightCheck, Preflig
 from slack_cli_agent.preflight.checks import (
     EngineBinaryCheck,
     EngineHomeCredentialCheck,
+    McpCredentialCheck,
     McpServerCheck,
     OwnerSettingsInertCheck,
     ProfilePermissionCheck,
@@ -217,6 +218,34 @@ class TestEngineBinaryCheck:
 
 # ---------------------------------------------------------------------------
 # McpServerCheck — 이식 대상. mcp_ready() 본문 특성화
+
+
+class TestMcpCredentialCheck:
+    """sca-dn4 — 표기가 안 풀리면 MCP 서버는 빈 자격으로 인증 실패만 낸다.
+    요청이 들어온 뒤가 아니라 기동 때 잡는다."""
+
+    def _profile(self, tmp_path: Path, value: str) -> Profile:
+        return make_profile(
+            tmp_path,
+            mcp_servers={"깃허브": {"command": "서버", "env": {"GITHUB_TOKEN": value}}},
+        )
+
+    def test_풀리면_통과한다(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GH", "값")
+        result = McpCredentialCheck().run(PreflightContext(profile=self._profile(tmp_path, "${env:GH}")))
+        assert result.ok is True
+
+    def test_안_풀리면_어느_서버인지_말한다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("GH", raising=False)
+        result = McpCredentialCheck().run(PreflightContext(profile=self._profile(tmp_path, "${env:GH}")))
+        assert result.ok is False
+        assert "깃허브" in result.detail
+
+    def test_서버가_없으면_볼_것이_없다(self, tmp_path: Path) -> None:
+        result = McpCredentialCheck().run(PreflightContext(profile=make_profile(tmp_path)))
+        assert result.ok is True
 
 
 class TestProfilePermissionCheck:
@@ -594,6 +623,7 @@ class TestPreflightSuite:
             "prompt_files",
             "owner_settings_inert",
             "profile_permissions",
+            "mcp_credentials",
         ]
 
     def test_추가_인자가_실제_점검에_반영된다(self, tmp_path: Path) -> None:
@@ -676,6 +706,7 @@ class TestPreflightSuite:
             "[통과] prompt_files : 좋음\n"
             "[통과] owner_settings_inert : 좋음\n"
             "[통과] profile_permissions : 좋음\n"
+            "[통과] mcp_credentials : 좋음\n"
             "기동 불가\n"
         )
 
