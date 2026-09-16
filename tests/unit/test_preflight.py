@@ -617,6 +617,7 @@ class TestPreflightSuite:
             "owner_settings_inert",
             "profile_permissions",
             "tool_allowlist_enforcement",
+            "usage_check_command",
             "mcp_credentials",
         ]
 
@@ -701,6 +702,7 @@ class TestPreflightSuite:
             "[통과] owner_settings_inert : 좋음\n"
             "[통과] profile_permissions : 좋음\n"
             "[통과] tool_allowlist_enforcement : 좋음\n"
+            "[통과] usage_check_command : 좋음\n"
             "[통과] mcp_credentials : 좋음\n"
             "기동 불가\n"
         )
@@ -893,3 +895,63 @@ class TestToolAllowlistEnforcementCheck:
     def test_표준_점검_목록에_들어_있다(self) -> None:
         names = [check.name for check in PreflightSuite().checks]
         assert ToolAllowlistEnforcementCheck.name in names
+
+
+class TestUsageCheckCommandCheck:
+    """명령이 잘못 적혀 있으면 매 시간 실패 로그만 남고 아무도 안 본다
+    (sca-3p7). 기동 때 한 번 드러낸다.
+    """
+
+    def test_명령이_없으면_점검_대상이_아니다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.preflight.checks import UsageCheckCommandCheck
+
+        result = UsageCheckCommandCheck().run(PreflightContext(profile=make_profile(tmp_path)))
+
+        assert result.ok is True
+
+    def test_절대경로_실행파일이_없으면_실패한다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.preflight.checks import UsageCheckCommandCheck
+
+        profile = make_profile(
+            tmp_path, usage_check_command=[str(tmp_path / "no_such"), "--check"]
+        )
+
+        result = UsageCheckCommandCheck().run(PreflightContext(profile=profile))
+
+        assert result.ok is False
+        assert "no_such" in result.detail
+        # 사용량 확인이 안 돼도 봇은 답할 수 있다. 기동을 막지 않는다.
+        assert result.fatal is False
+
+    def test_실행_권한이_없으면_실패한다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.preflight.checks import UsageCheckCommandCheck
+
+        binary = tmp_path / "usage.py"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o600)
+        profile = make_profile(tmp_path, usage_check_command=[str(binary)])
+
+        result = UsageCheckCommandCheck().run(PreflightContext(profile=profile))
+
+        assert result.ok is False
+        assert "실행 권한" in result.detail
+
+    def test_실행파일이_있으면_통과한다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.preflight.checks import UsageCheckCommandCheck
+
+        binary = tmp_path / "usage.py"
+        make_executable(binary)
+        profile = make_profile(tmp_path, usage_check_command=[str(binary), "--check"])
+
+        result = UsageCheckCommandCheck().run(PreflightContext(profile=profile))
+
+        assert result.ok is True
+
+    def test_PATH로_찾는_이름이면_which로_확인한다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.preflight.checks import UsageCheckCommandCheck
+
+        profile = make_profile(tmp_path, usage_check_command=["python3", "-V"])
+
+        result = UsageCheckCommandCheck().run(PreflightContext(profile=profile))
+
+        assert result.ok is True
