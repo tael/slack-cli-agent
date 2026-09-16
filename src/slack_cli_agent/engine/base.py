@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..auth.principal import TrustLevel
 from ..core.errors import ConfigError
-from .capability import EngineCapabilities
+from .capability import EngineCapabilities, ExecutionRequirements
 from .environment import EngineEnvironmentPolicy, create_environment_policy
 
 if TYPE_CHECKING:
@@ -79,6 +79,10 @@ class EngineRequest:
     readable_dirs: tuple[Path, ...] = ()
     allowed_tools: tuple[str, ...] = ()
     trust_level: TrustLevel = TrustLevel.GENERAL
+    #: What this request needs the engine to enforce. Empty means no
+    #: requirement -- recorded either way, so "no requirement" and "nothing
+    #: recorded" stay distinguishable in the audit.
+    requirements: ExecutionRequirements = field(default_factory=ExecutionRequirements)
     #: Where this engine should append the name of each tool it starts, for
     #: the progress display. None means this request has no display — either
     #: the channel has it off, or no one is watching the file. How the file

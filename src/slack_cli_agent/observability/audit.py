@@ -24,6 +24,9 @@ class IncidentKind(str, Enum):
     """
 
     REQUEST = "request"
+    #: What the request required of the engine and what that engine actually
+    #: enforces. Baseline traffic like REQUEST, not an incident.
+    CAPABILITY = "capability"
     SPLIT = "split"
     SPLIT_BROKEN = "split_broken"
     BLOCKS_REJECTED = "blocks_rejected"
@@ -41,7 +44,8 @@ REQUEST_KIND = IncidentKind.REQUEST.value
 
 # Kinds that count as an "incident" for the reliability/quality rollups —
 # REQUEST is excluded since it's the baseline traffic, not an incident.
-INCIDENT_KINDS: tuple[IncidentKind, ...] = tuple(k for k in IncidentKind if k is not IncidentKind.REQUEST)
+_BASELINE_KINDS = (IncidentKind.REQUEST, IncidentKind.CAPABILITY)
+INCIDENT_KINDS: tuple[IncidentKind, ...] = tuple(k for k in IncidentKind if k not in _BASELINE_KINDS)
 
 # Every row `record()` writes always carries a kind (see `line` below), so
 # this only guards a hand-edited or otherwise corrupted row.

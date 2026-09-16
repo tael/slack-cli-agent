@@ -19,7 +19,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from ..config.settings import RuntimeSettings
 from .base import (
@@ -31,10 +31,29 @@ from .base import (
     FailureDetail,
     UsageLimit,
 )
+from .capability import EngineCapabilities
 from .environment import EngineEnvironmentPolicy
 from .switcher import EngineSwitcher
 
 SubprocessRunner = Callable[..., Any]
+
+#: Audit kind for the capability record. Matches IncidentKind.CAPABILITY;
+#: kept as a literal here so this module doesn't import observability.
+CAPABILITY_KIND = "capability"
+
+
+class CapabilityAuditPort(Protocol):
+    """AuditLog.record's shape. Optional -- a runner without one still runs."""
+
+    def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None: ...
+
+
+def _as_audit(capabilities: EngineCapabilities) -> dict[str, str]:
+    return {
+        "tool_restriction": str(capabilities.tool_restriction),
+        "execution_isolation": str(capabilities.execution_isolation),
+        "instruction_boundary": str(capabilities.instruction_boundary),
+    }
 
 
 class EngineRunner:
@@ -47,7 +66,8 @@ class EngineRunner:
     def __init__(self, settings: RuntimeSettings,
                subprocess_runner: SubprocessRunner | None = None,
                environment_policy: EngineEnvironmentPolicy | None = None,
-               source_env: Mapping[str, str] | None = None) -> None:
+               source_env: Mapping[str, str] | None = None,
+               audit: CapabilityAuditPort | None = None) -> None:
         self._settings = settings
         self._run = subprocess_runner or self._default_runner
         # Overrides the policy for every engine this runner runs. Normally left
@@ -55,6 +75,9 @@ class EngineRunner:
         # secondary's home rather than the primary's.
         self._environment_policy = environment_policy
         self._source_env = source_env
+        # Recording only, for now. The engine that actually runs isn't known
+        # until here, so the record names the real one on a fallback turn.
+        self._audit = audit
 
     def run(self, engine: Engine, request: EngineRequest,
            timeout_sec: float | None = None) -> EngineResponse:
@@ -70,6 +93,7 @@ class EngineRunner:
             # Same reason as session_id: model naming is per-engine and the
             # concrete engine is only known here (sca-dyb.10).
             request = dataclasses.replace(request, model=engine.spec.model)
+        self._record_capabilities(engine, request)
         engine.prepare(request)
         cmd = engine.build_command(request)
         timeout = timeout_sec if timeout_sec is not None else self._settings.request_timeout_sec
@@ -105,6 +129,24 @@ class EngineRunner:
         if response.elapsed_source == ElapsedSource.UNKNOWN:
             response = dataclasses.replace(response, elapsed=wall_elapsed, elapsed_source=ElapsedSource.RUNNER)
         return response
+
+    def _record_capabilities(self, engine: Engine, request: EngineRequest) -> None:
+        if self._audit is None:
+            return
+        actual = engine.capabilities_for(request)
+        required = request.requirements
+        self._audit.record(
+            CAPABILITY_KIND,
+            engine=engine.name,
+            required={
+                axis: str(value)
+                for axis in ("tool_restriction", "execution_isolation", "instruction_boundary")
+                if (value := getattr(required, axis)) is not None
+            },
+            actual=_as_audit(actual),
+            unmet=list(required.unmet(actual)),
+            allow_audited_downgrade=required.allow_audited_downgrade,
+        )
 
     @staticmethod
     def _default_runner(
@@ -220,6 +262,11 @@ class FallbackEngine(Engine):
 
     def readable_paths_note(self, paths: Sequence[Path]) -> str:
         return self._active.readable_paths_note(paths)
+
+    def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
+        # A fallback turn runs the secondary. Reporting this class's own
+        # default would make every capability record on that turn false.
+        return self._active.capabilities_for(request)
 
     # -- The real entry point.
     def run(self, request: EngineRequest,

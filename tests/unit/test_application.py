@@ -374,6 +374,10 @@ class TestReviewReactions:
         assert isinstance(표시, ReviewProgressPort), 표시
         assert isinstance(표시, ReviewProgressDisplay), 표시
 
+    def test_엔진_실행기에_감사가_연결된다(self, app: Application) -> None:
+        """부품만 만들면 보장 기록이 한 줄도 안 남는다(sca-dyb.15 2단계)."""
+        assert app.engine_runner._audit is app.audit()
+
     def test_중단된_점검_보고기가_접수기_서비스에_들어간다(self, app: Application) -> None:
         """부품만 만들면 아무도 안 부른다(sca-9bq)."""
         이름들 = app.ingress_services(lambda 사유: None).runner_names
