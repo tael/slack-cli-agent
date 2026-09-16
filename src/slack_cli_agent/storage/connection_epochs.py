@@ -79,6 +79,19 @@ class SqliteConnectionEpochs(SqliteRepository, ConnectionEpochRecorder, CatchupT
             (now,),
         )
 
+    def reconnect_timestamps(self) -> tuple[float, ...]:
+        """Connect times of reconnect epochs, oldest first.
+
+        Read by the state snapshot, which the worker writes: the socket lives in
+        ingress, so counting from this process's own logs is always zero
+        (sca-qi5.3).
+        """
+        rows = self._fetch_all(
+            "SELECT connected_at FROM connection_epochs WHERE kind = ? ORDER BY generation",
+            (ConnectionKind.RECONNECT.value,),
+        )
+        return tuple(float(r["connected_at"]) for r in rows)
+
     # Worker side -----------------------------------------------------------
 
     def pending(self) -> list[ConnectionEpoch]:

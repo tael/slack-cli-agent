@@ -45,6 +45,7 @@ from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard
 from slack_cli_agent.learning.batch import BatchReport
 from slack_cli_agent.plugin.base import BotPlugin
 from slack_cli_agent.prompt.sections import CompositionContext, PromptSection, RosterSection
+from slack_cli_agent.reliability.connection import ConnectionKind
 from slack_cli_agent.reliability.watchresult import WatchOutcome
 from slack_cli_agent.review.base import ReviewProgressPort, ReviewTarget
 from slack_cli_agent.slack.review_ports import ReviewProgressDisplay
@@ -1473,6 +1474,24 @@ class Test에이전트패널연결:
         prompts = application.ingress()._assistant._prompts
         assert [p.title for p in prompts] == ["오늘 할 일"]
         application.close()
+
+
+class Test소켓지표출처연결:
+    """스냅샷은 워커가 쓰고 소켓은 접수기에만 있다(sca-qi5.3).
+
+    실측 2026-09-17 — 접수기 로그에는 세션 수립이 51회 있는데 워커가 쓴
+    state.json 의 재연결 누적은 0 이었다.
+    """
+
+    def test_오류_건수를_0_대신_미계측으로_낸다(self, app: Application) -> None:
+        snapshot = app._snapshot_source()
+        assert snapshot.socket_error_timestamps() is None
+
+    def test_재연결은_접수기가_적은_원장에서_읽는다(self, app: Application) -> None:
+        epochs = app.connection_epochs()
+        epochs.record_connection(ConnectionKind.INITIAL)
+        epochs.record_connection(ConnectionKind.RECONNECT)
+        assert len(app._snapshot_source().socket_reconnect_timestamps()) == 1
 
 
 class Test플러그인엔진등록:
