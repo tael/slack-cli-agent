@@ -14,6 +14,7 @@ import json
 import pytest
 
 from slack_cli_agent.config.channel import ChannelRegistry
+from slack_cli_agent.core.errors import ConfigError
 
 
 @pytest.fixture
@@ -121,3 +122,48 @@ class Test채널이름:
         설정 = ChannelRegistry(경로).get("C1")
         assert 설정 is not None
         assert 설정.name == "C1"
+
+
+class Test못읽는파일을덮지않는다:
+    """읽기 경로는 마지막 성공분을 유지하도록 이미 방어돼 있는데 쓰기 경로만
+    빠져 있었다. 못 읽은 것을 빈 설정으로 보고 그 위에 한 채널을 얹어 파일을
+    통째로 대체하면 다른 채널 설정이 전부 사라진다 (sca-zvk).
+    """
+
+    def test_JSON_오타가_있으면_다른_채널을_안_지운다(self, tmp_path) -> None:
+        경로 = tmp_path / "channels.json"
+        깨진것 = '{"C1": {"chat": "normal"}, "C2": {"chat": "quiet"},}'
+        경로.write_text(깨진것, encoding="utf-8")
+        registry = ChannelRegistry(경로)
+
+        with pytest.raises(ConfigError, match="채널 설정"):
+            registry.update("C3", {"chat": "quiet"})
+
+        assert 경로.read_text(encoding="utf-8") == 깨진것
+
+    def test_해제도_못_읽는_파일에는_손대지_않는다(self, tmp_path) -> None:
+        경로 = tmp_path / "channels.json"
+        깨진것 = '{"C1": {"chat": "normal"},}'
+        경로.write_text(깨진것, encoding="utf-8")
+        registry = ChannelRegistry(경로)
+
+        with pytest.raises(ConfigError):
+            registry.remove("C1")
+
+        assert 경로.read_text(encoding="utf-8") == 깨진것
+
+    def test_파일이_아예_없으면_새로_만든다(self, tmp_path) -> None:
+        """없는 것과 못 읽는 것은 다르다. 첫 등록을 막으면 안 된다."""
+        registry = ChannelRegistry(tmp_path / "channels.json")
+
+        registry.update("C1", {"chat": "quiet"})
+
+        assert json.loads((tmp_path / "channels.json").read_text(encoding="utf-8"))["C1"]
+
+    def test_최상위가_사전이_아니면_거부한다(self, tmp_path) -> None:
+        경로 = tmp_path / "channels.json"
+        경로.write_text("[]", encoding="utf-8")
+        registry = ChannelRegistry(경로)
+
+        with pytest.raises(ConfigError):
+            registry.update("C1", {"chat": "quiet"})
