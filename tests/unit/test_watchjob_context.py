@@ -113,3 +113,34 @@ class Test직렬화:
         큐.enqueue("C1", "111.1", "배포 확인")
         값 = database.connect().execute("SELECT extra FROM watch_jobs").fetchone()["extra"]
         assert 값 == ""
+
+
+class Test실행자리보존:
+    """확인 턴은 등록보다 한참 뒤에 다른 프로세스에서 돈다. 그 사이 채널
+    설정의 workdir 이 바뀌면, 지금 설정으로 다시 계산한 자리에는 결과 파일이
+    없다. 등록 시점의 절대 경로를 그대로 쓴다 (sca-6zt, 코덱스 검토).
+    """
+
+    def test_등록한_자리가_되돌아온다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/Users/Shared/bot-work")
+        작업 = 큐.due(now=2000.0, min_gap=0.0)[0]
+        assert 작업.workdir == "/Users/Shared/bot-work"
+
+    def test_안_주면_비어_있다(self, 큐) -> None:
+        """옛 행에는 이 값이 없다. 빈 값이면 호출부가 그때의 기본으로 돌아간다."""
+        큐.enqueue("C1", "111.1", "배포 확인")
+        작업 = 큐.due(now=2000.0, min_gap=0.0)[0]
+        assert 작업.workdir == ""
+
+    def test_결과_파일_이름이_되돌아온다(self, 큐) -> None:
+        """여러 감시가 같은 파일을 쓰면 출력이 섞여 잘못 완료 처리된다. 지금은
+        컬럼만 있고 값을 발급하는 코드는 sca-17p 에서 온다."""
+        큐.enqueue("C1", "111.1", "배포 확인", run_id="9f3a2b")
+        작업 = 큐.due(now=2000.0, min_gap=0.0)[0]
+        assert 작업.run_id == "9f3a2b"
+
+    def test_작업마다_받은_이름이_따로_보존된다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "첫째", run_id="aaa")
+        큐.enqueue("C1", "222.2", "둘째", run_id="bbb")
+        이름들 = {j.run_id for j in 큐.due(now=2000.0, min_gap=0.0)}
+        assert 이름들 == {"aaa", "bbb"}

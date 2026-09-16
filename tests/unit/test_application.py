@@ -1570,6 +1570,49 @@ class Test감시확인턴의_조립맥락:
         assert CompositionContext(principal=_소유자()).watch_check is False
 
 
+class Test감시확인턴의_실행자리:
+    """확인 턴은 등록보다 한참 뒤에 돈다. 결과 파일은 등록 시점 workdir 아래에
+    있으므로 지금 채널 설정으로 다시 계산하면 다른 자리를 본다 (sca-6zt).
+    """
+
+    def _요청을_잡는다(self, tmp_path: Path, monkeypatch: Any, job: Any) -> Any:
+        잡은요청: list[Any] = []
+
+        def 기록(self: Any, engine: Any, request: Any) -> None:
+            잡은요청.append(request)
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        monkeypatch.setattr(EngineRunner, "run", 기록)
+        app._watch_run_check(job)
+        return 잡은요청[0]
+
+    def _작업(self, **overrides: Any) -> Any:
+        from slack_cli_agent.reliability.watchjobs import WatchJob
+
+        base: dict[str, Any] = {
+            "id": 1, "channel": "C1", "thread_ts": "1.1", "condition": "배포 확인",
+            "created_at": 0.0, "last_run": None,
+        }
+        base.update(overrides)
+        return WatchJob(**base)
+
+    def test_등록시점_자리를_그대로_쓴다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        자리 = tmp_path.parent / f"{tmp_path.name}-watch"
+        자리.mkdir(exist_ok=True)
+        요청 = self._요청을_잡는다(
+            tmp_path, monkeypatch, self._작업(workdir=str(자리))
+        )
+
+        assert 요청.workdir == 자리
+
+    def test_등록시점_자리가_없으면_기본값을_쓴다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """이 컬럼이 생기기 전에 등록된 건은 값이 비어 있다. 그때 빈 경로로
+        실행하면 엔진이 아무 데서나 돈다."""
+        요청 = self._요청을_잡는다(tmp_path, monkeypatch, self._작업())
+
+        assert str(요청.workdir) not in ("", ".")
+
+
 def _소유자() -> Any:
     from slack_cli_agent.auth.principal import Principal, TrustLevel
 

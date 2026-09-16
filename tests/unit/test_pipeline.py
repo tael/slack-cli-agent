@@ -1209,12 +1209,15 @@ class Fake감시큐:
         msg_ts: str = "",
         trust: TrustLevel = TrustLevel.GENERAL,
         extra: Any = None,
+        workdir: str = "",
+        run_id: str = "",
     ) -> int:
         if self._fail:
             raise RuntimeError("등록 실패")
         self.enqueued.append({
             "channel": channel, "thread_ts": thread_ts, "condition": condition,
             "msg_ts": msg_ts, "trust": trust, "extra": extra,
+            "workdir": workdir, "run_id": run_id,
         })
         return len(self.enqueued)
 
@@ -1251,6 +1254,33 @@ class Test감시등록:
         assert 항목["channel"] == "C9"
         assert 항목["thread_ts"] == "1700000009.000900"
         assert 항목["msg_ts"] == "1700000009.000999"
+
+    def test_요청이_돌던_자리가_함께저장된다(self, tmp_path: Path) -> None:
+        """확인 턴은 등록보다 한참 뒤 다른 프로세스에서 돈다. 그 사이 채널 설정의
+        workdir 이 바뀌면 지금 설정으로 다시 계산한 자리에는 결과 파일이 없다."""
+        큐 = Fake감시큐()
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="네\n\n[[WATCH: 작업 상태]]")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert 큐.enqueued[0]["workdir"] == str(deps["runner"].calls[0].workdir)
+
+    def test_상대경로로_설정해도_절대경로로_저장된다(self, tmp_path: Path) -> None:
+        """확인 턴은 다른 프로세스에서 돈다. 그 프로세스의 현재 디렉터리가 다르면
+        같은 상대 경로가 다른 자리를 가리킨다 (코덱스 검토)."""
+        큐 = Fake감시큐()
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="네\n\n[[WATCH: 작업 상태]]")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+            channels={"C1": ChannelConfig(channel_id="C1", name="c1", workdir=Path("relwork"))},
+        )
+        pipeline.handle(make_ctx())
+
+        저장값 = Path(큐.enqueued[0]["workdir"])
+        assert 저장값.is_absolute()
+        assert deps["runner"].calls[0].workdir == 저장값
 
     def test_요청자권한이_함께저장된다(self, tmp_path: Path) -> None:
         """확인 프롬프트를 어느 권한으로 실행할지가 등록 시점에 정해진다."""

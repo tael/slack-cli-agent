@@ -24,7 +24,7 @@ from ..admin.router import AdminRouter
 from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
-from ..config.channel import ChannelRegistry
+from ..config.channel import ChannelConfig, ChannelRegistry
 from ..config.profile import EngineSpec, Profile
 from ..config.settings import RuntimeSettings
 from ..engine.base import CallOrigin, Engine, EngineRequest, EngineResponse
@@ -839,7 +839,7 @@ class Application:
             resume=False,
             model=self.access_policy.model_for(principal),
             effort=self.access_policy.effort_for(principal, prompt),
-            workdir=(config.workdir if (config and config.workdir) else self._profile.work_root),
+            workdir=_watch_workdir(job, config, self._profile.work_root),
             # readonly: the check only looks. Owner extras and Skill would let
             # this turn start new work, which `watch_check_prompt` forbids.
             # Left empty before, and claude turns an empty list into
@@ -1363,3 +1363,17 @@ class Application:
             for name in SOCKET_LOGGERS:
                 logging.getLogger(name).removeHandler(self._connection_watch)
         self._database.close()
+
+
+def _watch_workdir(job: WatchJob, config: ChannelConfig | None, work_root: Path) -> Path:
+    """Where the check turn runs.
+
+    The registration-time directory wins: the work being watched left its
+    result there, and the channel config may have moved since. Rows written
+    before that was recorded have none, so those fall back (sca-6zt).
+    """
+    if job.workdir:
+        return Path(job.workdir)
+    if config and config.workdir:
+        return config.workdir.resolve()
+    return work_root.resolve()
