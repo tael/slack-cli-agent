@@ -229,6 +229,38 @@ codex 처럼 JSONL 도 아니다.
     타임아웃           --print-timeout, 기본 5분. 긴 작업은 늘려야 한다
     구조화 출력         --json-schema 로 스키마를 강제하면 structured_output 에 담긴다
 
+## 9. --sandbox 는 쓰지 않는다 (2026-09-17 실측)
+
+`agy --help` 에 `--sandbox`("Run in a sandbox with terminal restrictions
+enabled") 가 있다. 코덱스가 sandbox 모드로 실행 격리를 선언하므로 같은 것을
+쓸 수 있는지 실제로 재 봤다.
+
+**결과 - 작업 디렉터리가 바뀐다.** `--sandbox` 를 붙이고 `/tmp/agysb/read` 에서
+띄운 뒤 셸로 `pwd` 를 찍게 했더니 이렇게 나왔다.
+
+    $ pwd
+    /Users/example/.gemini/antigravity-cli/scratch
+    $ ls
+    analyze.py	out.txt
+
+파일 쓰기 시험도 같았다. "현재 디렉터리에 out.txt 를 만들어라" 가 성공으로
+보고됐는데 실제 파일은 위 scratch 디렉터리에 생겼고 띄운 자리에는 없었다.
+셸 명령(`echo hello`) 자체는 그대로 실행된다. 즉 막는 것은 터미널이 아니라
+파일 경로다.
+
+**그래서 이 봇에는 쓸 수 없다.**
+
+- 요청마다 정하는 작업 디렉터리가 안 보인다. 채널별 workdir 이 무의미해진다
+- scratch 는 사용자 하나에 하나뿐이라 채널 간 격리가 오히려 사라진다
+- 실패가 오류가 아니라 "성공했다는 보고" 로 나온다. 로그로는 원인이 안 보인다
+
+`--add-dir` 로 읽기 경로를 더해도 CWD 자체가 바뀌는 것은 안 돌아온다. 같은
+프롬프트를 `--sandbox` 없이 돌리면 띄운 자리에 그대로 파일이 생긴다.
+
+**결론** - GeminiEngine 의 execution_isolation 은 NONE 그대로 둔다. 엔진별
+격리 수준 차이는 EngineCapabilities 로 드러내는 것이 맞고, 쓸 수 없는 플래그로
+격리를 선언하면 선언과 실제가 어긋난다.
+
 ## 참고한 문서
 
     https://antigravity.google/docs/cli/headless
