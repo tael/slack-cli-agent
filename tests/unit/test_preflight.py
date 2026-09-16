@@ -23,6 +23,7 @@ from slack_cli_agent.preflight.checks import (
     EngineHomeCredentialCheck,
     McpServerCheck,
     OwnerSettingsInertCheck,
+    ProfilePermissionCheck,
     PromptFileCheck,
     WorkdirCheck,
 )
@@ -216,6 +217,51 @@ class TestEngineBinaryCheck:
 
 # ---------------------------------------------------------------------------
 # McpServerCheck — 이식 대상. mcp_ready() 본문 특성화
+
+
+class TestProfilePermissionCheck:
+    """sca-8x7 — 프로필에는 MCP 서버 env 처럼 남에게 보이면 안 되는 값이 들어간다.
+    토큰 자체는 로드에서 막지만 env 값 전부를 가려낼 수는 없다."""
+
+    def _profile_file(self, tmp_path: Path, mode: int, *, mcp_env: bool = True) -> Profile:
+        path = tmp_path / "example.json"
+        data = {
+            "name": "example",
+            "primary_engine": {"type": "claude", "binary": str(tmp_path / "claude_bin"), "model": "m"},
+            "owner_user_id": "U1",
+            "troubleshoot_channel": "C1",
+            "state_dir": str(tmp_path / "state"),
+        }
+        if mcp_env:
+            data["mcp_servers"] = {"어딘가": {"command": "node", "env": {"API_BASE": "https://x"}}}
+        path.write_text(json.dumps(data), encoding="utf-8")
+        path.chmod(mode)
+        return Profile.load("example", [tmp_path])
+
+    def test_소유자_전용이면_통과한다(self, tmp_path: Path) -> None:
+        profile = self._profile_file(tmp_path, 0o600)
+        result = ProfilePermissionCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
+
+    def test_남이_읽을_수_있으면_경고한다(self, tmp_path: Path) -> None:
+        profile = self._profile_file(tmp_path, 0o644)
+        result = ProfilePermissionCheck().run(PreflightContext(profile=profile))
+        assert result.ok is False
+        assert result.fatal is False
+        assert "644" in result.detail
+
+    def test_가릴_값이_없으면_권한을_보지_않는다(self, tmp_path: Path) -> None:
+        """프로필은 저장소에 든다. 토큰은 로드에서 막히므로 평범한 프로필까지
+        경고하면 세 봇 모두 상시 경고가 붙는다."""
+        profile = self._profile_file(tmp_path, 0o644, mcp_env=False)
+        result = ProfilePermissionCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
+
+    def test_경로를_모르면_판정하지_않는다(self, tmp_path: Path) -> None:
+        """from_dict 로 만든 프로필에는 읽어 온 파일이 없다. 그것을 위반으로
+        세면 없는 결함이 보고된다."""
+        result = ProfilePermissionCheck().run(PreflightContext(profile=make_profile(tmp_path)))
+        assert result.ok is True
 
 
 class TestMcpServerCheck:
@@ -547,6 +593,7 @@ class TestPreflightSuite:
             "mcp_server",
             "prompt_files",
             "owner_settings_inert",
+            "profile_permissions",
         ]
 
     def test_추가_인자가_실제_점검에_반영된다(self, tmp_path: Path) -> None:
@@ -628,6 +675,7 @@ class TestPreflightSuite:
             "[통과] mcp_server : 좋음\n"
             "[통과] prompt_files : 좋음\n"
             "[통과] owner_settings_inert : 좋음\n"
+            "[통과] profile_permissions : 좋음\n"
             "기동 불가\n"
         )
 

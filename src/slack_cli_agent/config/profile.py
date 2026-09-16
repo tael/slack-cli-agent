@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +144,10 @@ class Profile:
     mcp_servers: Mapping[str, McpServerSpec] = field(default_factory=dict)
     # Path only. Defaults to StatePaths.credentials when unset.
     credentials_file: Path | None = None
+    # The file this was read from. None when built straight from a dict, which
+    # is every test and the init command -- checks about the file itself have
+    # nothing to look at then.
+    source_file: Path | None = None
 
     @property
     def paths(self) -> StatePaths:
@@ -207,9 +211,10 @@ class Profile:
         except json.JSONDecodeError as exc:
             raise ConfigError(f"프로필 파일이 올바른 JSON 이 아니다 : {path} ({exc})") from exc
         try:
-            return cls.from_dict(data)
+            profile = cls.from_dict(data)
         except ConfigError as exc:
             raise ConfigError(f"{exc} : {path}") from exc
+        return replace(profile, source_file=path)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Profile:

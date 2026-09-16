@@ -22,6 +22,7 @@ from .checks import (
     EngineHomeCredentialCheck,
     McpServerCheck,
     OwnerSettingsInertCheck,
+    ProfilePermissionCheck,
     PromptFileCheck,
     WorkdirCheck,
 )
@@ -57,6 +58,8 @@ class PreflightSuite:
             PromptFileCheck(required_names=list(required_prompts or ())),
             # fatal=False: only meant to prevent a misread config, not to block boot.
             OwnerSettingsInertCheck(),
+            # fatal=False for the same reason: a chmod fixes it, taking the bot down does not.
+            ProfilePermissionCheck(),
         )
 
     @property
