@@ -142,10 +142,6 @@ class StatePaths:
         return self.root / "state.json"
 
     @property
-    def pid_file(self) -> Path:
-        return self.root / "bot.pid"
-
-    @property
     def mcp_config(self) -> Path:
         return self.engine_dir / "mcp.json"
 
