@@ -41,7 +41,7 @@ class ReviewEngineCaller:
         self._allowed_tools = tuple(allowed_tools)
 
     def run(
-        self, prompt: str, session_id: str, resume: bool, progress_log: Path | None = None
+        self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None
     ) -> EngineResponse:
         request = EngineRequest(
             prompt=prompt,
