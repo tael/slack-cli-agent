@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import fields
 from typing import ClassVar
 
@@ -211,8 +212,13 @@ class FakePublisher:
 
 
 class TestSlowRequestReporter:
-    def _make_reporter(self, publisher, troubleshoot_channel="TS", events=None):
-        settings = make_settings(slow_report_sec=800, sleep_gap_suspect_sec=30, assumed_tokens_per_sec=40)
+    def _make_reporter(self, publisher, troubleshoot_channel="TS", events=None, owner_only=("TS",)):
+        settings = make_settings(
+            slow_report_sec=800,
+            sleep_gap_suspect_sec=30,
+            assumed_tokens_per_sec=40,
+            owner_only_channels=frozenset(owner_only),
+        )
         reader = FakeTranscriptReader(events or [])
         calc = TimeBreakdownCalculator(settings.assumed_tokens_per_sec)
         diagnostician = ElapsedDiagnostician(settings.sleep_gap_suspect_sec)
@@ -231,6 +237,34 @@ class TestSlowRequestReporter:
         }
         base.update(overrides)
         return SlowRequestMeta(**base)
+
+    def test_소유자_전용이_아닌_채널이면_아무것도_게시하지_않는다(self) -> None:
+        """보고에는 원 채널 발화와 채널명과 세션 ID 가 들어간다. 소유자 전용이
+        아닌 채널을 트러블슈팅 채널로 설정하면 그것이 그 채널 참여자 전원에게
+        간다(sca-dh6). 지금까지는 토큰 행만 빠지고 보고는 나갔다."""
+        publisher = FakePublisher()
+        reporter = self._make_reporter(publisher, owner_only=())
+        assert reporter.maybe_report(self._meta()) is None
+        assert publisher.posts == []
+
+    def test_다른_채널만_소유자_전용이어도_막는다(self) -> None:
+        publisher = FakePublisher()
+        reporter = self._make_reporter(publisher, owner_only=("OTHER",))
+        assert reporter.maybe_report(self._meta()) is None
+        assert publisher.posts == []
+
+    def test_막혔으면_기동_시점에_경고를_남긴다(self, caplog) -> None:
+        """게시 시점에만 막으면 설정 실수가 조용히 통과한다. 반영 후 보고
+        0건을 고장으로 읽지 않으려면 기동 경고가 먼저 있어야 한다."""
+        with caplog.at_level(logging.WARNING):
+            self._make_reporter(FakePublisher(), owner_only=())
+        assert any("소유자 전용" in r.getMessage() for r in caplog.records), caplog.records
+
+    def test_채널이_비어_있으면_경고하지_않는다(self, caplog) -> None:
+        """미설정은 유효한 설정이다. 경고를 내면 정상 구성에서 매번 뜬다."""
+        with caplog.at_level(logging.WARNING):
+            self._make_reporter(FakePublisher(), troubleshoot_channel="", owner_only=())
+        assert caplog.records == []
 
     def test_기준값_미만이면_보고하지_않는다(self) -> None:
         publisher = FakePublisher()
