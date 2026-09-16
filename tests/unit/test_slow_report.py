@@ -186,6 +186,38 @@ class TestSlowReportFormatter:
         assert "세션1" in detail or "세션1"[:8] in detail
         assert "800" in summary
 
+    def test_요청_행에서_슬랙_표기를_푼다(self) -> None:
+        """슬랙 이벤트 API 는 원문을 이스케이프해 준다. 그대로 새 메시지에
+        넣으면 그 글자가 그대로 보이고, 이미 렌더된 링크는 한 번 더 감싸여
+        겹으로 남는다. 원본 bot.py:3510 도 clean_excerpt 를 거친다(sca-3o1)."""
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        meta = SlowRequestMeta(
+            elapsed_wall=800.0, mono_elapsed=790.0, started=0.0, model="claude-x",
+            model_actual=None, effort="high", num_turns=3, reason=None,
+            session_id="세션1", resume=True, channel="C1", channel_name="테스트채널",
+            text="&lt;태그&gt; 와 <https://y.com|라벨> 을 &amp; 로",
+        )
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        summary, _ = formatter.format(meta, diagnosis, None)
+        # 남은 꺾쇠도 벗긴다. 원본 bot.py 의 clean_excerpt 가 그렇게 한다.
+        assert "태그 와 라벨 을 & 로" in summary
+        assert "&lt;" not in summary
+        assert "https://y.com" not in summary
+
+    def test_요청_행은_푼_뒤_이백자로_자른다(self) -> None:
+        """이스케이프를 풀면 길이가 준다. 자르고 나서 풀면 200자 상한이
+        원문 기준이 되어 결과가 그보다 짧아진다."""
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        meta = SlowRequestMeta(
+            elapsed_wall=800.0, mono_elapsed=790.0, started=0.0, model="claude-x",
+            model_actual=None, effort="high", num_turns=3, reason=None,
+            session_id="세션1", resume=True, channel="C1", channel_name="테스트채널",
+            text="&amp;" * 300,
+        )
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        summary, _ = formatter.format(meta, diagnosis, None)
+        assert "&" * 200 in summary
+
     def test_계산결과가_없으면_계산못했다고_적는다(self) -> None:
         formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
         meta = SlowRequestMeta(
