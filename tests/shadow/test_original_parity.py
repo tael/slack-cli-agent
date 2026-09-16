@@ -269,11 +269,11 @@ class Test상태_표식_이모지:
 
     def test_완료_표식_집합에_체크와_침묵이_들어있다(self) -> None:
         # 원본 bot.py:616 DONE_EMOJI = frozenset({"white_check_mark", SILENT_MARK_EMOJI})
-        assert DONE_EMOJI == frozenset({"white_check_mark", "zipper_mouth_face"})
+        assert frozenset({"white_check_mark", "zipper_mouth_face"}) == DONE_EMOJI
 
     def test_미완료_표식_집합이_eyes_hourglass_x다(self) -> None:
         # 원본 bot.py:618 UNFINISHED_EMOJI = frozenset({"eyes", "hourglass", "x"})
-        assert UNFINISHED_EMOJI == frozenset({"eyes", "hourglass", "x"})
+        assert frozenset({"eyes", "hourglass", "x"}) == UNFINISHED_EMOJI
 
     def test_부검_이모지가_dango다(self) -> None:
         # 원본 bot.py:621 POSTMORTEM_EMOJI = "dango"
@@ -382,7 +382,7 @@ class Test캐치업_재시도_상수:
         assert CATCHUP_MAX_THREADS_PER_CHANNEL == 60
 
     def test_완료_표식_집합이_캐치업_모듈에서도_같다(self) -> None:
-        assert DONE_EMOJI == frozenset({"white_check_mark", "zipper_mouth_face"})
+        assert frozenset({"white_check_mark", "zipper_mouth_face"}) == DONE_EMOJI
 
 
 class TestEngineProbe_주기와_문구:

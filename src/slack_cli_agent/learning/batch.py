@@ -141,7 +141,7 @@ class LearningBatch:
         # Applying runs on the whole day, so a round that only recovers an
         # earlier round's failed apply has nothing fresh — reporting the day's
         # results is what makes that message make sense (sca-b4o review).
-        reportable = fresh if fresh else (progress.completed if applied else {})
+        reportable = fresh or (progress.completed if applied else {})
         if reportable or progress.unnotified_failures():
             # The stored proposal covers the whole day, but announcing it again
             # would repeat the channels an earlier round already reported. What

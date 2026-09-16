@@ -63,7 +63,7 @@ def _실행(
     run: Path, tmp_path: Path, *인자: str, 대기: float = 20
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ, HOME=str(tmp_path))
-    return subprocess.run(  # noqa: PLW1510 - 종료코드를 시험이 직접 본다
+    return subprocess.run(
         ["/bin/bash", str(run), *인자], capture_output=True, text=True, env=env, timeout=대기
     )
 
