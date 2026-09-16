@@ -86,6 +86,10 @@ class WatchJobPort(Protocol):
         """Jobs to give up on: past `max_age` or at the check limit. Alerting
         an owner about these is the caller's responsibility."""
 
+    def active_watch(self, channel: str, msg_ts: str) -> bool:
+        """Whether that message is being watched right now. reclaim reads this
+        to pick the mark (sca-o1e)."""
+
 
 class WatchJobQueue(SqliteRepository):
     def __init__(self, db: Database, now: Callable[[], float] = time.time) -> None:
@@ -127,6 +131,15 @@ class WatchJobQueue(SqliteRepository):
             raise RuntimeError(f"감시 작업을 넣지도 찾지도 못했다 : {channel} {msg_ts}")
         log.info("이 메시지에는 활성 감시가 이미 있다. 그것을 그대로 쓴다 : %s %s", channel, msg_ts)
         return int(existing["id"])
+
+    def active_watch(self, channel: str, msg_ts: str) -> bool:
+        if not msg_ts:
+            return False
+        row = self._fetch_one(
+            "SELECT 1 FROM watch_jobs WHERE done = 0 AND channel = ? AND msg_ts = ?",
+            (channel, msg_ts),
+        )
+        return row is not None
 
     def due(self, now: float, min_gap: float, max_checks: int | None = None) -> list[WatchJob]:
         sql = (

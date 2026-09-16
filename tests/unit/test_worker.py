@@ -345,6 +345,61 @@ class TestReclaim:
         assert ("add", "C1", "2.1", "x") in client.calls
 
 
+    def test_감시_중인_메시지는_대기_표식으로_안_바꾼다(self, database) -> None:
+        """감시가 걸린 채로 대기 표식을 붙이면 그 메시지는 감시 중이면서 대기
+        중으로 보인다(sca-o1e)."""
+        from slack_cli_agent.core.worker import Worker
+        from slack_cli_agent.jobs.ports import ReclaimResult
+
+        class 감시대역:
+            def active_watch(self, channel: str, msg_ts: str) -> bool:
+                return (channel, msg_ts) == ("C1", "1.1")
+
+        requeued_ctx = ctx("1.1")
+        fake_queue = FakeReclaimQueue(result=ReclaimResult(requeued=[requeued_ctx], failed=[]))
+        settings = RuntimeSettings()
+        client = FakeSlackClient()
+
+        worker = Worker(
+            queue=fake_queue,
+            handler=FakeHandler(),
+            heartbeat=WorkerHeartbeat(fake_queue, settings),
+            catchup=FakeCatchup(CatchupReport(missed=[], skipped=[], unchecked_channels=[])),
+            markers=ReactionMarker(client),
+            settings=settings,
+            watch_jobs=감시대역(),
+        )
+        worker.reclaim()
+
+        assert ("add", "C1", "1.1", "mag") in client.calls
+        assert ("add", "C1", "1.1", "hourglass") not in client.calls
+
+    def test_감시가_없으면_그대로_대기_표식이다(self, database) -> None:
+        from slack_cli_agent.core.worker import Worker
+        from slack_cli_agent.jobs.ports import ReclaimResult
+
+        class 감시없음:
+            def active_watch(self, channel: str, msg_ts: str) -> bool:
+                return False
+
+        fake_queue = FakeReclaimQueue(result=ReclaimResult(requeued=[ctx("1.1")], failed=[]))
+        settings = RuntimeSettings()
+        client = FakeSlackClient()
+
+        worker = Worker(
+            queue=fake_queue,
+            handler=FakeHandler(),
+            heartbeat=WorkerHeartbeat(fake_queue, settings),
+            catchup=FakeCatchup(CatchupReport(missed=[], skipped=[], unchecked_channels=[])),
+            markers=ReactionMarker(client),
+            settings=settings,
+            watch_jobs=감시없음(),
+        )
+        worker.reclaim()
+
+        assert ("add", "C1", "1.1", "hourglass") in client.calls
+
+
 class TestCatchUpDedup:
     def test_큐에_이미_대기중인_대표건은_큐에_안_들어간다(self, database) -> None:
         worker, queue, _client = make_worker(database=database)
