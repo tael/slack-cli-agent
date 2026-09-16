@@ -1279,7 +1279,11 @@ class Test폴백엔진연결:
 
     @staticmethod
     def _폴백있는프로필(tmp_path: Path) -> Profile:
-        binary = tmp_path / "bin" / "fake-engine"
+        # 1차와 다른 경로를 쓴다. 같은 경로면 어느 엔진이 실행됐는지 명령만 보고
+        # 가릴 수 없다.
+        binary = tmp_path / "bin" / "fake-codex"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
         return write_profile(
             tmp_path,
             fallback_engine={"type": "codex", "binary": str(binary), "model": "model-b"},
@@ -1366,6 +1370,66 @@ class Test폴백엔진연결:
         application = Application(self._폴백있는프로필(tmp_path), client)
         caller = application._review_engine()
         assert caller._invoker is application.engine_invoker
+        application.close()
+
+
+    def test_한도소진부터_2차_실행까지_조립_전체가_이어진다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """전환 기계는 대역 엔진으로만 확인돼 있었다(sca-75x). 프로필에서 만든
+        실제 엔진 두 개와 상태 파일을 거쳐, 한도 소진이 전환 상태로 남고 승인
+        뒤 요청이 2차 바이너리로 나가는지는 이 자리에서만 확인된다.
+        """
+        import subprocess
+
+        from slack_cli_agent.engine.base import EngineRequest
+        from slack_cli_agent.engine.switcher import EngineSwitcher
+
+        profile = self._폴백있는프로필(tmp_path)
+        assert profile.fallback_engine is not None
+        일차 = str(profile.primary_engine.binary)
+        이차 = str(profile.fallback_engine.binary)
+        application = Application(profile, client)
+        엔진 = application.engine
+        실행된명령: list[list[str]] = []
+
+        def 대역(cmd: list[str], cwd: str, timeout: float, env: Any = None) -> Any:
+            실행된명령.append(cmd)
+            if cmd[0] == 일차:
+                # 클로드 CLI 는 한도 소진을 종료 코드 1 과 stdout JSON 으로 낸다.
+                본문 = json.dumps({"result": "5-hour limit reached", "api_error_status": 429})
+                return subprocess.CompletedProcess(args=cmd, returncode=1, stdout=본문, stderr="")
+            else:
+                본문 = "\n".join(
+                    [
+                        json.dumps({"type": "thread.started", "thread_id": "th-1"}),
+                        json.dumps(
+                            {
+                                "type": "item.completed",
+                                "item": {"type": "agent_message", "text": "2차 답변"},
+                            }
+                        ),
+                    ]
+                )
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=본문, stderr="")
+
+        엔진.runner._run = 대역  # type: ignore[attr-defined]
+        요청 = EngineRequest(
+            prompt="질문", system_prompt="", session_id=None, resume=False,
+            model=None, effort="low", workdir=tmp_path,
+        )
+
+        application.engine_invoker.invoke(요청)
+
+        switcher = EngineSwitcher(profile.paths.engine_state)
+        assert switcher.is_switched()
+
+        switcher.approve()
+        실행된명령.clear()
+        응답 = application.engine_invoker.invoke(요청)
+
+        assert 응답.body == "2차 답변"
+        assert [cmd[0] for cmd in 실행된명령] == [이차]
         application.close()
 
 
