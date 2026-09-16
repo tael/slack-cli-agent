@@ -8,7 +8,7 @@ first place — the only way to recover them is to re-read Slack history.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,8 +45,8 @@ def already_handled(msg: Mapping[str, Any]) -> bool:
 
 
 def unanswered(
-    thread: list[Mapping[str, Any]],
-    asked: list[Mapping[str, Any]],
+    thread: Sequence[Mapping[str, Any]],
+    asked: Sequence[Mapping[str, Any]],
     *,
     is_self: Callable[[Mapping[str, Any]], bool],
     is_notice: Callable[[str | None], bool],
