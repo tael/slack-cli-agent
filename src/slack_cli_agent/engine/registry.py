@@ -36,5 +36,27 @@ class EngineRegistry:
             raise ConfigError(f"엔진 {name} 이 등록돼 있지 않다. 등록된 엔진: {known}")
         return cls(profile, settings)
 
+    def engine_class(self, name: str) -> type[Engine] | None:
+        """For callers that need an engine's declarations without building one —
+        preflight reads `capabilities` before any profile is loaded into one."""
+        return self._classes.get(name)
+
     def available(self) -> list[str]:
         return sorted(self._classes)
+
+
+def default_registry() -> EngineRegistry:
+    """The engines this package ships. Plugins add their own on top of this.
+
+    Here rather than in the assembly layer so preflight can read the same set
+    without importing Application.
+    """
+    from .claude import ClaudeEngine
+    from .codex import CodexEngine
+    from .gemini import GeminiEngine
+
+    registry = EngineRegistry()
+    registry.register(ClaudeEngine)
+    registry.register(CodexEngine)
+    registry.register(GeminiEngine)
+    return registry

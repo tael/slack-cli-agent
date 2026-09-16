@@ -25,6 +25,7 @@ from .checks import (
     OwnerSettingsInertCheck,
     ProfilePermissionCheck,
     PromptFileCheck,
+    ToolAllowlistEnforcementCheck,
     WorkdirCheck,
 )
 from .runner import PreflightReport, PreflightRunner
@@ -61,6 +62,9 @@ class PreflightSuite:
             OwnerSettingsInertCheck(),
             # fatal=False for the same reason: a chmod fixes it, taking the bot down does not.
             ProfilePermissionCheck(),
+            # fatal=False: 허용목록이 안 걸리는 엔진을 쓰는 것은 운영자의 선택일 수
+            # 있다. 그 사실을 설정 시점에 알리는 것이 목적이다.
+            ToolAllowlistEnforcementCheck(),
             # 표기가 안 풀리면 MCP 서버는 빈 자격으로 인증 실패만 낸다. 기동에서 막는다.
             McpCredentialCheck(),
         )
