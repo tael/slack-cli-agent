@@ -22,8 +22,10 @@ MCP servers (sca-kos.2): codex has no --mcp-config-style flag, but `-c`
 takes a dotted config path per `codex --help` ("Use a dotted path
 (foo.bar.baz) to override nested values"), and learn.chatgpt.com's
 config reference documents config.toml's mcp_servers.<id> keys —
-command/args/env/cwd for stdio, url for remote, disabled_tools, and
-enabled (our disabled, inverted). Each field becomes its own -c
+command/args/env/cwd for stdio, url plus http_headers for remote,
+disabled_tools, and enabled (our disabled, inverted). The http_headers
+key name was confirmed against codex-cli 0.154.0 with `codex mcp list
+--json` (sca-m7w). Each field becomes its own -c
 override, so no config.toml file needs writing for this. Skills have no
 equivalent injection point (see engine/base.py's docstring override on
 this class, TestSkillDirectoryIsolation's xfail reason in
@@ -74,6 +76,8 @@ def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec]) -> list[str
             continue
         if server.is_remote:
             args += ["-c", f"{prefix}.url={CodexEngine._toml_string(server.url)}"]
+            for key, value in server.resolved_headers().items():
+                args += ["-c", f"{prefix}.http_headers.{key}={CodexEngine._toml_string(value)}"]
         else:
             args += ["-c", f"{prefix}.command={CodexEngine._toml_string(server.command)}"]
             if server.args:
