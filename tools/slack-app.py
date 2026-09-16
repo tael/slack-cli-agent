@@ -11,6 +11,13 @@ access 토큰은 12시간이면 만료되므로 매 호출 전에 자동으로 �
     tools/slack-app.py icon    <ws> <app_id> <PNG파일>
     tools/slack-app.py update  <ws> <app_id> <매니페스트파일>
     tools/slack-app.py list    <ws>
+    tools/slack-app.py diff    <ws> <app_id> <매니페스트파일>
+
+diff 는 저장소 정본(slack-apps/<이름>.json)과 슬랙에 실제로 올라간 설정을
+대조한다. 정본을 고치고 반영을 빠뜨리면 시험은 전부 통과하는데 봇은 옛
+설정으로 돈다 - sca-1v7 에서 세 봇의 DM 이 그렇게 꺼져 있었다. 부팅 경로인
+preflight 에는 넣지 않는다. 슬랙 장애가 봇 기동을 막으면 안 된다.
+차이가 있으면 종료코드 1 이다.
 
 브라우저가 필요한 것은 두 가지뿐이다 - 워크스페이스 설치 승인과 앱 수준
 토큰(xapp) 발급. 아이콘은 apps.icon.set 으로 올라간다(512px 에서 2000px
@@ -26,6 +33,11 @@ import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+# 대조 규칙은 패키지 쪽에 둔다. 단위 시험이 보는 것과 이 명령이 쓰는 것이
+# 같은 코드여야 한 쪽만 고쳐 어긋나지 않는다.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from slack_cli_agent.slack.manifest import AppManifest, ManifestDiff
 
 BASE = Path.home() / ".slack-app-config"
 API = "https://slack.com/api/"
@@ -130,6 +142,16 @@ def main(argv: list[str]) -> None:
             _fail(out)
         print("아이콘을 올렸다")
         return
+    if cmd == "diff":
+        out = _post("apps.manifest.export", {"app_id": argv[3]}, token)
+        if not out.get("ok"):
+            _fail(out)
+        local = AppManifest.from_path(Path(argv[4]))
+        차이 = ManifestDiff().differences(local, AppManifest(out["manifest"]))
+        for line in 차이:
+            print(line)
+        print("정본과 같다" if not 차이 else f"차이 {len(차이)}건")
+        raise SystemExit(1 if 차이 else 0)
     if cmd == "update":
         manifest = Path(argv[4]).read_text(encoding="utf-8")
         out = _post("apps.manifest.update", {"app_id": argv[3], "manifest": manifest}, token)
