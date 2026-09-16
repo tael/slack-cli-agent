@@ -22,7 +22,18 @@ gen() {
   <key>ProgramArguments</key>
   <array><string>/bin/bash</string><string>$HOME/.$NAME/run.sh</string><string>$role</string>$extra</array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <!-- KeepAlive 를 참으로 두면 설정 오류로 못 뜨는 봇이 ThrottleInterval
+       주기로 영원히 재기동한다. 표식이 없을 때만 살려 두어 설정 오류는 한 번
+       기록되고 멈추게 하고, 프로세스 충돌 같은 런타임 실패는 그대로 복구되게
+       한다. 표식은 run.sh 가 종료코드 78 을 받았을 때 남긴다 (sca-y4q).
+       표식을 만든 직후 한 번 더 뜨는 것은 정상이다 - launchd 의 경로 감시는
+       경합에 취약하다고 man 5 launchd.plist 가 밝히고 있고, 실측으로도
+       2회 기동 뒤 멈췄다. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>PathState</key>
+    <dict><key>$HOME/.$NAME/preflight-blocked/$role</key><false/></dict>
+  </dict>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>WorkingDirectory</key><string>$HOME/.$NAME</string>
   <key>StandardOutPath</key><string>$HOME/.$NAME/logs/$role.out.log</string>
@@ -31,13 +42,18 @@ gen() {
 </plist>
 EOF
   launchctl bootout gui/$(id -u)/local.$NAME.$role 2>/dev/null || true
+  # 옛 차단 표식을 두고 재등록하면 방금 고친 설정으로도 안 뜬다. 지우는 것은
+  # 그 역할을 bootstrap 하기 직전에 한다 - 둘을 미리 한꺼번에 지우면 재등록이
+  # 중간에 실패했을 때 다른 역할이 의도치 않게 살아난다.
+  rm -f "$HOME/.$NAME/preflight-blocked/$role"
   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.$NAME.$role.plist
 }
 
 gen ingress ""
 gen worker ""
 
-sleep 8
+# 등록 직후에는 아직 상태가 안 잡힌다. 시험은 이 대기가 필요 없어 줄인다.
+sleep "${REGISTER_SETTLE_SEC:-8}"
 echo "== 상태"
 launchctl list | grep "local.$NAME" || echo "  등록 실패"
 echo

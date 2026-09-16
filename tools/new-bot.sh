@@ -79,14 +79,10 @@ case "$ENGINE" in
   claude) mkdir -p "$D/engine/claude-home" ;;
 esac
 
-cat > "$D/run.sh" <<EOF
-#!/bin/bash
-# $DISPLAY 봇 기동. 토큰은 \$D/credentials.json 에서 읽는다
-set -e
-D="\$HOME/.$NAME"
-export PATH="\$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-exec "\$D/venv/bin/slack-cli-agent" "\$@" --profile $NAME --profile-dir $REPO/profiles
-EOF
+# 기동 wrapper 는 저장소 템플릿에서 만든다. 여기서 따로 쓰면 봇마다 갈리고,
+# 그러면 차단 표식 같은 공통 동작이 일부 봇에만 들어간다 (sca-y4q).
+sed -e "s|__NAME__|$NAME|g" -e "s|__DISPLAY__|$DISPLAY|g" -e "s|__REPO__|$REPO|g" \
+  "$REPO/tools/templates/run.sh" > "$D/run.sh"
 chmod +x "$D/run.sh"
 
 cat > "$D/persona/PERSONA.md" <<EOF

@@ -195,7 +195,7 @@ class RequestPipeline:
         """The progress display for this request, or a pass-through when it has none."""
         if self._progress is None or log_path is None:
             return nullcontext()
-        return self._progress.session(ctx.channel, ctx.thread_ts, log_path)
+        return self._progress.session(ctx.channel, ctx.thread_ts, ctx.user, log_path)
 
     def _handle(self, ctx: RequestContext) -> HandleOutcome:
         start = self._now()

@@ -13,13 +13,15 @@ from slack_cli_agent.slack.identity import BotIdentity, SlackBotIdentity
 
 
 class _FixedAuthClient:
-    def __init__(self, user_id: str, bot_id: str) -> None:
-        self._result = {"ok": True, "user_id": user_id, "bot_id": bot_id}
+    def __init__(self, user_id: str, bot_id: str, team_id: str) -> None:
+        self._result = {"ok": True, "user_id": user_id, "bot_id": bot_id, "team_id": team_id}
 
     def auth_test(self, **kwargs: Any) -> dict[str, Any]:
         return self._result
 
 
-def fake_identity(user_id: str = "U_BOT", bot_id: str = "B_BOT") -> BotIdentity:
+def fake_identity(
+    user_id: str = "U_BOT", bot_id: str = "B_BOT", team_id: str = "T_TEAM",
+) -> BotIdentity:
     """고정 신원. 조회는 일어나지 않는다."""
-    return SlackBotIdentity(_FixedAuthClient(user_id, bot_id))
+    return SlackBotIdentity(_FixedAuthClient(user_id, bot_id, team_id))

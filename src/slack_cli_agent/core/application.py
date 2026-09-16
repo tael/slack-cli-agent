@@ -488,9 +488,12 @@ class Application:
         if self._progress is None:
             self._progress = ProgressCoordinator(
                 settings=self._settings,
-                sink_factory=lambda channel, thread_ts: FallbackProgressSink(
+                sink_factory=lambda channel, thread_ts, user: FallbackProgressSink(
                     lambda: SlackStreamingProgressSink(
-                        self._client, channel, thread_ts, self._profile.display_name,
+                        self._client, channel, thread_ts,
+                        team_id=self.identity.team_id,
+                        user_id=user,
+                        bot_display_name=self._profile.display_name,
                     ),
                     lambda: SlackProgressSink(
                         self._client, channel, thread_ts, self._profile.display_name,
