@@ -27,6 +27,7 @@ from slack_cli_agent.cli import (
     WorkerCommand,
 )
 from slack_cli_agent.config.profile import Profile
+from slack_cli_agent.core.errors import SlackError
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -235,3 +236,65 @@ class Test결과가_로그에_실제로_닿는다:
         """차단은 곧 프로세스 종료라 대개 비워지지만, 종료 경로가 바뀌어도
         사유가 남아야 한다."""
         assert self._돌린다(tmp_path, bootable=False).flush_횟수 >= 1
+
+
+class Test설정_오류는_차단_코드로_끝낸다:
+    """설정 오류는 재기동으로 안 풀린다. 78 이 아니면 표식이 안 생겨 무한 재기동이다(sca-q2k).
+
+    2026-09-17 빈 설치 실측 - 앱 토큰 없이 ingress 는 2, model 이 빈 프로필로
+    preflight 도 2 였다. 둘 다 사람이 파일을 고쳐야 풀리는 상태다.
+    """
+
+    def test_프로필을_못_찾으면_차단_코드다(self, tmp_path: Path) -> None:
+        out = io.StringIO()
+        code = SlackCliAgent().run(
+            ["preflight", "--profile", "없는프로필", "--profile-dir", str(tmp_path)], stdout=out
+        )
+        assert code == BLOCKED_EXIT
+        assert "없는프로필" in out.getvalue()
+
+    def test_프로필_값이_빠져도_차단_코드다(self, tmp_path: Path) -> None:
+        (tmp_path / "봇.json").write_text(
+            json.dumps({"name": "봇", "primary_engine": {"type": "claude", "binary": "/bin/echo"}}),
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        code = SlackCliAgent().run(
+            ["preflight", "--profile", "봇", "--profile-dir", str(tmp_path)], stdout=out
+        )
+        assert code == BLOCKED_EXIT
+
+    def test_설정이_아닌_실패는_그대로_2다(self, tmp_path: Path) -> None:
+        """슬랙이 잠깐 안 되는 것은 재기동으로 풀린다. 그것까지 차단하면 봇이 안 뜬다."""
+
+        class 슬랙이막힌명령(PreflightGatedServiceCommand):
+            name = "슬랙막힘"
+
+            def __init__(self) -> None:
+                super().__init__(preflight_suite_factory=lambda: 고정Suite(bootable=True))
+
+            def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
+                pass
+
+            def run_service(
+                self, profile: Profile, args: argparse.Namespace, stdout: TextIO
+            ) -> int:
+                raise SlackError("슬랙 응답 없음")
+
+        profiles = tmp_path / "profiles"
+        profiles.mkdir(parents=True)
+        (profiles / "example.json").write_text(
+            json.dumps(
+                {
+                    "name": "example",
+                    "state_dir": str(tmp_path / "state"),
+                    "primary_engine": {"type": "claude", "binary": "/bin/echo", "model": "m"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        code = SlackCliAgent([슬랙이막힌명령()]).run(
+            ["슬랙막힘", "--profile", "example", "--profile-dir", str(profiles)],
+            stdout=io.StringIO(),
+        )
+        assert code == 2
