@@ -76,7 +76,15 @@ class Database:
     def migrate(self) -> int:
         conn = self.connect()
         current = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        if current >= SCHEMA_VERSION:
+        if current > SCHEMA_VERSION:
+            # editable 설치에서 한쪽 프로세스만 재기동하면 그 프로세스가 스키마를
+            # 올리고 다른 쪽은 옛 코드로 계속 돈다. 마이그레이션은 덧붙이는
+            # 형태라 대개 호환되므로 막지 않고 알리기만 한다 (sca-4cg).
+            log.warning(
+                "DB 스키마가 이 코드보다 새롭다. DB v%d, 코드 v%d", current, SCHEMA_VERSION
+            )
+            return current
+        if current == SCHEMA_VERSION:
             return current
 
         for version, label, statements in MIGRATIONS:
