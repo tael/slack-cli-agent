@@ -46,7 +46,18 @@ EOF
   # 그 역할을 bootstrap 하기 직전에 한다 - 둘을 미리 한꺼번에 지우면 재등록이
   # 중간에 실패했을 때 다른 역할이 의도치 않게 살아난다.
   rm -f "$HOME/.$NAME/preflight-blocked/$role"
-  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.$NAME.$role.plist
+  # bootout 은 비동기다. 프로세스가 아직 남은 채 같은 레이블로 bootstrap 하면
+  # "5: Input/output error" 로 실패하고, bootout 은 이미 끝났으므로 그 역할이
+  # 도메인에서 사라진 채로 남는다. 2026-09-16 에 실제로 그랬다 (sca-fca).
+  local tries=${BOOTOUT_WAIT_TRIES:-100}
+  while [ "$tries" -gt 0 ] && launchctl print gui/$(id -u)/local.$NAME.$role >/dev/null 2>&1; do
+    sleep "${BOOTOUT_POLL_SEC:-0.2}"
+    tries=$((tries - 1))
+  done
+  if ! launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.$NAME.$role.plist; then
+    echo "$NAME.$role : bootstrap 이 실패했다. 이 역할은 등록되지 않았다" >&2
+    return 1
+  fi
 }
 
 gen ingress ""
