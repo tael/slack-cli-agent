@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -61,6 +62,61 @@ class TestConnection:
         worker.join()
 
         assert seen and seen[0] != id(db.connect())
+
+
+class FakeConn:
+    """journal_mode 만 흉내내는 대역. 실제 잠금 충돌은 다른 프로세스가
+    있어야 나므로 단위 시험에서는 예외로 대신한다."""
+
+    def __init__(self, mode: str, fail_times: int = 0) -> None:
+        self.mode = mode
+        self.fail_times = fail_times
+        self.executed: list[str] = []
+
+    def execute(self, sql: str):  # type: ignore[no-untyped-def]
+        self.executed.append(sql)
+        if sql == "PRAGMA journal_mode":
+            return FakeCursor((self.mode,))
+        if sql == "PRAGMA journal_mode=WAL":
+            if self.fail_times > 0:
+                self.fail_times -= 1
+                raise sqlite3.OperationalError("database is locked")
+            self.mode = "wal"
+            return FakeCursor(("wal",))
+        return FakeCursor(None)
+
+
+class FakeCursor:
+    def __init__(self, row) -> None:  # type: ignore[no-untyped-def]
+        self._row = row
+
+    def fetchone(self):  # type: ignore[no-untyped-def]
+        return self._row
+
+
+class TestWAL전환:
+    """sca-fly — 첫 기동에서 ingress 와 worker 가 같은 새 DB 를 동시에 열다
+    PRAGMA journal_mode=WAL 이 잠금으로 죽었다."""
+
+    def test_이미_WAL_이면_다시_설정하지_않는다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        conn = FakeConn(mode="wal")
+        db._enable_wal(conn)
+        assert "PRAGMA journal_mode=WAL" not in conn.executed
+
+    def test_잠금이면_다시_시도한다(self, tmp_path: Path) -> None:
+        잔_시간: list[float] = []
+        db = Database(tmp_path / "state.db", sleep=잔_시간.append)
+        conn = FakeConn(mode="delete", fail_times=2)
+        db._enable_wal(conn)
+        assert conn.mode == "wal"
+        assert len(잔_시간) == 2
+
+    def test_끝까지_잠겨_있으면_예외를_낸다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db", sleep=lambda _: None)
+        conn = FakeConn(mode="delete", fail_times=99)
+        with pytest.raises(sqlite3.OperationalError):
+            db._enable_wal(conn)
 
 
 class TestTransaction:
