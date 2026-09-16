@@ -8,9 +8,9 @@ one to act on.
 - reaction_added: only accepted when a registered emoji lands on this
   bot's own reply
 
-ChannelConfig.answer_unaddressed (default False) is the inverse of the
-original's mention_only(channel) (default True, meaning the bot must
-be named): no config, or answer_unaddressed off, means the bot must be named.
+Whether an unaddressed thread reply gets answered is decided by
+`ResponsePolicy`, not here — this class only supplies the facts it needs
+(the channel config and the thread state).
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import BotIdentity
 from slack_cli_agent.slack.message_kind import MessageKind
+from slack_cli_agent.slack.policy import ResponsePolicy, ThreadState
 
 
 class EventListener:
@@ -43,6 +44,9 @@ class EventListener:
         # Message classification lives in one place; duplicating it
         # here would let the criteria drift.
         self._kind = MessageKind()
+        # Whether to speak up without being named is a channel-level
+        # decision, kept out of this class so it can vary per channel.
+        self._policy = ResponsePolicy(gate)
 
     def _context_from_event(
         self, event: Mapping[str, Any], *, unaddressed: bool, is_dm: bool
@@ -94,13 +98,12 @@ class EventListener:
             return None
 
         config = self._channels.get(channel)
-        if config is None or not config.answer_unaddressed:
+        # Checked before the thread lookup below, which costs a Slack API call.
+        if not self._policy.considers(config):
             return None
 
         joined, bot_asked = self._thread_state(channel, thread_ts)
-        if not joined:
-            return None
-        if not self._gate.worth_answering(text, bot_asked):
+        if not self._policy.answers(config, text, ThreadState(joined, bot_asked)):
             return None
 
         return self._context_from_event(event, unaddressed=True, is_dm=False)
