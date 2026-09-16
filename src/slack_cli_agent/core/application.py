@@ -166,6 +166,7 @@ from .periodic import PeriodicRunner
 from .pipeline import RequestPipeline
 from .services import ServiceGroup
 from .spawn import ThreadTaskSpawner
+from .sweeplog import SweepLog
 from .timezones import KST
 from .worker import Worker
 
@@ -251,6 +252,11 @@ class Application:
         self._roster_refresher: PeriodicRunner | None = None
         self._connection_watch: SocketErrorWatch | None = None
         self._health_runner: PeriodicRunner | None = None
+        # 각 정리 작업의 연속 0건 횟수와 누적 삭제 수를 이 프로세스가 사는
+        # 동안 들고 있는다. 매번 새로 만들면 그 수가 늘 1 로 보인다.
+        self._job_purge_log = SweepLog("끝난 작업")
+        self._watch_result_log = SweepLog("감시 결과 파일")
+        self._attachment_log = SweepLog("첨부")
         self._attachments: AttachmentStore | None = None
         self._response_archive: ResponseArchive | None = None
         self._progress: ProgressCoordinator | None = None
@@ -725,8 +731,7 @@ class Application:
 
     def _purge_finished_jobs(self) -> None:
         removed = self.queue().purge_finished(time.time() - self._settings.job_retention_sec)
-        if removed:
-            log.info("끝난 작업 정리 : %s건", removed)
+        self._job_purge_log.record(removed)
 
     def watch_jobs(self) -> WatchJobQueue:
         # cached and shared so registration, checking, and status reporting all
@@ -770,8 +775,7 @@ class Application:
             removed += reader.cleanup(
                 str(workdir), older_than_sec=self._settings.watch_result_retain_sec
             )
-        if removed:
-            log.info("감시 결과 파일 %d개를 정리했다", removed)
+        self._watch_result_log.record(removed)
 
     def _watch_result_dirs(self) -> list[Path]:
         """Every workdir a watch job could have run in. _watch_workdir picks
@@ -1289,10 +1293,13 @@ class Application:
     def attachment_cleanup_runner(self) -> PeriodicRunner:
         # without this, downloaded attachments accumulate forever
         return PeriodicRunner(
-            self.attachments().cleanup,
+            self._cleanup_attachments,
             self._settings.attachment_cleanup_interval_sec,
             name="attachment_cleanup",
         )
+
+    def _cleanup_attachments(self) -> None:
+        self._attachment_log.record(self.attachments().cleanup())
 
     def catchup_retry_runner(self, worker: Worker) -> PeriodicRunner:
         # Slack returning an empty channel history is usually transient —
