@@ -118,7 +118,7 @@ def snapshot_stale_after(profile: Profile) -> float:
     return settings.health_interval_sec * SNAPSHOT_STALE_CYCLES
 
 
-def read_snapshot(path: Path, now: float, stale_after: float) -> dict[str, object]:
+def read_snapshot(path: Path, now: float, stale_after: float) -> dict[str, Any]:
     """워커가 남긴 상태 스냅샷을 읽는다. 명부와 지표가 같이 쓴다."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -130,7 +130,7 @@ def read_snapshot(path: Path, now: float, stale_after: float) -> dict[str, objec
     if not isinstance(written_at, (int, float)):
         return {"available": False, "reason": "스냅샷 파일 없음"}
     age = now - written_at
-    result: dict[str, object] = dict(data)
+    result: dict[str, Any] = dict(data)
     result["age_sec"] = round(age, 1)
     available = age <= stale_after
     result["available"] = available
@@ -139,7 +139,7 @@ def read_snapshot(path: Path, now: float, stale_after: float) -> dict[str, objec
     return result
 
 
-def bot_row(profile: Profile, snapshot: Mapping[str, object]) -> dict[str, object]:
+def bot_row(profile: Profile, snapshot: Mapping[str, Any]) -> dict[str, Any]:
     """봇 선택줄 한 줄. 프로필의 고정값과 스냅샷의 현재값을 합친다."""
     return {
         "name": profile.name,
@@ -160,7 +160,7 @@ class MetricsCollector:
         self._profile = profile
         self._now = now
 
-    def collect(self, days: int) -> dict[str, object]:
+    def collect(self, days: int) -> dict[str, Any]:
         """Closes the connection it opens. The console polls every few
         seconds, and a leaked handle per request eventually exhausts the
         process (127 open state.db handles in 5 hours, 2026-09-15)."""
@@ -170,7 +170,7 @@ class MetricsCollector:
         finally:
             db.close()
 
-    def _collect(self, db: Database, days: int) -> dict[str, object]:
+    def _collect(self, db: Database, days: int) -> dict[str, Any]:
         now = self._now()
         paths = self._profile.paths
         db.migrate()
@@ -325,7 +325,7 @@ class MetricsCollector:
 
     # --- 지표 계산 -------------------------------------------------------
 
-    def _bot_fields(self, field_first_seen: Mapping[str, float]) -> dict[str, object]:
+    def _bot_fields(self, field_first_seen: Mapping[str, float]) -> dict[str, Any]:
         engine = self._profile.primary_engine
         not_applicable = dict(NOT_APPLICABLE_REASONS)
         if "by_user" in field_first_seen:
@@ -344,7 +344,7 @@ class MetricsCollector:
         }
 
 
-    def _responsiveness(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, object]:
+    def _responsiveness(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         times = sorted(
             float(r["elapsed"]) for r in requests if isinstance(r.get("elapsed"), (int, float))
         )
@@ -383,7 +383,7 @@ class MetricsCollector:
             "first_reaction": self._first_reaction(requests),
         }
 
-    def _first_reaction(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, object]:
+    def _first_reaction(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         values = sorted(
             float(r["first_reaction_sec"]) for r in requests
             if isinstance(r.get("first_reaction_sec"), (int, float))
@@ -398,7 +398,7 @@ class MetricsCollector:
 
     def _reliability(
         self, requests: Sequence[Mapping[str, Any]], incident_counts: collections.Counter[str]
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         ok = [r for r in requests if r.get("ok")]
         failed = [r for r in requests if not r.get("ok")]
         resumed = [r for r in requests if r.get("resumed")]
@@ -430,7 +430,7 @@ class MetricsCollector:
         requests: Sequence[Mapping[str, Any]],
         incident_counts: collections.Counter[str],
         first_seen: Mapping[str, float],
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         kinds = collections.Counter(str(r["kind"]) for r in reviews)
         asked = collections.Counter(str(r.get("channel") or "") for r in requests)
         per_channel = collections.Counter(
@@ -474,7 +474,7 @@ class MetricsCollector:
         requests: Sequence[Mapping[str, Any]],
         channels: Mapping[str, ChannelConfig],
         field_first_seen: Mapping[str, float],
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         total = len(requests)
         by_channel: collections.Counter[str] = collections.Counter(
             str(r.get("channel") or "") for r in requests
@@ -510,7 +510,7 @@ class MetricsCollector:
                 tokens["input"] + tokens["output"] + tokens["cache_write"] + tokens["cache_read"]
             )
 
-        def named(counter: collections.Counter[str]) -> list[dict[str, object]]:
+        def named(counter: collections.Counter[str]) -> list[dict[str, Any]]:
             return [
                 {
                     "channel": channel,
@@ -548,7 +548,7 @@ class MetricsCollector:
             },
         }
 
-    def _followup(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, object]:
+    def _followup(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         threads: collections.Counter[tuple[Any, Any]] = collections.Counter()
         for r in requests:
             key = (r.get("channel"), r.get("thread_ts"))
@@ -565,7 +565,7 @@ class MetricsCollector:
             "rate_of_multi_pct": None,
         }
 
-    def _queue_wait(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, object]:
+    def _queue_wait(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         values = sorted(
             float(r["queue_wait_sec"]) for r in requests
             if isinstance(r.get("queue_wait_sec"), (int, float))
@@ -587,7 +587,7 @@ class MetricsCollector:
         sessions: Sequence[Mapping[str, Any]],
         queued_by_channel: Mapping[str, int],
         now: float,
-    ) -> list[dict[str, object]]:
+    ) -> list[dict[str, Any]]:
         settings = RuntimeSettings().override(self._profile.settings_override)
         thread_ttl = settings.session_ttl_hours * 3600
         channel_ttl = settings.channel_session_ttl_days * 86400
@@ -612,7 +612,7 @@ class MetricsCollector:
             if stamp[:10] == today:
                 today_count[channel] += 1
 
-        live: dict[str, list[tuple[int, dict[str, object]]]] = collections.defaultdict(list)
+        live: dict[str, list[tuple[int, dict[str, Any]]]] = collections.defaultdict(list)
         for row in sessions:
             key = str(row["key"])
             session_channel: str | None
@@ -641,7 +641,7 @@ class MetricsCollector:
             }))
 
         seen = set(channels) | set(requests_window) | set(live) | set(queued_by_channel)
-        rows: list[dict[str, object]] = []
+        rows: list[dict[str, Any]] = []
         for channel in seen:
             conf = channels.get(channel)
             entries = [entry for _, entry in sorted(live.get(channel, []), key=lambda x: x[0])]
@@ -674,7 +674,7 @@ class MetricsCollector:
         rows.sort(key=lambda r: str(r["last_seen"] or ""), reverse=True)
         return rows
 
-    def _usage_block(self) -> dict[str, object]:
+    def _usage_block(self) -> dict[str, Any]:
         if self._profile.primary_engine.type == "codex":
             return {
                 "available": False,
@@ -685,7 +685,7 @@ class MetricsCollector:
         block["kind"] = "ccusage_block"
         return block
 
-    def _ccusage_block(self) -> dict[str, object]:
+    def _ccusage_block(self) -> dict[str, Any]:
         if not Path(CCUSAGE_BIN).exists():
             return {"available": False, "reason": "ccusage 없음"}
         try:
