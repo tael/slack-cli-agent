@@ -92,3 +92,39 @@ def test_제미나이_설정_파일에_표기가_남지_않는다(
     engine.prepare(_request(tmp_path))
     written = json.loads((tmp_path / ".agents" / "mcp_config.json").read_text(encoding="utf-8"))
     assert written["mcpServers"]["깃허브"]["env"] == {"GITHUB_TOKEN": "진짜값"}
+
+
+def _원격프로필(engine_type: str, header_value: str) -> Profile:
+    return Profile.from_dict({
+        "name": "봇",
+        "primary_engine": {"type": engine_type, "binary": f"/usr/bin/{engine_type}", "model": "m"},
+        "owner_user_id": "U1",
+        "troubleshoot_channel": "C1",
+        "mcp_servers": {
+            "원격": {"url": "https://mcp.example.com/api", "headers": {"Authorization": header_value}}
+        },
+    })
+
+
+@pytest.mark.parametrize("engine_type", sorted(_ENGINES))
+class TestMCP원격헤더:
+    """원격 MCP 서버의 인증 헤더는 세 엔진 모두에서 실제로 넘어가야 한다.
+
+    코덱스만 안 넘겨서 그 봇에서만 인증이 실패했다(sca-m7w). 프로필에는 적혀
+    있으므로 설정만 보면 되는 줄 안다. 코덱스 설정 키는 config.toml 의
+    mcp_servers.<이름>.http_headers 이고 codex-cli 0.154.0 의 `codex mcp list
+    --json` 으로 확인했다.
+    """
+
+    def test_헤더가_실행_설정에_들어간다(self, engine_type: str, tmp_path: Path) -> None:
+        본문 = _주입된_설정(engine_type, _원격프로필(engine_type, "Bearer 평문값"), tmp_path)
+        assert "Authorization" in 본문
+        assert "Bearer 평문값" in 본문
+
+    def test_헤더의_표기도_실제_값으로_바뀐다(
+        self, engine_type: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GH", "진짜토큰")
+        본문 = _주입된_설정(engine_type, _원격프로필(engine_type, "${env:GH}"), tmp_path)
+        assert "진짜토큰" in 본문
+        assert "${env:GH}" not in 본문
