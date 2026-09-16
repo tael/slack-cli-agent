@@ -22,9 +22,7 @@ from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import SlackBotIdentity
 
-# ---------------------------------------------------------------------------
 # dedup.py — DeduplicationTracker
-# ---------------------------------------------------------------------------
 
 
 class TestDeduplicationTracker:
@@ -62,9 +60,7 @@ class TestDeduplicationTracker:
         assert tracker.already_seen_event("C", "1") is False
 
 
-# ---------------------------------------------------------------------------
 # catchup.py — 순수 판정 함수 (원본 실행 결과로 기대값을 얻었다)
-# ---------------------------------------------------------------------------
 
 
 class TestReactionsOn:
@@ -168,9 +164,7 @@ class TestUnanswered:
         assert [m["ts"] for m in result] == ["400.0"]
 
 
-# ---------------------------------------------------------------------------
 # catchup.py — CatchupService
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -486,9 +480,7 @@ class TestRetryPending:
         assert [m.ts for m in statuses[0].missed] == ["800.0"]
 
 
-# ---------------------------------------------------------------------------
 # health.py — SocketErrorWatch, HealthMonitor
-# ---------------------------------------------------------------------------
 
 
 class TestSocketErrorWatch:
@@ -683,9 +675,7 @@ class TestHealthMonitor:
         assert event.kind is HealthEventKind.RESTARTED
 
 
-# ---------------------------------------------------------------------------
 # watchjobs.py — WatchJobQueue
-# ---------------------------------------------------------------------------
 
 
 @dataclass

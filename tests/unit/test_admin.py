@@ -43,7 +43,6 @@ def make_context(
     return AdminContext(principal=principal, channel=channel, thread_ts="1.0", channels=registry, profile=profile)
 
 
-# ---------------------------------------------------------------------------
 # AdminCommand 계약
 
 
@@ -70,7 +69,6 @@ class TestAdminResult:
         assert AdminResult(message="x").handled is True
 
 
-# ---------------------------------------------------------------------------
 # AdminRouter — 매칭과 권한 대조
 
 
@@ -116,7 +114,6 @@ class TestAdminRouter:
         assert result.handled is True
 
 
-# ---------------------------------------------------------------------------
 # HelpCommand
 
 
@@ -148,7 +145,6 @@ class TestApplicationHelpCoverage:
             assert command.usage in result.message, command.name
 
 
-# ---------------------------------------------------------------------------
 # ChannelListCommand
 
 
@@ -186,7 +182,6 @@ class TestChannelListCommand:
         assert "호명 : 불러야 답함, 세션 : 스레드" in result.message
 
 
-# ---------------------------------------------------------------------------
 # EngineStatusCommand
 
 

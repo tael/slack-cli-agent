@@ -49,7 +49,6 @@ def read_channel(tmp_path: Path, channel: str = "C1") -> dict:
     return json.loads(path.read_text(encoding="utf-8"))[channel]
 
 
-# ---------------------------------------------------------------------------
 # 말수 3종
 
 
@@ -101,7 +100,6 @@ class TestChatCommandsAreMutuallyExclusive:
         assert cmd.matches("말수 적게") is False
 
 
-# ---------------------------------------------------------------------------
 # 호명 정책
 
 
@@ -140,7 +138,6 @@ class TestUnaddressedCommandsAreMutuallyExclusive:
         assert UnaddressedOffCommand(NoticeCatalog()).matches("끼어들기 허용") is False
 
 
-# ---------------------------------------------------------------------------
 # 코치 모드
 
 
@@ -161,7 +158,6 @@ class TestCoachModeCommand:
         assert result.handled is True
 
 
-# ---------------------------------------------------------------------------
 # 기본 모드
 
 
@@ -178,7 +174,6 @@ class TestDefaultModeCommand:
         assert read_channel(tmp_path)["mode"] == "private"
 
 
-# ---------------------------------------------------------------------------
 # 채널 해제
 
 

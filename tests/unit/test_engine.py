@@ -87,7 +87,6 @@ class FakeCompleted:
         self.returncode = returncode
 
 
-# ---------------------------------------------------------------------------
 # 값 객체
 
 
@@ -203,7 +202,6 @@ class TestEngineRequestResponse:
         assert resp.elapsed_source == ElapsedSource.UNKNOWN
 
 
-# ---------------------------------------------------------------------------
 # Engine ABC 와 Registry
 
 
@@ -244,7 +242,6 @@ class TestEngineRegistry:
         assert registry.available() == ["claude", "codex"]
 
 
-# ---------------------------------------------------------------------------
 # ClaudeEngine
 
 
@@ -465,7 +462,6 @@ class TestClaudeEngineDetectUsageLimit:
         assert "resets" in limit.detail
 
 
-# ---------------------------------------------------------------------------
 # CodexEngine
 
 
@@ -645,7 +641,6 @@ class TestCodexEngineTurnBehavior:
         assert engine.directives_for_turn(request(resume=True)) != ""
 
 
-# ---------------------------------------------------------------------------
 # GeminiEngine — 계약 시험(tests/engine/test_engine_contract.py, test_gemini_engine.py)이
 # 이미 다루는 것은 다시 안 만든다. 여기서는 sca-cfa/sca-dyb.4 로 새로 생긴
 # elapsed_source·unavailable 판정만 본다.
@@ -739,7 +734,6 @@ class TestGeminiEngineUsageAndElapsed:
         assert resp.elapsed_source == "unknown"
 
 
-# ---------------------------------------------------------------------------
 # EngineSwitcher
 
 
@@ -802,7 +796,6 @@ class TestEngineSwitcher:
         assert "weekly limit" in switcher.limit_reply()
 
 
-# ---------------------------------------------------------------------------
 # EngineRunner
 
 
@@ -912,7 +905,6 @@ class TestEngineRunner:
         assert resp.elapsed_source == "engine"
 
 
-# ---------------------------------------------------------------------------
 # FallbackEngine
 
 

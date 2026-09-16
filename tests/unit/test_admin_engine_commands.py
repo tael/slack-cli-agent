@@ -43,7 +43,6 @@ def write_switch_state(ctx: AdminContext, **extra) -> None:
     path.write_text(json.dumps(state), encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
 # 엔진 승인
 
 
@@ -67,7 +66,6 @@ class TestEngineApproveCommand:
         assert "codex" in result.message
 
 
-# ---------------------------------------------------------------------------
 # 엔진 거부
 
 

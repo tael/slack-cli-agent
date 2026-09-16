@@ -39,7 +39,6 @@ from slack_cli_agent.prompt.sections import SILENT_MARK
 from slack_cli_agent.session.manager import SessionManager
 from slack_cli_agent.session.ports import SessionKey, SessionRecord
 
-# ---------------------------------------------------------------------------
 # 대역
 
 
@@ -272,7 +271,6 @@ class _Explodes:
         raise RuntimeError("프롬프트 조립 중 고장")
 
 
-# ---------------------------------------------------------------------------
 # 조립 도움 함수
 
 
@@ -389,7 +387,6 @@ def fail_response(reason: str = "nonzero_exit", detail: FailureDetail = NO_DETAI
     )
 
 
-# ---------------------------------------------------------------------------
 # 시험
 
 
@@ -1470,7 +1467,6 @@ class Test엔진호출경로:
         assert "self._runner.run(" not in 본문
 
 
-# ---------------------------------------------------------------------------
 # 응답 기록
 
 
