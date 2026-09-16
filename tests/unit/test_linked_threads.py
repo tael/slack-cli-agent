@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 
 from slack_cli_agent.prompt.linked_threads import LinkedThreadNote
-from slack_cli_agent.slack.linked_threads import LinkedThreadReader
+from slack_cli_agent.slack.linked_threads import LinkedThread, LinkedThreadReader
 from slack_cli_agent.slack.permalinks import SlackLink, parse_slack_links
+from slack_cli_agent.slack.transcript import TranscriptRead
 
 MSG = "https://example.slack.com/archives/C0EXAMPLE01/p1788253544408049"
 REPLY = (
@@ -39,13 +40,18 @@ class Test링크파싱:
 
 
 class 기록대역:
+    """bodies 에 없는 채널은 조회 실패로, 빈 문자열이 들어 있으면 조회 성공에
+    옮길 메시지가 없는 것으로 흉내낸다."""
+
     def __init__(self, bodies: dict[str, str]) -> None:
         self.bodies = bodies
         self.calls: list[tuple[str, str]] = []
 
-    def thread_transcript(self, channel: str, thread_ts: str, before_ts: object = None) -> str:
+    def read_thread(self, channel: str, thread_ts: str, before_ts: object = None) -> TranscriptRead:
         self.calls.append((channel, thread_ts))
-        return self.bodies.get(channel, "")
+        if channel not in self.bodies:
+            return TranscriptRead(body="", read_ok=False)
+        return TranscriptRead(body=self.bodies[channel], read_ok=True)
 
 
 def 리더(bodies: dict[str, str], *, max_links: int = 3) -> tuple[LinkedThreadReader, 기록대역]:
@@ -61,16 +67,26 @@ def 리더(bodies: dict[str, str], *, max_links: int = 3) -> tuple[LinkedThreadR
 class Test링크된스레드읽기:
     def test_읽은_스레드를_채널명과_함께_낸다(self):
         reader, _ = 리더({"C0EXAMPLE01": "[10:00 홍길동]\n안녕"})
-        assert reader.of(MSG, self_channel="C099") == (("테스트", "[10:00 홍길동]\n안녕"),)
+        assert reader.of(MSG, self_channel="C099") == (
+            LinkedThread(name="테스트", body="[10:00 홍길동]\n안녕", read_ok=True),
+        )
 
-    def test_못_읽으면_본문이_빈_항목으로_남는다(self):
+    def test_못_읽으면_읽기_실패로_남는다(self):
         reader, _ = 리더({})
-        assert reader.of(MSG, self_channel="C099") == (("테스트", ""),)
+        assert reader.of(MSG, self_channel="C099") == (
+            LinkedThread(name="테스트", body="", read_ok=False),
+        )
+
+    def test_조회는_됐고_옮길_메시지가_없으면_실패가_아니다(self):
+        reader, _ = 리더({"C0EXAMPLE01": ""})
+        assert reader.of(MSG, self_channel="C099") == (
+            LinkedThread(name="테스트", body="", read_ok=True),
+        )
 
     def test_이름을_모르면_채널_ID_를_쓴다(self):
         reader, _ = 리더({"D07ABC123": "본문"})
         text = "https://example.slack.com/archives/D07ABC123/p1788253544408049"
-        assert reader.of(text, self_channel="C099")[0][0] == "D07ABC123"
+        assert reader.of(text, self_channel="C099")[0].name == "D07ABC123"
 
     def test_지금_대화_자신을_가리키는_링크는_건너뛴다(self):
         reader, transcript = 리더({"C0EXAMPLE01": "본문"})
@@ -96,18 +112,24 @@ class Test링크된스레드읽기:
             "https://example.slack.com/archives/C0000000002/p1788253544408042"
         )
         reader, transcript = 리더(bodies, max_links=2)
-        assert reader.of(text, self_channel="C0EXAMPLE01") == (("C0000000001", "본문"),)
+        assert reader.of(text, self_channel="C0EXAMPLE01") == (
+            LinkedThread(name="C0000000001", body="본문", read_ok=True),
+        )
         assert transcript.calls == [("C0000000001", "1788253544.408041")]
 
     def test_조회가_예외를_내도_요청을_막지_않는다(self):
         class 터지는대역:
-            def thread_transcript(self, channel: str, thread_ts: str, before_ts: object = None) -> str:
+            def read_thread(
+                self, channel: str, thread_ts: str, before_ts: object = None
+            ) -> TranscriptRead:
                 raise RuntimeError("조회 실패")
 
         reader = LinkedThreadReader(
             transcript=터지는대역(), channel_name=lambda channel: "테스트", max_links=3
         )
-        assert reader.of(MSG, self_channel="C099") == (("테스트", ""),)
+        assert reader.of(MSG, self_channel="C099") == (
+            LinkedThread(name="테스트", body="", read_ok=False),
+        )
 
 
 def 안내(bodies: dict[str, str], *, max_links: int = 3) -> LinkedThreadNote:
@@ -129,6 +151,13 @@ class Test링크된스레드안내:
         note = 안내({}).of(MSG, self_channel="C099")
         assert "읽지 못했다" in note
         assert "서술하지 않는다" in note
+
+    def test_조회된_빈_스레드를_읽지_못했다고_적지_않는다(self):
+        """조회는 성공했는데 옮길 메시지가 없는 경우다. 여기에 '읽지 못했다' 를
+        적으면 모델에게 사실이 아닌 것을 알린다(sca-678)."""
+        note = 안내({"C0EXAMPLE01": ""}).of(MSG, self_channel="C099")
+        assert "읽지 못했다" not in note
+        assert "옮길 메시지가 없다" in note
 
 
 class Test엔진무관_전달:
