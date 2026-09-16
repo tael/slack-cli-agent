@@ -1,0 +1,73 @@
+{
+  "display_information": {
+    "name": "__DISPLAY__",
+    "description": "__DISPLAY__ 에이전트",
+    "background_color": "#1b2a3a"
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "__NAME__",
+      "always_online": true
+    },
+    "agent_view": {
+      "agent_description": "__DISPLAY__ 입니다. 슬랙 안에서 조사와 작업을 맡습니다.",
+      "suggested_prompts": []
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "channels:history",
+        "groups:history",
+        "im:history",
+        "mpim:history",
+        "reactions:read",
+        "channels:read",
+        "groups:read",
+        "im:read",
+        "mpim:read",
+        "users:read",
+        "users.profile:read",
+        "usergroups:read",
+        "team:read",
+        "emoji:read",
+        "files:read",
+        "chat:write",
+        "chat:write.customize",
+        "chat:write.public",
+        "reactions:write",
+        "files:write",
+        "im:write",
+        "channels:join",
+        "assistant:write"
+      ]
+    },
+    "pkce_enabled": false
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "app_mention",
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "message.mpim",
+        "reaction_added"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false,
+    "app_level_token_rotation_enabled": false,
+    "is_mcp_enabled": false
+  }
+}

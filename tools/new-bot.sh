@@ -39,30 +39,22 @@ case "$ENGINE" in
 esac
 
 echo "== 1. 매니페스트"
-# bot_user.display_name 은 ASCII 여야 한다. 한글은 앱 이름과 표시명에만 쓴다.
-python3 - "$NAME" "$DISPLAY" > /tmp/$NAME-manifest.json <<'PY'
+# 정본 템플릿에서 이름 두 자리만 갈아 끼운다. 여기서 매니페스트를 새로 쓰면
+# 저장소 정본과 갈린다 - 실제로 그래서 봇마다 설정이 달라졌고 세 봇의 DM 이
+# 꺼진 채로 돌았다 (sca-1v7, sca-4zy). 치환은 AppManifest.from_template 가
+# 하고 tests/unit/test_manifest.py 가 그 결과에 계약을 건다.
+#
+# venv 가 아니라 PYTHONPATH 로 부른다. 이 스크립트는 봇을 만들기 전에 도는
+# 것이라 그 봇의 venv 가 아직 없고, manifest.py 는 표준 라이브러리만 쓴다.
+PYTHONPATH="$REPO/src" python3 - "$NAME" "$DISPLAY" "$REPO/slack-apps/_template.json" > /tmp/$NAME-manifest.json <<'PY'
 import json, sys
-name, display = sys.argv[1], sys.argv[2]
-print(json.dumps({
-  "display_information": {"name": display, "description": f"{display} 에이전트", "background_color": "#1b2a3a"},
-  "features": {
-    "bot_user": {"display_name": name, "always_online": True},
-    # agent_view 가 에이전트 경험을 켠다. 옛 이름 assistant_view 로 만들면
-    # 앱이 에이전트가 안 되고, 슬랙 Agents 페이지에서 손으로 켜야 한다.
-    "agent_view": {"agent_description": f"{display} 입니다. 슬랙 안에서 조사와 작업을 맡습니다.",
-                   "suggested_prompts": []},
-  },
-  "oauth_config": {"scopes": {"bot": [
-    "app_mentions:read","channels:history","groups:history","im:history","mpim:history","reactions:read",
-    "channels:read","groups:read","im:read","mpim:read","users:read","users.profile:read","usergroups:read",
-    "team:read","emoji:read","files:read","chat:write","chat:write.customize","chat:write.public",
-    "reactions:write","files:write","im:write","channels:join","assistant:write"]}},
-  "settings": {
-    "event_subscriptions": {"bot_events": ["app_mention","message.channels","message.groups",
-      "message.im","message.mpim","reaction_added","assistant_thread_started"]},
-    "interactivity": {"is_enabled": False}, "org_deploy_enabled": False,
-    "socket_mode_enabled": True, "token_rotation_enabled": False},
-}, ensure_ascii=False))
+from pathlib import Path
+
+from slack_cli_agent.slack.manifest import AppManifest
+
+name, display, template = sys.argv[1], sys.argv[2], sys.argv[3]
+manifest = AppManifest.from_template(Path(template), name=name, display=display)
+print(json.dumps(manifest.raw, ensure_ascii=False))
 PY
 
 echo "== 2. 매니페스트 점검"
