@@ -127,6 +127,7 @@ td.editcell{white-space:normal;min-width:90px}
     <button type="button" data-tab="channels">채널</button>
     <button type="button" data-tab="prompts">프롬프트</button>
     <button type="button" data-tab="knowledge">지식</button>
+    <button type="button" data-tab="learned">학습이 쌓은 것</button>
   </div>
   <div id="app"></div>
   <footer id="foot">미계측은 아직 기록을 남기지 않는 지표다. 해당 없음은 이 봇의 엔진이 그 값을
@@ -778,16 +779,19 @@ async function saveChannel(idx){
 const fileTabState = {
   prompts: {names:null, current:null, text:""},
   knowledge: {names:null, current:null, text:""},
+  learned: {names:null, current:null, text:""},
 };
 
+/* 탭 이름과 API 경로 조각. 지식과 학습은 자리가 다르다 */
+const FILE_TAB_API = {prompts: ["prompts", "prompt"], knowledge: ["knowledge", "knowledge"],
+                      learned: ["learned", "learned"]};
+
 function fileTabPaths(kind){
-  return kind === "prompts"
-    ? {list: `/api/prompts/${encodeURIComponent(current)}`,
-       get: n => `/api/prompt/${encodeURIComponent(current)}/${encodeURIComponent(n)}`,
-       put: n => `/api/prompt/${encodeURIComponent(current)}/${encodeURIComponent(n)}`}
-    : {list: `/api/knowledge/${encodeURIComponent(current)}`,
-       get: n => `/api/knowledge/${encodeURIComponent(current)}/${encodeURIComponent(n)}`,
-       put: n => `/api/knowledge/${encodeURIComponent(current)}/${encodeURIComponent(n)}`};
+  const [listName, fileName] = FILE_TAB_API[kind];
+  const bot = encodeURIComponent(current);
+  return {list: `/api/${listName}/${bot}`,
+          get: n => `/api/${fileName}/${bot}/${encodeURIComponent(n)}`,
+          put: n => `/api/${fileName}/${bot}/${encodeURIComponent(n)}`};
 }
 
 function renderFileTab(kind){
@@ -897,6 +901,7 @@ function loadTab(){
   else if (activeTab === "channels") loadChannels();
   else if (activeTab === "prompts") loadFileList("prompts");
   else if (activeTab === "knowledge") loadFileList("knowledge");
+  else if (activeTab === "learned") loadFileList("learned");
 }
 
 function switchTab(name){

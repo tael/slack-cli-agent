@@ -49,6 +49,7 @@ def make_router(metrics: CountingMetrics | None = None) -> ApiRouter:
         channels_for=lambda bot: (_ for _ in ()).throw(KeyError(bot)),
         prompts_for=lambda bot: (_ for _ in ()).throw(KeyError(bot)),
         knowledge_for=lambda bot: (_ for _ in ()).throw(KeyError(bot)),
+        learned_for=lambda bot: (_ for _ in ()).throw(KeyError(bot)),
         metrics_for=lambda bot: metrics,
         roster=_EmptyRoster(),
     )
