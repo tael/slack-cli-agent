@@ -71,13 +71,22 @@ class RosterBuilder:
         out the roster and make every reply fall back to bare handles.
         """
         try:
-            entries = self._fetch_entries()
+            entries, seen = self._fetch_entries()
         except Exception as exc:  # noqa: BLE001 - same policy as the original: log the failure, don't hide the cause
             logger.warning("명부를 만들지 못했다: %s", exc)
             return 0
 
         if not entries:
-            logger.warning("명부 조회 결과가 비었다. 기존 파일을 그대로 둔다.")
+            if seen:
+                # 조회는 됐고 제외 규칙이 전부 걸러낸 경우다. 조회 실패와 같은
+                # 문구를 쓰면 스코프나 네트워크를 의심하게 된다 (sca-4pf).
+                logger.warning(
+                    "명부에 넣을 사람이 없다. 조회 %d명 중 규칙에 맞는 사람이 0명이다."
+                    " 기존 파일을 그대로 둔다.",
+                    seen,
+                )
+            else:
+                logger.warning("명부 조회 결과가 비었다. 기존 파일을 그대로 둔다.")
             return 0
 
         if not self._write(entries):
@@ -85,19 +94,24 @@ class RosterBuilder:
         logger.info("명부를 갱신했다. %d명", len(entries))
         return len(entries)
 
-    def _fetch_entries(self) -> list[RosterEntry]:
+    def _fetch_entries(self) -> tuple[list[RosterEntry], int]:
+        """Also returns how many members the lookup saw, so an empty roster
+        can say whether the lookup came back empty or the exclusion rules
+        dropped everyone."""
         rows: dict[str, RosterEntry] = {}
+        seen = 0
         cursor = ""
         while True:
             response = self._client.users_list(limit=self._page_size, cursor=cursor or None)
             for member in response.get("members", []):
+                seen += 1
                 entry = self._to_entry(member)
                 if entry is not None:
                     rows[entry.account_handle] = entry
             cursor = (response.get("response_metadata") or {}).get("next_cursor") or ""
             if not cursor:
                 break
-        return list(rows.values())
+        return list(rows.values()), seen
 
     @staticmethod
     def _to_entry(member: Mapping[str, Any]) -> RosterEntry | None:
