@@ -13,7 +13,8 @@ DB 테이블(kind='request')을 조회해 같은 알고리즘을 재현한다.
 from __future__ import annotations
 
 from slack_cli_agent.observability.audit import AuditLog
-from slack_cli_agent.review.records import AnswerRecordFinder, clean_excerpt
+from slack_cli_agent.review.records import AnswerRecordFinder
+from slack_cli_agent.slack.text import clean_excerpt
 
 
 class Test본문정리:

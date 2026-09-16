@@ -15,6 +15,7 @@ from ..core.timezones import KST
 from ..engine.base import Usage
 from ..engine.transcript import SessionTranscriptReader, TranscriptEvent
 from ..review.base import as_table
+from ..slack.text import clean_excerpt
 
 #: Maps the name of the engine that answered to the reader for its transcript
 #: format. Empty name means the profile's primary engine.
@@ -373,7 +374,9 @@ class SlowReportFormatter:
         ]
         if meta.num_turns:
             rows.append(("모델 턴 수", str(meta.num_turns)))
-        rows.append(("요청", meta.text[:200]))
+        # 자르기 전에 푼다. 이스케이프를 풀면 길이가 줄어, 순서를 바꾸면
+        # 200자 상한이 원문 기준이 되어 결과가 그보다 짧아진다.
+        rows.append(("요청", (clean_excerpt(meta.text) or "")[:200]))
 
         summary = "*느린 요청 트러블슈팅*\n\n" + as_table(rows) + "\n\n시간 분해와 원인은 이 스레드에 이어 답니다."
 
