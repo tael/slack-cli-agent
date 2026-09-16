@@ -130,7 +130,7 @@ def _audit(only_workspace: str = "") -> None:
         registry = AppRegistry()
         if registry.is_configured():
             # 파일이 있는데 0건이면 부재가 아니라 사고다. 종료코드 0 으로 끝내면
-            # 매일 도는 감사가 이상 없음과 같은 모습으로 지나간다 (sca-1qr).
+            # 매일 도는 감사가 이상 없음과 같은 모습으로 지나간다 (sca-hr8).
             print(f"레지스트리에 읽을 항목이 없다 : {registry.path}")
             raise SystemExit(1)
         print("레지스트리에 등록된 앱이 없다. register 로 먼저 적는다")
