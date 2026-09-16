@@ -62,6 +62,7 @@ RUNNER_ARGS: dict[str, Any] = {
     "state_snapshot_runner": lambda app: (),
     "roster_refresher": lambda app: (),
     "attachment_cleanup_runner": lambda app: (),
+    "watch_result_cleanup_runner": lambda app: (),
     "health_runner": lambda app: (lambda 사유: None,),
     "catchup_retry_runner": lambda app: (app.worker(),),
     "startup_catchup_runner": lambda app: (app.worker(),),
@@ -109,6 +110,7 @@ class Test묶음구성:
         assert set(app.worker_services(app.worker()).runner_names) == {
             "state_snapshot",
             "watch_jobs",
+            "watch_result_cleanup",
             "job_purge",
             "startup_catchup",
             "connection_catchup",
@@ -160,6 +162,11 @@ class Test첨부정리:
 
     def test_정리_실행기가_접수_묶음에_들어_있다(self, app: Application) -> None:
         assert "attachment_cleanup" in app.ingress_services(lambda 사유: None).runner_names
+
+    def test_감시_결과_정리가_워커_묶음에_들어_있다(self, app: Application) -> None:
+        """등록에 실패한 건의 결과 파일은 아무 완료 경로도 안 지난다. 주기
+        순회가 유일한 정리 계기다(sca-y6g)."""
+        assert "watch_result_cleanup" in app.worker_services(app.worker()).runner_names
 
 
 class Test캐치업재시도:

@@ -747,6 +747,35 @@ class Application:
             notify_owner=self._notify_owner if self._profile.owner_user_id else None,
         )
 
+    def watch_result_cleanup_runner(self) -> PeriodicRunner:
+        # A run_id is issued per request, so work started without a watch tag --
+        # or whose registration failed -- leaves .watch-out files nobody reads
+        # (sca-y6g). No completion path passes those, so this is the only trigger.
+        return PeriodicRunner(
+            self._watch_result_cleanup_tick,
+            self._settings.watch_result_cleanup_interval_sec,
+            name="watch_result_cleanup",
+        )
+
+    def _watch_result_cleanup_tick(self) -> None:
+        reader = WatchResultReader()
+        removed = 0
+        for workdir in self._watch_result_dirs():
+            removed += reader.cleanup(
+                str(workdir), older_than_sec=self._settings.watch_result_retain_sec
+            )
+        if removed:
+            log.info("감시 결과 파일 %d개를 정리했다", removed)
+
+    def _watch_result_dirs(self) -> list[Path]:
+        """Every workdir a watch job could have run in. _watch_workdir picks
+        between the channel's workdir and work_root, so both are swept."""
+        dirs = {self._profile.work_root}
+        for config in self._channels.all().values():
+            if config.workdir:
+                dirs.add(config.workdir)
+        return sorted(dirs)
+
     def watch_runner(self) -> PeriodicRunner:
         # without this runner, watch jobs get registered but never checked
         return PeriodicRunner(
@@ -1340,6 +1369,7 @@ class Application:
             [
                 self.state_snapshot_runner(),
                 self.watch_runner(),
+                self.watch_result_cleanup_runner(),
                 self.job_purge_runner(),
                 self.startup_catchup_runner(worker),
                 self.connection_catchup_runner(worker),

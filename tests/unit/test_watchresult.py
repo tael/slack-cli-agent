@@ -269,3 +269,46 @@ class Test띄웠는지_판정:
         assert 리더.launched(작업디렉터리, "../evil") is False
         assert 리더.launched(작업디렉터리, "") is False
         assert 리더.launched("", "9f3a2b") is False
+
+
+class Test고아파일정리:
+    """감시 태그가 안 나오거나 등록이 실패하면 이미 띄운 작업의 결과 파일과
+    스크립트 파일이 .watch-out 에 그대로 남는다. 아무도 보지 않는다(sca-y6g).
+    """
+
+    def _파일(self, 작업디렉터리: str, 이름: str, 나이초: float, 지금: float) -> Path:
+        자리 = Path(작업디렉터리) / ".watch-out"
+        자리.mkdir(exist_ok=True)
+        경로 = 자리 / 이름
+        경로.write_text("내용", encoding="utf-8")
+        import os
+
+        os.utime(경로, (지금 - 나이초, 지금 - 나이초))
+        return 경로
+
+    def test_보관_기간이_지난_파일을_지운다(self, 작업디렉터리, 리더) -> None:
+        지금 = 1_700_000_000.0
+        낡은것 = self._파일(작업디렉터리, "낡음.out", 200_000, 지금)
+        지운수 = 리더.cleanup(작업디렉터리, older_than_sec=172_800, now=지금)
+        assert not 낡은것.exists()
+        assert 지운수 == 1
+
+    def test_기간_안의_파일은_남긴다(self, 작업디렉터리, 리더) -> None:
+        """감시 작업은 최대 24시간 살아 있다. 그 안의 파일을 지우면 아직 도는
+        작업의 결과를 못 읽는다."""
+        지금 = 1_700_000_000.0
+        최근것 = self._파일(작업디렉터리, "최근.out", 3_600, 지금)
+        assert 리더.cleanup(작업디렉터리, older_than_sec=172_800, now=지금) == 0
+        assert 최근것.exists()
+
+    def test_스크립트_파일도_함께_지운다(self, 작업디렉터리, 리더) -> None:
+        지금 = 1_700_000_000.0
+        스크립트 = self._파일(작업디렉터리, "낡음.sh", 200_000, 지금)
+        리더.cleanup(작업디렉터리, older_than_sec=172_800, now=지금)
+        assert not 스크립트.exists()
+
+    def test_디렉터리가_없어도_터지지_않는다(self, 작업디렉터리, 리더) -> None:
+        assert 리더.cleanup(작업디렉터리, older_than_sec=172_800, now=1_700_000_000.0) == 0
+
+    def test_작업디렉터리가_비면_아무것도_안_한다(self, 리더) -> None:
+        assert 리더.cleanup("", older_than_sec=172_800, now=1_700_000_000.0) == 0
