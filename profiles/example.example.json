@@ -19,6 +19,7 @@
   "owner_user_id": "U00000000",
   "troubleshoot_channel": "C00000000",
   "plugins": [],
+  "usage_check_command": [],
   "settings": {
     "request_timeout_sec": 900,
     "max_concurrent": 10

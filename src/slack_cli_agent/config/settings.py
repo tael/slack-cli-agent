@@ -66,6 +66,10 @@ class RuntimeSettings:
     #: 들어오는 일은 드물어 자주 볼 이유가 없고, 조회는 채널마다 한 번이다.
     owner_only_audit_interval_sec: float = 6 * 3600
 
+    #: 사용량 확인 명령 주기. 원본과 같은 1시간이다.
+    usage_check_interval_sec: float = 3600
+    usage_check_timeout_sec: float = 60
+
     late_rewrite_min_ratio: float = 0.6
     late_rewrite_min_chars: int = 200
 
