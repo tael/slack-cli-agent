@@ -345,6 +345,18 @@ class Test사고_종류별_건수:
         assert quality["rewrites"] == 1
         assert quality["silent"] == 1
 
+    def test_기준_기록은_사고로_안_센다(self, tmp_path: Path) -> None:
+        """capability 는 엔진 실행마다 남는 기준 기록이라 사고가 아니다.
+        REQUEST 만 빼고 세면 정상 트래픽이 사고 건수를 채운다."""
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        insert_incident(db, kind=IncidentKind.CAPABILITY, at=1_001.0, engine="claude")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        result = collector.collect(days=7)
+        assert result["reliability"]["incidents"] == []
+        assert "capability" not in result["quality"]
+
     def test_침묵_비율은_전체_요청_대비다(self, tmp_path: Path) -> None:
         profile = make_profile(tmp_path)
         db = open_db(profile)

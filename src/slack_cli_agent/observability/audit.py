@@ -44,8 +44,11 @@ REQUEST_KIND = IncidentKind.REQUEST.value
 
 # Kinds that count as an "incident" for the reliability/quality rollups —
 # REQUEST is excluded since it's the baseline traffic, not an incident.
-_BASELINE_KINDS = (IncidentKind.REQUEST, IncidentKind.CAPABILITY)
-INCIDENT_KINDS: tuple[IncidentKind, ...] = tuple(k for k in IncidentKind if k not in _BASELINE_KINDS)
+BASELINE_KINDS: tuple[IncidentKind, ...] = (IncidentKind.REQUEST, IncidentKind.CAPABILITY)
+#: Read by metrics.py as well -- a kind that is baseline here must not be
+#: tallied as an incident there.
+BASELINE_KIND_VALUES: frozenset[str] = frozenset(k.value for k in BASELINE_KINDS)
+INCIDENT_KINDS: tuple[IncidentKind, ...] = tuple(k for k in IncidentKind if k not in BASELINE_KINDS)
 
 # Every row `record()` writes always carries a kind (see `line` below), so
 # this only guards a hand-edited or otherwise corrupted row.
