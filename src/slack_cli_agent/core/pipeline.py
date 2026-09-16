@@ -324,12 +324,16 @@ class RequestPipeline:
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage, turns=response.turns)
         watch_desc = watch_desc or self._watch_desc_for_launched(workdir, run_id)
-        if watch_desc and self._register_watch(ctx, principal, watch_desc, workdir, run_id):
+        watching = bool(watch_desc) and self._register_watch(ctx, principal, watch_desc, workdir, run_id)
+        if watching:
             # Not "done" — marking it done would exclude it from catch-up recovery.
             self._mark_watch(ctx)
         else:
             self._mark_done(ctx)
-        return HandleOutcome(ok=True, posted_ts=posted_ts)
+        # Reported so the worker settles on the same mark. It marks every ok
+        # outcome done otherwise, which overwrote the watch mark set here and
+        # put the message back in the done state this branch avoids (sca-5sb).
+        return HandleOutcome(ok=True, posted_ts=posted_ts, watching=watching)
 
     def _archive_response(
         self, ctx: RequestContext, channel_slug: str, body: str, response: EngineResponse, elapsed: float,
