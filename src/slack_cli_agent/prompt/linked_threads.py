@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 
-from ..slack.linked_threads import LinkedThreadReader
+from ..slack.linked_threads import LinkedThread, LinkedThreadReader
 
 log = logging.getLogger(__name__)
 
@@ -26,23 +26,30 @@ _UNREAD = (
     "확인하지 못했다고 밝힌다."
 )
 
+_EMPTY = (
+    "이 링크는 열렸으나 옮길 메시지가 없다.\n"
+    "조회 실패가 아니다. 없는 내용을 있는 것처럼 쓰지 않는다."
+)
+
 
 class LinkedThreadNote:
     def __init__(self, reader: LinkedThreadReader) -> None:
         self._reader = reader
 
     def of(self, text: str, self_channel: str = "") -> str:
-        blocks = [self._block(name, body) for name, body in self._reader.of(text, self_channel)]
+        blocks = [self._block(linked) for linked in self._reader.of(text, self_channel)]
         if not blocks:
             return ""
         note = _INTRO + "\n\n" + "\n\n".join(blocks)
         log.info("링크된 스레드 %d자를 먼저 읽어 붙인다", len(note))
         return note
 
-    def _block(self, name: str, body: str) -> str:
-        if body:
+    def _block(self, linked: LinkedThread) -> str:
+        if linked.body:
             return (
-                f"----- 링크된 스레드 : {name} -----\n\n{body}\n\n"
+                f"----- 링크된 스레드 : {linked.name} -----\n\n{linked.body}\n\n"
                 "----- 여기까지가 링크된 스레드다 -----"
             )
-        return f"----- 링크된 스레드 : {name} (읽지 못했다) -----\n\n{_UNREAD}"
+        if linked.read_ok:
+            return f"----- 링크된 스레드 : {linked.name} (옮길 메시지가 없다) -----\n\n{_EMPTY}"
+        return f"----- 링크된 스레드 : {linked.name} (읽지 못했다) -----\n\n{_UNREAD}"

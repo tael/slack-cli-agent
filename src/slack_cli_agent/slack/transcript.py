@@ -12,7 +12,9 @@ shared with LateAddendumChecker so both use the same judgment.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -23,6 +25,18 @@ from slack_cli_agent.slack.message_kind import MessageKind
 from slack_cli_agent.slack.speaker import SpeakerNamer
 
 from ..core.timezones import KST
+
+log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TranscriptRead:
+    """A read that failed and a thread with nothing to transcribe both produce
+    an empty body. Callers that tell the model what happened need them apart
+    (sca-678)."""
+
+    body: str
+    read_ok: bool
 
 
 def rich_text_element_text(el: Mapping[str, Any]) -> str:
@@ -167,6 +181,17 @@ class TranscriptBuilder:
         continuing a session, to append what's new since the last
         read instead of re-reading the whole thread every time.
         """
+        return self.read_thread(channel, thread_ts, before_ts, scope=scope, after_ts=after_ts).body
+
+    def read_thread(
+        self,
+        channel: str,
+        thread_ts: str,
+        before_ts: str | float | None,
+        scope: str = "thread",
+        after_ts: str | float | None = None,
+    ) -> TranscriptRead:
+        """thread_transcript plus whether the read itself succeeded."""
         limit = self._settings.history_max_msgs
         try:
             if scope == "channel":
@@ -178,8 +203,9 @@ class TranscriptBuilder:
                 msgs = self._client.conversations_replies(
                     channel=channel, ts=thread_ts, limit=limit
                 ).get("messages", [])
-        except Exception:  # noqa: BLE001 - a failed history read falls back to empty rather than raising
-            return ""
+        except Exception as exc:  # noqa: BLE001 - a failed history read falls back to empty rather than raising
+            log.warning("대화록 조회 실패 : channel=%s scope=%s error=%s", channel, scope, exc)
+            return TranscriptRead(body="", read_ok=False)
 
         lines = []
         for m in msgs:
@@ -197,7 +223,7 @@ class TranscriptBuilder:
             lines.append(f"[{when} {who}]\n{text}")
 
         if not lines:
-            return ""
+            return TranscriptRead(body="", read_ok=True)
 
         max_chars = self._settings.history_max_chars
         kept: list[str] = []
@@ -207,7 +233,7 @@ class TranscriptBuilder:
             if total > max_chars and kept:
                 break
             kept.append(line)
-        return "\n\n".join(reversed(kept))
+        return TranscriptRead(body="\n\n".join(reversed(kept)), read_ok=True)
 
     def with_history(self, transcript: str, tagged: str) -> str:
         """Prepends past conversation ahead of the current message,
