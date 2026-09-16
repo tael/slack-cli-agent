@@ -560,6 +560,7 @@ class TestCodexHome격리:
         ])
         registry = TranscriptReaderRegistry()
         reader = registry.create("codex", tmp_path / "work", home=home, spec=None)
+        assert isinstance(reader, CodexTranscriptReader)
         assert reader.find_transcript_path("구프로필세션") == expected
 
 

@@ -570,7 +570,7 @@ class TestUsageRowBuilder세션행:
     def _builder(self, used: int | None, limit: int | None) -> UsageRowBuilder:
         class 고정계산기:
             def compute(
-                self, reader: object, session_id: str, model: str | None = None,
+                self, reader: SessionTranscriptReader, session_id: str, model: str | None = None,
             ) -> SessionContext:
                 return SessionContext(used=used, limit=limit)
 

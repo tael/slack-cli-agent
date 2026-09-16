@@ -50,7 +50,7 @@ def make_collector(
     channel_ids: Mapping[str, str] | None = None,
     limit: int = 50,
     ts_by_text: Mapping[str, Sequence[str]] | None = None,
-) -> tuple[Callable[[], Mapping[str, object]], FakeThreads]:
+) -> tuple[Callable[[], Mapping[str, Sequence[Mapping[str, object]]]], FakeThreads]:
     channel_ids = channel_ids or {}
     ts_by_text = ts_by_text or {}
     threads = FakeThreads(thread_map, raise_on=raise_on)
@@ -141,7 +141,7 @@ class TestReactionCollector:
             ts_by_text={"본문": ("111.222",)},
         )
         result = collect()
-        assert len(result["공지"][0]["text"]) == 1000
+        assert len(str(result["공지"][0]["text"])) == 1000
 
     def test_채널_ID_를_모르면_건너뛴다(self) -> None:
         collect, threads = make_collector(

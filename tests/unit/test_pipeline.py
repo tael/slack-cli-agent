@@ -28,6 +28,7 @@ from slack_cli_agent.engine.base import (
     Usage,
 )
 from slack_cli_agent.engine.runner import DirectInvoker
+from slack_cli_agent.engine.transcript import SessionTranscriptReader, TranscriptEvent
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard, RerunRequest
 from slack_cli_agent.guard.mentions import AddresseeGuard
 from slack_cli_agent.guard.pipeline import GuardPipeline
@@ -1003,8 +1004,8 @@ class Test느린요청보고_첨부값:
                 self.posts.append(text)
                 return "ts-1"
 
-        class 빈기록:
-            def events(self, session_id: str):
+        class 빈기록(SessionTranscriptReader):
+            def read(self, session_id: str) -> list[TranscriptEvent]:
                 return []
 
         게시자 = 기록게시자()

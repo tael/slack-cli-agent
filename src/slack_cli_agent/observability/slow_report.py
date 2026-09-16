@@ -274,6 +274,14 @@ class SessionContextCalculator:
         return SessionContext(used=used, limit=limit)
 
 
+class SessionContextPort(Protocol):
+    """What UsageRowBuilder needs. SessionContextCalculator satisfies it."""
+
+    def compute(
+        self, reader: SessionTranscriptReader, session_id: str, model: str | None = None,
+    ) -> SessionContext: ...
+
+
 class UsageRowBuilder:
     """Builds token usage rows, but only for owner-only channels — token usage is
     sensitive, so this is enforced in code rather than left to convention.
@@ -282,7 +290,7 @@ class UsageRowBuilder:
     def __init__(
         self,
         owner_only_channels: frozenset[str],
-        session_context: SessionContextCalculator | None = None,
+        session_context: SessionContextPort | None = None,
     ) -> None:
         self._owner_only_channels = owner_only_channels
         self._session_context = session_context

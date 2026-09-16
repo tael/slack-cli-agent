@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -14,12 +15,18 @@ import pytest
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.errors import ConfigError
-from slack_cli_agent.engine.base import EngineRequest
+from slack_cli_agent.engine.base import Engine, EngineRequest
 from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
 from slack_cli_agent.engine.gemini import GeminiEngine
 
-_ENGINES = {"claude": ClaudeEngine, "codex": CodexEngine, "gemini": GeminiEngine}
+#: 값 표기가 type[Engine] 이면 Engine 이 추상이라 호출이 막힌다. 실제로 쓰는 것은
+#: 생성자 호출이므로 그 서명으로 적는다.
+_ENGINES: dict[str, Callable[[Profile, RuntimeSettings], Engine]] = {
+    "claude": ClaudeEngine,
+    "codex": CodexEngine,
+    "gemini": GeminiEngine,
+}
 
 
 def _profile(engine_type: str, env_value: str) -> Profile:
