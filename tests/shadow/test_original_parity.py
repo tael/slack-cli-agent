@@ -397,7 +397,6 @@ class TestEngineProbe_주기와_문구:
         assert FallbackEngine.PROBE_PROMPT == "준비됐으면 OK 두 글자만 답해라."
 
 
-# ---------------------------------------------------------------------------
 # 불일치를 발견하고 고친 자리.
 #
 # 원본 bot.py:1725 ENGINE_PROBE_TIMEOUT = 120 은 대체 실행기가 실제로 쓸 수

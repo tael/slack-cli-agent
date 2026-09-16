@@ -28,9 +28,7 @@ from slack_cli_agent.slack.gateway import SlackGateway
 from slack_cli_agent.slack.listener import EventListener
 from slack_cli_agent.slack.reactions import ReactionMarker
 
-# ---------------------------------------------------------------------------
 # 대역들
-# ---------------------------------------------------------------------------
 
 
 class FakeWebClient:
@@ -214,9 +212,7 @@ def mention_event(ts: str = "1.0", text: str = "<@U_BOT> 안녕") -> dict:
     return {"channel": "C1", "user": "U1", "ts": ts, "text": text}
 
 
-# ---------------------------------------------------------------------------
 # 시험
-# ---------------------------------------------------------------------------
 
 
 class TestQueueing:

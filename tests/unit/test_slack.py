@@ -43,9 +43,7 @@ from slack_cli_agent.slack.reactions import (
 )
 from slack_cli_agent.slack.transcript import TranscriptBuilder
 
-# ---------------------------------------------------------------------------
 # 대역 슬랙 클라이언트
-# ---------------------------------------------------------------------------
 
 
 class FakeWebClient:
@@ -106,9 +104,7 @@ class SlackApiError(Exception):
         self.response = {"error": error}
 
 
-# ---------------------------------------------------------------------------
 # HistoryReader
-# ---------------------------------------------------------------------------
 
 
 class FakeClock:
@@ -179,9 +175,7 @@ class TestHistoryReader:
         assert len(client.calls) == settings.history_read_tries
 
 
-# ---------------------------------------------------------------------------
 # ReactionMarker
-# ---------------------------------------------------------------------------
 
 
 class TestReactionMarker:
@@ -239,9 +233,7 @@ class TestReactionMarker:
         assert marker.already_handled({}) is False
 
 
-# ---------------------------------------------------------------------------
 # MessagePublisher
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -392,9 +384,7 @@ class TestMessagePublisher:
         assert out == "답변\n> 실행 모델 : new-model"
 
 
-# ---------------------------------------------------------------------------
 # SlackGateway
-# ---------------------------------------------------------------------------
 
 
 class Test이모지실패_흔적:
@@ -620,9 +610,7 @@ class Test연결_상태_전환_감지:
         assert detector.on_poll(False) is None
 
 
-# ---------------------------------------------------------------------------
 # EventListener
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -772,9 +760,7 @@ class TestEventListener:
         assert client.calls == []
 
 
-# ---------------------------------------------------------------------------
 # TranscriptBuilder
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -893,9 +879,7 @@ class TestTranscriptBuilder:
         assert out.endswith("지금 말")
 
 
-# ---------------------------------------------------------------------------
 # AttachmentStore
-# ---------------------------------------------------------------------------
 
 
 class TestAttachmentStore:

@@ -160,7 +160,6 @@ class Test선언_누락을_막는다:
         assert isinstance(engine_cls.capabilities, EngineCapabilities), engine_cls
 
 
-# ---------------------------------------------------------------------------
 # 2단계 — 요구와 실제 보장을 감사에 기록한다. 아직 차단하지 않는다.
 
 
