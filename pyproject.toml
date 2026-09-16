@@ -96,7 +96,7 @@ ignore = [
     "PERF401",
     # str 과 Enum 을 함께 상속한 열거형 5개를 StrEnum 으로 바꾸라고 한다.
     # str() 결과가 달라져 로그와 audit 의 kind 문자열이 바뀔 수 있다.
-    # 별건으로 뗀다 - sca-str.
+    # 별건으로 뗀다 - sca-c0u.
     "UP042",
 ]
 
