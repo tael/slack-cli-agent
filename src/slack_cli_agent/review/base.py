@@ -9,7 +9,6 @@ thread).
 from __future__ import annotations
 
 import logging
-import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
@@ -104,7 +103,7 @@ class EngineCaller(Protocol):
     # wiring layer that knows about Profile/RuntimeSettings; this package only passes the
     # prompt and session id through.
     def run(
-        self, prompt: str, session_id: str, resume: bool, progress_log: Path | None = None
+        self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None
     ) -> EngineResponse: ...
 
 
@@ -256,9 +255,11 @@ class ReviewTask(ABC):
         question = (record or {}).get("question") or ""
 
         prompt = self.build_prompt(target, transcript=transcript, flagged=flagged, question=question)
-        session_id = str(uuid.uuid4())
+        # None: the engine that runs this mints the ID in its own format.
+        # Minting a UUID here happened to work only because all three CLIs
+        # accept one today (sca-k6s).
         with self._progress_display(target, thread_ts) as progress_log:
-            response = self._engine.run(prompt, session_id, False, progress_log)
+            response = self._engine.run(prompt, None, False, progress_log)
 
         link = self._permalinks.permalink(target.channel, target.ts)
         header = self.build_header(target, record, link)
@@ -275,8 +276,10 @@ class ReviewTask(ABC):
 
         body = response.body
         marker = self.split_marker()
-        if marker not in body and self.retry_on_missing_split():
-            retry = self._engine.run(self.missing_split_prompt(), session_id, True)
+        if marker not in body and self.retry_on_missing_split() and response.session_id:
+            # Resume the session the engine actually used. Without an ID there
+            # is nothing to continue, so the response goes out as it came.
+            retry = self._engine.run(self.missing_split_prompt(), response.session_id, True)
             if retry.ok and marker in retry.body:
                 body = retry.body
 
