@@ -26,6 +26,7 @@ from .checks import (
     ProfilePermissionCheck,
     PromptFileCheck,
     ToolAllowlistEnforcementCheck,
+    UsageCheckCommandCheck,
     WorkdirCheck,
 )
 from .runner import PreflightReport, PreflightRunner
@@ -65,6 +66,7 @@ class PreflightSuite:
             # fatal=False: 허용목록이 안 걸리는 엔진을 쓰는 것은 운영자의 선택일 수
             # 있다. 그 사실을 설정 시점에 알리는 것이 목적이다.
             ToolAllowlistEnforcementCheck(),
+            UsageCheckCommandCheck(),
             # 표기가 안 풀리면 MCP 서버는 빈 자격으로 인증 실패만 낸다. 기동에서 막는다.
             McpCredentialCheck(),
         )

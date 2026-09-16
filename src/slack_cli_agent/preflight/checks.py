@@ -113,6 +113,38 @@ class EngineBinaryCheck(PreflightCheck):
         return CheckResult(ok=True, detail="엔진 실행 파일 점검 통과")
 
 
+class UsageCheckCommandCheck(PreflightCheck):
+    """Checks the operator's usage check command can actually be run.
+
+    A wrong path only shows up as an hourly warning in the log, which nobody
+    reads. `fatal=False` — the bot answers fine without this check (sca-3p7).
+    """
+
+    name: ClassVar[str] = "usage_check_command"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        command = ctx.profile.usage_check_command
+        if not command:
+            return CheckResult(ok=True, detail="사용량 확인 명령이 없다")
+        binary = Path(command[0]).expanduser()
+        if binary.is_absolute():
+            if not binary.exists():
+                return CheckResult(
+                    ok=False, detail=f"사용량 확인 실행 파일이 없다 : {binary}", fatal=False
+                )
+            if not os.access(binary, os.X_OK):
+                return CheckResult(
+                    ok=False, detail=f"사용량 확인 실행 권한이 없다 : {binary}", fatal=False
+                )
+        elif shutil.which(str(binary)) is None:
+            return CheckResult(
+                ok=False,
+                detail=f"사용량 확인 실행 파일을 PATH 에서 못 찾는다 : {binary}",
+                fatal=False,
+            )
+        return CheckResult(ok=True, detail="사용량 확인 명령 점검 통과")
+
+
 class OwnerSettingsInertCheck(PreflightCheck):
     """Warns once at boot about channel settings that are silently ignored for the owner.
 
