@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from slack_cli_agent.config import settings as config_settings
 from slack_cli_agent.config.channel import ChannelConfig, ChannelRegistry
 from slack_cli_agent.config.paths import StatePaths
 from slack_cli_agent.config.profile import EngineSpec, McpServerSpec, Profile
@@ -247,6 +248,45 @@ class TestRuntimeSettings:
         original = RuntimeSettings()
         original.override({"max_concurrent": 3})
         assert original.max_concurrent == 10
+
+
+class Test설정항목이살아있다:
+    """설정을 더하고 읽는 자리를 안 만들면 그 값은 조용히 무시된다. 운영자는
+    설정했다고 읽고 동작은 기본값으로 돈다. max_concurrent 가 실제로 그랬다
+    (sca-si6).
+    """
+
+    #: 아직 읽는 자리가 없는 항목. 비워 두는 것이 정상이고, 더할 때는 그 사유가
+    #: 되는 이슈 번호를 함께 적는다.
+    미결 = {"max_concurrent"}  # sca-si6
+
+    def 읽히지_않는_항목(self) -> set[str]:
+        import ast
+        import re
+
+        settings_file = Path(config_settings.__file__)
+        tree = ast.parse(settings_file.read_text(encoding="utf-8"))
+        fields = [
+            item.target.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef) and node.name == "RuntimeSettings"
+            for item in node.body
+            if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+        ]
+        src_root = settings_file.parent.parent
+        source = "\n".join(
+            f.read_text(encoding="utf-8")
+            for f in src_root.rglob("*.py")
+            if f != settings_file
+        )
+        return {name for name in fields if not re.search(r"\b" + name + r"\b", source)}
+
+    def test_항목을_찾기는_한다(self) -> None:
+        """대조의 근거가 실제로 잡히는지 먼저 본다. 빈 목록이면 이 시험이 공전한다."""
+        assert len(RuntimeSettings.__dataclass_fields__) > 30
+
+    def test_읽는_자리가_없는_항목은_미결_목록에만_있다(self) -> None:
+        assert self.읽히지_않는_항목() == self.미결
 
 
 class TestChannelRegistry:
