@@ -140,7 +140,7 @@ class SlackGateway:
             info = self._client.auth_test()
             team = str(info.get("team") or team)
             bot_user = str(info.get("user") or info.get("user_id") or bot_user)
-        except Exception:  # noqa: BLE001, S110 — identifying the workspace is best-effort; the connection event itself must still be logged
+        except Exception:  # noqa: BLE001 — identifying the workspace is best-effort; the connection event itself must still be logged
             pass
         log.info(
             "슬랙 소켓 %s : 워크스페이스=%s 봇=%s 프로필=%s",

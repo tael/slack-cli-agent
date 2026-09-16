@@ -77,7 +77,7 @@ _DEFAULT_KIND_FOR_MISSING = IncidentKind.REQUEST.value
 
 
 def normalize_kind(kind: str | None) -> str:
-    return kind if kind else _DEFAULT_KIND_FOR_MISSING
+    return kind or _DEFAULT_KIND_FOR_MISSING
 
 
 class AuditLog(SqliteRepository):
