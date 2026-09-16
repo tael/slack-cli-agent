@@ -7,10 +7,14 @@ and quietly wide open.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import replace
 
+from ..core.errors import ConfigError
 from .command import AdminCommand, AdminContext, AdminResult
+
+log = logging.getLogger(__name__)
 
 
 class AdminRouter:
@@ -47,5 +51,12 @@ class AdminRouter:
             # Filled in here rather than by every call site building context,
             # so no call site can forget it and break the command's argument
             # parsing.
-            return command.execute(replace(ctx, text=text, help_text=self.help_text()))
+            try:
+                return command.execute(replace(ctx, text=text, help_text=self.help_text()))
+            except ConfigError as exc:
+                # The ingress swallows exceptions and only logs them, so a
+                # command that stops on a bad config file would look to the
+                # user exactly like one that worked (sca-zvk).
+                log.warning("관리 명령 중단 : %s : %s", command.name, exc)
+                return AdminResult(message=f"설정을 읽지 못해 실행하지 않았습니다. {exc}", handled=False)
         return None

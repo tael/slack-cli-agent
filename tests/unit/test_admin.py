@@ -14,6 +14,7 @@ from slack_cli_agent.admin.router import AdminRouter
 from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import Profile
+from slack_cli_agent.core.errors import ConfigError
 from slack_cli_agent.observability.notices import NoticeCatalog
 
 
@@ -228,3 +229,31 @@ class Test채널목록은이름을보여준다:
         ctx = make_context(tmp_path, channels_path=channels_path)
         result = ChannelListCommand().execute(ctx)
         assert "- C1" in result.message
+
+
+class Test설정오류를사용자에게알린다:
+    """설정 파일을 못 읽어 명령이 멈추면 접수기가 예외를 삼키고 로그만 남긴다.
+    사용자 쪽에서는 아무 응답이 없어 명령이 먹은 것과 구분되지 않는다 (sca-zvk).
+    """
+
+    class _터지는명령(AdminCommand):
+        name = "터짐"
+        usage = "터짐"
+        description = "설정 오류를 낸다"
+        required_trust = TrustLevel.TRUSTED
+
+        def matches(self, text: str) -> bool:
+            return text.strip() == "터짐"
+
+        def execute(self, ctx: AdminContext) -> AdminResult:
+            raise ConfigError("채널 설정을 읽지 못해 쓰기를 멈춘다 : /경로")
+
+    def test_설정_오류는_사유를_담아_돌려준다(self, tmp_path: Path) -> None:
+        router = AdminRouter([self._터지는명령()])
+        ctx = make_context(tmp_path, trust=TrustLevel.TRUSTED)
+
+        result = router.dispatch("터짐", ctx)
+
+        assert result is not None
+        assert result.handled is False
+        assert "채널 설정을 읽지 못해" in result.message
