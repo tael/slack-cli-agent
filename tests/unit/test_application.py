@@ -576,18 +576,23 @@ class TestSlowReport:
     def test_보고_채널은_프로필에서_온다(self, tmp_path: Path) -> None:
         profile = write_profile(tmp_path, troubleshoot_channel="C_REPORT")
         app = Application.from_profile(profile, client=FakeSlackClient())
-        assert app.pipeline()._slow_reporter._troubleshoot_channel == "C_REPORT"
+        reporter = app.pipeline()._slow_reporter
+        assert reporter is not None
+        assert reporter._troubleshoot_channel == "C_REPORT"
 
     def test_보고_채널이_없어도_조립된다(self, tmp_path: Path) -> None:
         """범용 패키지라 보고 채널이 없는 프로필이 정상이다. 그때는 보고기가
         기준값 판정 전에 조용히 넘어간다."""
         profile = write_profile(tmp_path, troubleshoot_channel="")
         app = Application.from_profile(profile, client=FakeSlackClient())
-        assert app.pipeline()._slow_reporter._troubleshoot_channel == ""
+        reporter = app.pipeline()._slow_reporter
+        assert reporter is not None
+        assert reporter._troubleshoot_channel == ""
 
     def test_기준값이_설정에서_온다(self, tmp_path: Path) -> None:
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
         reporter = app.pipeline()._slow_reporter
+        assert reporter is not None
         assert reporter._settings.slow_report_sec == app.settings.slow_report_sec
 
     def test_세션_컨텍스트_계산기가_조립된다(self, tmp_path: Path) -> None:
@@ -595,13 +600,17 @@ class TestSlowReport:
         세션이 다음 요청에서 컨텍스트 부족으로 막힐지를 보고에서 미리 확인할
         수 없다."""
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
-        builder = app.pipeline()._slow_reporter._usage_row_builder
-        assert builder._session_context is not None
+        reporter = app.pipeline()._slow_reporter
+        assert reporter is not None
+        assert reporter._usage_row_builder._session_context is not None
 
     def test_컨텍스트_한도가_설정에서_온다(self, tmp_path: Path) -> None:
         profile = write_profile(tmp_path, settings={"context_limit": {"모델A": 200000}})
         app = Application.from_profile(profile, client=FakeSlackClient())
-        calculator = app.pipeline()._slow_reporter._usage_row_builder._session_context
+        reporter = app.pipeline()._slow_reporter
+        assert reporter is not None
+        calculator = reporter._usage_row_builder._session_context
+        assert calculator is not None
         assert calculator.compute(app.transcript_reader(), "없는세션", model="모델A").limit == 200000
 
     def test_사용량_노출_채널이_설정에서_온다(self, tmp_path: Path) -> None:
@@ -611,8 +620,9 @@ class TestSlowReport:
             tmp_path, troubleshoot_channel="C_REPORT", settings={"owner_only_channels": ["C_REPORT"]},
         )
         app = Application.from_profile(profile, client=FakeSlackClient())
-        builder = app.pipeline()._slow_reporter._usage_row_builder
-        rows = builder.build(
+        reporter = app.pipeline()._slow_reporter
+        assert reporter is not None
+        rows = reporter._usage_row_builder.build(
             None, "C_REPORT", reader=app.transcript_reader(), session_id="없는세션", model="모델A",
         )
         assert [row[0] for row in rows] == ["토큰", "세션"]
@@ -1458,20 +1468,26 @@ class Test에이전트패널연결:
     def test_프로필의_안내_문구를_쓴다(self, tmp_path: Path, client: FakeSlackClient) -> None:
         profile = write_profile(tmp_path, agent_greeting="신지입니다. 무엇을 도와드릴까요?")
         application = Application(profile, client)
-        assert application.ingress()._assistant._greeting == "신지입니다. 무엇을 도와드릴까요?"
+        assistant = application.ingress()._assistant
+        assert assistant is not None
+        assert assistant._greeting == "신지입니다. 무엇을 도와드릴까요?"
         application.close()
 
     def test_안내_문구가_없으면_기본_문구를_쓴다(self, app: Application) -> None:
         from slack_cli_agent.slack.assistant import DEFAULT_GREETING
 
-        assert app.ingress()._assistant._greeting == DEFAULT_GREETING
+        assistant = app.ingress()._assistant
+        assert assistant is not None
+        assert assistant._greeting == DEFAULT_GREETING
 
     def test_프로필의_제안_프롬프트를_쓴다(self, tmp_path: Path, client: FakeSlackClient) -> None:
         profile = write_profile(
             tmp_path, agent_prompts=[{"title": "오늘 할 일", "message": "오늘 할 일을 알려줘"}],
         )
         application = Application(profile, client)
-        prompts = application.ingress()._assistant._prompts
+        assistant = application.ingress()._assistant
+        assert assistant is not None
+        prompts = assistant._prompts
         assert [p.title for p in prompts] == ["오늘 할 일"]
         application.close()
 

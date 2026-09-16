@@ -10,6 +10,7 @@ load_format_reviews/save_format_review/drop_format_review 세 벌을 하나의
 from __future__ import annotations
 
 import pytest
+from review_support import recorded
 
 from slack_cli_agent.review.ledger import ReviewLedger, ReviewRecord
 
@@ -96,19 +97,19 @@ class Test조회:
 
     def test_시작상태를읽는다(self, ledger: ReviewLedger) -> None:
         ledger.begin("postmortem", "C1", "111.1", by="U1")
-        rec = ledger.find("postmortem", "C1", "111.1")
+        rec = recorded(ledger, "postmortem", "C1", "111.1")
         assert rec == ReviewRecord(status="진행", by="U1")
 
     def test_완료상태를읽는다(self, ledger: ReviewLedger) -> None:
         ledger.complete("format_review", "C1", "111.1", by="U2", link="L1", report="R1")
-        rec = ledger.find("format_review", "C1", "111.1")
+        rec = recorded(ledger, "format_review", "C1", "111.1")
         assert rec == ReviewRecord(status="완료", by="U2", link="L1", report="R1")
 
     def test_완료가시작을덮는다(self, ledger: ReviewLedger) -> None:
         """같은 (kind, channel, target_ts) 는 최신 상태 하나만 남는다."""
         ledger.begin("postmortem", "C1", "111.1", by="U1")
         ledger.complete("postmortem", "C1", "111.1", by="U1", link="L", report="R")
-        rec = ledger.find("postmortem", "C1", "111.1")
+        rec = recorded(ledger, "postmortem", "C1", "111.1")
         assert rec.status == "완료"
 
     def test_깨진값이면빈상태로본다(self, database, ledger: ReviewLedger) -> None:
@@ -117,7 +118,7 @@ class Test조회:
         database.connect().execute(
             "UPDATE reviews SET result = '{망가짐' WHERE kind='postmortem'"
         )
-        rec = ledger.find("postmortem", "C1", "111.1")
+        rec = recorded(ledger, "postmortem", "C1", "111.1")
         assert rec == ReviewRecord(status="")
 
 

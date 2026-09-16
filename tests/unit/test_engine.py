@@ -584,6 +584,7 @@ class TestCodexEngineParse:
             json.dumps({"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 6}}),
         ]
         resp = engine.parse("\n".join(lines), "", 0)
+        assert resp.usage is not None
         assert resp.usage.unavailable == frozenset({"cache_creation_tokens", "cache_read_tokens"})
 
     def test_codex는_출력에_duration이_없어_elapsed가_늘_판정_불가다(self, tmp_path: Path) -> None:

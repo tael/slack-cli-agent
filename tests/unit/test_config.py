@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from slack_cli_agent.config.channel import ChannelRegistry
+from slack_cli_agent.config.channel import ChannelConfig, ChannelRegistry
 from slack_cli_agent.config.paths import StatePaths
 from slack_cli_agent.config.profile import EngineSpec, McpServerSpec, Profile
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -20,6 +20,13 @@ MINIMAL = {
     "owner_user_id": "U1",
     "troubleshoot_channel": "C1",
 }
+
+
+def channel(registry: ChannelRegistry, channel_id: str) -> ChannelConfig:
+    """get 이 None 을 내면 그 자리에서 실패시킨다."""
+    config = registry.get(channel_id)
+    assert config is not None
+    return config
 
 
 def write(path: Path, data: dict) -> None:
@@ -251,7 +258,7 @@ class TestChannelRegistry:
         write(path, {"C1": {"mode": "helpdesk"}})
         registry = ChannelRegistry(path)
         assert registry.is_registered("C1")
-        assert registry.get("C1").mode == "helpdesk"
+        assert channel(registry, "C1").mode == "helpdesk"
 
     def test_파일을_고치면_재기동_없이_반영된다(self, tmp_path: Path) -> None:
         path = tmp_path / "channels.json"
@@ -263,7 +270,7 @@ class TestChannelRegistry:
         os.utime(path, (100, 100))
 
         assert registry.is_registered("C2")
-        assert registry.get("C1").mode == "helpdesk"
+        assert channel(registry, "C1").mode == "helpdesk"
 
     def test_깨진_파일은_직전_설정을_유지한다(self, tmp_path: Path) -> None:
         path = tmp_path / "channels.json"
@@ -279,12 +286,12 @@ class TestChannelRegistry:
     def test_모르는_키는_extra_에_보존한다(self, tmp_path: Path) -> None:
         path = tmp_path / "channels.json"
         write(path, {"C1": {"mode": "default", "플러그인설정": {"a": 1}}})
-        assert ChannelRegistry(path).get("C1").extra == {"플러그인설정": {"a": 1}}
+        assert channel(ChannelRegistry(path), "C1").extra == {"플러그인설정": {"a": 1}}
 
     def test_작업_디렉터리의_물결표를_확장한다(self, tmp_path: Path) -> None:
         path = tmp_path / "channels.json"
         write(path, {"C1": {"workdir": "~/Projects/x"}})
-        assert ChannelRegistry(path).get("C1").workdir == tmp_path / "Projects" / "x"
+        assert channel(ChannelRegistry(path), "C1").workdir == tmp_path / "Projects" / "x"
 
 
 class TestRuntimeSettings집합항목:
