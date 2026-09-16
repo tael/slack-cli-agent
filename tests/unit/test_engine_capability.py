@@ -16,6 +16,7 @@ from test_engine import claude_profile, gemini_profile, profile_with, request
 
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
+from slack_cli_agent.engine.base import Engine
 from slack_cli_agent.engine.capability import (
     EngineCapabilities,
     ExecutionIsolation,
@@ -154,7 +155,7 @@ class Test엔진별_선언:
 
 class Test선언_누락을_막는다:
     @pytest.mark.parametrize("engine_cls", [ClaudeEngine, CodexEngine, GeminiEngine])
-    def test_모든_엔진이_보장을_선언한다(self, engine_cls: type) -> None:
+    def test_모든_엔진이_보장을_선언한다(self, engine_cls: type[Engine]) -> None:
         """선언이 없으면 대조가 조용히 통과해 강제가 사라진다."""
         assert isinstance(engine_cls.capabilities, EngineCapabilities), engine_cls
 
