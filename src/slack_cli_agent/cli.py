@@ -118,6 +118,9 @@ class PreflightGatedServiceCommand(ProfileAwareCommand):
         # Printed on the way through as well: if only failures were logged, a
         # single old failure line would read as the state of everything after it.
         suite.report_to(report, stdout)
+        # Flushed here because under launchd stdout is a file, so it block
+        # buffers; a service that then runs for days never writes the verdict.
+        stdout.flush()
         if not report.bootable:
             return BLOCKED_EXIT
         return self.run_service(profile, args, stdout)
