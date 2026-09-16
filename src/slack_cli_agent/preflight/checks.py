@@ -18,7 +18,9 @@ from typing import ClassVar
 from ..auth.policy import EFFORT_LEVELS, OWNER_EFFORT_MIN
 from ..config.channel import ChannelRegistry
 from ..core.errors import ConfigError
+from ..engine.capability import ToolRestriction
 from ..engine.environment import registry
+from ..engine.registry import default_registry
 from .check import CheckResult, PreflightCheck, PreflightContext
 
 _SHEBANG_ENV_RE = re.compile(r"#!\s*/usr/bin/env\s+(\S+)")
@@ -140,6 +142,43 @@ class OwnerSettingsInertCheck(PreflightCheck):
         if dead:
             return CheckResult(ok=False, detail="; ".join(dead), fatal=False)
         return CheckResult(ok=True, detail="소유자에게 적용되는 채널 설정 점검 통과")
+
+
+
+class ToolAllowlistEnforcementCheck(PreflightCheck):
+    """Warns when the configured engine cannot enforce a tool allowlist.
+
+    The caller builds the same allowed_tools list for every engine, but only
+    claude passes it to the CLI as an allowlist. Codex takes a sandbox mode --
+    a different axis, not a weaker allowlist -- and agy enforces nothing. The
+    fact belongs at configuration time: recording it per request would repeat
+    the same sentence on every request that bot ever serves (sca-dyb.11).
+
+    fatal=False -- running without an allowlist is a choice an operator may
+    have made knowingly, and blocking boot would take the bot down for it.
+    An engine this package does not ship (a plugin's) is not judged: reading
+    "not registered here" as "enforces nothing" would be a false warning.
+    """
+
+    name: ClassVar[str] = "tool_allowlist_enforcement"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        engines = default_registry()
+        weak: list[str] = []
+        specs = [("1차", ctx.profile.primary_engine)]
+        if ctx.profile.fallback_engine:
+            specs.append(("2차", ctx.profile.fallback_engine))
+        for label, spec in specs:
+            engine_class = engines.engine_class(spec.type)
+            if engine_class is None:
+                continue
+            actual = engine_class.capabilities.tool_restriction
+            if actual is ToolRestriction.EXACT_ALLOWLIST:
+                continue
+            weak.append(f"{label} {spec.type} : 도구 제한이 {actual} 라 허용목록이 그대로 적용되지 않는다")
+        if weak:
+            return CheckResult(ok=False, detail="; ".join(weak), fatal=False)
+        return CheckResult(ok=True, detail="도구 허용목록 강제 점검 통과")
 
 
 class McpCredentialCheck(PreflightCheck):
