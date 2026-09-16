@@ -100,6 +100,20 @@ def _agy_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, Any]
     return servers
 
 
+def _write_if_changed(path: Path, content: Mapping[str, Any]) -> None:
+    """Leaves the file alone when nothing would change. A learning batch is
+    read-only in operational terms, and two runs sharing a home would otherwise
+    keep rewriting the same file (sca-dyb.13).
+    """
+    rendered = json.dumps(content, ensure_ascii=False, indent=2)
+    try:
+        if path.read_text(encoding="utf-8") == rendered:
+            return
+    except OSError:
+        pass
+    path.write_text(rendered, encoding="utf-8")
+
+
 def _normalize_effort(value: str) -> str:
     if not value:
         return "medium"
@@ -305,9 +319,7 @@ class GeminiEngine(Engine):
         if isinstance(loaded, Mapping):
             existing = dict(loaded)
         existing.update(_SETTINGS_CONTENT)
-        settings_path.write_text(
-            json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8",
-        )
+        _write_if_changed(settings_path, existing)
 
     @staticmethod
     def _ensure_mcp_config_file(workdir: Path, mcp_servers: Mapping[str, McpServerSpec]) -> None:
@@ -326,6 +338,4 @@ class GeminiEngine(Engine):
         if isinstance(loaded, Mapping):
             existing = dict(loaded)
         existing["mcpServers"] = servers
-        config_path.write_text(
-            json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8",
-        )
+        _write_if_changed(config_path, existing)
