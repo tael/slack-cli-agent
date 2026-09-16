@@ -21,6 +21,8 @@ from ..core.ports import HandleOutcome, RequestHandler
 from ..jobs.heartbeat import WorkerHeartbeat
 from ..jobs.ports import JobQueue, ReclaimResult
 from ..reliability.catchup import CatchupReport, CatchupService, RetryStatus
+
+_Mark = Callable[[str, str], None]
 from ..slack.reactions import ReactionMarker
 
 log = logging.getLogger(__name__)
@@ -133,14 +135,30 @@ class Worker:
     def _finish(self, job_id: int, context: RequestContext, outcome: HandleOutcome) -> None:
         if outcome.ok:
             self._queue.complete(job_id, True, "")
-            mark = self._markers.mark_silent if outcome.silent else self._markers.mark_done
+            mark, buried_mark = self._pick_done_marks(outcome)
         else:
             self._queue.complete(job_id, False, outcome.failure)
-            mark = self._markers.mark_failed
+            mark = buried_mark = self._markers.mark_failed
 
         mark(context.channel, context.ts)
         for buried in self._skip_groups.pop(context.key, []):
-            mark(buried.channel, buried.ts)
+            buried_mark(buried.channel, buried.ts)
+
+    def _pick_done_marks(self, outcome: HandleOutcome) -> tuple[_Mark, _Mark]:
+        """The mark for the request itself and the one for messages buried
+        behind it.
+
+        Silence wins over watching: a request answered with nothing has nothing
+        to follow up on. Buried messages never get the watch mark — the watch
+        job stores only the representative's ts and clears only that one, so a
+        mark left on them stays forever and keeps catch-up picking the thread
+        back up (codex review).
+        """
+        if outcome.silent:
+            return self._markers.mark_silent, self._markers.mark_silent
+        if outcome.watching:
+            return self._markers.mark_watch, self._markers.mark_done
+        return self._markers.mark_done, self._markers.mark_done
 
     def reclaim(self) -> ReclaimResult:
         result = self._heartbeat.reclaim_stale()

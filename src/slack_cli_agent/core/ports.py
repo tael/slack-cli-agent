@@ -20,6 +20,10 @@ class HandleOutcome:
     # marker differs: silence gets a "muted" mark and counts as done, failure gets an
     # x mark and is retried.
     silent: bool = False
+    # Also not a failure. Handed off to the watch queue, so the message keeps an
+    # unfinished mark: a done mark would drop it from catch-up recovery while the
+    # follow-up is still pending. The queue row itself completes (sca-5sb).
+    watching: bool = False
 
 
 @runtime_checkable
