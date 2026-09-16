@@ -21,6 +21,25 @@ def table_names(db: Database) -> set[str]:
 
 
 class TestMigration:
+    def test_코드보다_새_스키마면_경고를_남긴다(self, tmp_path: Path, caplog) -> None:
+        """editable 설치에서 한쪽 프로세스만 재기동하면 옛 코드가 새 스키마
+        위에서 돈다. 막지는 않되 로그에는 남겨야 그 상태를 확인할 수 있다
+        (sca-4cg)."""
+        path = tmp_path / "state.db"
+        db = Database(path)
+        db.migrate()
+        db.connect().execute(f"PRAGMA user_version={SCHEMA_VERSION + 3}")
+        with caplog.at_level("WARNING"):
+            assert Database(path).migrate() == SCHEMA_VERSION + 3
+        assert [r for r in caplog.records if str(SCHEMA_VERSION + 3) in r.getMessage()]
+
+    def test_같은_판이면_경고하지_않는다(self, tmp_path: Path, caplog) -> None:
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        with caplog.at_level("WARNING"):
+            db.migrate()
+        assert not caplog.records
+
     def test_새_DB_는_최신_버전으로_생성된다(self, tmp_path: Path) -> None:
         db = Database(tmp_path / "state.db")
         assert db.migrate() == SCHEMA_VERSION
