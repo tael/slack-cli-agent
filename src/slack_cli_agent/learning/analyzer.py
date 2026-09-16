@@ -11,6 +11,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from ..engine.base import CallOrigin, EngineRequest
 from ..engine.runner import EngineInvoker
@@ -176,6 +177,18 @@ class ProposalAnalyzer:
         return body
 
 
+class ChannelAnalyzer(Protocol):
+    """What ProposalBuilder needs. ProposalAnalyzer satisfies it."""
+
+    def analyze_channel(
+        self,
+        day: str,
+        channel_name: str,
+        archive_text: str,
+        reactions: Sequence[Mapping[str, object]],
+    ) -> ChannelAnalysis: ...
+
+
 class ProposalBuilder:
     """Runs one analysis round over the channels it is given.
 
@@ -184,7 +197,7 @@ class ProposalBuilder:
     note left it unable to tell a failed day from an uneventful one (sca-b4o).
     """
 
-    def __init__(self, analyzer: ProposalAnalyzer) -> None:
+    def __init__(self, analyzer: ChannelAnalyzer) -> None:
         self._analyzer = analyzer
 
     def build(
