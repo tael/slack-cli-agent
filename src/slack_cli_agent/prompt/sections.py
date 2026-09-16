@@ -34,6 +34,9 @@ class CompositionContext:
     asker_name: str = ""
     asker_id: str = ""
     unaddressed: bool = False
+    # The watch check turn only looks; it must not get the registration
+    # guidance, which tells the engine how to start new work (sca-ejy).
+    watch_check: bool = False
     postmortem: bool = False
     debug_trace: bool = False
     format_review: bool = False
@@ -273,7 +276,8 @@ class WatchSection(PromptSection):
         return not ctx.aside
 
     def render(self, ctx: CompositionContext) -> str:
-        return ctx._library_or_raise().text("WATCH_NOTE")
+        name = "WATCH_CHECK_NOTE" if ctx.watch_check else "WATCH_NOTE"
+        return ctx._library_or_raise().text(name)
 
 
 class PresentPeopleSection(PromptSection):

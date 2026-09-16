@@ -65,6 +65,7 @@ def prompts_dir(tmp_path: Path) -> Path:
         "full_authority_note": "최고권한 안내",
         "mechanism_note": "구조공개 안내",
         "watch_note": "지켜보기 안내",
+        "watch_check_note": "확인만 하는 안내",
         "chat_guide_normal": "보통 채널 안내",
     }.items():
         write(d / f"{name}.md", body)
@@ -360,9 +361,37 @@ class TestPromptLibraryDefaultsFallback:
             "FULL_AUTHORITY_NOTE",
             "MECHANISM_NOTE",
             "WATCH_NOTE",
+            "WATCH_CHECK_NOTE",
             "CHAT_GUIDE_ACTIVE",
             "CHAT_GUIDE_NORMAL",
             "CHAT_GUIDE_QUIET",
         }
         for name in required:
             assert library.text(name).strip(), f"{name} 기본 프롬프트가 비어 있다"
+
+
+class Test감시_확인_턴의_안내:
+    """확인 턴은 조회만 해야 한다. 일반 감시 안내는 새 감시를 등록하는
+    방법이라, 그것을 함께 주면 확인 턴이 새 작업을 띄우도록 유도한다
+    (sca-ejy, 코덱스 검토).
+    """
+
+    def _조립(self, library: PromptLibrary, knowledge: KnowledgeLoader, *, watch_check: bool) -> str:
+        composer = SystemPromptComposer(library, knowledge, base_sections())
+        return composer.compose(
+            CompositionContext(principal=OWNER, watch_check=watch_check)
+        )
+
+    def test_일반_턴은_등록_안내를_받는다(
+        self, library: PromptLibrary, knowledge: KnowledgeLoader
+    ) -> None:
+        본문 = self._조립(library, knowledge, watch_check=False)
+        assert "지켜보기 안내" in 본문
+        assert "확인만 하는 안내" not in 본문
+
+    def test_확인_턴은_확인_안내만_받는다(
+        self, library: PromptLibrary, knowledge: KnowledgeLoader
+    ) -> None:
+        본문 = self._조립(library, knowledge, watch_check=True)
+        assert "확인만 하는 안내" in 본문
+        assert "지켜보기 안내" not in 본문
