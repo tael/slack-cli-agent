@@ -640,6 +640,56 @@ class TestCodexEngineTurnBehavior:
 # elapsed_source·unavailable 판정만 본다.
 
 
+class TestGemini종료코드:
+    """agy 만 종료코드를 실패 판정에 안 썼다(sca-e9a).
+
+    2026-09-17 실측 — agy --output-format json 은 실패 시 exit 1 과
+    status=ERROR 를 함께 낸다(없는 모델 지정). 성공은 exit 0 과 SUCCESS 다.
+    원본 주석의 '권한 거부도 exit 0' 경로는 exit 0 이므로 status 판정이
+    그대로 남는다. 종료코드는 조건을 더하는 것이지 status 를 대체하지 않는다.
+    """
+
+    def test_종료코드가_0이_아니면_SUCCESS_라도_실패다(self, tmp_path: Path) -> None:
+        engine = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        payload = {
+            "conversation_id": "c1", "status": "SUCCESS", "response": "답",
+            "duration_seconds": 2.0, "num_turns": 1, "usage": {},
+        }
+        resp = engine.parse(json.dumps(payload), "", 1)
+        assert resp.ok is False
+        assert resp.failure_reason == "nonzero_exit"
+        assert resp.failure_detail.exit_code == 1
+
+    def test_실패로_판정해도_세션과_사용량은_보존한다(self, tmp_path: Path) -> None:
+        """이어가기와 사용량 집계가 그 값을 쓴다. 버리면 다음 턴이 새 대화가 된다."""
+        engine = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        payload = {
+            "conversation_id": "c1", "status": "SUCCESS", "response": "답",
+            "duration_seconds": 2.0, "num_turns": 3,
+            "usage": {"input_tokens": 5, "output_tokens": 6},
+        }
+        resp = engine.parse(json.dumps(payload), "", 2)
+        assert resp.session_id == "c1"
+        assert resp.turns == 3
+        assert resp.usage is not None and resp.usage.input_tokens == 5
+
+    def test_status_가_ERROR_면_그_사유를_유지한다(self, tmp_path: Path) -> None:
+        """더 구체적인 사유를 종료코드로 덮으면 원인 구분이 사라진다."""
+        engine = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        payload = {"conversation_id": "", "status": "ERROR", "response": "", "error": "모델 없음"}
+        resp = engine.parse(json.dumps(payload), "", 1)
+        assert resp.failure_reason == "is_error"
+        assert resp.body == "모델 없음"
+
+    def test_종료코드가_0이면_지금과_같다(self, tmp_path: Path) -> None:
+        engine = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        payload = {
+            "conversation_id": "c1", "status": "SUCCESS", "response": "답",
+            "duration_seconds": 2.0, "num_turns": 1, "usage": {},
+        }
+        assert engine.parse(json.dumps(payload), "", 0).ok is True
+
+
 class TestGeminiEngineUsageAndElapsed:
     def test_agy_캐시_읽기_키를_옮기고_생성_키는_판정_불가다(self, tmp_path: Path) -> None:
         profile = gemini_profile(tmp_path)
