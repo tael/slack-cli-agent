@@ -204,3 +204,34 @@ class Test실제_점검으로도_막는다:
         )
         assert code == BLOCKED_EXIT
         assert "workdir" in out.getvalue()
+
+
+class Test결과가_로그에_실제로_닿는다:
+    """launchd 아래에서 stdout 은 파일이라 블록 버퍼링이다. 프로세스가 계속
+    살아 있으면 버퍼가 안 비워져, 통과한 경우 점검 결과가 로그에 영영 안
+    남는다. 2026-09-17 에 실제로 out.log 가 0바이트였다.
+    """
+
+    class 기록하는출력(io.StringIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.flush_횟수 = 0
+
+        def flush(self) -> None:
+            self.flush_횟수 += 1
+            super().flush()
+
+    def _돌린다(self, tmp_path: Path, *, bootable: bool) -> 기록하는출력:
+        out = self.기록하는출력()
+        SlackCliAgent([기록하는명령(bootable=bootable)]).run(
+            ["기록", "--profile", "example", "--profile-dir", str(_프로필(tmp_path))], stdout=out
+        )
+        return out
+
+    def test_통과해도_비운다(self, tmp_path: Path) -> None:
+        assert self._돌린다(tmp_path, bootable=True).flush_횟수 >= 1
+
+    def test_막을_때도_비운다(self, tmp_path: Path) -> None:
+        """차단은 곧 프로세스 종료라 대개 비워지지만, 종료 경로가 바뀌어도
+        사유가 남아야 한다."""
+        assert self._돌린다(tmp_path, bootable=False).flush_횟수 >= 1
