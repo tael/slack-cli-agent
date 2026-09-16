@@ -81,3 +81,31 @@ class TestApplicationSnapshotSource:
         원본에 있던 항목이라 계약에는 남기고 0 으로 둔다. 값을 지어내지 않는다.
         """
         assert make_source().catchup_pending_count() == 0
+
+
+class Test소켓이_없는_프로세스:
+    """스냅샷은 워커가 쓰는데 소켓은 접수기에만 있다(sca-qi5.3).
+
+    워커의 로그 감시자는 소켓 로그를 한 줄도 못 본다. 실측 2026-09-17 — 접수기
+    로그에는 세션 수립이 51회 있는데 워커가 쓴 state.json 의 재연결 누적은 0 이었다.
+    """
+
+    def test_감시자가_없으면_오류_이력이_None_이다(self) -> None:
+        source = make_source(socket_watch=None)
+        assert source.socket_error_timestamps() is None
+
+    def test_재연결은_원장에서_읽는다(self) -> None:
+        class Fake원장:
+            def reconnect_timestamps(self) -> tuple[float, ...]:
+                return (10.0, 20.0)
+
+        source = make_source(socket_watch=None, connection_epochs=Fake원장())
+        assert source.socket_reconnect_timestamps() == (10.0, 20.0)
+
+    def test_원장_조회가_실패해도_스냅샷은_나간다(self) -> None:
+        class Raising원장:
+            def reconnect_timestamps(self) -> tuple[float, ...]:
+                raise RuntimeError("조회 실패")
+
+        source = make_source(socket_watch=None, connection_epochs=Raising원장())
+        assert source.socket_reconnect_timestamps() == ()

@@ -306,7 +306,8 @@ function statusBand(d){
     note = "pid " + s.pid + " · 스냅샷 " + Math.round(s.age_sec) + "초 전";
   }
   const q = s.available ? (s.queued_total || 0) : null;
-  const sockErr = s.available ? (s.socket_errors_3min || 0) : null;
+  /* null 은 미계측이다. 0 으로 바꾸면 "오류 없음" 과 구분이 안 된다(sca-qi5.3) */
+  const sockErr = s.available && s.socket_errors_3min != null ? s.socket_errors_3min : null;
   const rel = d.reliability || {};
   const resp = d.responsiveness || {};
   const today = (d.channels || []).reduce((a,c) => a + (c.requests_today||0), 0);
@@ -319,7 +320,7 @@ function statusBand(d){
            s.available ? `대기 스레드 ${s.queued_threads}` : "",
            q > 0 ? "warn" : "")}
     ${tile("최근 3분 소켓 오류", sockErr === null ? nil : sockErr,
-           s.available ? `재연결 누적 ${s.socket_reconnects_total}` : "",
+           s.available ? `재연결 누적 ${s.socket_reconnects_total}` + (sockErr === null ? " · 오류는 접수기 프로세스에만 기록된다" : "") : "",
            sockErr > 0 ? "bad" : "")}
     ${tile("마지막 응답", ago(d.last_answer_kst), esc(d.last_answer_kst || ""))}
     ${tile("오늘 요청", today, `최근 ${d.window_days}일 ${rel.total || 0}건`)}

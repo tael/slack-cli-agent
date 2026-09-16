@@ -24,7 +24,10 @@ class SnapshotSource(Protocol):
 
     def queued_threads(self) -> Mapping[str, int]: ...
 
-    def socket_error_timestamps(self) -> Sequence[float]: ...
+    def socket_error_timestamps(self) -> Sequence[float] | None:
+        """None means this process cannot see the socket at all, which is not
+        the same as having seen no errors (sca-qi5.3)."""
+        ...
 
     def socket_reconnect_timestamps(self) -> Sequence[float]: ...
 
@@ -54,7 +57,8 @@ class StateSnapshotBuilder:
 
     def build(self) -> dict[str, Any]:
         now = self._now()
-        errors = list(self._source.socket_error_timestamps())
+        raw_errors = self._source.socket_error_timestamps()
+        errors = None if raw_errors is None else list(raw_errors)
         reconnects = list(self._source.socket_reconnect_timestamps())
         # Drop threads with a zero count -- nothing is actually waiting there.
         queued = {ts: count for ts, count in self._source.queued_threads().items() if count}
@@ -69,8 +73,11 @@ class StateSnapshotBuilder:
             "queued_threads": len(queued),
             "queued_total": sum(queued.values()),
             "queued": queued,
-            "socket_errors_3min": sum(1 for x in errors if now - x <= RECENT_WINDOW_SEC),
-            "socket_errors_total": len(errors),
+            "socket_errors_3min": (
+                None if errors is None
+                else sum(1 for x in errors if now - x <= RECENT_WINDOW_SEC)
+            ),
+            "socket_errors_total": None if errors is None else len(errors),
             "socket_reconnects_3min": sum(1 for x in reconnects if now - x <= RECENT_WINDOW_SEC),
             "socket_reconnects_total": len(reconnects),
             "catchup_pending": self._source.catchup_pending_count(),
