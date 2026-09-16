@@ -19,6 +19,7 @@ from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.errors import ConfigError, HistoryUnavailable, SlackError
+from slack_cli_agent.guard.watch import WATCH_MARK_EMOJI
 from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.render.blocks import BlockBuilder
 from slack_cli_agent.render.markdown import MarkdownConverter
@@ -35,6 +36,7 @@ from slack_cli_agent.slack.reactions import (
     FORMAT_REVIEW_EMOJI,
     POSTMORTEM_EMOJI,
     SILENT_MARK_EMOJI,
+    STALE_ON_SETTLE,
     UNFINISHED_EMOJI,
     ReactionMarker,
 )
@@ -209,7 +211,7 @@ class TestReactionMarker:
         marker = ReactionMarker(client)
         marker.mark_done("C1", "1.0")
         removed = {name for _, _, name in client.reaction_remove_calls}
-        assert removed == set(UNFINISHED_EMOJI)
+        assert removed == set(STALE_ON_SETTLE)
         assert client.reaction_add_calls == [("C1", "1.0", "white_check_mark")]
 
     def test_mark_silent은_눈을_떼고_zipper를_단다(self) -> None:
@@ -223,7 +225,7 @@ class TestReactionMarker:
         marker = ReactionMarker(client)
         marker.mark_resolved_like("C1", "1.0", "white_check_mark")
         removed = {name for _, _, name in client.reaction_remove_calls}
-        assert removed == set(UNFINISHED_EMOJI)
+        assert removed == set(STALE_ON_SETTLE)
         assert client.reaction_add_calls == [("C1", "1.0", "white_check_mark")]
 
     def test_already_handled은_완료표식이_있을때만_참이다(self) -> None:
@@ -986,4 +988,98 @@ class Test완료_표식은_미완료_표식을_전부_지운다:
 
     def test_mark_failed는_자기가_달_표식을_지우지_않는다(self) -> None:
         """x 는 미완료 표식이면서 실패 표식이다. 지웠다 다시 달지 않는다."""
-        assert self._removed("mark_failed") == {"eyes", "hourglass"}
+        assert self._removed("mark_failed") == {"eyes", "hourglass", WATCH_MARK_EMOJI}
+
+
+class Test감시표식도_정리_대상이다:
+    """감시 표식은 미완료 표식이다. 최종 표식을 달 때 함께 떼지 않으면 mag 와
+    x 가 한 메시지에 같이 남는다. 떼는 자리를 한 곳으로 모아, 호출부가 따로
+    remove 를 부르다 조용히 실패하는 경로를 없앤다 (sca-3p6, 코덱스 검토).
+    """
+
+    def test_완료표식이_감시표식을_뗀다(self) -> None:
+        client = FakeWebClient()
+        ReactionMarker(client).mark_done("C1", "1.0")
+        removed = {name for _, _, name in client.reaction_remove_calls}
+        assert WATCH_MARK_EMOJI in removed
+
+    def test_실패표식이_감시표식을_뗀다(self) -> None:
+        client = FakeWebClient()
+        ReactionMarker(client).mark_failed("C1", "1.0")
+        removed = {name for _, _, name in client.reaction_remove_calls}
+        assert WATCH_MARK_EMOJI in removed
+
+    def test_감시표식을_달_때는_자기를_안_뗀다(self) -> None:
+        """떼고 다시 다는 것은 슬랙 호출만 한 번 더 쓴다."""
+        client = FakeWebClient()
+        ReactionMarker(client).mark_watch("C1", "1.0")
+        removed = {name for _, _, name in client.reaction_remove_calls}
+        assert WATCH_MARK_EMOJI not in removed
+        assert client.reaction_add_calls == [("C1", "1.0", WATCH_MARK_EMOJI)]
+
+    def test_미완료_판정_집합은_원본_그대로다(self) -> None:
+        """복구 스캔이 보는 집합과 최종 표식이 지우는 집합은 다르다. 전자를
+        넓히면 감시 위임 건이 복구 대상으로 다시 실행된다."""
+        assert WATCH_MARK_EMOJI not in UNFINISHED_EMOJI
+        assert STALE_ON_SETTLE == UNFINISHED_EMOJI | {WATCH_MARK_EMOJI}
+
+
+class Test감시표식_제거_실패는_운영_로그에_남는다:
+    """실제 ReactionMarker.remove 는 슬랙 예외를 삼킨다. 감시 표식 제거만
+    실패하면 mag 와 최종 표식이 함께 남는데, 로그가 debug 라 운영 수준(INFO)
+    에서는 아무 흔적이 없다. 실패를 못 보면 재시도 설계도 못 한다 (sca-3p6).
+
+    슬랙은 원래 그 이모지가 없을 때도 no_reaction 오류를 낸다. 그것은 지우려던
+    상태에 이미 도달한 것이므로 실패로 세지 않는다.
+    """
+
+    class 일부실패클라이언트:
+        def __init__(self, 실패이름: str, 사유: str = "ratelimited") -> None:
+            self.실패이름 = 실패이름
+            self.사유 = 사유
+            self.removed: list[str] = []
+            self.added: list[str] = []
+
+        def reactions_remove(self, *, channel: str, timestamp: str, name: str) -> None:
+            if name == self.실패이름:
+                raise RuntimeError(self.사유)
+            self.removed.append(name)
+
+        def reactions_add(self, *, channel: str, timestamp: str, name: str) -> None:
+            self.added.append(name)
+
+    def test_감시표식만_제거_실패하면_경고를_남긴다(self, caplog) -> None:
+        client = self.일부실패클라이언트(WATCH_MARK_EMOJI)
+        with caplog.at_level(logging.WARNING, logger="slack_cli_agent.slack.reactions"):
+            ReactionMarker(client).mark_done("C1", "1.0")
+
+        assert client.added == ["white_check_mark"]
+        경고 = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert 경고, "감시 표식이 남았는데 운영 로그에 아무 흔적이 없다"
+        assert any(WATCH_MARK_EMOJI in r.getMessage() for r in 경고)
+
+    def test_없어서_난_오류는_경고가_아니다(self, caplog) -> None:
+        """no_reaction 은 그 이모지가 애초에 없었다는 뜻이다. 목표는 달성됐다."""
+        client = self.일부실패클라이언트(WATCH_MARK_EMOJI, 사유="no_reaction")
+        with caplog.at_level(logging.WARNING, logger="slack_cli_agent.slack.reactions"):
+            ReactionMarker(client).mark_done("C1", "1.0")
+
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_다_지워지면_경고가_없다(self, caplog) -> None:
+        client = self.일부실패클라이언트("없는이름")
+        with caplog.at_level(logging.WARNING, logger="slack_cli_agent.slack.reactions"):
+            ReactionMarker(client).mark_failed("C1", "1.0")
+
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_remove가_제거_여부를_돌려준다(self) -> None:
+        """호출부가 실패를 알 방법이 없으면 재시도도 경고도 못 만든다."""
+        client = self.일부실패클라이언트(WATCH_MARK_EMOJI)
+        marker = ReactionMarker(client)
+        assert marker.remove("C1", "1.0", "eyes") is True
+        assert marker.remove("C1", "1.0", WATCH_MARK_EMOJI) is False
+
+    def test_no_reaction이면_제거된_것으로_본다(self) -> None:
+        client = self.일부실패클라이언트(WATCH_MARK_EMOJI, 사유="no_reaction")
+        assert ReactionMarker(client).remove("C1", "1.0", WATCH_MARK_EMOJI) is True

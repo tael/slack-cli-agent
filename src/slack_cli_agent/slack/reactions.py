@@ -30,6 +30,13 @@ log = logging.getLogger(__name__)
 SILENT_MARK_EMOJI = "zipper_mouth_face"
 DONE_EMOJI = frozenset({"white_check_mark", SILENT_MARK_EMOJI})
 UNFINISHED_EMOJI = frozenset({"eyes", "hourglass", "x"})
+"""Same value as the original bot.py:618; the parity test pins it. Recovery
+does not read this — catchup.already_handled goes by DONE_EMOJI."""
+
+STALE_ON_SETTLE = UNFINISHED_EMOJI | {WATCH_MARK_EMOJI}
+"""What a final mark clears. The watch mark is unfinished too, so leaving it
+on puts mag and x on the same message. Kept separate from the original
+constant so its value stays visible and the extension is named (sca-3p6)."""
 
 # A human reacting with this emoji triggers a postmortem review of that reply.
 POSTMORTEM_EMOJI = "dango"
@@ -47,11 +54,19 @@ class ReactionMarker:
         except Exception as exc:  # noqa: BLE001 - reactions are cosmetic; don't propagate per the module docstring
             log.debug("이모지 추가 실패 : %s %s:%s, %s", name, channel, ts, exc)
 
-    def remove(self, channel: str, ts: str, name: str) -> None:
+    def remove(self, channel: str, ts: str, name: str) -> bool:
+        """True when the emoji is known to be off the message.
+
+        Slack answers no_reaction when it was never there, which is the state
+        the caller wanted; anything else leaves it on and the caller has to be
+        able to tell (sca-3p6).
+        """
         try:
             self._client.reactions_remove(channel=channel, timestamp=ts, name=name)
         except Exception as exc:  # noqa: BLE001 - reactions are cosmetic; don't propagate per the module docstring
             log.debug("이모지 제거 실패 : %s %s:%s, %s", name, channel, ts, exc)
+            return "no_reaction" in str(exc)
+        return True
 
     def mark_processing(self, channel: str, ts: str) -> None:
         self.add(channel, ts, "eyes")
@@ -78,10 +93,20 @@ class ReactionMarker:
         applied itself — x doubles as an unfinished mark, and clearing
         then re-adding it would cost an extra Slack call for nothing.
         """
-        for stale in UNFINISHED_EMOJI:
-            if stale != mark:
-                self.remove(channel, ts, stale)
+        남은 = [
+            stale
+            for stale in sorted(STALE_ON_SETTLE)
+            if stale != mark and not self.remove(channel, ts, stale)
+        ]
         self.add(channel, ts, mark)
+        if 남은:
+            # The final mark goes on either way — a message with no mark at all
+            # reads as untouched. But a leftover watch mark says the request is
+            # still being followed up on, so it can't stay at debug level.
+            log.warning(
+                "미완료 표식이 남은 채 최종 표식을 달았다 : %s %s:%s, 남은 표식 %s",
+                mark, channel, ts, ", ".join(남은),
+            )
 
     def mark_done(self, channel: str, ts: str) -> None:
         self._settle(channel, ts, "white_check_mark")
