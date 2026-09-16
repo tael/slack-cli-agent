@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TextIO
 
 import pytest
-from preflight_support import 고정Suite
+from preflight_support import 고정_suite
 
 from slack_cli_agent.cli import (
     BLOCKED_EXIT,
@@ -36,7 +36,7 @@ class 기록하는명령(PreflightGatedServiceCommand):
     name = "기록"
 
     def __init__(self, *, bootable: bool, 반환: int = 0) -> None:
-        super().__init__(preflight_suite_factory=lambda: 고정Suite(bootable=bootable))
+        super().__init__(preflight_suite_factory=lambda: 고정_suite(bootable=bootable))
         self.호출 = 0
         self._반환 = 반환
 
@@ -128,7 +128,7 @@ class Test상시_기동_명령이_게이트를_거친다:
         클래스 = WorkerCommand if 이름 == "worker" else IngressCommand
         명령 = 클래스(
             application_factory=factory,
-            preflight_suite_factory=lambda: 고정Suite(bootable=False),
+            preflight_suite_factory=lambda: 고정_suite(bootable=False),
         )
         out = io.StringIO()
         code = SlackCliAgent([명령]).run(
@@ -159,7 +159,7 @@ class Test점검과_토큰이_같이_없으면:
     def test_설정_오류를_먼저_낸다(self, tmp_path: Path) -> None:
         명령 = IngressCommand(
             application_factory=lambda profile, resolver: pytest.fail("기동이 막혀야 한다"),
-            preflight_suite_factory=lambda: 고정Suite(bootable=False),
+            preflight_suite_factory=lambda: 고정_suite(bootable=False),
         )
         out = io.StringIO()
         code = SlackCliAgent([명령]).run(
@@ -181,7 +181,7 @@ class Test점검과_토큰이_같이_없으면:
         재기동이 멈추고 사유가 파일로 남는다 - tools/unblock.sh 로 지운다."""
         명령 = IngressCommand(
             application_factory=lambda profile, resolver: pytest.fail("토큰 없이 기동했다"),
-            preflight_suite_factory=lambda: 고정Suite(bootable=True),
+            preflight_suite_factory=lambda: 고정_suite(bootable=True),
         )
         out = io.StringIO()
         code = SlackCliAgent([명령]).run(
@@ -275,7 +275,7 @@ class Test설정_오류는_차단_코드로_끝낸다:
             name = "슬랙막힘"
 
             def __init__(self) -> None:
-                super().__init__(preflight_suite_factory=lambda: 고정Suite(bootable=True))
+                super().__init__(preflight_suite_factory=lambda: 고정_suite(bootable=True))
 
             def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
                 pass
@@ -334,7 +334,7 @@ class Test자격은_게이트에서_확인한다:
         불렀나: list[str] = []
         명령 = WorkerCommand(
             application_factory=lambda profile, resolver: 불렀나.append("조립"),
-            preflight_suite_factory=lambda: 고정Suite(bootable=True),
+            preflight_suite_factory=lambda: 고정_suite(bootable=True),
             signal_register=lambda *args: None,
         )
         out = io.StringIO()
@@ -354,7 +354,7 @@ class Test자격은_게이트에서_확인한다:
         불렀나: list[str] = []
         명령 = IngressCommand(
             application_factory=lambda profile, resolver: 불렀나.append("조립"),
-            preflight_suite_factory=lambda: 고정Suite(bootable=True),
+            preflight_suite_factory=lambda: 고정_suite(bootable=True),
         )
         out = io.StringIO()
         code = SlackCliAgent([명령]).run(
@@ -377,7 +377,7 @@ class Test자격은_게이트에서_확인한다:
 
         명령 = WorkerCommand(
             application_factory=factory,
-            preflight_suite_factory=lambda: 고정Suite(bootable=True),
+            preflight_suite_factory=lambda: 고정_suite(bootable=True),
             signal_register=lambda *args: None,
         )
         with pytest.raises(KeyboardInterrupt):

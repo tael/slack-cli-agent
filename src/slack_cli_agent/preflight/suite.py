@@ -39,8 +39,17 @@ class PreflightSuite:
         self,
         required_prompts: Sequence[str] | None = None,
         extra_workdirs: Sequence[str] | None = None,
+        *,
+        checks: Sequence[PreflightCheck] | None = None,
     ) -> None:
-        self._checks: tuple[PreflightCheck, ...] = (
+        # Injection point for tests that aren't about the gate: they swap the
+        # check list and keep the real verdict and formatting. Without it a
+        # double has to overwrite a private name, which breaks silently when
+        # the storage here changes (sca-mb7).
+        if checks is not None:
+            self._checks: tuple[PreflightCheck, ...] = tuple(checks)
+            return
+        self._checks = (
             WorkdirCheck(extra_dirs=list(extra_workdirs or ())),
             EngineBinaryCheck(),
             EngineHomeCredentialCheck(),

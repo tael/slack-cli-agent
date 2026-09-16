@@ -27,15 +27,13 @@ class 고정점검(PreflightCheck):
         return CheckResult(ok=self._ok, detail="시험용 고정 결과", fatal=self._fatal)
 
 
-class 고정Suite(PreflightSuite):
-    def __init__(self, *, bootable: bool = True) -> None:
-        super().__init__()
-        self._checks = (고정점검(ok=bootable),)
+def 고정_suite(*, bootable: bool) -> PreflightSuite:
+    return PreflightSuite(checks=(고정점검(ok=bootable),))
 
 
 def 통과하는_suite() -> PreflightSuite:
-    return 고정Suite(bootable=True)
+    return 고정_suite(bootable=True)
 
 
 def 막는_suite() -> PreflightSuite:
-    return 고정Suite(bootable=False)
+    return 고정_suite(bootable=False)
