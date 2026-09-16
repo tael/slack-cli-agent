@@ -393,11 +393,18 @@ class TestReviewReactions:
         보고기 = app.stale_review_reporter()
         assert 보고기._ledger is app.review_tasks()["dango"]._ledger
 
-    def test_모르는_이모지는_아무_점검도_부르지_않는다(self, app: Application) -> None:
+    def test_모르는_이모지는_아무_점검도_부르지_않는다(
+        self, app: Application, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """부작용의 부재로만 보면 검출력이 0이다. 호출 자리를 세운다."""
+        불린것: list[str] = []
+        for 이모지, task in app.review_tasks().items():
+            monkeypatch.setattr(task, "run", lambda _t, 이름=이모지: 불린것.append(이름))
         app.on_reaction("thumbsup", "C_ONE", "1.0", "U_OWNER")
+        assert 불린것 == []
 
     def test_점검이_예외를_내도_밖으로_내보내지_않는다(
-        self, app: Application, monkeypatch: pytest.MonkeyPatch
+        self, app: Application, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """리액션 하나의 실패가 이후 이벤트 처리를 막으면 안 된다."""
 
@@ -405,7 +412,11 @@ class TestReviewReactions:
             raise RuntimeError("점검 실패")
 
         monkeypatch.setattr(app.review_tasks()["brain"], "run", boom)
-        app.on_reaction("brain", "C_ONE", "1.0", "U_OWNER")
+        with caplog.at_level(logging.ERROR):
+            app.on_reaction("brain", "C_ONE", "1.0", "U_OWNER")
+
+        # 삼킨 실패는 아예 안 일어난 것과 구분이 안 된다.
+        assert any("점검 실패" in r.getMessage() for r in caplog.records)
 
 
 class TestConnectionWatch:
@@ -439,7 +450,15 @@ class TestConnectionWatch:
         assert watch not in logging.getLogger("slack_sdk.socket_mode").handlers
 
     def test_감시를_안_만들었으면_close_가_아무것도_안_한다(self, app: Application) -> None:
-        app.close()
+        """예외만 안 나면 통과하는 시험은 close 가 남의 핸들러를 떼도 통과한다."""
+        logger = logging.getLogger("slack_sdk.socket_mode")
+        남의것 = logging.NullHandler()
+        logger.addHandler(남의것)
+        try:
+            app.close()
+            assert 남의것 in logger.handlers
+        finally:
+            logger.removeHandler(남의것)
 
 
 class TestHealth:

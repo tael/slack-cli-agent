@@ -169,13 +169,17 @@ class Test기본값:
 
     def test_readable_dirs와allowed_tools기본값은빈튜플이다(self) -> None:
         profile = make_profile()
+        invoker = FakeInvoker(_response())
         caller = ReviewEngineCaller(
-            invoker=FakeInvoker(_response()),
+            invoker=invoker,
             profile=profile,
             workdir=Path("/code"),
             system_prompt="프롬프트",
         )
         caller.run("프롬프트", "세션1", False)
+        request = invoker.calls[0]
+        assert request.readable_dirs == ()
+        assert request.allowed_tools == ()
 
 
 class Test실패응답:

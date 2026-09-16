@@ -168,7 +168,7 @@ class Test저장소정본:
 
     def test_정본_파일이_읽히는_JSON_이다(self) -> None:
         for p in [*_정본_경로들(), SLACK_APPS / "_template.json"]:
-            json.loads(p.read_text(encoding="utf-8"))
+            assert isinstance(json.loads(p.read_text(encoding="utf-8")), dict), p
 
 
 class Test템플릿렌더링:
