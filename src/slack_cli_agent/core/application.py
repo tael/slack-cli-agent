@@ -826,6 +826,9 @@ class Application:
             channel_slug=config.name if config else job.channel,
             is_rich=bool(config and config.rich),
             chat_level=config.chat if config else "normal",
+            # This turn only looks: the registration guidance would tell it how
+            # to start new work, which watch_check_prompt forbids (sca-ejy).
+            watch_check=True,
         ))
         return self.engine_invoker.invoke(EngineRequest(
             prompt=prompt,

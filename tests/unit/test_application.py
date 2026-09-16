@@ -935,7 +935,13 @@ class Test감시확인연결:
 
 
 class _프롬프트조립대역:
+    """받은 맥락을 남긴다. 무엇을 넘겼는지 보려면 결과 문자열만으로는 안 된다."""
+
+    def __init__(self) -> None:
+        self.받은맥락: list[Any] = []
+
     def compose(self, ctx: Any) -> str:
+        self.받은맥락.append(ctx)
         return "시스템 프롬프트"
 
 
@@ -1533,3 +1539,38 @@ class Test소유자_DM_경로:
         app._post_owner_dm("두 번째")
 
         assert len([name for name, _ in client.calls if name == "conversations_open"]) == 1
+
+
+class Test감시확인턴의_조립맥락:
+    """확인 턴은 조회만 한다. 일반 감시 안내를 함께 주면 그 턴이 새 작업을
+    띄우도록 유도한다 (sca-ejy).
+    """
+
+    def test_watch_check_를_참으로_넘긴다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.reliability.watchjobs import WatchJob
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        조립 = _프롬프트조립대역()
+        app._composer = lambda: 조립  # type: ignore[method-assign]
+        monkeypatch.setattr(EngineRunner, "run", lambda self, engine, request: None)
+
+        app._watch_run_check(WatchJob(
+            id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
+            created_at=0.0, last_run=None, trust=TrustLevel.OWNER,
+        ))
+
+        assert 조립.받은맥락 and 조립.받은맥락[0].watch_check is True
+
+    def test_평상시_경로는_거짓이다(self, tmp_path: Path) -> None:
+        """기본값이 참이면 모든 턴이 확인 턴 안내를 받아 아무도 감시를 등록하지
+        못한다. 확인 턴 쪽만 보면 그 뒤집힘을 못 잡는다."""
+        from slack_cli_agent.prompt.sections import CompositionContext
+
+        assert CompositionContext(principal=_소유자()).watch_check is False
+
+
+def _소유자() -> Any:
+    from slack_cli_agent.auth.principal import Principal, TrustLevel
+
+    return Principal(user_id="U1", channel="D1", trust=TrustLevel.OWNER, is_direct_message=True)
