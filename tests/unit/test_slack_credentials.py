@@ -21,6 +21,7 @@ import types
 from pathlib import Path
 
 import pytest
+from preflight_support import 통과하는_suite
 
 from slack_cli_agent.cli import IngressCommand, InitCommand, SlackCliAgent
 from slack_cli_agent.config.profile import Profile, validate_profile_name
@@ -44,7 +45,9 @@ def _자격파일(path: Path, **tokens: str) -> Path:
     return path
 
 
-def _해석기(tmp_path: Path, env: dict[str, str] | None = None, file: Path | None = None) -> CredentialResolver:
+def _해석기(
+    tmp_path: Path, env: dict[str, str] | None = None, file: Path | None = None
+) -> CredentialResolver:
     return CredentialResolver(
         default_path=file or tmp_path / "credentials.json",
         configured_path=None,
@@ -295,7 +298,18 @@ class Test토큰_형태_탐지:
             )
 
     def test_알려진_접두사를_모두_본다(self) -> None:
-        for 접두사 in ("xoxb", "xoxp", "xoxa", "xoxr", "xoxs", "xoxe", "xoxc", "xoxd", "xapp", "xwfp"):
+        for 접두사 in (
+            "xoxb",
+            "xoxp",
+            "xoxa",
+            "xoxr",
+            "xoxs",
+            "xoxe",
+            "xoxc",
+            "xoxd",
+            "xapp",
+            "xwfp",
+        ):
             assert contains_secret(f"{접두사}-비밀값"), 접두사
 
     def test_비슷한_문자열은_안_건드린다(self) -> None:
@@ -313,7 +327,12 @@ class Testinit_명령:
         parser = argparse.ArgumentParser()
         command = InitCommand()
         command.add_arguments(parser)
-        원시 = ["--name", 인자.get("name", "봇"), "--profile-dir", 인자.get("profile_dir", str(tmp_path))]
+        원시 = [
+            "--name",
+            인자.get("name", "봇"),
+            "--profile-dir",
+            인자.get("profile_dir", str(tmp_path)),
+        ]
         if "state_dir" in 인자:
             원시 += ["--state-dir", 인자["state_dir"]]
         출력 = io.StringIO()
@@ -633,7 +652,9 @@ class Test진입점_조립:
                 받은["token"] = token
 
         app = Application.from_profile(
-            self._프로필(tmp_path), client=가짜클라이언트(), env={},
+            self._프로필(tmp_path),
+            client=가짜클라이언트(),
+            env={},
         )
         try:
             assert app.bot_token() == "파일봇"
@@ -689,7 +710,8 @@ class Test명령_안내:
             return 가짜앱()
 
         parser = argparse.ArgumentParser()
-        command = IngressCommand(공장)
+        # 게이트는 이 시험의 대상이 아니다. 자격 해석기 전달만 본다.
+        command = IngressCommand(공장, preflight_suite_factory=통과하는_suite)
         command.add_arguments(parser)
         프로필_자리 = tmp_path / "프로필자리"
         프로필_자리.mkdir()
@@ -778,7 +800,10 @@ class Test명령_안내:
                 pass
 
         parser = argparse.ArgumentParser()
-        command = IngressCommand(lambda _profile, _resolver: 가짜앱())
+        # 게이트는 이 시험의 대상이 아니다. 자격 해석기 전달만 본다.
+        command = IngressCommand(
+            lambda _profile, _resolver: 가짜앱(), preflight_suite_factory=통과하는_suite
+        )
         command.add_arguments(parser)
         args = parser.parse_args(["--profile", "봇", "--profile-dir", str(tmp_path)])
         assert command.execute(args, io.StringIO()) == 0

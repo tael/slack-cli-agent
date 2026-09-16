@@ -115,7 +115,9 @@ class TestWorkdirCheck:
         assert result.ok is False
         assert "없다" in result.detail
 
-    def test_작업_자리가_홈_안이면_실패한다(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_작업_자리가_홈_안이면_실패한다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: home)
@@ -126,6 +128,20 @@ class TestWorkdirCheck:
         result = check.run(PreflightContext(profile=profile))
         assert result.ok is False
         assert "홈 안" in result.detail
+
+    def test_이름이_겹치는_형제_자리는_홈_안이_아니다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """문자열 접두로 비교하면 /Users/taelkim-work 가 /Users/taelkim 안으로
+        읽힌다. 이 점검은 기동 게이트가 쓰므로 오판이 곧 기동 거부가 된다."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        work_root = tmp_path / "home-work"
+        work_root.mkdir()
+        profile = make_profile(tmp_path, work_root=str(work_root))
+        result = WorkdirCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True, result.detail
 
     def test_CLAUDE_MD가_있으면_실패한다(self, tmp_path: Path) -> None:
         # isolate_home 이 Path.home() 을 tmp_path 로 바꾸므로, "홈 밖" 을
@@ -186,7 +202,11 @@ class TestEngineBinaryCheck:
         profile = make_profile(
             tmp_path,
             primary_engine={"type": "claude", "binary": str(binary), "model": "m"},
-            fallback_engine={"type": "codex", "binary": str(tmp_path / "no_such_binary"), "model": "m2"},
+            fallback_engine={
+                "type": "codex",
+                "binary": str(tmp_path / "no_such_binary"),
+                "model": "m2",
+            },
         )
         check = EngineBinaryCheck()
         result = check.run(PreflightContext(profile=profile))
@@ -224,7 +244,9 @@ class TestMcpServerCheck:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         script = tmp_path / "server.js"
-        script.write_text("#!/usr/bin/env definitely-not-on-path\nconsole.log(1)\n", encoding="utf-8")
+        script.write_text(
+            "#!/usr/bin/env definitely-not-on-path\nconsole.log(1)\n", encoding="utf-8"
+        )
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
         profile = make_profile(tmp_path)
         mcp_config = profile.paths.mcp_config
@@ -332,8 +354,10 @@ class TestOwnerSettingsInertCheck:
         profile = make_profile(
             tmp_path,
             primary_engine={
-                "type": "claude", "binary": str(tmp_path / "claude_bin"),
-                "model": "sonnet", "model_owner": "opus",
+                "type": "claude",
+                "binary": str(tmp_path / "claude_bin"),
+                "model": "sonnet",
+                "model_owner": "opus",
             },
         )
         write_channels(profile, {"C1": {"name": "잡담방", "model": "haiku"}})
@@ -536,8 +560,11 @@ class TestPreflightSuite:
         추가 = {
             r.detail
             for r in PreflightSuite(
-                required_prompts=["없는프롬프트"], extra_workdirs=["없는자리"],
-            ).run(profile).results
+                required_prompts=["없는프롬프트"],
+                extra_workdirs=["없는자리"],
+            )
+            .run(profile)
+            .results
         }
         assert any("없는프롬프트" in d for d in 추가)
         assert any("없는자리" in d for d in 추가)
@@ -572,9 +599,9 @@ class TestPreflightSuite:
 
         suite = PreflightSuite()
         out = io.StringIO()
-        report = PreflightReport(results=tuple(
-            CheckResult(ok=True, detail="통과") for _ in suite.checks
-        ))
+        report = PreflightReport(
+            results=tuple(CheckResult(ok=True, detail="통과") for _ in suite.checks)
+        )
         suite.report_to(report, out)
         assert "기동 가능" in out.getvalue()
 
@@ -631,7 +658,6 @@ class TestPreflightSuite:
         assert "[경고]" in 본문
         assert "[실패]" not in 본문
         assert "기동 가능" in 본문
-
 
 
 class _터지는점검(PreflightCheck):
