@@ -80,3 +80,44 @@ class Test감시작업스키마:
             "SELECT msg_ts, checks, trust_level, extra FROM watch_jobs"
         ).fetchone()
         assert tuple(행) == ("", 0, 0, "")
+
+
+class Test실행자리컬럼:
+    """v5 로 올라가는 기존 행이 빈 값으로 남고, 조회가 그 행에서 안 깨지는지 본다.
+
+    ALTER TABLE 의 기본값만 보면 실제 행에 무엇이 들어갔는지 모른다 (코덱스 검토).
+    """
+
+    def _v4에_감시행을_넣는다(self, tmp_path):
+        경로 = tmp_path / "v4rows.db"
+        연결 = sqlite3.connect(경로)
+        for 단계 in MIGRATIONS[:4]:
+            for 문장 in 단계[2]:
+                연결.execute(문장)
+        연결.execute(
+            "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at)"
+            " VALUES ('C1', '111.1', '배포 확인', 100.0)"
+        )
+        연결.execute("PRAGMA user_version = 4")
+        연결.commit()
+        연결.close()
+        return 경로
+
+    def test_기존행은_두_컬럼이_빈_문자열이다(self, tmp_path) -> None:
+        from slack_cli_agent.storage.database import Database
+
+        db = Database(self._v4에_감시행을_넣는다(tmp_path))
+        db.migrate()
+
+        행 = db.connect().execute("SELECT workdir, run_id FROM watch_jobs").fetchone()
+        assert tuple(행) == ("", "")
+
+    def test_기존행도_큐_조회로_되읽힌다(self, tmp_path) -> None:
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+        from slack_cli_agent.storage.database import Database
+
+        db = Database(self._v4에_감시행을_넣는다(tmp_path))
+        db.migrate()
+
+        작업 = WatchJobQueue(db).due(now=200.0, min_gap=0.0)
+        assert [(항목.workdir, 항목.run_id) for 항목 in 작업] == [("", "")]

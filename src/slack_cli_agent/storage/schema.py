@@ -132,11 +132,27 @@ lease_owner     several workers can run, so one claims the span at a time
 """
 
 # (version, label, statements). Never edit an applied step; add a new one instead.
+V5_WATCH_JOB_RUN_SQL = """
+ALTER TABLE watch_jobs ADD COLUMN workdir TEXT NOT NULL DEFAULT '';
+ALTER TABLE watch_jobs ADD COLUMN run_id TEXT NOT NULL DEFAULT '';
+"""
+"""Pins where a watch job's background work actually runs.
+
+workdir  absolute working directory at registration time. The check runs
+         later in another process; recomputing it from the current channel
+         config would look in a different place if that config changed.
+run_id   identifier for this job's result file. The column lands here; the
+         code that issues it comes with sca-17p, so rows written until then
+         leave it empty.
+"""
+
+
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
     (3, "감시 작업에 표식 대상·확인 횟수·권한 추가", _statements(V3_WATCH_JOB_CONTEXT_SQL)),
     (4, "소켓 연결 세대 원장 추가", _statements(V4_CONNECTION_EPOCHS_SQL)),
+    (5, "감시 작업에 실행 자리와 결과 파일 이름 추가", _statements(V5_WATCH_JOB_RUN_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

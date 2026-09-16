@@ -208,7 +208,9 @@ class RequestPipeline:
         effort = self._access.effort_for(principal, ctx.text)
 
         config = self._channels.get(ctx.channel)
-        workdir = config.workdir if (config and config.workdir) else self._default_workdir
+        # Resolved so the recorded path means the same thing in the check
+        # process, which has its own current directory (sca-6zt).
+        workdir = (config.workdir if (config and config.workdir) else self._default_workdir).resolve()
         rich = bool(config and config.rich)
         channel_mode = config.mode if config else "default"
         channel_slug = config.name if config else ctx.channel
@@ -293,7 +295,7 @@ class RequestPipeline:
         self._archive_response(ctx, channel_slug, body, response, elapsed)
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage, turns=response.turns)
-        if watch_desc and self._register_watch(ctx, principal, watch_desc):
+        if watch_desc and self._register_watch(ctx, principal, watch_desc, workdir):
             # Not "done" — marking it done would exclude it from catch-up recovery.
             self._mark_watch(ctx)
         else:
@@ -486,13 +488,19 @@ class RequestPipeline:
                 before_chars=loss.get("before_chars"), after_chars=loss.get("after_chars"),
             )
 
-    def _register_watch(self, ctx: RequestContext, principal: Principal, description: str) -> bool:
+    def _register_watch(
+        self, ctx: RequestContext, principal: Principal, description: str, workdir: Path
+    ) -> bool:
         if self._watch_queue is None:
             return False
         try:
             self._watch_queue.enqueue(
                 ctx.channel, ctx.thread_ts, description,
                 msg_ts=ctx.ts, trust=principal.trust,
+                # Pinned here rather than recomputed at check time: the channel
+                # config can change in between, and the result of the work sits
+                # under the directory the request actually ran in (sca-6zt).
+                workdir=str(workdir),
             )
         except Exception as exc:  # noqa: BLE001 — the answer is already sent; a retry on this failure would double-post it
             log.warning("감시 등록 실패 : %s", exc)

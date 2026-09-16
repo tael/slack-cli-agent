@@ -21,7 +21,7 @@ from ..storage.repository import SqliteRepository
 
 _SELECT_COLUMNS = (
     "id, channel, thread_ts, condition, created_at, last_run, "
-    "msg_ts, checks, trust_level, extra"
+    "msg_ts, checks, trust_level, extra, workdir, run_id"
 )
 
 
@@ -40,6 +40,11 @@ class WatchJob:
     """Trust level to run the check prompt with, inherited from the requester at registration time."""
     extra: Mapping[str, Any] = field(default_factory=dict)
     """Plugin-owned data; org-specific values stay out of the core fields."""
+    workdir: str = ""
+    """Absolute working directory at registration time. Empty on rows written
+    before this was recorded, which leaves the caller on its own default."""
+    run_id: str = ""
+    """Identifies this job's result file. Empty means the caller pinned none."""
 
 
 @runtime_checkable
@@ -52,6 +57,8 @@ class WatchJobPort(Protocol):
         msg_ts: str = "",
         trust: TrustLevel = TrustLevel.GENERAL,
         extra: Mapping[str, Any] | None = None,
+        workdir: str = "",
+        run_id: str = "",
     ) -> int:
         """Registers a watch job and returns its row id."""
 
@@ -85,14 +92,16 @@ class WatchJobQueue(SqliteRepository):
         msg_ts: str = "",
         trust: TrustLevel = TrustLevel.GENERAL,
         extra: Mapping[str, Any] | None = None,
+        workdir: str = "",
+        run_id: str = "",
     ) -> int:
         cursor = self._execute(
             "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at, "
-            "last_run, done, msg_ts, checks, trust_level, extra) "
-            "VALUES (?, ?, ?, ?, NULL, 0, ?, 0, ?, ?)",
+            "last_run, done, msg_ts, checks, trust_level, extra, workdir, run_id) "
+            "VALUES (?, ?, ?, ?, NULL, 0, ?, 0, ?, ?, ?, ?)",
             (
                 channel, thread_ts, condition, self._now(),
-                msg_ts, int(trust), _dump_extra(extra),
+                msg_ts, int(trust), _dump_extra(extra), workdir, run_id,
             ),
         )
         assert cursor.lastrowid is not None  # sqlite always sets this on a successful INSERT
@@ -162,4 +171,6 @@ def _to_job(row: Any) -> WatchJob:
         checks=int(row["checks"]),
         trust=TrustLevel(int(row["trust_level"])),
         extra=_load_extra(row["extra"]),
+        workdir=row["workdir"] or "",
+        run_id=row["run_id"] or "",
     )
