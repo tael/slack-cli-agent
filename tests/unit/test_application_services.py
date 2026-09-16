@@ -177,9 +177,16 @@ class Test캐치업재시도:
     """
 
     def test_실행기가_워커의_재시도를_부른다(self, app: Application) -> None:
+        from slack_cli_agent.reliability.catchup import RetryStatus
+
         불린다: list[bool] = []
         워커 = app.worker()
-        워커.retry_catchup = lambda: 불린다.append(True) or []  # type: ignore[method-assign]
+
+        def 기록하고_빈_목록을_낸다() -> list[RetryStatus]:
+            불린다.append(True)
+            return []
+
+        워커.retry_catchup = 기록하고_빈_목록을_낸다  # type: ignore[method-assign]
         app.catchup_retry_runner(워커)._task()
         assert 불린다 == [True]
 
