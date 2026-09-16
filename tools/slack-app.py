@@ -127,6 +127,12 @@ def _audit(only_workspace: str = "") -> None:
         if not only_workspace or entry.workspace == only_workspace
     ]
     if not entries:
+        registry = AppRegistry()
+        if registry.is_configured():
+            # 파일이 있는데 0건이면 부재가 아니라 사고다. 종료코드 0 으로 끝내면
+            # 매일 도는 감사가 이상 없음과 같은 모습으로 지나간다 (sca-1qr).
+            print(f"레지스트리에 읽을 항목이 없다 : {registry.path}")
+            raise SystemExit(1)
         print("레지스트리에 등록된 앱이 없다. register 로 먼저 적는다")
         raise SystemExit(0)
     findings = audit(entries, lambda e: _differences(e.workspace, e.app_id, e.manifest))
