@@ -31,6 +31,9 @@ class HelpCommand(AdminCommand):
 # name and shouldn't reach the user.
 _MODE_LABELS = {"": "기본", "agent_coach": "코치", "private": "비공개"}
 
+# Session scope as the user sees it, same reason as _MODE_LABELS.
+_SCOPE_LABELS = {"channel": "채널", "thread": "스레드"}
+
 
 class ChannelListCommand(AdminCommand):
     """Lists channels currently being responded to.
@@ -56,6 +59,12 @@ class ChannelListCommand(AdminCommand):
             lines.append(f"- {cfg.name or channel_id}")
             mode = _MODE_LABELS.get(cfg.mode, cfg.mode or "기본")
             lines.append(f"  - 응답 형식 : {mode}, 말수 : {chat}")
+            # Without these two lines there's no way to see from Slack which
+            # channels answer without being named, or which keep one session
+            # across the whole channel.
+            called = "없어도 답함" if cfg.answer_unaddressed else "불러야 답함"
+            scope = _SCOPE_LABELS.get(cfg.session_scope, cfg.session_scope)
+            lines.append(f"  - 호명 : {called}, 세션 : {scope}")
         return AdminResult(message="\n".join(lines))
 
 
