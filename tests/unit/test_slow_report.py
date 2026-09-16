@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import fields
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import Usage
@@ -230,7 +230,7 @@ class TestSlowRequestReporter:
         )
 
     def _meta(self, **overrides) -> SlowRequestMeta:
-        base = {
+        base: dict[str, Any] = {
             "elapsed_wall": 850.0, "mono_elapsed": 840.0, "started": 0.0, "model": "claude-x",
             "model_actual": None, "effort": "high", "num_turns": 5, "reason": None,
             "session_id": "s1", "resume": True, "channel": "C1", "channel_name": "테스트채널", "text": "원문",

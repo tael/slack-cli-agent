@@ -39,7 +39,7 @@ SETTINGS = RuntimeSettings()
 
 
 def profile_with(primary: dict, fallback: dict | None = None, tmp_path: Path | None = None) -> Profile:
-    data = {
+    data: dict[str, Any] = {
         "name": "example",
         "primary_engine": primary,
         "owner_user_id": "U1",
@@ -63,7 +63,7 @@ def gemini_profile(tmp_path: Path, **extra: Any) -> Profile:
 
 
 def request(**overrides: Any) -> EngineRequest:
-    base = {
+    base: dict[str, Any] = {
         "prompt": "안녕",
         "system_prompt": "시스템 지침",
         "session_id": "11111111-1111-1111-1111-111111111111",

@@ -8,12 +8,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from slack_cli_agent.review.base import ReviewTarget
 from slack_cli_agent.review.postmortem import PostmortemTask
 
 
 def make_task(**overrides) -> PostmortemTask:
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "ledger": None,
         "message_lookup": None,
         "transcript": None,

@@ -8,13 +8,15 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from slack_cli_agent.learning.progress import ChannelFailure, FailureKind
 from slack_cli_agent.learning.proposal import LearningProposal
 from slack_cli_agent.learning.render import ProposalRenderer
 
 
 def make_proposal(**overrides) -> LearningProposal:
-    base = {
+    base: dict[str, Any] = {
         "day": "2026-09-14",
         "writing_style": ("문장을 짧게 써라",),
         "channel_knowledge": {"공지": ("9월 회의는 매주 화요일이다",)},

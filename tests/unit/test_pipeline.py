@@ -368,7 +368,7 @@ def build_pipeline(
 
 
 def make_ctx(**overrides: Any) -> RequestContext:
-    base = {"channel": "C1", "user": "U1", "ts": "1700000001.000100",
+    base: dict[str, Any] = {"channel": "C1", "user": "U1", "ts": "1700000001.000100",
             "thread_ts": "1700000001.000100", "text": "안녕"}
     base.update(overrides)
     return RequestContext(**base)
