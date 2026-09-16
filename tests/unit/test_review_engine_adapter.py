@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from typing import Any
 
 from slack_cli_agent.auth.policy import OWNER_EFFORT_MIN
 from slack_cli_agent.auth.principal import TrustLevel
@@ -26,7 +27,7 @@ from slack_cli_agent.review.engine_adapter import ReviewEngineCaller
 
 
 def make_profile(**overrides) -> Profile:
-    data = {
+    data: dict[str, Any] = {
         "name": "테스트봇",
         "primary_engine": {
             "type": "claude",
@@ -82,7 +83,7 @@ def _response(ok: bool = True, body: str = "결과") -> EngineResponse:
 def make_caller(**overrides) -> tuple[ReviewEngineCaller, FakeInvoker]:
     profile = overrides.pop("profile", None) or make_profile()
     invoker = overrides.pop("invoker", None) or FakeInvoker(_response())
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "invoker": invoker,
         "profile": profile,
         "workdir": Path("/code"),

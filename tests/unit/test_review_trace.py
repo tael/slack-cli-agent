@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from review_support import recorded
 
 from slack_cli_agent.review.base import ReviewTarget
@@ -14,7 +16,7 @@ from slack_cli_agent.review.trace import DebugTraceTask
 
 
 def make_task(**overrides) -> DebugTraceTask:
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "ledger": None,
         "message_lookup": None,
         "transcript": None,

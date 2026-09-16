@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -33,7 +34,7 @@ def _engine(tmp_path: Path, home_dir: Path | None = None) -> GeminiEngine:
 
 
 def _request(**overrides: object) -> EngineRequest:
-    base: dict[str, object] = {
+    base: dict[str, Any] = {
         "prompt": "안녕",
         "system_prompt": "시스템 지침",
         "session_id": "11111111-1111-1111-1111-111111111111",
