@@ -3,6 +3,7 @@
     readonly (postmortem/debug trace)   known read-only tools only
     owner                                base + owner extras
     an extension applies                 base + whatever the extension adds
+    the channel lists the user           base + that user's extra tools
     otherwise                            base tools only
 
 Read-only by default. Skill is appended last, and only when the request
@@ -12,7 +13,7 @@ isn't aside (postmortem/debug/format-check) and the channel has it enabled.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from .policy import AccessExtension
 from .principal import Principal, TrustLevel
@@ -34,10 +35,12 @@ class ToolPolicy:
         base_tools: Sequence[str],
         owner_tools: Sequence[str] = (),
         extensions: Sequence[AccessExtension] = (),
+        channel_tools: Callable[[Principal], Sequence[str]] | None = None,
     ) -> None:
         self._base_tools = tuple(base_tools)
         self._owner_tools = tuple(owner_tools)
         self._extensions = tuple(extensions)
+        self._channel_tools = channel_tools
 
     def tool_list_for(
         self,
@@ -59,6 +62,10 @@ class ToolPolicy:
             for ext in self._extensions:
                 if ext.applies(principal, prompt):
                     tools += list(ext.extra_tools(principal))
+            if self._channel_tools is not None:
+                tools += [
+                    tool for tool in self._channel_tools(principal) if tool not in tools
+                ]
         if not aside and skills_enabled:
             tools.append(SKILL_TOOL)
         return tuple(tools)

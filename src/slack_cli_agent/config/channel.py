@@ -16,6 +16,7 @@ KNOWN_KEYS = frozenset(
         "trusted_users", "answer_unaddressed", "session_scope",
         "disclose_mechanism", "skills", "light_context", "rich", "chat",
         "progress",
+        "user_tools",
     }
 )
 """Channel-setting keys the core reads. Org-specific keys (like org_admins)
@@ -38,6 +39,9 @@ class ChannelConfig:
     persona: str = ""
     knowledge: tuple[str, ...] = ()
     trusted_users: frozenset[str] = frozenset()
+    user_tools: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    """Per-user extra tools. The org-specific value (an ops script, say) lives
+    in the channel file, not in the installed package (sca-ww4)."""
     answer_unaddressed: bool = False
     session_scope: str = "thread"
     disclose_mechanism: bool = False
@@ -62,6 +66,10 @@ class ChannelConfig:
             persona=str(data.get("persona", "")),
             knowledge=tuple(data.get("knowledge") or ()),
             trusted_users=frozenset(data.get("trusted_users") or ()),
+            user_tools={
+                str(user): tuple(str(tool) for tool in (tools or ()))
+                for user, tools in (data.get("user_tools") or {}).items()
+            },
             answer_unaddressed=bool(data.get("answer_unaddressed", False)),
             session_scope=str(data.get("session_scope") or "thread"),
             disclose_mechanism=bool(data.get("disclose_mechanism", False)),

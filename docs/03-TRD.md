@@ -995,6 +995,7 @@ shadow 대조에도 쓴다.
     persona             페르소나 파일
     knowledge           지식 파일 목록
     trusted_users       이 채널에서 신뢰하는 사용자
+    user_tools          사용자별 추가 허용 도구 표. 소유자에게는 안 따진다
     answer_unaddressed  호명 없는 메시지에도 답하는가. 원본 mention_only 의 반대다.
                         슬랙에서 「끼어들기 허용」 · 「멘션 전용」 으로 바꾼다
     name                슬랙에서 조회한 채널 이름. 없으면 채널 ID

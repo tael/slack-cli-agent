@@ -107,6 +107,16 @@ class AccessPolicy:
         """True in the owner's own DM or a channel that granted trust."""
         return self.is_full_authority(principal) or principal.trust is TrustLevel.TRUSTED
 
+    def channel_tools_for(self, principal: Principal) -> tuple[str, ...]:
+        """Extra tools this channel grants this user. The owner is left out —
+        owner tools already cover it, same as the original (bot.py:110)."""
+        if principal.trust is TrustLevel.OWNER:
+            return ()
+        config = self._channels.get(principal.channel)
+        if not config:
+            return ()
+        return tuple(config.user_tools.get(principal.user_id, ()))
+
     def _is_channel_trusted(self, channel: str, user: str) -> bool:
         config = self._channels.get(channel)
         return bool(config and user in config.trusted_users)

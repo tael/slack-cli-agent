@@ -409,7 +409,10 @@ class Application:
         if self._tool_policy is None:
             extensions = [e for p in self._plugins for e in p.access_extensions()]
             self._tool_policy = ToolPolicy(
-                self._settings.base_tools, self._settings.owner_tools, extensions,
+                self._settings.base_tools,
+                self._settings.owner_tools,
+                extensions,
+                channel_tools=self.access_policy.channel_tools_for,
             )
         return self._tool_policy
 
