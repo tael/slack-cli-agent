@@ -121,6 +121,7 @@ from ..session.manager import SessionManager
 from ..session.store import SqliteSessionStore
 from ..slack.assistant import DEFAULT_GREETING, AssistantPanel
 from ..slack.attachments import AttachmentStore, DownloadResult
+from ..slack.channel_names import ChannelNameResolver
 from ..slack.credentials import CredentialResolver, resolver_for
 from ..slack.download import HttpDownloader
 from ..slack.gate import ResponseGate
@@ -225,6 +226,7 @@ class Application:
 
         self._channels = ChannelRegistry(profile.paths.channels)
         self._names = DisplayNameResolver(client)
+        self._channel_name_resolver: ChannelNameResolver | None = None
         self._notices = NoticeCatalog()
         # Pre-send recheck and the send queue must see the same consumption
         # record, or the recheck absorbs a message the queue then resends.
@@ -551,7 +553,7 @@ class Application:
         return LinkedThreadNote(
             LinkedThreadReader(
                 self._transcript_builder(),
-                self._channel_display_name,
+                self._channel_names(),
                 max_links=self._settings.linked_thread_max,
             )
         )
@@ -559,6 +561,13 @@ class Application:
     def _channel_display_name(self, channel: str) -> str:
         config = self._channels.get(channel)
         return getattr(config, "name", "") or ""
+
+    def _channel_names(self) -> ChannelNameResolver:
+        if self._channel_name_resolver is None:
+            self._channel_name_resolver = ChannelNameResolver(
+                self._client, self._channel_display_name
+            )
+        return self._channel_name_resolver
 
     def _history_port(self) -> SlackHistoryPort:
         return SlackHistoryPort(HistoryReader(self._client, self._settings), self._client)
