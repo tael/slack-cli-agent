@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -1352,12 +1352,12 @@ class Test폴백엔진연결:
     def test_학습_일정이_미완료_날짜를_볼_수_있다(self, app: Application) -> None:
         """안 넘기면 한도 소진으로 미완료인 날이 이틀 뒤 후보에서 사라진다."""
         일정 = app.learning_schedule()
-        assert 일정._unsettled_days.__self__ is app._learning_progress_store()
+        assert cast(Any, 일정._unsettled_days).__self__ is app._learning_progress_store()
 
     def test_학습_일정이_대기_여부를_볼_수_있다(self, app: Application) -> None:
         """안 넘기면 오늘이 재시도 대기 중일 때 옛 미완료 날짜가 순서를 못 받는다."""
         일정 = app.learning_schedule()
-        assert 일정._is_waiting.__self__ is app._learning_progress_store()
+        assert cast(Any, 일정._is_waiting).__self__ is app._learning_progress_store()
 
     def test_학습_배치가_진행_상태_저장소를_받는다(self, app: Application) -> None:
         """부품을 만든 것과 조립이 그것을 넘기는 것은 다르다. 안 넘기면 채널별

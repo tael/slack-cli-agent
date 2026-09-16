@@ -109,7 +109,7 @@ def settings() -> RuntimeSettings:
 
 
 @pytest.fixture
-def manager(store: SqliteSessionStore, settings: RuntimeSettings) -> SessionManager:
+def manager(store: SqliteSessionStore, settings: RuntimeSettings) -> tuple[SessionManager, dict[str, float]]:
     clock = {"now": 1_000_000.0}
     ids = iter(["new-sid-1", "new-sid-2", "new-sid-3"])
     return SessionManager(

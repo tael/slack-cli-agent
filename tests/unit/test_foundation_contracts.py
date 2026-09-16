@@ -21,7 +21,7 @@ class Test신뢰등급정의는하나다:
 
     def test_엔진이쓰는것과권한계층이쓰는것이같은객체다(self) -> None:
         from slack_cli_agent.auth.principal import TrustLevel as 권한계층
-        from slack_cli_agent.engine.base import TrustLevel as 엔진
+        from slack_cli_agent.engine.base import TrustLevel as 엔진  # type: ignore[attr-defined]
 
         assert 엔진 is 권한계층
 
