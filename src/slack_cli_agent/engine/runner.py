@@ -41,6 +41,9 @@ SubprocessRunner = Callable[..., Any]
 #: kept as a literal here so this module doesn't import observability.
 CAPABILITY_KIND = "capability"
 
+#: The one axis enforced at run time. The other two are recorded only.
+TOOL_AXIS = "tool_restriction"
+
 
 class CapabilityAuditPort(Protocol):
     """AuditLog.record's shape. Optional -- a runner without one still runs."""
@@ -93,7 +96,11 @@ class EngineRunner:
             # Same reason as session_id: model naming is per-engine and the
             # concrete engine is only known here (sca-dyb.10).
             request = dataclasses.replace(request, model=engine.spec.model)
-        self._record_capabilities(engine, request)
+        actual = engine.capabilities_for(request)
+        self._record_capabilities(engine, request, actual)
+        blocked = self._blocked_response(engine, request, actual)
+        if blocked is not None:
+            return blocked
         engine.prepare(request)
         cmd = engine.build_command(request)
         timeout = timeout_sec if timeout_sec is not None else self._settings.request_timeout_sec
@@ -130,10 +137,38 @@ class EngineRunner:
             response = dataclasses.replace(response, elapsed=wall_elapsed, elapsed_source=ElapsedSource.RUNNER)
         return response
 
-    def _record_capabilities(self, engine: Engine, request: EngineRequest) -> None:
+    def _blocked_response(
+        self, engine: Engine, request: EngineRequest, actual: EngineCapabilities
+    ) -> EngineResponse | None:
+        """Refuses before prepare() when the tool guarantee is weaker than required.
+
+        Only the tool axis is enforced here (sca-dyb.15 3/5). Isolation and the
+        instruction boundary are recorded but still run.
+        """
+        required = request.requirements
+        if required.allow_audited_downgrade:
+            return None
+        if TOOL_AXIS not in required.unmet(actual):
+            return None
+        return EngineResponse(
+            ok=False,
+            body=(
+                "요청이 요구한 도구 제한을 이 엔진이 보장하지 못해 실행하지 않았습니다. "
+                f"요구 {required.tool_restriction}, {engine.name} 보장 {actual.tool_restriction}."
+            ),
+            session_id=request.session_id, model_actual=None,
+            elapsed=0.0, turns=None, usage=None,
+            raw={}, failure_reason="capability_unmet",
+            failure_detail=FailureDetail(code=TOOL_AXIS),
+            elapsed_source=ElapsedSource.RUNNER,
+            engine=engine.name,
+        )
+
+    def _record_capabilities(
+        self, engine: Engine, request: EngineRequest, actual: EngineCapabilities
+    ) -> None:
         if self._audit is None:
             return
-        actual = engine.capabilities_for(request)
         required = request.requirements
         self._audit.record(
             CAPABILITY_KIND,
