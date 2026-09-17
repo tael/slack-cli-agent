@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_engine import claude_profile, gemini_profile, profile_with, request
+from test_engine import RecordingEngine, claude_profile, gemini_profile, profile_with, request
 
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -220,28 +220,6 @@ class Test보장을_감사에_남긴다:
         assert 필드["required"] == {}
         assert 필드["unmet"] == []
 
-    def test_아직_아무것도_막지_않는다(self, tmp_path: Path) -> None:
-        from test_engine import FakeCompleted, RecordingEngine, 통과정책
-
-        엔진 = RecordingEngine(claude_profile(tmp_path), SETTINGS)
-        runner = EngineRunner(
-            SETTINGS,
-            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(
-                stdout="답변", returncode=0
-            ),
-            environment_policy=통과정책(),
-            audit=_감사(),
-        )
-        응답 = runner.run(
-            엔진,
-            request(
-                requirements=ExecutionRequirements(
-                    tool_restriction=ToolRestriction.EXACT_ALLOWLIST
-                )
-            ),
-        )
-        assert 응답.ok is True
-
     def test_감사가_없어도_실행은_그대로다(self, tmp_path: Path) -> None:
         from test_engine import FakeCompleted, RecordingEngine, 통과정책
 
@@ -279,3 +257,105 @@ class Test감사_종류:
     def test_보장_기록은_사고로_세지_않는다(self) -> None:
         """기준 통행량이라 사고 집계에 들어가면 사고율이 전부 바뀐다."""
         assert IncidentKind.CAPABILITY not in INCIDENT_KINDS
+
+
+# 3단계 — 도구 제한 불일치를 실행 전 실패로 만든다. 다른 축은 아직 안 막는다.
+
+
+class _준비기록엔진(RecordingEngine):
+    """prepare 가 불렸는지 본다. 검증은 그 부수 효과보다 앞서야 한다."""
+
+    capabilities = EngineCapabilities(tool_restriction=ToolRestriction.NONE)
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.준비호출 = 0
+
+    def prepare(self, request: Any) -> None:
+        self.준비호출 += 1
+
+
+class Test도구_제한을_못_맞추면_실행_전에_막는다:
+    def _돌린다(self, tmp_path: Path, 감사: _감사 | None = None, **요청: Any) -> tuple[Any, Any, list[int]]:
+        from test_engine import FakeCompleted, 통과정책
+
+        실행 = []
+        엔진 = _준비기록엔진(claude_profile(tmp_path), SETTINGS)
+
+        def 프로세스(cmd: Any, cwd: Any, timeout: Any, env: Any = None) -> Any:
+            실행.append(1)
+            return FakeCompleted(stdout="답변", returncode=0)
+
+        runner = EngineRunner(
+            SETTINGS,
+            subprocess_runner=프로세스,
+            environment_policy=통과정책(),
+            audit=감사,
+        )
+        return runner.run(엔진, request(**요청)), 엔진, 실행
+
+    def test_프로세스를_띄우지_않고_실패로_돌려준다(self, tmp_path: Path) -> None:
+        응답, 엔진, 실행 = self._돌린다(
+            tmp_path,
+            requirements=ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
+        )
+        assert 응답.ok is False
+        assert 응답.failure_reason == "capability_unmet"
+        assert 응답.failure_detail is not None
+        assert 응답.failure_detail.code == "tool_restriction"
+        assert 실행 == []
+        assert 엔진.built == []
+
+    def test_prepare_의_부수효과도_내지_않는다(self, tmp_path: Path) -> None:
+        _, 엔진, _ = self._돌린다(
+            tmp_path,
+            requirements=ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
+        )
+        assert 엔진.준비호출 == 0
+
+    def test_완화를_명시하면_그대로_실행한다(self, tmp_path: Path) -> None:
+        응답, _, 실행 = self._돌린다(
+            tmp_path,
+            requirements=ExecutionRequirements(
+                tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+                allow_audited_downgrade=True,
+            ),
+        )
+        assert 응답.ok is True
+        assert 실행 == [1]
+
+    def test_도구_외_축은_아직_막지_않는다(self, tmp_path: Path) -> None:
+        응답, _, 실행 = self._돌린다(
+            tmp_path,
+            requirements=ExecutionRequirements(
+                execution_isolation=ExecutionIsolation.READONLY_SANDBOX,
+                instruction_boundary=InstructionBoundary.NATIVE,
+            ),
+        )
+        assert 응답.ok is True
+        assert 실행 == [1]
+
+    def test_요구가_없으면_그대로_실행한다(self, tmp_path: Path) -> None:
+        응답, _, 실행 = self._돌린다(tmp_path)
+        assert 응답.ok is True
+        assert 실행 == [1]
+
+    def test_막을_때도_감사_기록은_남는다(self, tmp_path: Path) -> None:
+        감사 = _감사()
+        self._돌린다(
+            tmp_path,
+            감사,
+            requirements=ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
+        )
+        [(kind, 필드)] = 감사.기록
+        assert kind == CAPABILITY_KIND
+        assert 필드["unmet"] == ["tool_restriction"]
+
+    def test_차단_사유가_알려진_코드다(self, tmp_path: Path) -> None:
+        """unknown:N 으로 찍히면 로그에서 무엇이 막혔는지 못 읽는다."""
+        응답, _, _ = self._돌린다(
+            tmp_path,
+            requirements=ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
+        )
+        assert 응답.failure_detail is not None
+        assert "unknown" not in str(응답.failure_detail)
