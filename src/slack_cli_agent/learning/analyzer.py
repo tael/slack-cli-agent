@@ -119,6 +119,11 @@ class ProposalAnalyzer:
         self._bot_name = bot_name
         self._decoder = decoder or ProposalDecoder()
 
+    # No tools. The day's history is already in the prompt, and the
+    # "이미 지식 파일에 있는 내용" rule never worked through Read anyway --
+    # the prompt never names the knowledge file's path. Withholding the
+    # tool is firmer than declaring a requirement, since each engine
+    # enforces an allowlist differently (sca-0p5).
     def analyze_channel(
         self,
         day: str,
@@ -138,7 +143,6 @@ class ProposalAnalyzer:
             model=self._model,
             effort=self._effort,
             workdir=self._workdir,
-            allowed_tools=("Read",),
         )
         # Nobody is waiting on the nightly batch, so it must not spend the
         # fallback's recovery probe that an interactive request needs.
