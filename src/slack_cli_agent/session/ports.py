@@ -5,11 +5,11 @@ on `store.SqliteSessionStore`. Verified by tests/unit/test_session.py.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 
-class SessionScope(str, Enum):
+class SessionScope(StrEnum):
     """Continuity unit. TTL policy (thread: 24h, channel: 7d) lives in manager."""
 
     THREAD = "thread"

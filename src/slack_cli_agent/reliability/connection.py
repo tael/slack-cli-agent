@@ -15,14 +15,14 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from ..config.settings import RuntimeSettings
 
 log = logging.getLogger(__name__)
 
 
-class ConnectionKind(str, Enum):
+class ConnectionKind(StrEnum):
     INITIAL = "initial"
     RECONNECT = "reconnect"
 
