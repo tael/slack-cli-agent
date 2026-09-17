@@ -61,6 +61,9 @@ class RuntimeSettings:
     watch_result_cleanup_interval_sec: float = 3600
 
     roster_refresh_sec: float = 12 * 3600
+    #: 명부에 넣을 계정 핸들이 맞아야 하는 정규식. 기본값은 회사
+    #: 워크스페이스의 이름.성 형식이고, 빈 문자열이면 형식을 안 본다 (sca-evt).
+    roster_handle_pattern: str = r"\."
 
     #: owner_only_channels 선언과 실제 멤버를 대조하는 주기. 사람이 채널에
     #: 들어오는 일은 드물어 자주 볼 이유가 없고, 조회는 채널마다 한 번이다.

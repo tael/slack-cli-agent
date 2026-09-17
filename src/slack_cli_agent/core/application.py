@@ -1212,7 +1212,11 @@ class Application:
         periodic refresher and direct calls write through the same instance.
         """
         if self._roster_builder is None:
-            self._roster_builder = RosterBuilder(self._client, self._profile.roster_file)
+            self._roster_builder = RosterBuilder(
+                self._client,
+                self._profile.roster_file,
+                handle_pattern=self._settings.roster_handle_pattern,
+            )
         return self._roster_builder
 
     def roster_refresher(self) -> PeriodicRunner:
