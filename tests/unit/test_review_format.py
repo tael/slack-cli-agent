@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from review_support import assert_header_is_one_table
+
 from slack_cli_agent.review.base import ReviewTarget
 from slack_cli_agent.review.format import FormatReviewTask
 
@@ -79,3 +81,12 @@ class Test머리말:
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
         header = task.build_header(target, None, "")
         assert "감사 기록에서 이 답변을 찾지 못해 뺐습니다" in header
+        # 표기는 이 점검의 판정 기준이므로 실행 기록 유무와 무관하게 넣는다.
+        assert "리치" in header
+
+    def test_요청자를표안에한형태로보인다(self) -> None:
+        task = make_task()
+        target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
+        header = task.build_header(target, {"model": "opus", "effort": "high"}, "https://slack/x")
+        assert "| 요청한 사람 | <@U1> |" in header
+        assert_header_is_one_table(header)
