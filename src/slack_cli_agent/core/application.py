@@ -1145,6 +1145,14 @@ class Application:
         task = self.review_tasks().get(emoji)
         if task is None:
             return
+        # The original bot.py had no permission check here (bot.py:6144), but a
+        # review runs on the owner's model at medium effort or higher, so anyone
+        # adding the emoji repeatedly spends that. Owner and the channel's
+        # trusted_users only (사용자 결정 2026-09-18, sca-cg9).
+        principal = self.access_policy.principal_for(channel, by_user)
+        if principal.trust is TrustLevel.GENERAL:
+            log.info("점검 권한이 없다 : %s %s:%s %s", emoji, channel, ts, by_user)
+            return
         config = self._channels.get(channel)
         try:
             task.run(

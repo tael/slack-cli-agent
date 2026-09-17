@@ -444,6 +444,51 @@ class TestReviewReactions:
         app.on_reaction("thumbsup", "C_ONE", "1.0", "U_OWNER")
         assert 불린것 == []
 
+    def _점검채널앱(self, profile: Profile, client: FakeSlackClient) -> Application:
+        profile.paths.root.mkdir(parents=True, exist_ok=True)
+        profile.paths.channels.write_text(
+            json.dumps({"C_ONE": {"name": "하나", "trusted_users": ["U_TRUSTED"]}}),
+            encoding="utf-8",
+        )
+        return Application(profile, client)
+
+    def _부른것(
+        self, app: Application, monkeypatch: pytest.MonkeyPatch, by_user: str
+    ) -> list[str]:
+        불린것: list[str] = []
+        for 이모지, task in app.review_tasks().items():
+            monkeypatch.setattr(task, "run", lambda _t, 이름=이모지: 불린것.append(이름))
+        app.on_reaction("dango", "C_ONE", "1.0", by_user)
+        return 불린것
+
+    def test_채널_신뢰_사용자가_달면_점검이_돈다(
+        self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = self._점검채널앱(profile, client)
+        assert self._부른것(app, monkeypatch, "U_TRUSTED") == ["dango"]
+
+    def test_그_밖의_사람이_달면_점검이_안_돈다(
+        self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """점검은 소유자 모델과 소유자 권한으로 돌아 비용이 크다 (sca-cg9)."""
+        app = self._점검채널앱(profile, client)
+        assert self._부른것(app, monkeypatch, "U_STRANGER") == []
+
+    def test_거른_사실을_로그에_남긴다(
+        self,
+        profile: Profile,
+        client: FakeSlackClient,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """안 도는 것과 이벤트가 안 온 것이 같은 모습이면 원인을 못 가린다."""
+        app = self._점검채널앱(profile, client)
+        with caplog.at_level(logging.INFO):
+            self._부른것(app, monkeypatch, "U_STRANGER")
+        남은것 = [r.getMessage() for r in caplog.records if "점검 권한이 없다" in r.getMessage()]
+        assert len(남은것) == 1, [r.getMessage() for r in caplog.records]
+        assert "U_STRANGER" in 남은것[0]
+
     def test_점검이_예외를_내도_밖으로_내보내지_않는다(
         self, app: Application, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
