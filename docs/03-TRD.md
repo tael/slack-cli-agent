@@ -1191,6 +1191,8 @@ class RuntimeSettings:
     # 벽시계와 monotonic 의 차이. 43분 보고가 실제 42초였던 사례
     sleep_gap_suspect_sec: float = 30
     max_concurrent: int = 10
+    # 명부에 넣을 계정 핸들의 형태. 빈 문자열이면 형식을 안 본다
+    roster_handle_pattern: str = r"\."
     slack_chunk: int = 3500
     markdown_block_limit: int = 12000
     session_ttl_hours: int = 24

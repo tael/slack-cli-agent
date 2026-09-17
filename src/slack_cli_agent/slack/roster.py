@@ -22,6 +22,7 @@ refresh() every RuntimeSettings.roster_refresh_sec instead.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -51,17 +52,26 @@ class RosterEntry:
 
 
 class RosterBuilder:
+    #: 계정 핸들이 맞아야 하는 형태. 기본값은 회사 워크스페이스의 이름.성
+    #: 형식이고, 다른 워크스페이스는 프로필에서 바꾼다 (sca-evt). 빈 문자열은
+    #: 형식을 안 본다는 뜻이다.
+    DEFAULT_HANDLE_PATTERN = r"\."
+
     def __init__(
         self,
         client: Any,
         output_path: Path,
         page_size: int = 200,
         now: Callable[[], float] = time.time,
+        *,
+        handle_pattern: str | None = None,
     ) -> None:
         self._client = client
         self._output_path = output_path
         self._page_size = page_size
         self._now = now
+        raw = self.DEFAULT_HANDLE_PATTERN if handle_pattern is None else handle_pattern
+        self._handle_pattern, self._pattern_error = self._compile(raw)
 
     def refresh(self) -> int:
         """Runs one pass. Returns the number of entries written.
@@ -70,6 +80,12 @@ class RosterBuilder:
         file alone and returns 0 — one failed lookup shouldn't wipe
         out the roster and make every reply fall back to bare handles.
         """
+        if self._pattern_error:
+            # 기본값으로 되돌아가면 설정한 대로 걸러졌다고 읽게 된다. 명부를
+            # 건드리지 않고 사유만 남긴다.
+            logger.warning("명부 핸들 패턴이 정규식이 아니다: %s", self._pattern_error)
+            return 0
+
         try:
             entries, seen = self._fetch_entries()
         except Exception as exc:  # noqa: BLE001 - same policy as the original: log the failure, don't hide the cause
@@ -114,14 +130,22 @@ class RosterBuilder:
         return list(rows.values()), seen
 
     @staticmethod
-    def _to_entry(member: Mapping[str, Any]) -> RosterEntry | None:
+    def _compile(raw: str) -> tuple[re.Pattern[str] | None, str]:
+        if not raw:
+            return None, ""
+        try:
+            return re.compile(raw), ""
+        except re.error as exc:
+            return None, f"{raw} : {exc}"
+
+    def _to_entry(self, member: Mapping[str, Any]) -> RosterEntry | None:
         """Same exclusion rules as the original. Any one of these
         drops the person from the roster:
 
         - bots/app users have no account-handle concept
         - an empty handle or name leaves nothing to join
         - a handle equal to the name adds no value
-        - a handle without a dot isn't the company's handle format
+        - a handle that doesn't match the configured pattern
         """
         if member.get("is_bot") or member.get("is_app_user"):
             return None
@@ -129,7 +153,7 @@ class RosterBuilder:
         display_name = ((member.get("profile") or {}).get("real_name") or "").strip()
         if not account_handle or not display_name or account_handle == display_name:
             return None
-        if "." not in account_handle:
+        if self._handle_pattern is not None and not self._handle_pattern.search(account_handle):
             return None
         return RosterEntry(
             account_handle=account_handle,
