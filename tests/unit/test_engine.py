@@ -945,6 +945,46 @@ class TestFallbackEngine:
 
         assert [r.model for r in secondary.built] == ["gpt-5.6-sol"]
 
+    def _소유자모델폴백(self, tmp_path: Path):
+        profile = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5",
+             "model_owner": "claude-opus-5"},
+            fallback={"type": "codex", "binary": "codex", "model": "gpt-5.6-sol",
+                      "model_owner": "gpt-5.6-pro"},
+            tmp_path=tmp_path,
+        )
+        primary = named(RecordingEngine, "claude")(profile, SETTINGS)
+        secondary = named(RecordingEngine, "codex")(profile, SETTINGS)
+        switcher = EngineSwitcher(tmp_path / "engine_state.json")
+        runner = EngineRunner(
+            SETTINGS,
+            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(stdout="", returncode=0),
+            environment_policy=통과정책(),
+        )
+        switcher.begin_switch("weekly limit", engine_name="codex")
+        switcher.approve()
+        return FallbackEngine(primary, secondary, switcher, runner), secondary
+
+    def test_소유자_요청은_2차에서도_소유자_모델을_받는다(self, tmp_path: Path) -> None:
+        """1차에서 등급을 올려 보낸 요청이 2차의 일반 모델로 떨어지면
+        그 등급이 조용히 사라진다(sca-14h). 엔진마다 모델명이 달라 1차 이름을
+        그대로 옮길 수는 없으므로 2차의 소유자 모델을 쓴다."""
+        fallback, secondary = self._소유자모델폴백(tmp_path)
+        fallback.run(request(model="claude-opus-5", trust_level=TrustLevel.OWNER))
+        assert [r.model for r in secondary.built] == ["gpt-5.6-pro"]
+
+    def test_일반_요청은_2차의_일반_모델을_받는다(self, tmp_path: Path) -> None:
+        fallback, secondary = self._소유자모델폴백(tmp_path)
+        fallback.run(request(model="claude-sonnet-5", trust_level=TrustLevel.GENERAL))
+        assert [r.model for r in secondary.built] == ["gpt-5.6-sol"]
+
+    def test_2차에_소유자_모델이_없으면_일반_모델을_쓴다(self, tmp_path: Path) -> None:
+        fallback, _primary, secondary, switcher = self._fallback(tmp_path)
+        switcher.begin_switch("weekly limit", engine_name="codex")
+        switcher.approve()
+        fallback.run(request(trust_level=TrustLevel.OWNER))
+        assert [r.model for r in secondary.built] == ["gpt-5.6-sol"]
+
     def test_복구_프로브가_1차로_돌면_1차의_모델을_받는다(self, tmp_path: Path) -> None:
         """모델을 안 정한 요청이 2차 상태에서 1차 프로브로 흘러도 1차 것을 써야 한다."""
         ok = EngineResponse(ok=True, body="복구", session_id=None, model_actual=None,

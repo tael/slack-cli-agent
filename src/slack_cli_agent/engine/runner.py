@@ -21,6 +21,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
+from ..auth.principal import TrustLevel
 from ..config.settings import RuntimeSettings
 from .base import (
     CallOrigin,
@@ -353,13 +354,18 @@ class FallbackEngine(Engine):
 
         A different engine can't continue a session, so this opens a
         new one. Model naming also differs per engine, so it uses the
-        secondary's own configured model.
+        secondary's own configured model -- the owner grade included, or
+        the owner's request would quietly drop to the secondary's general
+        model (sca-14h). A channel's explicitly named model can't carry
+        over at all; engine model names don't correspond.
         """
         self._active = self.secondary
+        owner = request.trust_level is TrustLevel.OWNER
+        model = self.secondary.spec.model_for_owner() if owner else None
         fallback_request = EngineRequest(
             prompt=request.prompt, system_prompt=request.system_prompt,
             session_id=None, resume=False,
-            model=None, effort=request.effort,
+            model=model, effort=request.effort,
             workdir=request.workdir, readable_dirs=request.readable_dirs,
             allowed_tools=request.allowed_tools, trust_level=request.trust_level,
             # Same request with the same person waiting on it. Dropping this
