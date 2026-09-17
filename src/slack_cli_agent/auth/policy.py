@@ -103,10 +103,6 @@ class AccessPolicy:
         """True only in the owner's own DM."""
         return principal.trust is TrustLevel.OWNER and principal.is_direct_message
 
-    def is_trusted_context(self, principal: Principal) -> bool:
-        """True in the owner's own DM or a channel that granted trust."""
-        return self.is_full_authority(principal) or principal.trust is TrustLevel.TRUSTED
-
     def channel_tools_for(self, principal: Principal) -> tuple[str, ...]:
         """Extra tools this channel grants this user. The owner is left out —
         owner tools already cover it, same as the original (bot.py:110)."""
