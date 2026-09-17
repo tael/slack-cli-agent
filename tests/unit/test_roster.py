@@ -310,3 +310,26 @@ class TestRosterSection:
         assert str(roster_path) in rendered
         # 내용 전체를 프롬프트에 싣지 않는다. 표 헤더가 그대로 들어가면 안 된다.
         assert "계정 핸들 | 이름 | 상태" not in rendered
+
+
+class Test핸들패턴을설정으로받는다:
+    """점 규칙은 회사 워크스페이스의 핸들 형식이라 설치물에 박아 둘 것이 아니다.
+    기본값은 그대로 두고 프로필에서 바꿀 수 있게 한다 (sca-evt)."""
+
+    def test_기본은_점이_있어야_통과한다(self, tmp_path: Path) -> None:
+        client = _FakeSlackClient(pages=[_page([_member(handle="alice", real_name="김앨리스")])])
+        assert RosterBuilder(client, tmp_path / "roster.md").refresh() == 0
+
+    def test_패턴을_주면_그것으로_거른다(self, tmp_path: Path) -> None:
+        client = _FakeSlackClient(pages=[_page([_member(handle="alice", real_name="김앨리스")])])
+        builder = RosterBuilder(client, tmp_path / "roster.md", handle_pattern="")
+        assert builder.refresh() == 1
+        assert "alice" in (tmp_path / "roster.md").read_text(encoding="utf-8")
+
+    def test_잘못된_패턴이면_명부를_만들지_않는다(self, tmp_path: Path, caplog) -> None:
+        """조용히 기본값으로 돌아가면 설정한 대로 걸러졌다고 읽게 된다."""
+        client = _FakeSlackClient(pages=[_page([_member()])])
+        with caplog.at_level(logging.WARNING):
+            builder = RosterBuilder(client, tmp_path / "roster.md", handle_pattern="[")
+            assert builder.refresh() == 0
+        assert [r for r in caplog.records if "패턴" in r.getMessage()]
