@@ -15,7 +15,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from review_support import header_body_lines, recorded
 
@@ -301,9 +301,10 @@ class Test표조립도우미:
 
 def make_header_task(cls: type[ReviewTask]) -> ReviewTask:
     """머리말만 보는 테스트용. 협력 객체는 build_header 가 쓰지 않아 None 으로 둔다."""
+    없음 = cast(Any, None)
     return cls(
-        ledger=None, message_lookup=None, transcript=None, answer_finder=None,
-        reactions=None, permalinks=None, publisher=None, engine=None,
+        ledger=없음, message_lookup=없음, transcript=없음, answer_finder=없음,
+        reactions=없음, permalinks=없음, publisher=없음, engine=없음,
         troubleshoot_channel="TS",
     )
 
