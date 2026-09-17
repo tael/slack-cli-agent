@@ -106,6 +106,18 @@ class TestProposalAnalyzer:
         assert "봇" in request.system_prompt
         assert "기록 본문" in request.prompt
 
+    def test_도구를_하나도_주지_않는다(self) -> None:
+        """기록은 프롬프트에 이미 들어간다. 도구를 안 주는 쪽이 요구 등급을
+        선언하는 것보다 확실하다 - 엔진마다 강제 수준이 다르기 때문이다 (sca-0p5)."""
+        engine = FakeEngine()
+        runner = make_runner(analysis_stdout())
+        analyzer = ProposalAnalyzer(
+            DirectInvoker(runner, engine), model="m", effort="low",
+            workdir=Path("/tmp"), bot_name="봇",
+        )
+        analyzer.analyze_channel("2026-09-14", "공지", "기록 본문", [])
+        assert engine.built_requests[0].allowed_tools == ()
+
     def test_엔진_실행_실패는_실행_실패로_갈린다(self, tmp_path: Path) -> None:
         engine = FakeEngine()
         runner = make_runner("실패", returncode=1)
