@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,7 @@ from ..storage.database import Database
 from ..storage.repository import SqliteRepository
 
 
-class IncidentKind(str, Enum):
+class IncidentKind(StrEnum):
     """Every kind string written to the `audit` table's `kind` column.
 
     Single source for these strings — pipeline.py, publisher.py, and

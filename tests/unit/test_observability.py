@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from enum import StrEnum
+from typing import ClassVar
 
 import pytest
 
+from slack_cli_agent.jobs.ports import JobStatus
 from slack_cli_agent.observability.audit import AuditLog, IncidentKind, normalize_kind
 from slack_cli_agent.observability.notices import NoticeCatalog, NoticeKey
+from slack_cli_agent.reliability.connection import ConnectionKind
+from slack_cli_agent.session.ports import SessionScope
 
 
 @pytest.fixture
@@ -224,3 +230,34 @@ class TestAudit기록직렬화:
         # 깊이 제한만으로도 예외는 안 나지만 20겹이 그대로 기록에 남는다.
         # 고리는 처음 만난 자리에서 끊는다.
         assert 기록["이상한값"] == {"이름": "고리", "자신": "<순환 참조>"}
+
+
+class Test열거형은_값_그대로_저장된다:
+    """StrEnum 전환(sca-c0u) 을 되돌리면 str() 이 'IncidentKind.REQUEST' 가 된다.
+
+    저장 자리는 sqlite 바인딩과 json.dumps 라 str+Enum 이어도 값이 같았지만,
+    로그 문구와 f-string 은 달라진다. 운영 audit 의 kind 는 'request' 형태다.
+    """
+
+    열거형: ClassVar[tuple[type[StrEnum], ...]] = (
+        IncidentKind, JobStatus, NoticeKey, ConnectionKind, SessionScope,
+    )
+
+    @pytest.mark.parametrize("enum_cls", 열거형)
+    def test_StrEnum_이다(self, enum_cls: type[StrEnum]) -> None:
+        assert issubclass(enum_cls, StrEnum), enum_cls.__name__
+
+    @pytest.mark.parametrize("enum_cls", 열거형)
+    def test_str_과_json_이_값과_같다(self, enum_cls: type[StrEnum]) -> None:
+        for member in enum_cls:
+            assert str(member) == member.value
+            assert json.dumps(member) == json.dumps(member.value)
+
+    @pytest.mark.parametrize("enum_cls", 열거형)
+    def test_sqlite_에도_값으로_들어간다(self, enum_cls: type[StrEnum]) -> None:
+        con = sqlite3.connect(":memory:")
+        con.execute("CREATE TABLE t(v TEXT)")
+        for member in enum_cls:
+            con.execute("INSERT INTO t VALUES (?)", (member,))
+        저장된 = [row[0] for row in con.execute("SELECT v FROM t")]
+        assert 저장된 == [m.value for m in enum_cls]

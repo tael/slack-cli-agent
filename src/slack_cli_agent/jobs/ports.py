@@ -5,13 +5,13 @@ particular implementation. Verified by tests/unit/test_jobs.py.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from ..core.context import RequestContext
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
