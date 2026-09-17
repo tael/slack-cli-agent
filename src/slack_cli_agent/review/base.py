@@ -1,9 +1,14 @@
 """Shared control flow for post-answer review tasks (postmortem, debug trace, format review).
 
-Subclasses only implement `build_prompt()` / `build_header()`; this base class
-handles dedup, ledger bookkeeping, running the engine, and splitting the
-response into a summary (posted to the channel) and detail (posted to the
-thread).
+Subclasses only implement `build_prompt()` / `header_title()` / `header_rows()`;
+this base class handles dedup, ledger bookkeeping, running the engine, assembling
+the header, and splitting the response into a summary (posted to the channel) and
+detail (posted to the thread).
+
+`build_header()` is concrete here on purpose. Each kind used to assemble its own
+header and they drifted: two built a table and then appended the requester line as
+loose text below it, the third used bullets, so the same kind of field showed up in
+two different forms in one header. Subclasses now return rows only.
 """
 
 from __future__ import annotations
@@ -40,6 +45,19 @@ def as_table(
     for row in rows:
         lines.append("| " + " | ".join(cell(c) for c in row) + " |")
     return "\n".join(lines)
+
+
+def run_info_rows(record: Mapping[str, Any] | None) -> list[tuple[str, str]]:
+    """Header rows describing the run that produced the reviewed answer."""
+    if not record:
+        return [("실행 정보", "감사 기록에서 이 답변을 찾지 못해 뺐습니다")]
+    elapsed = f"{record.get('elapsed') or 0:.1f}초"
+    if record.get("num_turns"):
+        elapsed += f", {record['num_turns']}턴"
+    return [
+        ("모델 / effort", model_effort_cell(record)),
+        ("소요", elapsed),
+    ]
 
 
 def model_effort_cell(record: Mapping[str, Any] | None) -> str:
@@ -143,6 +161,9 @@ class ReviewTask(ABC):
     # Reaction emoji that triggers this review. Dispatch happens outside this package;
     # this is display-only here.
     emoji: ClassVar[str]
+    # Label of the header row naming the user who asked for this review.
+    # A postmortem is a complaint, the other kinds are requests.
+    requester_label: ClassVar[str] = "요청한 사람"
 
     def __init__(
         self,
@@ -175,7 +196,21 @@ class ReviewTask(ABC):
     def build_prompt(self, target: ReviewTarget, *, transcript: str, flagged: str, question: str) -> str: ...
 
     @abstractmethod
-    def build_header(self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str) -> str: ...
+    def header_title(self, target: ReviewTarget) -> str: ...
+
+    @abstractmethod
+    def header_rows(
+        self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str
+    ) -> list[tuple[str, str]]:
+        """Rows shown in the header table, in display order.
+
+        The requester row is added by `build_header()`; don't return it here.
+        """
+
+    def build_header(self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str) -> str:
+        rows = list(self.header_rows(target, record, link))
+        rows.append((self.requester_label, f"<@{target.by_user}>"))
+        return f"## {self.header_title(target)}\n\n" + as_table(rows) + "\n\n"
 
     def split_marker(self) -> str:
         return REVIEW_SPLIT

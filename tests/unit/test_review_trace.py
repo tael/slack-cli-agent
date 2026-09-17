@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from review_support import recorded
+from review_support import assert_header_is_one_table, recorded
 
 from slack_cli_agent.review.base import ReviewTarget
 from slack_cli_agent.review.trace import DebugTraceTask
@@ -65,8 +65,10 @@ class Test머리말:
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
         header = task.build_header(target, None, "https://slack/x")
         assert "## 디버그 : 회의방" in header
-        assert "<@U1>" in header
+        assert "| 요청한 사람 | <@U1> |" in header
         assert "https://slack/x" in header
+        # 세 점검의 머리말 형태를 표 한 벌로 맞췄다. 디버그만 불릿이었다.
+        assert_header_is_one_table(header)
 
     def test_링크가없으면그줄을뺀다(self) -> None:
         task = make_task()
