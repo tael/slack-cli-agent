@@ -719,3 +719,78 @@ class Test캐치업창을받는다:
         worker.catch_up(["C1"])
 
         assert catchup.calls == [(["C1"], 777.0)]
+
+
+class 동시계측핸들러:
+    """동시에 몇 건이 처리 중인지 재는 대역. 상한만큼 모이면 함께 풀어준다."""
+
+    def __init__(self, expected: int, timeout: float = 5.0) -> None:
+        self._lock = threading.Lock()
+        self._expected = expected
+        self._timeout = timeout
+        self._gate = threading.Event()
+        self.동시최대 = 0
+        self._현재 = 0
+
+    def handle(self, ctx: RequestContext) -> HandleOutcome:
+        with self._lock:
+            self._현재 += 1
+            self.동시최대 = max(self.동시최대, self._현재)
+            if self._현재 >= self._expected:
+                self._gate.set()
+        self._gate.wait(self._timeout)
+        with self._lock:
+            self._현재 -= 1
+        return HandleOutcome(ok=True)
+
+
+class Test동시처리상한:
+    """워커 1개가 한 번에 하나씩만 처리하면 서로 다른 스레드의 요청이 서로를
+    기다린다. 실측에서 최대 42분이었다. max_concurrent 를 상한으로 쓴다
+    (sca-si6)."""
+
+    def test_상한만큼_동시에_처리한다(self, database) -> None:
+        handler = 동시계측핸들러(expected=3)
+        settings = RuntimeSettings(heartbeat_interval_sec=0.01, max_concurrent=3)
+        worker, queue, _client = make_worker(
+            database=database, handler=handler, settings=settings
+        )
+        for i in range(3):
+            queue.enqueue(ctx(f"{i}.0", thread=f"t{i}"))
+        멈춤 = [False, False, False, True]
+        worker.run_forever(lambda: 멈춤.pop(0) if 멈춤 else True)
+        assert handler.동시최대 == 3
+
+    def test_상한을_넘지_않는다(self, database) -> None:
+        handler = 동시계측핸들러(expected=2, timeout=0.3)
+        settings = RuntimeSettings(heartbeat_interval_sec=0.01, max_concurrent=1)
+        worker, queue, _client = make_worker(
+            database=database, handler=handler, settings=settings
+        )
+        for i in range(2):
+            queue.enqueue(ctx(f"{i}.0", thread=f"t{i}"))
+        멈춤 = [False, False, True]
+        worker.run_forever(lambda: 멈춤.pop(0) if 멈춤 else True)
+        assert handler.동시최대 == 1
+
+    def test_반환하기_전에_처리_중인_건을_기다린다(self, database) -> None:
+        """안 기다리면 종료 중이던 건이 처리 표식만 남고 아무도 끝내지 않는다."""
+
+        class 늦게끝나는핸들러:
+            def __init__(self) -> None:
+                self.끝났다 = False
+
+            def handle(self, ctx: RequestContext) -> HandleOutcome:
+                time.sleep(0.2)
+                self.끝났다 = True
+                return HandleOutcome(ok=True)
+
+        handler = 늦게끝나는핸들러()
+        settings = RuntimeSettings(heartbeat_interval_sec=0.01, max_concurrent=2)
+        worker, queue, _client = make_worker(
+            database=database, handler=handler, settings=settings
+        )
+        queue.enqueue(ctx("1.0"))
+        멈춤 = [False, True]
+        worker.run_forever(lambda: 멈춤.pop(0) if 멈춤 else True)
+        assert handler.끝났다

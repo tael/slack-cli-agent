@@ -19,7 +19,7 @@ from ..core.context import RequestContext
 from ..core.lifecycle import InflightCounter
 from ..core.ports import HandleOutcome, RequestHandler
 from ..jobs.heartbeat import WorkerHeartbeat
-from ..jobs.ports import JobQueue, ReclaimResult
+from ..jobs.ports import Job, JobQueue, ReclaimResult
 from ..reliability.catchup import CatchupReport, RetryStatus
 from ..reliability.ports import CatchupPort
 from ..reliability.watchjobs import ActiveWatchPort
@@ -80,7 +80,10 @@ class Worker:
         job = self._queue.claim_next(self._worker_id)
         if job is None:
             return False
+        self._process(job)
+        return True
 
+    def _process(self, job: Job) -> None:
         context = job.context
         with self._lock:
             self._running[job.id] = context
@@ -108,18 +111,54 @@ class Worker:
             still_running = self._running.pop(job.id, None) is not None
         if not still_running:
             # shutdown() already requeued this job; don't finish it a second time.
-            return True
+            return
 
         self._finish(job.id, context, outcome)
-        return True
 
     def run_forever(self, should_stop: Callable[[], bool]) -> None:
         # Sleeps on an empty queue so this doesn't busy-poll SQLite; checks should_stop
         # before claiming so a job doesn't get claimed right as shutdown begins and
         # then sit stuck until the stale-job timeout.
+        #
+        # Claiming stays on this one loop; only the handling goes to a thread. The
+        # queue already refuses two jobs on the same thread_ts, so different threads
+        # are free to run at once -- what serialized them was this process handling
+        # one at a time (sca-si6). max_concurrent is that cap, same as the original
+        # bot.py's semaphore.
+        slots = max(1, int(self._settings.max_concurrent))
+        if slots == 1:
+            while not should_stop():
+                if not self.run_once():
+                    self._sleep(self._settings.queue_idle_sleep_sec)
+            return
+
+        free = threading.Semaphore(slots)
+        running: list[threading.Thread] = []
         while not should_stop():
-            if not self.run_once():
+            # One should_stop call per turn, same as the single-slot loop: the
+            # caller's flag is also what the tests step through.
+            free.acquire()
+            job = self._queue.claim_next(self._worker_id)
+            if job is None:
+                free.release()
                 self._sleep(self._settings.queue_idle_sleep_sec)
+                continue
+            thread = threading.Thread(
+                target=self._process_and_release, args=(job, free), daemon=True
+            )
+            thread.start()
+            running.append(thread)
+            running = [t for t in running if t.is_alive()]
+        # A job left mid-handling would keep its processing mark and be finished
+        # by nobody, so the loop does not return before its threads are done.
+        for thread in running:
+            thread.join()
+
+    def _process_and_release(self, job: Job, free: threading.Semaphore) -> None:
+        try:
+            self._process(job)
+        finally:
+            free.release()
 
     def _safe_handle(self, context: RequestContext) -> HandleOutcome:
         # RequestHandler is contracted not to raise, but if it does anyway, only this
@@ -147,7 +186,11 @@ class Worker:
             mark = buried_mark = self._markers.mark_failed
 
         mark(context.channel, context.ts)
-        for buried in self._skip_groups.pop(context.key, []):
+        # Handling now runs on several threads while catch-up fills this from
+        # the claim loop, so the read-and-clear is taken under the lock.
+        with self._lock:
+            buried_all = self._skip_groups.pop(context.key, [])
+        for buried in buried_all:
             buried_mark(buried.channel, buried.ts)
 
     def _pick_done_marks(self, outcome: HandleOutcome) -> tuple[_Mark, _Mark]:
@@ -226,7 +269,8 @@ class Worker:
         for buried in report.skipped:
             rep_key = rep_key_by_thread.get((buried.channel, buried.thread_ts))
             if rep_key is not None:
-                self._skip_groups.setdefault(rep_key, []).append(buried)
+                with self._lock:
+                    self._skip_groups.setdefault(rep_key, []).append(buried)
 
         return CatchupReport(missed=accepted, skipped=report.skipped, unchecked_channels=report.unchecked_channels)
 
