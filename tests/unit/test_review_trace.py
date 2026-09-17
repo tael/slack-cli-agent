@@ -26,6 +26,7 @@ def make_task(**overrides) -> DebugTraceTask:
         "publisher": None,
         "engine": None,
         "troubleshoot_channel": "TS",
+        "owner_only_channels": frozenset({"TS"}),
         "bot_display_name": "테스트봇",
         "code_dir": "/code",
         "persona_dir": "/persona",

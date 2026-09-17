@@ -11,6 +11,7 @@ as_table/cell 의 기대값은 원본 as_table()/cell() 을 AST 추출해 실제
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -172,7 +173,8 @@ class Rig:
 _MISSING = object()
 
 
-def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, progress=None, audit=None) -> Rig:
+def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, progress=None,
+             audit=None, owner_only_channels=frozenset({"TS"})) -> Rig:
     ledger = ReviewLedger(database)
     reactions = FakeReactions()
     publisher = FakePublisher()
@@ -191,6 +193,7 @@ def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, prog
         publisher=publisher,
         engine=engine,
         troubleshoot_channel="TS",
+        owner_only_channels=owner_only_channels,
         progress=progress,
         audit=audit,
     )
@@ -469,3 +472,32 @@ class Test점검_실행_기록:
         rig.task._audit = None
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
         assert recorded(rig.ledger, "fake_kind", "C1", "1.1").status == "완료"
+
+
+class Test점검보고도소유자전용채널에만낸다:
+    """점검 보고는 원 채널 전문을 바탕으로 만든 모델 출력이라 같은 채널
+    경계를 넘는다. 느린 요청 보고에만 걸려 있던 강제를 여기도 건다 (sca-psr).
+    """
+
+    def test_소유자전용이아니면점검을돌리지않는다(self, database) -> None:
+        rig = make_rig(database, owner_only_channels=frozenset())
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert rig.engine.calls == []
+        assert rig.publisher.posts == []
+
+    def test_돌리지않은것을원장에도남기지않는다(self, database) -> None:
+        """진행 행이 남으면 설정을 고친 뒤에도 재시도가 막힌다."""
+        rig = make_rig(database, owner_only_channels=frozenset())
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert rig.ledger.find("fake_kind", "C1", "1.1") is None
+
+    def test_소유자전용이면그대로돈다(self, database) -> None:
+        rig = make_rig(database, owner_only_channels=frozenset({"TS"}))
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert len(rig.engine.calls) == 1
+
+    def test_끌때사유를로그에남긴다(self, database, caplog) -> None:
+        """안 도는 것과 리액션이 안 온 것이 같은 모습이면 원인을 못 가린다."""
+        with caplog.at_level(logging.WARNING):
+            make_rig(database, owner_only_channels=frozenset())
+        assert any("owner_only_channels" in r.getMessage() for r in caplog.records)
