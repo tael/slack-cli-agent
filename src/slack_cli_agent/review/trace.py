@@ -53,13 +53,16 @@ class DebugTraceTask(ReviewTask):
             "파일 이름과 함수 이름을 짚는다."
         )
 
-    def build_header(self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str) -> str:
-        return (
-            f"## 디버그 : {target.channel_name}\n\n"
-            f"- 요청한 사람 : <@{target.by_user}>\n"
-            + (f"- 대상 답변 : {link}\n" if link else "")
-            + "\n"
-        )
+    def header_title(self, target: ReviewTarget) -> str:
+        return f"디버그 : {target.channel_name}"
+
+    def header_rows(
+        self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str
+    ) -> list[tuple[str, str]]:
+        rows: list[tuple[str, str]] = [("대화", target.channel_name)]
+        if link:
+            rows.append(("대상 답변", link))
+        return rows
 
     def not_ok_message(self, body: str) -> str:
         return f"디버그 흐름을 내지 못했습니다. {body}"

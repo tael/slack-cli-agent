@@ -17,10 +17,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from review_support import recorded
+from review_support import header_body_lines, recorded
 
 from slack_cli_agent.engine.base import EngineResponse
-from slack_cli_agent.review.base import ReviewTarget, ReviewTask, as_table, cell, model_effort_cell
+from slack_cli_agent.review.base import (
+    ReviewTarget,
+    ReviewTask,
+    as_table,
+    cell,
+    model_effort_cell,
+    run_info_rows,
+)
 from slack_cli_agent.review.ledger import ReviewLedger
 
 
@@ -142,8 +149,13 @@ class FakeReviewTask(ReviewTask):
     def build_prompt(self, target: ReviewTarget, *, transcript: str, flagged: str, question: str) -> str:
         return f"prompt:{flagged}"
 
-    def build_header(self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str) -> str:
-        return "head\n\n"
+    def header_title(self, target: ReviewTarget) -> str:
+        return "head"
+
+    def header_rows(
+        self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str
+    ) -> list[tuple[str, str]]:
+        return []
 
 
 @dataclass
@@ -278,6 +290,49 @@ class Test표조립도우미:
 
     def test_model_effort_cell은값이없으면물음표다(self) -> None:
         assert model_effort_cell(None) == "? / ?"
+
+    def test_run_info_rows는기록이없으면못찾았다고적는다(self) -> None:
+        assert run_info_rows(None) == [("실행 정보", "감사 기록에서 이 답변을 찾지 못해 뺐습니다")]
+
+    def test_run_info_rows는턴수가있으면소요에함께적는다(self) -> None:
+        rows = run_info_rows({"model": "opus", "effort": "high", "elapsed": 12.3, "num_turns": 4})
+        assert rows == [("모델 / effort", "opus / high"), ("소요", "12.3초, 4턴")]
+
+
+def make_header_task(cls: type[ReviewTask]) -> ReviewTask:
+    """머리말만 보는 테스트용. 협력 객체는 build_header 가 쓰지 않아 None 으로 둔다."""
+    return cls(
+        ledger=None, message_lookup=None, transcript=None, answer_finder=None,
+        reactions=None, permalinks=None, publisher=None, engine=None,
+        troubleshoot_channel="TS",
+    )
+
+
+class Test머리말조립:
+    """요청자 줄이 표 밖에 덧붙어 같은 머리말에서 같은 종류의 값이
+    표와 평문으로 갈렸다. 세 점검 모두 표 한 벌로만 낸다."""
+
+    def test_요청자행이표안에들어간다(self) -> None:
+        class 행있는점검(FakeReviewTask):
+            def header_rows(self, target, record, link):
+                return [("대화", target.channel_name)]
+
+        target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
+        header = make_header_task(행있는점검).build_header(target, None, "")
+        assert header_body_lines(header) == [
+            "| 항목 | 값 |",
+            "|---|---|",
+            "| 대화 | 회의방 |",
+            "| 요청한 사람 | <@U1> |",
+        ]
+
+    def test_라벨은점검종류마다다르게둘수있다(self) -> None:
+        class 지적받는점검(FakeReviewTask):
+            requester_label = "지적한 사람"
+
+        target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
+        header = make_header_task(지적받는점검).build_header(target, None, "")
+        assert "| 지적한 사람 | <@U1> |" in header
 
 
 class Test점검이_도는_동안_진행_신호를_낸다:

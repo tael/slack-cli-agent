@@ -7,13 +7,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from slack_cli_agent.review.base import ReviewTarget, ReviewTask, as_table, model_effort_cell
+from slack_cli_agent.review.base import ReviewTarget, ReviewTask, run_info_rows
 
 
 class PostmortemTask(ReviewTask):
 
     log_name: ClassVar[str] = "postmortem"
     emoji: ClassVar[str] = "dango"
+    requester_label: ClassVar[str] = "지적한 사람"
 
     def __init__(self, *, bot_display_name: str, code_dir: str, persona_dir: str, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -56,24 +57,17 @@ class PostmortemTask(ReviewTask):
             "파일 이름과 함수 이름을 짚는다."
         )
 
-    def build_header(self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str) -> str:
+    def header_title(self, target: ReviewTarget) -> str:
+        return f"부검 : {target.channel_name}"
+
+    def header_rows(
+        self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str
+    ) -> list[tuple[str, str]]:
         rows: list[tuple[str, str]] = [("대화", target.channel_name)]
         if link:
             rows.append(("대상 답변", link))
-        if record:
-            rows.append(("모델 / effort", model_effort_cell(record)))
-            elapsed = f"{record.get('elapsed') or 0:.1f}초"
-            if record.get("num_turns"):
-                elapsed += f", {record['num_turns']}턴"
-            rows.append(("소요", elapsed))
-        else:
-            rows.append(("실행 정보", "감사 기록에서 이 답변을 찾지 못해 뺐습니다"))
-
-        return (
-            f"## 부검 : {target.channel_name}\n\n"
-            + as_table(rows)
-            + f"\n\n지적한 사람 : <@{target.by_user}>\n\n"
-        )
+        rows.extend(run_info_rows(record))
+        return rows
 
     def not_ok_message(self, body: str) -> str:
         return f"부검을 마치지 못했습니다. {body}"

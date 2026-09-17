@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from slack_cli_agent.review.base import ReviewTarget, ReviewTask, as_table, model_effort_cell
+from slack_cli_agent.review.base import ReviewTarget, ReviewTask, run_info_rows
 
 
 class FormatReviewTask(ReviewTask):
@@ -60,25 +60,20 @@ class FormatReviewTask(ReviewTask):
             "실행 결과의 ok 와 blocks 종류를 확인하고 리포트의 교정했습니다 절에 적는다."
         )
 
-    def build_header(self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str) -> str:
+    def header_title(self, target: ReviewTarget) -> str:
+        return f"서식 점검 : {target.channel_name}"
+
+    def header_rows(
+        self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str
+    ) -> list[tuple[str, str]]:
         rows: list[tuple[str, str]] = [("대화", target.channel_name)]
         if link:
             rows.append(("대상 답변", link))
-        if record:
-            rows.append(("모델 / effort", model_effort_cell(record)))
-            elapsed = f"{record.get('elapsed') or 0:.1f}초"
-            if record.get("num_turns"):
-                elapsed += f", {record['num_turns']}턴"
-            rows.append(("소요", elapsed))
-            rows.append(("표기", self._rich_label(target)))
-        else:
-            rows.append(("실행 정보", "감사 기록에서 이 답변을 찾지 못해 뺐습니다"))
-
-        return (
-            f"## 서식 점검 : {target.channel_name}\n\n"
-            + as_table(rows)
-            + f"\n\n요청한 사람 : <@{target.by_user}>\n\n"
-        )
+        rows.extend(run_info_rows(record))
+        # Which notation the channel uses is what this review judges against,
+        # so it belongs in the header whether or not the run record was found.
+        rows.append(("표기", self._rich_label(target)))
+        return rows
 
     def not_ok_message(self, body: str) -> str:
         return f"서식 점검을 내지 못했습니다. {body}"
