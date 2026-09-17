@@ -1092,6 +1092,7 @@ class Application:
                 "publisher": ReviewPublisher(self.publisher()),
                 "engine": self._review_engine(),
                 "troubleshoot_channel": self._profile.troubleshoot_channel,
+                "owner_only_channels": self._settings.owner_only_channels,
                 # 점검은 몇 분이 걸린다. 표시가 없으면 도는 것과 죽은 것이
                 # 사용자에게 같아 보인다(sca-tfd).
                 "progress": ReviewProgressDisplay(self.progress(), self._channels),

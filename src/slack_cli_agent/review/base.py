@@ -177,6 +177,7 @@ class ReviewTask(ABC):
         publisher: PublisherPort,
         engine: EngineCaller,
         troubleshoot_channel: str,
+        owner_only_channels: frozenset[str] = frozenset(),
         progress: ReviewProgressPort | None = None,
         audit: ReviewAuditPort | None = None,
     ) -> None:
@@ -189,6 +190,19 @@ class ReviewTask(ABC):
         self._publisher = publisher
         self._engine = engine
         self._troubleshoot_channel = troubleshoot_channel
+        # The report is built from the source channel's full text, so it
+        # crosses the same channel boundary the slow-request report does.
+        # Decided here at assembly rather than per post, so a config mistake
+        # shows at startup instead of only in what stops arriving (sca-psr).
+        self._owner_only = (
+            bool(troubleshoot_channel) and troubleshoot_channel in owner_only_channels
+        )
+        if not self._owner_only:
+            log.warning(
+                "%s 을 끕니다 : 트러블슈팅 채널 %s 이 소유자 전용이 아닙니다. "
+                "settings 의 owner_only_channels 에 넣으면 다시 나갑니다.",
+                self.log_name, troubleshoot_channel or "(없음)",
+            )
         self._progress = progress
         self._audit = audit
 
@@ -242,6 +256,8 @@ class ReviewTask(ABC):
         return "다시 리액션을 붙이면 재시도합니다."
 
     def run(self, target: ReviewTarget) -> None:
+        if not self._owner_only:
+            return
         if self._ledger.is_reviewed(self.log_name, target.channel, target.ts):
             return
         self._ledger.begin(self.log_name, target.channel, target.ts, by=target.by_user)
