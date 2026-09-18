@@ -161,8 +161,10 @@ class ProgressTracker:
 
 
 def channel_progress_enabled(config: ChannelConfig | None) -> bool:
+    # None means the channel is not in channels.json, not that it wants a
+    # quiet thread -- a bot answers a mention anywhere (sca-stj).
     if config is None:
-        return False
+        return ChannelConfig(channel_id="").progress
     return bool(config.progress)
 
 
