@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import sqlite3
+import sys
 import time
 from collections.abc import Sequence
 from dataclasses import replace
@@ -428,6 +430,35 @@ class TestReviewReactions:
         """부품만 만들면 아무도 안 부른다(sca-9bq)."""
         이름들 = app.ingress_services(lambda 사유: None).runner_names
         assert "stale_review" in 이름들
+
+    def test_서식_점검이_실재하는_교정_명령을_받는다(self, app: Application) -> None:
+        """점검 프롬프트가 부르는 명령이 없으면 위반을 찾아도 원 메시지를 못
+        고친다. 2026-09-18 부검까지 "리치" 라는 없는 명령이 박혀 있었다."""
+        from slack_cli_agent.cli import SlackCliAgent
+
+        명령 = app.rewrite_command()
+        assert sys.executable in 명령
+        assert "-m slack_cli_agent.cli rewrite" in 명령
+        assert "--profile testbot" in 명령
+        assert "rewrite" in SlackCliAgent().command_names()
+
+        target = ReviewTarget(
+            channel="C_ONE", ts="1.0", by_user="U_OWNER", channel_name="하나", rich=True
+        )
+        프롬프트 = app.review_tasks()["pencil2"].build_prompt(
+            target, transcript="", flagged="답변", question=""
+        )
+        assert f"{명령} --channel C_ONE --update 1.0" in 프롬프트
+
+    def test_교정_명령이_프로필을_읽은_디렉터리를_지정한다(
+        self, profile: Profile, client: FakeSlackClient, tmp_path: Path
+    ) -> None:
+        """기본 탐색 순서는 환경변수를 보는데, 엔진 하위 프로세스가 그것을
+        들고 있다는 보장이 없다."""
+        loaded = replace(profile, source_file=tmp_path / "profiles" / "testbot.json")
+        명령 = Application(loaded, client).rewrite_command()
+        # 경로에 공백이나 비ASCII 가 들어가도 셸에서 한 인자로 남아야 한다
+        assert f"--profile-dir {shlex.quote(str(tmp_path / 'profiles'))}" in 명령
 
     def test_보고기와_점검이_같은_원장을_본다(self, app: Application) -> None:
         """따로 만들면 중단 판정 기한이 갈려 도는 점검을 중단으로 알린다."""
