@@ -434,3 +434,61 @@ class Test봇_멘션을_지운다:
         result = guard.apply("그냥 답", GuardContext())
 
         assert result.changed is False
+
+
+class Test코드_구간_보호가_안_샌다:
+    """가드가 코드 구간을 비켜 가는 절차의 결함 2건 (sca-9qv, 코덱스 리뷰).
+
+    예시로 적은 멘션을 진짜 멘션으로 바꾸면 엉뚱한 사람이나 봇을 부른다.
+    """
+
+    def _guard(self):
+        from slack_cli_agent.guard.mentions import BotMentionGuard
+
+        return BotMentionGuard(is_bot=lambda uid: True, display_name=lambda uid: "레이")
+
+    @pytest.mark.parametrize(
+        "본문",
+        [
+            "`<@U0REI>`",
+            "``<@U0REI>``",
+            "```<@U0REI>```",
+            "```\n<@U0REI>\n```",
+            "````<@U0REI>````",
+        ],
+    )
+    def test_백틱_개수와_무관하게_보호된다(self, 본문: str) -> None:
+        """마크다운은 백틱을 몇 개든 같은 수로 닫으면 코드 구간이다. 홑겹과
+        세겹만 보면 겹백틱 예시의 안쪽이 바뀐다."""
+        result = self._guard().apply(본문, GuardContext())
+
+        assert result.body == 본문
+        assert result.changed is False
+
+    def test_여는_백틱과_닫는_백틱_수가_다르면_코드_구간이_아니다(self) -> None:
+        """길이가 다른 백틱 run 은 코드 구간을 열지 않는다. 그런데도 구간으로
+        읽으면 그 안의 진짜 멘션이 가려져 가드를 통째로 건너뛴다(코덱스 리뷰)."""
+        result = self._guard().apply("````<@U0REI> ```", GuardContext())
+
+        assert "레이" in result.body
+        assert "<@U0REI>" not in result.body
+
+    def test_본문에_구분자로_쓰는_문자가_있어도_안_깨진다(self) -> None:
+        """코드 구간을 빼 둘 때 쓰는 표식이 본문에 이미 있으면 되돌리는
+        단계가 그것을 구간 번호로 읽는다. 구간이 없으면 예외가 나고 있으면
+        본문이 다른 조각으로 바뀐다."""
+        본문 = "표식 \x000\x00 과 `코드` 와 <@U0REI>"
+
+        result = self._guard().apply(본문, GuardContext())
+
+        assert "\x000\x00" in result.body
+        assert "`코드`" in result.body
+        assert "레이" in result.body
+
+    def test_평문_멘션_가드도_같은_보호를_받는다(self) -> None:
+        """두 가드가 같은 절차를 쓴다. 한쪽만 고치면 다른 쪽이 그대로 샌다."""
+        guard = PlainMentionGuard()
+
+        result = guard.apply("``@레이``", GuardContext(mention_names={"레이": "U0REI"}))
+
+        assert result.body == "``@레이``"

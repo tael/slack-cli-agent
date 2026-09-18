@@ -5,6 +5,7 @@ mentions of the wrong recipient.
 from __future__ import annotations
 
 import re
+import secrets
 from collections.abc import Callable
 from typing import ClassVar
 
@@ -18,7 +19,39 @@ ANY_MENTION = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]*)?>")
 #: indentation or blank-line structure.
 INNER_RUN_OF_SPACES = re.compile(r"(?<=\S)[ \t]{2,}(?=\S)")
 
-CODE_SPANS = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+#: A code span is a run of backticks closed by a run of the same length.
+#: Single backticks keep the original's no-newline rule; two or more are
+#: matched by length so a `` `` example isn't rewritten from the inside.
+#: The run has to be the whole run on both sides -- without that the
+#: opening length backtracks and pairs with a shorter closing run, hiding
+#: real body text from every guard (sca-9qv).
+CODE_SPANS = re.compile(r"(?<!`)(`{2,})(?!`)[\s\S]*?\1(?!`)|`[^`\n]*`")
+
+
+class CodeSpanMask:
+    """Hides code spans while a guard rewrites prose, then puts them back.
+
+    An example is not a call: substituting inside one produces a mention
+    that really fires. The placeholder carries a random tag because a fixed
+    one gets misread as a placeholder when the body already contains that
+    shape -- restoring then raises IndexError or swaps in the wrong span.
+    """
+
+    def __init__(self, body: str) -> None:
+        self._spans: list[str] = []
+        tag = secrets.token_hex(4)
+        while f"\x00{tag}" in body:
+            tag = secrets.token_hex(4)
+        self._hole = re.compile(rf"\x00{tag}:(\d+)\x00")
+        self._tag = tag
+        self.masked = CODE_SPANS.sub(self._stash, body)
+
+    def _stash(self, m: re.Match[str]) -> str:
+        self._spans.append(m.group(0))
+        return f"\x00{self._tag}:{len(self._spans) - 1}\x00"
+
+    def restore(self, text: str) -> str:
+        return self._hole.sub(lambda m: self._spans[int(m.group(1))], text)
 
 
 class PlainMentionGuard(OutputGuard):
@@ -42,15 +75,8 @@ class PlainMentionGuard(OutputGuard):
         if not body or not table:
             return body, []
 
-        # Code spans are protected — substituting inside an example would
-        # produce a bogus mention.
-        holes: list[str] = []
-
-        def stash(m: re.Match[str]) -> str:
-            holes.append(m.group(0))
-            return f"\x00{len(holes) - 1}\x00"
-
-        out = CODE_SPANS.sub(stash, body)
+        mask = CodeSpanMask(body)
+        out = mask.masked
 
         changed: list[str] = []
         for name in sorted(table, key=len, reverse=True):
@@ -60,8 +86,7 @@ class PlainMentionGuard(OutputGuard):
                 out = pat.sub(f"<@{uid}>", out)
                 changed.append(name)
 
-        out = re.sub(r"\x00(\d+)\x00", lambda m: holes[int(m.group(1))], out)
-        return out, changed
+        return mask.restore(out), changed
 
     def apply(self, body: str, ctx: GuardContext) -> GuardResult:
         out, changed = self._fix_plain_mentions(body, dict(ctx.mention_names))
@@ -132,14 +157,8 @@ class BotMentionGuard(OutputGuard):
         if not body or "<@" not in body:
             return GuardResult(body=body, changed=False)
 
-        # Code spans are left as written; an example is not a call.
-        holes: list[str] = []
-
-        def stash(m: re.Match[str]) -> str:
-            holes.append(m.group(0))
-            return f"\x00{len(holes) - 1}\x00"
-
-        out = CODE_SPANS.sub(stash, body)
+        mask = CodeSpanMask(body)
+        out = mask.masked
 
         targets: list[str] = []
         verdicts: dict[str, bool] = {}
@@ -154,8 +173,7 @@ class BotMentionGuard(OutputGuard):
                 targets.append(user_id)
             return self._display_name(user_id)
 
-        out = ANY_MENTION.sub(swap, out)
-        out = re.sub(r"\x00(\d+)\x00", lambda m: holes[int(m.group(1))], out)
+        out = mask.restore(ANY_MENTION.sub(swap, out))
 
         if not targets:
             return GuardResult(body=body, changed=False)
