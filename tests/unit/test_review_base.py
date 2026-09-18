@@ -1,12 +1,11 @@
-"""review/base.py 의 ReviewTask 공통 흐름과 표 조립 도우미 테스트.
+"""review/base.py 의 ReviewTask 공통 흐름 테스트.
 
 원본 bot.py 의 run_postmortem/_run_postmortem 계열 셋이
 공유하던 흐름(대상 조회 -> 처리중 표시 -> 대화록/실행기록 조회 -> 모델 호출
 -> 실패 처리 -> 구분선 분할 -> 채널 게시 -> 원장 기록)을 ReviewTask(ABC) 로
 하나로 합쳤다. 여기서는 최소한의 가짜 하위 클래스로 그 공통 흐름만 검증한다.
 
-as_table/cell 의 기대값은 원본 as_table()/cell() 을 AST 추출해 실제로
-실행해서 얻었다.
+as_table/cell 은 render/table.py 로 옮겨 tests/unit/test_render_table.py 에서 본다.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -24,8 +23,6 @@ from slack_cli_agent.engine.base import EngineResponse
 from slack_cli_agent.review.base import (
     ReviewTarget,
     ReviewTask,
-    as_table,
-    cell,
     model_effort_cell,
     run_info_rows,
 )
@@ -85,6 +82,10 @@ class FakePublisher:
 class FakeEngine:
     def __init__(self, responses: list[EngineResponse]) -> None:
         self._responses = list(responses)
+        # 실물 ReviewEngineCaller 가 들고 있는 값. 없으면 느린 보고가 조용히
+        # 실패해 시험이 통과한다.
+        self.model = "모델"
+        self.effort = "medium"
         self.calls: list[tuple[str, str | None, bool]] = []
         self.progress_logs: list[Path | None] = []
 
@@ -174,7 +175,7 @@ _MISSING = object()
 
 
 def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, progress=None,
-             audit=None, owner_only_channels=frozenset({"TS"})) -> Rig:
+             audit=None, owner_only_channels=frozenset({"TS"}), slow_reporter=None) -> Rig:
     ledger = ReviewLedger(database)
     reactions = FakeReactions()
     publisher = FakePublisher()
@@ -196,6 +197,7 @@ def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, prog
         owner_only_channels=owner_only_channels,
         progress=progress,
         audit=audit,
+        slow_reporter=slow_reporter,
     )
     return Rig(ledger, reactions, publisher, engine, message_lookup, task, audit)
 
@@ -274,19 +276,6 @@ class Test예외발생:
 
 
 class Test표조립도우미:
-    def test_cell은파이프와줄바꿈을치환한다(self) -> None:
-        assert cell("a|b\nc") == "a/b c"
-
-    def test_cell은빈값을대시로바꾼다(self) -> None:
-        assert cell("") == "-"
-
-    def test_as_table은빈목록이면빈문자열이다(self) -> None:
-        assert as_table([]) == ""
-
-    def test_as_table은파이프표를만든다(self) -> None:
-        rows = [("a", "b|c\nd"), ("e", "")]
-        assert as_table(rows) == "| 항목 | 값 |\n|---|---|\n| a | b/c d |\n| e | - |"
-
     def test_model_effort_cell은실제모델이다르면함께보인다(self) -> None:
         rec = {"model": "opus", "model_actual": "sonnet", "effort": "high"}
         assert model_effort_cell(rec) == "opus (실제 sonnet) / high"
@@ -509,3 +498,99 @@ class Test점검보고도소유자전용채널에만낸다:
         with caplog.at_level(logging.WARNING):
             make_rig(database, owner_only_channels=frozenset())
         assert any("owner_only_channels" in r.getMessage() for r in caplog.records)
+
+
+class Fake느린보고:
+    def __init__(self, fail: bool = False) -> None:
+        self.metas: list[Any] = []
+        self._fail = fail
+
+    def maybe_report(self, meta: Any) -> str | None:
+        if self._fail:
+            raise RuntimeError("보고 실패")
+        self.metas.append(meta)
+        return "TS:1.0"
+
+
+def _느린_rig(database, reporter, *, elapsed: float) -> Rig:
+    response = replace(_ok_response("요약===상세===상세내용"), elapsed=elapsed)
+    return make_rig(database, engine_responses=[response], slow_reporter=reporter)
+
+
+class Test점검이_느리면_보고한다:
+    """점검 경로에도 느린 실행 보고를 붙인다 (sca-xck).
+
+    붙기 전에는 점검이 제한시간 근처까지 길어져도 남는 것이 audit 의 숫자
+    하나뿐이라, 2026-09-17 에 14분을 쓴 부검의 원인을 이틀 뒤에도 못 밝혔다.
+    """
+
+    def test_기준을_넘으면_보고를_낸다(self, database) -> None:
+        reporter = Fake느린보고()
+        _느린_rig(database, reporter, elapsed=900.0).task.run(
+            ReviewTarget(channel="C1", ts="1.0", by_user="U1", channel_name="일반", rich=True)
+        )
+
+        assert len(reporter.metas) == 1
+
+    def test_보고에_엔진이_돌린_값이_담긴다(self, database) -> None:
+        reporter = Fake느린보고()
+        _느린_rig(database, reporter, elapsed=900.0).task.run(
+            ReviewTarget(channel="C1", ts="1.0", by_user="U1", channel_name="일반", rich=True)
+        )
+
+        meta = reporter.metas[0]
+        assert meta.elapsed_wall == 900.0
+        assert meta.channel == "C1"
+        assert meta.channel_name == "일반"
+        # 지적받은 메시지 원문. 보고는 소유자 전용 채널로만 나가고, 어느 입력에
+        # 걸렸는지가 있어야 지연 구간을 읽을 수 있다(코덱스 검토).
+        assert meta.text == "지목한 답변"
+
+    def test_기준_판정은_보고자가_한다(self, database) -> None:
+        """점검은 원래 몇 분씩 걸린다. 여기서 한 번 더 거르면 기준이 두 곳에
+        적히고 한쪽만 고쳐 어긋난다."""
+        reporter = Fake느린보고()
+        _느린_rig(database, reporter, elapsed=1.0).task.run(
+            ReviewTarget(channel="C1", ts="1.0", by_user="U1", channel_name="일반", rich=True)
+        )
+
+        assert len(reporter.metas) == 1
+
+    def test_보고가_터져도_점검_결과는_나간다(self, database) -> None:
+        reporter = Fake느린보고(fail=True)
+        rig = _느린_rig(database, reporter, elapsed=900.0)
+
+        rig.task.run(ReviewTarget(channel="C1", ts="1.0", by_user="U1", channel_name="일반", rich=True))
+
+        assert any("요약" in text for _, _, text, _ in rig.publisher.posts)
+
+    def test_구분선_재시도도_보고_대상이다(self, database) -> None:
+        """첫 호출이 빨리 끝나고 재시도가 오래 걸리는 형태가 있다. 재시도를
+        빼면 그 구간은 audit 의 숫자로만 남는다(코덱스 지적)."""
+        reporter = Fake느린보고()
+        first = replace(_ok_response("구분선 없는 본문"), elapsed=1.0, session_id="S1")
+        retry = replace(_ok_response("요약===상세===상세내용"), elapsed=900.0, session_id="S1")
+        rig = make_rig(database, engine_responses=[first, retry], slow_reporter=reporter)
+        rig.task.__class__ = 재시도하는Task
+
+        rig.task.run(ReviewTarget(channel="C1", ts="1.0", by_user="U1", channel_name="일반", rich=True))
+
+        assert [meta.elapsed_wall for meta in reporter.metas] == [1.0, 900.0]
+
+    def test_재시도_보고는_이어붙인_세션이라고_적는다(self, database) -> None:
+        reporter = Fake느린보고()
+        first = replace(_ok_response("구분선 없는 본문"), elapsed=1.0, session_id="S1")
+        retry = replace(_ok_response("요약===상세===상세내용"), elapsed=900.0, session_id="S1")
+        rig = make_rig(database, engine_responses=[first, retry], slow_reporter=reporter)
+        rig.task.__class__ = 재시도하는Task
+
+        rig.task.run(ReviewTarget(channel="C1", ts="1.0", by_user="U1", channel_name="일반", rich=True))
+
+        assert [meta.resume for meta in reporter.metas] == [False, True]
+
+    def test_보고자가_없어도_점검은_돈다(self, database) -> None:
+        rig = make_rig(database)
+
+        rig.task.run(ReviewTarget(channel="C1", ts="1.0", by_user="U1", channel_name="일반", rich=True))
+
+        assert any("요약" in text for _, _, text, _ in rig.publisher.posts)

@@ -12,6 +12,10 @@ class RuntimeSettings:
     # 300s would have cut 2 of 150 requests; the median was 34s.
     request_timeout_sec: float = 900
     slow_report_sec: float = 800
+    #: Same trigger for reviews, kept separate because a review normally
+    #: spends minutes -- measured 150-169s on gemini (sca-2hf) -- so the two
+    #: thresholds have different meanings even where the number matches.
+    review_slow_report_sec: float = 800
     # Catches wall-clock vs. monotonic clock drift — one case reported 43
     # minutes for what was actually 42 seconds.
     sleep_gap_suspect_sec: float = 30
