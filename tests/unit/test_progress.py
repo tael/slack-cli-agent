@@ -38,6 +38,38 @@ class TestToolLabelMapper:
     def test_서버_이름을_못_가르면_조회_중으로_돌려준다(self, mapper: ToolLabelMapper) -> None:
         assert mapper.label_for("mcp__") == "조회 중"
 
+    @pytest.mark.parametrize(
+        ("tool", "label"),
+        [
+            # codex — item.type (2026-09-19 실측)
+            ("command_execution", "명령 실행 중"),
+            ("file_change", "파일 고치는 중"),
+            ("web_search", "웹 찾는 중"),
+            ("agent_message", "답 쓰는 중"),
+            # agy — step_update.tool_name (init 이벤트의 도구 목록)
+            ("run_command", "명령 실행 중"),
+            ("view_file", "파일 읽는 중"),
+            ("grep_search", "코드 찾는 중"),
+            ("find_by_name", "파일 찾는 중"),
+            ("list_dir", "파일 찾는 중"),
+            ("replace_file_content", "파일 고치는 중"),
+            ("multi_replace_file_content", "파일 고치는 중"),
+            ("write_to_file", "파일 쓰는 중"),
+            ("search_web", "웹 찾는 중"),
+            ("read_url_content", "웹 문서 읽는 중"),
+            ("invoke_subagent", "따로 조사 돌리는 중"),
+            ("browser_subagent", "따로 조사 돌리는 중"),
+            ("open_browser_url", "브라우저로 화면 보는 중"),
+            ("browser_click_element", "브라우저로 화면 보는 중"),
+            ("manage_task", "할 일 정리 중"),
+        ],
+    )
+    def test_코덱스와_제미나이_도구도_같은_문구로_옮긴다(
+        self, mapper: ToolLabelMapper, tool: str, label: str
+    ) -> None:
+        """엔진이 달라도 사람이 보는 문구는 같다. 도구 이름만 엔진마다 다르다(sca-8ks)."""
+        assert mapper.label_for(tool) == label
+
     def test_모르는_도구는_기본_문구다(self, mapper: ToolLabelMapper) -> None:
         assert mapper.label_for("무엇인지모를도구") == "확인하는 중"
 

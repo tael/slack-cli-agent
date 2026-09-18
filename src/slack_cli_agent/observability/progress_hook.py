@@ -29,12 +29,13 @@ from pathlib import Path
 HOOK_SCRIPT = Path(__file__).resolve()
 
 
-def record(log_path: Path, payload: str) -> None:
-    """Appends one tool name from a hook payload. Silent on anything unreadable."""
-    try:
-        tool_name = json.loads(payload or "{}").get("tool_name") or ""
-    except (json.JSONDecodeError, AttributeError, TypeError):
-        return
+def append_tool(log_path: Path, tool_name: str) -> None:
+    """Appends one tool name in the format ProgressLogReader expects.
+
+    Also called in-process by EngineRunner for engines that stream their own
+    events (engine/stream.py), so the two writers share one format definition.
+    Silent on any write failure -- progress display is cosmetic.
+    """
     if not tool_name:
         return
     try:
@@ -45,6 +46,15 @@ def record(log_path: Path, payload: str) -> None:
             handle.write(json.dumps({"tool": tool_name}, ensure_ascii=False) + "\n")
     except OSError:
         return
+
+
+def record(log_path: Path, payload: str) -> None:
+    """Appends one tool name from a hook payload. Silent on anything unreadable."""
+    try:
+        tool_name = json.loads(payload or "{}").get("tool_name") or ""
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return
+    append_tool(log_path, tool_name)
 
 
 def main(argv: list[str]) -> int:

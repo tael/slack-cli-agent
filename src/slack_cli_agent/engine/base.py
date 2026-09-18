@@ -7,6 +7,7 @@ pinned. Callers only know about Engine.
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -296,6 +297,22 @@ class EngineResponse:
             )
 
 
+def json_object_line(line: str) -> Mapping[str, Any] | None:
+    """One JSONL line as a mapping, or None when it is not one.
+
+    Progress streaming reads lines as they arrive, so a blank line or a
+    half-written last line is normal rather than an error.
+    """
+    text = line.strip()
+    if not text:
+        return None
+    try:
+        event = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return event if isinstance(event, Mapping) else None
+
+
 class Engine(ABC):
     """Contract for one engine. Has shared default implementations below, hence ABC rather than Protocol."""
 
@@ -305,6 +322,13 @@ class Engine(ABC):
     #: request is capabilities_for() -- codex's sandbox comes from profile
     #: options, and claude's allowlist only holds if the request has one.
     capabilities: ClassVar[EngineCapabilities] = EngineCapabilities()
+
+    #: True when this engine's own stdout carries structured progress events,
+    #: so EngineRunner streams stdout and feeds each line to
+    #: progress_tool_name(). Claude reports progress through a separate hook
+    #: process and leaves this False -- doing both would record every tool
+    #: call twice (sca-8ks).
+    streams_progress: ClassVar[bool] = False
 
     def __init__(self, profile: Profile, settings: RuntimeSettings) -> None:
         self.profile = profile
@@ -324,6 +348,14 @@ class Engine(ABC):
         if profile.fallback_engine and profile.fallback_engine.type == self.name:
             return profile.fallback_engine
         raise ConfigError(f"프로필 {profile.name} 에 {self.name} 엔진 설정이 없다")
+
+    def progress_tool_name(self, line: str) -> str:
+        """Tool name from one line of this engine's structured stdout.
+
+        Empty when the line carries no tool call, is not this engine's event
+        format, or is a partial write. Only consulted when streams_progress.
+        """
+        return ""
 
     @abstractmethod
     def build_command(self, request: EngineRequest) -> list[str]: ...
