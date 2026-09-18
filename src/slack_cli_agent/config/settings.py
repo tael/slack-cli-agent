@@ -55,6 +55,12 @@ class RuntimeSettings:
     watch_check_interval_sec: float = 300
     watch_job_min_gap_sec: float = 300
     watch_job_max_age_sec: float = 24 * 3600
+    #: How many engine calls one watch may spend. Each check is a full engine
+    #: call, so without a cap a condition watch spends max_age / min_gap of
+    #: them -- 288 at the defaults. Reaching it hands the job to `expired`,
+    #: which sends the owner a give-up report instead of going quiet
+    #: (sca-2v2). 48 is four hours of checking at the default gap.
+    watch_job_max_checks: int = 48
     #: Must stay above watch_job_max_age_sec: a job still in the queue needs
     #: its result file. Orphans only appear when registration never happened.
     watch_result_retain_sec: float = 48 * 3600

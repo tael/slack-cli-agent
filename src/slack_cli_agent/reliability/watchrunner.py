@@ -128,7 +128,9 @@ class WatchJobChecker:
         now = self._now()
 
         given_up_ids: set[int] = set()
-        for job in self._queue.expired(now, self._settings.watch_job_max_age_sec):
+        for job in self._queue.expired(
+            now, self._settings.watch_job_max_age_sec, self._settings.watch_job_max_checks
+        ):
             # An exit status already read outranks the clock: giving up on work
             # that finished drops its report and tells the owner it never ended.
             if self._outcome_of(job) in _TERMINAL:
@@ -140,7 +142,9 @@ class WatchJobChecker:
             self._settle_mark(job, failed=True)
             self._record(WATCH_ABANDONED_KIND, job, age_sec=now - job.created_at)
 
-        for job in self._queue.due(now, self._settings.watch_job_min_gap_sec):
+        for job in self._queue.due(
+            now, self._settings.watch_job_min_gap_sec, self._settings.watch_job_max_checks
+        ):
             if job.id in given_up_ids:
                 continue
             self._check_one(job, now)

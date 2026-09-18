@@ -1091,3 +1091,50 @@ class Test안_띄운_감시는_확인을_돌린다:
 
         assert [결과 for _작업, 결과 in 호출] == [WatchOutcome.NOT_LAUNCHED]
         assert [작업.checks for 작업 in 큐.due(now=99999.0, min_gap=0.0)] == [1]
+
+
+class Test확인_횟수_상한을_건다:
+    """due 와 expired 는 max_checks 를 받는데 check_once 가 안 넘겼다. 그래서
+    조건 감시 하나가 24시간 동안 300초마다 엔진을 불렀다 - 최대 288회다
+    (sca-2v2)."""
+
+    def test_상한에_닿으면_더_안_묻는다(self, 큐) -> None:
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "커밋 확인", workdir="/w", run_id="r1")
+        호출: list[object] = []
+
+        def run_check(job, outcome):
+            호출.append(job.id)
+            return 응답(ok=True, body="아직")
+
+        c = 체커(
+            큐=큐,
+            run_check=run_check,
+            판정기=고정판정기(WatchOutcome.NOT_LAUNCHED),
+            설정값=설정(watch_job_max_checks=2, watch_job_max_age_sec=99999.0),
+            notify_owner=lambda _텍스트: None,
+        )
+        for 회차 in range(4):
+            큐.시각["값"] = 2000.0 + 회차 * 1000
+            c.check_once()
+
+        assert len(호출) == 2
+
+    def test_상한에_닿은_건은_포기_보고를_낸다(self, 큐) -> None:
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "커밋 확인", workdir="/w", run_id="r1")
+        통지: list[str] = []
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="아직"),
+            판정기=고정판정기(WatchOutcome.NOT_LAUNCHED),
+            설정값=설정(watch_job_max_checks=1, watch_job_max_age_sec=99999.0),
+            notify_owner=통지.append,
+        )
+        for 회차 in range(3):
+            큐.시각["값"] = 2000.0 + 회차 * 1000
+            c.check_once()
+
+        assert len(통지) == 1
+        assert 큐.due(now=99999.0, min_gap=0.0) == []
