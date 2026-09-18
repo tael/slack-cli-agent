@@ -338,6 +338,14 @@ class Test머리말조립:
         header = make_header_task(지적받는점검).build_header(target, None, "")
         assert "| 지적한 사람 | <@U1> |" in header
 
+    def test_제목은최상위이고표뒤에구분선을둔다(self) -> None:
+        """본문 절이 `##` 라서 머리말 제목이 `##` 이면 같은 높이로 읽혔다."""
+        target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
+        header = make_header_task(FakeReviewTask).build_header(target, None, "")
+        assert header.startswith("# ")
+        assert not header.startswith("## ")
+        assert header.rstrip().endswith("---")
+
 
 class Test점검이_도는_동안_진행_신호를_낸다:
     """경단을 붙이면 눈 이모지만 붙고 결과까지 아무 신호가 없었다(sca-tfd).
