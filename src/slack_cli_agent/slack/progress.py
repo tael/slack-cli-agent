@@ -88,8 +88,8 @@ class SlackProgressSink:
             log.debug("진행 표시 삭제 실패 : %s:%s, %s", self._channel, ts, exc)
 
 
-#: Title shown while steps are still coming in. The card's own title is the
-#: line a person reads first, so it carries the current step, not a fixed word.
+#: Title the card ends on. While steps are still coming in the title is the
+#: step running now, since that is the line a person reads first.
 DONE_TITLE = "작업 완료"
 
 
