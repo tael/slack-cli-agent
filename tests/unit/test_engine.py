@@ -1421,3 +1421,127 @@ class Test실패_사유의_진단값:
         engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
         payload = {"type": "result", "result": "답", "session_id": "s1"}
         assert not engine.parse(json.dumps(payload), "", 0).failure_detail
+
+
+# sca-8ks — codex·gemini 의 진행 단계
+
+
+class Test엔진_stdout에서_도구_이름을_읽는다:
+    """실측(2026-09-19) — codex 는 item.started/item.completed 의 item.type 에,
+    agy 는 step_update.tool_name 에 도구 이름이 온다."""
+
+    def codex(self, tmp_path: Path) -> CodexEngine:
+        return CodexEngine(profile_with({"type": "codex", "binary": "codex", "model": "gpt-5"},
+                                        tmp_path=tmp_path), SETTINGS)
+
+    def gemini(self, tmp_path: Path) -> GeminiEngine:
+        return GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+
+    def test_codex는_item_started의_item_type을_낸다(self, tmp_path: Path) -> None:
+        line = json.dumps({"type": "item.started",
+                           "item": {"id": "item_1", "type": "command_execution", "command": "ls"}})
+        assert self.codex(tmp_path).progress_tool_name(line) == "command_execution"
+
+    def test_codex는_item_completed도_읽는다(self, tmp_path: Path) -> None:
+        line = json.dumps({"type": "item.completed", "item": {"type": "file_change"}})
+        assert self.codex(tmp_path).progress_tool_name(line) == "file_change"
+
+    def test_codex는_도구가_아닌_이벤트에_빈_값을_낸다(self, tmp_path: Path) -> None:
+        engine = self.codex(tmp_path)
+        assert engine.progress_tool_name(json.dumps({"type": "turn.started"})) == ""
+        assert engine.progress_tool_name(json.dumps({"type": "thread.started", "thread_id": "x"})) == ""
+
+    def test_gemini는_도구_단계의_tool_name을_낸다(self, tmp_path: Path) -> None:
+        line = json.dumps({"event": "step_update",
+                           "step_update": {"step_type": "tool", "tool_name": "run_command"}})
+        assert self.gemini(tmp_path).progress_tool_name(line) == "run_command"
+
+    def test_gemini는_도구가_아닌_단계에_빈_값을_낸다(self, tmp_path: Path) -> None:
+        engine = self.gemini(tmp_path)
+        line = json.dumps({"event": "step_update", "step_update": {"step_type": "agent_response"}})
+        assert engine.progress_tool_name(line) == ""
+        assert engine.progress_tool_name(json.dumps({"event": "init", "init": {"tools": ["a"]}})) == ""
+
+    @pytest.mark.parametrize("line", ["", "   ", "{깨진", "[]", "null"])
+    def test_형식이_깨진_줄은_빈_값이다(self, tmp_path: Path, line: str) -> None:
+        assert self.codex(tmp_path).progress_tool_name(line) == ""
+        assert self.gemini(tmp_path).progress_tool_name(line) == ""
+
+    def test_클로드는_stdout_스트리밍_대상이_아니다(self, tmp_path: Path) -> None:
+        """클로드는 훅 프로세스가 진행 로그를 쓴다. stdout 을 겹쳐 읽으면 같은
+        호출이 두 번 기록된다."""
+        assert ClaudeEngine(claude_profile(tmp_path), SETTINGS).streams_progress is False
+        assert self.codex(tmp_path).streams_progress is True
+        assert self.gemini(tmp_path).streams_progress is True
+
+
+class Test실행기가_진행_로그를_스트리밍으로_쓴다:
+    def test_도구_이름을_진행_로그에_한_줄씩_쓴다(self, tmp_path: Path) -> None:
+        engine = CodexEngine(profile_with({"type": "codex", "binary": "codex", "model": "gpt-5"},
+                                          tmp_path=tmp_path), SETTINGS)
+        log = tmp_path / "progress.jsonl"
+        events = [
+            json.dumps({"type": "thread.started", "thread_id": "t1"}),
+            json.dumps({"type": "item.started", "item": {"type": "command_execution"}}),
+            json.dumps({"type": "item.started", "item": {"type": "web_search"}}),
+            json.dumps({"type": "item.completed",
+                        "item": {"type": "agent_message", "text": "답"}}),
+        ]
+
+        def fake_subprocess(cmd, cwd, timeout, env=None, on_stdout_line=None):
+            assert on_stdout_line is not None
+            for event in events:
+                on_stdout_line(event + "\n")
+            return FakeCompleted(stdout="\n".join(events), returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        resp = runner.run(engine, request(progress_log=log, model="gpt-5"))
+        assert resp.ok is True
+        written = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert written == [{"tool": "command_execution"}, {"tool": "web_search"},
+                           {"tool": "agent_message"}]
+
+    def test_진행_로그가_없으면_스트리밍을_안_건다(self, tmp_path: Path) -> None:
+        """진행 표시가 꺼진 채널이다. 쓸 자리가 없으니 stdout 을 겹쳐 읽지 않는다."""
+        engine = CodexEngine(profile_with({"type": "codex", "binary": "codex", "model": "gpt-5"},
+                                          tmp_path=tmp_path), SETTINGS)
+        받은것: list[Any] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None, **kwargs):
+            받은것.append(kwargs)
+            return FakeCompleted(stdout=json.dumps(
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "답"}}),
+                returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        runner.run(engine, request(progress_log=None, model="gpt-5"))
+        assert 받은것 == [{}]
+
+    def test_스트리밍을_안_하는_엔진에는_안_건다(self, tmp_path: Path) -> None:
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        받은것: list[Any] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None, **kwargs):
+            받은것.append(kwargs)
+            return FakeCompleted(stdout="답변", returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        runner.run(engine, request(progress_log=tmp_path / "p.jsonl"))
+        assert 받은것 == [{}]
+
+    def test_진행_로그를_못_써도_실행은_계속한다(self, tmp_path: Path) -> None:
+        """진행 표시는 부가 기능이다. 쓸 수 없으면 그 줄만 버리고 답은 낸다."""
+        engine = CodexEngine(profile_with({"type": "codex", "binary": "codex", "model": "gpt-5"},
+                                          tmp_path=tmp_path), SETTINGS)
+        answer = json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "답"}})
+
+        def fake_subprocess(cmd, cwd, timeout, env=None, on_stdout_line=None):
+            assert on_stdout_line is not None
+            on_stdout_line(json.dumps({"type": "item.started", "item": {"type": "web_search"}}) + "\n")
+            return FakeCompleted(stdout=answer, returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        # 디렉터리가 없는 경로라 append 가 실패한다.
+        resp = runner.run(engine, request(progress_log=tmp_path / "없는자리" / "p.jsonl", model="gpt-5"))
+        assert resp.ok is True
+        assert resp.body == "답"

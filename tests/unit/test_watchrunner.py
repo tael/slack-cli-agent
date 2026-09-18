@@ -1138,3 +1138,49 @@ class Test확인_횟수_상한을_건다:
 
         assert len(통지) == 1
         assert 큐.due(now=99999.0, min_gap=0.0) == []
+
+
+class Test상한에_닿은_뒤_끝난_일도_보고된다:
+    """상한을 due 로만 막으면 그 시점에 이미 끝나 있던 작업의 보고가 사라진다.
+    expired 는 종료 상태를 보고 건너뛰고, due 는 횟수로 걸러 다시는 안 꺼낸다.
+    그래서 작업이 done=0 인 채로 큐에 영영 남는다(코덱스 리뷰)."""
+
+    def test_종료상태면_상한에_닿아도_완료_보고를_낸다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
+        발행 = 가짜발행()
+        통지: list[str] = []
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body="끝났습니다"),
+            발행=발행,
+            판정기=고정판정기(WatchOutcome.SUCCEEDED),
+            설정값=설정(watch_job_max_checks=0, watch_job_max_age_sec=99999.0),
+            notify_owner=통지.append,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "끝났습니다", True)]
+        assert 통지 == []
+        assert 큐.expired(now=99999.0, max_age=0.0) == []
+
+    def test_같은_회차에_확인이_두_번_돌지_않는다(self, 큐) -> None:
+        """expired 에서 확인을 돌린 건을 due 가 다시 꺼내면 엔진을 한 회차에
+        두 번 부른다. 그 건은 처리 완료로 표시해 아래 루프에서 뺀다."""
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
+        호출: list[int] = []
+
+        def run_check(job, outcome):
+            호출.append(job.id)
+            return 응답(ok=False, body="", failure_reason="보고 생성 실패")
+
+        c = 체커(
+            큐=큐,
+            run_check=run_check,
+            판정기=고정판정기(WatchOutcome.SUCCEEDED),
+            설정값=설정(watch_job_max_checks=0, watch_job_max_age_sec=99999.0),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert len(호출) == 1
