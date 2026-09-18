@@ -1979,3 +1979,40 @@ class Test진행표시감사기록배선:
         기록 = [json.loads(line) for line in lines]
         assert [x["kind"] for x in 기록] == ["progress_unknown_tool"]
         assert 기록[0]["tool"] == "새로생긴도구"
+
+
+class Test봇멘션가드연결:
+    """다른 봇의 멘션을 지우는 가드가 조립에 들어가는가 (sca-c4m).
+
+    만들어도 파이프라인에 안 넣으면 답에 든 <@U...> 가 그대로 나가 그 봇을
+    깨우고, 그 봇의 답이 이쪽을 부르면 서로 계속 깨운다.
+    """
+
+    def test_가드가_파이프라인에_들어간다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.guard.mentions import BotMentionGuard
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        assert any(isinstance(g, BotMentionGuard) for g in app._guards()._guards)
+
+    def test_봇_멘션이_실제로_지워진다(self, tmp_path: Path) -> None:
+        client = FakeSlackClient()
+        client.users_info = lambda **kw: {  # type: ignore[method-assign]
+            "user": {"id": kw.get("user"), "is_bot": True, "profile": {"real_name": "레이"}}
+        }
+        app = Application.from_profile(write_profile(tmp_path), client=client)
+
+        result = app._guards().run("자세한 것은 <@U0REI> 에게 물어보세요", GuardContext())
+
+        assert "<@U0REI>" not in result.body
+        assert "레이" in result.body
+
+    def test_사람_멘션은_남는다(self, tmp_path: Path) -> None:
+        client = FakeSlackClient()
+        client.users_info = lambda **kw: {  # type: ignore[method-assign]
+            "user": {"id": kw.get("user"), "is_bot": False, "profile": {"real_name": "김태일"}}
+        }
+        app = Application.from_profile(write_profile(tmp_path), client=client)
+
+        result = app._guards().run("확인은 <@U0TAEL> 께 부탁드립니다", GuardContext())
+
+        assert "<@U0TAEL>" in result.body
