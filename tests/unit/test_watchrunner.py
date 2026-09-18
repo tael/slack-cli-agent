@@ -1208,19 +1208,65 @@ class Test포기_사유를_가른다:
         assert "하루" not in 통지[0]
         assert "확인 횟수 상한" in 통지[0]
 
-    def test_시간_상한은_그대로_하루로_보고한다(self, 큐) -> None:
-        """원본 bot.py:6808 의 문구다. 시간 초과 경로는 안 바뀐다."""
+    def test_시간_상한은_실제_경과로_보고한다(self, 큐) -> None:
+        """상한이 설정값이라 '하루' 를 박으면 다른 설정에서 사실과 다르다."""
         큐.enqueue("C1", "111.1", "배포 확인")
         통지: list[str] = []
         c = 체커(
             큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="안 불린다"),
             설정값=설정(watch_job_max_age_sec=10.0), notify_owner=통지.append,
         )
-        큐.시각["값"] = 9999.0
+        큐.시각["값"] = 1000.0 + 2 * 3600
         c.check_once()
 
         assert len(통지) == 1
-        assert "하루 넘게 못 끝낸" in 통지[0]
+        assert "2시간 넘게 못 끝낸" in 통지[0]
+
+    def test_기본_상한이면_문구가_원본과_같은_뜻이다(self, 큐) -> None:
+        """원본 bot.py:6808 은 '하루 넘게' 다. 기본 24시간에서는 그 뜻이다."""
+        큐.enqueue("C1", "111.1", "배포 확인")
+        통지: list[str] = []
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="안 불린다"),
+            설정값=설정(watch_job_max_checks=99999), notify_owner=통지.append,
+        )
+        큐.시각["값"] = 1000.0 + 25 * 3600
+        c.check_once()
+
+        assert "25시간 넘게 못 끝낸" in 통지[0]
+
+    def test_상한이_0이면_횟수가_사유다(self, 큐) -> None:
+        """상한 0 은 확인을 한 번도 안 돌린다는 뜻이다. 그 건을 시간 초과로
+        보고하면 실제로 걸린 조건과 다른 것을 알린다."""
+        큐.enqueue("C1", "111.1", "배포 확인")
+        통지: list[str] = []
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="안 불린다"),
+            설정값=설정(watch_job_max_checks=0, watch_job_max_age_sec=99999.0),
+            notify_owner=통지.append,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert len(통지) == 1
+        assert "확인 횟수 상한" in 통지[0]
+
+    def test_둘_다_넘겼으면_횟수를_쓴다(self, 큐) -> None:
+        """정책이다. 어느 쪽이 먼저 걸렸는지는 기록으로 못 가른다."""
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
+        통지: list[str] = []
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body="아직"),
+            판정기=고정판정기(WatchOutcome.NOT_LAUNCHED),
+            설정값=설정(watch_job_max_checks=1, watch_job_max_age_sec=1500.0),
+            notify_owner=통지.append,
+        )
+        for 회차 in range(3):
+            큐.시각["값"] = 2000.0 + 회차 * 1000
+            c.check_once()
+
+        assert "확인 횟수 상한" in 통지[0]
 
     def test_감사_기록에_사유가_남는다(self, 큐) -> None:
         큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
@@ -1250,3 +1296,12 @@ class Test포기_사유를_가른다:
         c.check_once()
 
         assert dict(감사.기록)[WATCH_ABANDONED_KIND]["reason"] == "max_age"
+
+    @pytest.mark.parametrize(
+        "경과, 기대",
+        [(90000.0, "25시간"), (5400.0, "1시간"), (600.0, "10분"), (30.0, "30초")],
+    )
+    def test_경과는_단위를_바꿔_읽힌다(self, 경과: float, 기대: str) -> None:
+        from slack_cli_agent.reliability.watchrunner import _elapsed_text
+
+        assert _elapsed_text(경과) == 기대
