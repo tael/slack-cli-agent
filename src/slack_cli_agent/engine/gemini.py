@@ -50,6 +50,7 @@ from .base import (
     FailureDetail,
     Usage,
     UsageLimit,
+    json_object_line,
 )
 from .capability import (
     EngineCapabilities,
@@ -187,6 +188,21 @@ class GeminiEngine(Engine):
         )
         cmd += ["-p", prompt]
         return cmd
+
+    # 2026-09-19 실측 — step_update 의 step_type 이 "tool" 인 이벤트에만
+    # tool_name 이 온다. 나머지 step_type(user_input, agent_response)은
+    # 도구 호출이 아니다.
+    streams_progress = True
+
+    def progress_tool_name(self, line: str) -> str:
+        event = json_object_line(line)
+        if event is None or event.get("event") != "step_update":
+            return ""
+        step = event.get("step_update")
+        if not isinstance(step, Mapping) or step.get("step_type") != "tool":
+            return ""
+        name = step.get("tool_name")
+        return name if isinstance(name, str) else ""
 
     def new_session_id(self) -> str:
         # agy mints the real conversation_id on first run; this is only a
