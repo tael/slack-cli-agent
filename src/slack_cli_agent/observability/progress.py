@@ -171,7 +171,9 @@ class ProgressLogReader:
         cut = raw.rfind("\n")
         if cut < 0:
             return []
-        self._offset += len(raw[: cut + 1].encode("utf-8"))
+        # Characters, not bytes: the offset indexes the decoded text above,
+        # and a byte count would run past a line holding non-ASCII names.
+        self._offset += cut + 1
 
         out: list[str] = []
         for line in raw[:cut].splitlines():
