@@ -749,7 +749,9 @@ class Test응답엔진별_기록_리더:
         """예외를 내면 이미 끝난 요청의 보고가 통째로 날아간다. 그렇다고 primary
         리더로 돌리면 다른 엔진의 숫자를 이 엔진 것으로 내놓는다."""
         app = Application(self._profile(tmp_path), FakeSlackClient())
-        reader = app.transcript_reader("gemini")
+        # 등록된 이름을 쓰면 이 시험이 그 리더가 생기는 순간 조용히 뜻을 잃는다.
+        # 실제로 제미나이로 적어 뒀다가 sca-ebp 에서 그렇게 됐다.
+        reader = app.transcript_reader("등록되지않은엔진")
         assert isinstance(reader, NullTranscriptReader)
         assert reader.read("어떤세션") == []
 
