@@ -38,6 +38,11 @@ class IncidentKind(StrEnum):
     WATCH_FINISHED = "watch_finished"
     #: A watch dropped on the age limit without its work ever finishing.
     WATCH_ABANDONED = "watch_abandoned"
+    #: A tool name the progress label table has no entry for, so the step
+    #: line fell back to the default wording. Recorded once per name per
+    #: process -- a CLI version bump renaming its tools shows up here and
+    #: nowhere else (sca-2wu).
+    PROGRESS_UNKNOWN_TOOL = "progress_unknown_tool"
     SPLIT = "split"
     SPLIT_BROKEN = "split_broken"
     BLOCKS_REJECTED = "blocks_rejected"

@@ -518,6 +518,7 @@ class Application:
                     ),
                 ),
                 log_dir=self._profile.paths.progress,
+                audit=self.audit().record,
             )
         return self._progress
 

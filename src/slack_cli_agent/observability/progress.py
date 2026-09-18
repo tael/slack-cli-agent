@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from ..config.channel import ChannelConfig
 from ..config.settings import RuntimeSettings
@@ -30,6 +30,11 @@ START_TEXT = "작업 중"
 # generation-only stretch doesn't look like it stalled.
 IDLE_TEXT = "아직 작업 중"
 DEFAULT_LABEL = "확인하는 중"
+
+#: Audit kind for a tool name the table has no entry for. Matches
+#: IncidentKind.PROGRESS_UNKNOWN_TOOL; kept as a literal so this module
+#: does not import the audit layer.
+UNKNOWN_TOOL_KIND = "progress_unknown_tool"
 
 # Maps tool names to human-readable step labels; first prefix match wins.
 TOOL_LABELS: Sequence[tuple[str, str]] = (
@@ -100,8 +105,18 @@ TOOL_LABELS: Sequence[tuple[str, str]] = (
 class ToolLabelMapper:
     """Maps a tool name to a progress label, falling back to the mcp server name."""
 
-    def __init__(self, labels: Sequence[tuple[str, str]] = TOOL_LABELS) -> None:
+    def __init__(
+        self,
+        labels: Sequence[tuple[str, str]] = TOOL_LABELS,
+        on_unknown: Callable[[str], None] | None = None,
+    ) -> None:
         self._labels = tuple(labels)
+        # Told about names the table has no entry for, so a CLI renaming its
+        # tools is visible instead of silently showing the default wording.
+        # Deduped here: progress runs many times per request, and recording
+        # every call would bury the ledger (sca-2wu).
+        self._on_unknown = on_unknown
+        self._reported: set[str] = set()
 
     def label_for(self, tool_name: str) -> str:
         if not tool_name:
@@ -112,8 +127,20 @@ class ToolLabelMapper:
         if tool_name.startswith("mcp__"):
             parts = tool_name.split("__")
             server = parts[1] if len(parts) > 2 else ""
+            # The server name carries the meaning, so there is nothing to add
+            # to the table -- not reported.
             return f"{server} 조회 중" if server else "조회 중"
+        self._report_unknown(tool_name)
         return DEFAULT_LABEL
+
+    def _report_unknown(self, tool_name: str) -> None:
+        if self._on_unknown is None or tool_name in self._reported:
+            return
+        self._reported.add(tool_name)
+        try:
+            self._on_unknown(tool_name)
+        except Exception:  # noqa: BLE001 - progress display must not fail a request
+            log.warning("표에 없는 도구 이름 기록 실패 : %s", tool_name)
 
 
 class ProgressLogReader:
@@ -200,6 +227,22 @@ def channel_progress_enabled(config: ChannelConfig | None) -> bool:
     if config is None:
         return ChannelConfig(channel_id="").progress
     return bool(config.progress)
+
+
+class AuditPort(Protocol):
+    """AuditLog.record's shape. Optional -- progress runs without one."""
+
+    def __call__(self, kind: str, **fields: Any) -> None: ...
+
+
+def _unknown_tool_reporter(audit: AuditPort | None) -> Callable[[str], None] | None:
+    if audit is None:
+        return None
+
+    def report(tool_name: str) -> None:
+        audit(UNKNOWN_TOOL_KIND, tool=tool_name)
+
+    return report
 
 
 class ProgressSink(Protocol):
@@ -316,11 +359,12 @@ class ProgressCoordinator:
         sink_factory: SinkFactory,
         log_dir: Path,
         mapper: ToolLabelMapper | None = None,
+        audit: AuditPort | None = None,
     ) -> None:
         self._settings = settings
         self._sink_factory = sink_factory
         self._log_dir = log_dir
-        self._mapper = mapper or ToolLabelMapper()
+        self._mapper = mapper or ToolLabelMapper(on_unknown=_unknown_tool_reporter(audit))
 
     def log_path_for(self, config: ChannelConfig | None, channel: str, ts: str) -> Path | None:
         """The log this request's engine should write to, or None when the

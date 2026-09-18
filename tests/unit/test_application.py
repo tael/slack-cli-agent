@@ -1964,3 +1964,18 @@ def _소유자() -> Any:
     from slack_cli_agent.auth.principal import Principal, TrustLevel
 
     return Principal(user_id="U1", channel="D1", trust=TrustLevel.OWNER, is_direct_message=True)
+
+
+class Test진행표시감사기록배선:
+    """ProgressCoordinator 는 audit 인자를 받는다. Application 이 안 넘기면
+    표에 없는 도구 이름이 어디에도 안 남는다 (sca-2wu)."""
+
+    def test_표에_없는_도구_이름이_감사_기록에_남는다(self, tmp_path: Path) -> None:
+        profile = write_profile(tmp_path)
+        app = Application(profile, FakeSlackClient())
+        # 조정자가 쥔 매퍼를 그대로 쓴다 - 세션을 돌리면 스레드 시간에 기댄다
+        assert app.progress()._mapper.label_for("새로생긴도구") == "확인하는 중"
+        lines = profile.paths.audit_log.read_text(encoding="utf-8").splitlines()
+        기록 = [json.loads(line) for line in lines]
+        assert [x["kind"] for x in 기록] == ["progress_unknown_tool"]
+        assert 기록[0]["tool"] == "새로생긴도구"

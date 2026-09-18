@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -172,6 +173,24 @@ class TestProgressCoordinator:
             assert sink.opened == [START_TEXT]
             assert sink.closed == 0
         assert sink.closed == 1
+
+    def test_표에_없는_도구_이름을_원장에_남긴다(self, tmp_path: Path) -> None:
+        """조정자가 감사 기록을 매퍼에 이어 준다 (sca-2wu)."""
+        기록: list[tuple[str, dict[str, Any]]] = []
+        log = tmp_path / "s.log"
+        coordinator = ProgressCoordinator(
+            settings=RuntimeSettings(progress_tick_sec=0.01),
+            sink_factory=lambda channel, thread_ts, user: FakeSink(),
+            log_dir=tmp_path,
+            audit=lambda kind, **fields: 기록.append((kind, fields)),
+        )
+        with coordinator.session("C1", "1.0", "U1", log):
+            record(log, json.dumps({"tool_name": "새로생긴도구"}))
+            deadline = time.time() + 2.0
+            while not 기록 and time.time() < deadline:
+                time.sleep(0.01)
+        assert [kind for kind, _ in 기록] == ["progress_unknown_tool"]
+        assert 기록[0][1]["tool"] == "새로생긴도구"
 
     def test_구간_안에서_예외가_나도_표시를_닫는다(self, tmp_path: Path) -> None:
         sink = FakeSink()
