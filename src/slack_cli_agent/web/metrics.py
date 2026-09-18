@@ -83,6 +83,7 @@ _INCIDENT_KINDS: tuple[IncidentKind, ...] = (
     IncidentKind.POST_FAILED,
     IncidentKind.REWRITE_LOSS,
     IncidentKind.SILENT,
+    IncidentKind.PROGRESS_UNKNOWN_TOOL,
 )
 
 _SLOW_LABELS = (
@@ -472,6 +473,9 @@ class MetricsCollector:
             "silent_pct": _pct(silent, len(requests)),
             "corrections": self._count_corrections(),
             "rewrites": incident_counts.get(IncidentKind.REWRITE_LOSS.value, 0),
+            "progress_unknown_tool": incident_counts.get(
+                IncidentKind.PROGRESS_UNKNOWN_TOOL.value, 0
+            ),
             # Per sca-qi5.1 item 5: None means this kind has never fired in
             # this store, so a 0 count in the window can't be told apart
             # from "not instrumented yet" without this.

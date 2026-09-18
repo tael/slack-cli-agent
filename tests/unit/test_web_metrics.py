@@ -346,6 +346,19 @@ class Test사고_종류별_건수:
         assert quality["rewrites"] == 1
         assert quality["silent"] == 1
 
+    def test_표에_없는_도구_이름도_센다(self, tmp_path: Path) -> None:
+        """진행 표시가 기본 문구로 흘러가고 있는 것을 세는 유일한 자리다 (sca-2wu)."""
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        insert_incident(db, kind=IncidentKind.PROGRESS_UNKNOWN_TOOL, at=1_001.0, tool="새도구")
+        insert_incident(db, kind=IncidentKind.PROGRESS_UNKNOWN_TOOL, at=1_002.0, tool="또새도구")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        quality = collector.collect(days=7)["quality"]
+        assert quality["progress_unknown_tool"] == 2
+        # 0건이 '아직 안 걸렸다' 인지 '계측이 없다' 인지 가르는 값이다
+        assert quality["tracked_since"]["progress_unknown_tool"] is not None
+
     def test_기준_기록은_사고로_안_센다(self, tmp_path: Path) -> None:
         """capability 는 엔진 실행마다 남는 기준 기록이라 사고가 아니다.
         REQUEST 만 빼고 세면 정상 트래픽이 사고 건수를 채운다."""
