@@ -201,7 +201,15 @@ class GeminiEngine(Engine):
         if event is None or event.get("event") != "step_update":
             return ""
         step = event.get("step_update")
-        if not isinstance(step, Mapping) or step.get("step_type") != "tool":
+        if not isinstance(step, Mapping):
+            return ""
+        kind = step.get("step_type")
+        # The answer arrives as text_delta fragments, so this name repeats
+        # dozens of times per answer. ProgressLogReader collapses consecutive
+        # repeats, which is what keeps it to one line on screen (sca-92g).
+        if kind == "agent_response":
+            return "agent_response"
+        if kind != "tool":
             return ""
         name = step.get("tool_name")
         return name if isinstance(name, str) else ""
