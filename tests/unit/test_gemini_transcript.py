@@ -155,6 +155,11 @@ class Test도구_시간을_가를_수_없다고_알린다:
         어디에도 토큰 수가 없다(2026-09-19)."""
         assert GeminiTranscriptReader(tmp_path / "일", home=tmp_path).reports_output_tokens is False
 
+    def test_제미나이_리더는_캐시_사용량을_안_낸다(self, tmp_path: Path) -> None:
+        """재시도 판정은 요청별 캐시 사용량 역산이다. 그 값이 없으면 판정 열이
+        영원히 비어 있어, 재시도가 없는 것과 구분이 안 된다(sca-ron)."""
+        assert GeminiTranscriptReader(tmp_path / "일", home=tmp_path).reports_cache_usage is False
+
     def test_다른_리더는_가른다(self, tmp_path: Path) -> None:
         from slack_cli_agent.engine.transcript import ClaudeTranscriptReader
 

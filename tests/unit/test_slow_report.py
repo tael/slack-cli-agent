@@ -691,6 +691,64 @@ class Test비중이_백을_안_넘는다:
         assert breakdown.total_span == 100.0
 
 
+class Test재시도를_판정할_수_없는_기록:
+    """재시도 판정은 요청별 cache_read/cache_creation 역산이다. 사용량 자체를
+    안 남기는 기록에서는 영원히 "-" 라, 그 열이 0 과 미측정을 헷갈리게 한다
+    (sca-ron). 출력 토큰 유무와는 독립 축이다(코덱스 판단)."""
+
+    def _meta(self) -> SlowRequestMeta:
+        return SlowRequestMeta(
+            elapsed_wall=800.0, mono_elapsed=790.0, started=0.0, model="gemini-x",
+            model_actual=None, effort="medium", num_turns=1, reason=None,
+            session_id="세션1", resume=False, channel="C1", channel_name="테스트채널", text="원문",
+        )
+
+    def _detail(self, *, reports_cache_usage: bool) -> str:
+        from slack_cli_agent.observability.slow_report import GapDetail
+
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        breakdown = TimeBreakdown(
+            start_ts=0.0, end_ts=100.0, tool_sec=0.0, think_sec=0.0, wait_sec=100.0,
+            top_gaps=(
+                GapDetail(duration_sec=12.0, start_ts=0.0, end_ts=12.0, last_tool_brief="grep_search",
+                          output_tokens=None, think_sec=0.0, wait_sec=12.0),
+            ),
+            reports_output_tokens=False, splits_tool_time=False,
+            reports_cache_usage=reports_cache_usage,
+        )
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        return formatter.format(self._meta(), diagnosis, breakdown)[1]
+
+    def test_사용량이_없으면_판정_열을_뺀다(self) -> None:
+        detail = self._detail(reports_cache_usage=False)
+
+        assert "| 판정 |" not in detail
+        assert "| 직전 도구 |" in detail
+
+    def test_사용량이_있으면_판정_열을_낸다(self) -> None:
+        """출력 토큰이 없어도 캐시 사용량은 있을 수 있다. 두 축은 독립이다."""
+        detail = self._detail(reports_cache_usage=True)
+
+        assert "| 판정 |" in detail
+
+    def test_계산기가_사용량_능력을_그대로_전한다(self) -> None:
+        class 사용량없는리더(SessionTranscriptReader):
+            @property
+            def reports_cache_usage(self) -> bool:
+                return False
+
+            def read(self, session_id: str) -> list[TranscriptEvent]:
+                return [
+                    TranscriptEvent(ts=0.0, role="user", kind="text", brief="", output_tokens=None),
+                    TranscriptEvent(ts=10.0, role="assistant", kind="text", brief="", output_tokens=None),
+                ]
+
+        breakdown = TimeBreakdownCalculator(assumed_tokens_per_sec=40).compute(사용량없는리더(), "S1")
+
+        assert breakdown is not None
+        assert breakdown.reports_cache_usage is False
+
+
 class Test계산기가_리더의_능력을_그대로_전한다:
     def test_못_가르는_리더면_표시가_따라온다(self) -> None:
         class 못가르는리더(SessionTranscriptReader):
@@ -713,6 +771,7 @@ class Test계산기가_리더의_능력을_그대로_전한다:
         assert breakdown is not None
         assert breakdown.splits_tool_time is False
         assert breakdown.reports_output_tokens is False
+        assert breakdown.reports_cache_usage is True  # 이 대역은 사용량을 남긴다
 
 
 class Test엔진원문은_보고에_담기지_않는다:
