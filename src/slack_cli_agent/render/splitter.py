@@ -11,6 +11,74 @@ from .blocks import SPLIT_MARKER, BlockBuilder
 # Tables, code blocks, and quotes render broken if split mid-block, even by one line.
 ATOMIC_HEADS = ("|", "```", ">")
 
+HEADING_LINE = re.compile(r"^\s{0,3}#{1,6}\s")
+
+#: Slack expands a `markdown` block server side and rejects the whole post
+#: with invalid_blocks past 50 items. Measured 2026-09-18 against the live
+#: API: each heading line and each table becomes one block, while
+#: paragraphs, code fences, quotes and lists coalesce into one block per
+#: run (200 of them still posted fine). The headroom covers the context
+#: block the publisher attaches to the last chunk.
+MAX_BLOCKS = 45
+
+
+def _block_kinds(text: str) -> list[str]:
+    kinds = []
+    in_fence = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if in_fence:
+            kinds.append("other")
+            if stripped.startswith("```"):
+                in_fence = False
+        elif stripped.startswith("```"):
+            in_fence = True
+            kinds.append("other")
+        elif not stripped:
+            kinds.append("blank")
+        elif HEADING_LINE.match(line):
+            kinds.append("heading")
+        elif stripped.startswith("|"):
+            kinds.append("table")
+        else:
+            kinds.append("other")
+    return kinds
+
+
+def _block_deltas(text: str) -> list[int]:
+    """How many Slack blocks each line adds. 1 only where a new unit starts,
+    which is also the only place splitting is safe -- a delta of 0 means the
+    line continues a table or a fenced block."""
+    deltas = []
+    prev = "blank"
+    for kind in _block_kinds(text):
+        if kind == "blank":
+            deltas.append(0)
+            continue
+        deltas.append(1 if kind == "heading" or kind != prev else 0)
+        prev = kind
+    return deltas
+
+
+def block_cost(text: str) -> int:
+    return sum(_block_deltas(text))
+
+
+def split_by_block_budget(text: str, budget: int = MAX_BLOCKS) -> list[str]:
+    lines = text.split("\n")
+    out: list[str] = []
+    buf: list[str] = []
+    cost = 0
+    for line, delta in zip(lines, _block_deltas(text), strict=True):
+        if buf and delta and cost + delta > budget:
+            out.append("\n".join(buf).strip("\n"))
+            buf, cost = [], 0
+        buf.append(line)
+        cost += delta
+    if buf:
+        out.append("\n".join(buf).strip("\n"))
+    return [p for p in out if p.strip()] or [text]
+
 
 class ContentSplitter:
     def __init__(self, settings: RuntimeSettings, block_builder: BlockBuilder) -> None:
@@ -199,7 +267,8 @@ class ContentSplitter:
                         flush()
                     buf.append(piece)
         flush(final=True)
-        return self.merge_tiny(parts, forced, limit)
+        merged = self.merge_tiny(parts, forced, limit)
+        return [piece for part in merged for piece in split_by_block_budget(part)]
 
     def merge_tiny(
         self, parts: list[str], forced: list[bool], limit: int, floor: int = 500
@@ -209,7 +278,11 @@ class ContentSplitter:
         out: list[str] = []
         for part, by_marker in zip(parts, forced, strict=True):
             joinable = out and not by_marker and (len(part) < floor or len(out[-1]) < floor)
-            if joinable and len(out[-1]) + len(part) + 1 <= limit:
+            if (
+                joinable
+                and len(out[-1]) + len(part) + 1 <= limit
+                and block_cost(out[-1] + "\n" + part) <= MAX_BLOCKS
+            ):
                 out[-1] = out[-1] + "\n" + part
             else:
                 out.append(part)

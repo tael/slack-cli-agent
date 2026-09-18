@@ -7,6 +7,7 @@ import re
 from slack_cli_agent.config.settings import RuntimeSettings
 
 from .blocks import SPLIT_MARKER
+from .splitter import split_by_block_budget
 
 TABLE_LINE = re.compile(r"^\s*\|.*\|\s*$")
 #: A GFM table separator row. The pipe may be followed by spaces and the
@@ -67,6 +68,7 @@ class SplitVerifier:
             buf.append(line)
         if buf:
             parts.append("\n".join(buf))
+        parts = [piece for part in parts for piece in split_by_block_budget(part)]
         return parts or [text[:limit]]
 
     def separate_tables(self, text: str) -> str:
