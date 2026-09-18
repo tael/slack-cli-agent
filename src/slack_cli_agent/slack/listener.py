@@ -64,6 +64,10 @@ class EventListener:
         )
 
     def from_app_mention(self, event: Mapping[str, Any]) -> RequestContext:
+        # No bot_id filter here, unlike from_message. The original bot.py:5410
+        # does the same, and test-channel-probe wakes a bot with another bot's
+        # token through this path. Loop risk is handled on the outgoing side
+        # (sca-c4m), not by rejecting here.
         return self._context_from_event(event, unaddressed=False, is_dm=False)
 
     def _thread_state(self, channel: str, thread_ts: str) -> tuple[bool, bool]:
