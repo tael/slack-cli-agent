@@ -57,7 +57,11 @@ class TimeBreakdown:
 
     @property
     def total_span(self) -> float:
-        return max(self.end_ts - self.start_ts, 0.001)  # floor to avoid division by zero
+        # A transcript that records whole seconds only shortens the span while
+        # leaving the gaps intact, and the shares then read past 100 percent
+        # (sca-be2). The parts are what the table shows, so they set the floor.
+        parts = self.tool_sec + self.think_sec + self.wait_sec + self.retry_sec
+        return max(self.end_ts - self.start_ts, parts, 0.001)  # floor to avoid division by zero
 
 
 def detect_retries(events: Sequence[TranscriptEvent]) -> dict[float, int]:

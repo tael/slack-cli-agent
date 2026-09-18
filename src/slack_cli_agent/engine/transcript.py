@@ -375,6 +375,10 @@ def _gemini_step_ts(metadata: bytes | None) -> float | None:
     — the rest of metadata is the tool payload and an opaque blob, and
     reverse-engineering those adds a second thing to break per CLI update
     for no extra signal.
+
+    Seconds and nanos are both read. Truncating to whole seconds pushed
+    every step onto a second boundary, and the gaps then summed past the total
+    span — a review reported 101 percent (sca-be2).
     """
     if not metadata:
         return None
@@ -383,11 +387,14 @@ def _gemini_step_ts(metadata: bytes | None) -> float | None:
         return None
     try:
         seconds = _proto_varint_field(inner, 1)
+        nanos = _proto_varint_field(inner, 2)
     except ValueError:
         return None
     # `is None` rather than falsy: epoch 0 is a real time, and dropping it
     # would silently lose a whole session.
-    return None if seconds is None else float(_as_signed64(seconds))
+    if seconds is None:
+        return None
+    return float(_as_signed64(seconds)) + (_as_signed64(nanos) / 1e9 if nanos is not None else 0.0)
 
 
 def _proto_field(data: bytes, field: int) -> bytes | None:
