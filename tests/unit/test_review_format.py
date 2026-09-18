@@ -34,7 +34,7 @@ def make_task(**overrides) -> FormatReviewTask:
         "bot_display_name": "테스트봇",
         "persona_dir": "/persona",
         "prompts_dir": "/prompts",
-        "post_rich_command": "python3 /tools/post_rich.py --profile example",
+        "rewrite_command": "/venv/bin/python -m slack_cli_agent.cli rewrite --profile example",
     }
     kwargs.update(overrides)
     return FormatReviewTask(**kwargs)
@@ -57,7 +57,7 @@ class Test프롬프트:
         assert "내용이 맞았는지 틀렸는지는 보지 않는다" in prompt
         assert "/prompts" in prompt
         assert "/persona" in prompt
-        assert "python3 /tools/post_rich.py --profile example --channel C1 --update 1.1" in prompt
+        assert "/venv/bin/python -m slack_cli_agent.cli rewrite --profile example --channel C1 --update 1.1" in prompt
 
     def test_평문채널표기를담는다(self) -> None:
         task = make_task()

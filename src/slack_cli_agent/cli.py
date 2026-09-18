@@ -559,6 +559,77 @@ class LearnCommand(ProfileAwareCommand):
         return 0
 
 
+class RewriteCommand(ProfileAwareCommand):
+    """Rewrites one message this bot already posted.
+
+    The format review's whole point is correcting the message it flagged, and
+    until this existed the review prompt named a command that didn't exist —
+    it could find a violation and had no way to fix it (2026-09-18 부검).
+
+    Rendering goes through `MessagePublisher.update()`, the same object that
+    posted the original, so the correction is rendered in the channel's own
+    mode rather than in whatever this command guessed.
+    """
+
+    name: ClassVar[str] = "rewrite"
+    help: ClassVar[str] = "이미 올린 메시지를 교정본 파일 내용으로 바꿔 쓴다"
+
+    def __init__(self, application_factory: ApplicationFactory | None = None) -> None:
+        self._factory = application_factory or _default_application
+
+    def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--channel", required=True, help="고칠 메시지가 있는 채널 ID")
+        parser.add_argument(
+            "--update",
+            required=True,
+            metavar="TS",
+            help="고칠 메시지의 ts. 이 명령은 갱신만 한다. 새 메시지는 올리지 않는다",
+        )
+        parser.add_argument("file", help="교정본 마크다운 파일 경로")
+
+    def execute_with_profile(
+        self, profile: Profile, args: argparse.Namespace, stdout: TextIO
+    ) -> int:
+        path = Path(args.file).expanduser()
+        try:
+            body = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"교정본 파일을 읽지 못했다 : {path} ({exc})", file=stdout)
+            return 2
+
+        # The channel's notation decides between markdown blocks and plain
+        # mrkdwn. Guessing it would render the correction differently from the
+        # message it replaces, so an unregistered channel is refused instead.
+        config = ChannelRegistry(profile.paths.channels).get(args.channel)
+        if config is None:
+            print(f"등록되지 않은 채널이라 표기 규약을 모른다 : {args.channel}", file=stdout)
+            return 2
+
+        app = self._factory(profile, resolver_for(profile))
+        try:
+            blocks = app.publisher().update(
+                args.channel, args.update, body, rich=config.rich
+            )
+        except AgentError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=stdout)
+            return 2
+        finally:
+            app.close()
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "channel": args.channel,
+                    "ts": args.update,
+                    "blocks": blocks,
+                },
+                ensure_ascii=False,
+            ),
+            file=stdout,
+        )
+        return 0
+
+
 @runtime_checkable
 class ServerLike(Protocol):
     """What WebCommand needs from a server.
@@ -639,6 +710,7 @@ DEFAULT_COMMANDS: tuple[CliCommand, ...] = (
     IngressCommand(),
     WorkerCommand(),
     LearnCommand(),
+    RewriteCommand(),
     WebCommand(),
 )
 

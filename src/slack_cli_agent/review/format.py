@@ -1,6 +1,6 @@
-# `post_rich_command` is passed in pre-assembled (e.g. "python3
-# /path/post_rich.py --profile example") since the script path and profile
-# name are deployment config this package has no business knowing --
+# `rewrite_command` is passed in pre-assembled (e.g. "/path/python -m
+# slack_cli_agent.cli rewrite --profile example") since the interpreter and
+# the profile are deployment config this package has no business knowing --
 # only "--channel --update" gets appended here.
 
 from __future__ import annotations
@@ -22,14 +22,14 @@ class FormatReviewTask(ReviewTask):
         bot_display_name: str,
         persona_dir: str,
         prompts_dir: str,
-        post_rich_command: str,
+        rewrite_command: str,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._bot_display_name = bot_display_name
         self._persona_dir = persona_dir
         self._prompts_dir = prompts_dir
-        self._post_rich_command = post_rich_command
+        self._rewrite_command = rewrite_command
 
     def _rich_label(self, target: ReviewTarget) -> str:
         return "리치" if target.rich else "평문"
@@ -55,7 +55,7 @@ class FormatReviewTask(ReviewTask):
             "어느 절을 어겼는지는 그 파일을 실제로 열어 확인하고 파일 이름과 절 제목을 짚는다.\n\n"
             "위반을 찾았으면 지적으로 끝내지 않는다. 교정본을 파일로 쓴 뒤 아래 명령으로 "
             "원 메시지를 고친다. 새 메시지를 올리지 않는다.\n"
-            f"{self._post_rich_command} --channel {target.channel} --update {target.ts} <교정본 파일>\n"
+            f"{self._rewrite_command} --channel {target.channel} --update {target.ts} <교정본 파일>\n"
             "교정 범위는 서식뿐이다. 사실, 수치, 판단, 결론을 바꾸지 않는다. "
             "실행 결과의 ok 와 blocks 종류를 확인하고 리포트의 교정했습니다 절에 적는다."
         )

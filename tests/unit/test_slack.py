@@ -56,6 +56,7 @@ class FakeWebClient:
         self.calls: list[tuple[str, dict]] = []
         self._history_responses: list[dict] = []
         self._post_responses: list[Any] = []
+        self._update_responses: list[Any] = []
         self.reaction_add_calls: list[tuple[str, str, str]] = []
         self.reaction_remove_calls: list[tuple[str, str, str]] = []
         self._raise_on_reaction_add: set[str] = set()
@@ -85,6 +86,16 @@ class FakeWebClient:
     def chat_postMessage(self, **kwargs):
         self.calls.append(("chat_postMessage", kwargs))
         result = self._post_responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def queue_update(self, response: Any) -> None:
+        self._update_responses.append(response)
+
+    def chat_update(self, **kwargs):
+        self.calls.append(("chat_update", kwargs))
+        result = self._update_responses.pop(0) if self._update_responses else {"ok": True}
         if isinstance(result, Exception):
             raise result
         return result
@@ -447,6 +458,81 @@ class Test빈본문게시:
         with caplog.at_level(logging.WARNING):
             pub.post("C1", "100.0", "본문", rich=True)
         assert caplog.records == []
+
+
+class Test메시지갱신:
+    """서식 점검이 지적한 메시지를 교정본으로 바꿔 쓰는 경로.
+
+    이것이 없던 동안 서식 점검은 위반을 찾아도 원 메시지를 고칠 수단이
+    없었다(2026-09-18 부검). 갱신은 ts 하나만 건드리므로, 한 메시지에 안
+    들어가는 교정본은 앞 조각만 보내는 대신 거부한다.
+    """
+
+    def test_리치_채널은_markdown_블록으로_갱신한다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        종류 = pub.update("C1", "100.0", "## 제목\n\n본문", rich=True)
+        assert 종류 == ["markdown"]
+        kind, kwargs = client.calls[0]
+        assert kind == "chat_update"
+        assert kwargs["ts"] == "100.0"
+        assert kwargs["blocks"][0]["text"] == "## 제목\n\n본문"
+
+    def test_말미_인용줄은_context_블록으로_내린다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        """게시 때와 같은 렌더를 써야 교정 전후로 표시가 달라지지 않는다."""
+        client = FakeWebClient()
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        종류 = pub.update("C1", "100.0", "본문\n> 실행 모델 : m", rich=True)
+        assert 종류 == ["markdown", "context"]
+
+    def test_평문_채널은_mrkdwn으로_낮춘다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        assert pub.update("C1", "100.0", "**굵게**", rich=False) == []
+        _, kwargs = client.calls[0]
+        assert kwargs["text"] == "*굵게*"
+        assert "blocks" not in kwargs
+
+    def test_한_메시지에_안_들어가면_갱신하지_않는다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        긴본문 = "\n\n".join(["가" * 3000] * 6)
+        with pytest.raises(SlackError) as 오류:
+            pub.update("C1", "100.0", 긴본문, rich=True)
+        assert "조각" in str(오류.value)
+        assert client.calls == []
+
+    def test_빈_교정본은_갱신하지_않는다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        with pytest.raises(SlackError):
+            pub.update("C1", "100.0", "   ", rich=True)
+        assert client.calls == []
+
+    def test_갱신_실패는_감사에_남는다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        """교정본이 안 올라간 것을 조용히 넘기면 점검 보고의 교정했습니다 절이
+        실제와 어긋난다."""
+        client = FakeWebClient()
+        client.queue_update(RuntimeError("cant_update_message"))
+        기록: list = []
+        pub = make_publisher(
+            client, settings, markdown, splitter, verifier, block_builder, audit=기록
+        )
+        with pytest.raises(SlackError):
+            pub.update("C1", "100.0", "본문", rich=True)
+        assert 기록 and 기록[0]["error"] == "cant_update_message"
 
 
 class TestSlackGateway:
