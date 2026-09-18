@@ -1313,7 +1313,7 @@ class TestRewriteCommand:
     def test_평문_채널은_리치로_갱신하지_않는다(self, tmp_path: Path) -> None:
         """표기 규약을 추측하면 교정 전후로 표시가 달라진다."""
         _, publisher, _, _ = self._run(
-            tmp_path, [], channels={"C1": {"name": "회의방"}}
+            tmp_path, [], channels={"C1": {"name": "회의방", "rich": False}}
         )
         assert publisher.calls[0][3] is False
 

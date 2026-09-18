@@ -12,6 +12,13 @@ from typing import Any, Protocol
 
 from ..core.errors import ConfigError
 
+#: Rendering and progress defaults, named once because the dataclass field and
+#: from_dict() both need them -- they were two literals and drifted, so a
+#: channels.json entry without the key came back False while the dataclass
+#: default said True (sca-75v).
+DEFAULT_RICH = True
+DEFAULT_PROGRESS = True
+
 KNOWN_KEYS = frozenset(
     {
         "name", "mode", "workdir", "model", "effort", "persona", "knowledge",
@@ -49,14 +56,17 @@ class ChannelConfig:
     disclose_mechanism: bool = False
     skills: bool = False
     light_context: bool = False
-    rich: bool = True
+    rich: bool = DEFAULT_RICH
     """Markdown blocks are the default rendering. The original bot.py had this
     on for one hardcoded channel; opting in per channel meant a bot with no
     channel file answered in stripped-down mrkdwn (sca-75v). A channel that
     needs plain text turns it off."""
     chat: str = CHAT_DEFAULT
-    progress: bool = False
-    """Whether to stream progress updates for long-running work."""
+    progress: bool = DEFAULT_PROGRESS
+    """Whether to show progress for long-running work. On by default for the
+    same reason as `rich`: opting in per channel meant the task card almost
+    never appeared and a long request looked like nothing was happening
+    (sca-stj). A channel that wants a quiet thread turns it off."""
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -81,9 +91,9 @@ class ChannelConfig:
             disclose_mechanism=bool(data.get("disclose_mechanism", False)),
             skills=bool(data.get("skills", False)),
             light_context=bool(data.get("light_context", False)),
-            rich=bool(data.get("rich", False)),
+            rich=bool(data.get("rich", DEFAULT_RICH)),
             chat=str(data.get("chat") or CHAT_DEFAULT),
-            progress=bool(data.get("progress", False)),
+            progress=bool(data.get("progress", DEFAULT_PROGRESS)),
             extra={k: v for k, v in data.items() if k not in KNOWN_KEYS},
         )
 
