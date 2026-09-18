@@ -46,6 +46,7 @@ class TestToolLabelMapper:
             ("file_change", "파일 고치는 중"),
             ("web_search", "웹 찾는 중"),
             ("agent_message", "답 쓰는 중"),
+            ("agent_response", "답 쓰는 중"),
             # agy — step_update.tool_name (init 이벤트의 도구 목록)
             ("run_command", "명령 실행 중"),
             ("view_file", "파일 읽는 중"),
