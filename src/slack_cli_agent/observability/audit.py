@@ -44,6 +44,7 @@ class IncidentKind(StrEnum):
     #: nowhere else (sca-2wu).
     PROGRESS_UNKNOWN_TOOL = "progress_unknown_tool"
     SPLIT = "split"
+    BLOCKS_RESPLIT = "blocks_resplit"
     SPLIT_BROKEN = "split_broken"
     BLOCKS_REJECTED = "blocks_rejected"
     POST_FAILED = "post_failed"
