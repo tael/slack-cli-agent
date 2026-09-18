@@ -359,6 +359,18 @@ class Test사고_종류별_건수:
         # 0건이 '아직 안 걸렸다' 인지 '계측이 없다' 인지 가르는 값이다
         assert quality["tracked_since"]["progress_unknown_tool"] is not None
 
+    def test_블록_재분할도_센다(self, tmp_path: Path) -> None:
+        """로컬 블록 추정이 얼마나 빗나가는지 보이는 유일한 자리다 (sca-2k7).
+        재분할이 늘면 추정이 나쁜 것이고, 화면에 안 나오면 아무도 안 본다."""
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        insert_incident(db, kind=IncidentKind.BLOCKS_RESPLIT, at=1_001.0, pieces=2)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        quality = collector.collect(days=7)["quality"]
+        assert quality["blocks_resplit"] == 1
+        assert quality["tracked_since"]["blocks_resplit"] is not None
+
     def test_기준_기록은_사고로_안_센다(self, tmp_path: Path) -> None:
         """capability 는 엔진 실행마다 남는 기준 기록이라 사고가 아니다.
         REQUEST 만 빼고 세면 정상 트래픽이 사고 건수를 채운다."""
