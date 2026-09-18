@@ -17,6 +17,17 @@ TABLE_DIVIDER = re.compile(r"^\|?(\s*:?-+:?\s*\|)+\s*:?-*:?\s*\|?\s*$")
 FENCE_LINE = re.compile(r"^\s*```")
 
 
+def _outside_fences(part: str) -> list[str]:
+    kept, in_fence = [], False
+    for line in part.split("\n"):
+        if FENCE_LINE.match(line):
+            in_fence = not in_fence
+            continue
+        if not in_fence and line.strip():
+            kept.append(line)
+    return kept
+
+
 class SplitVerifier:
     def __init__(self, settings: RuntimeSettings) -> None:
         self._settings = settings
@@ -35,12 +46,18 @@ class SplitVerifier:
         for i, part in enumerate(chunks):
             if len(part) > limit:
                 problems.append(f"{i}번 조각 상한 초과 {len(part)}")
-            if part.count("```") % 2:
+            # Only a line that opens or closes a fence counts. Counting every
+            # occurrence made an inline code span carrying the three backticks
+            # mid-sentence read as an unclosed fence (sca-a3b).
+            if sum(1 for x in part.split("\n") if FENCE_LINE.match(x)) % 2:
                 problems.append(f"{i}번 조각 코드블록 펜스 짝 안 맞음")
             # Checking only the chunk's start would miss tables that begin
             # mid-chunk, so scan every place a table row starts for the
-            # header divider that must follow it.
-            lines = [x for x in part.split("\n") if x.strip()]
+            # header divider that must follow it. Lines inside a fence are
+            # dropped first: a table shown as an example there is not a table
+            # Slack renders, and treating it as one sent the whole answer
+            # through safe_fallback (sca-a3b).
+            lines = _outside_fences(part)
             prev_row = False
             for j, line in enumerate(lines):
                 is_row = line.lstrip().startswith("|")

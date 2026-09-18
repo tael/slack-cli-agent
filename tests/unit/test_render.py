@@ -252,3 +252,31 @@ class Test블록_개수_상한:
 
         chunks = verifier.safe_fallback(self._제목과_표(60))
         assert all(block_cost(c) <= MAX_BLOCKS for c in chunks)
+
+
+class Test검증기는_코드_문맥을_가린다:
+    """운영에서 오판정 2건이 났다 (2026-09-18 23:54, 09-19 00:13). 둘 다
+    safe_fallback 으로 떨어져 서식을 버린 채 게시됐다 (sca-a3b)."""
+
+    def test_코드블록_안의_표_예시는_표로_보지_않는다(self, verifier: SplitVerifier) -> None:
+        본문 = (
+            "아래 형식으로 바꿉니다.\n\n"
+            "```markdown\n"
+            "## 고칠 대상\n"
+            "| 대상 | 파일 | 바꿀 내용 |\n"
+            "```\n\n"
+            "제목을 고정하면 비교가 됩니다."
+        )
+        assert verifier.verify_chunks(본문, [본문]) == []
+
+    def test_문장_중간의_인라인_코드는_펜스로_세지_않는다(self, verifier: SplitVerifier) -> None:
+        본문 = "응답 안에 ` ```slack-blocks ` 펜스로 JSON 을 넣으면 그것을 꺼냅니다."
+        assert verifier.verify_chunks(본문, [본문]) == []
+
+    def test_진짜로_펜스가_안_닫히면_여전히_잡는다(self, verifier: SplitVerifier) -> None:
+        본문 = "설명\n\n```python\nprint(1)\n"
+        assert "0번 조각 코드블록 펜스 짝 안 맞음" in verifier.verify_chunks(본문, [본문])
+
+    def test_코드블록_밖의_열_이름_없는_표는_여전히_잡는다(self, verifier: SplitVerifier) -> None:
+        본문 = "설명\n\n| 대상 | 파일 |\n| 가 | 나 |"
+        assert "0번 조각 표 열 이름 행 없음" in verifier.verify_chunks(본문, [본문])
