@@ -375,3 +375,35 @@ class TestStatePaths상태기록:
         from slack_cli_agent.config.paths import StatePaths
 
         assert StatePaths(tmp_path).state_snapshot == tmp_path / "state.json"
+
+
+class Test채널_기본값은_리치다:
+    """원본 bot.py 는 한 채널만 하드코딩으로 리치로 다뤘다. 지금은 markdown
+    블록이 표준이고 거부되면 평문으로 떨어지는 경로도 있어 옵트인으로 둘
+    이유가 없다. 설정 파일이 없는 봇의 답이 평문으로 깎였다 (sca-75v)."""
+
+    def test_아무것도_안_적으면_리치다(self) -> None:
+        from slack_cli_agent.config.channel import ChannelConfig
+
+        assert ChannelConfig(channel_id="C1").rich is True
+
+    def test_끄려면_명시해야_한다(self) -> None:
+        from slack_cli_agent.config.channel import ChannelConfig
+
+        assert ChannelConfig(channel_id="C1", rich=False).rich is False
+
+
+class Test등록_안_된_채널도_리치다:
+    """rei 는 channels.json 자체가 없는데도 멘션에는 답한다. 호출부가
+    `bool(config and config.rich)` 로 봐서 그 답이 전부 평문으로 내려갔다.
+    등록 여부와 렌더링 방식은 별개다 (sca-75v)."""
+
+    def test_설정이_없으면_기본값을_쓴다(self) -> None:
+        from slack_cli_agent.config.channel import channel_is_rich
+
+        assert channel_is_rich(None) is True
+
+    def test_설정에서_끄면_꺼진다(self) -> None:
+        from slack_cli_agent.config.channel import ChannelConfig, channel_is_rich
+
+        assert channel_is_rich(ChannelConfig(channel_id="C1", rich=False)) is False

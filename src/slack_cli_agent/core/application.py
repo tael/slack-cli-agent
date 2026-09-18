@@ -26,7 +26,7 @@ from ..admin.router import AdminRouter
 from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
-from ..config.channel import ChannelConfig, ChannelRegistry
+from ..config.channel import ChannelConfig, ChannelRegistry, channel_is_rich
 from ..config.profile import EngineSpec, Profile
 from ..config.settings import RuntimeSettings
 from ..engine.base import CallOrigin, Engine, EngineRequest, EngineResponse
@@ -905,7 +905,7 @@ class Application:
             prompt=prompt,
             channel_mode=config.mode if config else "default",
             channel_slug=config.name if config else job.channel,
-            is_rich=bool(config and config.rich),
+            is_rich=channel_is_rich(config),
             chat_level=config.chat if config else "normal",
             # This turn only looks: the registration guidance would tell it how
             # to start new work, which watch_check_prompt forbids (sca-ejy).
@@ -1185,7 +1185,7 @@ class Application:
                     ts=ts,
                     by_user=by_user,
                     channel_name=getattr(config, "name", "") or channel,
-                    rich=bool(getattr(config, "rich", False)),
+                    rich=channel_is_rich(config),
                 )
             )
         except Exception:

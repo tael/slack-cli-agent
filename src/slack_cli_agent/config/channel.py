@@ -8,7 +8,7 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from ..core.errors import ConfigError
 
@@ -49,7 +49,11 @@ class ChannelConfig:
     disclose_mechanism: bool = False
     skills: bool = False
     light_context: bool = False
-    rich: bool = False
+    rich: bool = True
+    """Markdown blocks are the default rendering. The original bot.py had this
+    on for one hardcoded channel; opting in per channel meant a bot with no
+    channel file answered in stripped-down mrkdwn (sca-75v). A channel that
+    needs plain text turns it off."""
     chat: str = CHAT_DEFAULT
     progress: bool = False
     """Whether to stream progress updates for long-running work."""
@@ -82,6 +86,22 @@ class ChannelConfig:
             progress=bool(data.get("progress", False)),
             extra={k: v for k, v in data.items() if k not in KNOWN_KEYS},
         )
+
+
+class HasRich(Protocol):
+    """Anything carrying the rendering flag. watchrunner declares its own
+    narrow protocol rather than importing the whole config type."""
+
+    @property
+    def rich(self) -> bool: ...
+
+
+def channel_is_rich(config: HasRich | None) -> bool:
+    """Rendering mode for a channel that may not be registered. A bot answers a
+    mention anywhere, so `config is None` means "not in channels.json", not
+    "plain text" -- reading it as the latter stripped every answer of a bot with
+    no channel file (sca-75v)."""
+    return ChannelConfig(channel_id="").rich if config is None else config.rich
 
 
 class ChannelRegistry:
