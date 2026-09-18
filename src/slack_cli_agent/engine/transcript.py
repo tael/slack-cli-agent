@@ -129,6 +129,15 @@ class SessionTranscriptReader(ABC):
         """
         return True
 
+    @property
+    def reports_cache_usage(self) -> bool:
+        """Whether the transcript records per-request cache read/creation.
+
+        Retries are inferred from those numbers alone, so without them the
+        verdict column is always empty rather than "no retry" (sca-ron).
+        """
+        return True
+
 
 class ClaudeTranscriptReader(SessionTranscriptReader):
     """Reads the jsonl session transcript the Claude Code CLI writes.
@@ -524,6 +533,11 @@ class GeminiTranscriptReader(SessionTranscriptReader):
     def reports_output_tokens(self) -> bool:
         # Checked the whole conversation DB on 2026-09-19: neither steps,
         # gen_metadata nor executor_metadata carries a token count.
+        return False
+
+    @property
+    def reports_cache_usage(self) -> bool:
+        # No usage numbers at all, so detect_retries() has nothing to work with.
         return False
 
     def read(self, session_id: str) -> list[TranscriptEvent]:
