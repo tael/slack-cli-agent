@@ -164,12 +164,12 @@ class TestProgressTracker:
 
 
 class TestChannelProgressEnabled:
-    def test_설정이_없으면_꺼짐이다(self) -> None:
-        assert channel_progress_enabled(None) is False
+    def test_설정이_없으면_켜짐이다(self) -> None:
+        assert channel_progress_enabled(None) is True
 
-    def test_progress_키가_없으면_꺼짐이다(self) -> None:
+    def test_progress_키가_없으면_켜짐이다(self) -> None:
         config = ChannelConfig.from_dict("C1", {})
-        assert channel_progress_enabled(config) is False
+        assert channel_progress_enabled(config) is True
 
     def test_progress_참이면_켜짐이다(self) -> None:
         config = ChannelConfig.from_dict("C1", {"progress": True})
@@ -178,3 +178,25 @@ class TestChannelProgressEnabled:
     def test_progress_거짓이면_꺼짐이다(self) -> None:
         config = ChannelConfig.from_dict("C1", {"progress": False})
         assert channel_progress_enabled(config) is False
+
+
+class Test진행_표시는_기본으로_켠다:
+    """rich 와 같은 구조였다 - 옵트인이라 sca-tc1 의 task_card 가 거의 안
+    떴다. 긴 작업이 도는 동안 아무 표시도 안 나오는 것이 기본값이면 안 된다
+    (sca-stj)."""
+
+    def test_아무것도_안_적으면_켜진다(self) -> None:
+        from slack_cli_agent.config.channel import ChannelConfig
+
+        assert ChannelConfig(channel_id="C1").progress is True
+
+    def test_등록_안_된_채널도_켜진다(self) -> None:
+        from slack_cli_agent.observability.progress import channel_progress_enabled
+
+        assert channel_progress_enabled(None) is True
+
+    def test_끄려면_명시해야_한다(self) -> None:
+        from slack_cli_agent.config.channel import ChannelConfig
+        from slack_cli_agent.observability.progress import channel_progress_enabled
+
+        assert channel_progress_enabled(ChannelConfig(channel_id="C1", progress=False)) is False

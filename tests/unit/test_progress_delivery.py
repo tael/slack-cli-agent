@@ -145,9 +145,11 @@ class TestProgressCoordinator:
         config = ChannelConfig.from_dict("C1", {"progress": False})
         assert coordinator.log_path_for(config, "C1", "1.0") is None
 
-    def test_설정이_없는_채널도_로그_경로가_없다(self, tmp_path: Path) -> None:
+    def test_설정이_없는_채널도_로그_경로를_준다(self, tmp_path: Path) -> None:
+        """미등록은 '조용한 스레드를 원한다' 가 아니다. 봇은 등록 안 된
+        채널의 멘션에도 답한다 (sca-stj)."""
         coordinator = self._coordinator(tmp_path, FakeSink())
-        assert coordinator.log_path_for(None, "C1", "1.0") is None
+        assert coordinator.log_path_for(None, "C1", "1.0") is not None
 
     def test_켜진_채널은_요청마다_다른_경로를_준다(self, tmp_path: Path) -> None:
         coordinator = self._coordinator(tmp_path, FakeSink())
