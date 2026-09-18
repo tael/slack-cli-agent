@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -31,6 +32,21 @@ log = logging.getLogger(__name__)
 
 # Color-codes status so success vs. failure is visible before reading the text.
 COLOR_FAIL = "#d64541"
+
+
+@dataclass(frozen=True)
+class RichPayload:
+    """One chunk rendered for a rich channel.
+
+    `body` and `note` are kept alongside the Slack arguments because the
+    plain-text fallback in post() re-sends the same chunk without blocks
+    and needs the two parts split_context() separated.
+    """
+
+    body: str
+    note: str
+    text: str
+    blocks: list[dict[str, Any]] = field(default_factory=list)
 
 
 class MessagePublisher:
@@ -65,6 +81,28 @@ class MessagePublisher:
             return body
         cleaned = ELAPSED_MODEL_LINE.sub("", body.rstrip()).rstrip()
         return cleaned.rstrip() + f"\n> 실행 모델 : {model}"
+
+    def _rich_payload(self, part: str, *, split_note: bool) -> RichPayload:
+        """Renders one chunk into Slack arguments for a rich channel.
+
+        post() and update() share this so a correction is rendered exactly
+        the way the original answer was — two copies of this would let the
+        two drift apart one edit at a time.
+        """
+        note = ""
+        if split_note:
+            part, note = self._blocks.split_context(part)
+        blocks: list[dict[str, Any]] = []
+        if part.strip():
+            blocks.append({"type": "markdown", "text": part})
+        if note:
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": note}],
+            })
+        return RichPayload(
+            body=part, note=note, text=self._blocks.preview(part or note), blocks=blocks
+        )
 
     def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None:
         """Posts using the channel's rendering mode.
@@ -108,18 +146,10 @@ class MessagePublisher:
             kwargs: dict[str, Any] = {"channel": channel, "username": self._bot_display_name}
             note = ""
             if rich:
-                if idx == len(chunks) - 1:
-                    part, note = self._blocks.split_context(part)
-                kwargs["text"] = self._blocks.preview(part or note)
-                blocks: list[dict[str, Any]] = []
-                if part.strip():
-                    blocks.append({"type": "markdown", "text": part})
-                if note:
-                    blocks.append({
-                        "type": "context",
-                        "elements": [{"type": "mrkdwn", "text": note}],
-                    })
-                kwargs["blocks"] = blocks
+                payload = self._rich_payload(part, split_note=idx == len(chunks) - 1)
+                part, note = payload.body, payload.note
+                kwargs["text"] = payload.text
+                kwargs["blocks"] = payload.blocks
             else:
                 kwargs["text"] = part
             if parent_ts:
@@ -176,3 +206,48 @@ class MessagePublisher:
                 total=len(text), sizes=[len(c) for c in chunks],
             )
         return parent_ts
+
+    def update(self, channel: str, ts: str, text: str, rich: bool) -> list[str]:
+        """Rewrites one already-posted message, using the channel's mode.
+
+        Rewrites only — it never posts. chat.update touches a single ts, so a
+        correction that no longer fits in one message is refused rather than
+        sent as its first chunk with the rest dropped. Returns the block types
+        Slack was given, so the caller can report what the message became
+        ([] for a plain-text channel).
+        """
+        if rich:
+            body = self._verifier.separate_tables(text)
+            chunks = self._splitter.split_for_blocks(body)
+        else:
+            chunks = self._splitter.chunk(self._markdown.to_mrkdwn(text))
+        if not any(chunk.strip() for chunk in chunks):
+            raise SlackError("교정본이 비어 있어 갱신하지 않았다")
+        if len(chunks) > 1:
+            raise SlackError(
+                f"교정본이 한 메시지에 들어가지 않는다 : {len(chunks)} 조각, {len(text)}자. "
+                "메시지 하나만 고칠 수 있으므로 갱신하지 않았다"
+            )
+
+        kwargs: dict[str, Any] = {"channel": channel, "ts": ts}
+        if rich:
+            payload = self._rich_payload(
+                self._verifier.separate_tables(chunks[0]), split_note=True
+            )
+            kwargs["text"] = payload.text
+            kwargs["blocks"] = payload.blocks
+        else:
+            kwargs["text"] = chunks[0]
+
+        try:
+            self._client.chat_update(**kwargs)
+        except Exception as exc:
+            # Recorded under the same incident kind as a failed post: this
+            # writes to a channel the same way, and a correction that never
+            # landed has to be visible in the audit log (sca-psr).
+            self._audit(
+                kind=IncidentKind.POST_FAILED.value, channel=channel, thread_ts=ts,
+                sent=0, total=1, error=str(exc),
+            )
+            raise SlackError(str(exc)) from exc
+        return [str(block["type"]) for block in kwargs.get("blocks", [])]

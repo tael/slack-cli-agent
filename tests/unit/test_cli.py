@@ -18,12 +18,14 @@ from slack_cli_agent.cli import (
     BLOCKED_EXIT,
     IngressCommand,
     LearnCommand,
+    RewriteCommand,
     ServerLike,
     SlackCliAgent,
     WebCommand,
     WorkerCommand,
 )
 from slack_cli_agent.config.settings import RuntimeSettings
+from slack_cli_agent.core.errors import SlackError
 from slack_cli_agent.core.lifecycle import InflightCounter
 from slack_cli_agent.core.services import ServiceGroup
 from slack_cli_agent.learning.batch import BatchReport
@@ -1234,6 +1236,119 @@ class TestLearnCommand:
         assert code == 0
         assert "잡담 2" in text
         assert "알리지 못했다" in text
+
+
+class FakePublisher:
+    def __init__(self, blocks: list[str] | Exception) -> None:
+        self.calls: list[tuple[str, str, str, bool]] = []
+        self._blocks = blocks
+
+    def update(self, channel: str, ts: str, body: str, *, rich: bool) -> list[str]:
+        self.calls.append((channel, ts, body, rich))
+        if isinstance(self._blocks, Exception):
+            raise self._blocks
+        return self._blocks
+
+
+class FakeRewriteApplication:
+    def __init__(self, publisher: FakePublisher) -> None:
+        self._publisher = publisher
+        self.close_calls = 0
+
+    def publisher(self) -> FakePublisher:
+        return self._publisher
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class TestRewriteCommand:
+    """서식 점검이 지적한 메시지를 고치는 경로.
+
+    점검 프롬프트가 부르는 명령이 실재하지 않아, 위반을 찾아도 원 메시지를
+    못 고치던 것을 메운다(2026-09-18 부검).
+    """
+
+    def _run(
+        self,
+        tmp_path: Path,
+        blocks: list[str] | Exception,
+        *,
+        channels: dict | None = None,
+        argv: list[str] | None = None,
+        body: str = "교정본",
+    ):
+        profiles = tmp_path / "profiles"
+        state_dir = tmp_path / "state"
+        write_profile(profiles, state_dir)
+        (state_dir).mkdir(parents=True, exist_ok=True)
+        (state_dir / "channels.json").write_text(
+            json.dumps({"C1": {"name": "회의방", "rich": True}} if channels is None else channels),
+            encoding="utf-8",
+        )
+        교정본 = tmp_path / "fix.md"
+        교정본.write_text(body, encoding="utf-8")
+        publisher = FakePublisher(blocks)
+        app = FakeRewriteApplication(publisher)
+        command = RewriteCommand(application_factory=lambda profile, _resolver: app)
+        out = io.StringIO()
+        code = SlackCliAgent([command]).run(
+            argv or [
+                "rewrite", "--profile", "example", "--profile-dir", str(profiles),
+                "--channel", "C1", "--update", "100.0", str(교정본),
+            ],
+            stdout=out,
+        )
+        return code, publisher, app, out.getvalue()
+
+    def test_채널_표기_규약으로_갱신하고_블록_종류를_출력한다(self, tmp_path: Path) -> None:
+        code, publisher, app, text = self._run(tmp_path, ["markdown"])
+        assert code == 0
+        assert publisher.calls == [("C1", "100.0", "교정본", True)]
+        assert json.loads(text) == {
+            "ok": True, "channel": "C1", "ts": "100.0", "blocks": ["markdown"],
+        }
+        assert app.close_calls == 1
+
+    def test_평문_채널은_리치로_갱신하지_않는다(self, tmp_path: Path) -> None:
+        """표기 규약을 추측하면 교정 전후로 표시가 달라진다."""
+        _, publisher, _, _ = self._run(
+            tmp_path, [], channels={"C1": {"name": "회의방"}}
+        )
+        assert publisher.calls[0][3] is False
+
+    def test_등록되지_않은_채널은_거부한다(self, tmp_path: Path) -> None:
+        code, publisher, _, text = self._run(tmp_path, ["markdown"], channels={})
+        assert code == 2
+        assert publisher.calls == []
+        assert "표기 규약을 모른다" in text
+
+    def test_교정본_파일이_없으면_거부한다(self, tmp_path: Path) -> None:
+        profiles = tmp_path / "profiles"
+        write_profile(profiles, tmp_path / "state")
+        publisher = FakePublisher(["markdown"])
+        app = FakeRewriteApplication(publisher)
+        out = io.StringIO()
+        code = SlackCliAgent([RewriteCommand(lambda profile, _resolver: app)]).run(
+            [
+                "rewrite", "--profile", "example", "--profile-dir", str(profiles),
+                "--channel", "C1", "--update", "100.0", str(tmp_path / "없는파일.md"),
+            ],
+            stdout=out,
+        )
+        assert code == 2
+        assert publisher.calls == []
+        assert "읽지 못했다" in out.getvalue()
+
+    def test_갱신_실패는_ok_거짓으로_출력하고_2를_돌려준다(self, tmp_path: Path) -> None:
+        """점검 보고가 읽는 값이다. 실패를 조용히 넘기면 안 고쳐진 것이
+        고쳐진 것으로 보고된다."""
+        code, _, app, text = self._run(tmp_path, SlackError("교정본이 한 메시지에 들어가지 않는다"))
+        assert code == 2
+        결과 = json.loads(text)
+        assert 결과["ok"] is False
+        assert "한 메시지에 들어가지 않는다" in 결과["error"]
+        assert app.close_calls == 1
 
 
 class FakeWebServer:

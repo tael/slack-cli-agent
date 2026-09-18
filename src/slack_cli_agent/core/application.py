@@ -12,6 +12,8 @@ connection, so events would arrive but nothing would handle them.
 from __future__ import annotations
 
 import logging
+import shlex
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
@@ -1120,11 +1122,31 @@ class Application:
                     bot_display_name=self._profile.display_name,
                     persona_dir=str(paths.persona),
                     prompts_dir=str(paths.prompts),
-                    post_rich_command="리치",
+                    rewrite_command=self.rewrite_command(),
                     **shared,
                 ),
             }
         return self._review_tasks
+
+    def rewrite_command(self) -> str:
+        """The command the format review runs to correct the message it flagged.
+
+        Assembled here because the interpreter and the profile are deployment
+        facts the review package has no way to know. `sys.executable` rather
+        than "python3" — the engine subprocess inherits a PATH that need not
+        have this venv on it, and a different interpreter wouldn't have the
+        package installed. `--profile-dir` is pinned to the directory this
+        profile was actually loaded from; the default search order depends on
+        an env var the subprocess may not carry.
+        """
+        parts = [
+            shlex.quote(sys.executable), "-m", "slack_cli_agent.cli", "rewrite",
+            "--profile", shlex.quote(self._profile.name),
+        ]
+        source = self._profile.source_file
+        if source is not None:
+            parts += ["--profile-dir", shlex.quote(str(source.parent))]
+        return " ".join(parts)
 
     def _review_engine(self) -> ReviewEngineCaller:
         paths = self._profile.paths
