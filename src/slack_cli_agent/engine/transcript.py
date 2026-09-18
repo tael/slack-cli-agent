@@ -120,6 +120,15 @@ class SessionTranscriptReader(ABC):
         """
         return True
 
+    @property
+    def reports_output_tokens(self) -> bool:
+        """Whether the transcript records output tokens per model turn.
+
+        Without them the thinking/waiting split collapses to all waiting,
+        which reads as "this engine generates no tokens" (sca-y36).
+        """
+        return True
+
 
 class ClaudeTranscriptReader(SessionTranscriptReader):
     """Reads the jsonl session transcript the Claude Code CLI writes.
@@ -502,6 +511,12 @@ class GeminiTranscriptReader(SessionTranscriptReader):
     def splits_tool_time(self) -> bool:
         # One step holds both the call and its result, so the gap between
         # them is not in the record at all.
+        return False
+
+    @property
+    def reports_output_tokens(self) -> bool:
+        # Checked the whole conversation DB on 2026-09-19: neither steps,
+        # gen_metadata nor executor_metadata carries a token count.
         return False
 
     def read(self, session_id: str) -> list[TranscriptEvent]:
