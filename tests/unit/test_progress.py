@@ -77,6 +77,47 @@ class TestToolLabelMapper:
         assert mapper.label_for("") == "확인하는 중"
 
 
+class Test표에_없는_이름을_남긴다:
+    """모르는 이름은 조용히 기본 문구가 된다. CLI 판이 올라가 이름이 바뀌면
+    진행 표시가 쓸모없어진 것을 아무도 모른다 (sca-2wu)."""
+
+    def test_표에_없는_이름을_알린다(self) -> None:
+        본것: list[str] = []
+        mapper = ToolLabelMapper(on_unknown=본것.append)
+        assert mapper.label_for("모르는도구") == "확인하는 중"
+        assert 본것 == ["모르는도구"]
+
+    def test_같은_이름은_한_번만_알린다(self) -> None:
+        """진행 표시는 한 요청에서도 여러 번 돈다. 매번 남기면 원장이 덮인다."""
+        본것: list[str] = []
+        mapper = ToolLabelMapper(on_unknown=본것.append)
+        for _ in range(5):
+            mapper.label_for("모르는도구")
+        mapper.label_for("또모르는도구")
+        assert 본것 == ["모르는도구", "또모르는도구"]
+
+    def test_표에_있는_이름은_안_알린다(self) -> None:
+        본것: list[str] = []
+        mapper = ToolLabelMapper(on_unknown=본것.append)
+        mapper.label_for("Read")
+        mapper.label_for("command_execution")
+        assert 본것 == []
+
+    def test_빈_이름은_안_알린다(self) -> None:
+        """도구 호출이 아니라 읽지 못한 줄이다. 이름이 없으니 표에 더할 것도 없다."""
+        본것: list[str] = []
+        mapper = ToolLabelMapper(on_unknown=본것.append)
+        mapper.label_for("")
+        assert 본것 == []
+
+    def test_모르는_mcp_서버는_안_알린다(self) -> None:
+        """서버 이름으로 문구를 만들어 내므로 표에 더할 것이 없다."""
+        본것: list[str] = []
+        mapper = ToolLabelMapper(on_unknown=본것.append)
+        assert mapper.label_for("mcp__새서버__무엇") == "새서버 조회 중"
+        assert 본것 == []
+
+
 class TestProgressLogReader:
     def _write_lines(self, path: Path, tools: list[str]) -> None:
         path.write_text(

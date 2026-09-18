@@ -433,6 +433,7 @@ function renderStateTab(d){
     ${tile("화자 오인", qa.wrong_addressee, "여러 사람 스레드 오답",
            qa.wrong_addressee > 0 ? "warn" : "")}
     ${tile("분할 깨짐", qa.split_broken, "코드블록 펜스 짝")}
+    ${tile("모르는 도구", qa.progress_unknown_tool, "진행 표시 문구가 기본값으로 나간 도구 이름 수")}
     ${tile("발송 실패", qa.post_failed, "", qa.post_failed > 0 ? "warn" : "")}
     ${tile("응답 재작성", num(qa.rewrites, "회"), "발송 직전 스레드가 이어짐")}
     ${tile("정정 누적", num(qa.corrections, "건"), "지식 파일 항목 수")}
