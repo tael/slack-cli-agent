@@ -2016,3 +2016,26 @@ class Test봇멘션가드연결:
         result = app._guards().run("확인은 <@U0TAEL> 께 부탁드립니다", GuardContext())
 
         assert "<@U0TAEL>" in result.body
+
+
+class Test점검느린보고연결:
+    """점검 경로에도 느린 실행 보고가 붙는가 (sca-xck).
+
+    안 붙이면 점검이 제한시간 근처까지 길어져도 audit 의 숫자 하나만 남는다.
+    """
+
+    def test_점검에_보고자가_주입된다(self, tmp_path: Path) -> None:
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        for task in app.review_tasks().values():
+            assert task._slow_reporter is not None
+
+    def test_점검용_기준을_따로_쓴다(self, tmp_path: Path) -> None:
+        """점검은 원래 몇 분씩 걸린다. 요청 쪽 기준을 같이 쓰면 한쪽을 바꿀 때
+        다른 쪽이 딸려 온다."""
+        app = Application.from_profile(
+            write_profile(tmp_path, settings={"review_slow_report_sec": 111, "slow_report_sec": 222}),
+            client=FakeSlackClient(),
+        )
+        task = next(iter(app.review_tasks().values()))
+        reporter = cast(Any, task._slow_reporter)
+        assert reporter._settings.slow_report_sec == 111
