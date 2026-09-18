@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
+from ..config.channel import channel_is_rich
 from ..config.settings import RuntimeSettings
 from ..engine.base import EngineResponse
 from ..guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG
@@ -157,7 +158,7 @@ class WatchJobChecker:
     def _post_report(self, job_id: int, channel: str, thread_ts: str, body: str) -> bool:
         config = self._channels.get(channel)
         try:
-            self._publisher.post(channel, thread_ts, body, bool(config and config.rich))
+            self._publisher.post(channel, thread_ts, body, channel_is_rich(config))
         except Exception as exc:  # noqa: BLE001 — a post failure must not stop the job from being marked done
             # The body can carry Slack conversations or file contents, so the
             # log gets the identifiers only.

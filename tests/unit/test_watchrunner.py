@@ -135,7 +135,7 @@ class Test완료처리:
         큐.시각["값"] = 2000.0
         c.check_once()
 
-        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", False)]
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
         assert 큐.due(now=99999.0, min_gap=0.0) == []
         assert 큐.expired(now=99999.0, max_age=0.0) == []
 
@@ -556,7 +556,7 @@ class Test결과파일로_완료를_가른다:
         큐.시각["값"] = 2000.0
         c.check_once()
 
-        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", False)]
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
         assert 큐.due(now=99999.0, min_gap=0.0) == []
 
     def test_실패로_끝났어도_완료다(self, 큐) -> None:
@@ -572,7 +572,7 @@ class Test결과파일로_완료를_가른다:
         큐.시각["값"] = 2000.0
         c.check_once()
 
-        assert 발행.게시내역 == [("C1", "111.1", "실패했습니다", False)]
+        assert 발행.게시내역 == [("C1", "111.1", "실패했습니다", True)]
         assert 큐.due(now=99999.0, min_gap=0.0) == []
 
     def test_판정_결과를_확인턴에_넘긴다(self, 큐) -> None:
@@ -615,7 +615,7 @@ class Test결과파일로_완료를_가른다:
         큐.시각["값"] = 2000.0
         c.check_once()
 
-        assert 발행.게시내역 == [("C1", "111.1", "끝", False)]
+        assert 발행.게시내역 == [("C1", "111.1", "끝", True)]
 
 
 class Test종료_상태가_포기보다_앞선다:
@@ -637,7 +637,7 @@ class Test종료_상태가_포기보다_앞선다:
         큐.시각["값"] = 99999.0
         c.check_once()
 
-        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", False)]
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
         assert 통지 == []
 
     def test_아직_안_끝난_건은_예전대로_포기한다(self, 큐) -> None:
@@ -696,7 +696,7 @@ class Test실제_결과_파일로_판정한다:
         큐.시각["값"] = 2000.0
         c.check_once()
 
-        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", False)]
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
 
     def test_표식이_없으면_엔진을_안_부른다(self, 큐, tmp_path) -> None:
         from slack_cli_agent.reliability.watchresult import WatchResultReader
