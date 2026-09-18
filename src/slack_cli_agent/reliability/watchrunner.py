@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 from ..config.channel import channel_is_rich
@@ -140,11 +141,16 @@ class WatchJobChecker:
             if self._outcome_of(job) in _TERMINAL:
                 self._check_one(job, now)
                 continue
+            reason = _give_up_reason(job, self._settings.watch_job_max_checks)
             if self._notify_owner is not None:
-                self._notify_owner(_give_up_report(job))
+                self._notify_owner(
+                    _give_up_report(job, reason, self._settings.watch_job_max_checks)
+                )
             self._queue.mark_done(job.id)
             self._settle_mark(job, failed=True)
-            self._record(WATCH_ABANDONED_KIND, job, age_sec=now - job.created_at)
+            self._record(
+                WATCH_ABANDONED_KIND, job, age_sec=now - job.created_at, reason=reason.value
+            )
 
         for job in self._queue.due(
             now, self._settings.watch_job_min_gap_sec, self._settings.watch_job_max_checks
@@ -332,11 +338,37 @@ def _bare_done_report(outcome: WatchOutcome = WatchOutcome.UNKNOWN) -> str:
     )
 
 
-def _give_up_report(job: WatchJob) -> str:
+class GiveUpReason(StrEnum):
+    """Why a watch stopped. expired() returns age and check-cap hits in one
+    list, so the caller has to work this out itself (sca-uwq)."""
+
+    MAX_CHECKS = "max_checks"
+    MAX_AGE = "max_age"
+
+
+def _give_up_reason(job: WatchJob, max_checks: int) -> GiveUpReason:
+    """The check cap wins when both hold. It is the tighter of the two at the
+    default settings -- 48 checks is about four hours against a 24-hour age
+    limit -- so a job that hit both almost certainly hit this one first."""
+    if max_checks > 0 and job.checks >= max_checks:
+        return GiveUpReason.MAX_CHECKS
+    return GiveUpReason.MAX_AGE
+
+
+def _give_up_report(job: WatchJob, reason: GiveUpReason, max_checks: int) -> str:
+    # The original bot.py:6808 has one line here because it has no check cap.
+    # Reporting a four-hour stop as "over a day" would send the owner looking
+    # at the wrong thing (sca-uwq).
+    if reason is GiveUpReason.MAX_CHECKS:
+        머리 = "*확인 횟수 상한에 닿은 감시 건이 있습니다*"
+        횟수 = f"- 확인 횟수 : {job.checks}회 (상한 {max_checks}회)"
+    else:
+        머리 = "*하루 넘게 못 끝낸 감시 건이 있습니다*"
+        횟수 = f"- 확인 횟수 : {job.checks}회"
     return (
-        "*하루 넘게 못 끝낸 감시 건이 있습니다*\n\n"
+        f"{머리}\n\n"
         f"- 무엇 : {job.condition}\n"
         f"- 채널 : {job.channel}\n"
-        f"- 확인 횟수 : {job.checks}회\n\n"
+        f"{횟수}\n\n"
         "감시를 여기서 멈춥니다. 직접 확인이 필요합니다."
     )
