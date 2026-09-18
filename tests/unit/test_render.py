@@ -215,3 +215,40 @@ class Test상한_기본값:
     def test_마크다운_블록_상한은_12000자다(self, settings: RuntimeSettings) -> None:
         assert settings.markdown_block_limit == 12000
 
+
+
+class Test블록_개수_상한:
+    """슬랙은 markdown 블록을 서버에서 펼친다. 제목 한 줄과 표 하나가 각각
+    블록 1개가 되고 50개를 넘으면 게시 전체가 invalid_blocks 로 거부된다
+    (2026-09-18 asuka 실측, sca-mb1). 문단·코드·인용·목록은 몇 개든 합쳐진다."""
+
+    def _제목과_표(self, n: int) -> str:
+        return "\n\n".join(f"## 제목 {i}\n\n| a | b |\n| --- | --- |\n| 1 | 2 |" for i in range(n))
+
+    def test_제목과_표만_블록으로_센다(self) -> None:
+        from slack_cli_agent.render.splitter import block_cost
+
+        assert block_cost("## 제목\n\n문단입니다.") == 2
+        assert block_cost("\n\n".join(f"문단 {i}." for i in range(50))) == 1
+        assert block_cost("| a | b |\n| --- | --- |\n| 1 | 2 |") == 1
+
+    def test_상한을_넘는_본문은_여러_조각으로_나뉜다(self, splitter: ContentSplitter) -> None:
+        from slack_cli_agent.render.splitter import MAX_BLOCKS, block_cost
+
+        chunks = splitter.split_for_blocks(self._제목과_표(60))
+        assert len(chunks) > 1
+        assert all(block_cost(c) <= MAX_BLOCKS for c in chunks)
+
+    def test_짧은_조각을_붙일_때도_상한을_지킨다(self, splitter: ContentSplitter) -> None:
+        from slack_cli_agent.render.splitter import MAX_BLOCKS, block_cost
+
+        # 둘 다 500자 미만이라 merge_tiny 의 병합 대상이지만 합치면 상한을 넘는다.
+        parts = ["\n".join(f"## 제목 {i}" for i in range(40)), "\n".join(f"## 끝 {i}" for i in range(10))]
+        merged = splitter.merge_tiny(parts, [False, False], 12000)
+        assert all(block_cost(c) <= MAX_BLOCKS for c in merged)
+
+    def test_안전_낙하도_상한을_지킨다(self, verifier: SplitVerifier) -> None:
+        from slack_cli_agent.render.splitter import MAX_BLOCKS, block_cost
+
+        chunks = verifier.safe_fallback(self._제목과_표(60))
+        assert all(block_cost(c) <= MAX_BLOCKS for c in chunks)
