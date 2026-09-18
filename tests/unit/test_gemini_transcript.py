@@ -39,6 +39,11 @@ def metadata_with_ts(ts: int) -> bytes:
     return b"\x0a" + varint(len(inner)) + inner
 
 
+def metadata_with_precise_ts(seconds: int, nanos: int) -> bytes:
+    inner = b"\x08" + varint(seconds) + b"\x10" + varint(nanos)
+    return b"\x0a" + varint(len(inner)) + inner
+
+
 def field(number: int, body: bytes) -> bytes:
     return varint(number << 3 | 2) + varint(len(body)) + body
 
@@ -73,6 +78,17 @@ class Test제미나이_기록을_읽는다:
         events = GeminiTranscriptReader(tmp_path / "일", home=tmp_path).read("S1")
 
         assert [event.ts for event in events] == [1789754523.0, 1789754530.0]
+
+    def test_초_아래_자리까지_읽는다(self) -> None:
+        """초로 자르면 구간 합이 총 구간을 넘어 비중이 100퍼센트를 넘는다."""
+        from slack_cli_agent.engine.transcript import _gemini_step_ts
+
+        assert _gemini_step_ts(metadata_with_precise_ts(1789754523, 140929000)) == 1789754523.140929
+
+    def test_나노초가_없으면_초만_쓴다(self) -> None:
+        from slack_cli_agent.engine.transcript import _gemini_step_ts
+
+        assert _gemini_step_ts(metadata_with_ts(1789754523)) == 1789754523.0
 
     def test_step_종류를_역할로_옮긴다(self, tmp_path: Path) -> None:
         write_db(tmp_path, "S1", [
@@ -261,7 +277,11 @@ class Test실제_바이트로_고정한다:
         ])
         events = GeminiTranscriptReader(tmp_path / "일", home=tmp_path).read("S1")
 
-        assert [event.ts for event in events] == [1789754523.0, 1789754523.0, 1789754525.0]
+        # nanos 를 버리면 세 step 이 모두 초 경계로 붙어 구간이 최대 1초씩
+        # 어긋난다. 실측에서 비중이 101퍼센트로 나온 원인이다(sca-be2).
+        assert [event.ts for event in events] == [
+            1789754523.140929, 1789754523.203539, 1789754525.885261,
+        ]
 
     def test_실제_payload_에서_도구_이름을_읽는다(self, tmp_path: Path) -> None:
         write_db(tmp_path, "S1", [(
