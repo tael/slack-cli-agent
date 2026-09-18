@@ -180,3 +180,112 @@ def test_call_matches_resolve() -> None:
 
     assert resolver("U_ALICE") == resolver.resolve("U_ALICE")
     assert client.call_count == 1
+
+
+# BotUserResolver (sca-c4m)
+
+
+def _bot_profile(*, is_bot: bool = False, user_id: str = "U1") -> dict[str, Any]:
+    return {"id": user_id, "is_bot": is_bot, "profile": {}, "name": ""}
+
+
+def test_봇_계정은_봇으로_본다() -> None:
+    from slack_cli_agent.slack.names import BotUserResolver
+
+    client = _FakeSlackClient({"U0REI": _bot_profile(is_bot=True, user_id="U0REI")})
+
+    assert BotUserResolver(client).is_bot("U0REI") is True
+
+
+def test_사람_계정은_봇이_아니다() -> None:
+    from slack_cli_agent.slack.names import BotUserResolver
+
+    client = _FakeSlackClient({"U0TAEL": _bot_profile(user_id="U0TAEL")})
+
+    assert BotUserResolver(client).is_bot("U0TAEL") is False
+
+
+def test_슬랙봇도_봇으로_본다() -> None:
+    from slack_cli_agent.slack.names import BotUserResolver
+
+    client = _FakeSlackClient({"USLACKBOT": _bot_profile(user_id="USLACKBOT")})
+
+    assert BotUserResolver(client).is_bot("USLACKBOT") is True
+
+
+def test_조회가_안_되면_사람으로_본다() -> None:
+    """이 판정의 쓰임은 멘션을 지우는 것이다. 조회 실패를 봇으로 읽으면
+    일시적 장애에 사람 멘션이 지워진다. 소유자 전용 채널 점검은 반대로
+    실패를 봇으로 보는데, 거기서는 사람으로 읽는 쪽이 헛경보를 낸다."""
+    from slack_cli_agent.slack.names import BotUserResolver
+
+    assert BotUserResolver(_FakeSlackClient()).is_bot("U0GONE") is False
+
+
+def test_같은_사용자를_두_번_물어도_조회는_한_번이다() -> None:
+    from slack_cli_agent.slack.names import BotUserResolver
+
+    client = _FakeSlackClient({"U0REI": _bot_profile(is_bot=True, user_id="U0REI")})
+    resolver = BotUserResolver(client)
+
+    resolver.is_bot("U0REI")
+    resolver.is_bot("U0REI")
+
+    assert client.call_count == 1
+
+
+def test_조회_실패는_간격을_두고_다시_묻는다() -> None:
+    """실패를 사람으로 굳혀 캐시하면 그 봇의 멘션이 프로세스가 사는 내내
+    안 지워져 막으려던 루프가 그대로 난다. 그렇다고 매번 다시 물으면 답
+    하나에 멘션 수만큼 조회가 나간다. 그래서 간격을 둔다(코덱스 리뷰)."""
+    from slack_cli_agent.slack.names import BotUserResolver
+
+    client = _FakeSlackClient()
+    시각 = {"값": 0.0}
+    resolver = BotUserResolver(client, clock=lambda: 시각["값"], retry_interval_sec=60.0)
+
+    resolver.is_bot("U0GONE")
+    resolver.is_bot("U0GONE")
+    assert client.call_count == 1
+
+    시각["값"] = 61.0
+    resolver.is_bot("U0GONE")
+    assert client.call_count == 2
+
+
+def test_실패_뒤_되살아나면_봇으로_바뀐다() -> None:
+    from slack_cli_agent.slack.names import BotUserResolver
+
+    client = _FakeSlackClient()
+    시각 = {"값": 0.0}
+    resolver = BotUserResolver(client, clock=lambda: 시각["값"], retry_interval_sec=60.0)
+
+    assert resolver.is_bot("U0REI") is False
+
+    client._profiles["U0REI"] = _bot_profile(is_bot=True, user_id="U0REI")
+    시각["값"] = 61.0
+
+    assert resolver.is_bot("U0REI") is True
+
+
+def test_성공한_판정은_다시_묻지_않는다() -> None:
+    from slack_cli_agent.slack.names import BotUserResolver
+
+    client = _FakeSlackClient({"U0REI": _bot_profile(is_bot=True, user_id="U0REI")})
+    시각 = {"값": 0.0}
+    resolver = BotUserResolver(client, clock=lambda: 시각["값"], retry_interval_sec=60.0)
+
+    resolver.is_bot("U0REI")
+    시각["값"] = 6000.0
+    resolver.is_bot("U0REI")
+
+    assert client.call_count == 1
+
+
+def test_빈_user_id_는_조회하지_않는다() -> None:
+    from slack_cli_agent.slack.names import BotUserResolver
+
+    client = _FakeSlackClient()
+
+    assert BotUserResolver(client).is_bot("") is False
+    assert client.call_count == 0

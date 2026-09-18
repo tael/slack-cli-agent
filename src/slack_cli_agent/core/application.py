@@ -45,7 +45,7 @@ from ..engine.transcript import (
 )
 from ..guard.base import OutputGuard
 from ..guard.dropline import ConfiguredLineDropGuard
-from ..guard.mentions import AddresseeGuard, PlainMentionGuard
+from ..guard.mentions import AddresseeGuard, BotMentionGuard, PlainMentionGuard
 from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard
@@ -134,7 +134,7 @@ from ..slack.identity import BotIdentity, SlackBotIdentity
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption
 from ..slack.linked_threads import LinkedThreadReader
 from ..slack.listener import EventListener
-from ..slack.names import DisplayNameResolver
+from ..slack.names import BotUserResolver, DisplayNameResolver
 from ..slack.owner_only_audit import OwnerOnlyChannelAudit
 from ..slack.participants import ThreadParticipants
 from ..slack.progress import (
@@ -229,6 +229,7 @@ class Application:
 
         self._channels = ChannelRegistry(profile.paths.channels)
         self._names = DisplayNameResolver(client)
+        self._bot_users = BotUserResolver(client)
         self._channel_name_resolver: ChannelNameResolver | None = None
         self._usage_check_run = run_command
         self._notices = NoticeCatalog()
@@ -452,6 +453,9 @@ class Application:
     def _guards(self) -> GuardPipeline:
         guards: list[OutputGuard] = [
             PlainMentionGuard(),
+            # Before AddresseeGuard so a bot mention at the head is turned
+            # into a name here rather than cut with a note meant for people.
+            BotMentionGuard(is_bot=self._bot_users.is_bot, display_name=self._names.resolve),
             AddresseeGuard(),
             WatchPromiseGuard(),
             RewriteLossGuard(self._settings),

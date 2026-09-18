@@ -339,3 +339,98 @@ class TestConfiguredLineDropGuard:
         assert result.changed is True
         assert result.body == "본문."
         assert result.detail["dropped"] == ["문구2"]
+
+
+# mentions.py — BotMentionGuard (sca-c4m)
+
+
+class _가짜봇판정:
+    """user ID -> 봇인가. 조회 횟수를 센다."""
+
+    def __init__(self, bots: set[str], names: dict[str, str] | None = None) -> None:
+        self._bots = bots
+        self._names = names or {}
+        self.calls: list[str] = []
+
+    def is_bot(self, user_id: str) -> bool:
+        self.calls.append(user_id)
+        return user_id in self._bots
+
+    def display_name(self, user_id: str) -> str:
+        return self._names.get(user_id, "")
+
+
+class Test봇_멘션을_지운다:
+    """엔진 답에 다른 봇의 <@U...> 가 들어가면 그 봇이 깨어난다.
+
+    app_mention 은 bot_id 를 안 거르므로(sca-3ee) 수신에서 막을 수 없고,
+    막는 자리는 발신측이다. 답 A 가 봇 B 를 부르고 B 의 답이 A 를 부르면
+    둘이 서로를 계속 깨운다.
+    """
+
+    def _guard(self, bots: set[str], names: dict[str, str] | None = None):
+        from slack_cli_agent.guard.mentions import BotMentionGuard
+
+        판정 = _가짜봇판정(bots, names)
+        return BotMentionGuard(is_bot=판정.is_bot, display_name=판정.display_name), 판정
+
+    def test_봇_멘션은_표시_이름_평문으로_바뀐다(self) -> None:
+        guard, _ = self._guard({"U0REI"}, {"U0REI": "레이"})
+
+        result = guard.apply("<@U0REI> 에게 물어보세요", GuardContext())
+
+        assert result.body == "레이 에게 물어보세요"
+        assert result.changed is True
+        assert result.detail == {"targets": ["U0REI"]}
+
+    def test_사람_멘션은_그대로_둔다(self) -> None:
+        """사람을 부르는 것은 이 봇의 기능이다. PlainMentionGuard 가 일부러
+        @이름 을 멘션으로 바꾸는데 여기서 되돌리면 그 기능이 죽는다."""
+        guard, _ = self._guard({"U0REI"})
+
+        result = guard.apply("<@U0HUMAN> 확인 부탁드립니다", GuardContext())
+
+        assert result.body == "<@U0HUMAN> 확인 부탁드립니다"
+        assert result.changed is False
+
+    def test_표시_이름을_모르면_멘션만_지운다(self) -> None:
+        guard, _ = self._guard({"U0REI"})
+
+        result = guard.apply("먼저 <@U0REI> 를 부르세요", GuardContext())
+
+        assert "<@" not in result.body
+        assert result.changed is True
+
+    def test_이름이_붙은_멘션_형식도_바꾼다(self) -> None:
+        """슬랙은 <@U123|표시이름> 형태로도 보낸다. 이 형태를 놓치면
+        루프가 그대로 난다."""
+        guard, _ = self._guard({"U0REI"}, {"U0REI": "레이"})
+
+        result = guard.apply("<@U0REI|rei> 확인", GuardContext())
+
+        assert result.body == "레이 확인"
+
+    def test_코드_안의_멘션은_안_건드린다(self) -> None:
+        """예시로 적은 것은 실제로 부르지 않는다. PlainMentionGuard 가 같은
+        이유로 코드 구간을 비켜 간다."""
+        guard, _ = self._guard({"U0REI"}, {"U0REI": "레이"})
+
+        body = "이렇게 씁니다 : `<@U0REI>`"
+        result = guard.apply(body, GuardContext())
+
+        assert result.body == body
+        assert result.changed is False
+
+    def test_같은_봇을_여러_번_불러도_조회는_한_번이다(self) -> None:
+        guard, 판정 = self._guard({"U0REI"}, {"U0REI": "레이"})
+
+        guard.apply("<@U0REI> 와 <@U0REI>", GuardContext())
+
+        assert 판정.calls == ["U0REI"]
+
+    def test_봇이_없으면_본문이_그대로다(self) -> None:
+        guard, _ = self._guard(set())
+
+        result = guard.apply("그냥 답", GuardContext())
+
+        assert result.changed is False
