@@ -672,6 +672,25 @@ class Test단정하지_않는다(Test출력_토큰을_안_남기는_기록):
         assert "시간 대부분" not in detail
 
 
+class Test비중이_백을_안_넘는다:
+    """구간 합이 총 구간을 넘으면 비중이 100퍼센트를 넘어 표가 신뢰를 잃는다.
+    실측 2026-09-19 04:17 에 101퍼센트로 나왔다(sca-be2)."""
+
+    def test_구간_합이_더_크면_그것을_총_구간으로_쓴다(self) -> None:
+        breakdown = TimeBreakdown(
+            start_ts=0.0, end_ts=100.0, tool_sec=60.0, think_sec=0.0, wait_sec=45.0,
+        )
+
+        assert breakdown.total_span == 105.0
+
+    def test_총_구간이_더_크면_그대로_쓴다(self) -> None:
+        breakdown = TimeBreakdown(
+            start_ts=0.0, end_ts=100.0, tool_sec=10.0, think_sec=0.0, wait_sec=20.0,
+        )
+
+        assert breakdown.total_span == 100.0
+
+
 class Test계산기가_리더의_능력을_그대로_전한다:
     def test_못_가르는_리더면_표시가_따라온다(self) -> None:
         class 못가르는리더(SessionTranscriptReader):
