@@ -23,6 +23,7 @@ from typing import Any, Protocol
 
 from ..auth.principal import TrustLevel
 from ..config.settings import RuntimeSettings
+from ..observability.progress_hook import append_tool
 from .base import (
     CallOrigin,
     ElapsedSource,
@@ -34,6 +35,7 @@ from .base import (
 )
 from .capability import EngineCapabilities
 from .environment import EngineEnvironmentPolicy
+from .stream import run_streaming
 from .switcher import EngineSwitcher
 
 SubprocessRunner = Callable[..., Any]
@@ -107,6 +109,9 @@ class EngineRunner:
         timeout = timeout_sec if timeout_sec is not None else self._settings.request_timeout_sec
         source = self._source_env if self._source_env is not None else os.environ
         extra: dict[str, Any] = {"env": policy.build(source)}
+        sink = self._progress_sink(engine, request)
+        if sink is not None:
+            extra["on_stdout_line"] = sink
         started = time.monotonic()
         try:
             completed = self._run(
@@ -137,6 +142,24 @@ class EngineRunner:
         if response.elapsed_source == ElapsedSource.UNKNOWN:
             response = dataclasses.replace(response, elapsed=wall_elapsed, elapsed_source=ElapsedSource.RUNNER)
         return response
+
+    @staticmethod
+    def _progress_sink(engine: Engine, request: EngineRequest) -> Callable[[str], None] | None:
+        """Turns the engine's own stdout events into progress log lines.
+
+        None when there is nothing to write to (progress off for this channel)
+        or when the engine reports progress another way -- Claude's hook
+        process writes the same file, and streaming as well would record
+        every tool call twice (sca-8ks).
+        """
+        log_path = request.progress_log
+        if log_path is None or not engine.streams_progress:
+            return None
+
+        def sink(line: str) -> None:
+            append_tool(log_path, engine.progress_tool_name(line))
+
+        return sink
 
     def _blocked_response(
         self, engine: Engine, request: EngineRequest, actual: EngineCapabilities
@@ -186,8 +209,11 @@ class EngineRunner:
 
     @staticmethod
     def _default_runner(
-        cmd: list[str], cwd: str, timeout: float, env: Mapping[str, str] | None = None
+        cmd: list[str], cwd: str, timeout: float, env: Mapping[str, str] | None = None,
+        on_stdout_line: Callable[[str], None] | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        if on_stdout_line is not None:
+            return run_streaming(cmd, cwd, timeout, env, on_stdout_line)
         # engine.parse() interprets returncode directly — turning it
         # into an exception here would break the path that carries a
         # failed exit code as a failure response.

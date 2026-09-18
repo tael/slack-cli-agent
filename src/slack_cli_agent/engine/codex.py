@@ -44,7 +44,15 @@ from pathlib import Path
 from typing import Any
 
 from ..config.profile import McpServerSpec
-from .base import Engine, EngineRequest, EngineResponse, FailureDetail, Usage, UsageLimit
+from .base import (
+    Engine,
+    EngineRequest,
+    EngineResponse,
+    FailureDetail,
+    Usage,
+    UsageLimit,
+    json_object_line,
+)
 from .capability import (
     EngineCapabilities,
     ExecutionIsolation,
@@ -150,6 +158,22 @@ class CodexEngine(Engine):
         else:
             cmd += ["--sandbox", sandbox, "-C", str(request.workdir), "--", request.prompt]
         return cmd
+
+    # 2026-09-19 실측 — item.started/item.completed 의 item.type 이 도구 이름
+    # 자리다(command_execution, file_change, web_search, agent_message).
+    # started 와 completed 가 잇달아 같은 이름을 내지만 ProgressLogReader 가
+    # 연속 중복을 합친다.
+    streams_progress = True
+
+    def progress_tool_name(self, line: str) -> str:
+        event = json_object_line(line)
+        if event is None or event.get("type") not in ("item.started", "item.completed"):
+            return ""
+        item = event.get("item")
+        if not isinstance(item, Mapping):
+            return ""
+        kind = item.get("type")
+        return kind if isinstance(kind, str) else ""
 
     def new_session_id(self) -> str:
         # The real thread ID is minted by the CLI on first run. This is

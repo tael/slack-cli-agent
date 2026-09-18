@@ -60,6 +60,40 @@ TOOL_LABELS: Sequence[tuple[str, str]] = (
     ("Agent", "따로 조사 돌리는 중"),
     ("Skill", "스킬 여는 중"),
     ("TodoWrite", "할 일 정리 중"),
+    # codex — item.type 이 도구 이름 자리다 (2026-09-19 실측).
+    ("command_execution", "명령 실행 중"),
+    ("file_change", "파일 고치는 중"),
+    ("web_search", "웹 찾는 중"),
+    ("mcp_tool_call", "조회 중"),
+    ("agent_message", "답 쓰는 중"),
+    # agy — step_update.tool_name. 이름은 init 이벤트의 도구 목록에서 가져왔다.
+    # 앞이 긴 이름부터 온다: 첫 접두어가 이기므로 browser_subagent 가
+    # browser_ 보다 뒤에 있으면 브라우저 문구로 덮인다.
+    ("browser_subagent", "따로 조사 돌리는 중"),
+    ("invoke_subagent", "따로 조사 돌리는 중"),
+    ("run_command", "명령 실행 중"),
+    ("command_status", "명령 실행 중"),
+    ("view_file", "파일 읽는 중"),
+    ("notebook_edit", "파일 고치는 중"),
+    ("grep_search", "코드 찾는 중"),
+    ("find_by_name", "파일 찾는 중"),
+    ("list_dir", "파일 찾는 중"),
+    ("replace_file_content", "파일 고치는 중"),
+    ("multi_replace_file_content", "파일 고치는 중"),
+    ("sed_file", "파일 고치는 중"),
+    ("write_to_file", "파일 쓰는 중"),
+    ("search_web", "웹 찾는 중"),
+    ("read_url_content", "웹 문서 읽는 중"),
+    ("call_mcp_tool", "조회 중"),
+    ("browser_", "브라우저로 화면 보는 중"),
+    ("open_browser_url", "브라우저로 화면 보는 중"),
+    ("read_browser_page", "브라우저로 화면 보는 중"),
+    ("capture_browser_", "브라우저로 화면 보는 중"),
+    ("click_browser_pixel", "브라우저로 화면 보는 중"),
+    ("execute_browser_javascript", "브라우저로 화면 보는 중"),
+    ("list_browser_pages", "브라우저로 화면 보는 중"),
+    ("manage_task", "할 일 정리 중"),
+    ("generate_image", "그림 만드는 중"),
 )
 
 
