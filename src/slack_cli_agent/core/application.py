@@ -140,7 +140,7 @@ from ..slack.participants import ThreadParticipants
 from ..slack.progress import (
     FallbackProgressSink,
     SlackProgressSink,
-    SlackStreamingProgressSink,
+    SlackTaskCardProgressSink,
 )
 from ..slack.publisher import MessagePublisher
 from ..slack.reactions import (
@@ -501,16 +501,17 @@ class Application:
 
     def progress(self) -> ProgressCoordinator:
         """Progress display, built for every bot. Which channels actually get
-        one is the `progress` flag in channels.json, read per request."""
+        one is the `progress` flag in channels.json, read per request.
+
+        The task card is primary and the rewrite sink is the fallback, so a
+        workspace that rejects task_card still gets the plain step lines.
+        The user id the streaming sink needed as a recipient is unused now."""
         if self._progress is None:
             self._progress = ProgressCoordinator(
                 settings=self._settings,
-                sink_factory=lambda channel, thread_ts, user: FallbackProgressSink(
-                    lambda: SlackStreamingProgressSink(
-                        self._client, channel, thread_ts,
-                        team_id=self.identity.team_id,
-                        user_id=user,
-                        bot_display_name=self._profile.display_name,
+                sink_factory=lambda channel, thread_ts, _user: FallbackProgressSink(
+                    lambda: SlackTaskCardProgressSink(
+                        self._client, channel, thread_ts, self._profile.display_name,
                     ),
                     lambda: SlackProgressSink(
                         self._client, channel, thread_ts, self._profile.display_name,
