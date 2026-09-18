@@ -162,6 +162,22 @@ class TestSplitVerifier:
 
         assert verifier.blocks_rejected(FakeExc("something_else")) is False
 
+    def test_블록_수_한도를_다른_형식_오류와_가른다(self, verifier: SplitVerifier) -> None:
+        """sca-2k7 — 한도 초과는 더 잘게 나누면 풀리고 나머지는 안 풀린다."""
+
+        class FakeExc(Exception):
+            def __init__(self, error: str) -> None:
+                self.response: dict = {"error": error}
+
+        한도 = FakeExc("invalid_blocks")
+        한도.response["errors"] = ["no more than 50 items allowed [json-pointer:/blocks]"]
+        assert verifier.block_limit_exceeded(한도) is True
+
+        형식 = FakeExc("invalid_blocks")
+        형식.response["errors"] = ["must be less than 3001 characters [json-pointer:/blocks/0/text]"]
+        assert verifier.block_limit_exceeded(형식) is False
+        assert verifier.block_limit_exceeded(FakeExc("something_else")) is False
+
     def test_response_속성이_없어도_예외를_내지_않는다(self, verifier: SplitVerifier) -> None:
         assert verifier.blocks_rejected(Exception("invalid_blocks in str")) is False
 

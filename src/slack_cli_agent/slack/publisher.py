@@ -25,7 +25,7 @@ from slack_cli_agent.core.markers import ELAPSED_MODEL_LINE
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.render.blocks import BlockBuilder
 from slack_cli_agent.render.markdown import MarkdownConverter
-from slack_cli_agent.render.splitter import ContentSplitter
+from slack_cli_agent.render.splitter import ContentSplitter, block_cost, split_by_block_budget
 from slack_cli_agent.render.verifier import SplitVerifier
 
 log = logging.getLogger(__name__)
@@ -142,11 +142,16 @@ class MessagePublisher:
         # and later chunks post at top level instead of under the first.
         parent_ts = None if is_direct_message_channel(channel) else (thread_ts or None)
         sent = 0
-        for idx, part in enumerate(chunks):
+        # A rejected chunk can be replaced in place by smaller pieces, so this
+        # walks a mutable list rather than the original chunks (sca-2k7).
+        pending = list(chunks)
+        idx = 0
+        while idx < len(pending):
+            part = pending[idx]
             kwargs: dict[str, Any] = {"channel": channel, "username": self._bot_display_name}
             note = ""
             if rich:
-                payload = self._rich_payload(part, split_note=idx == len(chunks) - 1)
+                payload = self._rich_payload(part, split_note=idx == len(pending) - 1)
                 part, note = payload.body, payload.note
                 kwargs["text"] = payload.text
                 kwargs["blocks"] = payload.blocks
@@ -158,6 +163,16 @@ class MessagePublisher:
             try:
                 res = self._client.chat_postMessage(**kwargs)
             except Exception as exc:
+                if rich and self._verifier.block_limit_exceeded(exc):
+                    pieces = self._resplit(part)
+                    if len(pieces) > 1:
+                        self._audit(
+                            kind=IncidentKind.BLOCKS_RESPLIT.value, channel=channel,
+                            thread_ts=thread_ts, pieces=len(pieces),
+                            cost=block_cost(part), sizes=[len(piece) for piece in pieces],
+                        )
+                        pending[idx : idx + 1] = pieces
+                        continue
                 if rich and self._verifier.blocks_rejected(exc):
                     self._audit(
                         kind=IncidentKind.BLOCKS_REJECTED.value, channel=channel,
@@ -169,6 +184,7 @@ class MessagePublisher:
                     try:
                         res = self._client.chat_postMessage(**plain)
                         sent += 1
+                        idx += 1
                         if parent_ts is None:
                             parent_ts = res["ts"]
                         continue
@@ -177,18 +193,18 @@ class MessagePublisher:
 
                 self._audit(
                     kind=IncidentKind.POST_FAILED.value, channel=channel, thread_ts=thread_ts,
-                    sent=sent, total=len(chunks), error=str(exc),
+                    sent=sent, total=len(pending), error=str(exc),
                 )
                 if sent:
                     try:
                         self._client.chat_postMessage(
                             channel=channel, username=self._bot_display_name,
                             thread_ts=parent_ts,
-                            text=f"답변이 {sent}/{len(chunks)} 까지만 전달됐습니다.",
+                            text=f"답변이 {sent}/{len(pending)} 까지만 전달됐습니다.",
                             attachments=[{
                                 "color": COLOR_FAIL,
                                 "text": (
-                                    f"답변이 {sent}/{len(chunks)} 까지만 전달됐습니다. "
+                                    f"답변이 {sent}/{len(pending)} 까지만 전달됐습니다. "
                                     "나머지는 보내지 못했습니다."
                                 ),
                             }],
@@ -197,15 +213,22 @@ class MessagePublisher:
                         log.warning("부분 발송 실패 안내 전송 실패 : %s", notify_exc)
                 raise SlackError(str(exc)) from exc
             sent += 1
+            idx += 1
             if parent_ts is None:
                 parent_ts = res["ts"]
 
-        if rich and len(chunks) > 1:
+        if rich and len(pending) > 1:
             self._audit(
                 kind=IncidentKind.SPLIT.value, channel=channel, thread_ts=thread_ts,
-                total=len(text), sizes=[len(c) for c in chunks],
+                total=len(text), sizes=[len(c) for c in pending],
             )
         return parent_ts
+
+    @staticmethod
+    def _resplit(part: str) -> list[str]:
+        """Halves one chunk's block budget. Slack counted more blocks than the
+        local estimate did, so the next try aims well under what it just was."""
+        return split_by_block_budget(part, max(1, block_cost(part) // 2))
 
     def update(self, channel: str, ts: str, text: str, rich: bool) -> list[str]:
         """Rewrites one already-posted message, using the channel's mode.

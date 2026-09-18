@@ -110,9 +110,17 @@ class FakeWebClient:
 
 
 class SlackApiError(Exception):
-    def __init__(self, error: str) -> None:
+    def __init__(self, error: str, errors: list[str] | None = None) -> None:
         super().__init__(error)
-        self.response = {"error": error}
+        # The real payload carries the reason in errors[], which is how the
+        # block-count limit is told apart from other invalid_blocks causes.
+        self.response: dict[str, Any] = {"ok": False, "error": error}
+        if errors is not None:
+            self.response["errors"] = errors
+            self.response["response_metadata"] = {"messages": [f"[ERROR] {e}" for e in errors]}
+
+
+BLOCK_LIMIT_ERRORS = ["no more than 50 items allowed [json-pointer:/blocks]"]
 
 
 # HistoryReader
@@ -360,6 +368,40 @@ class TestMessagePublisher:
         assert "blocks" not in second_kwargs
         assert second_kwargs["text"] == "본문입니다"
         assert any(a.get("kind") == "blocks_rejected" for a in audit)
+
+    def test_블록_수_한도면_더_잘게_나눠_리치로_다시_보낸다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        """sca-2k7 — 블록 수 초과는 길이 문제이지 형식 문제가 아니다. 평문으로
+        낮추면 표·제목이 사라지고 본문도 3900자에서 잘린다."""
+        client = FakeWebClient()
+        client.queue_post(SlackApiError("invalid_blocks", BLOCK_LIMIT_ERRORS))
+        for i in range(20):
+            client.queue_post({"ts": f"{200 + i}.000000"})
+        audit: list = []
+        pub = make_publisher(
+            client, settings, markdown, splitter, verifier, block_builder, audit=audit
+        )
+        body = "\n\n".join(f"## 제목{i}\n\n문단{i}" for i in range(40))
+        pub.post("C1", "100.0", body, rich=True)
+        재발신 = client.calls[1:]
+        assert len(재발신) >= 2
+        assert all("blocks" in kwargs for _, kwargs in 재발신)
+        보낸_본문 = "".join(kwargs["blocks"][0]["text"] for _, kwargs in 재발신)
+        assert "제목0" in 보낸_본문 and "제목39" in 보낸_본문
+        assert any(a.get("kind") == "blocks_resplit" for a in audit)
+
+    def test_더_나눌_수_없으면_평문으로_낮춘다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        """한 줄짜리 본문은 나눠도 그대로다. 그 자리에서 다시 시도하면
+        같은 거부가 끝없이 돈다."""
+        client = FakeWebClient()
+        client.queue_post(SlackApiError("invalid_blocks", BLOCK_LIMIT_ERRORS))
+        client.queue_post({"ts": "222.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        pub.post("C1", "100.0", "한 줄뿐인 본문", rich=True)
+        assert "blocks" not in client.calls[-1][1]
 
     def test_조각_전송_중_실패하면_부분전달_안내를_붙이고_예외를_낸다(
         self, settings, markdown, splitter, verifier, block_builder

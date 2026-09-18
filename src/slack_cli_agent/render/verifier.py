@@ -122,6 +122,23 @@ class SplitVerifier:
             prev_table = is_table
         return "\n".join(out)
 
+    def block_limit_exceeded(self, exc: Exception) -> bool:
+        """True when Slack refused the message for holding too many blocks.
+
+        That cause is about length, not shape: the same content posts fine in
+        smaller pieces. Other invalid_blocks causes do not, so they keep going
+        down to plain text (sca-2k7).
+        """
+        if not self.blocks_rejected(exc):
+            return False
+        res = getattr(exc, "response", None)
+        try:
+            reasons = (res or {}).get("errors") or []
+        except Exception:  # noqa: BLE001 -- unexpected response shape, fall back to the message text
+            reasons = []
+        text = " ".join([*(str(r) for r in reasons), str(exc)])
+        return "items allowed" in text and "/blocks" in text
+
     def blocks_rejected(self, exc: Exception) -> bool:
         # Checks the response payload rather than the exception type, so
         # this keeps working across Slack SDK version upgrades.
