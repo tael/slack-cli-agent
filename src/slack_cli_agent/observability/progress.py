@@ -71,6 +71,7 @@ TOOL_LABELS: Sequence[tuple[str, str]] = (
     ("web_search", "웹 찾는 중"),
     ("mcp_tool_call", "조회 중"),
     ("agent_message", "답 쓰는 중"),
+    ("agent_response", "답 쓰는 중"),
     # agy — step_update.tool_name. 이름은 init 이벤트의 도구 목록에서 가져왔다.
     # 앞이 긴 이름부터 온다: 첫 접두어가 이기므로 browser_subagent 가
     # browser_ 보다 뒤에 있으면 브라우저 문구로 덮인다.

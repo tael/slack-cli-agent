@@ -1456,9 +1456,11 @@ class Test엔진_stdout에서_도구_이름을_읽는다:
                            "step_update": {"step_type": "tool", "tool_name": "run_command"}})
         assert self.gemini(tmp_path).progress_tool_name(line) == "run_command"
 
-    def test_gemini는_도구가_아닌_단계에_빈_값을_낸다(self, tmp_path: Path) -> None:
+    def test_gemini는_모르는_단계에_빈_값을_낸다(self, tmp_path: Path) -> None:
+        """agent_response 는 sca-92g 에서 표시 대상이 됐다. 그 밖의 단계는
+        무엇을 하는 중인지 모르므로 이름을 안 낸다."""
         engine = self.gemini(tmp_path)
-        line = json.dumps({"event": "step_update", "step_update": {"step_type": "agent_response"}})
+        line = json.dumps({"event": "step_update", "step_update": {"step_type": "plan"}})
         assert engine.progress_tool_name(line) == ""
         assert engine.progress_tool_name(json.dumps({"event": "init", "init": {"tools": ["a"]}})) == ""
 
@@ -1545,6 +1547,32 @@ class Test실행기가_진행_로그를_스트리밍으로_쓴다:
         resp = runner.run(engine, request(progress_log=tmp_path / "없는자리" / "p.jsonl", model="gpt-5"))
         assert resp.ok is True
         assert resp.body == "답"
+
+
+class Test제미나이가_답을_쓰는_구간도_표시한다:
+    """sca-92g — 도구를 안 부르고 답만 길게 쓰는 구간에 아무 표시가 없었다.
+
+    코덱스는 agent_message 로 같은 구간을 이미 내고 있어 둘을 맞춘다.
+    """
+
+    def engine(self, tmp_path: Path) -> GeminiEngine:
+        return GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+
+    def 줄(self, step: dict[str, Any]) -> str:
+        return json.dumps({"event": "step_update", "step_update": step})
+
+    def test_agent_response_단계를_낸다(self, tmp_path: Path) -> None:
+        line = self.줄({"step_type": "agent_response", "text_delta": "답의 한 조각"})
+        assert self.engine(tmp_path).progress_tool_name(line) == "agent_response"
+
+    def test_도구_단계는_그대로_도구_이름이다(self, tmp_path: Path) -> None:
+        """답 쓰는 구간을 더하면서 도구 이름 경로가 가려지면 표시가 뭉개진다."""
+        line = self.줄({"step_type": "tool", "tool_name": "run_command"})
+        assert self.engine(tmp_path).progress_tool_name(line) == "run_command"
+
+    def test_모르는_단계는_안_낸다(self, tmp_path: Path) -> None:
+        line = self.줄({"step_type": "plan", "text_delta": "..."})
+        assert self.engine(tmp_path).progress_tool_name(line) == ""
 
 
 class Test제미나이_스트리밍_출력:
