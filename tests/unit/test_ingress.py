@@ -580,3 +580,45 @@ class Test접수가_재시도상한을_넘긴다:
         )
         service.handle_app_mention(mention_event())
         assert queue.enqueue_limits == [0]
+
+
+class Test봇이_넣은_멘션도_받는다:
+    """app_mention 은 bot_id 를 안 거른다. 이것은 이식 결함이 아니라 계약이다.
+
+    원본 bot.py:5410 on_mention 도 봇 필터 없이 처리한다. 그리고 이 성질이
+    tools/test-channel-probe.py 가 사람 없이 멘션-응답 경로 전체를 재는
+    근거다 - 다른 봇의 토큰으로 멘션을 넣어 대상 봇을 깨운다. 필터를 넣으면
+    원본 동등성과 그 도구가 함께 죽으므로 여기서 고정한다(sca-3ee).
+
+    루프 위험은 다른 자리에서 막는다 - 발신 본문의 다른 봇 멘션을 지우는
+    것이다(sca-c4m). 수신을 막는 것이 아니다.
+    """
+
+    def test_bot_id_가_붙은_멘션도_큐에_들어간다(
+        self, listener: EventListener, admin_router: AdminRouter, tmp_path: Path
+    ) -> None:
+        queue = FakeJobQueue()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path
+        )
+
+        event = mention_event() | {"bot_id": "B_OTHER"}
+        ingress.handle_app_mention(event)
+
+        assert len(queue.enqueued) == 1
+
+    def test_사람이_넣은_멘션과_같게_다룬다(
+        self, listener: EventListener, admin_router: AdminRouter, tmp_path: Path
+    ) -> None:
+        """bot_id 가 큐 항목의 내용을 바꾸지 않는다. 받되 다르게 다루면
+        도구로 잰 것이 실제 동작과 달라진다."""
+        사람큐, 봇큐 = FakeJobQueue(), FakeJobQueue()
+        make_ingress(
+            listener=listener, queue=사람큐, admin_router=admin_router, tmp_path=tmp_path
+        ).handle_app_mention(mention_event())
+        make_ingress(
+            listener=listener, queue=봇큐, admin_router=admin_router, tmp_path=tmp_path
+        ).handle_app_mention(mention_event() | {"bot_id": "B_OTHER"})
+
+        사람, 봇 = 사람큐.enqueued[0], 봇큐.enqueued[0]
+        assert (봇.channel, 봇.ts, 봇.text) == (사람.channel, 사람.ts, 사람.text)
