@@ -1107,6 +1107,13 @@ class Application:
                 # 점검 한 건이 엔진을 몇 분씩 쓴다. 남기지 않으면 제한시간을
                 # 어떻게 잡을지 정할 근거가 없다(sca-fy5).
                 "audit": self.audit(),
+                # 숫자만 남기면 느려진 것을 아무도 모른다. 요청 쪽과 같은
+                # 보고자를 쓰되 기준값만 점검용으로 갈아 끼운다(sca-xck).
+                "slow_reporter": self._slow_reporter(
+                    self._settings.override(
+                        {"slow_report_sec": self._settings.review_slow_report_sec}
+                    )
+                ),
             }
             paths = self._profile.paths
             owner_name = self._names.resolve(self._profile.owner_user_id)
@@ -1223,7 +1230,7 @@ class Application:
             return fallback
         return None
 
-    def _slow_reporter(self) -> SlowRequestReporter:
+    def _slow_reporter(self, settings: RuntimeSettings | None = None) -> SlowRequestReporter:
         # an empty troubleshoot_channel is valid config — the reporter just
         # skips past the threshold check in that case
         return SlowRequestReporter(
@@ -1239,7 +1246,7 @@ class Application:
             ),
             diagnostician=ElapsedDiagnostician(self._settings.sleep_gap_suspect_sec),
             formatter=SlowReportFormatter(self._settings.assumed_tokens_per_sec),
-            settings=self._settings,
+            settings=settings or self._settings,
             troubleshoot_channel=self._profile.troubleshoot_channel,
         )
 

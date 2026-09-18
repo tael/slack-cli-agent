@@ -14,7 +14,7 @@ from ..config.settings import RuntimeSettings
 from ..core.timezones import KST
 from ..engine.base import Usage
 from ..engine.transcript import SessionTranscriptReader, TranscriptEvent
-from ..review.base import as_table
+from ..render.table import as_table
 from ..slack.text import clean_excerpt
 
 #: Maps the name of the engine that answered to the reader for its transcript

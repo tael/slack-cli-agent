@@ -40,6 +40,14 @@ class ReviewEngineCaller:
         self._effort = effort or OWNER_EFFORT_MIN
         self._allowed_tools = tuple(allowed_tools)
 
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def effort(self) -> str:
+        return self._effort
+
     def run(
         self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None
     ) -> EngineResponse:

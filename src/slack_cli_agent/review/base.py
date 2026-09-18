@@ -14,8 +14,9 @@ two different forms in one header. Subclasses now return rows only.
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,28 +24,14 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from slack_cli_agent.engine.base import EngineResponse
 from slack_cli_agent.observability.audit import REVIEW_KIND
+from slack_cli_agent.observability.slow_report import SlowRequestMeta
+from slack_cli_agent.render.table import as_table
 from slack_cli_agent.review.ledger import ReviewLedger
 
 log = logging.getLogger(__name__)
 
 # Shared by all review kinds so the split marker can't drift out of sync between them.
 REVIEW_SPLIT = "===상세==="
-
-
-def cell(value: Any) -> str:
-    # A stray pipe or newline would break the table row it's in and everything after it.
-    return str(value).replace("|", "/").replace("\n", " ").strip() or "-"
-
-
-def as_table(
-    rows: Sequence[tuple[Any, ...]], head: tuple[str, ...] = ("항목", "값")
-) -> str:
-    if not rows:
-        return ""
-    lines = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
-    for row in rows:
-        lines.append("| " + " | ".join(cell(c) for c in row) + " |")
-    return "\n".join(lines)
 
 
 def run_info_rows(record: Mapping[str, Any] | None) -> list[tuple[str, str]]:
@@ -125,6 +112,23 @@ class EngineCaller(Protocol):
         self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None
     ) -> EngineResponse: ...
 
+    @property
+    def model(self) -> str:
+        """What the caller asked for. The slow-report needs it and the
+        response only carries what the engine actually used."""
+
+    @property
+    def effort(self) -> str: ...
+
+
+@runtime_checkable
+class SlowReportPort(Protocol):
+    """SlowRequestReporter.maybe_report's shape. The threshold lives in the
+    reporter, not here -- writing it in both places lets one be changed alone
+    (sca-xck)."""
+
+    def maybe_report(self, meta: SlowRequestMeta) -> str | None: ...
+
 
 @runtime_checkable
 class ReviewAuditPort(Protocol):
@@ -180,6 +184,7 @@ class ReviewTask(ABC):
         owner_only_channels: frozenset[str] = frozenset(),
         progress: ReviewProgressPort | None = None,
         audit: ReviewAuditPort | None = None,
+        slow_reporter: SlowReportPort | None = None,
     ) -> None:
         self._ledger = ledger
         self._message_lookup = message_lookup
@@ -205,6 +210,7 @@ class ReviewTask(ABC):
             )
         self._progress = progress
         self._audit = audit
+        self._slow_reporter = slow_reporter
 
     @abstractmethod
     def build_prompt(self, target: ReviewTarget, *, transcript: str, flagged: str, question: str) -> str: ...
@@ -328,6 +334,47 @@ class ReviewTask(ABC):
         except Exception as exc:  # noqa: BLE001 - see docstring
             log.warning("점검 실행 기록을 남기지 못했다 : %s", exc)
 
+    def _report_if_slow(
+        self,
+        target: ReviewTarget,
+        response: EngineResponse,
+        flagged: str,
+        started: float,
+        mono_elapsed: float,
+        *,
+        resume: bool = False,
+    ) -> None:
+        """A review that already ran must not be lost because its slow-run
+        report could not be built -- same contract as _record_run."""
+        if self._slow_reporter is None:
+            return
+        try:
+            self._slow_reporter.maybe_report(
+                SlowRequestMeta(
+                    elapsed_wall=response.elapsed,
+                    mono_elapsed=mono_elapsed,
+                    started=started,
+                    model=self._engine.model,
+                    model_actual=response.model_actual,
+                    effort=self._engine.effort,
+                    num_turns=response.turns,
+                    reason=response.failure_reason,
+                    session_id=response.session_id or "",
+                    resume=resume,
+                    engine=response.engine,
+                    channel=target.channel,
+                    channel_name=target.channel_name,
+                    # The flagged message, the same way the request path passes
+                    # the asker's text: without the input there is nothing to
+                    # read the slow stretch against. The report only ever goes
+                    # to the owner-only troubleshooting channel.
+                    text=flagged,
+                    usage=response.usage,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            log.warning("점검의 느린 실행 보고를 내지 못했다 : %s", exc)
+
     def _execute(self, target: ReviewTarget) -> None:
         msg = self._message_lookup.find(target.channel, target.ts)
         if msg is None:
@@ -346,9 +393,11 @@ class ReviewTask(ABC):
         # None: the engine that runs this mints the ID in its own format.
         # Minting a UUID here happened to work only because all three CLIs
         # accept one today (sca-k6s).
+        started, mono_started = time.time(), time.monotonic()
         with self._progress_display(target, thread_ts) as progress_log:
             response = self._engine.run(prompt, None, False, progress_log)
         self._record_run(target, response, attempt="main")
+        self._report_if_slow(target, response, flagged, started, time.monotonic() - mono_started)
 
         link = self._permalinks.permalink(target.channel, target.ts)
         header = self.build_header(target, record, link)
@@ -368,8 +417,14 @@ class ReviewTask(ABC):
         if marker not in body and self.retry_on_missing_split() and response.session_id:
             # Resume the session the engine actually used. Without an ID there
             # is nothing to continue, so the response goes out as it came.
+            retry_started, retry_mono = time.time(), time.monotonic()
             retry = self._engine.run(self.missing_split_prompt(), response.session_id, True)
             self._record_run(target, retry, attempt="split_retry")
+            # The retry is a second engine call and can be the slow one on its
+            # own -- the first response came back fast, it just had no marker.
+            self._report_if_slow(
+                target, retry, flagged, retry_started, time.monotonic() - retry_mono, resume=True
+            )
             if retry.ok and marker in retry.body:
                 body = retry.body
 
