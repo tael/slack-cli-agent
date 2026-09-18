@@ -72,7 +72,7 @@ class Test머리말:
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
         record = {"model": "opus", "effort": "high", "elapsed": 3.0}
         header = task.build_header(target, record, "")
-        assert "## 서식 점검 : 회의방" in header
+        assert header.startswith("# 서식 점검 : 회의방\n")
         assert "리치" in header
         assert "opus / high" in header
 

@@ -72,7 +72,7 @@ class Test머리말:
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
         record = {"model": "opus", "effort": "high", "elapsed": 12.3, "num_turns": 4}
         header = task.build_header(target, record, "https://slack/x")
-        assert "## 부검 : 회의방" in header
+        assert header.startswith("# 부검 : 회의방\n")
         assert "opus / high" in header
         assert "12.3초, 4턴" in header
         assert "https://slack/x" in header

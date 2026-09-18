@@ -65,7 +65,7 @@ class Test머리말:
         task = make_task()
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
         header = task.build_header(target, None, "https://slack/x")
-        assert "## 디버그 : 회의방" in header
+        assert header.startswith("# 디버그 : 회의방\n")
         assert "| 요청한 사람 | <@U1> |" in header
         assert "https://slack/x" in header
         # 세 점검의 머리말 형태를 표 한 벌로 맞췄다. 디버그만 불릿이었다.

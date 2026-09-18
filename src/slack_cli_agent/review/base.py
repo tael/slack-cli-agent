@@ -224,7 +224,10 @@ class ReviewTask(ABC):
     def build_header(self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str) -> str:
         rows = list(self.header_rows(target, record, link))
         rows.append((self.requester_label, f"<@{target.by_user}>"))
-        return f"## {self.header_title(target)}\n\n" + as_table(rows) + "\n\n"
+        # Top-level heading and a rule below the table: the report body uses `##`
+        # for its own sections, so a `##` title sat at the same level as them and
+        # the report read as one flat run of sections.
+        return f"# {self.header_title(target)}\n\n" + as_table(rows) + "\n\n---\n\n"
 
     def split_marker(self) -> str:
         return REVIEW_SPLIT

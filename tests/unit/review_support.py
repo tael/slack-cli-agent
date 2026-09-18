@@ -13,8 +13,12 @@ def recorded(ledger: ReviewLedger, kind: str, channel: str, target_ts: str) -> R
 
 
 def header_body_lines(header: str) -> list[str]:
-    """머리말에서 제목과 빈 줄을 뺀 나머지 줄."""
-    return [line for line in header.splitlines() if line.strip() and not line.startswith("## ")]
+    """머리말에서 제목과 구분선, 빈 줄을 뺀 나머지 줄."""
+    return [
+        line
+        for line in header.splitlines()
+        if line.strip() and not line.startswith("# ") and line.strip() != "---"
+    ]
 
 
 def assert_header_is_one_table(header: str) -> None:
