@@ -54,6 +54,9 @@ class TimeBreakdown:
     reports_output_tokens: bool = True
     """False when the transcript has no per-turn output tokens, so think_sec is
     unknown and wait_sec absorbs it (sca-y36). Also from the reader."""
+    reports_cache_usage: bool = True
+    """False when the transcript has no per-request cache numbers, so retries
+    cannot be inferred at all and the verdict column stays empty (sca-ron)."""
 
     @property
     def total_span(self) -> float:
@@ -167,6 +170,7 @@ class TimeBreakdownCalculator:
             retry_sec=retry_sec, retries=retries,
             splits_tool_time=reader.splits_tool_time,
             reports_output_tokens=reader.reports_output_tokens,
+            reports_cache_usage=reader.reports_cache_usage,
         )
 
 
@@ -528,16 +532,17 @@ class SlowReportFormatter:
     def _gap_head(breakdown: TimeBreakdown) -> tuple[str, ...]:
         # Columns derived from output tokens are dropped rather than shown as
         # a column of dashes, which reads as "measured, and it was zero".
+        verdict = ("판정",) if breakdown.reports_cache_usage else ()
         if not breakdown.reports_output_tokens:
-            return ("순위", "소요", "직전 도구", "판정")
-        return ("순위", "소요", "직전 도구", "구간 끝 출력 토큰", "사고/대기 근사", "판정")
+            return ("순위", "소요", "직전 도구", *verdict)
+        return ("순위", "소요", "직전 도구", "구간 끝 출력 토큰", "사고/대기 근사", *verdict)
 
     @staticmethod
     def _gap_rows(breakdown: TimeBreakdown) -> list[tuple[str, ...]]:
         rows: list[tuple[str, ...]] = []
         for i, gap in enumerate(breakdown.top_gaps):
             head = (str(i + 1), f"{gap.duration_sec:.1f}초", gap.last_tool_brief or "-")
-            verdict = ("재시도" if gap.retry_orphan_tokens else "-",)
+            verdict = ("재시도" if gap.retry_orphan_tokens else "-",) if breakdown.reports_cache_usage else ()
             if not breakdown.reports_output_tokens:
                 rows.append((*head, *verdict))
                 continue
