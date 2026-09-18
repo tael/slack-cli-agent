@@ -134,10 +134,17 @@ class Test도구_시간을_가를_수_없다고_알린다:
     def test_제미나이_리더는_도구_시간을_못_가른다(self, tmp_path: Path) -> None:
         assert GeminiTranscriptReader(tmp_path / "일", home=tmp_path).splits_tool_time is False
 
+    def test_제미나이_리더는_출력_토큰을_안_낸다(self, tmp_path: Path) -> None:
+        """DB 를 훑어 확인했다 - gen_metadata·executor_metadata·step_payload
+        어디에도 토큰 수가 없다(2026-09-19)."""
+        assert GeminiTranscriptReader(tmp_path / "일", home=tmp_path).reports_output_tokens is False
+
     def test_다른_리더는_가른다(self, tmp_path: Path) -> None:
         from slack_cli_agent.engine.transcript import ClaudeTranscriptReader
 
-        assert ClaudeTranscriptReader(tmp_path / "일", home=tmp_path).splits_tool_time is True
+        reader = ClaudeTranscriptReader(tmp_path / "일", home=tmp_path)
+        assert reader.splits_tool_time is True
+        assert reader.reports_output_tokens is True
 
 
 class Test레지스트리에_붙어_있다:

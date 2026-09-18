@@ -51,6 +51,9 @@ class TimeBreakdown:
     splits_tool_time: bool = True
     """False when the transcript has no tool-call/tool-result pair, so tool_sec
     is unknown rather than zero (sca-ebp). Comes from the reader, not the events."""
+    reports_output_tokens: bool = True
+    """False when the transcript has no per-turn output tokens, so think_sec is
+    unknown and wait_sec absorbs it (sca-y36). Also from the reader."""
 
     @property
     def total_span(self) -> float:
@@ -159,6 +162,7 @@ class TimeBreakdownCalculator:
             think_sec=think_sec, wait_sec=wait_sec, top_gaps=tuple(gaps[: self._top_n]),
             retry_sec=retry_sec, retries=retries,
             splits_tool_time=reader.splits_tool_time,
+            reports_output_tokens=reader.reports_output_tokens,
         )
 
 
@@ -406,11 +410,19 @@ class SlowReportFormatter:
         rows = []
         if breakdown.splits_tool_time:
             rows.append(("도구 실행", f"{breakdown.tool_sec:.1f}초", f"{tool_pct:.1f}퍼센트"))
-        rows += [
-            ("사고, 토큰 소모", f"{breakdown.think_sec:.1f}초", f"{think_pct:.1f}퍼센트"),
-            ("단순 대기, 토큰 무관", f"{breakdown.wait_sec:.1f}초", f"{wait_pct:.1f}퍼센트"),
-            ("재시도로 버린 시간", f"{breakdown.retry_sec:.1f}초", f"{retry_pct:.1f}퍼센트"),
-        ]
+        if breakdown.reports_output_tokens:
+            rows += [
+                # 이 값은 출력 토큰 수를 처리 속도로 나눈 근사다. 모델 내부의
+                # 사고를 잰 것이 아니므로 이름에 "사고" 를 쓰지 않는다.
+                ("출력 토큰으로 설명되는 시간", f"{breakdown.think_sec:.1f}초", f"{think_pct:.1f}퍼센트"),
+                ("출력 토큰으로 설명 안 되는 시간", f"{breakdown.wait_sec:.1f}초", f"{wait_pct:.1f}퍼센트"),
+            ]
+        else:
+            model_sec = breakdown.think_sec + breakdown.wait_sec
+            # "모델 처리" 는 과장이다. 도구도 못 가르는 엔진이면 이 값에 도구
+            # 실행까지 섞여 있다. 미분리라는 것을 이름에 적는다.
+            rows.append(("엔진 처리(미분리)", f"{model_sec:.1f}초", f"{100 * model_sec / total_span:.1f}퍼센트"))
+        rows.append(("재시도로 버린 시간", f"{breakdown.retry_sec:.1f}초", f"{retry_pct:.1f}퍼센트"))
 
         lines = [
             "*시간 분해*",
@@ -419,11 +431,17 @@ class SlowReportFormatter:
                 f"- 대상 : {scope}, 세션 {meta.session_id[:8]} "
                 f"{total_span:.1f}초 ({breakdown.start_ts:.0f}부터 {breakdown.end_ts:.0f}까지)"
             ),
-            (
-                f"- 사고와 단순 대기는 출력 토큰 수를 초당 {self._assumed_tokens_per_sec:.0f}개로 나눠 "
-                "가른 근사치입니다. 실측이 아닙니다"
-            ),
         ]
+        if breakdown.reports_output_tokens:
+            lines.append(
+                f"- 위 두 줄은 출력 토큰 수를 초당 {self._assumed_tokens_per_sec:.0f}개로 나눠 "
+                "가른 근사치입니다. 실측이 아닙니다"
+            )
+        else:
+            # 사고 0초는 계산 결과일 뿐 관측이 아니다. 나누지 않은 것을 밝힌다.
+            lines.append(
+                "- 이 엔진의 기록은 턴별 출력 토큰을 남기지 않아, 사고와 대기를 나누지 않았습니다"
+            )
         if not breakdown.splits_tool_time:
             # 0 으로 적으면 도구를 안 썼다는 뜻으로 읽힌다. 모른다는 것을 적는다.
             lines.append(
@@ -436,22 +454,13 @@ class SlowReportFormatter:
                 "",
                 "*긴 구간*",
                 "",
-                as_table(
-                    [
-                        (
-                            str(i + 1),
-                            f"{gap.duration_sec:.1f}초",
-                            gap.last_tool_brief or "-",
-                            f"{gap.output_tokens:,}" if gap.output_tokens else "-",
-                            f"사고 {gap.think_sec:.1f}초 / 대기 {gap.wait_sec:.1f}초",
-                            "재시도" if gap.retry_orphan_tokens else "-",
-                        )
-                        for i, gap in enumerate(breakdown.top_gaps)
-                    ],
-                    head=("순위", "소요", "직전 도구", "구간 끝 출력 토큰", "사고/대기 근사", "판정"),
-                ),
+                as_table(self._gap_rows(breakdown), head=self._gap_head(breakdown)),
                 "",
-                "직전 도구를 처리한 뒤 다음 행동을 정하기까지의 대기입니다.",
+                (
+                    "기록에 남은 단계 사이의 긴 구간입니다. 토큰으로 설명되는 시간도 이 안에 들어 있습니다."
+                    if breakdown.reports_output_tokens
+                    else "기록에 남은 단계 사이의 긴 구간입니다. 무엇에 쓴 시간인지는 이 기록으로 알 수 없습니다."
+                ),
             ]
 
         if breakdown.retries:
@@ -471,18 +480,35 @@ class SlowReportFormatter:
         # Lead with retry time when present — attributing it to thinking/wait instead
         # would wrongly suggest lowering effort as the fix.
         if retry_pct > 30:
+            # 30퍼센트는 "대부분" 이 아니다. 절반을 넘을 때만 그렇게 적는다.
+            head = "시간 대부분이 끊겼다 다시 부르느라 버린 시간입니다. " if retry_pct > 50 else ""
             lines.append(
-                f"- 시간 대부분이 끊겼다 다시 부르느라 버린 시간입니다. {breakdown.retry_sec:.1f}초, "
-                f"전체의 {retry_pct:.0f}퍼센트입니다. 요청 내용이나 effort 와 무관한 구간입니다."
+                f"- {head}끊겼다 다시 부르느라 버린 시간이 {breakdown.retry_sec:.1f}초, "
+                f"전체의 {retry_pct:.0f}퍼센트입니다. 캐시 사용량으로 역산한 값입니다."
             )
+        elif not breakdown.reports_output_tokens and think_pct + wait_pct > 50:
+            # 비중을 안 보고 "대부분" 이라고 하면 도구가 70퍼센트인 기록에도
+            # 같은 문장이 나간다.
+            model_pct = think_pct + wait_pct
+            lines.append(
+                f"- 시간 대부분이 엔진 처리 구간입니다. "
+                f"{breakdown.think_sec + breakdown.wait_sec:.1f}초, 전체의 {model_pct:.0f}퍼센트입니다. "
+                "토큰 기록이 없어 사고와 대기 중 무엇인지는 이 기록으로 알 수 없습니다."
+            )
+        elif not breakdown.reports_output_tokens and tool_pct > 30:
+            lines.append(
+                f"- 도구 실행 자체가 {breakdown.tool_sec:.1f}초, 전체의 {tool_pct:.0f}퍼센트를 차지합니다."
+            )
+        elif not breakdown.reports_output_tokens:
+            lines.append("- 토큰 기록이 없어 어느 구간에 시간이 몰렸는지 세분화할 수 없습니다.")
         elif wait_pct > 50:
             lines.append(
-                f"- 시간 대부분이 토큰 생성과 무관한 단순 대기입니다. {breakdown.wait_sec:.1f}초, "
+                f"- 시간 대부분이 출력 토큰으로 설명되지 않는 구간입니다. {breakdown.wait_sec:.1f}초, "
                 f"전체의 {wait_pct:.0f}퍼센트입니다."
             )
         elif think_pct > 50:
             lines.append(
-                f"- 시간 대부분이 토큰을 실제로 만들어내는 사고 시간입니다. {breakdown.think_sec:.1f}초, "
+                f"- 시간 대부분이 출력 토큰 생성으로 설명되는 구간입니다. {breakdown.think_sec:.1f}초, "
                 f"전체의 {think_pct:.0f}퍼센트입니다."
             )
         elif tool_pct > 30:
@@ -493,6 +519,31 @@ class SlowReportFormatter:
             lines.append("- 특정 구간에 시간이 몰리지 않고 고르게 분산돼 있습니다.")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _gap_head(breakdown: TimeBreakdown) -> tuple[str, ...]:
+        # Columns derived from output tokens are dropped rather than shown as
+        # a column of dashes, which reads as "measured, and it was zero".
+        if not breakdown.reports_output_tokens:
+            return ("순위", "소요", "직전 도구", "판정")
+        return ("순위", "소요", "직전 도구", "구간 끝 출력 토큰", "사고/대기 근사", "판정")
+
+    @staticmethod
+    def _gap_rows(breakdown: TimeBreakdown) -> list[tuple[str, ...]]:
+        rows: list[tuple[str, ...]] = []
+        for i, gap in enumerate(breakdown.top_gaps):
+            head = (str(i + 1), f"{gap.duration_sec:.1f}초", gap.last_tool_brief or "-")
+            verdict = ("재시도" if gap.retry_orphan_tokens else "-",)
+            if not breakdown.reports_output_tokens:
+                rows.append((*head, *verdict))
+                continue
+            rows.append((
+                *head,
+                f"{gap.output_tokens:,}" if gap.output_tokens else "-",
+                f"사고 {gap.think_sec:.1f}초 / 대기 {gap.wait_sec:.1f}초",
+                *verdict,
+            ))
+        return rows
 
     @staticmethod
     def _model_effort_cell(meta: SlowRequestMeta) -> str:
