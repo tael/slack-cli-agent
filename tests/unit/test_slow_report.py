@@ -478,11 +478,209 @@ class Test도구_시간을_못_가르는_기록:
         assert "도구 실행과 대기를 가를 수 없습니다" not in detail
 
 
+class Test출력_토큰을_안_남기는_기록:
+    """제미나이는 step 에 출력 토큰을 안 남긴다. 그러면 사고 시간이 0 으로
+    계산돼 전부 단순 대기로 밀리고, 보고가 "이 엔진은 토큰을 안 쓴다" 로
+    읽힌다. 실측 2026-09-19 03:30 에 그렇게 나왔다(sca-y36)."""
+
+    def _meta(self) -> SlowRequestMeta:
+        return SlowRequestMeta(
+            elapsed_wall=800.0, mono_elapsed=790.0, started=0.0, model="gemini-x",
+            model_actual=None, effort="medium", num_turns=1, reason=None,
+            session_id="세션1", resume=False, channel="C1", channel_name="테스트채널", text="원문",
+        )
+
+    def _detail(self, *, reports_output_tokens: bool = True, splits_tool_time: bool = True) -> str:
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        breakdown = TimeBreakdown(
+            start_ts=0.0, end_ts=100.0, tool_sec=0.0, think_sec=0.0, wait_sec=100.0,
+            reports_output_tokens=reports_output_tokens, splits_tool_time=splits_tool_time,
+        )
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        return formatter.format(self._meta(), diagnosis, breakdown)[1]
+
+    def test_토큰을_안_남기면_사고와_대기를_안_나눈다(self) -> None:
+        detail = self._detail(reports_output_tokens=False, splits_tool_time=False)
+
+        assert "| 출력 토큰으로 설명되는 시간 |" not in detail
+        assert "| 출력 토큰으로 설명 안 되는 시간 |" not in detail
+        assert "| 엔진 처리(미분리) |" in detail
+
+    def test_토큰을_안_남기면_그_사실을_적는다(self) -> None:
+        detail = self._detail(reports_output_tokens=False, splits_tool_time=False)
+
+        assert "출력 토큰을 남기지 않아" in detail
+
+    def test_토큰을_안_남기면_단순_대기라고_결론짓지_않는다(self) -> None:
+        """대기 100퍼센트는 계산 결과일 뿐 관측이 아니다."""
+        detail = self._detail(reports_output_tokens=False, splits_tool_time=False)
+
+        assert "출력 토큰으로 설명되지 않는 구간" not in detail
+
+    def test_토큰을_안_남기면_긴_구간에_토큰_열을_안_낸다(self) -> None:
+        """늘 "-" 인 열은 읽는 사람을 헷갈리게만 한다."""
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        from slack_cli_agent.observability.slow_report import GapDetail
+
+        breakdown = TimeBreakdown(
+            start_ts=0.0, end_ts=100.0, tool_sec=0.0, think_sec=0.0, wait_sec=100.0,
+            top_gaps=(
+                GapDetail(duration_sec=12.0, start_ts=0.0, end_ts=12.0, last_tool_brief="view_file",
+                          output_tokens=None, think_sec=0.0, wait_sec=12.0),
+            ),
+            reports_output_tokens=False, splits_tool_time=False,
+        )
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        _, detail = formatter.format(self._meta(), diagnosis, breakdown)
+
+        assert "구간 끝 출력 토큰" not in detail
+        assert "사고/대기 근사" not in detail
+        # 머리글만 줄이면 행이 길어져 표가 어긋난다. 둘을 함께 본다.
+        assert "| 순위 | 소요 | 직전 도구 | 판정 |" in detail
+        assert "| 1 | 12.0초 | view_file | - |" in detail
+
+    def test_토큰을_남기면_긴_구간에_토큰_열이_그대로_있다(self) -> None:
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        from slack_cli_agent.observability.slow_report import GapDetail
+
+        breakdown = TimeBreakdown(
+            start_ts=0.0, end_ts=100.0, tool_sec=0.0, think_sec=80.0, wait_sec=20.0,
+            top_gaps=(
+                GapDetail(duration_sec=12.0, start_ts=0.0, end_ts=12.0, last_tool_brief="Bash ls",
+                          output_tokens=480, think_sec=12.0, wait_sec=0.0),
+            ),
+        )
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        _, detail = formatter.format(self._meta(), diagnosis, breakdown)
+
+        assert "| 순위 | 소요 | 직전 도구 | 구간 끝 출력 토큰 | 사고/대기 근사 | 판정 |" in detail
+        assert "| 1 | 12.0초 | Bash ls | 480 | 사고 12.0초 / 대기 0.0초 | - |" in detail
+
+    def test_토큰을_남기면_전과_같다(self) -> None:
+        detail = self._detail()
+
+        assert "| 출력 토큰으로 설명되는 시간 |" in detail
+        assert "출력 토큰으로 설명되지 않는 구간" in detail
+        assert "출력 토큰을 남기지 않아" not in detail
+
+
+class Test능력이_다른_조합(Test출력_토큰을_안_남기는_기록):
+    """두 능력은 독립이다. 둘 다 False 인 조합만 보면 한쪽만 False 인 경우가
+    안 걸린다(코덱스 지적)."""
+
+    def test_토큰만_없고_도구는_가르면_도구_줄이_남는다(self) -> None:
+        detail = self._detail(reports_output_tokens=False, splits_tool_time=True)
+
+        assert "| 도구 실행 |" in detail
+        assert "| 엔진 처리(미분리) |" in detail
+
+    def test_비중이_낮으면_대부분이라고_안_한다(self) -> None:
+        """미분리 구간이 30퍼센트인데 대부분이라고 적으면 거짓이다."""
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        breakdown = TimeBreakdown(
+            start_ts=0.0, end_ts=100.0, tool_sec=70.0, think_sec=0.0, wait_sec=30.0,
+            reports_output_tokens=False, splits_tool_time=True,
+        )
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        _, detail = formatter.format(self._meta(), diagnosis, breakdown)
+
+        assert "시간 대부분이 엔진 처리" not in detail
+        assert "도구 실행 자체가" in detail
+
+    def test_토큰이_없으면_근사_안내문을_안_낸다(self) -> None:
+        """나누지 않았다고 해 놓고 나눈 근사치라고 안내하면 어긋난다."""
+        detail = self._detail(reports_output_tokens=False, splits_tool_time=False)
+
+        assert "나눠 가른 근사치" not in detail
+
+    def test_토큰이_있으면_근사_안내문을_낸다(self) -> None:
+        assert "나눠 가른 근사치" in self._detail()
+
+    def test_토큰이_없으면_긴_구간_설명이_중립이다(self) -> None:
+        """제미나이에서는 그 구간이 대기라고 단정할 수 없다."""
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        from slack_cli_agent.observability.slow_report import GapDetail
+
+        breakdown = TimeBreakdown(
+            start_ts=0.0, end_ts=100.0, tool_sec=0.0, think_sec=0.0, wait_sec=100.0,
+            top_gaps=(
+                GapDetail(duration_sec=12.0, start_ts=0.0, end_ts=12.0, last_tool_brief="view_file",
+                          output_tokens=None, think_sec=0.0, wait_sec=12.0),
+            ),
+            reports_output_tokens=False, splits_tool_time=False,
+        )
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        _, detail = formatter.format(self._meta(), diagnosis, breakdown)
+
+        assert "다음 행동을 정하기까지의 대기입니다" not in detail
+        assert "기록에 남은 단계 사이의 긴 구간입니다" in detail
+
+
+class Test단정하지_않는다(Test출력_토큰을_안_남기는_기록):
+    """사고 시간은 출력 토큰 수를 처리 속도로 나눈 근사이지 측정이 아니다.
+    보고 문구가 근사보다 강하게 말하면 읽는 쪽이 실측으로 받는다(코덱스 지적)."""
+
+    def _cause(self, **fields: float) -> str:
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        base = {"start_ts": 0.0, "end_ts": 100.0, "tool_sec": 0.0, "think_sec": 0.0, "wait_sec": 0.0}
+        base.update(fields)
+        breakdown = TimeBreakdown(**base)  # type: ignore[arg-type]
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        return formatter.format(self._meta(), diagnosis, breakdown)[1]
+
+    def test_재시도가_절반_이하면_대부분이라고_안_한다(self) -> None:
+        detail = self._cause(retry_sec=40.0, wait_sec=60.0)
+
+        assert "시간 대부분이 끊겼다" not in detail
+        assert "끊겼다 다시 부르느라 버린 시간이 40.0초" in detail
+
+    def test_재시도_구간이_요청과_무관하다고_단정하지_않는다(self) -> None:
+        """캐시 사용량 역산 판정이라 effort 무관까지는 이 기록으로 못 말한다."""
+        detail = self._cause(retry_sec=60.0, wait_sec=40.0)
+
+        assert "effort 와 무관한 구간입니다" not in detail
+
+    def test_긴_구간_설명이_직전_도구를_단정하지_않는다(self) -> None:
+        """도구 없이 사용자 입력 뒤 모델이 답한 구간도 여기 들어온다."""
+        from slack_cli_agent.observability.slow_report import GapDetail
+
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        breakdown = TimeBreakdown(
+            start_ts=0.0, end_ts=100.0, tool_sec=0.0, think_sec=20.0, wait_sec=80.0,
+            top_gaps=(
+                GapDetail(duration_sec=12.0, start_ts=0.0, end_ts=12.0, last_tool_brief="Read",
+                          output_tokens=100, think_sec=2.5, wait_sec=9.5),
+            ),
+        )
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        _, detail = formatter.format(self._meta(), diagnosis, breakdown)
+
+        assert "직전 도구를 처리한 뒤 다음 행동을 정하기까지의 대기입니다" not in detail
+        assert "기록에 남은 단계 사이의 긴 구간입니다" in detail
+
+    def test_토큰_미기록에_한쪽도_안_넘으면_세분화_불가로_끝낸다(self) -> None:
+        """미분리 40퍼센트, 도구 25퍼센트면 어느 쪽도 대부분이 아니다."""
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        breakdown = TimeBreakdown(
+            start_ts=0.0, end_ts=100.0, tool_sec=25.0, think_sec=0.0, wait_sec=40.0,
+            reports_output_tokens=False, splits_tool_time=True,
+        )
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        _, detail = formatter.format(self._meta(), diagnosis, breakdown)
+
+        assert "세분화할 수 없습니다" in detail
+        assert "시간 대부분" not in detail
+
+
 class Test계산기가_리더의_능력을_그대로_전한다:
     def test_못_가르는_리더면_표시가_따라온다(self) -> None:
         class 못가르는리더(SessionTranscriptReader):
             @property
             def splits_tool_time(self) -> bool:
+                return False
+
+            @property
+            def reports_output_tokens(self) -> bool:
                 return False
 
             def read(self, session_id: str) -> list[TranscriptEvent]:
@@ -495,6 +693,7 @@ class Test계산기가_리더의_능력을_그대로_전한다:
 
         assert breakdown is not None
         assert breakdown.splits_tool_time is False
+        assert breakdown.reports_output_tokens is False
 
 
 class Test엔진원문은_보고에_담기지_않는다:
