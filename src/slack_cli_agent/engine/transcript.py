@@ -11,8 +11,11 @@ doesn't need to know what it is.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
+import logging
+import sqlite3
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -21,6 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from .codex import CODEX_USAGE_KEY_MAP
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..config.profile import EngineSpec
@@ -104,6 +109,16 @@ class SessionTranscriptReader(ABC):
 
     @abstractmethod
     def read(self, session_id: str) -> list[TranscriptEvent]: ...
+
+    @property
+    def splits_tool_time(self) -> bool:
+        """Whether this transcript separates a tool call from its result.
+
+        Without that pair the duration breakdown cannot book tool
+        execution, and reporting it as 0 would read as "spent no time in
+        tools" rather than "cannot tell" (sca-ebp).
+        """
+        return True
 
 
 class ClaudeTranscriptReader(SessionTranscriptReader):
@@ -306,18 +321,252 @@ class CodexTranscriptReader(SessionTranscriptReader):
         )
 
 
+#: step_type values seen in real conversation DBs. The format is internal to
+#: the Antigravity CLI and undocumented, so an unknown value is kept as a
+#: plain assistant turn rather than dropped.
+GEMINI_USER_STEP = 14
+GEMINI_MODEL_STEP = 15
+GEMINI_TOOL_STEP = 132
+
+#: protobuf caps a varint at 64 bits, which is 10 bytes. Anything longer is
+#: corrupt, and without the cap a garbled run reads as an absurd number
+#: instead of failing.
+MAX_VARINT_BYTES = 10
+
+
+def _read_varint(data: bytes, pos: int) -> tuple[int, int]:
+    value = shift = 0
+    for read in range(MAX_VARINT_BYTES):
+        if pos >= len(data):
+            break
+        byte = data[pos]
+        # The tenth byte carries the top bit of a 64-bit value, so anything
+        # above 0x01 there overflows — length alone doesn't bound it.
+        if read == MAX_VARINT_BYTES - 1 and byte > 0x01:
+            break
+        value |= (byte & 0x7F) << shift
+        pos += 1
+        if not byte & 0x80:
+            return value, pos
+        shift += 7
+    raise ValueError("varint 이 끝나지 않았다")
+
+
+def _as_signed64(value: int) -> int:
+    """protobuf writes a negative int64 as its two's-complement varint."""
+    return value - (1 << 64) if value >= 1 << 63 else value
+
+
+def _gemini_step_ts(metadata: bytes | None) -> float | None:
+    """Reads the protobuf Timestamp field 1 of metadata.
+
+    Found by field number rather than by position: protobuf does not
+    promise an order, so reading the head byte would drop every row the
+    day the CLI adds a field before this one. Only the seconds are taken
+    — the rest of metadata is the tool payload and an opaque blob, and
+    reverse-engineering those adds a second thing to break per CLI update
+    for no extra signal.
+    """
+    if not metadata:
+        return None
+    inner = _proto_field(metadata, 1)
+    if not inner:
+        return None
+    try:
+        seconds = _proto_varint_field(inner, 1)
+    except ValueError:
+        return None
+    # `is None` rather than falsy: epoch 0 is a real time, and dropping it
+    # would silently lose a whole session.
+    return None if seconds is None else float(_as_signed64(seconds))
+
+
+def _proto_field(data: bytes, field: int) -> bytes | None:
+    """The first length-delimited field with that number, or None.
+
+    A declared length past the end of the buffer means the value is
+    truncated; returning what is there would pass a cut-off value off as
+    whole. Groups (wire types 3 and 4) are deprecated and the CLI does not
+    use them — meeting one stops the scan rather than guessing its extent.
+    """
+    pos = 0
+    while pos < len(data):
+        try:
+            tag, pos = _read_varint(data, pos)
+        except ValueError:
+            return None
+        wire = tag & 0x07
+        if wire == 2:
+            try:
+                length, pos = _read_varint(data, pos)
+            except ValueError:
+                return None
+            if pos + length > len(data):
+                return None
+            chunk = data[pos : pos + length]
+            if tag >> 3 == field:
+                return chunk
+            pos += length
+        elif wire == 0:
+            try:
+                _, pos = _read_varint(data, pos)
+            except ValueError:
+                return None
+        elif wire == 5:
+            pos += 4
+        elif wire == 1:
+            pos += 8
+        else:
+            return None
+    return None
+
+
+def _proto_varint_field(data: bytes, field: int) -> int | None:
+    """The first varint field with that number. Raises on a corrupt varint."""
+    pos = 0
+    while pos < len(data):
+        tag, pos = _read_varint(data, pos)
+        wire = tag & 0x07
+        if wire == 0:
+            value, pos = _read_varint(data, pos)
+            if tag >> 3 == field:
+                return value
+        elif wire == 2:
+            length, pos = _read_varint(data, pos)
+            if pos + length > len(data):
+                return None
+            pos += length
+        elif wire == 5:
+            pos += 4
+        elif wire == 1:
+            pos += 8
+        else:
+            return None
+    return None
+
+
+#: step_payload nests the tool call as field 5 -> field 4, and the name is
+#: field 2 of that (field 1 is the call id). Read off a real conversation DB
+#: on 2026-09-19; there is no published schema to check this against.
+GEMINI_TOOL_PATH = (5, 4, 2)
+
+
+def _gemini_tool_brief(payload: bytes | None) -> str:
+    if not payload:
+        return ""
+    data: bytes | None = payload
+    for field in GEMINI_TOOL_PATH:
+        if data is None:
+            return ""
+        data = _proto_field(data, field)
+    if data is None:
+        return ""
+    try:
+        return data.decode()
+    except UnicodeDecodeError:
+        return ""
+
+
+class GeminiTranscriptReader(SessionTranscriptReader):
+    """Reads the sqlite conversation the Antigravity CLI (gemini) writes.
+
+    Path: <home>/.gemini/antigravity-cli/conversations/<session_id>.db,
+    where session_id is the conversation_id the engine returns
+    (engine/gemini.py). Confirmed 2026-09-19 against real files under
+    ~/.rei; before that gemini fell through to NullTranscriptReader and
+    every slow-request report from a gemini bot had an empty time
+    breakdown (sca-ebp).
+
+    The format is internal to the CLI and undocumented, so this reads the
+    least it can: one timestamp and one step kind per row. A row it cannot
+    read is dropped rather than raised on, and a run where most rows are
+    dropped logs a warning -- silently returning nothing would look exactly
+    like the state this reader was written to fix.
+    """
+
+    #: Below this ratio of readable rows the format is assumed to have changed.
+    MIN_READABLE_RATIO = 0.5
+
+    #: How long to wait on a lock the running CLI holds. The report is
+    #: already late by definition; waiting sqlite's 5s default adds to that.
+    LOCK_TIMEOUT_SEC = 1.0
+
+    def __init__(self, workdir: Path, home: Path | None = None) -> None:
+        self._workdir = workdir
+        self._home = home or Path.home()
+
+    def transcript_path(self, session_id: str) -> Path:
+        return self._home / ".gemini" / "antigravity-cli" / "conversations" / f"{session_id}.db"
+
+    @property
+    def splits_tool_time(self) -> bool:
+        # One step holds both the call and its result, so the gap between
+        # them is not in the record at all.
+        return False
+
+    def read(self, session_id: str) -> list[TranscriptEvent]:
+        path = self.transcript_path(session_id)
+        if not path.exists():
+            return []
+        try:
+            rows = self._rows(path)
+        except Exception as exc:  # noqa: BLE001 — contract: never raise
+            log.warning("제미나이 대화 기록을 읽지 못했다 %s : %s", session_id[:8], exc)
+            return []
+
+        events: list[TranscriptEvent] = []
+        for step_type, metadata, payload in rows:
+            ts = _gemini_step_ts(metadata)
+            if ts is None:
+                continue
+            role, kind = self._role_kind(step_type)
+            brief = _gemini_tool_brief(payload) if kind == "tool_use" else ""
+            events.append(
+                TranscriptEvent(ts=ts, role=role, kind=kind, brief=brief, output_tokens=None)
+            )
+
+        if rows and len(events) < len(rows) * self.MIN_READABLE_RATIO:
+            log.warning(
+                "제미나이 기록 형식이 바뀐 것으로 보인다. %d개 중 %d개만 읽었다 : %s",
+                len(rows), len(events), session_id[:8],
+            )
+        return events
+
+    def _rows(self, path: Path) -> list[tuple[int, bytes | None, bytes | None]]:
+        # Read-only URI so a live CLI writing the same file isn't blocked.
+        # The short timeout keeps a lock held by that CLI from stalling the
+        # report; a timeout surfaces as the "읽지 못했다" warning like any
+        # other failure.
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=self.LOCK_TIMEOUT_SEC)
+        with contextlib.closing(conn) as con:
+            return [
+                (int(step_type), metadata, payload)
+                for step_type, metadata, payload in con.execute(
+                    "select step_type, metadata, step_payload from steps order by `idx`"
+                )
+            ]
+
+    @staticmethod
+    def _role_kind(step_type: int) -> tuple[str, str]:
+        if step_type == GEMINI_USER_STEP:
+            return "user", "text"
+        if step_type == GEMINI_TOOL_STEP:
+            return "assistant", "tool_use"
+        return "assistant", "text"
+
+
 class NullTranscriptReader(SessionTranscriptReader):
     """Always returns an empty list — the default for an unregistered engine name.
 
     An unregistered name is treated the same as a genuinely
     transcript-less engine: a duration-breakdown failure shouldn't
     wreck handling of an already-completed request (see
-    TranscriptReaderRegistry). This is no longer used for "codex" —
-    see CodexTranscriptReader — and it's an open question whether it's
-    the right choice for "gemini" (sca-dyb.3 checked: the Antigravity
-    CLI returns one JSON object per call, not an incremental
-    transcript, so there may be nothing to read at all rather than
-    something this reader is merely not looking for).
+    TranscriptReaderRegistry). No longer used for "codex" (see
+    CodexTranscriptReader) or "gemini" (see GeminiTranscriptReader).
+
+    sca-dyb.3's note that gemini may have nothing to read was wrong:
+    the Antigravity CLI does return one JSON object per call, but it
+    also writes a sqlite conversation per session on disk (sca-ebp).
     """
 
     def __init__(self, workdir: Path, home: Path | None = None, spec: EngineSpec | None = None) -> None:
@@ -377,6 +626,13 @@ def _codex_reader_factory(workdir: Path, home: Path | None, spec: EngineSpec | N
     return CodexTranscriptReader(workdir, home=home, codex_home=codex_home)
 
 
+def _gemini_reader_factory(workdir: Path, home: Path | None, spec: EngineSpec | None) -> SessionTranscriptReader:
+    # GeminiEnvironmentPolicy overwrites HOME itself, so spec.home_dir is the
+    # effective $HOME the CLI ran under -- same shape as claude.
+    effective_home = spec.home_dir if spec is not None and spec.home_dir is not None else home
+    return GeminiTranscriptReader(workdir, home=effective_home)
+
+
 def _null_reader_factory(workdir: Path, home: Path | None, spec: EngineSpec | None) -> SessionTranscriptReader:
     return NullTranscriptReader(workdir, home, spec)
 
@@ -405,6 +661,7 @@ class TranscriptReaderRegistry:
         self._factories: dict[str, ReaderFactory] = {
             "claude": _claude_reader_factory,
             "codex": _codex_reader_factory,
+            "gemini": _gemini_reader_factory,
         }
 
     def register(self, name: str, factory: ReaderFactory | LegacyReaderFactory) -> None:

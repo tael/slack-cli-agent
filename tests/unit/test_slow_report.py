@@ -435,6 +435,68 @@ class TestSlowReportFormatter재시도표시:
         assert "끊겼다 다시 부른 요청" not in detail
 
 
+class Test도구_시간을_못_가르는_기록:
+    """제미나이 기록은 도구 호출과 결과가 한 step 이라 그 둘 사이가 기록에
+    아예 없다. 그것을 0초로 적으면 "도구를 안 썼다" 로 읽힌다(sca-ebp)."""
+
+    def _meta(self) -> SlowRequestMeta:
+        return SlowRequestMeta(
+            elapsed_wall=800.0, mono_elapsed=790.0, started=0.0, model="gemini-x",
+            model_actual=None, effort="medium", num_turns=1, reason=None,
+            session_id="세션1", resume=False, channel="C1", channel_name="테스트채널", text="원문",
+        )
+
+    def test_못_가르면_도구_실행_줄을_안_낸다(self) -> None:
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        breakdown = TimeBreakdown(
+            start_ts=0.0, end_ts=20.0, tool_sec=0.0, think_sec=0.0, wait_sec=20.0,
+            splits_tool_time=False,
+        )
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        _, detail = formatter.format(self._meta(), diagnosis, breakdown)
+
+        assert "| 도구 실행 |" not in detail
+
+    def test_못_가르면_그_사실을_적는다(self) -> None:
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        breakdown = TimeBreakdown(
+            start_ts=0.0, end_ts=20.0, tool_sec=0.0, think_sec=0.0, wait_sec=20.0,
+            splits_tool_time=False,
+        )
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        _, detail = formatter.format(self._meta(), diagnosis, breakdown)
+
+        assert "도구 실행과 대기를 가를 수 없습니다" in detail
+
+    def test_가를_수_있으면_전과_같다(self) -> None:
+        formatter = SlowReportFormatter(assumed_tokens_per_sec=40)
+        breakdown = TimeBreakdown(start_ts=0.0, end_ts=20.0, tool_sec=5.0, think_sec=0.0, wait_sec=15.0)
+        diagnosis = ElapsedDiagnostician(sleep_gap_suspect_sec=30).diagnose(800.0, 790.0)
+        _, detail = formatter.format(self._meta(), diagnosis, breakdown)
+
+        assert "| 도구 실행 |" in detail
+        assert "도구 실행과 대기를 가를 수 없습니다" not in detail
+
+
+class Test계산기가_리더의_능력을_그대로_전한다:
+    def test_못_가르는_리더면_표시가_따라온다(self) -> None:
+        class 못가르는리더(SessionTranscriptReader):
+            @property
+            def splits_tool_time(self) -> bool:
+                return False
+
+            def read(self, session_id: str) -> list[TranscriptEvent]:
+                return [
+                    TranscriptEvent(ts=0.0, role="user", kind="text", brief="", output_tokens=None),
+                    TranscriptEvent(ts=10.0, role="assistant", kind="text", brief="", output_tokens=None),
+                ]
+
+        breakdown = TimeBreakdownCalculator(assumed_tokens_per_sec=40).compute(못가르는리더(), "S1")
+
+        assert breakdown is not None
+        assert breakdown.splits_tool_time is False
+
+
 class Test엔진원문은_보고에_담기지_않는다:
     """이 보고는 요청이 온 채널이 아니라 트러블슈팅 채널로 간다. stdout 은
     엔진 응답 본문이라 원 대화·읽은 파일·링크된 스레드를 인용할 수 있다.
