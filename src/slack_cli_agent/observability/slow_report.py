@@ -48,6 +48,9 @@ class TimeBreakdown:
     retry_sec: float = 0.0
     retries: Mapping[float, int] = field(default_factory=dict)
     """Retry timestamp -> tokens left behind by the aborted attempt. See detect_retries()."""
+    splits_tool_time: bool = True
+    """False when the transcript has no tool-call/tool-result pair, so tool_sec
+    is unknown rather than zero (sca-ebp). Comes from the reader, not the events."""
 
     @property
     def total_span(self) -> float:
@@ -155,6 +158,7 @@ class TimeBreakdownCalculator:
             start_ts=start_ts, end_ts=end_ts, tool_sec=tool_sec,
             think_sec=think_sec, wait_sec=wait_sec, top_gaps=tuple(gaps[: self._top_n]),
             retry_sec=retry_sec, retries=retries,
+            splits_tool_time=reader.splits_tool_time,
         )
 
 
@@ -399,6 +403,15 @@ class SlowReportFormatter:
         retry_pct = 100 * breakdown.retry_sec / total_span
         scope = "이번 요청" if meta.started is not None else "세션 전체, 이번 요청 경계 미상"
 
+        rows = []
+        if breakdown.splits_tool_time:
+            rows.append(("도구 실행", f"{breakdown.tool_sec:.1f}초", f"{tool_pct:.1f}퍼센트"))
+        rows += [
+            ("사고, 토큰 소모", f"{breakdown.think_sec:.1f}초", f"{think_pct:.1f}퍼센트"),
+            ("단순 대기, 토큰 무관", f"{breakdown.wait_sec:.1f}초", f"{wait_pct:.1f}퍼센트"),
+            ("재시도로 버린 시간", f"{breakdown.retry_sec:.1f}초", f"{retry_pct:.1f}퍼센트"),
+        ]
+
         lines = [
             "*시간 분해*",
             "",
@@ -410,17 +423,13 @@ class SlowReportFormatter:
                 f"- 사고와 단순 대기는 출력 토큰 수를 초당 {self._assumed_tokens_per_sec:.0f}개로 나눠 "
                 "가른 근사치입니다. 실측이 아닙니다"
             ),
-            "",
-            as_table(
-                [
-                    ("도구 실행", f"{breakdown.tool_sec:.1f}초", f"{tool_pct:.1f}퍼센트"),
-                    ("사고, 토큰 소모", f"{breakdown.think_sec:.1f}초", f"{think_pct:.1f}퍼센트"),
-                    ("단순 대기, 토큰 무관", f"{breakdown.wait_sec:.1f}초", f"{wait_pct:.1f}퍼센트"),
-                    ("재시도로 버린 시간", f"{breakdown.retry_sec:.1f}초", f"{retry_pct:.1f}퍼센트"),
-                ],
-                head=("구분", "합계", "비중"),
-            ),
         ]
+        if not breakdown.splits_tool_time:
+            # 0 으로 적으면 도구를 안 썼다는 뜻으로 읽힌다. 모른다는 것을 적는다.
+            lines.append(
+                "- 이 엔진의 기록은 도구 호출과 결과가 한 단계라, 도구 실행과 대기를 가를 수 없습니다"
+            )
+        lines += ["", as_table(rows, head=("구분", "합계", "비중"))]
 
         if breakdown.top_gaps:
             lines += [
