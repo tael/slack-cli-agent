@@ -1069,3 +1069,25 @@ class Test보고재발송:
         c.check_once()
 
         assert 발행.게시내역[0][3] is True
+
+
+class Test안_띄운_감시는_확인을_돌린다:
+    """RUNNING 은 엔진 호출을 건너뛴다. 백그라운드 작업이 없는 조건 감시까지
+    그렇게 보면 확인이 한 번도 안 돌아 checks 가 0 인 채 버려진다 (sca-vrs)."""
+
+    def test_NOT_LAUNCHED면_엔진_확인을_돌린다(self, 큐) -> None:
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "커밋이 생겼는지 본다", workdir="/w", run_id="r1")
+        호출: list[tuple[object, object]] = []
+
+        def run_check(job, outcome):
+            호출.append((job.id, outcome))
+            return 응답(ok=True, body="아직입니다")
+
+        c = 체커(큐=큐, run_check=run_check, 판정기=고정판정기(WatchOutcome.NOT_LAUNCHED))
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert [결과 for _작업, 결과 in 호출] == [WatchOutcome.NOT_LAUNCHED]
+        assert [작업.checks for 작업 in 큐.due(now=99999.0, min_gap=0.0)] == [1]

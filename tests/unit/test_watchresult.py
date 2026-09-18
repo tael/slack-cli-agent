@@ -62,8 +62,8 @@ class Test판정:
     def test_run_id가_경로탈출을_시도하면_UNKNOWN이다(self, 작업디렉터리, 리더) -> None:
         assert 리더.read(작업디렉터리, "../secret") is WatchOutcome.UNKNOWN
 
-    def test_파일이_없으면_RUNNING이다(self, 작업디렉터리, 리더) -> None:
-        assert 리더.read(작업디렉터리, "9f3a2b") is WatchOutcome.RUNNING
+    def test_파일이_없으면_NOT_LAUNCHED다(self, 작업디렉터리, 리더) -> None:
+        assert 리더.read(작업디렉터리, "9f3a2b") is WatchOutcome.NOT_LAUNCHED
 
     def test_marker가_없으면_RUNNING이다(self, 작업디렉터리, 리더) -> None:
         경로 = 리더.path_for(작업디렉터리, "9f3a2b")
@@ -312,3 +312,18 @@ class Test고아파일정리:
 
     def test_작업디렉터리가_비면_아무것도_안_한다(self, 리더) -> None:
         assert 리더.cleanup("", older_than_sec=172_800, now=1_700_000_000.0) == 0
+
+
+class Test한_번도_안_띄운_것과_도는_중을_가른다:
+    """결과 파일은 백그라운드 명령을 nohup 으로 띄울 때만 생긴다. 모델이 감시
+    태그만 붙여 등록한 조건 감시는 그 파일이 애초에 없다. 둘을 같은 RUNNING
+    으로 보면 조건 감시가 24시간 내내 확인 없이 버려진다 (sca-vrs)."""
+
+    def test_파일이_없으면_NOT_LAUNCHED다(self, 작업디렉터리, 리더) -> None:
+        assert 리더.read(작업디렉터리, "9f3a2b") is WatchOutcome.NOT_LAUNCHED
+
+    def test_파일은_있고_표식만_없으면_RUNNING이다(self, 작업디렉터리, 리더) -> None:
+        경로 = 리더.path_for(작업디렉터리, "9f3a2b")
+        경로.parent.mkdir(parents=True)
+        경로.write_text("도는 중\n", encoding="utf-8")
+        assert 리더.read(작업디렉터리, "9f3a2b") is WatchOutcome.RUNNING

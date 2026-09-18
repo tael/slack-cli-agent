@@ -27,7 +27,10 @@ _MARKER_RE = re.compile(r"^\s*" + re.escape(MARKER_PREFIX) + r"(-?\d+)\s*$")
 
 
 class WatchOutcome(Enum):
+    #: 결과 파일이 아직 표식을 안 남겼다. 띄운 작업이 도는 중이다.
     RUNNING = auto()
+    #: 결과 파일이 아예 없다. 백그라운드 작업을 띄운 적이 없는 조건 감시다.
+    NOT_LAUNCHED = auto()
     SUCCEEDED = auto()
     FAILED = auto()
     UNKNOWN = auto()
@@ -74,8 +77,12 @@ class WatchResultReader:
         if path is None:
             return WatchOutcome.UNKNOWN
 
+        # The redirection creates this file the moment nohup runs, so its
+        # absence means no background work was ever started -- a watch the
+        # engine registered by tag alone. Reporting RUNNING for that made the
+        # checker skip the engine call forever (sca-vrs).
         if not path.exists():
-            return WatchOutcome.RUNNING
+            return WatchOutcome.NOT_LAUNCHED
 
         try:
             body = path.read_text(encoding="utf-8", errors="replace")
