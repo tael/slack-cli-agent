@@ -16,7 +16,7 @@ from typing import Any
 
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
-from ..config.channel import ChannelConfig
+from ..config.channel import ChannelConfig, channel_is_rich
 from ..engine.base import NO_DETAIL, Engine, EngineRequest, EngineResponse, FailureDetail, Usage
 from ..engine.runner import EngineInvoker
 from ..guard.base import GuardContext
@@ -230,7 +230,7 @@ class RequestPipeline:
         # Resolved so the recorded path means the same thing in the check
         # process, which has its own current directory (sca-6zt).
         workdir = (config.workdir if (config and config.workdir) else self._default_workdir).resolve()
-        rich = bool(config and config.rich)
+        rich = channel_is_rich(config)
         channel_mode = config.mode if config else "default"
         channel_slug = config.name if config else ctx.channel
         chat_level = config.chat if config else "normal"
