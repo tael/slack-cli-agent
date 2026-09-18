@@ -127,15 +127,19 @@ class WatchJobChecker:
     def check_once(self) -> None:
         now = self._now()
 
-        given_up_ids: set[int] = set()
+        handled_ids: set[int] = set()
         for job in self._queue.expired(
             now, self._settings.watch_job_max_age_sec, self._settings.watch_job_max_checks
         ):
             # An exit status already read outranks the clock: giving up on work
             # that finished drops its report and tells the owner it never ended.
+            # The report has to go out here, not in the loop below -- the check
+            # cap excludes the job there, so skipping left it open forever with
+            # its report never posted (codex review).
+            handled_ids.add(job.id)
             if self._outcome_of(job) in _TERMINAL:
+                self._check_one(job, now)
                 continue
-            given_up_ids.add(job.id)
             if self._notify_owner is not None:
                 self._notify_owner(_give_up_report(job))
             self._queue.mark_done(job.id)
@@ -145,7 +149,7 @@ class WatchJobChecker:
         for job in self._queue.due(
             now, self._settings.watch_job_min_gap_sec, self._settings.watch_job_max_checks
         ):
-            if job.id in given_up_ids:
+            if job.id in handled_ids:
                 continue
             self._check_one(job, now)
 
