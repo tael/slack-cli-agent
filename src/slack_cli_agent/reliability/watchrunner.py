@@ -144,7 +144,9 @@ class WatchJobChecker:
             reason = _give_up_reason(job, self._settings.watch_job_max_checks)
             if self._notify_owner is not None:
                 self._notify_owner(
-                    _give_up_report(job, reason, self._settings.watch_job_max_checks)
+                    _give_up_report(
+                        job, reason, self._settings.watch_job_max_checks, now - job.created_at
+                    )
                 )
             self._queue.mark_done(job.id)
             self._settle_mark(job, failed=True)
@@ -347,15 +349,27 @@ class GiveUpReason(StrEnum):
 
 
 def _give_up_reason(job: WatchJob, max_checks: int) -> GiveUpReason:
-    """The check cap wins when both hold. It is the tighter of the two at the
-    default settings -- 48 checks is about four hours against a 24-hour age
-    limit -- so a job that hit both almost certainly hit this one first."""
-    if max_checks > 0 and job.checks >= max_checks:
+    """Which limit to report when both are over. The check cap is chosen by
+    policy, not because it provably came first -- a short max_age or a late
+    sweep can put the age over as well. It is the tighter limit at the default
+    settings, and it is the one whose value the owner can act on."""
+    if job.checks >= max_checks:
         return GiveUpReason.MAX_CHECKS
     return GiveUpReason.MAX_AGE
 
 
-def _give_up_report(job: WatchJob, reason: GiveUpReason, max_checks: int) -> str:
+def _elapsed_text(age_sec: float) -> str:
+    """Wording comes from the elapsed time, not from the 24-hour default. The
+    limit is a setting, so a fixed "over a day" is wrong wherever it differs
+    (codex review)."""
+    if age_sec >= 3600:
+        return f"{int(age_sec // 3600)}시간"
+    if age_sec >= 60:
+        return f"{int(age_sec // 60)}분"
+    return f"{int(age_sec)}초"
+
+
+def _give_up_report(job: WatchJob, reason: GiveUpReason, max_checks: int, age_sec: float) -> str:
     # The original bot.py:6808 has one line here because it has no check cap.
     # Reporting a four-hour stop as "over a day" would send the owner looking
     # at the wrong thing (sca-uwq).
@@ -363,7 +377,7 @@ def _give_up_report(job: WatchJob, reason: GiveUpReason, max_checks: int) -> str
         머리 = "*확인 횟수 상한에 닿은 감시 건이 있습니다*"
         횟수 = f"- 확인 횟수 : {job.checks}회 (상한 {max_checks}회)"
     else:
-        머리 = "*하루 넘게 못 끝낸 감시 건이 있습니다*"
+        머리 = f"*{_elapsed_text(age_sec)} 넘게 못 끝낸 감시 건이 있습니다*"
         횟수 = f"- 확인 횟수 : {job.checks}회"
     return (
         f"{머리}\n\n"
