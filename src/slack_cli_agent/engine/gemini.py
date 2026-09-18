@@ -5,9 +5,11 @@ from Claude/Codex:
 
 - ``-p`` must be the last flag: anything after it on the command line is
   swallowed as the prompt text, so ``-p <prompt>`` has to be the tail.
-- Output is one JSON object (not an event array like Claude, not JSONL
-  like Codex). Exit code 0 doesn't mean success — a headless permission
-  denial also exits 0, so ``status`` is the only reliable signal.
+- Output is JSONL (``--output-format stream-json``), and the payload the
+  ``json`` format would have printed arrives as the last ``result`` event.
+  parse() still reads the single-object form, so a CLI version without
+  stream-json keeps working (sca-8ks). Exit code 0 doesn't mean success —
+  a headless permission denial also exits 0, so ``status`` is checked too.
 - Model name and ``--effort`` are mutually exclusive when the model name
   already carries an effort suffix (e.g. ``gemini-3.8-flash-medium``).
   This engine always sends the suffix-free name plus ``--effort``.
@@ -169,7 +171,7 @@ class GeminiEngine(Engine):
 
         cmd: list[str] = [
             str(spec.binary),
-            "--output-format", "json",
+            "--output-format", "stream-json",
             "--dangerously-skip-permissions",
             "--model", base_model,
             "--effort", effort,
@@ -223,17 +225,8 @@ class GeminiEngine(Engine):
         )
 
     def parse(self, stdout: str, stderr: str, returncode: int) -> EngineResponse:
-        try:
-            payload = json.loads(stdout)
-        except (json.JSONDecodeError, TypeError):
-            return EngineResponse(
-                ok=False, body="Gemini 응답 형식을 읽지 못했습니다.", session_id=None,
-                model_actual=None, elapsed=0.0, turns=None, usage=None,
-                raw={"stdout": stdout, "stderr": stderr, "returncode": returncode},
-                failure_reason="bad_json",
-                failure_detail=FailureDetail(exit_code=returncode, stdout_chars=len(stdout)),
-            )
-        if not isinstance(payload, Mapping):
+        payload = self._payload_from(stdout)
+        if payload is None:
             return EngineResponse(
                 ok=False, body="Gemini 응답 형식을 읽지 못했습니다.", session_id=None,
                 model_actual=None, elapsed=0.0, turns=None, usage=None,
@@ -284,6 +277,32 @@ class GeminiEngine(Engine):
             ok=True, body=body, session_id=session_id, model_actual=None, elapsed=elapsed,
             turns=turns, usage=usage, raw=raw, failure_reason=None, elapsed_source=elapsed_source,
         )
+
+    @staticmethod
+    def _payload_from(stdout: str) -> Mapping[str, Any] | None:
+        """The result object, from either output format.
+
+        stream-json wraps it in the last ``{"event": "result"}`` line -- last
+        rather than first because a resumed run can emit more than one. A
+        single object with no "event" key is the old --output-format json
+        shape, kept as a fallback for a CLI version that drops stream-json
+        (sca-8ks). A stream that never reached a result event is a cut-off
+        run, not an empty answer, so it stays unreadable.
+        """
+        found: Mapping[str, Any] | None = None
+        for line in stdout.splitlines():
+            event = json_object_line(line)
+            if event is None or event.get("event") != "result":
+                continue
+            result = event.get("result")
+            if isinstance(result, Mapping):
+                found = result
+        if found is not None:
+            return found
+        whole = json_object_line(stdout)
+        if whole is None or "event" in whole:
+            return None
+        return whole
 
     @staticmethod
     def _elapsed_from_payload(payload: Mapping[str, Any]) -> tuple[float, ElapsedSource]:

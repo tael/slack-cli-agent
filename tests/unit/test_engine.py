@@ -1545,3 +1545,73 @@ class Test실행기가_진행_로그를_스트리밍으로_쓴다:
         resp = runner.run(engine, request(progress_log=tmp_path / "없는자리" / "p.jsonl", model="gpt-5"))
         assert resp.ok is True
         assert resp.body == "답"
+
+
+class Test제미나이_스트리밍_출력:
+    """sca-8ks — 진행 단계를 내려면 이벤트가 도는 동안 나와야 한다.
+
+    --output-format json 은 끝에 한 덩어리로만 낸다. stream-json 은 같은
+    payload 를 마지막 result 이벤트에 담아 낸다(2026-09-19 실측).
+    """
+
+    def engine(self, tmp_path: Path) -> GeminiEngine:
+        return GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+
+    def 성공_payload(self) -> dict[str, Any]:
+        return {
+            "conversation_id": "c1", "status": "SUCCESS", "response": "답",
+            "duration_seconds": 2.0, "num_turns": 1,
+            "usage": {"input_tokens": 5, "output_tokens": 6},
+        }
+
+    def stream(self, payload: dict[str, Any]) -> str:
+        lines = [
+            json.dumps({"event": "init", "init": {"conversation_id": "c1", "tools": ["run_command"]}}),
+            json.dumps({"event": "step_update",
+                        "step_update": {"step_type": "tool", "tool_name": "run_command"}}),
+            json.dumps({"event": "result", "result": payload}),
+        ]
+        return "\n".join(lines) + "\n"
+
+    def test_명령이_stream_json을_쓴다(self, tmp_path: Path) -> None:
+        cmd = self.engine(tmp_path).build_command(request(model="gemini-3.8-flash"))
+        assert cmd[cmd.index("--output-format") + 1] == "stream-json"
+
+    def test_result_이벤트에서_답을_읽는다(self, tmp_path: Path) -> None:
+        resp = self.engine(tmp_path).parse(self.stream(self.성공_payload()), "", 0)
+        assert resp.ok is True
+        assert resp.body == "답"
+        assert resp.session_id == "c1"
+        assert resp.turns == 1
+        assert resp.usage is not None and resp.usage.input_tokens == 5
+        assert resp.elapsed == 2.0
+        assert resp.elapsed_source == "engine"
+
+    def test_result_이벤트의_실패도_그대로_읽는다(self, tmp_path: Path) -> None:
+        payload = {"conversation_id": "", "status": "ERROR", "response": "", "error": "모델 없음"}
+        resp = self.engine(tmp_path).parse(self.stream(payload), "", 1)
+        assert resp.ok is False
+        assert resp.failure_reason == "is_error"
+        assert resp.body == "모델 없음"
+
+    def test_한_덩어리_json도_계속_읽는다(self, tmp_path: Path) -> None:
+        """폴백 - 판이 바뀌어 stream-json 을 못 쓰게 돼도 답은 나와야 한다."""
+        resp = self.engine(tmp_path).parse(json.dumps(self.성공_payload()), "", 0)
+        assert resp.ok is True
+        assert resp.body == "답"
+
+    def test_result_이벤트가_없으면_형식_실패다(self, tmp_path: Path) -> None:
+        """중간에 끊긴 출력이다. 진행 이벤트만 있는 것을 성공으로 읽으면 빈 답이 나간다."""
+        partial = json.dumps({"event": "step_update",
+                              "step_update": {"step_type": "tool", "tool_name": "run_command"}}) + "\n"
+        resp = self.engine(tmp_path).parse(partial, "", 0)
+        assert resp.ok is False
+        assert resp.failure_reason == "bad_json"
+
+    def test_마지막_result_이벤트를_쓴다(self, tmp_path: Path) -> None:
+        first = {"conversation_id": "c0", "status": "ERROR", "response": "", "error": "옛것"}
+        text = self.stream(first) + json.dumps(
+            {"event": "result", "result": self.성공_payload()}) + "\n"
+        resp = self.engine(tmp_path).parse(text, "", 0)
+        assert resp.ok is True
+        assert resp.body == "답"
