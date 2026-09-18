@@ -9,6 +9,10 @@ from slack_cli_agent.config.settings import RuntimeSettings
 from .blocks import SPLIT_MARKER
 
 TABLE_LINE = re.compile(r"^\s*\|.*\|\s*$")
+#: A GFM table separator row. The pipe may be followed by spaces and the
+#: alignment colons are optional, so "|-" as a prefix test rejects the form
+#: models actually write -- "| --- | --- |" (sca-3pr).
+TABLE_DIVIDER = re.compile(r"^\|?(\s*:?-+:?\s*\|)+\s*:?-*:?\s*\|?\s*$")
 FENCE_LINE = re.compile(r"^\s*```")
 
 
@@ -40,8 +44,8 @@ class SplitVerifier:
             for j, line in enumerate(lines):
                 is_row = line.lstrip().startswith("|")
                 if is_row and not prev_row:
-                    nxt = lines[j + 1].lstrip() if j + 1 < len(lines) else ""
-                    if not nxt.startswith("|-"):
+                    nxt = lines[j + 1].strip() if j + 1 < len(lines) else ""
+                    if not TABLE_DIVIDER.match(nxt):
                         problems.append(f"{i}번 조각 표 열 이름 행 없음")
                         break
                 prev_row = is_row

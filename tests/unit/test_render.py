@@ -109,6 +109,25 @@ class TestSplitVerifier:
     def test_표에_열_이름_행이_없으면_문제로_잡는다(self, verifier: SplitVerifier) -> None:
         assert verifier.verify_chunks('| a | b |\n| 1 | 2 |', ['| a | b |\n| 1 | 2 |']) == ['0번 조각 표 열 이름 행 없음']
 
+    @pytest.mark.parametrize("구분행", [
+        "|---|---|",
+        "| --- | --- |",
+        "|:---|---:|",
+        "| :--- | :---: |",
+        "| - | - |",
+        "|-|-|",
+    ])
+    def test_쓰이는_구분행_형태를_모두_통과시킨다(self, verifier: SplitVerifier, 구분행: str) -> None:
+        """모델이 실제로 쓰는 것은 '| --- | --- |' 다. 파이프 뒤 공백을
+        안 받아 주면 표가 든 응답이 매번 안전 낙하로 떨어져 서식을 잃는다
+        (2026-09-18 실측 5건, sca-3pr)."""
+        본문 = f"| a | b |\n{구분행}\n| 1 | 2 |"
+        assert verifier.verify_chunks(본문, [본문]) == []
+
+    def test_구분행이_아닌_줄이_오면_여전히_잡는다(self, verifier: SplitVerifier) -> None:
+        본문 = "| a | b |\n| 1 | 2 |"
+        assert verifier.verify_chunks(본문, [본문]) == ["0번 조각 표 열 이름 행 없음"]
+
     def test_코드블록_펜스_짝이_안_맞으면_문제로_잡는다(self, verifier: SplitVerifier) -> None:
         assert verifier.verify_chunks('```python\nprint(1)', ['```python\nprint(1)']) == ['0번 조각 코드블록 펜스 짝 안 맞음']
 
