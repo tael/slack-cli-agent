@@ -20,11 +20,13 @@ from slack_cli_agent.observability.progress import (
 )
 from slack_cli_agent.observability.progress_hook import record
 from slack_cli_agent.slack.progress import (
+    DONE_TITLE,
     MAX_LINES,
     FallbackProgressSink,
     ProgressStreamUnavailable,
     SlackProgressSink,
     SlackStreamingProgressSink,
+    SlackTaskCardProgressSink,
 )
 
 
@@ -178,7 +180,9 @@ class TestProgressCoordinator:
 
 
 class FakeClient:
-    def __init__(self, fail_update: bool = False, fail_stream: str = "") -> None:
+    def __init__(
+        self, fail_update: bool = False, fail_stream: str = "", fail_blocks: bool = False,
+    ) -> None:
         self.posted: list[dict[str, Any]] = []
         self.updated: list[dict[str, Any]] = []
         self.deleted: list[dict[str, Any]] = []
@@ -189,6 +193,8 @@ class FakeClient:
         # "" 면 스트리밍이 된다. 값이 있으면 그 이름의 호출에서만 거부한다 —
         # 시작에서 막히는 경우와 도중에 막히는 경우가 전환 경로가 다르다
         self._fail_stream = fail_stream
+        # task_card 를 못 쓰는 워크스페이스가 invalid_blocks 로 거부하는 경우다
+        self._fail_blocks = fail_blocks
 
     def chat_startStream(self, **kwargs: Any) -> dict[str, str]:
         if self._fail_stream == "start":
@@ -212,12 +218,16 @@ class FakeClient:
         return {"ts": kwargs["ts"]}
 
     def chat_postMessage(self, **kwargs: Any) -> dict[str, str]:
+        if self._fail_blocks and kwargs.get("blocks"):
+            raise RuntimeError("invalid_blocks")
         self.posted.append(kwargs)
         return {"ts": "111.222"}
 
     def chat_update(self, **kwargs: Any) -> dict[str, str]:
         if self._fail_update:
             raise RuntimeError("갱신 거부")
+        if self._fail_blocks and kwargs.get("blocks"):
+            raise RuntimeError("invalid_blocks")
         self.updated.append(kwargs)
         return {"ts": kwargs["ts"]}
 
@@ -274,6 +284,111 @@ class TestSlackProgressSink:
         sink.append([IDLE_TEXT])
         sink.close()
         assert client.updated == [] and client.deleted == []
+
+
+def _card_of(kwargs: dict[str, Any]) -> dict[str, Any]:
+    return kwargs["blocks"][0]
+
+
+def _bullets(card: dict[str, Any]) -> list[str]:
+    return [
+        item["elements"][0]["text"]
+        for item in card["details"]["elements"][0]["elements"]
+    ]
+
+
+class TestSlackTaskCardProgressSink:
+    def test_한_카드를_올리고_제목에_지금_단계를_넣는다(self) -> None:
+        client = FakeClient()
+        sink = SlackTaskCardProgressSink(client, "C1", "1.0", "이카리 신지")
+        sink.open(START_TEXT)
+        sink.append(["파일 읽는 중"])
+        sink.append(["명령 실행 중"])
+        assert len(client.posted) == 1
+        assert client.posted[0]["thread_ts"] == "1.0"
+        card = _card_of(client.updated[-1])
+        assert card["type"] == "task_card"
+        assert card["status"] == "in_progress"
+        assert card["title"] == "명령 실행 중"
+        assert _bullets(card) == [START_TEXT, "파일 읽는 중", "명령 실행 중"]
+
+    def test_고쳐_써도_같은_task_id_를_쓴다(self) -> None:
+        # task_id 가 바뀌면 슬랙이 다른 작업으로 취급한다
+        client = FakeClient()
+        sink = SlackTaskCardProgressSink(client, "C1", "1.0")
+        sink.open(START_TEXT)
+        sink.append(["파일 읽는 중"])
+        sink.close()
+        ids = {_card_of(call)["task_id"] for call in client.posted + client.updated}
+        assert len(ids) == 1
+
+    def test_끝나면_완료_카드로_남긴다(self) -> None:
+        client = FakeClient()
+        sink = SlackTaskCardProgressSink(client, "C1", "1.0")
+        sink.open(START_TEXT)
+        sink.append(["파일 읽는 중"])
+        sink.close()
+        card = _card_of(client.updated[-1])
+        assert card["status"] == "complete"
+        assert card["title"] == DONE_TITLE
+        assert _bullets(card) == [START_TEXT, "파일 읽는 중"]
+        assert client.deleted == []
+
+    def test_남기지_않기로_하면_지운다(self) -> None:
+        client = FakeClient()
+        sink = SlackTaskCardProgressSink(client, "C1", "1.0", keep_on_close=False)
+        sink.open(START_TEXT)
+        sink.close()
+        assert client.deleted == [{"channel": "C1", "ts": "111.222"}]
+
+    def test_두_번_닫아도_한_번만_마무리한다(self) -> None:
+        client = FakeClient()
+        sink = SlackTaskCardProgressSink(client, "C1", "1.0")
+        sink.open(START_TEXT)
+        sink.close()
+        sink.close()
+        assert len([c for c in client.updated if _card_of(c)["status"] == "complete"]) == 1
+
+    def test_DM_은_스레드로_달지_않는다(self) -> None:
+        client = FakeClient()
+        SlackTaskCardProgressSink(client, "D1", "1.0").open(START_TEXT)
+        assert "thread_ts" not in client.posted[0]
+
+    def test_줄이_너무_많아지면_오래된_것부터_버린다(self) -> None:
+        client = FakeClient()
+        sink = SlackTaskCardProgressSink(client, "C1", "1.0")
+        sink.open(START_TEXT)
+        sink.append([f"단계 {i}" for i in range(MAX_LINES + 10)])
+        bullets = _bullets(_card_of(client.updated[-1]))
+        assert len(bullets) == MAX_LINES
+        assert START_TEXT not in bullets
+
+    def test_이어받은_여러_줄을_각각의_항목으로_연다(self) -> None:
+        # FallbackProgressSink 가 전환할 때 지금까지 보인 것을 한 문자열로 넘긴다
+        client = FakeClient()
+        sink = SlackTaskCardProgressSink(client, "C1", "1.0")
+        sink.open(f"{START_TEXT}\n파일 읽는 중")
+        card = _card_of(client.posted[0])
+        assert _bullets(card) == [START_TEXT, "파일 읽는 중"]
+        assert card["title"] == "파일 읽는 중"
+
+    def test_열지_못했으면_갱신도_삭제도_하지_않는다(self) -> None:
+        client = FakeClient()
+        sink = SlackTaskCardProgressSink(client, "C1", "1.0")
+        sink.append([IDLE_TEXT])
+        sink.close()
+        assert client.updated == [] and client.deleted == []
+
+    def test_카드가_거부되면_고쳐_쓰기로_전환한다(self) -> None:
+        client = FakeClient(fail_blocks=True)
+        sink = FallbackProgressSink(
+            lambda: SlackTaskCardProgressSink(client, "C1", "1.0", "이카리 신지"),
+            lambda: SlackProgressSink(client, "C1", "1.0", "이카리 신지"),
+        )
+        sink.open(START_TEXT)
+        sink.append(["파일 읽는 중"])
+        assert "blocks" not in client.posted[-1]
+        assert client.updated[-1]["text"] == f"{START_TEXT}\n파일 읽는 중"
 
 
 def _streaming(

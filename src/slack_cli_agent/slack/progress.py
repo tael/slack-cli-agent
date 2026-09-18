@@ -1,29 +1,34 @@
 """Shows progress as one Slack message while the engine runs.
 
-Two implementations, picked at runtime rather than by config:
+Three implementations, picked at runtime rather than by config:
 
+- SlackTaskCardProgressSink posts a task_card block and rewrites it with
+  chat.update. The card carries the current step as its title and the
+  finished steps as a bulleted list, and it ends as a complete card that
+  stays in the thread. This is what the bot uses.
 - SlackStreamingProgressSink uses chat.startStream / appendStream, which
   appends deltas instead of rewriting the whole message. Slack grants
   these only to apps with the agent feature turned on, and only into a
-  thread.
+  thread. Not on the runtime path since the task card took the front.
 - SlackProgressSink posts once and rewrites with chat.update. It needs
   only the chat:write this bot already has for its answers, so it works
-  for every bot.
+  for every bot, which is why it is the fallback.
 
 FallbackProgressSink runs the first and drops to the second the moment it
-raises — a bot without the agent feature fails on the very first call, and
-that failure must not be the difference between showing progress and
-showing nothing.
+raises — a bot whose workspace rejects task_card fails on the very first
+call, and that failure must not be the difference between showing progress
+and showing nothing.
 
-The placeholder is deleted when the request finishes, so the thread ends
-up holding the answer alone. A failed delete leaves the last step line
-visible, which is why the lines read as steps ("파일 읽는 중") rather than
-as an answer.
+The fallback's placeholder is deleted when the request finishes, so the
+thread ends up holding the answer alone. A failed delete leaves the last
+step line visible, which is why the lines read as steps ("파일 읽는 중")
+rather than as an answer.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -81,6 +86,119 @@ class SlackProgressSink:
             self._client.chat_delete(channel=self._channel, ts=ts)
         except Exception as exc:  # noqa: BLE001 - a leftover progress line is worse reported than raised
             log.debug("진행 표시 삭제 실패 : %s:%s, %s", self._channel, ts, exc)
+
+
+#: Title shown while steps are still coming in. The card's own title is the
+#: line a person reads first, so it carries the current step, not a fixed word.
+DONE_TITLE = "작업 완료"
+
+
+def _task_card_details(lines: Sequence[str]) -> dict[str, Any]:
+    return {
+        "type": "rich_text",
+        "elements": [
+            {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "elements": [
+                    {"type": "rich_text_section", "elements": [{"type": "text", "text": line}]}
+                    for line in lines
+                ],
+            }
+        ],
+    }
+
+
+class SlackTaskCardProgressSink:
+    """One request's progress card. Not reusable across requests.
+
+    Posts a task_card block and rewrites it with chat.update, same calls as
+    SlackProgressSink. The card's title holds the step running now and its
+    details hold the steps already done, so the last state stays readable
+    without the lines having to read as a sentence.
+
+    Slack takes status only as in_progress / complete / error (confirmed
+    2026-09-18 against the real API; completed, failed and cancelled come
+    back as invalid_blocks).
+
+    keep_on_close leaves the finished card in the thread above the answer.
+    Set it False to get SlackProgressSink's behaviour, where the display is
+    deleted and the thread holds the answer alone.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        channel: str,
+        thread_ts: str,
+        bot_display_name: str = "",
+        *,
+        keep_on_close: bool = True,
+    ) -> None:
+        self._client = client
+        # Same rule as MessagePublisher.post: DMs have no thread to reply in.
+        self._thread_ts = None if is_direct_message_channel(channel) else (thread_ts or None)
+        self._channel = channel
+        self._bot_display_name = bot_display_name
+        self._keep_on_close = keep_on_close
+        # Kept for the life of the request: Slack treats an update that
+        # changes task_id as a different task.
+        self._task_id = str(uuid.uuid4())
+        self._ts: str | None = None
+        self._lines: list[str] = []
+
+    def open(self, text: str) -> None:
+        # FallbackProgressSink replays what was shown so far as one string,
+        # so the first text can already hold several lines.
+        self._lines = [line for line in text.splitlines() if line.strip()] or [text]
+        kwargs: dict[str, Any] = {
+            "channel": self._channel,
+            "text": self._lines[-1],
+            "blocks": [self._card(self._lines[-1], "in_progress")],
+        }
+        if self._bot_display_name:
+            kwargs["username"] = self._bot_display_name
+        if self._thread_ts:
+            kwargs["thread_ts"] = self._thread_ts
+        response = self._client.chat_postMessage(**kwargs)
+        self._ts = response["ts"]
+
+    def append(self, lines: Sequence[str]) -> None:
+        # No message to update means open() failed; see SlackProgressSink.
+        if self._ts is None:
+            return
+        self._lines.extend(lines)
+        del self._lines[:-MAX_LINES]
+        self._update(self._lines[-1], "in_progress")
+
+    def close(self) -> None:
+        if self._ts is None:
+            return
+        ts, self._ts = self._ts, None
+        try:
+            if self._keep_on_close:
+                self._update(DONE_TITLE, "complete", ts=ts)
+            else:
+                self._client.chat_delete(channel=self._channel, ts=ts)
+        except Exception as exc:  # noqa: BLE001 - a leftover card is worse reported than raised
+            log.debug("진행 카드 정리 실패 : %s:%s, %s", self._channel, ts, exc)
+
+    def _update(self, title: str, status: str, ts: str | None = None) -> None:
+        self._client.chat_update(
+            channel=self._channel,
+            ts=ts or self._ts,
+            text=title,
+            blocks=[self._card(title, status)],
+        )
+
+    def _card(self, title: str, status: str) -> dict[str, Any]:
+        return {
+            "type": "task_card",
+            "task_id": self._task_id,
+            "title": title,
+            "status": status,
+            "details": _task_card_details(self._lines),
+        }
 
 
 class ProgressStreamUnavailable(RuntimeError):
