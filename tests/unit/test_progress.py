@@ -126,6 +126,16 @@ class TestProgressLogReader:
             encoding="utf-8",
         )
 
+    def test_ASCII가_아닌_줄_뒤도_읽는다(self, tmp_path: Path) -> None:
+        """오프셋을 글자로 세면서 바이트로 늘리면 그만큼 앞서 나가 뒤가 잘린다.
+        표에 없는 이름은 그대로 쓰이므로 한글 이름이 언제든 들어올 수 있다."""
+        log_path = tmp_path / "s0.log"
+        self._write_lines(log_path, ["한글도구"])
+        reader = ProgressLogReader()
+        assert reader.read_new_labels(log_path) == ["확인하는 중"]
+        self._write_lines(log_path, ["한글도구", "Bash"])
+        assert reader.read_new_labels(log_path) == ["명령 실행 중"]
+
     def test_파일이_없으면_빈_목록이다(self, tmp_path: Path) -> None:
         reader = ProgressLogReader()
         assert reader.read_new_labels(tmp_path / "없음.log") == []
