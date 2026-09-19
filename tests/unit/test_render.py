@@ -107,8 +107,9 @@ class TestSplitVerifier:
         assert verifier.verify_chunks('본문내용입니다', ['본문내용입니다']) == []
 
     def test_표에_열_이름_행이_없으면_문제로_잡는다(self, verifier: SplitVerifier) -> None:
-        (문제,) = verifier.verify_chunks('| a | b |\n| 1 | 2 |', ['| a | b |\n| 1 | 2 |'])
-        assert 문제.reason == '0번 조각 표 열 이름 행 없음'
+        본문 = '| a | b |\n|---|---|\n| 1 | 2 |'
+        (문제,) = verifier.verify_chunks(본문, ['| a | b |\n|---|---|', '| 1 | 2 |'])
+        assert 문제.reason == '1번 조각 표 열 이름 행 없음'
 
     @pytest.mark.parametrize("구분행", [
         "|---|---|",
@@ -126,9 +127,21 @@ class TestSplitVerifier:
         assert verifier.verify_chunks(본문, [본문]) == []
 
     def test_구분행이_아닌_줄이_오면_여전히_잡는다(self, verifier: SplitVerifier) -> None:
-        본문 = "| a | b |\n| 1 | 2 |"
-        (문제,) = verifier.verify_chunks(본문, [본문])
-        assert 문제.reason == "0번 조각 표 열 이름 행 없음"
+        본문 = "| a | b |\n|---|---|\n| 1 | 2 |\n꼬리말"
+        (문제,) = verifier.verify_chunks(본문, ["| a | b |\n|---|---|", "| 1 | 2 |\n꼬리말"])
+        assert 문제.reason == "1번 조각 표 열 이름 행 없음"
+
+    def test_원문에_이미_있던_열_이름_없는_표는_분할_탓이_아니다(self, verifier: SplitVerifier) -> None:
+        """분할 점검은 분할이 만든 손상만 본다. 원문이 원래 그런 표를 담고
+        있으면 safe_fallback 으로 보내도 표가 살아나지 않고 서식만 잃는다.
+        2026-09-19 실측 split_broken 2건이 전부 이것이었다 (sca-iyq)."""
+        본문 = "| 대상 | 파일 |\n| 진행 표시 | progress.py |"
+        assert verifier.verify_chunks(본문, [본문]) == []
+
+    def test_분할이_열_이름_행을_떼어_내면_잡는다(self, verifier: SplitVerifier) -> None:
+        본문 = "| a | b |\n|---|---|\n| 1 | 2 |"
+        문제 = verifier.verify_chunks(본문, ["| a | b |\n|---|---|", "| 1 | 2 |"])
+        assert [p.reason for p in 문제] == ["1번 조각 표 열 이름 행 없음"]
 
     def test_코드블록_펜스_짝이_안_맞으면_문제로_잡는다(self, verifier: SplitVerifier) -> None:
         (문제,) = verifier.verify_chunks('```python\nprint(1)', ['```python\nprint(1)'])
@@ -143,13 +156,13 @@ class TestSplitVerifier:
     def test_표_문제에_걸린_줄과_번호를_담는다(self, verifier: SplitVerifier) -> None:
         """사유 이름만 남으면 새 사유가 나와도 재현이 안 된다. 2026-09-19 에
         실제로 원인 미규명으로 끝났다 (sca-9uj)."""
-        본문 = "머리말\n| a | b |\n| 1 | 2 |\n꼬리말"
-        (문제,) = verifier.verify_chunks(본문, [본문])
+        본문 = "머리말\n| a | b |\n|---|---|\n| 1 | 2 |\n꼬리말"
+        (문제,) = verifier.verify_chunks(본문, ["머리말\n| 1 | 2 |\n꼬리말"])
         assert 문제.reason == "0번 조각 표 열 이름 행 없음"
         assert 문제.line_no == 2
-        assert "| a | b |" in 문제.excerpt
+        assert "| 1 | 2 |" in 문제.excerpt
         # 앞뒤 한 줄씩. 그 줄만 있으면 왜 그렇게 읽혔는지가 안 보인다
-        assert "머리말" in 문제.excerpt and "| 1 | 2 |" in 문제.excerpt
+        assert "머리말" in 문제.excerpt and "꼬리말" in 문제.excerpt
 
     def test_펜스_문제에_여는_줄을_담는다(self, verifier: SplitVerifier) -> None:
         본문 = "설명\n```python\nprint(1)"
@@ -346,5 +359,6 @@ class Test검증기는_코드_문맥을_가린다:
         assert "0번 조각 코드블록 펜스 짝 안 맞음" in [p.reason for p in verifier.verify_chunks(본문, [본문])]
 
     def test_코드블록_밖의_열_이름_없는_표는_여전히_잡는다(self, verifier: SplitVerifier) -> None:
-        본문 = "설명\n\n| 대상 | 파일 |\n| 가 | 나 |"
-        assert "0번 조각 표 열 이름 행 없음" in [p.reason for p in verifier.verify_chunks(본문, [본문])]
+        본문 = "설명\n\n| 대상 | 파일 |\n|---|---|\n| 가 | 나 |"
+        조각 = ["설명\n\n| 대상 | 파일 |\n|---|---|", "| 가 | 나 |"]
+        assert "1번 조각 표 열 이름 행 없음" in [p.reason for p in verifier.verify_chunks(본문, 조각)]

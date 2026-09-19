@@ -48,6 +48,25 @@ def _outside_fences(part: str) -> list[tuple[int, str]]:
     return kept
 
 
+def _header_less_rows(text: str) -> list[tuple[int, str]]:
+    """Rows that open a table with no divider line following them.
+
+    Lines inside a fence are dropped first: a table shown as an example there
+    is not a table Slack renders (sca-a3b).
+    """
+    lines = _outside_fences(text)
+    found: list[tuple[int, str]] = []
+    prev_row = False
+    for j, (no, line) in enumerate(lines):
+        is_row = line.lstrip().startswith("|")
+        if is_row and not prev_row:
+            nxt = lines[j + 1][1].strip() if j + 1 < len(lines) else ""
+            if not TABLE_DIVIDER.match(nxt):
+                found.append((no, line))
+        prev_row = is_row
+    return found
+
+
 def _excerpt(part: str, line_no: int) -> str:
     """The offending line with one line on each side. The neighbours are what
     show why it read that way -- a table row is only wrong given what follows."""
@@ -64,6 +83,7 @@ class SplitVerifier:
         limit = self._settings.markdown_block_limit
         problems: list[SplitProblem] = []
         source = text.replace(SPLIT_MARKER, "")
+        preexisting = {line.strip() for _, line in _header_less_rows(source)}
         kept = sum(len(c) for c in chunks)
         missing = len(source.strip()) - kept
         # Stripping markers/newlines naturally shrinks the text a bit; a
@@ -83,24 +103,17 @@ class SplitVerifier:
                 problems.append(SplitProblem(
                     f"{i}번 조각 코드블록 펜스 짝 안 맞음", fences[-1], _excerpt(part, fences[-1])
                 ))
-            # Checking only the chunk's start would miss tables that begin
-            # mid-chunk, so scan every place a table row starts for the
-            # header divider that must follow it. Lines inside a fence are
-            # dropped first: a table shown as an example there is not a table
-            # Slack renders, and treating it as one sent the whole answer
-            # through safe_fallback (sca-a3b).
-            lines = _outside_fences(part)
-            prev_row = False
-            for j, (no, line) in enumerate(lines):
-                is_row = line.lstrip().startswith("|")
-                if is_row and not prev_row:
-                    nxt = lines[j + 1][1].strip() if j + 1 < len(lines) else ""
-                    if not TABLE_DIVIDER.match(nxt):
-                        problems.append(SplitProblem(
-                            f"{i}번 조각 표 열 이름 행 없음", no, _excerpt(part, no)
-                        ))
-                        break
-                prev_row = is_row
+            # A row the source already opened without a divider is the
+            # answer's own formatting, not damage the split caused. Flagging
+            # it sent an unsplit answer through safe_fallback, which cannot
+            # restore the table and only costs the rest of the markup (sca-iyq).
+            for no, line in _header_less_rows(part):
+                if line.strip() in preexisting:
+                    continue
+                problems.append(SplitProblem(
+                    f"{i}번 조각 표 열 이름 행 없음", no, _excerpt(part, no)
+                ))
+                break
             if SPLIT_MARKER in part:
                 problems.append(SplitProblem(f"{i}번 조각 마커 잔존"))
         return problems
