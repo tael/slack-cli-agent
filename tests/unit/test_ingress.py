@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,7 @@ from slack_cli_agent.core.ingress import IngressService
 from slack_cli_agent.core.spawn import InlineTaskSpawner, TaskSpawner
 from slack_cli_agent.jobs.ports import Job, JobQueue, ReclaimResult
 from slack_cli_agent.reliability.dedup import DeduplicationTracker
-from slack_cli_agent.slack.attachments import AttachmentStore, DownloadResult
+from slack_cli_agent.slack.attachments import AttachmentStore, DownloadResult, SavedAttachment
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.gateway import SlackGateway
 from slack_cli_agent.slack.listener import EventListener
@@ -217,8 +217,13 @@ def make_ingress(
     )
 
 
-def mention_event(ts: str = "1.0", text: str = "<@U_BOT> 안녕") -> dict:
-    return {"channel": "C1", "user": "U1", "ts": ts, "text": text}
+def mention_event(
+    ts: str = "1.0", text: str = "<@U_BOT> 안녕", files: list[dict] | None = None
+) -> dict:
+    event: dict[str, Any] = {"channel": "C1", "user": "U1", "ts": ts, "text": text}
+    if files is not None:
+        event["files"] = files
+    return event
 
 
 # 시험
@@ -541,6 +546,65 @@ class Test적재가_실패한_요청:
 
         assert [r[2] for r in replies] == ["pong"]
         assert queue.enqueued == []
+
+    def test_첨부_저장이_실패해도_접수_실패로_다룬다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """첨부 저장이 적재 앞에 있어, 거기서 터지면 표식도 안내도 없이 사라졌다."""
+        replies: list[tuple[str, str, str]] = []
+
+        class 터지는첨부(AttachmentStore):
+            def __init__(self) -> None:
+                super().__init__(
+                    attach_dir=tmp_path / "attach",
+                    token_provider=lambda: "",
+                    downloader=lambda url, token: DownloadResult("image/png", b""),
+                )
+
+            def save(self, event: Mapping[str, Any]) -> list[SavedAttachment]:
+                raise OSError("디스크 없음")
+
+        queue = FakeJobQueue()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+            attachments=터지는첨부(), replies=replies,
+        )
+
+        ingress.handle_app_mention(mention_event(ts="1.0", files=[{"url_private": "u", "name": "a.png"}]))
+
+        assert replies, "첨부 저장 실패를 알리지 않았다"
+
+    def test_재접수에_성공하면_실패_표식을_지운다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        client = FakeWebClient()
+        queue = FakeJobQueue(fail_times=1)
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+            reactions=ReactionMarker(client), enqueue_attempts=1,
+        )
+
+        ingress.handle_app_mention(mention_event(ts="1.0"))
+        assert ("C1", "1.0", "x") in client.reaction_add_calls
+
+        client.reaction_remove_calls.clear()
+        ingress.handle_app_mention(mention_event(ts="1.0"))
+
+        assert ("C1", "1.0", "x") in client.reaction_remove_calls
+
+    def test_실패한_적_없으면_표식을_지우러_가지_않는다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """정상 요청마다 슬랙 호출을 하나 더 쓰지 않는다."""
+        client = FakeWebClient()
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, reactions=ReactionMarker(client),
+        )
+
+        ingress.handle_app_mention(mention_event(ts="1.0"))
+
+        assert all(name != "x" for _c, _t, name in client.reaction_remove_calls)
 
     def test_적재에_성공하면_재전달을_계속_막는다(
         self, listener, admin_router, tmp_path
