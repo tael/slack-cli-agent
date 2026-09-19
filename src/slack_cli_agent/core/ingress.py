@@ -153,7 +153,7 @@ class IngressService:
         for attempt in range(self._enqueue_attempts):
             try:
                 return self._queue.enqueue(ctx, max_attempts=self._job_max_attempts)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - any storage error is worth one more try
                 last = exc
                 log.warning("요청 적재 실패, 다시 시도한다 (%d회차) : %s", attempt + 1, exc)
                 if attempt + 1 < self._enqueue_attempts:
