@@ -174,3 +174,56 @@ class UserGroupNameResolver:
 
     def __call__(self, group_id: str) -> str:
         return self.resolve(group_id)
+
+
+class UserNamer:
+    """What to call a user id, decided in one place.
+
+    The speaker label used profile.display_name for this bot while the
+    mention markup went through users.info, so the same bot appeared under
+    two names in one transcript (sca-inw8). The original had no such gap --
+    bot.py:2710 name_of_user held the judgment and both the speaker label
+    and readable_mentions went through it. It could do that with constants;
+    here the names come from the profile, so the judgment is shared as an
+    object instead.
+
+    The bot's own id is read per call rather than at construction: the
+    lookup goes to Slack, and resolving it during assembly would make
+    wiring alone call out (core/application.py).
+    """
+
+    def __init__(
+        self,
+        name_resolver: Callable[[str], str],
+        *,
+        identity: Any = None,
+        bot_display_name: str = "",
+        owner_user_id: str = "",
+        owner_display_name: str = "",
+    ) -> None:
+        self._name_resolver = name_resolver
+        self._identity = identity
+        self._bot_display_name = bot_display_name
+        self._owner_user_id = owner_user_id
+        self._owner_display_name = owner_display_name
+
+    @property
+    def bot_display_name(self) -> str:
+        return self._bot_display_name
+
+    def name_of(self, user_id: str) -> str:
+        if user_id:
+            if self._bot_display_name and user_id == self._bot_user_id():
+                return self._bot_display_name
+            if self._owner_display_name and user_id == self._owner_user_id:
+                return self._owner_display_name
+        return self._name_resolver(user_id)
+
+    def __call__(self, user_id: str) -> str:
+        return self.name_of(user_id)
+
+    def _bot_user_id(self) -> str:
+        try:
+            return str(getattr(self._identity, "user_id", "") or "")
+        except Exception:  # noqa: BLE001 - identity is a Slack lookup; a failure falls back to the resolver
+            return ""
