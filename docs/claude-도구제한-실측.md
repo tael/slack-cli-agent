@@ -92,9 +92,6 @@ settings 의 allow 에 이름이 들어가면 열린다.
 
 ## 남은 구멍
 
-`--strict-mcp-config` 가 서버 없는 프로필에서 안 붙는다. 전역 MCP 서버가 그대로
-실려 도구 정의가 컨텍스트를 차지하고, 승인 규칙 하나로만 막혀 있다. sca-mo4g.
-
 원본 `bot.py:1343-1348` 은 `--setting-sources project` 와 `--settings <봇 전용
 파일>` 로 사용자 settings 를 배제한다. 이식본에는 그 두 인자가 없다. 위에서
 보듯 그것만으로 Bash 가 막히지는 않으므로 이번 수정과는 별개다.
