@@ -253,6 +253,54 @@ class Test폴백은_실제로_도는_엔진의_보장을_낸다:
         assert 폴백.capabilities_for(request()) == GeminiEngine.capabilities
 
 
+class _그만(Exception):
+    """대역이 요청만 받고 멈춘다. 응답을 지어내면 계약이 바뀔 때 안 깨진다."""
+
+
+class Test폴백은_요청의_요구를_그대로_넘긴다:
+    """일차에서 세운 경계가 이차로 넘어갈 때 사라지면, 한도 소진이 그대로
+    권한 우회가 된다 (sca-93u)."""
+
+    def _폴백(self, tmp_path: Path) -> tuple[FallbackEngine, Any]:
+        from engine_support import named
+        from test_engine import RecordingEngine, profile_with, 통과정책
+
+        프로필 = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            {"type": "gemini", "binary": "agy", "model": "gemini-3.8-flash"},
+            tmp_path=tmp_path,
+        )
+        일차 = ClaudeEngine(프로필, SETTINGS)
+        이차종류 = named(RecordingEngine, "gemini", capabilities=GeminiEngine.capabilities)
+        이차 = 이차종류(프로필, SETTINGS)
+        runner = EngineRunner(SETTINGS, environment_policy=통과정책())
+        폴백 = FallbackEngine(일차, 이차, EngineSwitcher(tmp_path / "engine_state.json"), runner)
+        return 폴백, 이차
+
+    def test_이차로_넘길_때_요구를_버리지_않는다(self, tmp_path: Path) -> None:
+        폴백, _ = self._폴백(tmp_path)
+        요구 = ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST)
+        받은: list[Any] = []
+
+        def 받아둔다(engine: Any, req: Any) -> Any:
+            받은.append(req)
+            raise _그만()
+
+        폴백.runner.run = 받아둔다  # type: ignore[assignment,method-assign]
+        with pytest.raises(_그만):
+            폴백._run_secondary(request(requirements=요구))
+        assert 받은[0].requirements == 요구
+
+    def test_이차가_요구를_못_맞추면_실행하지_않는다(self, tmp_path: Path) -> None:
+        """gemini 의 도구 제한은 NONE 이다. 정확한 허용 목록을 요구한 요청이
+        폴백에서 그냥 도는 것이 이 이슈의 실제 피해다."""
+        폴백, 이차 = self._폴백(tmp_path)
+        요구 = ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST)
+        응답 = 폴백._run_secondary(request(requirements=요구))
+        assert 응답.ok is False
+        assert 이차.built == [], "명령을 만들었다는 것은 실행 경로에 들어갔다는 뜻이다"
+
+
 class Test감사_종류:
     def test_보장_기록은_사고로_세지_않는다(self) -> None:
         """기준 통행량이라 사고 집계에 들어가면 사고율이 전부 바뀐다."""
