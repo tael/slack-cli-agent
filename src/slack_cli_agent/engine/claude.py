@@ -272,7 +272,7 @@ class ClaudeEngine(Engine):
             )
 
         session_id = payload.get("session_id")
-        model_actual = payload.get("model")
+        model_actual = _actual_model(payload)
         turns = payload.get("num_turns")
         usage = Usage.from_native(payload.get("usage"), _USAGE_KEY_MAP)
         elapsed, elapsed_source = self._elapsed_from_payload(payload)
@@ -379,3 +379,37 @@ class ClaudeEngine(Engine):
         else:
             return None
         return UsageLimit(detail=result.strip(), source=source)
+
+
+def _actual_model(payload: Mapping[str, Any]) -> str | None:
+    """The model that actually spent tokens this run.
+
+    The result event carries no `model` key (measured 2026-09-19 on 2.1.263),
+    only modelUsage -- a per-model usage table. A resumed session that switched
+    models brings several, so the one with the most output tokens wins
+    (bot.py:207). Unknown stays unknown: a single entry is the model that ran
+    even at zero tokens, but a tie at the top is not evidence for either, and
+    picking by insertion order would record a guess as a fact (codex review).
+    """
+    table = payload.get("modelUsage")
+    if not isinstance(table, dict) or not table:
+        return None
+    if len(table) == 1:
+        return str(next(iter(table)))
+
+    ranked = sorted(table.items(), key=lambda kv: _out_tokens(kv[1]), reverse=True)
+    top = _out_tokens(ranked[0][1])
+    if top == 0 or top == _out_tokens(ranked[1][1]):
+        return None
+    return str(ranked[0][0])
+
+
+def _out_tokens(value: Any) -> int:
+    """The table comes from the CLI. A value that is not a number must not
+    break a request whose answer already arrived."""
+    if not isinstance(value, Mapping):
+        return 0
+    try:
+        return int(value.get("outputTokens") or 0)
+    except (TypeError, ValueError):
+        return 0

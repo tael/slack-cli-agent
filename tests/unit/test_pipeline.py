@@ -1894,3 +1894,53 @@ class Test감시_안내가_실제_결과_자리를_받는다:
 
         composed_ctx = deps["composer"].contexts[0]
         assert composed_ctx.watch_out_dir == str(deps["watch_results"].result_dir)
+
+
+class Test실제로_돈_모델을_기록에_남긴다:
+    """엔진이 값을 채워도 감사 기록에 안 들어가면 트러블슈팅 표의 '실제' 칸이
+    영영 비어 있다. review/base.py:53 이 그 기록을 읽는다 (sca-asrp)."""
+
+    def test_기록에_model_actual_이_들어간다(self, tmp_path: Path) -> None:
+        응답 = replace(ok_response(), model_actual="claude-haiku-4-5")
+        pipeline, deps = build_pipeline(responses=[응답], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1"))
+
+        기록 = deps["audit"].records[-1]
+        assert 기록["model_actual"] == "claude-haiku-4-5"
+
+    def test_요청_모델_칸은_요청값_그대로다(self, tmp_path: Path) -> None:
+        """실제 모델이 요청과 달라도 요청 칸은 안 바뀐다. 둘이 한 칸을 쓰면
+        무엇을 시켰는지가 사라진다."""
+        응답 = replace(ok_response(), model_actual="claude-haiku-4-5")
+        pipeline, deps = build_pipeline(responses=[응답], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1"))
+
+        기록 = deps["audit"].records[-1]
+        assert 기록["model"] == "model-general"
+
+    def test_모르면_키를_안_넣는다(self, tmp_path: Path) -> None:
+        """비어 있는 값을 넣으면 '요청과 같았다' 와 '몰랐다' 가 안 갈린다."""
+        응답 = replace(ok_response(), model_actual=None)
+        pipeline, deps = build_pipeline(responses=[응답], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1"))
+
+        assert "model_actual" not in deps["audit"].records[-1]
+
+    def test_침묵한_요청도_남긴다(self, tmp_path: Path) -> None:
+        """침묵 경로는 기록만 남고 게시가 없다. 그 자리만 빠지면 그 요청의
+        모델을 영영 모른다 (코덱스 리뷰 지적)."""
+        응답 = replace(
+            ok_response(body=f"{SILENT_MARK} 답할 것이 없습니다"),
+            model_actual="claude-haiku-4-5",
+        )
+        pipeline, deps = build_pipeline(responses=[응답], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1"))
+
+        assert deps["audit"].records[-1]["model_actual"] == "claude-haiku-4-5"
+
+    def test_실패한_요청도_남긴다(self, tmp_path: Path) -> None:
+        응답 = replace(fail_response(), model_actual="claude-haiku-4-5")
+        pipeline, deps = build_pipeline(responses=[응답, 응답], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1"))
+
+        assert deps["audit"].records[-1]["model_actual"] == "claude-haiku-4-5"
