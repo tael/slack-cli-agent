@@ -25,11 +25,19 @@ KNOWN_KEYS = frozenset(
         "trusted_users", "answer_unaddressed", "session_scope",
         "disclose_mechanism", "skills", "light_context", "rich", "chat",
         "progress",
-        "user_tools",
+        "user_tools", "tool_enforcement",
     }
 )
 """Channel-setting keys the core reads. Org-specific keys (like org_admins)
 aren't here — plugins read those from `extra`."""
+
+#: How hard an engine must enforce this channel's tool list. `audited` lets an
+#: engine that can't hold an exact allowlist run anyway with the downgrade
+#: recorded; `strict` refuses instead. Default is `audited` so the codex and
+#: gemini bots keep working, and a channel that must be protected opts in.
+TOOL_ENFORCEMENT_AUDITED = "audited"
+TOOL_ENFORCEMENT_STRICT = "strict"
+TOOL_ENFORCEMENT_LEVELS = (TOOL_ENFORCEMENT_AUDITED, TOOL_ENFORCEMENT_STRICT)
 
 CHAT_DEFAULT = "normal"
 """Default chat volume, used when assembling prompts."""
@@ -62,6 +70,7 @@ class ChannelConfig:
     channel file answered in stripped-down mrkdwn (sca-75v). A channel that
     needs plain text turns it off."""
     chat: str = CHAT_DEFAULT
+    tool_enforcement: str = TOOL_ENFORCEMENT_AUDITED
     progress: bool = DEFAULT_PROGRESS
     """Whether to show progress for long-running work. On by default for the
     same reason as `rich`: opting in per channel meant the task card almost
@@ -93,9 +102,21 @@ class ChannelConfig:
             light_context=bool(data.get("light_context", False)),
             rich=bool(data.get("rich", DEFAULT_RICH)),
             chat=str(data.get("chat") or CHAT_DEFAULT),
+            tool_enforcement=cls._tool_enforcement(channel_id, data),
             progress=bool(data.get("progress", DEFAULT_PROGRESS)),
             extra={k: v for k, v in data.items() if k not in KNOWN_KEYS},
         )
+
+    @staticmethod
+    def _tool_enforcement(channel_id: str, data: Mapping[str, Any]) -> str:
+        """Refuses an unknown value instead of falling back. A typo in `strict`
+        would otherwise read as the permissive default and drop enforcement
+        without a word (sca-98k)."""
+        level = str(data.get("tool_enforcement") or TOOL_ENFORCEMENT_AUDITED)
+        if level not in TOOL_ENFORCEMENT_LEVELS:
+            known = ", ".join(TOOL_ENFORCEMENT_LEVELS)
+            raise ConfigError(f"채널 {channel_id} 의 tool_enforcement 값이 잘못됐다 : {level} (가능한 값: {known})")
+        return level
 
 
 class HasRich(Protocol):

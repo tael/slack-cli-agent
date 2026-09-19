@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from ..auth.execution_policy import ExecutionPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelConfig, channel_is_rich
@@ -91,6 +92,10 @@ class RequestPipeline:
         # Without this the engine gets an empty tool list, which for the Claude
         # CLI means no tools at all.
         tool_policy: ToolPolicy | None = None,
+        # Sets the guarantee this request demands of the engine. Defaulted
+        # rather than injected so no assembly path can leave it unset and
+        # silently drop enforcement (sca-98k).
+        execution_policy: ExecutionPolicy | None = None,
         readable_dirs: tuple[Path, ...] = (),
         # Feeds the learning batch — without it, that batch has nothing to read.
         response_archive: ResponseArchive | None = None,
@@ -127,6 +132,7 @@ class RequestPipeline:
         self._consumption = consumption
         self._watch_queue = watch_queue
         self._tool_policy = tool_policy
+        self._execution_policy = execution_policy or ExecutionPolicy()
         self._readable_dirs = readable_dirs
         self._response_archive = response_archive
         self._progress = progress
@@ -253,6 +259,7 @@ class RequestPipeline:
             self._progress.log_path_for(config, ctx.channel, ctx.ts)
             if self._progress is not None else None
         )
+        allowed_tools = self._allowed_tools(principal, ctx.text, config)
         request = EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
@@ -261,7 +268,10 @@ class RequestPipeline:
             model=model,
             effort=effort,
             workdir=workdir,
-            allowed_tools=self._allowed_tools(principal, ctx.text, config),
+            allowed_tools=allowed_tools,
+            requirements=self._execution_policy.requirements_for(
+                config=config, allowed_tools=allowed_tools,
+            ),
             readable_dirs=self._readable_dirs,
             trust_level=principal.trust,
             progress_log=progress_log,
