@@ -179,16 +179,24 @@ class EngineRunner:
         # The relief valve is an *audited* downgrade. With nowhere to record it,
         # granting it anyway would leave no trace that the guarantee was given
         # up, which is the one thing the name promises (sca-gpe).
+        audit_missing = False
         if required.allow_audited_downgrade:
             if self._audit is not None:
                 return None
+            audit_missing = True
             log.warning("감사 기록 경로가 없어 완화를 받아주지 않는다 : 엔진 %s", engine.name)
+        body = (
+            "요청이 요구한 도구 제한을 이 엔진이 보장하지 못해 실행하지 않았습니다. "
+            f"요구 {required.tool_restriction}, {engine.name} 보장 {actual.tool_restriction}."
+        )
+        if audit_missing:
+            # Naming only the engine limit would read as an engine problem when
+            # the direct condition is a missing audit path -- an operator wiring
+            # issue (sca-gpe).
+            body += " 완화가 허용된 요청이지만 감사 기록 경로가 없어 완화를 적용하지 않았습니다."
         return EngineResponse(
             ok=False,
-            body=(
-                "요청이 요구한 도구 제한을 이 엔진이 보장하지 못해 실행하지 않았습니다. "
-                f"요구 {required.tool_restriction}, {engine.name} 보장 {actual.tool_restriction}."
-            ),
+            body=body,
             session_id=request.session_id, model_actual=None,
             elapsed=0.0, turns=None, usage=None,
             raw={}, failure_reason=CAPABILITY_UNMET_REASON,
