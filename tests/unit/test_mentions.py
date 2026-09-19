@@ -11,8 +11,9 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
+from identity_support import fake_identity
 
-from slack_cli_agent.slack.mentions import MentionRenderer
+from slack_cli_agent.slack.mentions import MentionRenderer, SelfMentionStripper
 from slack_cli_agent.slack.names import UserGroupNameResolver
 
 
@@ -333,3 +334,44 @@ class Test2차_리뷰_지적:
         )
         body, _ = checker.check("C1", "1700000000.000001", "1700000001.000001")
         assert "@데이터팀 그룹 봐줘" in body
+
+
+class Test자기_멘션만_지운다:
+    """받은 본문에서 멘션을 전부 지우면 누구를 불렀는지가 사라진다. 원본
+    bot.py:4973 도 전부 지운다 - 그 자리를 이 봇에서 바꾼다 (sca-za2a)."""
+
+    def _지우개(self, user_id: str = "U_BOT") -> SelfMentionStripper:
+        return SelfMentionStripper(fake_identity(user_id=user_id))
+
+    def test_봇_자신의_멘션을_지운다(self) -> None:
+        assert self._지우개().remove_self("<@U_BOT> 배포 상태 알려줘") == "배포 상태 알려줘"
+
+    def test_파이프가_붙은_형태도_지운다(self) -> None:
+        assert self._지우개().remove_self("<@U_BOT|신지> 확인") == "확인"
+
+    def test_남의_멘션은_남긴다(self) -> None:
+        assert self._지우개().remove_self("<@U_BOT> <@U9> 에게 물어봐") == "<@U9> 에게 물어봐"
+
+    def test_문장_안의_자기_멘션도_지운다(self) -> None:
+        """자리에 공백이 둘 남는다. 원본과 같은 동작이고, 공백을 합치면
+        코드 블록 안의 들여쓰기까지 바뀐다."""
+        assert self._지우개().remove_self("아까 <@U_BOT> 가 말한 것") == "아까  가 말한 것"
+
+    def test_신원을_모르면_선두_멘션만_지운다(self) -> None:
+        """본문은 관리 명령이 맞춰 보는 대상이다. 앞에 멘션이 남으면 어느
+        명령도 안 맞는다. 뒤의 멘션까지 지우면 누구를 불렀는지가 사라져,
+        이 클래스가 막으려던 것을 신원 조회 실패 때마다 다시 하게 된다."""
+        지우개 = SelfMentionStripper(fake_identity(user_id=""))
+        assert 지우개.remove_self("<@U_BOT> <@U9> !ping") == "<@U9> !ping"
+
+    def test_신원을_모르면_그룹_멘션은_안_건드린다(self) -> None:
+        지우개 = SelfMentionStripper(fake_identity(user_id=""))
+        assert 지우개.remove_self("<!subteam^S1> 봐줘") == "<!subteam^S1> 봐줘"
+
+    def test_신원_조회가_터져도_요청이_안_깨진다(self) -> None:
+        class 터지는신원:
+            @property
+            def user_id(self) -> str:
+                raise RuntimeError("조회 실패")
+
+        assert SelfMentionStripper(터지는신원()).remove_self("<@U_BOT> !ping") == "!ping"

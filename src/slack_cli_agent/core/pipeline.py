@@ -37,6 +37,7 @@ from ..reliability.watchresult import WatchResultReader
 from ..session.manager import SessionDecision, SessionManager
 from ..session.ports import SessionKey, SessionScope
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
+from ..slack.mentions import MentionRenderer
 from .context import RequestContext
 from .pipeline_ports import (
     AccessPolicyPort,
@@ -79,6 +80,7 @@ class RequestPipeline:
         owner_user_id: str = "",
         reactions: ReactionPort | None = None,
         name_resolver: Callable[[str], str] = lambda user_id: user_id,
+        group_resolver: Callable[[str], str] | None = None,
         mention_table: Callable[[], Mapping[str, str]] = dict,
         slow_reporter: SlowRequestReporter | None = None,
         # Optional to avoid an extra Slack lookup where it's not needed.
@@ -129,6 +131,10 @@ class RequestPipeline:
         self._owner_user_id = owner_user_id
         self._reactions = reactions
         self._name_resolver = name_resolver
+        # The prompt body only. Slack's addressee check and this bot's own
+        # mention removal read the raw text, so rendering earlier would break
+        # them (sca-za2a).
+        self._mentions = MentionRenderer(name_resolver, group_resolver)
         self._mention_table = mention_table
         self._slow_reporter = slow_reporter
         self._participants = participants
@@ -397,7 +403,7 @@ class RequestPipeline:
             transcript = self._transcript.thread_transcript(
                 ctx.channel, ctx.thread_ts, ctx.ts, scope=scope,
             )
-        tagged = ctx.text
+        tagged = self._mentions.render(ctx.text)
         note = self._linked_thread_note(ctx)
         if note:
             tagged = f"{tagged}\n\n{note}"

@@ -935,3 +935,19 @@ class Test재시도도대표건만남긴다:
         statuses = service.retry_pending()
 
         assert statuses[0].missed[0].late
+
+
+class Test캐치업_본문도_실시간과_같게_만든다:
+    """캐치업은 ingress 를 안 거쳐 본문을 그대로 큐에 넣었다. 실시간으로 받은
+    같은 말과 본문이 달라진다 (코덱스 리뷰 지적, sca-za2a)."""
+
+    def _본문(self, text: str) -> str:
+        history = FakeHistoryReader(history={"C1": [{"ts": "99000.0", "user": "U1", "text": text}]})
+        outcome = make_service(history).find_missed("C1", window=3600)
+        return outcome.value()[0].text
+
+    def test_봇_자신의_멘션을_지운다(self) -> None:
+        assert self._본문("<@U_BOT> 질문") == "질문"
+
+    def test_남을_부른_멘션은_남긴다(self) -> None:
+        assert self._본문("<@U_BOT> <@U9> 에게 물어봐") == "<@U9> 에게 물어봐"
