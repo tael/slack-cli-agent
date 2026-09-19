@@ -198,6 +198,33 @@ same pair (sca-b0y). The lease is generated per claim and never repeats.
 """
 
 
+V9_ADMIN_CLAIMS_SQL = """
+CREATE TABLE admin_claims (
+  channel     TEXT NOT NULL,
+  message_ts  TEXT NOT NULL,
+  owner       TEXT NOT NULL,
+  state       TEXT NOT NULL,
+  claimed_at  REAL NOT NULL,
+  finished_at REAL,
+  failure     TEXT,
+  PRIMARY KEY (channel, message_ts)
+);
+CREATE INDEX idx_admin_claims_state ON admin_claims(state, claimed_at);
+"""
+"""Which admin commands have already been run, shared across processes.
+
+Ingress and the worker are separate processes, so the in-memory dedup record
+does not cross between them. A normal request is protected by the jobs table's
+UNIQUE(channel, message_ts), but an admin command never enters the queue and
+left no trace at all until the reaction mark, which lands only after the
+command has run (sca-8m5p).
+
+A finished row is kept, not deleted: catch-up decides from the mark, and a
+mark that failed to post would otherwise let the same command run again. The
+retention has to outlast the catch-up window for that reason.
+"""
+
+
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
@@ -207,6 +234,7 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (6, "메시지당 활성 감시를 하나로 제한", _statements(V6_WATCH_JOB_ACTIVE_UNIQUE_SQL)),
     (7, "감시 완료 보고의 미발송분 보관", _statements(V7_WATCH_JOB_PENDING_REPORT_SQL)),
     (8, "작업 점유마다 고유한 표를 둔다", _statements(V8_JOB_LEASE_SQL)),
+    (9, "관리 명령 점유 원장 추가", _statements(V9_ADMIN_CLAIMS_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

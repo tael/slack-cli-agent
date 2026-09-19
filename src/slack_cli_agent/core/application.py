@@ -12,6 +12,7 @@ connection, so events would arrive but nothing would handle them.
 from __future__ import annotations
 
 import logging
+import os
 import shlex
 import sys
 import time
@@ -162,6 +163,7 @@ from ..slack.review_ports import (
 )
 from ..slack.roster import RosterBuilder
 from ..slack.transcript import TranscriptBuilder
+from ..storage.admin_claims import AdminClaims
 from ..storage.connection_epochs import SqliteConnectionEpochs
 from ..storage.database import Database
 from .channel_kind import is_direct_message_channel
@@ -252,6 +254,7 @@ class Application:
         self._gateway: SlackGateway | None = None
         self._ingress: IngressService | None = None
         self._admin: AdminAdmission | None = None
+        self._admin_claims: AdminClaims | None = None
         self._pipeline: RequestPipeline | None = None
         self._access_policy: AccessPolicy | None = None
         self._execution_policy: ExecutionPolicy | None = None
@@ -271,6 +274,7 @@ class Application:
         # 동안 들고 있는다. 매번 새로 만들면 그 수가 늘 1 로 보인다.
         self._job_purge_log = SweepLog("끝난 작업")
         self._epoch_purge_log = SweepLog("끝난 연결 세대")
+        self._admin_claim_purge_log = SweepLog("끝난 관리 명령 점유")
         self._watch_result_log = SweepLog("감시 결과 파일")
         self._attachment_log = SweepLog("첨부")
         self._attachments: AttachmentStore | None = None
@@ -819,6 +823,52 @@ class Application:
         removed = self.queue().purge_finished(time.time() - self._settings.job_retention_sec)
         self._job_purge_log.record(removed)
 
+    @property
+    def _claim_owner(self) -> str:
+        """Only for diagnosis -- the claim itself is decided by the row, not
+        this value. Has to differ per process to say which one died."""
+        return f"pid:{os.getpid()}"
+
+    def admin_claims(self) -> AdminClaims:
+        if self._admin_claims is None:
+            self._admin_claims = AdminClaims(self._database)
+        return self._admin_claims
+
+    def admin_claim_purge_runner(self) -> PeriodicRunner:
+        """Closed claims are a dedup record, so they outlive the catch-up
+        window the same way job rows do (sca-8m5p)."""
+        return PeriodicRunner(
+            self._purge_admin_claims,
+            self._settings.admin_claim_purge_interval_sec,
+            name="admin_claim_purge",
+        )
+
+    def _purge_admin_claims(self) -> None:
+        now = time.time()
+        removed = self.admin_claims().purge(
+            now - self._settings.admin_claim_retention_sec,
+            failures_before=now - self._settings.admin_claim_failure_retention_sec,
+        )
+        self._admin_claim_purge_log.record(removed)
+
+    def admin_claim_reclaim_runner(self) -> PeriodicRunner:
+        """A claim left RUNNING by a process that died blocks its message
+        forever: no mark was posted, so catch-up keeps finding it, and the
+        claim stops anyone from running it (sca-8m5p)."""
+        return PeriodicRunner(
+            self._reclaim_stale_admin_claims,
+            self._settings.admin_claim_purge_interval_sec,
+            name="admin_claim_reclaim",
+        )
+
+    def _reclaim_stale_admin_claims(self) -> None:
+        stale = self.admin_claims().reclaim_stale(
+            time.time() - self._settings.admin_claim_stale_sec
+        )
+        for claim in stale:
+            log.warning("관리 명령이 처리 도중 끊겼다 : %s:%s : %s", claim.channel, claim.ts, claim.owner)
+            self.reactions().mark_failed(claim.channel, claim.ts)
+
     def epoch_purge_runner(self) -> PeriodicRunner:
         """Closed connection epochs are only a record of a gap already caught
         up, but purge_done had no caller at all, so the table only grew
@@ -1083,6 +1133,8 @@ class Application:
                 context_builder=self._admin_context,
                 reply=self._reply,
                 markers=self.reactions(),
+                claims=self.admin_claims(),
+                owner=self._claim_owner,
             )
         return self._admin
 
@@ -1620,6 +1672,8 @@ class Application:
                 self.watch_result_cleanup_runner(),
                 self.job_purge_runner(),
                 self.epoch_purge_runner(),
+                self.admin_claim_purge_runner(),
+                self.admin_claim_reclaim_runner(),
                 self.startup_catchup_runner(worker),
                 self.connection_catchup_runner(worker),
                 self.catchup_retry_runner(worker),

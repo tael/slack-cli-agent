@@ -14,7 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 
-from ..admin.admission import AdminAdmission
+from ..admin.admission import AdminAdmission, ClaimUnavailable
 from ..config.settings import RuntimeSettings
 from ..core.context import RequestContext
 from ..core.lifecycle import InflightCounter
@@ -256,6 +256,12 @@ class Worker:
         for context in contexts:
             try:
                 handled = self._admin.handled(context)
+            except ClaimUnavailable:
+                # Nobody ran it and nothing was marked, so the next sweep
+                # finds it again. Left unmarked on purpose (sca-8m5p).
+                log.warning("관리 명령 점유를 못 해 넘긴다 : %s:%s", context.channel, context.ts)
+                ended.add((context.channel, context.thread_ts))
+                continue
             except Exception as exc:  # noqa: BLE001 - see below
                 # The dispatch may already have run part of the command
                 # before raising, so passing it to the model would repeat

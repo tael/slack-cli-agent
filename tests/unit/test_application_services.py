@@ -65,6 +65,8 @@ def runner_factory_names() -> list[str]:
 RUNNER_ARGS: dict[str, Any] = {
     "job_purge_runner": lambda app: (),
     "epoch_purge_runner": lambda app: (),
+    "admin_claim_purge_runner": lambda app: (),
+    "admin_claim_reclaim_runner": lambda app: (),
     "watch_runner": lambda app: (),
     "state_snapshot_runner": lambda app: (),
     "roster_refresher": lambda app: (),
@@ -125,6 +127,8 @@ class Test묶음구성:
             "watch_result_cleanup",
             "job_purge",
             "epoch_purge",
+            "admin_claim_purge",
+            "admin_claim_reclaim",
             "startup_catchup",
             "connection_catchup",
             "catchup_retry",

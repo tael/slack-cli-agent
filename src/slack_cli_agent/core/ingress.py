@@ -12,7 +12,7 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import replace
 from typing import Any, ClassVar
 
-from ..admin.admission import AdminAdmission
+from ..admin.admission import AdminAdmission, ClaimUnavailable
 from ..jobs.ports import JobQueue
 from ..reliability.dedup import DeduplicationTracker
 from ..slack.assistant import AssistantPanel
@@ -158,7 +158,19 @@ class IngressService:
 
             ctx = replace(ctx, text=self._strip_self_mention(ctx.text))
 
-            if self._admin.handled(ctx):
+            # Inside the budget: the check writes a claim row, and a socket
+            # handler thread waiting on that lock holds up every later event
+            # (sca-9l1, sca-8m5p).
+            try:
+                with self._budget():
+                    if self._admin.handled(ctx):
+                        return
+            except ClaimUnavailable:
+                # Nobody ran the command. The dedup record is dropped so a
+                # redelivery gets through, and the user is told, because
+                # catch-up only reaches back one window (sca-8m5p).
+                self._dedup.forget_event(ctx.channel, ctx.ts)
+                self._report_not_accepted(ctx)
                 return
 
             request = ctx
