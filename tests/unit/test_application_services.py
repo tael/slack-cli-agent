@@ -591,10 +591,12 @@ class Test접수의_잠금예산:
 
     def test_예산_합이_슬랙_ACK_한도보다_짧다(self, app: Application) -> None:
         """처리 풀이 전부 막히면 뒤 이벤트의 콜백 시작이 그만큼 밀린다.
-        적재 시도의 잠금 대기와 백오프를 합쳐 3초 안이어야 한다."""
+        적재 시도뿐 아니라 적재 뒤의 대기 여부 조회도 예산을 한 번 더 쓴다."""
         settings = app._settings
         ingress = app.ingress()
         시도 = ingress._enqueue_attempts
-        대기 = settings.ingress_lock_budget_sec * 시도
+        잠금_접근_횟수 = 시도 + 1  # enqueue 시도들 + blocked_on_thread
+        대기 = settings.ingress_lock_budget_sec * 잠금_접근_횟수
         백오프 = sum(ingress._enqueue_retry_wait_sec * (n + 1) for n in range(시도 - 1))
-        assert 대기 + 백오프 <= 1.5
+        상한 = 대기 + 백오프
+        assert 상한 <= 1.5, f"접수 경로 상한이 {상한:.2f}초다"

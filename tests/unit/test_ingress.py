@@ -887,3 +887,41 @@ class Test접수경로의_잠금예산:
         with caplog.at_level(logging.WARNING):
             ingress.handle_app_mention(mention_event())
         assert not any("적재가 오래" in r.message for r in caplog.records)
+
+
+class Test적재_뒤의_표식_실패:
+    """적재는 됐는데 표식 조회가 실패하면, 작업은 큐에 있는데 로그에는
+    접수 실패로 남았다 (sca-9l1 리뷰)."""
+
+    def test_표식이_실패해도_접수_실패로_적지_않는다(
+        self, tmp_path: Path, listener: EventListener, caplog
+    ) -> None:
+        class 조회가_막힌큐(FakeJobQueue):
+            def blocked_on_thread(self, thread_ts: str, message_ts: str) -> bool:
+                raise RuntimeError("잠겨 있다")
+
+        queue = 조회가_막힌큐()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=AdminRouter([]),
+            tmp_path=tmp_path,
+        )
+        with caplog.at_level(logging.WARNING):
+            ingress.handle_app_mention(mention_event())
+        assert len(queue.enqueued) == 1
+        assert not any("요청 접수 실패" in r.message for r in caplog.records), caplog.text
+        assert any("표식" in r.message for r in caplog.records), caplog.text
+
+    def test_표식이_실패해도_실패_안내를_보내지_않는다(
+        self, tmp_path: Path, listener: EventListener
+    ) -> None:
+        class 조회가_막힌큐(FakeJobQueue):
+            def blocked_on_thread(self, thread_ts: str, message_ts: str) -> bool:
+                raise RuntimeError("잠겨 있다")
+
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=조회가_막힌큐(), admin_router=AdminRouter([]),
+            tmp_path=tmp_path, replies=replies,
+        )
+        ingress.handle_app_mention(mention_event())
+        assert replies == []
