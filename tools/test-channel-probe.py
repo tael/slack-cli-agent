@@ -19,6 +19,7 @@ import json
 import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Mapping
@@ -58,12 +59,69 @@ OUTCOMES: tuple[tuple[str, str], ...] = (
 EXIT_CODES = {DONE: 0, SILENT: 0, FAILED: 1, NO_REACTION: 3}
 UNFINISHED_EXIT = 4
 
+#: 슬랙에 못 닿은 것은 봇 실패가 아니다. 2026-09-19 20:00 점검에서 HTTP 500
+#: 하나가 종료코드 1 로 나가 봇이 답을 못 낸 것과 같아 보였다 (sca-oaty).
+TRANSPORT_EXIT = 5
+
+#: 다시 해 보면 달라지는 것만 고른다. 서버 오류와 rate limit, 그리고 연결
+#: 자체가 안 된 것이다. 4xx 는 다시 해도 같아 원인만 늦게 드러난다.
+RETRY_STATUS = (429, 500, 502, 503, 504)
+RETRY_ATTEMPTS = 3
+RETRY_DELAY_SEC = 3
+
+#: 슬랙은 internal_error 에서 일부 작업이 이미 성공했을 수 있다고 적는다.
+#: 게시를 다시 하면 같은 멘션이 두 번 나가고 봇이 둘 다 처리한다. 한 번만
+#: 보내고 못 닿았으면 그대로 끝낸다 - 다시 재는 것은 사람이 하면 된다.
+WRITE_METHODS = ("chat.postMessage", "chat.update", "chat.delete", "reactions.add")
+
 #: 이 상태에서는 더 기다리면 바뀐다. 나머지는 기다려도 그대로다.
 PENDING = (NO_REACTION, RUNNING, WAITING)
 
 NAME_PATTERN = re.compile(r"\A[a-z0-9_-]+\Z")
 POLL_SEC = 5
 DEFAULT_WAIT_SEC = 600
+
+
+class TransportFailed(Exception):
+    """슬랙에 못 닿았다. 봇이 답을 못 낸 것과 고칠 자리가 다르다."""
+
+
+def is_transient(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in RETRY_STATUS
+    return isinstance(exc, urllib.error.URLError)
+
+
+def wait_sec(exc: Exception, default: float) -> float:
+    """429 는 슬랙이 얼마나 기다리라고 알려 준다. 그 값을 무시하면 429 가
+    계속 돌아온다."""
+    headers = getattr(exc, "headers", None)
+    raw = headers.get("Retry-After") if headers else None
+    try:
+        return float(raw) if raw else default
+    except (TypeError, ValueError):
+        return default
+
+
+def call_with_retry(
+    call: Any,
+    attempts: int = RETRY_ATTEMPTS,
+    delay: float = RETRY_DELAY_SEC,
+    sleep: Any = time.sleep,
+) -> Any:
+    """일시 오류면 다시 해 보고, 한도를 넘기면 마지막 오류를 담아 올린다."""
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except Exception as exc:
+            if not is_transient(exc):
+                raise
+            last = exc
+            print(f"슬랙 호출 실패 {attempt}/{attempts} : {exc}", file=sys.stderr)
+            if attempt < attempts:
+                sleep(wait_sec(exc, delay))
+    raise TransportFailed(f"슬랙에 {attempts}번 못 닿았다 : {last}")
 
 
 def check_name(name: str) -> str:
@@ -101,8 +159,15 @@ def _post(method: str, payload: dict[str, Any], token: str) -> dict[str, Any]:
     req = urllib.request.Request(API + method, data=body)
     req.add_header("Content-type", "application/x-www-form-urlencoded; charset=utf-8")
     req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=30) as res:
-        result: dict[str, Any] = json.loads(res.read().decode())
+
+    def once() -> dict[str, Any]:
+        with urllib.request.urlopen(req, timeout=30) as res:
+            loaded: dict[str, Any] = json.loads(res.read().decode())
+        return loaded
+
+    # 쓰기는 한 번만. 다시 하면 같은 멘션이 두 번 나갈 수 있다.
+    attempts = 1 if method in WRITE_METHODS else RETRY_ATTEMPTS
+    result: dict[str, Any] = call_with_retry(once, attempts=attempts)
     if not result.get("ok"):
         raise SystemExit(f"{method} 실패 : {result.get('error')}")
     return result
@@ -113,8 +178,13 @@ def _get(url: str, token: str, cookie: str = "") -> dict[str, Any]:
     req.add_header("Authorization", f"Bearer {token}")
     if cookie:
         req.add_header("Cookie", f"d={cookie}")
-    with urllib.request.urlopen(req, timeout=30) as res:
-        data: dict[str, Any] = json.loads(res.read().decode())
+
+    def once() -> dict[str, Any]:
+        with urllib.request.urlopen(req, timeout=30) as res:
+            loaded: dict[str, Any] = json.loads(res.read().decode())
+        return loaded
+
+    data: dict[str, Any] = call_with_retry(once)
     return data
 
 
@@ -175,5 +245,15 @@ def main(argv: list[str]) -> None:
     raise SystemExit(exit_code(outcome))
 
 
+def run(argv: list[str]) -> None:
+    """못 닿은 것을 봇 실패와 가르는 자리. main 을 직접 부르면 TransportFailed
+    가 그대로 올라가 종료코드 1 이 된다."""
+    try:
+        main(argv)
+    except TransportFailed as exc:
+        print(f"점검 도구가 슬랙에 못 닿았다 : {exc}", file=sys.stderr)
+        raise SystemExit(TRANSPORT_EXIT) from exc
+
+
 if __name__ == "__main__":
-    main(sys.argv)
+    run(sys.argv)

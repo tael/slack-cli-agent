@@ -145,3 +145,174 @@ class Test스레드_읽기:
         결과, 답 = probe.thread_state("C1", "1.1", "t", "c")
         assert 결과 == probe.DONE
         assert 답 == ["봇 답"]
+
+
+class Test일시_오류_재시도:
+    """2026-09-19 20:00 점검에서 asuka 가 HTTP 500 으로 종료코드 1 이었다.
+    곧바로 다시 돌리자 0 이었다. 슬랙 쪽 일시 오류인데 봇 실패로 남았다
+    (sca-oaty)."""
+
+    def test_서버_오류는_다시_해_본다(self) -> None:
+        import urllib.error
+
+        시도: list[int] = []
+
+        def 호출() -> str:
+            시도.append(1)
+            if len(시도) < 2:
+                raise urllib.error.HTTPError("u", 500, "err", {}, None)  # type: ignore[arg-type]
+            return "ok"
+
+        assert probe.call_with_retry(호출, sleep=lambda _: None) == "ok"
+        assert len(시도) == 2
+
+    def test_연결_실패도_다시_해_본다(self) -> None:
+        import urllib.error
+
+        시도: list[int] = []
+
+        def 호출() -> str:
+            시도.append(1)
+            if len(시도) < 3:
+                raise urllib.error.URLError("연결 안 됨")
+            return "ok"
+
+        assert probe.call_with_retry(호출, sleep=lambda _: None) == "ok"
+
+    def test_요청이_잘못된_것은_다시_안_한다(self) -> None:
+        """400 은 다시 해도 같다. 재시도하면 원인만 늦게 드러난다."""
+        import urllib.error
+
+        시도: list[int] = []
+
+        def 호출() -> str:
+            시도.append(1)
+            raise urllib.error.HTTPError("u", 400, "bad", {}, None)  # type: ignore[arg-type]
+
+        with pytest.raises(urllib.error.HTTPError):
+            probe.call_with_retry(호출, sleep=lambda _: None)
+        assert len(시도) == 1
+
+    def test_한도를_넘기면_전송_실패로_올린다(self) -> None:
+        """봇 실패와 구분되는 예외여야 한다. 그대로 올리면 종료코드 1 이 돼
+        봇이 답을 못 낸 것과 같아 보인다."""
+        import urllib.error
+
+        def 호출() -> str:
+            raise urllib.error.HTTPError("u", 503, "err", {}, None)  # type: ignore[arg-type]
+
+        with pytest.raises(probe.TransportFailed):
+            probe.call_with_retry(호출, attempts=2, sleep=lambda _: None)
+
+    def test_마지막_오류를_메시지에_남긴다(self) -> None:
+        """무엇 때문에 못 했는지가 안 남으면 다시 재는 것 말고 할 수 있는 것이
+        없다."""
+        import urllib.error
+
+        def 호출() -> str:
+            raise urllib.error.HTTPError("u", 503, "서버 오류", {}, None)  # type: ignore[arg-type]
+
+        with pytest.raises(probe.TransportFailed) as 잡힘:
+            probe.call_with_retry(호출, attempts=2, sleep=lambda _: None)
+        assert "503" in str(잡힘.value)
+
+    def test_전송_실패의_종료코드는_봇_실패와_다르다(self) -> None:
+        assert probe.TRANSPORT_EXIT not in (0, 1, 3, 4)
+
+
+class Test게시는_다시_안_한다:
+    """슬랙은 internal_error 에서 일부 작업이 이미 성공했을 수 있다고 적는다.
+    500 을 '안 올라갔다' 로 읽고 다시 올리면 같은 멘션이 두 번 나가고 봇이 둘
+    다 처리한다 (코덱스 리뷰)."""
+
+    def test_쓰기는_한_번만_한다(self) -> None:
+        import urllib.error
+
+        시도: list[int] = []
+
+        def 호출() -> str:
+            시도.append(1)
+            raise urllib.error.HTTPError("u", 500, "err", {}, None)  # type: ignore[arg-type]
+
+        with pytest.raises(probe.TransportFailed):
+            probe.call_with_retry(호출, attempts=1, sleep=lambda _: None)
+        assert len(시도) == 1
+
+    def test_게시_호출은_재시도_없이_보낸다(self, monkeypatch) -> None:
+        본 = {}
+
+        def 가짜(call, attempts=probe.RETRY_ATTEMPTS, delay=0.0, sleep=None):
+            본["attempts"] = attempts
+            return {"ok": True, "ts": "1.1"}
+
+        monkeypatch.setattr(probe, "call_with_retry", 가짜)
+        probe._post("chat.postMessage", {"channel": "C1"}, "t")
+        assert 본["attempts"] == 1
+
+    def test_조회_호출은_재시도한다(self, monkeypatch) -> None:
+        본 = {}
+
+        def 가짜(call, attempts=probe.RETRY_ATTEMPTS, delay=0.0, sleep=None):
+            본["attempts"] = attempts
+            return {"ok": True}
+
+        monkeypatch.setattr(probe, "call_with_retry", 가짜)
+        probe._get("https://x", "t")
+        assert 본["attempts"] > 1
+
+    def test_읽기_전용_호출은_재시도한다(self, monkeypatch) -> None:
+        """auth.test 는 쓰기가 아니다. 쓰기만 골라 막는 것이지 POST 전부가
+        아니다."""
+        본 = {}
+
+        def 가짜(call, attempts=probe.RETRY_ATTEMPTS, delay=0.0, sleep=None):
+            본["attempts"] = attempts
+            return {"ok": True, "user_id": "U1"}
+
+        monkeypatch.setattr(probe, "call_with_retry", 가짜)
+        probe._post("auth.test", {}, "t")
+        assert 본["attempts"] > 1
+
+
+class Test대기_시간:
+    def test_429는_슬랙이_알려준_시간을_기다린다(self) -> None:
+        import urllib.error
+
+        잔: list[float] = []
+        시도: list[int] = []
+
+        def 호출() -> str:
+            시도.append(1)
+            if len(시도) < 2:
+                raise urllib.error.HTTPError("u", 429, "slow", {"Retry-After": "7"}, None)  # type: ignore[arg-type]
+            return "ok"
+
+        assert probe.call_with_retry(호출, delay=3, sleep=잔.append) == "ok"
+        assert 잔 == [7.0]
+
+    def test_알려준_시간이_없으면_기본_간격을_쓴다(self) -> None:
+        import urllib.error
+
+        잔: list[float] = []
+        시도: list[int] = []
+
+        def 호출() -> str:
+            시도.append(1)
+            if len(시도) < 2:
+                raise urllib.error.HTTPError("u", 500, "err", {}, None)  # type: ignore[arg-type]
+            return "ok"
+
+        probe.call_with_retry(호출, delay=3, sleep=잔.append)
+        assert 잔 == [3]
+
+
+class Test종료까지_이어진다:
+    def test_슬랙에_못_닿으면_종료코드_5로_끝난다(self, monkeypatch) -> None:
+        """상수만 보는 시험은 실제 종료 경로가 끊겨도 통과한다."""
+        def 터짐(argv: list[str]) -> None:
+            raise probe.TransportFailed("못 닿았다")
+
+        monkeypatch.setattr(probe, "main", 터짐)
+        with pytest.raises(SystemExit) as 잡힘:
+            probe.run(["probe", "shinji", "질문"])
+        assert 잡힘.value.code == probe.TRANSPORT_EXIT
