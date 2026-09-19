@@ -1064,6 +1064,27 @@ class Test감시확인연결:
 
         assert "Read" in 보낸요청[0].allowed_tools
 
+    def test_확인실행에도_실행_보장_요구가_붙는다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """감시 확인은 파이프라인을 안 거친다. 여기서 요구를 안 세우면 이
+        경로의 도구 권한만 아무도 강제하지 않는다 (sca-98k)."""
+        from slack_cli_agent.engine.capability import ToolRestriction
+        from slack_cli_agent.reliability.watchjobs import WatchJob
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        app._composer = lambda: _프롬프트조립대역()  # type: ignore[method-assign]
+        보낸요청: list[Any] = []
+        monkeypatch.setattr(
+            EngineRunner, "run",
+            lambda self, engine, request: 보낸요청.append(request),
+        )
+
+        app._watch_run_check(WatchJob(
+            id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
+            created_at=0.0, last_run=None,
+        ), WatchOutcome.UNKNOWN)
+
+        assert 보낸요청[0].requirements.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+
     def test_확인실행은_소유자_추가_도구와_스킬을_안_준다(
         self, tmp_path: Path, monkeypatch: Any
     ) -> None:
