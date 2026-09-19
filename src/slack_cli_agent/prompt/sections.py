@@ -16,6 +16,17 @@ if TYPE_CHECKING:
 SILENT_MARK = "[침묵]"
 
 
+def is_silent(body: str) -> bool:
+    """Whether the model chose not to answer.
+
+    A prefix match, not equality: the mark is sometimes followed by the
+    model's own reason for staying quiet, and comparing for equality sent
+    that reason to the channel (sca-2ak). The original bot.py used
+    startswith from the start.
+    """
+    return body.strip().startswith(SILENT_MARK)
+
+
 @dataclass(frozen=True)
 class CompositionContext:
     """Input to a single composition run.

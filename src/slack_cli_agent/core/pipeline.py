@@ -29,7 +29,7 @@ from ..observability.progress import ProgressCoordinator
 from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter
 from ..prompt.composer import PromptComposer
-from ..prompt.sections import SILENT_MARK, CompositionContext
+from ..prompt.sections import CompositionContext, is_silent
 from ..reliability.watchjobs import WatchJobPort
 from ..reliability.watchresult import WatchResultReader
 from ..session.manager import SessionDecision, SessionManager
@@ -312,7 +312,7 @@ class RequestPipeline:
 
         self._sessions.touch(key, ctx.ts)
 
-        if response.body.strip() == SILENT_MARK:
+        if is_silent(response.body):
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage, turns=response.turns)
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
@@ -460,7 +460,7 @@ class RequestPipeline:
             ok=rerun.ok, added_chars=len(addendum),
         )
         new_body = (rerun.body or "").strip()
-        if not rerun.ok or not new_body or new_body == SILENT_MARK:
+        if not rerun.ok or not new_body or is_silent(new_body):
             return body, None
 
         if self._consumption is not None:
