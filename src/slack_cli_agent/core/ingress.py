@@ -121,7 +121,15 @@ class IngressService:
 
             ctx = self._merge_attachments(ctx, event)
 
-            if not self._queue.enqueue(ctx, max_attempts=self._job_max_attempts):
+            try:
+                queued = self._queue.enqueue(ctx, max_attempts=self._job_max_attempts)
+            except Exception:
+                # The dedup record was made before this point, and Slack already
+                # ACKed the socket event, so leaving it would suppress the one
+                # redelivery that could still recover the request (sca-if6).
+                self._dedup.forget_event(ctx.channel, ctx.ts)
+                raise
+            if not queued:
                 # Already queued — don't mark it twice.
                 return
             self._mark_accepted(ctx)
