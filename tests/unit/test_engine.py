@@ -18,6 +18,7 @@ from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.errors import ConfigError
 from slack_cli_agent.engine.base import (
+    UNTRUSTED_INPUT_MARK,
     CallOrigin,
     ElapsedSource,
     Engine,
@@ -529,6 +530,22 @@ class TestCodexEngineBuildCommand:
                                            session_id="thread-abc",
                                            system_prompt="이번턴만의지침"))
         assert "이번턴만의지침" in cmd[-1]
+        assert cmd[-1].endswith("안녕")
+        # 표식은 지침 뒤, 슬랙 입력 앞이어야 뜻이 있다.
+        지침끝 = cmd[-1].index("이번턴만의지침")
+        표식 = cmd[-1].index(UNTRUSTED_INPUT_MARK)
+        assert 지침끝 < 표식 < cmd[-1].index("안녕")
+
+    def test_지침이_비어도_슬랙_입력에_표식을_붙인다(self, tmp_path: Path) -> None:
+        """리뷰 경로는 system_prompt 를 빈 값으로 고정한 채 재개한다. 그때
+        표식을 빼면 그 경로에서만 비신뢰 입력 표시가 사라져 gemini 와
+        동작이 갈린다 (sca-ivs 리뷰 [중간])."""
+        profile = codex_profile(tmp_path)
+        engine = CodexEngine(profile, SETTINGS)
+        cmd = engine.build_command(request(resume=True, model="gpt-5.6-sol",
+                                           session_id="thread-abc",
+                                           system_prompt=""))
+        assert UNTRUSTED_INPUT_MARK in cmd[-1]
         assert cmd[-1].endswith("안녕")
 
     def test_재개_턴의_지침은_슬랙_입력과_같은_계층이다(self, tmp_path: Path) -> None:

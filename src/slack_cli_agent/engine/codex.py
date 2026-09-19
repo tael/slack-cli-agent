@@ -178,9 +178,11 @@ class CodexEngine(Engine):
         whenever the thread started -- a stale run id, prompt files edited since,
         knowledge picked for a different question (sca-ivs). gemini puts the same
         two parts in one string for the same reason.
+
+        The mark goes in even with no instructions: the review path resumes with
+        an empty system prompt, and dropping it there would leave that one path
+        without the untrusted-input marker.
         """
-        if not request.system_prompt:
-            return request.prompt
         return (
             request.system_prompt
             + self.readable_paths_note(request.readable_dirs)
