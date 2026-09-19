@@ -197,8 +197,42 @@ def thread_state(channel: str, ts: str, token: str, cookie: str = "") -> tuple[s
         raise SystemExit(f"conversations.replies 실패 : {data.get('error')}")
     messages = data.get("messages") or [{}]
     reactions = [str(r.get("name")) for r in messages[0].get("reactions") or []]
-    replies = [str(m.get("text") or "") for m in messages[1:] if m.get("bot_id")]
+    replies = [
+        (str(m.get("ts") or ""), str(m.get("text") or ""))
+        for m in messages[1:] if m.get("bot_id")
+    ]
     return outcome_of(reactions), replies
+
+
+#: 지우고 끝내도 되는 결과. 그 밖은 사람이 원인을 봐야 하므로 남긴다.
+CLEARABLE = (DONE, SILENT)
+
+
+def clear_probe(
+    channel: str, ts: str, reply_ts: list[str], outcome: str, poster: str, target: str,
+) -> None:
+    """점검이 남긴 멘션과 답을 지운다.
+
+    점검이 잦아 테스트 채널이 같은 질문으로 찼다(사용자 지시 2026-09-20).
+    멘션-응답 경로를 실제로 재는 것은 그대로 두고 그 자리에 쌓이는 것만 없앤다.
+    봇 토큰은 자기가 올린 글만 지울 수 있어 답과 멘션의 토큰이 다르다.
+    답을 먼저 지운다 - 멘션이 먼저 사라지면 스레드가 끊겨 답이 채널에 남는다.
+    """
+    if outcome not in CLEARABLE:
+        return
+    for reply in reply_ts:
+        _clear_one(channel, reply, target)
+    _clear_one(channel, ts, poster)
+
+
+def _clear_one(channel: str, ts: str, token: str) -> None:
+    """정리는 곁다리다. 못 지운 것이 점검 판정을 뒤집으면 안 된다."""
+    try:
+        _post("chat.delete", {"channel": channel, "ts": ts}, token)
+    # _post 는 슬랙 오류를 SystemExit 로 낸다. Exception 만 잡으면 그것이
+    # 그대로 올라가 점검 종료코드를 덮는다.
+    except (SystemExit, Exception) as exc:  # noqa: BLE001 - 점검은 이미 끝났다
+        print(f"점검 흔적을 못 지웠다 : {channel} {ts} : {exc}", file=sys.stderr)
 
 
 def _token_of(name: str) -> str:
@@ -240,8 +274,9 @@ def main(argv: list[str]) -> None:
         outcome, replies = thread_state(channel, ts, poster)
 
     print(f"결과 : {outcome}")
-    for reply in replies:
-        print(f"--- {reply}")
+    for _reply_ts, text in replies:
+        print(f"--- {text}")
+    clear_probe(channel, ts, [t for t, _ in replies], outcome, poster, _token_of(name))
     raise SystemExit(exit_code(outcome))
 
 

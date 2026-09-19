@@ -138,13 +138,14 @@ class Test스레드_읽기:
             "ok": True,
             "messages": [
                 {"reactions": [{"name": "white_check_mark"}]},
-                {"bot_id": "B1", "text": "봇 답"},
+                {"bot_id": "B1", "ts": "2.2", "text": "봇 답"},
                 {"user": "U1", "text": "사람 글"},
             ],
         })
         결과, 답 = probe.thread_state("C1", "1.1", "t", "c")
         assert 결과 == probe.DONE
-        assert 답 == ["봇 답"]
+        # ts 도 함께 돌려준다 - 점검이 끝나면 그 답을 지운다 (sca-9bwx).
+        assert [text for _ts, text in 답] == ["봇 답"]
 
 
 class Test일시_오류_재시도:
@@ -316,3 +317,62 @@ class Test종료까지_이어진다:
         with pytest.raises(SystemExit) as 잡힘:
             probe.run(["probe", "shinji", "질문"])
         assert 잡힘.value.code == probe.TRANSPORT_EXIT
+
+
+class Test점검_흔적을_남기지_않는다:
+    """점검이 잦아 테스트 채널이 같은 질문으로 찬다(사용자 지시 2026-09-20 -
+    'UTC를 질문하는 테스트 슬랙은 너무 심하네. 작업후 제거해라'). 확인은
+    그대로 하고 그 자리에 쌓이는 것만 없앤다."""
+
+    def _지운것(self, monkeypatch) -> list[tuple[str, str]]:
+        지운것: list[tuple[str, str]] = []
+
+        def 가짜게시(method, payload, token):
+            if method == "chat.delete":
+                지운것.append((str(payload["channel"]), str(payload["ts"])))
+            return {"ok": True}
+
+        monkeypatch.setattr(probe, "_post", 가짜게시)
+        return 지운것
+
+    def test_완결이면_멘션과_답을_지운다(self, monkeypatch) -> None:
+        지운것 = self._지운것(monkeypatch)
+        probe.clear_probe("C1", "1.1", ["2.2", "3.3"], probe.DONE, "poster", "target")
+        assert 지운것 == [("C1", "2.2"), ("C1", "3.3"), ("C1", "1.1")]
+
+    def test_침묵도_완결이라_지운다(self, monkeypatch) -> None:
+        지운것 = self._지운것(monkeypatch)
+        probe.clear_probe("C1", "1.1", [], probe.SILENT, "poster", "target")
+        assert 지운것 == [("C1", "1.1")]
+
+    def test_실패면_남긴다(self, monkeypatch) -> None:
+        """원인을 사람이 봐야 한다. 지우면 무엇이 잘못됐는지 사라진다."""
+        지운것 = self._지운것(monkeypatch)
+        probe.clear_probe("C1", "1.1", ["2.2"], probe.FAILED, "poster", "target")
+        assert 지운것 == []
+
+    def test_반응이_없어도_남긴다(self, monkeypatch) -> None:
+        지운것 = self._지운것(monkeypatch)
+        probe.clear_probe("C1", "1.1", ["2.2"], probe.NO_REACTION, "poster", "target")
+        assert 지운것 == []
+
+    def test_지우다_실패해도_점검_판정을_안_바꾼다(self, monkeypatch) -> None:
+        """정리는 곁다리다. 그것 때문에 점검이 실패로 뒤집히면 안 된다."""
+        def 터지는게시(method, payload, token):
+            raise SystemExit("chat.delete 실패 : message_not_found")
+
+        monkeypatch.setattr(probe, "_post", 터지는게시)
+        probe.clear_probe("C1", "1.1", ["2.2"], probe.DONE, "poster", "target")
+
+    def test_답은_그_봇의_토큰으로_지운다(self, monkeypatch) -> None:
+        """봇 토큰은 자기가 올린 글만 지울 수 있다."""
+        쓴토큰: list[tuple[str, str]] = []
+
+        def 가짜게시(method, payload, token):
+            if method == "chat.delete":
+                쓴토큰.append((str(payload["ts"]), token))
+            return {"ok": True}
+
+        monkeypatch.setattr(probe, "_post", 가짜게시)
+        probe.clear_probe("C1", "1.1", ["2.2"], probe.DONE, "poster", "target")
+        assert 쓴토큰 == [("2.2", "target"), ("1.1", "poster")]
