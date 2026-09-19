@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -136,12 +138,25 @@ class TestArgumentOrder:
         cmd = engine.build_command(_request())
         assert "--dangerously-skip-permissions" in cmd
 
-    def test_print_timeout이_설정_초와_함께_들어간다(self, tmp_path: Path) -> None:
+    def test_print_timeout은_실행기_제한보다_짧다(self, tmp_path: Path) -> None:
+        """제한에 걸린 뒤 agy 가 부분 답을 쓰고 끝내는 데 쓰는 시간을 뺀다
+        (실측 2026-09-20, sca-ocie)."""
         settings = RuntimeSettings(request_timeout_sec=120)
         engine = GeminiEngine(_profile(tmp_path), settings)
         cmd = engine.build_command(_request())
         idx = cmd.index("--print-timeout")
-        assert cmd[idx + 1] == "120s"
+        assert cmd[idx + 1] == f"{120 - int(GeminiEngine.PRINT_TIMEOUT_MARGIN_SEC)}s"
+
+    @pytest.mark.parametrize("제한", [1, 3, 5, 15])
+    def test_제한이_여유보다_짧아도_양수를_준다(self, tmp_path: Path, 제한: int) -> None:
+        """0s 는 agy 에서 '제한 없음' 이라 정반대가 된다. 이 구간에서는 CLI 가
+        먼저 끝난다는 보장이 없고 실행기가 먼저 죽인다 - 그래도 무제한보다는
+        낫다 (코덱스 리뷰)."""
+        settings = RuntimeSettings(request_timeout_sec=제한)
+        engine = GeminiEngine(_profile(tmp_path), settings)
+        cmd = engine.build_command(_request())
+        idx = cmd.index("--print-timeout")
+        assert cmd[idx + 1] == "1s"
 
 
 class TestParse:
