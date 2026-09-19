@@ -138,7 +138,7 @@ from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption
 from ..slack.linked_threads import LinkedThreadReader
 from ..slack.listener import EventListener
 from ..slack.mentions import SelfMentionStripper
-from ..slack.names import BotUserResolver, DisplayNameResolver, UserGroupNameResolver
+from ..slack.names import BotUserResolver, DisplayNameResolver, UserGroupNameResolver, UserNamer
 from ..slack.owner_only_audit import OwnerOnlyChannelAudit
 from ..slack.participants import ThreadParticipants
 from ..slack.progress import (
@@ -233,6 +233,7 @@ class Application:
 
         self._channels = ChannelRegistry(profile.paths.channels)
         self._names = DisplayNameResolver(client)
+        self._user_namer: UserNamer | None = None
         self._group_names = UserGroupNameResolver(client)
         self._bot_users = BotUserResolver(client)
         self._channel_name_resolver: ChannelNameResolver | None = None
@@ -552,12 +553,29 @@ class Application:
             )
         return self._progress
 
+    def user_namer(self) -> UserNamer:
+        """What to call a user id. Every place that shows a name shares this
+        one object, so the same person cannot appear under two names in one
+        transcript (sca-inw8).
+
+        The bot user ID it compares against is read per call, not here --
+        resolving it during assembly would make wiring alone call Slack.
+        """
+        if self._user_namer is None:
+            self._user_namer = UserNamer(
+                self._names,
+                identity=self.identity,
+                bot_display_name=self._profile.display_name,
+                owner_user_id=self._profile.owner_user_id,
+            )
+        return self._user_namer
+
     def _transcript_builder(self) -> TranscriptBuilder:
         return TranscriptBuilder(
             client=self._client,
             settings=self._settings,
             notices=self._notices,
-            name_resolver=self._names,
+            name_resolver=self.user_namer(),
             group_resolver=self._group_names,
             identity=self.identity,
             bot_display_name=self._profile.display_name,
@@ -569,7 +587,7 @@ class Application:
         return LateAddendumChecker(
             self._history_port(),
             self._notices,
-            self._names,
+            self.user_namer(),
             self._settings,
             identity=self.identity,
             bot_display_name=self._profile.display_name,
@@ -583,7 +601,7 @@ class Application:
         """
         return ThreadParticipants(
             self._history_port(),
-            self._names,
+            self.user_namer(),
             self.identity.user_id,
             limit=self._settings.history_max_msgs,
         )
@@ -641,7 +659,7 @@ class Application:
                 default_workdir=self._profile.work_root,
                 owner_user_id=self._profile.owner_user_id,
                 reactions=self.reactions(),
-                name_resolver=self._names,
+                name_resolver=self.user_namer(),
                 mention_table=self._names.name_table,
                 group_resolver=self._group_names,
                 slow_reporter=self._slow_reporter(),
