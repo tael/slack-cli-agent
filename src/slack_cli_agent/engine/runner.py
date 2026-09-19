@@ -285,6 +285,9 @@ class EngineRunner:
         downgraded = required.downgraded(unmet)
         record_fields: dict[str, Any] = {
             "engine": engine.name,
+            # Always present, empty when the caller set none: "no key" and "the
+            # field was never written" have to stay apart in the audit.
+            "request_id": request.request_id,
             "required": {
                 axis: str(value)
                 for axis in ("tool_restriction", "execution_isolation", "instruction_boundary")
@@ -515,6 +518,9 @@ class FallbackEngine(Engine):
             # would leave the already-open progress display stuck on its
             # opening line for the whole fallback turn.
             progress_log=request.progress_log,
+            # The same reason in the audit: this is the next attempt at one
+            # request, not a second request (sca-4ol).
+            request_id=request.request_id,
         )
         return self.runner.run(self.secondary, fallback_request)
 
@@ -545,6 +551,7 @@ class FallbackEngine(Engine):
             session_id=None, resume=False,
             model=None, effort="low", workdir=request.workdir,
             readable_dirs=(), allowed_tools=(), trust_level=request.trust_level,
+            request_id=request.request_id,
         )
         response = self.runner.run(self.secondary, probe_request, timeout_sec=self.PROBE_TIMEOUT_SEC)
         detail = response.body.strip() if response.body else ""

@@ -51,7 +51,8 @@ class ReviewEngineCaller:
         return self._effort
 
     def run(
-        self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None
+        self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None,
+        request_id: str = "",
     ) -> EngineResponse:
         request = EngineRequest(
             prompt=prompt,
@@ -68,5 +69,8 @@ class ReviewEngineCaller:
             ),
             trust_level=TrustLevel.OWNER,
             progress_log=progress_log,
+            # One review calls the engine twice (main and split retry). Same
+            # key so the audit reads them as one review (sca-4ol).
+            request_id=request_id,
         )
         return self._invoker.invoke(request)

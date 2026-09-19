@@ -1830,3 +1830,23 @@ class Test실행_보장_요구를_세운다:
 
     def test_도구가_없으면_요구도_없다(self, tmp_path: Path) -> None:
         assert self._요청(tmp_path, ()).requirements.tool_restriction is None
+
+
+class Test요청_상관관계_키:
+    """capability 기록은 실행 시도마다 남는다. 폴백·재시도가 별도 이벤트로
+    섞이면 요청 단위 집계가 안 된다 (sca-4ol)."""
+
+    def test_요청마다_상관관계_키가_붙는다(self, tmp_path: Path) -> None:
+        pipeline, parts = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx())
+        runner: Any = parts["runner"]
+        assert runner.calls[0].request_id
+
+    def test_요청이_다르면_키도_다르다(self, tmp_path: Path) -> None:
+        pipeline, parts = build_pipeline(
+            responses=[ok_response(), ok_response()], tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+        pipeline.handle(make_ctx(ts="2.0"))
+        runner: Any = parts["runner"]
+        assert runner.calls[0].request_id != runner.calls[1].request_id
