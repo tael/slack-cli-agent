@@ -1543,6 +1543,18 @@ class Test폴백엔진연결:
         assert caller._invoker is application.engine_invoker
         application.close()
 
+    def test_점검_경로가_읽을_자리를_받는다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """점검은 빈 시스템 지침으로 세션을 연다. 엔진이 그 조건에서 경로
+        안내를 빼면 점검이 읽어도 되는 자리를 모른 채 돈다 (sca-9u18)."""
+        application = Application(self._폴백있는프로필(tmp_path), client)
+        caller = application._review_engine()
+        paths = application._profile.paths
+        assert caller._system_prompt == ""
+        assert caller._readable_dirs == (paths.persona, paths.prompts)
+        application.close()
+
 
     def test_한도소진부터_2차_실행까지_조립_전체가_이어진다(
         self, tmp_path: Path, client: FakeSlackClient

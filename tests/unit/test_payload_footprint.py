@@ -155,9 +155,19 @@ class Test선언은_실제_명령과_맞는다:
         발자국 = 엔진.footprint_for(요청)
         assert 발자국.total_bytes == self._모델이_읽는_바이트(엔진.build_command(요청), 값을_가진_플래그=플래그)
 
-    def test_codex_신규턴은_지침이_없으면_경로_안내도_안_보낸다(self, tmp_path: Path) -> None:
+    def test_codex_신규턴은_지침이_없어도_경로_안내를_보낸다(self, tmp_path: Path) -> None:
+        """리뷰 경로가 빈 지침으로 세션을 연다. 그때도 읽을 자리는 알려야
+        한다 - codex 는 --add-dir 을 안 받아 이 자리가 유일하다 (sca-9u18)."""
         엔진 = CodexEngine(codex_profile(tmp_path), SETTINGS)
         요청 = request(resume=False, system_prompt="", readable_dirs=(tmp_path,))
+        cmd = 엔진.build_command(요청)
+        assert any(tok.startswith("developer_instructions=") for tok in cmd)
+        assert 엔진.footprint_for(요청).adapter_added_bytes > 0
+        assert 엔진.footprint_for(요청).total_bytes == self._모델이_읽는_바이트(cmd, 값을_가진_플래그=())
+
+    def test_codex_신규턴은_알릴_것이_없으면_안_보낸다(self, tmp_path: Path) -> None:
+        엔진 = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        요청 = request(resume=False, system_prompt="", readable_dirs=())
         cmd = 엔진.build_command(요청)
         assert not any(tok.startswith("developer_instructions=") for tok in cmd)
         assert 엔진.footprint_for(요청).adapter_added_bytes == 0

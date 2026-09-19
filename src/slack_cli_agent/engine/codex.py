@@ -200,9 +200,10 @@ class CodexEngine(Engine):
         if request.effort:
             cmd += ["-c", f"model_reasoning_effort={self._toml_string(request.effort)}"]
         cmd += _codex_mcp_config_args(self.profile.mcp_servers)
-        if not request.resume and request.system_prompt:
+        if not request.resume:
             instructions = request.system_prompt + self._session_path_note(request)
-            cmd += ["-c", f"developer_instructions={self._toml_string(instructions)}"]
+            if instructions:
+                cmd += ["-c", f"developer_instructions={self._toml_string(instructions)}"]
 
         if request.resume:
             # resume doesn't accept --sandbox or -C; achieve the same effect via config keys instead.
@@ -214,10 +215,12 @@ class CodexEngine(Engine):
         return cmd
 
     def _session_path_note(self, request: EngineRequest) -> str:
-        """The path note rides on developer_instructions, which is dropped
-        whole when there are no instructions to open the session with."""
-        if not request.system_prompt:
-            return ""
+        """The path note rides on developer_instructions, which is the only
+        place a first turn can carry it -- codex's --add-dir adds writable paths,
+        not readable ones (codex-cli 0.154.0). It is
+        written even with no system prompt: the review path opens its session
+        that way (core/application.py:1309) and would otherwise be told
+        nothing about where it may read (sca-9u18)."""
         return self.readable_paths_note(request.readable_dirs) + self.write_paths_note(request)
 
     def _turn_ban_prefix(self, request: EngineRequest) -> str:
