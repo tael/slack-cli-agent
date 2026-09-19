@@ -284,6 +284,7 @@ class Application:
         self._transcript_readers = transcript_readers or TranscriptReaderRegistry()
         self._invoker: EngineInvoker | None = None
         self._watch_jobs: WatchJobQueue | None = None
+        self._watch_results: WatchResultReader | None = None
         self._closed = False
 
     @classmethod
@@ -418,8 +419,15 @@ class Application:
     @property
     def readable_dirs(self) -> tuple[Path, ...]:
         """Directories every engine call may read. One place so the watch
-        check and the normal path cannot drift apart (sca-0ab)."""
-        return (self._profile.paths.persona, self._profile.paths.prompts)
+        check and the normal path cannot drift apart (sca-0ab).
+
+        The watch results moved out of the work directory, so the check turn
+        now reads them from outside its cwd (sca-vokt)."""
+        return (
+            self._profile.paths.persona,
+            self._profile.paths.prompts,
+            self._profile.paths.watch_out,
+        )
 
     def tool_policy(self) -> ToolPolicy:
         if self._tool_policy is None:
@@ -640,6 +648,7 @@ class Application:
                 late_addendum=self._late_addendum(),
                 consumption=self.consumption,
                 watch_queue=self.watch_jobs(),
+                watch_results=self.watch_results(),
                 response_archive=self.response_archive(),
                 tool_policy=self.tool_policy(),
                 readable_dirs=self.readable_dirs,
@@ -813,13 +822,22 @@ class Application:
             self._watch_jobs = WatchJobQueue(self._database)
         return self._watch_jobs
 
+    def watch_results(self) -> WatchResultReader:
+        """One reader for the whole bot. The directory is not workdir-relative
+        any more, so there is a single place for the prompt note, the reader
+        and the cleanup to agree on (sca-vokt)."""
+        if self._watch_results is None:
+            self._watch_results = WatchResultReader(self._profile.paths.watch_out)
+            self._watch_results.ensure_dir()
+        return self._watch_results
+
     def watch_checker(self) -> WatchJobChecker:
         # owner notification needs an owner to send to; the DM channel itself
         # is resolved at send time (see owner_dm_channel)
         return WatchJobChecker(
             queue=self.watch_jobs(),
             run_check=self._watch_run_check,
-            results=WatchResultReader(),
+            results=self.watch_results(),
             publisher=self.publisher(),
             channels=self._channels,
             settings=self._settings,
@@ -832,7 +850,7 @@ class Application:
 
     def watch_result_cleanup_runner(self) -> PeriodicRunner:
         # A run_id is issued per request, so work started without a watch tag --
-        # or whose registration failed -- leaves .watch-out files nobody reads
+        # or whose registration failed -- leaves result files nobody reads
         # (sca-y6g). No completion path passes those, so this is the only trigger.
         return PeriodicRunner(
             self._watch_result_cleanup_tick,
@@ -841,22 +859,10 @@ class Application:
         )
 
     def _watch_result_cleanup_tick(self) -> None:
-        reader = WatchResultReader()
-        removed = 0
-        for workdir in self._watch_result_dirs():
-            removed += reader.cleanup(
-                str(workdir), older_than_sec=self._settings.watch_result_retain_sec
-            )
+        removed = self.watch_results().cleanup(
+            older_than_sec=self._settings.watch_result_retain_sec
+        )
         self._watch_result_log.record(removed)
-
-    def _watch_result_dirs(self) -> list[Path]:
-        """Every workdir a watch job could have run in. _watch_workdir picks
-        between the channel's workdir and work_root, so both are swept."""
-        dirs = {self._profile.work_root}
-        for config in self._channels.all().values():
-            if config.workdir:
-                dirs.add(config.workdir)
-        return sorted(dirs)
 
     def watch_runner(self) -> PeriodicRunner:
         # without this runner, watch jobs get registered but never checked
@@ -935,7 +941,7 @@ class Application:
         )
         config = self._channels.get(job.channel)
         workdir = _watch_workdir(job, config, self._profile.work_root)
-        결과파일 = WatchResultReader().path_for(str(workdir), job.run_id)
+        결과파일 = self.watch_results().path_for(job.run_id)
         prompt = watch_check_prompt(job.condition, outcome, str(결과파일) if 결과파일 else "")
         system_prompt = self._composer().compose(CompositionContext(
             principal=principal,

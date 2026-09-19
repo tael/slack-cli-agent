@@ -508,10 +508,10 @@ class 고정판정기:
 
     def __init__(self, outcome) -> None:
         self._outcome = outcome
-        self.받은인자: list[tuple[str, str]] = []
+        self.받은인자: list[str] = []
 
-    def read(self, workdir: str, run_id: str):
-        self.받은인자.append((workdir, run_id))
+    def read(self, run_id: str):
+        self.받은인자.append(run_id)
         return self._outcome
 
 
@@ -691,7 +691,7 @@ class Test실제_결과_파일로_판정한다:
         발행 = 가짜발행()
         c = 체커(
             큐=큐, run_check=lambda job, outcome: 응답(ok=True, body="배포됐습니다"),
-            발행=발행, 판정기=WatchResultReader(),
+            발행=발행, 판정기=WatchResultReader(결과),
         )
         큐.시각["값"] = 2000.0
         c.check_once()
@@ -709,7 +709,7 @@ class Test실제_결과_파일로_판정한다:
         c = 체커(
             큐=큐,
             run_check=기록하고_응답(호출, 응답(ok=True, body="x")),
-            판정기=WatchResultReader(),
+            판정기=WatchResultReader(결과),
         )
         큐.시각["값"] = 2000.0
         c.check_once()

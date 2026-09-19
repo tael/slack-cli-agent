@@ -85,6 +85,13 @@ class StatePaths:
         return self.root / "persona"
 
     @property
+    def watch_out(self) -> Path:
+        """Background watch results. Under the bot rather than the work
+        directory: a channel pointed at a real repository used to get a
+        .watch-out/ inside it (sca-vokt)."""
+        return self.root / "watch-out"
+
+    @property
     def responses(self) -> Path:
         """Bot replies, logged per channel into per-day files."""
         return self.root / "responses"

@@ -413,7 +413,7 @@ class Test감시_결과_파일_안내:
     def test_발급된_이름이_안내에_들어간다(
         self, library: PromptLibrary, knowledge: KnowledgeLoader
     ) -> None:
-        본문 = self._조립(library, knowledge, watch_run_id="9f3a2b1c")
+        본문 = self._조립(library, knowledge, watch_run_id="9f3a2b1c", watch_out_dir="/w")
 
         assert "결과 파일 9f3a2b1c 안내" in 본문
 
@@ -431,7 +431,9 @@ class Test감시_결과_파일_안내:
         self, library: PromptLibrary, knowledge: KnowledgeLoader
     ) -> None:
         """확인 턴은 새 백그라운드 작업을 띄우지 않는다."""
-        본문 = self._조립(library, knowledge, watch_check=True, watch_run_id="9f3a2b1c")
+        본문 = self._조립(
+            library, knowledge, watch_check=True, watch_run_id="9f3a2b1c", watch_out_dir="/w",
+        )
 
         assert "결과 파일" not in 본문
 
@@ -451,10 +453,12 @@ class Test동봉_자산으로_조립한_결과:
         )
 
         본문 = composer.compose(
-            CompositionContext(principal=OWNER, watch_run_id="fixed-run-id")
+            CompositionContext(
+                principal=OWNER, watch_run_id="fixed-run-id", watch_out_dir="/상태/watch-out",
+            )
         )
 
-        assert ".watch-out/fixed-run-id.out" in 본문
+        assert "/상태/watch-out/fixed-run-id.out" in 본문
         assert "<<WATCH_RUN_ID>>" not in 본문
 
 

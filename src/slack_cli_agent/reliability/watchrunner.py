@@ -275,7 +275,7 @@ class WatchJobChecker:
     def _outcome_of(self, job: WatchJob) -> WatchOutcome:
         if self._results is None:
             return WatchOutcome.UNKNOWN
-        return self._results.read(job.workdir, job.run_id)
+        return self._results.read(job.run_id)
 
     def _finish(
         self, job: WatchJob, raw_body: str, outcome: WatchOutcome = WatchOutcome.UNKNOWN
