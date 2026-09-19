@@ -167,6 +167,7 @@ def make_ingress(
     replies: list[tuple[str, str, str]] | None = None,
     reactions_seen: list[tuple[str, str, str, str]] | None = None,
     job_max_attempts: int = 0,
+    enqueue_attempts: int = 1,
     spawn: TaskSpawner | None = None,
     assistant: Any = None,
 ) -> IngressService:
@@ -211,6 +212,8 @@ def make_ingress(
         spawn=spawn if spawn is not None else InlineTaskSpawner(),
         assistant=assistant,
         job_max_attempts=job_max_attempts,
+        enqueue_attempts=enqueue_attempts,
+        sleep=lambda _초: None,
     )
 
 
@@ -491,6 +494,53 @@ class Test적재가_실패한_요청:
 
         ingress.handle_app_mention(mention_event(ts="1.0"))
         assert len(queue.enqueued) == 1
+
+    def test_적재가_한_번_실패해도_그_자리에서_다시_시도한다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """슬랙은 ACK 한 이벤트를 다시 보내지 않는다. 되살릴 기회는 이 자리뿐이다."""
+        queue = FakeJobQueue(fail_times=1)
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+            enqueue_attempts=3,
+        )
+
+        ingress.handle_app_mention(mention_event(ts="1.0"))
+
+        assert len(queue.enqueued) == 1
+
+    def test_끝까지_실패하면_스레드에_알린다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """조용히 사라지면 물은 사람은 답을 기다리기만 한다."""
+        replies: list[tuple[str, str, str]] = []
+        queue = FakeJobQueue(raise_on_enqueue=True)
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+            replies=replies, enqueue_attempts=2,
+        )
+
+        ingress.handle_app_mention(mention_event(ts="1.0"))
+
+        assert replies, "접수 실패를 알리지 않았다"
+        assert "접수" in replies[-1][2]
+
+    def test_관리_명령은_되돌리지_않는다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """관리 명령은 그 자리에서 효과를 낸다. 되돌려 다시 받으면 두 번 돈다."""
+        replies: list[tuple[str, str, str]] = []
+        queue = FakeJobQueue()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+            replies=replies,
+        )
+
+        ingress.handle_app_mention(mention_event(ts="1.0", text="!ping"))
+        ingress.handle_app_mention(mention_event(ts="1.0", text="!ping"))
+
+        assert [r[2] for r in replies] == ["pong"]
+        assert queue.enqueued == []
 
     def test_적재에_성공하면_재전달을_계속_막는다(
         self, listener, admin_router, tmp_path
