@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from typing import Any
+from typing import Any, ClassVar
 
 from ..admin.command import AdminContext
 from ..admin.router import AdminRouter
@@ -53,6 +54,11 @@ class IngressService:
         # Retry cap for a failed job; 0 means unlimited. Takes just this value rather
         # than the whole settings object since ingress doesn't need anything else from it.
         job_max_attempts: int = 0,
+        # How many times to try storing one request before giving up. Slack acks
+        # the socket event before this runs, so it never redelivers a request
+        # that failed here — this retry is the only recovery (sca-9r6).
+        enqueue_attempts: int = 3,
+        sleep: Callable[[float], None] = time.sleep,
         # None means this bot has no agent panel wiring; the event is then
         # neither subscribed to nor handled.
         assistant: AssistantPanel | None = None,
@@ -69,6 +75,8 @@ class IngressService:
         self._on_reaction = on_reaction
         self._spawn = spawn
         self._job_max_attempts = job_max_attempts
+        self._enqueue_attempts = max(1, enqueue_attempts)
+        self._sleep = sleep
         self._assistant = assistant
 
     def register(self, gateway: SlackGateway) -> None:
@@ -119,24 +127,52 @@ class IngressService:
                 self._reply(ctx.channel, ctx.thread_ts, admin_result.message)
                 return
 
-            ctx = self._merge_attachments(ctx, event)
+            request = self._merge_attachments(ctx, event)
 
             try:
-                queued = self._queue.enqueue(ctx, max_attempts=self._job_max_attempts)
+                queued = self._store(request)
             except Exception:
-                # The dedup record was made before this point, and Slack already
-                # ACKed the socket event, so leaving it would suppress the one
-                # redelivery that could still recover the request (sca-if6).
-                self._dedup.forget_event(ctx.channel, ctx.ts)
+                # The dedup record was made before this point, so leaving it
+                # would block a later redelivery too (sca-if6). Past the admin
+                # dispatch, nothing here has an effect outside the queue, so
+                # re-running the same event is safe.
+                self._dedup.forget_event(request.channel, request.ts)
+                self._report_not_accepted(request)
                 raise
             if not queued:
                 # Already queued — don't mark it twice.
                 return
-            self._mark_accepted(ctx)
+            self._mark_accepted(request)
         except Exception:
             channel = ctx.channel if ctx is not None else event.get("channel")
             ts = ctx.ts if ctx is not None else event.get("ts")
             log.exception("요청 접수 실패: %s:%s", channel, ts)
+
+    def _store(self, ctx: RequestContext) -> bool:
+        last: Exception | None = None
+        for attempt in range(self._enqueue_attempts):
+            try:
+                return self._queue.enqueue(ctx, max_attempts=self._job_max_attempts)
+            except Exception as exc:
+                last = exc
+                log.warning("요청 적재 실패, 다시 시도한다 (%d회차) : %s", attempt + 1, exc)
+                if attempt + 1 < self._enqueue_attempts:
+                    self._sleep(self._enqueue_retry_wait_sec * (attempt + 1))
+        raise last if last is not None else RuntimeError("요청을 적재하지 못했다")
+
+    #: Backoff step between store attempts. Short — the socket handler is
+    #: blocked while this runs and Slack's other events wait behind it.
+    _enqueue_retry_wait_sec: ClassVar[float] = 0.2
+
+    def _report_not_accepted(self, ctx: RequestContext) -> None:
+        try:
+            self._reactions.mark_failed(ctx.channel, ctx.ts)
+            self._reply(
+                ctx.channel, ctx.thread_ts,
+                "요청을 접수하지 못했습니다. 다시 불러 주십시오.",
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed notice must not hide the original failure
+            log.warning("접수 실패 안내를 보내지 못했다 : %s", exc)
 
     def _mark_accepted(self, ctx: RequestContext) -> None:
         """One mark, not both: hourglass if it has to wait, eyes if not.
