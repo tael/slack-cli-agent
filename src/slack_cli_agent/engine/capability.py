@@ -58,6 +58,9 @@ class ExecutionRequirements:
     #: Off by default. A default-on relief valve is the same as no enforcement,
     #: since nobody turns it off.
     allow_audited_downgrade: bool = False
+    #: Which policy set this, for the audit record. Empty means nobody did --
+    #: that reads differently from a policy that decided to require nothing.
+    policy: str = ""
 
     def unmet(self, actual: EngineCapabilities) -> tuple[str, ...]:
         """Axes where `actual` is weaker than required, in declaration order."""

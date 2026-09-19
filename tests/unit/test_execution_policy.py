@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from slack_cli_agent.auth.execution_policy import ExecutionPolicy
+from slack_cli_agent.auth.execution_policy import NO_TOOLS_POLICY, ExecutionPolicy
 from slack_cli_agent.config.channel import (
     TOOL_ENFORCEMENT_AUDITED,
     TOOL_ENFORCEMENT_STRICT,
@@ -58,6 +58,30 @@ class Test도구_목록이_비면_요구가_없다:
             config=채널(tool_enforcement=TOOL_ENFORCEMENT_STRICT), allowed_tools=()
         )
         assert 요구.tool_restriction is None
+
+
+class Test정책_이름을_남긴다:
+    """감사 기록에서 '이 정책이 요구를 세웠다' 와 '아무도 안 세웠다' 가
+    구분돼야 한다 (sca-98k 3/3)."""
+
+    def test_감사_완화는_audited_로_남는다(self) -> None:
+        요구 = ExecutionPolicy().requirements_for(config=None, allowed_tools=("Read",))
+        assert 요구.policy == TOOL_ENFORCEMENT_AUDITED
+
+    def test_강제_채널은_strict_로_남는다(self) -> None:
+        요구 = ExecutionPolicy().requirements_for(
+            config=채널(tool_enforcement=TOOL_ENFORCEMENT_STRICT), allowed_tools=("Read",)
+        )
+        assert 요구.policy == TOOL_ENFORCEMENT_STRICT
+
+    def test_도구가_없어_요구를_안_세운_것도_이름이_있다(self) -> None:
+        요구 = ExecutionPolicy().requirements_for(config=None, allowed_tools=())
+        assert 요구.policy == NO_TOOLS_POLICY
+
+    def test_아무도_안_세운_요구는_이름이_비어_있다(self) -> None:
+        from slack_cli_agent.engine.capability import ExecutionRequirements
+
+        assert ExecutionRequirements().policy == ""
 
 
 class Test설정값_검증:
