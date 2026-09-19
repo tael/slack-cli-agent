@@ -52,9 +52,11 @@ class Database:
             # isolation_level=None disables the driver's implicit transactions,
             # so we can open BEGIN IMMEDIATE ourselves and keep dequeue's
             # select-then-update atomic.
-            # timeout is the same lock wait busy_timeout sets, and it applies
-            # to the connect itself, so the budget has to be known here and not
-            # only after the connection exists (sca-9l1).
+            # The budget has to be read here, not by a caller that already has a
+            # connection: this thread's first DB statement is _enable_wal below,
+            # and it must already be under the budget (sca-9l1). timeout= and
+            # busy_timeout set the same lock wait; both are set from one value so
+            # they can't drift.
             wait_ms = self._busy_timeout_ms()
             conn = sqlite3.connect(self._path, timeout=wait_ms / 1000, isolation_level=None)
             conn.row_factory = sqlite3.Row
@@ -102,12 +104,15 @@ class Database:
         cannot help with."""
         if str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal":
             return
-        for attempt in range(1, self.WAL_ATTEMPTS + 1):
+        # Under a latency budget the retry sleeps alone would outlast it, and
+        # the caller is a socket handler thread holding a pool slot (sca-9l1).
+        attempts = 1 if getattr(self._local, "budget_ms", None) is not None else self.WAL_ATTEMPTS
+        for attempt in range(1, attempts + 1):
             try:
                 conn.execute("PRAGMA journal_mode=WAL")
                 return
             except sqlite3.OperationalError as exc:
-                if attempt == self.WAL_ATTEMPTS:
+                if attempt == attempts:
                     raise
                 log.warning(
                     "WAL 전환이 잠금으로 실패했다. 같은 DB 를 여는 다른 프로세스가 있다 : %s", exc

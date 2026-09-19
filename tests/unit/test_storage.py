@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -272,3 +273,87 @@ class Test잠금대기예산:
             worker.start()
             worker.join()
         assert 측정 == [30_000]
+
+
+class Test예산은_실제_잠금대기를_줄인다:
+    """PRAGMA 값만 보는 시험은 '연결 뒤에 낮추는' 구현도 통과시킨다.
+    실제로 잠긴 DB 에 써 보는 것이 그 둘을 가른다 (sca-9l1)."""
+
+    def test_잠긴_DB_에_쓸_때_예산_안에서_금방_포기한다(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.db"
+        db = Database(path)
+        db.migrate()
+        db.connect().execute("CREATE TABLE t (v INTEGER)")
+
+        잠근쪽 = sqlite3.connect(path, isolation_level=None)
+        잠근쪽.execute("PRAGMA busy_timeout=0")
+        잠근쪽.execute("BEGIN EXCLUSIVE")
+        걸린시간: list[float] = []
+        오류: list[str] = []
+
+        def 새_스레드에서() -> None:
+            시작 = time.monotonic()
+            try:
+                with db.latency_budget(0.2):
+                    db.connect().execute("INSERT INTO t VALUES (1)")
+            except sqlite3.OperationalError as exc:
+                오류.append(str(exc))
+            걸린시간.append(time.monotonic() - 시작)
+
+        worker = threading.Thread(target=새_스레드에서)
+        worker.start()
+        worker.join(timeout=10)
+        잠근쪽.execute("ROLLBACK")
+        잠근쪽.close()
+
+        assert 오류, "잠긴 DB 에 썼는데 오류가 안 났다"
+        assert 걸린시간[0] < 2.0, f"예산을 안 쓰고 기본 대기를 썼다 : {걸린시간[0]:.1f}초"
+
+
+class TestWAL전환은_예산_안에서_재시도를_안_한다:
+    """WAL 전환 재시도는 0.5초와 1초를 쉰다. 접수 스레드가 그것까지 하면
+    예산이 무의미해진다 (sca-9l1)."""
+
+    @staticmethod
+    def 전환이_막힌_DB(tmp_path: Path, 쉰시간: list[float]) -> tuple[Database, sqlite3.Connection]:
+        """DELETE 모드에서 다른 연결이 쓰기 잠금을 쥐면 journal_mode 조회는
+        되고 WAL 전환만 막힌다."""
+        path = tmp_path / "state.db"
+        준비 = sqlite3.connect(path, isolation_level=None)
+        준비.execute("PRAGMA journal_mode=DELETE")
+        준비.execute("CREATE TABLE t (v INTEGER)")
+        준비.close()
+
+        잠근쪽 = sqlite3.connect(path, isolation_level=None)
+        잠근쪽.execute("PRAGMA busy_timeout=0")
+        잠근쪽.execute("BEGIN IMMEDIATE")
+        잠근쪽.execute("INSERT INTO t VALUES (1)")
+        return Database(path, sleep=쉰시간.append), 잠근쪽
+
+    def test_예산_안에서는_한_번만_시도한다(self, tmp_path: Path) -> None:
+        쉰시간: list[float] = []
+        db, 잠근쪽 = self.전환이_막힌_DB(tmp_path, 쉰시간)
+        시험연결 = sqlite3.connect(db.path, isolation_level=None, timeout=0)
+        시험연결.execute("PRAGMA busy_timeout=0")
+        try:
+            with db.latency_budget(0.2), pytest.raises(sqlite3.OperationalError):
+                db._enable_wal(시험연결)
+        finally:
+            잠근쪽.execute("ROLLBACK")
+            잠근쪽.close()
+            시험연결.close()
+        assert 쉰시간 == [], f"예산 안에서 재시도를 쉬었다 : {쉰시간}"
+
+    def test_예산_밖에서는_재시도한다(self, tmp_path: Path) -> None:
+        쉰시간: list[float] = []
+        db, 잠근쪽 = self.전환이_막힌_DB(tmp_path, 쉰시간)
+        시험연결 = sqlite3.connect(db.path, isolation_level=None, timeout=0)
+        시험연결.execute("PRAGMA busy_timeout=0")
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                db._enable_wal(시험연결)
+        finally:
+            잠근쪽.execute("ROLLBACK")
+            잠근쪽.close()
+            시험연결.close()
+        assert len(쉰시간) == Database.WAL_ATTEMPTS - 1
