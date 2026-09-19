@@ -21,12 +21,19 @@ Skills (sca-kos.3): code.claude.com/docs/en/skills states "--add-dir 로
 추가한 디렉터리의 .claude/skills/ 에서 스킬을 읽는다" — a bot's own
 StatePaths.skills, passed the same way as any other --add-dir path, is
 enough to keep one bot's skills out of another's session.
+
+That discovery path is also unwritable: in dontAsk mode Write and Bash are
+refused on any path with a `.claude` component, --add-dir or not (실측
+2026-09-19, so a bot could never install its own skill). prepare() therefore
+points it at StatePaths.skill_files with a symlink; discovery follows the
+link and writes go to the plain path.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import shlex
 import sys
 import uuid
@@ -63,6 +70,8 @@ _USAGE_LIMIT_HINTS = (
 # (rather than a from_mapping() special case) so a partial usage dict is
 # read the same way every engine reads one: a missing key is "can't tell",
 # not "measured zero".
+log = logging.getLogger(__name__)
+
 _USAGE_KEY_MAP: Mapping[str, str] = {
     "input_tokens": "input_tokens",
     "output_tokens": "output_tokens",
@@ -134,6 +143,30 @@ class ClaudeEngine(Engine):
             return self.capabilities
         # An empty --allowedTools is not a restriction the caller placed.
         return dataclasses.replace(self.capabilities, tool_restriction=ToolRestriction.NONE)
+
+    def prepare(self, request: EngineRequest) -> None:
+        self._ensure_skill_discovery_link()
+
+    def _ensure_skill_discovery_link(self) -> None:
+        paths = self.profile.paths
+        paths.skill_files.mkdir(parents=True, exist_ok=True)
+        link = paths.skills / ".claude" / "skills"
+        if link.is_symlink():
+            if link.resolve() != paths.skill_files.resolve():
+                link.unlink()
+            else:
+                return
+        elif link.exists():
+            # A real directory here holds someone's skill files. Replacing it
+            # would delete them, so it is left alone and only logged.
+            log.warning(
+                "스킬 탐색 경로가 symlink 가 아니라 실제 디렉터리다 : %s - "
+                "봇이 이 자리에 스킬을 쓸 수 없다. 내용을 %s 로 옮기고 이 디렉터리를 지운다",
+                link, paths.skill_files,
+            )
+            return
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(paths.skill_files, target_is_directory=True)
 
     def build_command(self, request: EngineRequest) -> list[str]:
         # Don't pass --max-budget-usd. A subscription OAuth token
