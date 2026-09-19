@@ -415,14 +415,12 @@ class TestMessagePublisher:
         pub = make_publisher(
             client, settings, markdown, splitter, verifier, block_builder, audit=audit
         )
-        pub.post("C1", "100.0", "머리말\n| a | b |\n| 1 | 2 |\n꼬리말", rich=True)
+        pub.post("C1", "100.0", "설명\n```python\nprint(1)", rich=True)
         (기록,) = [a for a in audit if a.get("kind") == "split_broken"]
-        assert 기록["problems"] == ["0번 조각 표 열 이름 행 없음"]
+        assert 기록["problems"] == ["0번 조각 코드블록 펜스 짝 안 맞음"]
         (근거,) = 기록["evidence"]
-        # 게시 전에 separate_tables 가 표 앞에 빈 줄을 넣는다. 번호는 실제로
-        # 점검한 조각 기준이라 원문 줄 번호와 하나 어긋난다
-        assert 근거["line_no"] == 3
-        assert "| a | b |" in 근거["excerpt"]
+        assert 근거["line_no"] == 2
+        assert "```python" in 근거["excerpt"]
 
     def test_조각_전송_중_실패하면_부분전달_안내를_붙이고_예외를_낸다(
         self, settings, markdown, splitter, verifier, block_builder
