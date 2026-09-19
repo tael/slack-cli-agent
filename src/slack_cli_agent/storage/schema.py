@@ -186,6 +186,18 @@ hold Slack conversations or file contents, so it stays out of logs and audit.
 """
 
 
+V8_JOB_LEASE_SQL = """
+ALTER TABLE jobs ADD COLUMN lease TEXT NOT NULL DEFAULT '';
+"""
+"""Identifies one claim of one job.
+
+Fencing on (id, attempts) only held within a row's lifetime: jobs.id is the
+rowid and gets reused after a purge, and attempts restarts at 0 there, so a
+long-lived worker could close a different job that happened to land on the
+same pair (sca-b0y). The lease is generated per claim and never repeats.
+"""
+
+
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
@@ -194,6 +206,7 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (5, "감시 작업에 실행 자리와 결과 파일 이름 추가", _statements(V5_WATCH_JOB_RUN_SQL)),
     (6, "메시지당 활성 감시를 하나로 제한", _statements(V6_WATCH_JOB_ACTIVE_UNIQUE_SQL)),
     (7, "감시 완료 보고의 미발송분 보관", _statements(V7_WATCH_JOB_PENDING_REPORT_SQL)),
+    (8, "작업 점유마다 고유한 표를 둔다", _statements(V8_JOB_LEASE_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
