@@ -1218,6 +1218,29 @@ class TestFallbackEngine:
         )
         return fallback, primary, secondary, switcher
 
+    def test_실제_codex_실패_출력으로도_전환된다(self, tmp_path: Path) -> None:
+        """대역이 detect_auth_failure 를 통째로 바꿔 끼면, 실제 문구 판정과
+        전환이 이어지는지는 아무 시험도 안 본다 (리뷰 지적 2026-09-19).
+        여기서는 codex 가 실제로 내는 stderr 를 parse 에 먹여 그 결과로
+        전환까지 가는지 본다."""
+        codex = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        실패 = codex.parse(
+            stdout="",
+            stderr="ERROR codex_login::auth::manager: Failed to refresh token: "
+                   '401 Unauthorized: {"code": "refresh_token_invalidated"}',
+            returncode=1,
+        )
+        probe_ok = EngineResponse(ok=True, body="OK", session_id=None, model_actual=None,
+                                  elapsed=0, turns=None, usage=None)
+        fallback, primary, _secondary, switcher = self._fallback(
+            tmp_path, primary_response=실패, secondary_response=probe_ok)
+        primary.detect_auth_failure = codex.detect_auth_failure  # type: ignore[method-assign]
+
+        resp = fallback.run(request())
+
+        assert switcher.reason() == EngineSwitcher.AUTH_FAILURE
+        assert resp.user_facing is True
+
     def test_1차_로그인이_풀리면_전환_상태를_남긴다(self, tmp_path: Path) -> None:
         """한도가 아니어도 1차가 당분간 아무 요청도 못 받는 상태면 전환한다.
         전환 계기가 없어서 codex 로그인 만료 때 2차로 안 넘어갔다.
