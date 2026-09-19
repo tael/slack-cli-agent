@@ -1082,6 +1082,7 @@ class Application:
                 router=self._admin_router(),
                 context_builder=self._admin_context,
                 reply=self._reply,
+                markers=self.reactions(),
             )
         return self._admin
 
