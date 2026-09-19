@@ -112,8 +112,10 @@ class ChannelConfig:
         """Refuses an unknown value instead of falling back. A typo in `strict`
         would otherwise read as the permissive default and drop enforcement
         without a word (sca-98k)."""
-        level = str(data.get("tool_enforcement") or TOOL_ENFORCEMENT_AUDITED)
-        if level not in TOOL_ENFORCEMENT_LEVELS:
+        if "tool_enforcement" not in data:
+            return TOOL_ENFORCEMENT_AUDITED
+        level = data["tool_enforcement"]
+        if not isinstance(level, str) or level not in TOOL_ENFORCEMENT_LEVELS:
             known = ", ".join(TOOL_ENFORCEMENT_LEVELS)
             raise ConfigError(f"채널 {channel_id} 의 tool_enforcement 값이 잘못됐다 : {level} (가능한 값: {known})")
         return level

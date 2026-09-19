@@ -85,10 +85,12 @@ class Test정책_이름을_남긴다:
 
 
 class Test설정값_검증:
-    def test_모르는_값은_적재에서_막는다(self) -> None:
-        """조용히 기본값으로 떨어지면 strict 오타가 강제 해제가 된다."""
+    @pytest.mark.parametrize("값", ["strinct", "", None, False, 0, ["strict"]])
+    def test_키가_있는데_값이_잘못되면_막는다(self, 값: object) -> None:
+        """조용히 기본값으로 떨어지면 strict 채널을 잘못 편집했을 때 차단이
+        아니라 완화 실행이 된다. 빈 문자열과 null 도 오편집이다."""
         with pytest.raises(ConfigError):
-            ChannelConfig.from_dict("C1", {"tool_enforcement": "strinct"})
+            ChannelConfig.from_dict("C1", {"tool_enforcement": 값})
 
     def test_설정이_없으면_기본은_audited_다(self) -> None:
         assert ChannelConfig.from_dict("C1", {}).tool_enforcement == TOOL_ENFORCEMENT_AUDITED
