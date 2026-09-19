@@ -27,3 +27,13 @@ class DeduplicationTracker:
                 self._seen.clear()
             self._seen.add(key)
             return False
+
+    def forget_event(self, channel: str, ts: str) -> None:
+        """Undoes the record so Slack's redelivery is allowed through.
+
+        Slack ACKs the socket event before the handler runs, so a request the
+        ingress failed to store is only recoverable if the redelivery isn't
+        suppressed here (sca-if6).
+        """
+        with self._lock:
+            self._seen.discard((channel, ts))

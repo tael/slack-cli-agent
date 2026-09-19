@@ -57,11 +57,14 @@ class FakeJobQueue:
         *,
         enqueue_result: bool = True,
         raise_on_enqueue: bool = False,
+        fail_times: int = 0,
         blocked: bool = False,
     ) -> None:
         self.enqueued: list[RequestContext] = []
         self._enqueue_result = enqueue_result
         self._raise_on_enqueue = raise_on_enqueue
+        # 앞의 몇 번만 실패하는 저장소. 재전달이 살아나는지 보는 데 쓴다.
+        self._fail_times = fail_times
         # 같은 스레드에 먼저 들어온 미완료 작업이 있는 상태를 흉내낸다.
         self._blocked = blocked
         # 등록 때 함께 넘어온 재시도 상한. 접수가 이 값을 안 넘기면
@@ -69,6 +72,9 @@ class FakeJobQueue:
         self.enqueue_limits: list[int] = []
 
     def enqueue(self, ctx: RequestContext, max_attempts: int = 0) -> bool:
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise RuntimeError("큐 저장소 장애")
         if self._raise_on_enqueue:
             raise RuntimeError("큐 저장소 장애")
         self.enqueued.append(ctx)
@@ -466,6 +472,52 @@ class TestResilience:
         ingress2 = make_ingress(listener=listener, queue=queue2, admin_router=admin_router, tmp_path=tmp_path)
         ingress2.handle_app_mention(mention_event(ts="2.0"))
         assert len(queue2.enqueued) == 1
+
+
+class Test적재가_실패한_요청:
+    """슬랙 Socket Mode 는 이벤트를 먼저 ACK 한다. 적재가 실패하면 그 요청을
+    되살릴 곳은 슬랙의 재전달뿐인데, 중복 표식이 먼저 남으면 그것도 막힌다."""
+
+    def test_적재가_실패하면_같은_이벤트를_다시_받아_처리한다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        queue = FakeJobQueue(fail_times=1)
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path
+        )
+
+        ingress.handle_app_mention(mention_event(ts="1.0"))
+        assert queue.enqueued == []
+
+        ingress.handle_app_mention(mention_event(ts="1.0"))
+        assert len(queue.enqueued) == 1
+
+    def test_적재에_성공하면_재전달을_계속_막는다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        queue = FakeJobQueue()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path
+        )
+
+        ingress.handle_app_mention(mention_event(ts="1.0"))
+        ingress.handle_app_mention(mention_event(ts="1.0"))
+
+        assert len(queue.enqueued) == 1
+
+    def test_이미_큐에_있어_False가_와도_재전달을_막는다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """False 는 장애가 아니라 이미 들어가 있다는 뜻이다. 되살릴 것이 없다."""
+        queue = FakeJobQueue(enqueue_result=False)
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path
+        )
+
+        ingress.handle_app_mention(mention_event(ts="1.0"))
+        ingress.handle_app_mention(mention_event(ts="1.0"))
+
+        assert len(queue.enqueued) == 1
 
 
 class TestAttachments:
