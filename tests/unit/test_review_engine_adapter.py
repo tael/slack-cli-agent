@@ -27,6 +27,7 @@ from slack_cli_agent.engine.base import (
     EngineResponse,
     UsageLimit,
 )
+from slack_cli_agent.engine.capability import ToolRestriction
 from slack_cli_agent.engine.runner import DirectInvoker, EngineInvoker, EngineRunner
 from slack_cli_agent.review.base import EngineCaller
 from slack_cli_agent.review.engine_adapter import ReviewEngineCaller
@@ -132,6 +133,20 @@ class TestEngineRequest조립:
         assert request.workdir == Path("/code")
         assert request.readable_dirs == (Path("/persona"),)
         assert request.allowed_tools == ("Read",)
+
+    def test_도구를_준_요청에는_실행_보장_요구가_붙는다(self) -> None:
+        """요구를 세우는 자리가 파이프라인만이면 이 경로의 도구 권한은 아무도
+        강제하지 않는다 (sca-98k)."""
+        caller, invoker = make_caller()
+        caller.run("프롬프트", None, False)
+        요구 = invoker.calls[0].requirements
+        assert 요구.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+        assert 요구.allow_audited_downgrade is True
+
+    def test_도구가_없으면_요구도_없다(self) -> None:
+        caller, invoker = make_caller(allowed_tools=())
+        caller.run("프롬프트", None, False)
+        assert invoker.calls[0].requirements.tool_restriction is None
 
     def test_resume_True로부르면_EngineRequest_resume도_True다(self) -> None:
         caller, invoker = make_caller()
