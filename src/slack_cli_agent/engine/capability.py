@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -48,6 +49,12 @@ class EngineCapabilities:
     instruction_boundary: InstructionBoundary = InstructionBoundary.UNAVAILABLE
 
 
+#: Axis names, as the dataclass fields spell them. Here rather than in the
+#: runner so a caller can name an axis without importing the run path.
+TOOL_AXIS = "tool_restriction"
+ISOLATION_AXIS = "execution_isolation"
+BOUNDARY_AXIS = "instruction_boundary"
+
 @dataclass(frozen=True)
 class ExecutionRequirements:
     """What this request needs. None on an axis means it has no requirement there."""
@@ -55,12 +62,23 @@ class ExecutionRequirements:
     tool_restriction: ToolRestriction | None = None
     execution_isolation: ExecutionIsolation | None = None
     instruction_boundary: InstructionBoundary | None = None
-    #: Off by default. A default-on relief valve is the same as no enforcement,
-    #: since nobody turns it off.
-    allow_audited_downgrade: bool = False
+    #: Axes the caller will give up if the engine can't hold them, provided the
+    #: downgrade is recorded. Per axis rather than one flag: a tool-only setting
+    #: must not also lower isolation, which is a separate guarantee (sca-igu).
+    #: Empty by default -- a default-on relief valve is the same as no
+    #: enforcement, since nobody turns it off.
+    downgradable_axes: frozenset[str] = frozenset()
     #: Which policy set this, for the audit record. Empty means nobody did --
     #: that reads differently from a policy that decided to require nothing.
     policy: str = ""
+
+    def downgraded(self, unmet: Sequence[str]) -> tuple[str, ...]:
+        """Axes actually given up. Empty when any unmet axis is outside
+        `downgradable_axes`: one axis the caller insisted on blocks the run,
+        and then nothing is relieved."""
+        if not unmet or any(axis not in self.downgradable_axes for axis in unmet):
+            return ()
+        return tuple(unmet)
 
     def unmet(self, actual: EngineCapabilities) -> tuple[str, ...]:
         """Axes where `actual` is weaker than required, in declaration order."""

@@ -27,13 +27,13 @@ class Test기본은_감사_완화다:
         """기본이 STRICT 면 codex·gemini 봇의 모든 요청이 실행 전에 막힌다."""
         요구 = ExecutionPolicy().requirements_for(config=None, allowed_tools=("Read",))
         assert 요구.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
-        assert 요구.allow_audited_downgrade is True
+        assert 요구.downgradable_axes == frozenset({"tool_restriction"})
 
     def test_audited_채널도_같다(self) -> None:
         요구 = ExecutionPolicy().requirements_for(
             config=채널(tool_enforcement=TOOL_ENFORCEMENT_AUDITED), allowed_tools=("Read",)
         )
-        assert 요구.allow_audited_downgrade is True
+        assert 요구.downgradable_axes == frozenset({"tool_restriction"})
 
 
 class Test강제_채널:
@@ -42,7 +42,7 @@ class Test강제_채널:
             config=채널(tool_enforcement=TOOL_ENFORCEMENT_STRICT), allowed_tools=("Read",)
         )
         assert 요구.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
-        assert 요구.allow_audited_downgrade is False
+        assert 요구.downgradable_axes == frozenset()
 
 
 class Test도구_목록이_비면_요구가_없다:
@@ -51,7 +51,7 @@ class Test도구_목록이_비면_요구가_없다:
         여기서 요구를 세우면 지킬 것이 없는데 엔진만 막힌다."""
         요구 = ExecutionPolicy().requirements_for(config=None, allowed_tools=())
         assert 요구.tool_restriction is None
-        assert 요구.allow_audited_downgrade is False
+        assert 요구.downgradable_axes == frozenset()
 
     def test_strict_채널이어도_빈_목록은_요구가_없다(self) -> None:
         요구 = ExecutionPolicy().requirements_for(
