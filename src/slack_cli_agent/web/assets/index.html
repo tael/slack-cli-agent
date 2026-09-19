@@ -488,6 +488,12 @@ function renderStateTab(d){
              : ((d.queue_wait||{}).queued_events
                  ? `근사치 · p90 ${dur((d.queue_wait||{}).p90_sec)} · 매칭 ${num((d.queue_wait||{}).matched_pct)}%`
                  : "대기줄에 들어간 요청이 이 기간에 없다"))}
+    ${(d.payload||{}).count
+        ? tile("지침 크기 중위", `${num(Math.round((d.payload||{}).instruction_bytes_median||0))}B`,
+               `최대 ${num((d.payload||{}).instruction_bytes_max)}B · 재개에 다시 실린 턴 ` +
+               `${num((d.payload||{}).replayed_count)}건 · 그 합계 ` +
+               `${num((d.payload||{}).replayed_instruction_bytes_total)}B`)
+        : tile("지침 크기 중위", nil, "전송량 기록이 이 기간에 없다")}
     ${fr.count
         ? tile("첫 반응까지", dur(fr.median_sec),
                `p90 ${dur(fr.p90_sec)} · 표본 ${fr.count}건 (전체의 ${fr.sample_pct}%)`)

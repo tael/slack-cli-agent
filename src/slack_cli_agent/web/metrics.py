@@ -32,6 +32,7 @@ from ..engine.registry import registry_for_profile
 from ..jobs.ports import JobStatus
 from ..observability.audit import (
     BASELINE_KIND_VALUES,
+    PAYLOAD_KIND,
     REQUEST_KIND,
     IncidentKind,
     normalize_kind,
@@ -184,7 +185,7 @@ class MetricsCollector:
         cutoff = now - days * 86400
 
         snapshot = read_snapshot(paths.state_snapshot, now, snapshot_stale_after(self._profile))
-        requests, incident_counts = self._read_requests(db, cutoff)
+        requests, incident_counts, payload_rows = self._read_requests(db, cutoff)
         first_seen = self._kind_first_seen_map(db)
         field_first_seen = self._usage_field_first_seen(db)
         reviews = self._read_reviews(db)
@@ -208,6 +209,7 @@ class MetricsCollector:
             "followup": self._followup(requests),
             "tools": {"available": False, "reason": NOT_APPLICABLE_REASONS["tools"]},
             "queue_wait": self._queue_wait(requests),
+            "payload": self._payload(payload_rows),
             "usage_block": self._usage_block(),
             "session_total": len(sessions),
         }
@@ -216,7 +218,7 @@ class MetricsCollector:
 
     def _read_requests(
         self, db: Database, cutoff: float
-    ) -> tuple[list[dict[str, Any]], collections.Counter[str]]:
+    ) -> tuple[list[dict[str, Any]], collections.Counter[str], list[dict[str, Any]]]:
         """Reads every audit row in the window once and splits it by kind.
 
         Request-kind rows go through the same payload parsing as before;
@@ -232,8 +234,19 @@ class MetricsCollector:
         ).fetchall()
         out: list[dict[str, Any]] = []
         incidents: collections.Counter[str] = collections.Counter()
+        payloads: list[dict[str, Any]] = []
         for row in rows:
             kind = normalize_kind(row["kind"])
+            if kind == PAYLOAD_KIND:
+                # Parsed rather than only tallied: the sizes are the point of
+                # this kind, and a count alone answers nothing (sca-ygd).
+                try:
+                    사이즈 = json.loads(row["payload"])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(사이즈, dict):
+                    payloads.append(사이즈)
+                continue
             if kind != REQUEST_KIND:
                 if kind not in BASELINE_KIND_VALUES:
                     incidents[kind] += 1
@@ -250,7 +263,7 @@ class MetricsCollector:
             record["at"] = row["at"]
             record["ts_kst"] = _kst(row["at"])
             out.append(record)
-        return out, incidents
+        return out, incidents, payloads
 
     def _kind_first_seen_map(self, db: Database) -> dict[str, float]:
         """Earliest `at` ever recorded for each kind, unbounded by the
@@ -582,6 +595,47 @@ class MetricsCollector:
             "same_user_repeat": None,
             "rate_pct": None,
             "rate_of_multi_pct": None,
+        }
+
+    def _payload(self, rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        """How much text each engine call carried, and how much of it was paid
+        again on a resumed turn.
+
+        replayed_instruction_bytes_total is what sca-ygd is about: with the
+        instructions folded into the prompt, every resume pays for them again,
+        and that sum is what a cap would have to act on.
+        """
+        by_engine: collections.Counter[str] = collections.Counter()
+        by_transport: collections.Counter[str] = collections.Counter()
+        instruction: list[float] = []
+        total: list[float] = []
+        replayed = 0
+        replayed_bytes = 0
+        for row in rows:
+            by_engine[str(row.get("engine") or "")] += 1
+            by_transport[str(row.get("instruction_transport") or "")] += 1
+            바이트 = row.get("instruction_bytes")
+            if isinstance(바이트, (int, float)):
+                instruction.append(float(바이트))
+                if row.get("instruction_replayed_on_resume") is True:
+                    replayed_bytes += int(바이트)
+            if isinstance(row.get("total_bytes"), (int, float)):
+                total.append(float(row["total_bytes"]))
+            if row.get("instruction_replayed_on_resume") is True:
+                replayed += 1
+        instruction.sort()
+        total.sort()
+        return {
+            "count": len(rows),
+            "by_engine": dict(by_engine),
+            "by_transport": dict(by_transport),
+            "replayed_count": replayed,
+            "replayed_instruction_bytes_total": replayed_bytes,
+            "instruction_bytes_median": _quantile(instruction, 0.5),
+            "instruction_bytes_p95": _quantile(instruction, 0.95),
+            "instruction_bytes_max": int(instruction[-1]) if instruction else None,
+            "total_bytes_median": _quantile(total, 0.5),
+            "total_bytes_max": int(total[-1]) if total else None,
         }
 
     def _queue_wait(self, requests: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
