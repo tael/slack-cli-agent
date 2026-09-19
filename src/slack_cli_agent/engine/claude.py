@@ -129,6 +129,9 @@ def _claude_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, A
 class ClaudeEngine(Engine):
     name = "claude"
 
+    #: ccusage reads Claude Code's session records, which is exactly this engine.
+    ccusage_reports_consumption = True
+
     # --allowedTools overrides settings.json's allow rules, and the system prompt
     # is its own flag. There is no filesystem sandbox: read-only is held by the
     # tool list, which is the tool axis rather than this one.

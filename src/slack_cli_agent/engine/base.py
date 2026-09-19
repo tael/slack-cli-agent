@@ -330,6 +330,13 @@ class Engine(ABC):
     #: call twice (sca-8ks).
     streams_progress: ClassVar[bool] = False
 
+    #: True when ccusage reports this engine's consumption. It reads Claude
+    #: Code's own session records, so for any other engine its numbers belong
+    #: to something else entirely and must not be shown as the bot's (sca-cs0).
+    #: Declared here rather than branched on the engine name at each reader, so
+    #: a new engine answers the question once.
+    ccusage_reports_consumption: ClassVar[bool] = False
+
     def __init__(self, profile: Profile, settings: RuntimeSettings) -> None:
         self.profile = profile
         self.settings = settings
