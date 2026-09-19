@@ -114,6 +114,7 @@ _SANDBOX_ISOLATION = {
 
 class CodexEngine(Engine):
     name = "codex"
+    shell_always_attached = True
 
     # developer_instructions is a separate field from the prompt. Isolation is
     # whatever options.sandbox says, which the default (danger-full-access)
@@ -163,6 +164,15 @@ class CodexEngine(Engine):
             instruction_replayed_on_resume=True,
         )
 
+    def blocks_outbound_writes(self, request: EngineRequest) -> bool:
+        if not super().blocks_outbound_writes(request):
+            return False
+        # sandbox_workspace_write.network_access only lifts the workspace-write
+        # sandbox; read-only stays closed whatever the profile asks for.
+        if self.capabilities_for(request).execution_isolation is ExecutionIsolation.WORKSPACE_WRITE:
+            return not self.spec.options.get("network")
+        return True
+
     def build_command(self, request: EngineRequest) -> list[str]:
         binary = str(self.spec.binary)
         # The bot is meant to read and write freely; a profile can still narrow
@@ -197,7 +207,7 @@ class CodexEngine(Engine):
         whole when there are no instructions to open the session with."""
         if not request.system_prompt:
             return ""
-        return self.readable_paths_note(request.readable_dirs)
+        return self.readable_paths_note(request.readable_dirs) + self.write_paths_note(request)
 
     def _turn_ban_prefix(self, request: EngineRequest) -> str:
         """The tool ban on a first turn.
@@ -227,6 +237,7 @@ class CodexEngine(Engine):
         return (
             request.system_prompt
             + self.readable_paths_note(request.readable_dirs)
+            + self.write_paths_note(request)
             + self.tool_ban_note(request)
             + UNTRUSTED_INPUT_MARK
             + request.prompt

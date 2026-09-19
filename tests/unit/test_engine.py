@@ -42,13 +42,20 @@ from slack_cli_agent.engine.tool_selection import ToolSelection
 SETTINGS = RuntimeSettings()
 
 
-def profile_with(primary: dict, fallback: dict | None = None, tmp_path: Path | None = None) -> Profile:
+def profile_with(
+    primary: dict,
+    fallback: dict | None = None,
+    tmp_path: Path | None = None,
+    mcp_servers: dict[str, Any] | None = None,
+) -> Profile:
     data: dict[str, Any] = {
         "name": "example",
         "primary_engine": primary,
         "owner_user_id": "U1",
         "troubleshoot_channel": "C1",
     }
+    if mcp_servers:
+        data["mcp_servers"] = mcp_servers
     if fallback:
         data["fallback_engine"] = fallback
     if tmp_path is not None:
@@ -1968,3 +1975,135 @@ class Test요청_모델도_실행기가_찍는다:
         runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
         resp = runner.run(engine, request(model="claude-opus-5"))
         assert resp.model_asked == "claude-opus-5"
+
+
+class Test셸이_붙는_엔진에_바깥_쓰기_수단을_알려_준다:
+    """codex 와 gemini 는 셸이 늘 붙어 있어 모델이 curl 로 무엇이든 된다고
+    보고 답한다. 샌드박스가 쓰기를 막으면 이름 해석에서 끊겨 '등록 실패' 만
+    남는다. claude 는 도구 목록 자체가 권한이라 이 문제가 없다.
+    원본 bot.py:1571 write_paths_note 대조 (sca-w415).
+    """
+
+    def _codex(self, tmp_path: Path, **options: Any) -> CodexEngine:
+        return CodexEngine(
+            profile_with(
+                {"type": "codex", "binary": "codex", "model": "gpt-5", "options": options},
+                tmp_path=tmp_path,
+            ),
+            SETTINGS,
+        )
+
+    def test_클로드는_안_붙인다(self, tmp_path: Path) -> None:
+        """도구 목록이 곧 권한이라 없는 일을 시도하지 않는다."""
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        assert engine.write_paths_note(request()) == ""
+
+    def test_샌드박스가_쓰기를_막으면_붙인다(self, tmp_path: Path) -> None:
+        note = self._codex(tmp_path, sandbox="read-only").write_paths_note(request())
+        assert "셸" in note and "curl" in note
+
+    def test_샌드박스가_안_막으면_안_붙인다(self, tmp_path: Path) -> None:
+        """막힌 적이 없는데 막혔다고 적으면 할 수 있는 일을 안 한다."""
+        assert self._codex(tmp_path, sandbox="danger-full-access").write_paths_note(request()) == ""
+
+    def test_이번_턴에_허용된_도구를_적는다(self, tmp_path: Path) -> None:
+        note = self._codex(tmp_path, sandbox="read-only").write_paths_note(
+            request(tools=ToolSelection.allow(["mcp__x__post", "Read"]))
+        )
+        assert "mcp__x__post" in note
+
+    def test_도구가_없으면_없다고_적는다(self, tmp_path: Path) -> None:
+        note = self._codex(tmp_path, sandbox="read-only").write_paths_note(
+            request(tools=ToolSelection.forbid_all())
+        )
+        assert "없다" in note
+
+    def test_제한이_없으면_붙은_서버를_적는다(self, tmp_path: Path) -> None:
+        """이름을 코드에 박지 않는다. 프로필이 무엇을 붙였는지에서 뽑는다."""
+        profile = profile_with(
+            {"type": "codex", "binary": "codex", "model": "gpt-5",
+             "options": {"sandbox": "read-only"}},
+            tmp_path=tmp_path,
+            mcp_servers={"jira": {"command": "jira-mcp"}},
+        )
+        note = CodexEngine(profile, SETTINGS).write_paths_note(
+            request(tools=ToolSelection.unrestricted())
+        )
+        assert "jira" in note
+
+    def test_약속과_실행이_어긋나지_않게_못박는다(self, tmp_path: Path) -> None:
+        note = self._codex(tmp_path, sandbox="read-only").write_paths_note(request())
+        assert "도구 응답" in note
+
+    def test_제미나이는_격리가_없어_안_붙인다(self, tmp_path: Path) -> None:
+        """agy 는 --sandbox 를 안 쓰고 --dangerously-skip-permissions 로만 돈다
+        (gemini.py:183, docs/agy-실측.md). 프로필에 sandbox 를 적어도 명령에
+        안 실리므로 막혔다고 안내하면 거짓이다 (코덱스 리뷰)."""
+        engine = GeminiEngine(gemini_profile(tmp_path, options={"sandbox": "read-only"}), SETTINGS)
+        assert engine.write_paths_note(request()) == ""
+
+    def test_제미나이_조립에도_같은_문장이_실린다(self, tmp_path: Path) -> None:
+        """격리가 켜지는 날 문장이 두 벌로 갈리지 않게 한다."""
+
+        class 격리된제미나이(GeminiEngine):
+            def blocks_outbound_writes(self, request: EngineRequest) -> bool:
+                return True
+
+        engine = 격리된제미나이(gemini_profile(tmp_path), SETTINGS)
+        assert "curl" in " ".join(engine.build_command(request()))
+        assert engine.write_paths_note(request()) == self._codex(
+            tmp_path, sandbox="read-only"
+        ).write_paths_note(request())
+
+    def test_네트워크가_열려_있으면_안_붙인다(self, tmp_path: Path) -> None:
+        """workspace-write 는 프로필이 network 를 열면 바깥으로 나간다
+        (codex.py:176). 막혔다고 적으면 되는 일을 안 한다 (코덱스 리뷰)."""
+        engine = self._codex(tmp_path, sandbox="workspace-write", network=True)
+        assert engine.write_paths_note(request()) == ""
+
+    def test_workspace_write_는_기본으로_막힌다(self, tmp_path: Path) -> None:
+        engine = self._codex(tmp_path, sandbox="workspace-write")
+        assert "curl" in engine.write_paths_note(request())
+
+    def test_읽기전용은_network_를_열어도_막힌다(self, tmp_path: Path) -> None:
+        """network_access 키는 workspace-write 샌드박스에만 걸린다."""
+        engine = self._codex(tmp_path, sandbox="read-only", network=True)
+        assert "curl" in engine.write_paths_note(request())
+
+    def test_꺼진_서버는_목록에_없다(self, tmp_path: Path) -> None:
+        profile = profile_with(
+            {"type": "codex", "binary": "codex", "model": "gpt-5",
+             "options": {"sandbox": "read-only"}},
+            tmp_path=tmp_path,
+            mcp_servers={"jira": {"command": "jira-mcp"},
+                         "old": {"command": "old-mcp", "disabled": True}},
+        )
+        note = CodexEngine(profile, SETTINGS).write_paths_note(
+            request(tools=ToolSelection.unrestricted())
+        )
+        assert "jira" in note and "old" not in note
+
+    def test_이어가는_턴에도_실린다(self, tmp_path: Path) -> None:
+        """codex 는 resume 에서 developer_instructions 를 못 바꿔 지침이
+        프롬프트로 간다. 거기에 노트가 빠져 스레드 두 번째 메시지부터
+        안내가 사라졌다."""
+        engine = self._codex(tmp_path, sandbox="read-only")
+        cmd = engine.build_command(request(resume=True, session_id="S1"))
+        assert "curl" in cmd[-1]
+
+    def test_이어가는_턴의_바이트가_footprint_에_잡힌다(self, tmp_path: Path) -> None:
+        """실제로 보내는데 안 세면 예산이 실제보다 작게 나온다 (코덱스 리뷰)."""
+        요청 = request(resume=True, session_id="S1")
+        막힌쪽 = self._codex(tmp_path, sandbox="read-only")
+        열린쪽 = self._codex(tmp_path, sandbox="danger-full-access")
+        차이 = (
+            막힌쪽.footprint_for(요청).adapter_added_bytes
+            - 열린쪽.footprint_for(요청).adapter_added_bytes
+        )
+        assert 차이 == len(막힌쪽.write_paths_note(요청).encode())
+
+    def test_시스템_지침에_실린다(self, tmp_path: Path) -> None:
+        """만든 것과 프롬프트에 실은 것은 다르다."""
+        engine = self._codex(tmp_path, sandbox="read-only")
+        붙은것 = engine._session_path_note(request())
+        assert "curl" in 붙은것

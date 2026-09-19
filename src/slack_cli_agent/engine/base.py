@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..auth.principal import TrustLevel
 from ..core.errors import ConfigError
-from .capability import EngineCapabilities, ExecutionRequirements
+from .capability import EngineCapabilities, ExecutionIsolation, ExecutionRequirements
 from .environment import EngineEnvironmentPolicy, create_environment_policy
 from .footprint import (
     INSTRUCTION_TRANSPORT_NATIVE,
@@ -515,6 +515,70 @@ class Engine(ABC):
         """How to announce readable paths, for engines that don't take it as an argument. Default: empty."""
         return ""
 
+    #: Whether a shell is attached to every turn regardless of the tool list.
+    #: With one, the model answers as if curl could reach anything; the
+    #: sandbox then stops it at name resolution and all that is left is a
+    #: failure. An engine whose tool list is the permission does not need the
+    #: note -- it does not attempt what it was not given (sca-w415).
+    shell_always_attached: ClassVar[bool] = False
+
+    def blocks_outbound_writes(self, request: EngineRequest) -> bool:
+        """Whether the shell on this turn cannot reach outside.
+
+        Read from the isolation the engine declares for the turn, not from
+        the profile's sandbox value: an engine that never passes that value
+        to its CLI would otherwise be told it is confined when it is not
+        (gemini does exactly that -- codex review).
+        """
+        return self.capabilities_for(request).execution_isolation is not ExecutionIsolation.NONE
+
+    def write_paths_note(self, request: EngineRequest) -> str:
+        """Which tools this turn can actually leave something outside with.
+
+        The original spells this out for the same reason (bot.py:1571): on
+        2026-09-11 it answered that it had filed a ticket, the shell call was
+        cut off, and only "등록 실패" remained. Names are taken from the
+        request and the profile, never written here -- they belong to the
+        installation, not the package.
+        """
+        if not self.shell_always_attached or not self.blocks_outbound_writes(request):
+            return ""
+        lines = [
+            "\n\n# 바깥에 쓸 수 있는 수단\n",
+            "샌드박스가 바깥 쓰기를 막아 셸에서 밖으로 나가지 못한다.",
+            "curl, git push, 스크립트의 API 호출은 이름 해석 단계에서 끊긴다.",
+            "셸 스크립트 경로로 바깥에 남기려 하지 않는다.",
+            "바깥에 남기는 일은 이번 턴에 붙은 아래 도구로만 한다.\n",
+        ]
+        lines += [f"- {수단}" for 수단 in self._outbound_means(request)] or [
+            "- 없다. 이 턴에는 도구가 붙지 않았다."
+        ]
+        lines += [
+            "",
+            "읽기 전용 도구도 섞여 있다. 쓰는 도구가 없으면 없는 것이다.",
+            "목록에 없는 일은 하겠다고 답하지 않는다.",
+            "먼저 수단이 없다고 말하고, 대신 본문 초안을 답변에 싣는다.",
+            "남겼다고 쓰는 것은 도구 응답이 온 뒤에만 한다.",
+        ]
+        return "\n".join(lines) + "\n"
+
+    def _outbound_means(self, request: EngineRequest) -> list[str]:
+        """What this turn was actually given, in the order the caller narrowed
+        it: an explicit allowlist first, then whatever servers are attached.
+
+        Whether a given tool writes anywhere is not knowable from its name, so
+        this lists what is attached and the note says so (codex review).
+        """
+        if request.tools.access is ToolAccess.FORBIDDEN:
+            return []
+        if request.tools.access is ToolAccess.ALLOWLIST:
+            return list(request.tools.names)
+        return [
+            f"{server.name} 서버의 도구"
+            for server in self.profile.mcp_servers.values()
+            if not server.disabled
+        ]
+
     def footprint_for(self, request: EngineRequest) -> PayloadFootprint:
         """What this call puts on the wire, in bytes and by transport.
 
@@ -529,7 +593,9 @@ class Engine(ABC):
             instruction_bytes=utf8_bytes(request.system_prompt),
             user_prompt_bytes=utf8_bytes(request.prompt),
             adapter_added_bytes=utf8_bytes(
-                self.readable_paths_note(request.readable_dirs) + self.tool_ban_note(request)
+                self.readable_paths_note(request.readable_dirs)
+                + self.write_paths_note(request)
+                + self.tool_ban_note(request)
             ),
             instruction_transport=INSTRUCTION_TRANSPORT_NATIVE,
             instruction_replayed_on_resume=False,
