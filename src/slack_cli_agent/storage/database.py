@@ -30,6 +30,11 @@ class Database:
     WAL_ATTEMPTS: int = 3
     WAL_RETRY_SEC: float = 0.5
 
+    #: Lock wait for everything that is not on a latency-sensitive path. Long
+    #: on purpose -- a boot that collides with another process should wait
+    #: rather than fail.
+    DEFAULT_BUSY_TIMEOUT_MS: int = 30_000
+
     def __init__(self, path: Path, *, sleep: Callable[[float], None] = time.sleep) -> None:
         self._path = path
         self._local = threading.local()
@@ -47,13 +52,49 @@ class Database:
             # isolation_level=None disables the driver's implicit transactions,
             # so we can open BEGIN IMMEDIATE ourselves and keep dequeue's
             # select-then-update atomic.
-            conn = sqlite3.connect(self._path, timeout=30, isolation_level=None)
+            # timeout is the same lock wait busy_timeout sets, and it applies
+            # to the connect itself, so the budget has to be known here and not
+            # only after the connection exists (sca-9l1).
+            wait_ms = self._busy_timeout_ms()
+            conn = sqlite3.connect(self._path, timeout=wait_ms / 1000, isolation_level=None)
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute(f"PRAGMA busy_timeout={wait_ms}")
             self._enable_wal(conn)
             conn.execute("PRAGMA foreign_keys=ON")
             self._local.conn = conn
         return conn
+
+    def _busy_timeout_ms(self) -> int:
+        budget: int | None = getattr(self._local, "budget_ms", None)
+        return budget if budget is not None else self.DEFAULT_BUSY_TIMEOUT_MS
+
+    @contextmanager
+    def latency_budget(self, seconds: float) -> Iterator[None]:
+        """Caps how long DB calls on this thread wait on a lock.
+
+        For the socket handler threads: they ack the Slack event before the
+        handler runs, so a long lock wait does not delay that event's ack, but
+        it holds one of the ten pool slots and delays every event behind it
+        (sca-9l1). Everything else -- migrations, the WAL switch, the worker --
+        keeps the long wait.
+
+        Thread-local, like the connection it applies to.
+        """
+        previous: int | None = getattr(self._local, "budget_ms", None)
+        self._local.budget_ms = max(1, int(seconds * 1000))
+        try:
+            self._apply_busy_timeout()
+            yield
+        finally:
+            self._local.budget_ms = previous
+            self._apply_busy_timeout()
+
+    def _apply_busy_timeout(self) -> None:
+        """Only touches a connection this thread already made. A connection
+        made later reads the budget in connect()."""
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms()}")
 
     def _enable_wal(self, conn: sqlite3.Connection) -> None:
         """Skips the change when the file is already WAL -- that is every

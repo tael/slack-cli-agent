@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+import logging
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -170,6 +172,7 @@ def make_ingress(
     enqueue_attempts: int = 1,
     spawn: TaskSpawner | None = None,
     assistant: Any = None,
+    lock_budget: Any = None,
 ) -> IngressService:
     profile = make_profile(tmp_path)
     channels = ChannelRegistry(Path("/nonexistent.json"))
@@ -214,6 +217,7 @@ def make_ingress(
         job_max_attempts=job_max_attempts,
         enqueue_attempts=enqueue_attempts,
         sleep=lambda _초: None,
+        lock_budget=lock_budget,
     )
 
 
@@ -788,3 +792,98 @@ class Test봇이_넣은_멘션도_받는다:
 
         사람, 봇 = 사람큐.enqueued[0], 봇큐.enqueued[0]
         assert (봇.channel, 봇.ts, 봇.text) == (사람.channel, 사람.ts, 사람.text)
+
+
+class 기록하는예산:
+    """적재가 잠금 예산 안에서 도는지를 본다."""
+
+    def __init__(self) -> None:
+        self.깊이 = 0
+        self.들어간_횟수 = 0
+
+    @contextmanager
+    def __call__(self) -> Iterator[None]:
+        self.깊이 += 1
+        self.들어간_횟수 += 1
+        try:
+            yield
+        finally:
+            self.깊이 -= 1
+
+
+class Test접수경로의_잠금예산:
+    """소켓 처리 스레드가 잠금 대기로 묶이면 뒤 이벤트가 밀린다 (sca-9l1)."""
+
+    def test_적재를_예산_안에서_한다(self, tmp_path: Path, listener: EventListener) -> None:
+        예산 = 기록하는예산()
+
+        class 예산확인큐(FakeJobQueue):
+            def enqueue(self, ctx: RequestContext, max_attempts: int = 0) -> bool:
+                assert 예산.깊이 == 1, "적재가 예산 밖에서 돌았다"
+                return super().enqueue(ctx, max_attempts=max_attempts)
+
+        queue = 예산확인큐()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=AdminRouter([]),
+            tmp_path=tmp_path, lock_budget=예산,
+        )
+        ingress.handle_app_mention(mention_event())
+        assert len(queue.enqueued) == 1
+        assert 예산.들어간_횟수 >= 1
+
+    def test_대기_여부_조회도_예산_안에서_한다(self, tmp_path: Path, listener: EventListener) -> None:
+        """같은 연결·같은 잠금을 쓰므로 여기서 30초를 쓰면 의미가 없다."""
+        예산 = 기록하는예산()
+        본_깊이: list[int] = []
+
+        class 예산확인큐(FakeJobQueue):
+            def blocked_on_thread(self, thread_ts: str, message_ts: str) -> bool:
+                본_깊이.append(예산.깊이)
+                return False
+
+        queue = 예산확인큐()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=AdminRouter([]),
+            tmp_path=tmp_path, lock_budget=예산,
+        )
+        ingress.handle_app_mention(mention_event())
+        assert 본_깊이 == [1]
+
+    def test_예산을_안_주면_그냥_돈다(self, tmp_path: Path, listener: EventListener) -> None:
+        queue = FakeJobQueue()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=AdminRouter([]),
+            tmp_path=tmp_path,
+        )
+        ingress.handle_app_mention(mention_event())
+        assert len(queue.enqueued) == 1
+
+    def test_적재가_오래_걸리면_경고를_남긴다(self, tmp_path: Path, listener: EventListener, caplog) -> None:
+        """오류 0건은 '30초가 만료된 적 없다' 까지만 말한다. 잠금 대기 분포를
+        보려면 성공한 적재의 소요도 남아야 한다."""
+        시각 = [100.0]
+
+        class 느린큐(FakeJobQueue):
+            def enqueue(self, ctx: RequestContext, max_attempts: int = 0) -> bool:
+                시각[0] += 2.0
+                return super().enqueue(ctx, max_attempts=max_attempts)
+
+        queue = 느린큐()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=AdminRouter([]),
+            tmp_path=tmp_path,
+        )
+        ingress._clock = lambda: 시각[0]  # type: ignore[assignment]
+        with caplog.at_level(logging.WARNING):
+            ingress.handle_app_mention(mention_event())
+        assert any("적재가 오래" in r.message for r in caplog.records), caplog.text
+
+    def test_빠른_적재는_경고를_안_남긴다(self, tmp_path: Path, listener: EventListener, caplog) -> None:
+        queue = FakeJobQueue()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=AdminRouter([]),
+            tmp_path=tmp_path,
+        )
+        with caplog.at_level(logging.WARNING):
+            ingress.handle_app_mention(mention_event())
+        assert not any("적재가 오래" in r.message for r in caplog.records)

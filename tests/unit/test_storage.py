@@ -195,3 +195,80 @@ class TestSqliteRepository:
         with pytest.raises(RuntimeError):
             Repo(db).insert_twice_and_fail()
         assert db.connect().execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 0
+
+
+def busy_timeout(db: Database) -> int:
+    return int(db.connect().execute("PRAGMA busy_timeout").fetchone()[0])
+
+
+class Test잠금대기예산:
+    """소켓 처리 스레드가 잠금 대기로 오래 묶이지 않게 하는 경로다 (sca-9l1)."""
+
+    def test_기본은_30초다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        assert busy_timeout(db) == 30_000
+
+    def test_예산_안에서는_대기가_짧아진다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        with db.latency_budget(0.25):
+            assert busy_timeout(db) == 250
+
+    def test_예산을_나가면_기본값으로_돌아온다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        with db.latency_budget(0.25):
+            pass
+        assert busy_timeout(db) == 30_000
+
+    def test_예외가_나도_기본값으로_돌아온다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        with pytest.raises(RuntimeError), db.latency_budget(0.25):
+            raise RuntimeError("실패")
+        assert busy_timeout(db) == 30_000
+
+    def test_예산_안에서_처음_연결해도_대기가_짧다(self, tmp_path: Path) -> None:
+        """연결 생성 자체가 잠금 대기를 쓴다. 컨텍스트에 들어간 뒤 PRAGMA 로
+        낮추는 방식이면 첫 접속의 상한을 못 잡는다."""
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        측정: list[int] = []
+
+        def 새_스레드에서() -> None:
+            with db.latency_budget(0.25):
+                측정.append(busy_timeout(db))
+
+        worker = threading.Thread(target=새_스레드에서)
+        worker.start()
+        worker.join()
+        assert 측정 == [250]
+
+    def test_예산_안에서_만든_연결도_나가면_기본값이_된다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        측정: list[int] = []
+
+        def 새_스레드에서() -> None:
+            with db.latency_budget(0.25):
+                db.connect()
+            측정.append(busy_timeout(db))
+
+        worker = threading.Thread(target=새_스레드에서)
+        worker.start()
+        worker.join()
+        assert 측정 == [30_000]
+
+    def test_예산은_스레드마다_따로다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        측정: list[int] = []
+
+        def 예산_없는_스레드() -> None:
+            측정.append(busy_timeout(db))
+
+        with db.latency_budget(0.25):
+            worker = threading.Thread(target=예산_없는_스레드)
+            worker.start()
+            worker.join()
+        assert 측정 == [30_000]
