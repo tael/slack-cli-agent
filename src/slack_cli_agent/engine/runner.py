@@ -155,10 +155,12 @@ class EngineRunner:
             request = dataclasses.replace(request, model=engine.spec.model)
         actual = engine.capabilities_for(request)
         recorded = self._record_capabilities(engine, request, actual)
-        self._record_payload(engine, request)
         blocked = self._blocked_response(engine, request, actual, recorded)
         if blocked is not None:
             return blocked
+        # After the block check: a refused request never reaches the process,
+        # and counting it would put bytes nobody sent into the measurement.
+        self._record_payload(engine, request)
         engine.prepare(request)
         cmd = engine.build_command(request)
         timeout = timeout_sec if timeout_sec is not None else self._settings.request_timeout_sec
