@@ -6,7 +6,13 @@ import pytest
 
 from slack_cli_agent.config.channel import ChannelConfig
 from slack_cli_agent.slack.gate import ResponseGate
-from slack_cli_agent.slack.policy import ResponsePolicy, ThreadState
+from slack_cli_agent.slack.policy import (
+    ResponsePolicy,
+    ThreadState,
+    addresses_someone_else,
+)
+
+아스카 = "<@U0EXAMPLE03>"
 
 
 @pytest.fixture
@@ -54,6 +60,61 @@ class TestAnswers:
     ) -> None:
         state = ThreadState(joined=True, bot_asked=True)
         assert policy.answers(채널(), "이거 해줘", state) is False
+
+
+class TestAddressedToOther:
+    """다른 참가자를 부른 메시지는 그 참가자의 것이다.
+
+    2026-09-19 18:44 에 소유자가 아스카만 부른 요청을 이 봇이 가로챘다.
+    같은 스레드에 봇이 여럿 있으면 "나를 안 불렀다" 가 "아무도 안 불렀다" 와
+    다르다.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            f"{아스카} 리뷰해주세요",
+            f"{아스카}\n리뷰해주세요",
+            f"  {아스카}, 이거 해줘",
+            "<@U0EXAMPLE03|아스카> 이거 해줘",
+            f"{아스카} <@U0EXAMPLE04> 둘이 정리해주세요",
+        ],
+    )
+    def test_선두_멘션은_다른_사람_몫이다(self, text: str) -> None:
+        assert addresses_someone_else(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "이거 해줘",
+            f"아까 {아스카} 가 말한 것 확인해줘",
+            "<!here> 다들 확인해주세요",
+            "",
+        ],
+    )
+    def test_수신자_지정이_아니면_아니다(self, text: str) -> None:
+        assert addresses_someone_else(text) is False
+
+    def test_봇이_낀_스레드여도_다른_봇을_부르면_안_받는다(
+        self, policy: ResponsePolicy
+    ) -> None:
+        state = ThreadState(joined=True, bot_asked=False)
+        conf = 채널(answer_unaddressed=True)
+        assert policy.answers(conf, f"{아스카} 리뷰해주세요", state) is False
+
+    def test_되물은_직후여도_다른_봇을_부르면_안_받는다(
+        self, policy: ResponsePolicy
+    ) -> None:
+        """quiet 과 bot_asked 보다 수신자 판정이 앞선다."""
+        state = ThreadState(joined=True, bot_asked=True)
+        for level in ("quiet", "normal", "active"):
+            conf = 채널(answer_unaddressed=True, chat=level)
+            assert policy.answers(conf, f"{아스카} 네 진행해", state) is False
+
+    def test_참조로_나온_멘션은_그대로_받는다(self, policy: ResponsePolicy) -> None:
+        state = ThreadState(joined=True, bot_asked=False)
+        conf = 채널(answer_unaddressed=True)
+        assert policy.answers(conf, f"아까 {아스카} 가 말한 것 확인해줘", state) is True
 
 
 class TestChatLevel:

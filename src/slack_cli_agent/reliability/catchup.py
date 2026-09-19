@@ -19,6 +19,7 @@ from ..observability.notices import NoticeCatalog
 from ..slack.gate import ResponseGate
 from ..slack.identity import BotIdentity
 from ..slack.message_kind import MessageKind
+from ..slack.policy import addresses_someone_else
 from .ports import HistoryReader
 
 # Marks the bot puts on a message once it's answered or decided not to.
@@ -180,6 +181,11 @@ class CatchupService:
                 text = m.get("text") or ""
                 called = self._identity.is_mentioned(text)
                 bot_asked = asked_before.get(m.get("ts"), False)
+                # Same rule the live path applies in ResponsePolicy. Without
+                # it here, a message addressed to another bot is skipped live
+                # and then picked up on the next catch-up round instead.
+                if not called and addresses_someone_else(text):
+                    continue
                 if not called and not (
                     bot_in_thread and self._gate.worth_answering(text, bot_asked)
                 ):
