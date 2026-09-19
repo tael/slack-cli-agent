@@ -34,6 +34,12 @@ class AdminRouter:
         ]
         return "\n".join(lines)
 
+    def matches(self, text: str) -> bool:
+        """Whether any command would take this text. Lets a caller decide
+        before building context or writing a claim row, without running the
+        command (sca-8m5p)."""
+        return any(c.matches(text) for c in self._commands)
+
     def dispatch(self, text: str, ctx: AdminContext) -> AdminResult | None:
         """Returns None when nothing matches, so the caller falls through to
         a normal request. A match with insufficient permission returns a

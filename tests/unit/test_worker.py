@@ -844,6 +844,9 @@ class Test캐치업도_관리_명령_판정을_거친다:
         from slack_cli_agent.admin.command import AdminResult
 
         class 대역라우터:
+            def matches(self, text: str) -> bool:
+                return text in 처리할본문
+
             def dispatch(self, text, ctx):
                 return AdminResult(message="pong") if text in 처리할본문 else None
 
@@ -934,15 +937,20 @@ class Test캐치업도_관리_명령_판정을_거친다:
         from slack_cli_agent.admin.admission import AdminAdmission
 
         class 터지는라우터:
+            def matches(self, text: str) -> bool:
+                return True
+
             def dispatch(self, text, ctx):
                 raise RuntimeError("판정 실패")
 
+        client = FakeSlackClient()
         판정 = AdminAdmission(
             router=터지는라우터(),
             context_builder=관리맥락(tmp_path),
             reply=lambda channel, thread_ts, message: None,
+            markers=ReactionMarker(client),
         )
-        worker, queue, client = make_worker(
+        worker, queue, _ = make_worker(
             database=database,
             catchup=FakeCatchup(
                 CatchupReport(missed=[self._요청("1.7", "!ping")], skipped=[], unchecked_channels=[])
