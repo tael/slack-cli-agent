@@ -24,6 +24,7 @@ from typing import Any, Protocol
 from ..auth.principal import TrustLevel
 from ..config.settings import RuntimeSettings
 from ..observability.progress_hook import append_tool
+from ..session.manager import CAPABILITY_UNMET_REASON
 from .base import (
     CallOrigin,
     ElapsedSource,
@@ -182,7 +183,10 @@ class EngineRunner:
             ),
             session_id=request.session_id, model_actual=None,
             elapsed=0.0, turns=None, usage=None,
-            raw={}, failure_reason="capability_unmet",
+            raw={}, failure_reason=CAPABILITY_UNMET_REASON,
+            # Written for the person who asked: without it they only see the
+            # failure mark and can't tell this from a crash (sca-5sc).
+            user_facing=True,
             failure_detail=FailureDetail(code=TOOL_AXIS),
             elapsed_source=ElapsedSource.RUNNER,
             engine=engine.name,
@@ -354,6 +358,7 @@ class FallbackEngine(Engine):
                 return EngineResponse(
                     ok=False, body=self.switcher.limit_reply(), session_id=None,
                     model_actual=None, elapsed=0.0, turns=None, usage=None,
+                    user_facing=True,
                     raw={"engine_switch": approval},
                     failure_reason="usage_limit", engine=self.primary.name,
                     failure_detail=FailureDetail(code=approval),

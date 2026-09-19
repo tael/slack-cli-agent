@@ -241,6 +241,12 @@ class TestSessionManagerRetryPolicy:
         mgr, _clock = manager
         assert mgr.should_retry_with_new_session("usage_limit") is False
 
+    def test_보장_미충족도_재시도하지_않는다(self, manager) -> None:
+        """엔진의 보장은 세션을 새로 열어도 그대로다. 같은 자리에서 또 막힌다
+        (sca-5sc)."""
+        mgr, _clock = manager
+        assert mgr.should_retry_with_new_session("capability_unmet") is False
+
 
 class TestSqliteSessionStoreReassignSessionId:
     """실행기가 새로 발급한 세션 ID로 갈아 끼운다. 원본 persist_runner_session 이식.
