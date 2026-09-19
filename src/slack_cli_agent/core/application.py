@@ -741,6 +741,21 @@ class Application:
             name="learning_batch",
         )
 
+    def stale_reclaim_runner(self, worker: Worker) -> PeriodicRunner:
+        """Requeues jobs whose worker stopped sending heartbeats.
+
+        The startup reclaim only covers the process that just restarted. With
+        more than one worker, a crashed worker's RUNNING jobs would sit there
+        until the next restart of that same worker, which may never come
+        (sca-vlx). Marker updates go through Worker.reclaim so a periodic
+        sweep leaves the same reaction state a startup sweep does.
+        """
+        return PeriodicRunner(
+            worker.reclaim,
+            self._settings.stale_reclaim_interval_sec,
+            name="stale_reclaim",
+        )
+
     def job_purge_runner(self) -> PeriodicRunner:
         """Completed/failed job rows also serve as a dedup record, so
         retention must outlast the catch-up window — otherwise an
@@ -1540,6 +1555,7 @@ class Application:
                 self.catchup_retry_runner(worker),
                 self.pending_report_runner(),
                 self.learning_batch_runner(),
+                self.stale_reclaim_runner(worker),
             ],
             name="worker",
             watch_interval_sec=self._settings.service_watch_interval_sec,
