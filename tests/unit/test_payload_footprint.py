@@ -118,3 +118,64 @@ class Test감사에_남는다:
         직렬 = repr(감사.기록)
         assert "비밀본문" not in 직렬
         assert "비밀지침" not in 직렬
+
+
+class Test선언은_실제_명령과_맞는다:
+    """선언과 build_command 가 어긋나면 이 측정으로 정한 상한이 틀린 값에
+    걸린다 (sca-ygd 리뷰 [중간])."""
+
+    def _본문(self, cmd: list[str]) -> str:
+        return cmd[-1]
+
+    def test_codex_신규턴은_지침이_없으면_경로_안내도_안_보낸다(self, tmp_path: Path) -> None:
+        엔진 = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        요청 = request(resume=False, system_prompt="", readable_dirs=(tmp_path,))
+        cmd = 엔진.build_command(요청)
+        assert not any(tok.startswith("developer_instructions=") for tok in cmd)
+        assert 엔진.footprint_for(요청).adapter_added_bytes == 0
+
+    def test_codex_재개턴_합계가_실제_프롬프트와_같다(self, tmp_path: Path) -> None:
+        엔진 = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        요청 = request(
+            resume=True, session_id="s1", system_prompt="지침", prompt="본문",
+            readable_dirs=(tmp_path,),
+        )
+        발자국 = 엔진.footprint_for(요청)
+        보낸것 = len(self._본문(엔진.build_command(요청)).encode("utf-8"))
+        assert 발자국.total_bytes == 보낸것
+
+    def test_gemini_합계가_실제_프롬프트와_같다(self, tmp_path: Path) -> None:
+        엔진 = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        요청 = request(system_prompt="지침", prompt="본문", readable_dirs=(tmp_path,))
+        발자국 = 엔진.footprint_for(요청)
+        보낸것 = len(self._본문(엔진.build_command(요청)).encode("utf-8"))
+        assert 발자국.total_bytes == 보낸것
+
+
+class Test안_보낸_요청은_안_센다:
+    """보장을 못 맞춰 막힌 요청은 프로세스가 뜨지 않는다. 그 행이 섞이면
+    '실제로 보낸 바이트' 가 아니게 된다 (sca-ygd 리뷰 [중간])."""
+
+    def test_차단된_요청은_전송량을_남기지_않는다(self, tmp_path: Path) -> None:
+        from test_engine import FakeCompleted, 통과정책
+        from test_engine_capability import _감사, _준비기록엔진
+
+        from slack_cli_agent.engine.capability import ExecutionRequirements, ToolRestriction
+        from slack_cli_agent.engine.runner import EngineRunner
+
+        감사 = _감사()
+        응답 = EngineRunner(
+            SETTINGS,
+            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(
+                stdout="답변", returncode=0
+            ),
+            environment_policy=통과정책(),
+            audit=감사,
+        ).run(
+            _준비기록엔진(claude_profile(tmp_path), SETTINGS),
+            request(requirements=ExecutionRequirements(
+                tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+            )),
+        )
+        assert 응답.ok is False
+        assert [kind for kind, _ in 감사.기록] == ["capability"]

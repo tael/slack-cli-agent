@@ -1,4 +1,4 @@
-"""What one engine call actually puts on the wire.
+"""How much text one engine call puts in front of the model.
 
 Kept apart from EngineCapabilities: that says what an engine guarantees, this
 says what it costs. The two move for different reasons and a reader of one
@@ -28,7 +28,9 @@ class PayloadFootprint:
     user_prompt_bytes: int
     #: What the engine adapter adds on its own -- readable-path notes, the
     #: untrusted-input mark. Separated so a growing prompt isn't blamed on
-    #: the adapter or the other way round.
+    #: the adapter or the other way round. CLI-side overhead the model never
+    #: sees (flag names, TOML escaping, --add-dir) is not counted: this
+    #: measures what the model reads, which is what a cap would act on.
     adapter_added_bytes: int
     instruction_transport: str
     #: Whether this turn's instructions land in a resumed session's context.

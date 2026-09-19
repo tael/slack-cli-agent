@@ -151,6 +151,10 @@ class CodexEngine(Engine):
         those bytes join the session context and are paid again every turn."""
         base = super().footprint_for(request)
         if not request.resume:
+            # build_command drops the whole instructions argument, path note
+            # included, when there are no instructions to send.
+            if not request.system_prompt:
+                return dataclasses.replace(base, adapter_added_bytes=0)
             return base
         return dataclasses.replace(
             base,
