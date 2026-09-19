@@ -123,3 +123,57 @@ class Test두_입구가_같은_판정을_쓴다:
 
         본문 = inspect.getsource(Application)
         assert 본문.count("self._admin_admission()") >= 2
+
+    def test_조립이_표식기를_꽂는다(self) -> None:
+        """주입을 빠뜨리면 표식이 안 달려 캐치업이 명령을 다시 실행한다."""
+        import inspect
+
+        from slack_cli_agent.core.application import Application
+
+        본문 = inspect.getsource(Application._admin_admission)
+        assert "markers=self.reactions()" in 본문
+
+
+class Test명령을_처리했으면_완료_표식을_단다:
+    """표식이 없으면 캐치업이 그 메시지를 미처리로 보고 다시 잡는다. 접수기
+    프로세스의 중복 방지 기록은 워커 프로세스에 없어 캐치업을 못 막는다.
+    원본도 handle_admin 직후 white_check_mark 를 단다(bot.py:4989) (sca-sk9t).
+    """
+
+    def _표식(self, tmp_path: Path, result: AdminResult | None) -> list[Any]:
+        from slack_cli_agent.slack.reactions import ReactionMarker
+
+        찍힘: list[Any] = []
+
+        class 대역클라이언트:
+            def reactions_add(self, channel: str, timestamp: str, name: str) -> None:
+                찍힘.append(("add", channel, timestamp, name))
+
+            def reactions_remove(self, channel: str, timestamp: str, name: str) -> None:
+                찍힘.append(("remove", channel, timestamp, name))
+
+        판정 = AdminAdmission(
+            router=대역라우터(result),
+            context_builder=관리맥락(tmp_path),
+            reply=lambda channel, thread_ts, message: None,
+            markers=ReactionMarker(대역클라이언트()),
+        )
+        판정.handled(요청())
+        return 찍힘
+
+    def test_명령이면_완료_표식을_단다(self, tmp_path: Path) -> None:
+        assert ("add", "C1", "1.1", "white_check_mark") in self._표식(
+            tmp_path, AdminResult(message="pong")
+        )
+
+    def test_명령이_아니면_표식을_안_단다(self, tmp_path: Path) -> None:
+        assert self._표식(tmp_path, None) == []
+
+    def test_표식_없이도_판정은_돌아간다(self, tmp_path: Path) -> None:
+        """조립이 주입을 빠뜨려도 명령이 모델로 새지는 않는다."""
+        판정 = AdminAdmission(
+            router=대역라우터(AdminResult(message="pong")),
+            context_builder=관리맥락(tmp_path),
+            reply=lambda channel, thread_ts, message: None,
+        )
+        assert 판정.handled(요청()) is True

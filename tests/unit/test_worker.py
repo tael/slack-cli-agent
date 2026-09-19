@@ -839,7 +839,7 @@ class Test캐치업도_관리_명령_판정을_거친다:
     """봇이 꺼져 있는 동안 받은 !ping 이 회수된 뒤 명령이 아니라 모델 요청으로
     갔다. 소켓 경로만 AdminRouter 를 거쳤다 (sca-oyku)."""
 
-    def _명령판정(self, tmp_path: Path, 처리할본문: set[str], 보냄: list[Any]):
+    def _명령판정(self, tmp_path: Path, 처리할본문: set[str], 보냄: list[Any], markers=None):
         from slack_cli_agent.admin.admission import AdminAdmission
         from slack_cli_agent.admin.command import AdminResult
 
@@ -851,6 +851,7 @@ class Test캐치업도_관리_명령_판정을_거친다:
             router=대역라우터(),
             context_builder=관리맥락(tmp_path),
             reply=lambda channel, thread_ts, message: 보냄.append(message),
+            markers=markers,
         )
 
     def _요청(self, ts: str, text: str) -> RequestContext:
@@ -884,13 +885,15 @@ class Test캐치업도_관리_명령_판정을_거친다:
 
     def test_회수한_관리_명령에_완료_표식을_단다(self, database, tmp_path: Path) -> None:
         """큐에 안 들어가므로 _finish 가 안 돈다. 표식이 없으면 다음 캐치업이
-        같은 명령을 다시 찾아 또 실행한다 (코덱스 리뷰)."""
+        같은 명령을 다시 찾아 또 실행한다 (코덱스 리뷰). 표식 자체는
+        AdminAdmission 이 달아 소켓 경로와 같은 흔적이 남는다 (sca-sk9t)."""
         보냄: list[Any] = []
+        client = FakeSlackClient()
         명령 = self._요청("1.1", "!ping")
-        worker, _queue, client = make_worker(
+        worker, _queue, _ = make_worker(
             database=database,
             catchup=FakeCatchup(CatchupReport(missed=[명령], skipped=[], unchecked_channels=[])),
-            admin=self._명령판정(tmp_path, {"!ping"}, 보냄),
+            admin=self._명령판정(tmp_path, {"!ping"}, 보냄, markers=ReactionMarker(client)),
         )
         worker.catch_up(["C1"])
         assert ("add", "C1", "1.1", "white_check_mark") in client.calls
