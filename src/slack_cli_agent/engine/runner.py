@@ -394,6 +394,10 @@ class FallbackEngine(Engine):
             model=model, effort=request.effort,
             workdir=request.workdir, readable_dirs=request.readable_dirs,
             allowed_tools=request.allowed_tools, trust_level=request.trust_level,
+            # The boundary the caller asked for does not stop applying because
+            # the primary ran out of quota. Dropping it turned a rate limit into
+            # a permission bypass (sca-93u).
+            requirements=request.requirements,
             # Same request with the same person waiting on it. Dropping this
             # would leave the already-open progress display stuck on its
             # opening line for the whole fallback turn.
