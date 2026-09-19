@@ -141,7 +141,7 @@ class TestEngineRequest조립:
         caller.run("프롬프트", None, False)
         요구 = invoker.calls[0].requirements
         assert 요구.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
-        assert 요구.allow_audited_downgrade is True
+        assert 요구.downgradable_axes == frozenset({"tool_restriction"})
 
     def test_도구가_없으면_요구도_없다(self) -> None:
         caller, invoker = make_caller(allowed_tools=())

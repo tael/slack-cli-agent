@@ -35,7 +35,7 @@ from .base import (
     FailureDetail,
     UsageLimit,
 )
-from .capability import EngineCapabilities
+from .capability import TOOL_AXIS, EngineCapabilities
 from .environment import EngineEnvironmentPolicy
 from .stream import run_streaming
 from .switcher import EngineSwitcher
@@ -47,8 +47,6 @@ SubprocessRunner = Callable[..., Any]
 log = logging.getLogger(__name__)
 
 CAPABILITY_KIND = "capability"
-
-TOOL_AXIS = "tool_restriction"
 
 #: For the notice the person who asked reads. The axis names are internal.
 AXIS_NAMES = {
@@ -187,7 +185,7 @@ class EngineRunner:
         # granting it anyway would leave no trace that the guarantee was given
         # up, which is the one thing the name promises (sca-gpe).
         audit_missing = False
-        if required.allow_audited_downgrade:
+        if required.downgraded(unmet):
             if self._audit is not None:
                 return None
             audit_missing = True
@@ -225,6 +223,7 @@ class EngineRunner:
         if self._audit is None:
             return
         required = request.requirements
+        downgraded = required.downgraded(required.unmet(actual))
         self._audit.record(
             CAPABILITY_KIND,
             engine=engine.name,
@@ -235,11 +234,14 @@ class EngineRunner:
             },
             actual=_as_audit(actual),
             unmet=list(required.unmet(actual)),
-            allow_audited_downgrade=required.allow_audited_downgrade,
+            downgradable_axes=sorted(required.downgradable_axes),
             policy=required.policy,
             # Permitted and used are different questions. Counting relieved
-            # requests needs the second one (sca-98k).
-            downgrade_applied=bool(required.unmet(actual)) and required.allow_audited_downgrade,
+            # requests needs the second one (sca-98k). Only axes the caller
+            # named are counted, so a tool-only policy can't read as having
+            # relieved isolation too.
+            downgraded_axes=list(downgraded),
+            downgrade_applied=bool(downgraded),
         )
 
     @staticmethod

@@ -1822,11 +1822,11 @@ class Test실행_보장_요구를_세운다:
     def test_도구를_준_요청에는_허용목록_요구가_붙는다(self, tmp_path: Path) -> None:
         요구 = self._요청(tmp_path, ("Read", "Grep")).requirements
         assert 요구.tool_restriction is not None
-        assert 요구.allow_audited_downgrade is True
+        assert 요구.downgradable_axes == frozenset({"tool_restriction"})
 
     def test_strict_채널은_완화를_안_준다(self, tmp_path: Path) -> None:
         요구 = self._요청(tmp_path, ("Read",), tool_enforcement="strict").requirements
-        assert 요구.allow_audited_downgrade is False
+        assert 요구.downgradable_axes == frozenset()
 
     def test_도구가_없으면_요구도_없다(self, tmp_path: Path) -> None:
         assert self._요청(tmp_path, ()).requirements.tool_restriction is None

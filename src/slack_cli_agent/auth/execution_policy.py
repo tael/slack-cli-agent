@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ..config.channel import TOOL_ENFORCEMENT_AUDITED, TOOL_ENFORCEMENT_STRICT, ChannelConfig
-from ..engine.capability import ExecutionRequirements, ToolRestriction
+from ..engine.capability import TOOL_AXIS, ExecutionRequirements, ToolRestriction
 
 #: Named so the audit record tells "this policy decided nothing is enforceable"
 #: apart from "no policy ran at all".
@@ -44,6 +44,8 @@ class ExecutionPolicy:
         strict = config is not None and config.tool_enforcement == TOOL_ENFORCEMENT_STRICT
         return ExecutionRequirements(
             tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
-            allow_audited_downgrade=not strict,
+            # Only the tool axis: this setting speaks about tool enforcement
+            # and must not lower a guarantee it never mentioned.
+            downgradable_axes=frozenset() if strict else frozenset({TOOL_AXIS}),
             policy=TOOL_ENFORCEMENT_STRICT if strict else TOOL_ENFORCEMENT_AUDITED,
         )
