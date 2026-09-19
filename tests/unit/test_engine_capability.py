@@ -465,6 +465,16 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
         assert 실행 == []
         assert 엔진.built == []
 
+    def test_막힌_응답에도_요청_모델이_실린다(self, tmp_path: Path) -> None:
+        """막힌 요청도 기록에 남는다. 그 줄만 모델 칸이 비면 어느 모델의
+        요청이 막혔는지 못 센다 (sca-cr2b)."""
+        응답, _, _ = self._돌린다(
+            tmp_path,
+            model="claude-opus-5",
+            requirements=ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
+        )
+        assert 응답.model_asked == "claude-opus-5"
+
     def test_prepare_의_부수효과도_내지_않는다(self, tmp_path: Path) -> None:
         _, 엔진, _ = self._돌린다(
             tmp_path,

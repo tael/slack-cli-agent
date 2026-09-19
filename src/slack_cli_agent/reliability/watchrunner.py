@@ -202,9 +202,10 @@ class WatchJobChecker:
             )
             return
 
+        실제모델 = {"model_actual": response.model_actual} if response.model_actual else {}
         self._record(
             WATCH_CHECKED_KIND, job, ok=response.ok, outcome=outcome.name,
-            engine=response.engine, model=response.model_actual or "",
+            engine=response.engine, model=response.model_asked, **실제모델,
             elapsed=response.elapsed, turns=response.turns,
             failure=response.failure_reason or "", body_len=len(response.body),
         )
