@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import replace
@@ -35,6 +36,30 @@ ReactionCallback = Callable[[str, str, str, str], None]
 # (channel, thread_ts, body)
 ReplyCallback = Callable[[str, str, str], None]
 AdminContextBuilder = Callable[[RequestContext], AdminContext]
+
+
+class RejectedRequests:
+    """Requests this process failed to store, so a later delivery of the same
+    one knows to clear the failure mark it left."""
+
+    def __init__(self, max_entries: int = 200) -> None:
+        self._keys: set[tuple[str, str]] = set()
+        self._max = max_entries
+        self._lock = threading.Lock()
+
+    def add(self, channel: str, ts: str) -> None:
+        with self._lock:
+            if len(self._keys) >= self._max:
+                self._keys.clear()
+            self._keys.add((channel, ts))
+
+    def discard_key(self, channel: str, ts: str) -> bool:
+        with self._lock:
+            key = (channel, ts)
+            if key not in self._keys:
+                return False
+            self._keys.discard(key)
+            return True
 
 
 class IngressService:
@@ -76,6 +101,7 @@ class IngressService:
         self._spawn = spawn
         self._job_max_attempts = job_max_attempts
         self._enqueue_attempts = max(1, enqueue_attempts)
+        self._not_accepted = RejectedRequests()
         self._sleep = sleep
         self._assistant = assistant
 
@@ -127,9 +153,9 @@ class IngressService:
                 self._reply(ctx.channel, ctx.thread_ts, admin_result.message)
                 return
 
-            request = self._merge_attachments(ctx, event)
-
+            request = ctx
             try:
+                request = self._merge_attachments(ctx, event)
                 queued = self._store(request)
             except Exception:
                 # The dedup record was made before this point, so leaving it
@@ -142,6 +168,7 @@ class IngressService:
             if not queued:
                 # Already queued — don't mark it twice.
                 return
+            self._clear_not_accepted(request)
             self._mark_accepted(request)
         except Exception:
             channel = ctx.channel if ctx is not None else event.get("channel")
@@ -166,6 +193,7 @@ class IngressService:
 
     def _report_not_accepted(self, ctx: RequestContext) -> None:
         try:
+            self._not_accepted.add(ctx.channel, ctx.ts)
             self._reactions.mark_failed(ctx.channel, ctx.ts)
             self._reply(
                 ctx.channel, ctx.thread_ts,
@@ -173,6 +201,17 @@ class IngressService:
             )
         except Exception as exc:  # noqa: BLE001 - a failed notice must not hide the original failure
             log.warning("접수 실패 안내를 보내지 못했다 : %s", exc)
+
+    def _clear_not_accepted(self, ctx: RequestContext) -> None:
+        """Drops the failure mark a previous rejected delivery left behind.
+
+        Without this the message carries both x and the processing mark while
+        the retry runs, which reads as failed and running at once (sca-aqw).
+        Only for requests this process rejected — clearing unconditionally
+        would add a Slack call to every single request.
+        """
+        if self._not_accepted.discard_key(ctx.channel, ctx.ts):
+            self._reactions.remove(ctx.channel, ctx.ts, "x")
 
     def _mark_accepted(self, ctx: RequestContext) -> None:
         """One mark, not both: hourglass if it has to wait, eyes if not.
