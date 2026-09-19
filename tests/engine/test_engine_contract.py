@@ -225,6 +225,14 @@ class _FakeCompleted:
 
 @pytest.mark.parametrize("fx", _fixture_params())
 class TestEngineContract:
+    def test_로그인_만료_문구와_안내를_댄다(self, fx: EngineFixture, tmp_path: Path) -> None:
+        """엔진이 문구를 안 대면 그 엔진만 로그인이 풀려도 전환이 안 된다.
+        판정은 Engine 한 자리에 있으므로 엔진이 댈 것은 이 둘뿐이다 (sca-sj8r).
+        """
+        engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
+        assert engine.AUTH_FAILURE_MARKERS, fx.id
+        assert "로그인" in engine.AUTH_FAILURE_NOTE, fx.id
+
     def test_재개_여부가_실제로_다른_명령을_만든다(self, fx: EngineFixture, tmp_path: Path) -> None:
         engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
         cmd_new = engine.build_command(_request(resume=False))

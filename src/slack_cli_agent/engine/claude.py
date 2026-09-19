@@ -39,7 +39,7 @@ import sys
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ..config.profile import McpServerSpec
 from ..observability.progress_hook import HOOK_SCRIPT
@@ -226,6 +226,19 @@ class ClaudeEngine(Engine):
         # with a hyphen would be parsed as a flag.
         cmd += ["--", request.prompt]
         return cmd
+
+    #: 2026-09-19 실측 (claude 2.1.270 네이티브 바이너리) - 로그인이 풀리면
+    #: 'Please run /login' 을, 인증 자체가 실패하면 'Failed to authenticate' 를
+    #: 낸다. 같은 판정에 쓰이는 문구 중 'credit balance' 와 'usage limit' 은
+    #: 한도 계열이라 뺐고, MCP 쪽 401 도 여기 해당하지 않는다.
+    #: 문구는 좁게 잡는다. 'invalid api key' 나 'not logged in' 같은 조각은
+    #: gh·aws 같은 도구도 내므로, 그것으로 판정하면 CLI 로그인은 멀쩡한데
+    #: 1차가 통째로 내려간다.
+    AUTH_FAILURE_MARKERS: ClassVar[tuple[str, ...]] = (
+        "Please run /login",
+        "Failed to authenticate.",
+    )
+    AUTH_FAILURE_NOTE = "claude 로그인이 풀렸다. claude 에서 /login 으로 다시 로그인해야 한다."
 
     def new_session_id(self) -> str:
         return str(uuid.uuid4())
