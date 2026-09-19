@@ -1124,6 +1124,10 @@ class TestFallbackEngine:
         limit_response = EngineResponse(
             ok=False, body="한도 소진", session_id=None, model_actual=None,
             elapsed=0, turns=None, usage=None, failure_reason="usage_limit",
+            # 실제 claude 의 한도 응답은 사람에게 그대로 나간다(claude.py 의
+            # user_facing=is_limit). 비공개로 두면 이 시험이 답 없이 끝나는
+            # 경우를 정상으로 굳힌다 (sca-3hh4).
+            user_facing=True,
         )
         probe_response = EngineResponse(ok=True, body="OK", session_id=None,
                                         model_actual=None, elapsed=0, turns=None, usage=None)
@@ -1133,6 +1137,35 @@ class TestFallbackEngine:
         assert resp.body == "한도 소진"
         assert switcher.is_switched() is True
         assert switcher.is_approved() is False
+
+    def test_전환을_시작한_첫_요청도_사람에게_답을_낸다(self, tmp_path: Path) -> None:
+        """1차의 실패 응답은 기본이 비공개다. 그대로 돌려주면 전환을 만든 그
+        요청만 아무 답도 없이 끝나 봇이 멈춘 것으로 보인다 (sca-3hh4).
+        두 번째 요청부터는 승인 대기 분기가 같은 문구를 낸다."""
+        fallback, _primary, _secondary, _switcher = self._인증실패_1차(tmp_path)
+
+        resp = fallback.run(request())
+
+        assert resp.user_facing is True
+        assert "로그인" in resp.body
+        assert resp.failure_reason == EngineSwitcher.AUTH_FAILURE
+
+    def test_1차가_이미_사람에게_낼_답을_냈으면_그대로_쓴다(self, tmp_path: Path) -> None:
+        """한도 안내는 엔진이 직접 낸다. 덮어쓰면 남은 한도 시각 같은 내용이
+        사라진다."""
+        limit_response = EngineResponse(
+            ok=False, body="주간 한도를 다 썼습니다. 목요일에 풀립니다.", session_id=None,
+            model_actual=None, elapsed=0, turns=None, usage=None,
+            failure_reason="usage_limit", user_facing=True,
+        )
+        probe = EngineResponse(ok=True, body="OK", session_id=None, model_actual=None,
+                               elapsed=0, turns=None, usage=None)
+        fallback, _primary, _secondary, _switcher = self._fallback(
+            tmp_path, primary_response=limit_response, secondary_response=probe)
+
+        resp = fallback.run(request())
+
+        assert resp.body == "주간 한도를 다 썼습니다. 목요일에 풀립니다."
 
     def test_전환됐지만_승인_전이면_한도_안내만_낸다(self, tmp_path: Path) -> None:
         fallback, primary, secondary, switcher = self._fallback(tmp_path)

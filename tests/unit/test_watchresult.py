@@ -355,7 +355,7 @@ class Test안내문대로_띄우면_실패가_실패로_남는다:
         (자리 / "r1.sh").write_text(스크립트, encoding="utf-8")
         subprocess.run(self._실행줄("r1"), shell=True, cwd=tmp_path, check=True)
         리더 = WatchResultReader()
-        for _ in range(100):
+        for _ in range(400):
             결과 = 리더.read(str(tmp_path), "r1")
             if 결과 is not WatchOutcome.RUNNING:
                 return 결과

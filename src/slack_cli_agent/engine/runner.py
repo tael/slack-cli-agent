@@ -523,11 +523,30 @@ class FallbackEngine(Engine):
         limit = self.primary.detect_usage_limit(response)
         if limit is not None:
             self._begin_switch(request, EngineSwitcher.USAGE_LIMIT, limit.detail)
-            return response
+            return self._announce_switch(response)
         auth_failure = self.primary.detect_auth_failure(response)
         if auth_failure is not None:
             self._begin_switch(request, EngineSwitcher.AUTH_FAILURE, auth_failure)
+            return self._announce_switch(response)
         return response
+
+    def _announce_switch(self, response: EngineResponse) -> EngineResponse:
+        """전환을 시작한 그 요청에도 사람에게 보일 답을 낸다.
+
+        1차의 실패 응답은 기본이 비공개다 - codex 의 종료코드 1 이 그렇다.
+        그대로 돌려주면 pipeline 이 아무것도 게시하지 않아, 전환을 만든 그
+        요청 하나만 답 없이 끝난다 (sca-3hh4). 두 번째 요청부터는 run() 의
+        승인 대기 분기가 같은 문구를 낸다.
+
+        실패 사유도 전환 계기로 바꿔 쓴다. nonzero_exit 으로 남기면 새 세션
+        재시도 대상이 되어 같은 자격으로 한 번 더 실패한다.
+        """
+        if response.user_facing and response.body.strip():
+            return response
+        return dataclasses.replace(
+            response, body=self.switcher.limit_reply(), user_facing=True,
+            failure_reason=self.switcher.reason(),
+        )
 
     def _begin_switch(self, request: EngineRequest, reason: str, detail: str) -> None:
         probe_ok, probe_detail = self._probe_secondary(request)
