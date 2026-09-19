@@ -265,7 +265,8 @@ class Worker:
                 ended.add((context.channel, context.thread_ts))
                 continue
             if handled:
-                self._markers.mark_done(context.channel, context.ts)
+                # The mark itself is AdminAdmission's job, so the socket path
+                # leaves the same trace (sca-sk9t).
                 ended.add((context.channel, context.thread_ts))
             else:
                 remaining.append(context)
