@@ -108,3 +108,104 @@ class Test운영_조립에도_예산이_걸린다:
         composer = SystemPromptComposer(library, 로더(tmp_path), base_sections(), budget_bytes=0)
         write(지식폴더 / "_크다.md", "가" * 4000)
         assert "가" * 4000 in composer.compose(ctx())
+
+
+class Test예산이_걸린_사실이_기록에_남는다:
+    """상한이 무엇을 뺐는지 아무도 못 보면 상한을 조정할 근거가 안 생긴다.
+    모델은 생략 헤더로, 운영자는 이 보고로 안다 (sca-ygd)."""
+
+    def _보고(self, tmp_path: Path, library, 예산: int):
+        return SystemPromptComposer(
+            library, 로더(tmp_path), base_sections(), budget_bytes=예산,
+        ).compose_with_report(ctx())
+
+    def test_안_걸리면_뺀_것이_없다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
+        write(지식폴더 / "_가.md", "가나다")
+        본문, 보고 = self._보고(tmp_path, library, 예산=100_000)
+        assert "가나다" in 본문
+        assert 보고.budget_limited is False
+        assert 보고.omitted_document_count == 0
+        assert 보고.budget_bytes == 100_000
+
+    def test_뺀_건수와_바이트를_센다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
+        write(지식폴더 / "_크다.md", "가" * 4000)
+        write(지식폴더 / "_더크다.md", "나" * 4000)
+        보고 = self._보고(tmp_path, library, 예산=3000)[1]
+        assert 보고.budget_limited is True
+        assert 보고.omitted_document_count == 2
+        assert 보고.omitted_document_bytes == 2 * len(("가" * 4000).encode("utf-8"))
+
+    def test_자르기_전후_크기를_함께_낸다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
+        """이 둘이 있어야 상한이 실제로 무엇을 줄였는지 말할 수 있다."""
+        write(지식폴더 / "_크다.md", "가" * 4000)
+        본문, 보고 = self._보고(tmp_path, library, 예산=3000)
+        assert 보고.bytes_after == len(본문.encode("utf-8"))
+        assert 보고.bytes_before > 보고.bytes_after
+
+    def test_상한이_없으면_전후가_같다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
+        write(지식폴더 / "_크다.md", "가" * 4000)
+        보고 = self._보고(tmp_path, library, 예산=0)[1]
+        assert 보고.budget_bytes is None
+        assert 보고.bytes_before == 보고.bytes_after
+        assert 보고.budget_limited is False
+
+
+class Test예산_경계와_단위:
+    """리뷰가 짚은 공백이다 - 글자 수로 재도 통과하는 시험, 경계값 없는 시험,
+    학습 지식을 안 쓰는 fixture (2026-09-19)."""
+
+    def _본문(self, tmp_path: Path, library, 예산: int, learned: Path | None = None) -> str:
+        loader = KnowledgeLoader(
+            tmp_path / "persona" / "PERSONA.md", tmp_path / "persona" / "knowledge",
+            learned_dir=learned,
+        )
+        return SystemPromptComposer(
+            library, loader, base_sections(), budget_bytes=예산,
+        ).compose(ctx())
+
+    def test_글자_수가_아니라_바이트로_잰다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
+        """한글 한 글자가 3바이트다. 글자 수로 재면 세 배를 싣게 된다."""
+        write(지식폴더 / "_한글.md", "가" * 500)  # 500자 = 1500바이트
+        조합 = SystemPromptComposer(
+            library, 로더(tmp_path), base_sections(), budget_bytes=100_000,
+        )
+        고정 = len(조합.compose(ctx()).encode("utf-8")) - 1500
+        덩어리 = "가" * 100  # 안내문에도 '가' 한 글자는 나오므로 덩어리로 본다
+        assert 덩어리 not in self._본문(tmp_path, library, 예산=고정 + 1499)
+        assert 덩어리 in self._본문(tmp_path, library, 예산=고정 + 1600)
+
+    def test_딱_맞으면_싣는다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
+        write(지식폴더 / "_가.md", "가나다")
+        전체 = len(self._본문(tmp_path, library, 예산=100_000).encode("utf-8"))
+        assert "가나다" in self._본문(tmp_path, library, 예산=전체)
+        assert "가나다" not in self._본문(tmp_path, library, 예산=전체 - 1)
+
+    def test_큰_것을_건너뛰고_뒤의_작은_것을_싣는다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
+        """파일 순서는 알파벳순이지 우선순위가 아니다. 앞의 큰 파일 하나가
+        뒤의 것을 전부 버리게 하면 안 된다."""
+        write(지식폴더 / "_1큰것.md", "가" * 4000)
+        write(지식폴더 / "_2작은것.md", "살아남는 지식")
+        본문 = self._본문(tmp_path, library, 예산=4000)
+        assert "살아남는 지식" in 본문
+        assert "가" * 4000 not in 본문
+
+    def test_학습_지식도_파일_단위로_뺀다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
+        """하나로 합치면 통째로 떨어지고 생략 안내에 첫 파일만 적힌다."""
+        learned = tmp_path / "learned"
+        learned.mkdir()
+        write(learned / "_큰학습.md", "가" * 4000)
+        write(learned / "_작은학습.md", "남는 학습")
+        본문 = self._본문(tmp_path, library, 예산=4000, learned=learned)
+        assert "남는 학습" in 본문
+        assert "큰학습" in 본문  # 생략 안내에 이름이 적힌다
+
+    def test_결과가_예산을_넘지_않는다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
+        """생략 안내와 헤더까지 포함해 재야 상한이 상한 노릇을 한다."""
+        for i in range(6):
+            write(지식폴더 / f"_{i}.md", "가" * 900)
+        조합 = SystemPromptComposer(
+            library, 로더(tmp_path), base_sections(), budget_bytes=100_000,
+        )
+        고정 = len(조합.compose(ctx()).encode("utf-8")) - 6 * 2700
+        예산 = 고정 + 5000
+        assert len(self._본문(tmp_path, library, 예산=예산).encode("utf-8")) <= 예산
