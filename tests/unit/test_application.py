@@ -1039,9 +1039,8 @@ class Test감시확인연결:
 
     def test_확인실행에_읽기_도구가_들어간다(self, tmp_path: Path, monkeypatch: Any) -> None:
         """조회하라고 시켜 놓고 조회할 도구를 안 준 적이 있다. allowed_tools
-        를 안 넘기면 기본값이 빈 튜플이고, 클로드 엔진은 그것을
-        `--allowedTools ""` 로 그대로 넘겨 도구가 하나도 없는 턴이 된다
-        (sca-0ab).
+        를 안 넘기면 기본값이 빈 튜플이고, 그것은 금지가 아니라 금지의 부재라
+        아무 경계도 안 걸린 턴이 된다(sca-6ewc).
 
         도구 목록이 실제로 강제되는 것은 클로드뿐이다. codex 와 gemini 는
         allowed_tools 를 읽지 않아 이 값이 그쪽에서는 아무 효과가 없다
