@@ -24,6 +24,8 @@ class Job:
     context: RequestContext
     attempts: int
     created_at: float
+    #: Unique per claim. Empty for a job that is not currently claimed.
+    lease: str = ""
 
 
 @dataclass(frozen=True)
@@ -70,13 +72,13 @@ class JobQueue(Protocol):
         - None if nothing is queued
         """
 
-    def heartbeat(self, job_id: int, attempt: int) -> None:
+    def heartbeat(self, job_id: int, lease: str) -> None:
         """Mark the job as still alive. Stale heartbeats get reclaimed."""
 
-    def complete(self, job_id: int, ok: bool, failure: str = "", *, attempt: int) -> bool:
+    def complete(self, job_id: int, ok: bool, failure: str = "", *, lease: str) -> bool:
         """Finish the job, unblocking the next one queued on its thread."""
 
-    def requeue(self, job_id: int, *, attempt: int) -> bool:
+    def requeue(self, job_id: int, *, lease: str) -> bool:
         """Cancel a running job back to queued, e.g. on shutdown."""
 
     def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult:
