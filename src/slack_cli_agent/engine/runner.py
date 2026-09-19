@@ -64,7 +64,7 @@ AXIS_NAMES = {
     BOUNDARY_AXIS: "지침 경계",
 }
 
-LEVEL_NAMES = {
+LEVEL_NAMES: dict[ToolRestriction | ExecutionIsolation | InstructionBoundary, str] = {
     ToolRestriction.NONE: "제한 없음",
     ToolRestriction.COARSE_SANDBOX: "샌드박스 수준",
     ToolRestriction.EXACT_ALLOWLIST: "허용된 도구 목록",
@@ -77,8 +77,10 @@ LEVEL_NAMES = {
 }
 
 
-def _level(value: object) -> str:
-    return LEVEL_NAMES.get(value, str(value))  # type: ignore[arg-type]
+def _level(value: ToolRestriction | ExecutionIsolation | InstructionBoundary | None) -> str:
+    if value is None:
+        return "요구 없음"
+    return LEVEL_NAMES.get(value, str(value))
 
 
 class CapabilityAuditPort(Protocol):
