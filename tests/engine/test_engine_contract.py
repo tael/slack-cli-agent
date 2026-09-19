@@ -142,10 +142,10 @@ ENGINE_FIXTURES: list[EngineFixture] = [
         engine_class=CodexEngine,
         configured_profile=_codex_configured,
         unconfigured_profile=_codex_unconfigured,
-        # Codex pins the system prompt on the first turn only (confirmed 2026-09-11,
-        # see codex.py module docstring) — a resend on resume is silently ignored by
-        # the CLI, so this engine doesn't attempt it.
-        resend_system_prompt_on_resume=False,
+        # developer_instructions is pinned to the first turn: the CLI ignores a
+        # new value on resume (measured 2026-09-19). So codex carries this turn's
+        # instructions in the prompt instead, like gemini (sca-ivs).
+        resend_system_prompt_on_resume=True,
         resume_token="resume",
         native_usage={"input_tokens": 5, "output_tokens": 6},
         expected_usage=Usage(

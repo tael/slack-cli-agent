@@ -28,6 +28,7 @@ from slack_cli_agent.engine.base import (
     UsageLimit,
     equivalent_values,
 )
+from slack_cli_agent.engine.capability import InstructionBoundary
 from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
 from slack_cli_agent.engine.environment import EngineEnvironmentPolicy
@@ -505,17 +506,41 @@ class TestCodexEngineBuildCommand:
         assert "-C" in cmd
         assert cmd[-1] == "안녕"
 
-    def test_재개_스레드는_resume과_sandbox_mode를_쓰고_지침을_안_실는다(self, tmp_path: Path) -> None:
+    def test_재개_스레드는_resume과_sandbox_mode를_쓴다(self, tmp_path: Path) -> None:
         profile = codex_profile(tmp_path)
         engine = CodexEngine(profile, SETTINGS)
         cmd = engine.build_command(request(resume=True, model="gpt-5.6-sol",
                                            session_id="thread-abc"))
         assert cmd[1] == "exec"
         assert cmd[2] == "resume"
+        # CLI 가 재개 세션의 지침을 안 바꾼다(2026-09-19 실측). 그 자리에 실어도
+        # 첫 턴 지침이 그대로 쓰이므로 안 싣는다.
         assert not any(tok.startswith("developer_instructions=") for tok in cmd)
         assert any("sandbox_mode=" in tok for tok in cmd)
         assert "thread-abc" in cmd
-        assert cmd[-1] == "안녕"
+
+    def test_재개_스레드는_갱신된_지침을_프롬프트에_싣는다(self, tmp_path: Path) -> None:
+        """시스템 지침은 턴마다 달라진다(run_id, 수정된 프롬프트 파일, 이번
+        요청에 맞춘 지식). 재개 턴이 옛 지침을 쓰면 claude·gemini 와 다른
+        동작이 된다 (sca-ivs)."""
+        profile = codex_profile(tmp_path)
+        engine = CodexEngine(profile, SETTINGS)
+        cmd = engine.build_command(request(resume=True, model="gpt-5.6-sol",
+                                           session_id="thread-abc",
+                                           system_prompt="이번턴만의지침"))
+        assert "이번턴만의지침" in cmd[-1]
+        assert cmd[-1].endswith("안녕")
+
+    def test_재개_턴의_지침은_슬랙_입력과_같은_계층이다(self, tmp_path: Path) -> None:
+        """프롬프트 한 문자열 안에 든 지침은 native 경계가 아니다. 선언을
+        그대로 두면 요구 대조가 거짓이 된다."""
+        profile = codex_profile(tmp_path)
+        engine = CodexEngine(profile, SETTINGS)
+        신규 = engine.capabilities_for(request(resume=False, model="gpt-5.6-sol"))
+        재개 = engine.capabilities_for(request(resume=True, model="gpt-5.6-sol",
+                                              session_id="thread-abc"))
+        assert 신규.instruction_boundary is InstructionBoundary.NATIVE
+        assert 재개.instruction_boundary is InstructionBoundary.PROMPT_ONLY
 
     def test_기본_sandbox는_제한하지_않는다(self, tmp_path: Path) -> None:
         """봇이 읽기와 쓰기를 다 할 수 있어야 한다(2026-09-15 사용자 지시).
