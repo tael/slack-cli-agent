@@ -146,6 +146,7 @@ def _split_model_suffix(model: str) -> tuple[str, str | None]:
 
 class GeminiEngine(Engine):
     name = "gemini"
+    shell_always_attached = True
 
     # --dangerously-skip-permissions is always passed (headless mode auto-denies
     # otherwise), so nothing is restricted. system_prompt and prompt go into one
@@ -195,6 +196,7 @@ class GeminiEngine(Engine):
         prompt = (
             request.system_prompt
             + self.readable_paths_note(request.readable_dirs)
+            + self.write_paths_note(request)
             + self.tool_ban_note(request)
             + UNTRUSTED_INPUT_MARK
             + request.prompt
