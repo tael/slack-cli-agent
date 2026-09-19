@@ -12,6 +12,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,7 +29,7 @@ from slack_cli_agent.web.metrics import MetricsCollector
 TOP_LEVEL_KEYS = {
     "generated_at", "window_days", "bot", "snapshot", "last_answer_kst",
     "channels", "responsiveness", "reliability", "quality", "usage", "followup",
-    "tools", "queue_wait", "usage_block", "session_total",
+    "tools", "queue_wait", "usage_block", "session_total", "payload",
 }
 
 
@@ -930,3 +931,67 @@ class Test정정지식두자리:
         (profile.paths.learned / "_corrections.md").write_text("- 새 정정\n", encoding="utf-8")
         collector = MetricsCollector(profile, now=lambda: 1_000.0)
         assert collector.collect(days=7)["quality"]["corrections"] == 1
+
+
+class Test전송량_집계:
+    """감사에만 쌓이고 아무도 안 읽으면 상한을 정할 근거가 안 생긴다
+    (sca-ygd 2단계)."""
+
+    def _수집(self, tmp_path: Path, 행: list[dict[str, Any]]) -> dict[str, Any]:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        for i, 값 in enumerate(행):
+            insert_incident(db, kind="payload", at=900.0 + i, **값)
+        return MetricsCollector(profile, now=lambda: 1_000.0).collect(days=7)["payload"]
+
+    def _행(self, **덮기: Any) -> dict[str, Any]:
+        기본: dict[str, Any] = {
+            "engine": "codex", "request_id": "r1", "resume": False,
+            "instruction_bytes": 100, "user_prompt_bytes": 10,
+            "adapter_added_bytes": 5, "total_bytes": 115,
+            "instruction_transport": "native_system",
+            "instruction_replayed_on_resume": False,
+        }
+        기본.update(덮기)
+        return 기본
+
+    def test_기록이_없으면_건수가_0이다(self, tmp_path: Path) -> None:
+        assert self._수집(tmp_path, [])["count"] == 0
+
+    def test_엔진별_건수를_센다(self, tmp_path: Path) -> None:
+        결과 = self._수집(tmp_path, [
+            self._행(engine="codex"), self._행(engine="codex"), self._행(engine="gemini"),
+        ])
+        assert 결과["by_engine"] == {"codex": 2, "gemini": 1}
+
+    def test_재전송된_턴을_따로_센다(self, tmp_path: Path) -> None:
+        """이 값이 sca-ygd 가 세려는 것이다. 재개 턴에 지침이 다시 실린 건수."""
+        결과 = self._수집(tmp_path, [
+            self._행(resume=True, instruction_replayed_on_resume=True),
+            self._행(resume=True, instruction_replayed_on_resume=True),
+            self._행(resume=False),
+        ])
+        assert 결과["replayed_count"] == 2
+
+    def test_지침_바이트의_중앙값과_최댓값을_낸다(self, tmp_path: Path) -> None:
+        결과 = self._수집(tmp_path, [
+            self._행(instruction_bytes=100), self._행(instruction_bytes=300),
+            self._행(instruction_bytes=200),
+        ])
+        assert 결과["instruction_bytes_median"] == 200
+        assert 결과["instruction_bytes_max"] == 300
+
+    def test_재전송_바이트_합계를_낸다(self, tmp_path: Path) -> None:
+        """재개마다 다시 문 바이트의 총량. 상한을 정할 때 이 값이 근거다."""
+        결과 = self._수집(tmp_path, [
+            self._행(instruction_bytes=100, instruction_replayed_on_resume=True),
+            self._행(instruction_bytes=250, instruction_replayed_on_resume=True),
+            self._행(instruction_bytes=999),
+        ])
+        assert 결과["replayed_instruction_bytes_total"] == 350
+
+    def test_전송량은_사고로_세지_않는다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        insert_incident(open_db(profile), kind="payload", at=900.0, **self._행())
+        결과 = MetricsCollector(profile, now=lambda: 1_000.0).collect(days=7)
+        assert "payload" not in 결과["reliability"].get("incident_counts", {})

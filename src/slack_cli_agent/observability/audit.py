@@ -62,6 +62,7 @@ class IncidentKind(StrEnum):
 
 
 REQUEST_KIND = IncidentKind.REQUEST.value
+PAYLOAD_KIND = IncidentKind.PAYLOAD.value
 REVIEW_KIND = IncidentKind.REVIEW.value
 WATCH_CHECKED_KIND = IncidentKind.WATCH_CHECKED.value
 WATCH_FINISHED_KIND = IncidentKind.WATCH_FINISHED.value
