@@ -46,15 +46,35 @@ def _is_safe_run_id(run_id: str) -> bool:
 
 
 class WatchResultReader:
-    def __init__(self, result_dir: str = ".watch-out") -> None:
-        self._result_dir = result_dir
+    """Reads background results out of one directory.
 
-    def path_for(self, workdir: str, run_id: str) -> Path | None:
-        if not workdir or not _is_safe_run_id(run_id):
+    The directory used to be workdir-relative, so a channel pointed at a real
+    repository got a `.watch-out/` inside it (sca-vokt). It is a required
+    absolute path now: a default here and a default in the prompt note would
+    be two places to keep in step, and a mismatch makes the watch silently
+    never register.
+    """
+
+    def __init__(self, result_dir: Path) -> None:
+        self._result_dir = Path(result_dir)
+
+    @property
+    def result_dir(self) -> Path:
+        return self._result_dir
+
+    def ensure_dir(self) -> None:
+        """The model's own `mkdir -p` was the only thing creating this."""
+        try:
+            self._result_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            _LOGGER.warning("감시 결과 디렉터리를 못 만들었다: %s (%s)", self._result_dir, exc)
+
+    def path_for(self, run_id: str) -> Path | None:
+        if not _is_safe_run_id(run_id):
             return None
-        return Path(workdir) / self._result_dir / f"{run_id}.out"
+        return self._result_dir / f"{run_id}.out"
 
-    def launched(self, workdir: str, run_id: str) -> bool:
+    def launched(self, run_id: str) -> bool:
         """Whether the background work for this run_id was actually started.
 
         The result file is the evidence: the shell redirection creates it the
@@ -67,13 +87,13 @@ class WatchResultReader:
         that ran without one finished with nobody reading its exit status
         (sca-pq5).
         """
-        path = self.path_for(workdir, run_id)
+        path = self.path_for(run_id)
         if path is None:
             return False
         return path.is_file()
 
-    def read(self, workdir: str, run_id: str) -> WatchOutcome:
-        path = self.path_for(workdir, run_id)
+    def read(self, run_id: str) -> WatchOutcome:
+        path = self.path_for(run_id)
         if path is None:
             return WatchOutcome.UNKNOWN
 
@@ -102,7 +122,7 @@ class WatchResultReader:
         return WatchOutcome.SUCCEEDED if status == 0 else WatchOutcome.FAILED
 
 
-    def cleanup(self, workdir: str, *, older_than_sec: float, now: float | None = None) -> int:
+    def cleanup(self, *, older_than_sec: float, now: float | None = None) -> int:
         """Deletes result and script files older than older_than_sec, returning
         how many went.
 
@@ -111,24 +131,42 @@ class WatchResultReader:
         reading them (sca-y6g). The cut must stay above watch_job_max_age_sec:
         a job still in the queue needs its result file.
         """
-        if not workdir:
-            return 0
         cut = (now if now is not None else time.time()) - older_than_sec
         removed = 0
+        strangers = 0
         try:
-            for path in (Path(workdir) / self._result_dir).glob("*"):
-                if not path.is_file() or path.suffix not in (".out", ".sh"):
+            for path in self._result_dir.glob("*"):
+                if not path.is_file():
+                    continue
+                if path.name.startswith("."):
+                    # The OS puts .DS_Store here. A warning nobody can act on
+                    # makes the real one unreadable.
+                    continue
+                if path.suffix not in (".out", ".sh"):
+                    # Nothing else should be written here. Counting it is how
+                    # a model using this directory for something else shows up.
+                    strangers += 1
                     continue
                 if path.stat().st_mtime >= cut:
                     continue
                 path.unlink()
                 removed += 1
         except OSError as exc:
-            _LOGGER.warning("감시 결과 파일을 정리하지 못했다 : %s (%s)", workdir, exc)
+            _LOGGER.warning("감시 결과 파일을 정리하지 못했다 : %s (%s)", self._result_dir, exc)
+        if strangers:
+            _LOGGER.warning(
+                "감시 결과 디렉터리에 결과 파일이 아닌 것이 %d 건 있다 : %s",
+                strangers, self._result_dir,
+            )
         return removed
 
 
-def background_command(command: str, run_id: str, out_dir: str = ".watch-out") -> str:
+#: Double quotes are what keeps a path with a space in one piece; these
+#: characters would still be read by the shell inside them.
+_UNQUOTABLE = ('"', "$", "`", "\\")
+
+
+def background_command(command: str, run_id: str, out_dir: str) -> str:
     """Raises on a name the reader would refuse: building a command that writes
     where nothing will look for it is worse than failing here.
 
@@ -140,13 +178,17 @@ def background_command(command: str, run_id: str, out_dir: str = ".watch-out") -
         raise ValueError(f"결과 파일 이름으로 쓸 수 없다 : {run_id!r}")
     if any(line.strip() == _HEREDOC_TAG for line in command.splitlines()):
         raise ValueError(f"명령에 heredoc 종료 표시가 들어 있다 : {_HEREDOC_TAG}")
+    if any(bad in out_dir for bad in _UNQUOTABLE):
+        raise ValueError(f"결과 디렉터리에 셸이 해석하는 글자가 있다 : {out_dir!r}")
     script = f"{out_dir}/{run_id}.sh"
+    # Same shape as the prompt note, down to pipefail: the model copies that
+    # line and this builds it, so a fix applied to one only would split them.
     wrapper = (
-        f"sh {script}; status=$?; "
+        f'bash -o pipefail "{script}"; status=$?; '
         f'printf "\\n{MARKER_PREFIX}%s\\n" "$status"; exit "$status"'
     )
     return (
-        f"mkdir -p {out_dir}\n"
-        f"cat > {script} <<'{_HEREDOC_TAG}'\n{command}\n{_HEREDOC_TAG}\n"
-        f"nohup sh -c '{wrapper}' > {out_dir}/{run_id}.out 2>&1 &\n"
+        f'mkdir -p "{out_dir}"\n'
+        f"cat > \"{script}\" <<'{_HEREDOC_TAG}'\n{command}\n{_HEREDOC_TAG}\n"
+        f"nohup sh -c '{wrapper}' > \"{out_dir}/{run_id}.out\" 2>&1 &\n"
     )

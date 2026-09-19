@@ -110,7 +110,7 @@ class RequestPipeline:
         # Its own generator: run_id names a result file and is re-minted for the
         # retry, so sharing one source would tie the two lifetimes together.
         new_request_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
-        watch_results: WatchResultReader | None = None,
+        watch_results: WatchResultReader,
     ) -> None:
         self._access = access_policy
         self._transcript = transcript_builder
@@ -125,7 +125,7 @@ class RequestPipeline:
         self._default_workdir = default_workdir
         self._new_run_id = new_run_id
         self._new_request_id = new_request_id
-        self._watch_results = watch_results or WatchResultReader()
+        self._watch_results = watch_results
         self._owner_user_id = owner_user_id
         self._reactions = reactions
         self._name_resolver = name_resolver
@@ -434,6 +434,7 @@ class RequestPipeline:
             chat_level=chat_level,
             people=self._present_people(ctx),
             watch_run_id=run_id,
+            watch_out_dir=str(self._watch_results.result_dir),
         )
         text, report = self._composer.compose_with_report(composition_ctx)
         return text, report.as_audit_dict()
@@ -554,7 +555,7 @@ class RequestPipeline:
         no tag. Registration used to depend on that tag, so work that ran
         without one finished with nobody reading its exit status (sca-pq5).
         """
-        if not self._watch_results.launched(str(workdir), run_id):
+        if not self._watch_results.launched(run_id):
             return ""
         return LAUNCHED_WATCH_DESC
 

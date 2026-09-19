@@ -52,6 +52,10 @@ class CompositionContext:
     """Result file name for this turn's background work, issued by the code.
     Empty means no name was minted, and the guidance that names it is left
     out — an unfilled slot would reach the engine as a literal (sca-17p)."""
+    watch_out_dir: str = ""
+    """Directory the background result goes in. Absolute, and the same value
+    the reader uses — the two used to agree by both hardcoding .watch-out,
+    which is how a mismatch would silently stop every watch (sca-vokt)."""
     postmortem: bool = False
     debug_trace: bool = False
     format_review: bool = False
@@ -329,15 +333,22 @@ class WatchSection(PromptSection):
         return not ctx.aside
 
     RUN_ID_SLOT = "<<WATCH_RUN_ID>>"
+    OUT_DIR_SLOT = "<<WATCH_OUT_DIR>>"
 
     def render(self, ctx: CompositionContext) -> str:
         library = ctx._library_or_raise()
         if ctx.watch_check:
             return library.text("WATCH_CHECK_NOTE")
         text = library.text("WATCH_NOTE")
-        if ctx.watch_run_id:
-            background = library.text("WATCH_BACKGROUND_NOTE", keep_slots=("WATCH_RUN_ID",))
-            text += "\n\n" + background.replace(self.RUN_ID_SLOT, ctx.watch_run_id)
+        # Both slots or neither: a note naming the file but not the directory
+        # would send the model to a path nothing reads.
+        if ctx.watch_run_id and ctx.watch_out_dir:
+            background = library.text(
+                "WATCH_BACKGROUND_NOTE", keep_slots=("WATCH_RUN_ID", "WATCH_OUT_DIR"),
+            )
+            text += "\n\n" + background.replace(
+                self.RUN_ID_SLOT, ctx.watch_run_id,
+            ).replace(self.OUT_DIR_SLOT, ctx.watch_out_dir)
         return text
 
 
