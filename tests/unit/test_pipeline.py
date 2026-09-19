@@ -380,10 +380,17 @@ def ok_response(body: str = "답변입니다", session_id: str = "sess-1") -> En
     )
 
 
-def fail_response(reason: str = "nonzero_exit", detail: FailureDetail = NO_DETAIL) -> EngineResponse:
+def fail_response(
+    reason: str = "nonzero_exit",
+    detail: FailureDetail = NO_DETAIL,
+    *,
+    body: str = "실패",
+    user_facing: bool = False,
+) -> EngineResponse:
     return EngineResponse(
-        ok=False, body="실패", session_id=None, model_actual=None,
+        ok=False, body=body, session_id=None, model_actual=None,
         elapsed=0.5, turns=None, usage=None, failure_reason=reason, failure_detail=detail,
+        user_facing=user_facing,
     )
 
 
@@ -528,6 +535,45 @@ class Test예외처리:
 
         assert "failed" not in [이름 for 이름, _채널, _ts in deps["reactions"].events]
         assert outcome.ok is False
+
+
+class Test실패_안내를_사람에게_보인다:
+    """원본 bot.py 는 실패해도 사람이 볼 문구를 그대로 돌려줬다. 사유를 안
+    보이면 사람은 왜 안 되는지 모른 채 다시 부르고, 그때마다 한 번 더 태운다
+    (sca-5sc)."""
+
+    def test_사용자_대면_안내는_스레드에_올린다(self, tmp_path: Path) -> None:
+        안내 = "구독 사용 한도에 걸려 지금은 답할 수 없습니다."
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("usage_limit", body=안내, user_facing=True)],
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx())
+
+        assert outcome.ok is False
+        assert [p["text"] for p in deps["publisher"].posted] == [안내]
+
+    def test_엔진_원문_실패는_올리지_않는다(self, tmp_path: Path) -> None:
+        """제미나이는 CLI 의 error 문자열을 그대로 body 에 넣는다. 그것까지
+        올리면 내부 사정이 채널로 나간다."""
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("is_error", body="Traceback ... /Users/x/키")] * 2,
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert deps["publisher"].posted == []
+
+    def test_안내를_올려도_실패로_남는다(self, tmp_path: Path) -> None:
+        """성공으로 바뀌면 표식과 큐 기록이 전부 어긋난다."""
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("usage_limit", body="한도", user_facing=True)],
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx())
+
+        assert outcome.ok is False
+        assert deps["audit"].records[0]["ok"] is False
 
 
 class Test세션이어받기실패:

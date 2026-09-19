@@ -224,6 +224,7 @@ class ClaudeEngine(Engine):
                 return EngineResponse(
                     ok=False, body=self._limit_body(limit), session_id=None,
                     model_actual=None, elapsed=0.0, turns=None, usage=None,
+                    user_facing=True,
                     raw={"usage_limit": {"detail": limit.detail, "source": limit.source}},
                     failure_reason="usage_limit",
                     failure_detail=FailureDetail(exit_code=returncode, code=limit.source),

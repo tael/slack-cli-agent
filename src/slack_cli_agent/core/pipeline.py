@@ -296,6 +296,8 @@ class RequestPipeline:
 
         if not response.ok:
             failure = response.failure_reason or "엔진 실행 실패"
+            if response.user_facing and response.body.strip():
+                self._publisher.post(ctx.channel, ctx.thread_ts, response.body, rich)
             self._record(
                 ctx, decision, model, effort, elapsed,
                 ok=False, usage=None, turns=response.turns, failure=failure,
