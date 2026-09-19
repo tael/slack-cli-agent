@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -708,6 +709,38 @@ class Test사용량_블록:
         profile = make_profile(tmp_path, engine="claude")
         collector = MetricsCollector(profile, now=lambda: 1_000.0)
         assert "usage_block" not in collector.collect(days=7)["bot"]["not_applicable"]
+
+    def test_플러그인이_등록한_엔진의_선언도_읽는다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """엔진 선언을 묻는다는 계약은 동봉 엔진에만 적용되는 것이 아니다.
+        기본 목록만 보면 플러그인 엔진은 전부 '모르는 엔진' 이 된다 (sca-cs0)."""
+        module = "fake_metrics_engine_plugin"
+        (tmp_path / f"{module}.py").write_text(
+            "from slack_cli_agent.engine.claude import ClaudeEngine\n"
+            "from slack_cli_agent.plugin.base import BotPlugin\n\n"
+            "class 내엔진(ClaudeEngine):\n"
+            "    name = 'mine'\n"
+            "    ccusage_reports_consumption = True\n\n"
+            "class Plugin(BotPlugin):\n"
+            "    name = 'mineplug'\n"
+            "    def engines(self):\n        return (내엔진,)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        sys.modules.pop(module, None)
+        profile = Profile.from_dict({
+            "name": "example",
+            "primary_engine": {"type": "mine", "binary": "bin", "model": "model-x"},
+            "state_dir": str(tmp_path / "bot"),
+            "owner_user_id": "U1",
+            "troubleshoot_channel": "C1",
+            "plugins": [module],
+        })
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        result = collector.collect(days=7)
+        assert result["usage_block"]["kind"] != "engine_not_covered"
+        assert "usage_block" not in result["bot"]["not_applicable"]
 
     def test_ccusage_실행파일이_없으면_사용_불가다(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
