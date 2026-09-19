@@ -119,6 +119,18 @@ class StatePaths:
         return self.root / "skills"
 
     @property
+    def skill_files(self) -> Path:
+        """Where a skill's own files live, and the only place the bot can write them.
+
+        Claude Code refuses Write/Bash on any path holding a `.claude`
+        component while in dontAsk mode, even when its parent came in through
+        --add-dir (실측 2026-09-19). Its skill discovery path is exactly such a
+        path, so the two are split: this directory holds the files, and the
+        engine points the discovery path here (engine/claude.py prepare()).
+        """
+        return self.skills / "installed"
+
+    @property
     def engine_dir(self) -> Path:
         return self.root / "engine"
 
@@ -158,5 +170,6 @@ class StatePaths:
         return self.root / "progress"
 
     def ensure(self) -> None:
-        for path in (self.root, self.prompts, self.persona, self.engine_dir, self.progress):
+        for path in (self.root, self.prompts, self.persona, self.engine_dir,
+                     self.progress, self.skill_files):
             path.mkdir(parents=True, exist_ok=True)
