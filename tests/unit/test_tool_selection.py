@@ -413,3 +413,39 @@ class Test허용목록은_tools_로_건다:
         assert "--tools" not in cmd
         assert "--disallowedTools" not in cmd
         assert "--allowedTools" not in cmd
+
+
+class Test전역_MCP_서버가_안_붙는다:
+    """--strict-mcp-config 가 프로필에 MCP 서버가 있을 때만 붙어 있었다.
+
+    서버가 없는 프로필에서는 사용자 ~/.claude.json 의 전역 서버가 전부 실린다.
+    2026-09-20 측정 시점에 9개였다. --tools "Read,Grep,Glob" 로 내장 도구를
+    닫아 놓아도 모델이 mcp__playwright__browser_run_code_unsafe 를 대신 호출했다.
+    그 호출은 dontAsk 가 거부했지만 승인 규칙에 걸린 것이라, 이름이 허용목록이나
+    settings 의 allow 에 들어가면 열린다 (sca-mo4g).
+    """
+
+    def cmd(self, tmp_path, **kwargs):
+        from test_engine import profile_with, request
+        from test_engine_capability import SETTINGS
+
+        from slack_cli_agent.engine.claude import ClaudeEngine
+
+        profile = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            tmp_path=tmp_path,
+            **kwargs,
+        )
+        return ClaudeEngine(profile, SETTINGS).build_command(request())
+
+    def test_서버가_없어도_붙인다(self, tmp_path) -> None:
+        assert "--strict-mcp-config" in self.cmd(tmp_path)
+
+    def test_서버가_있으면_그것만_붙인다(self, tmp_path) -> None:
+        cmd = self.cmd(tmp_path, mcp_servers={"jira": {"command": "jira-mcp"}})
+        assert "--strict-mcp-config" in cmd
+        assert "jira" in cmd[cmd.index("--mcp-config") + 1]
+
+    def test_서버가_없으면_설정_인자를_안_붙인다(self, tmp_path) -> None:
+        """빈 mcpServers 를 넘길 자리가 아니다. 제한만 걸면 된다."""
+        assert "--mcp-config" not in self.cmd(tmp_path)

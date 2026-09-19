@@ -225,10 +225,12 @@ class ClaudeEngine(Engine):
             cmd += ["--add-dir", str(skills_dir)]
         mcp_servers = _claude_mcp_servers(self.profile.mcp_servers)
         if mcp_servers:
-            cmd += [
-                "--mcp-config", json.dumps({"mcpServers": mcp_servers}, ensure_ascii=False),
-                "--strict-mcp-config",
-            ]
+            cmd += ["--mcp-config", json.dumps({"mcpServers": mcp_servers}, ensure_ascii=False)]
+        # Unconditional: it used to ride along with --mcp-config, so a profile
+        # with no servers took the user's global ones instead -- 9 of them at
+        # the 2026-09-20 measurement. With the built-in tools closed the model
+        # reached for one of those anyway (sca-mo4g).
+        cmd += ["--strict-mcp-config"]
         if request.progress_log is not None:
             cmd += [
                 "--settings",
