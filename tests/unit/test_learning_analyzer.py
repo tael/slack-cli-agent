@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from engine_support import named
 from test_engine import 통과정책
@@ -63,12 +64,28 @@ class FakeEngine(Engine):
         return None
 
 
+class 기록감사:
+    """운영과 같이 완화를 받아 줄 수 있는 기록기다. 없으면 완화가 거부돼
+    학습 배치가 claude 밖의 엔진에서 통째로 막힌다."""
+
+    def __init__(self) -> None:
+        self.기록: list[tuple[str, dict[str, Any]]] = []
+
+    def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None:
+        self.기록.append((kind, fields))
+
+
 def make_runner(stdout: str, returncode: int = 0) -> EngineRunner:
     def fake_subprocess(cmd, cwd, timeout, env=None):
         return SimpleNamespace(stdout=stdout, stderr="", returncode=returncode)
 
     settings = RuntimeSettings(request_timeout_sec=10)
-    return EngineRunner(settings, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+    # 운영 조립과 같이 감사 기록기를 준다. 없으면 완화가 거부돼 학습 배치가
+    # claude 밖의 엔진에서 통째로 막힌다.
+    return EngineRunner(
+        settings, subprocess_runner=fake_subprocess, environment_policy=통과정책(),
+        audit=기록감사(),
+    )
 
 
 def analysis_stdout(**fields) -> str:
@@ -106,9 +123,7 @@ class TestProposalAnalyzer:
         assert "봇" in request.system_prompt
         assert "기록 본문" in request.prompt
 
-    def test_도구를_하나도_주지_않는다(self) -> None:
-        """기록은 프롬프트에 이미 들어간다. 도구를 안 주는 쪽이 요구 등급을
-        선언하는 것보다 확실하다 - 엔진마다 강제 수준이 다르기 때문이다 (sca-0p5)."""
+    def _요청(self):
         engine = FakeEngine()
         runner = make_runner(analysis_stdout())
         analyzer = ProposalAnalyzer(
@@ -116,7 +131,26 @@ class TestProposalAnalyzer:
             workdir=Path("/tmp"), bot_name="봇",
         )
         analyzer.analyze_channel("2026-09-14", "공지", "기록 본문", [])
-        assert engine.built_requests[0].tools.names == ()
+        return engine.built_requests[0]
+
+    def test_도구를_하나도_주지_않는다(self) -> None:
+        """기록은 프롬프트에 이미 들어간다.
+
+        이름이 빈 것으로는 판정이 안 된다 - 예전 시험이 그것만 봐서, 도구를
+        안 준다고 적어 놓고 전체 도구가 열린 채 도는 것을 못 잡았다 (sca-0a7).
+        """
+        from slack_cli_agent.engine.tool_selection import ToolAccess
+
+        assert self._요청().tools.access is ToolAccess.FORBIDDEN
+
+    def test_그_금지를_엔진에_요구한다(self) -> None:
+        """claude 는 강제하고, 못 하는 엔진은 강등이 감사에 남는다. 야간
+        배치는 아무도 기다리지 않으므로 막지 않고 기록으로 남긴다."""
+        from slack_cli_agent.engine.capability import TOOL_AXIS, ToolRestriction
+
+        요구 = self._요청().requirements
+        assert 요구.tool_restriction is ToolRestriction.ALL_FORBIDDEN
+        assert 요구.downgradable_axes == frozenset({TOOL_AXIS})
 
     def test_엔진_실행_실패는_실행_실패로_갈린다(self, tmp_path: Path) -> None:
         engine = FakeEngine()
