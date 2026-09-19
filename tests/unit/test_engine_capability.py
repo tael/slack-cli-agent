@@ -388,6 +388,28 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
         assert 실행 == []
         assert 엔진.준비호출 == 0
 
+    def test_감사_경로_부재는_안내문에_드러난다(self, tmp_path: Path) -> None:
+        """엔진 제약만 말하면 배선 문제를 엔진 탓으로 읽는다. 완화를 요청했는데
+        기록할 곳이 없어 막힌 것이 이 차단의 직접 조건이다."""
+        응답, _, _ = self._돌린다(
+            tmp_path,
+            감사=None,
+            requirements=ExecutionRequirements(
+                tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+                allow_audited_downgrade=True,
+            ),
+        )
+        assert "감사" in 응답.body
+
+    def test_완화를_요청하지_않은_차단에는_감사_문구가_없다(self, tmp_path: Path) -> None:
+        응답, _, _ = self._돌린다(
+            tmp_path,
+            감사=None,
+            requirements=ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
+        )
+        assert 응답.ok is False
+        assert "감사" not in 응답.body
+
     def test_도구_외_축은_아직_막지_않는다(self, tmp_path: Path) -> None:
         응답, _, 실행 = self._돌린다(
             tmp_path,
