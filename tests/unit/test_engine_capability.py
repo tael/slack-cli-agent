@@ -454,12 +454,34 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
         assert 응답.ok is False
         assert "감사 기록기" not in 응답.body
 
-    def test_도구_외_축은_아직_막지_않는다(self, tmp_path: Path) -> None:
+    def test_도구_외_축도_막는다(self, tmp_path: Path) -> None:
+        """선언한 축을 하나만 강제하면 나머지 둘은 요구해도 그냥 돈다.
+        요구를 세우는 쪽은 세 축이 같은 무게라고 읽는다 (sca-igu)."""
         응답, _, 실행 = self._돌린다(
             tmp_path,
             requirements=ExecutionRequirements(
                 execution_isolation=ExecutionIsolation.READONLY_SANDBOX,
                 instruction_boundary=InstructionBoundary.NATIVE,
+            ),
+        )
+        assert 응답.ok is False
+        assert 실행 == []
+
+    def test_못_맞춘_축을_안내문에_적는다(self, tmp_path: Path) -> None:
+        응답, _, _ = self._돌린다(
+            tmp_path,
+            requirements=ExecutionRequirements(
+                execution_isolation=ExecutionIsolation.READONLY_SANDBOX,
+            ),
+        )
+        assert "execution_isolation" in (응답.failure_detail.code if 응답.failure_detail else "")
+        assert "격리" in 응답.body
+
+    def test_맞춘_축만_요구하면_그대로_실행한다(self, tmp_path: Path) -> None:
+        응답, _, 실행 = self._돌린다(
+            tmp_path,
+            requirements=ExecutionRequirements(
+                execution_isolation=ExecutionIsolation.NONE,
             ),
         )
         assert 응답.ok is True

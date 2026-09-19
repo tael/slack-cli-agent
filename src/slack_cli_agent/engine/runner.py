@@ -48,8 +48,14 @@ log = logging.getLogger(__name__)
 
 CAPABILITY_KIND = "capability"
 
-#: The one axis enforced at run time. The other two are recorded only.
 TOOL_AXIS = "tool_restriction"
+
+#: For the notice the person who asked reads. The axis names are internal.
+AXIS_NAMES = {
+    TOOL_AXIS: "도구 제한",
+    "execution_isolation": "실행 격리",
+    "instruction_boundary": "지침 경계",
+}
 
 
 class CapabilityAuditPort(Protocol):
@@ -168,13 +174,14 @@ class EngineRunner:
     def _blocked_response(
         self, engine: Engine, request: EngineRequest, actual: EngineCapabilities
     ) -> EngineResponse | None:
-        """Refuses before prepare() when the tool guarantee is weaker than required.
+        """Refuses before prepare() when a declared guarantee is weaker than required.
 
-        Only the tool axis is enforced here (sca-dyb.15 3/5). Isolation and the
-        instruction boundary are recorded but still run.
+        Every axis counts. Enforcing one of the three would tell the caller that
+        setting the other two means something when it does not (sca-igu).
         """
         required = request.requirements
-        if TOOL_AXIS not in required.unmet(actual):
+        unmet = required.unmet(actual)
+        if not unmet:
             return None
         # The relief valve is an *audited* downgrade. With nowhere to record it,
         # granting it anyway would leave no trace that the guarantee was given
@@ -186,8 +193,12 @@ class EngineRunner:
             audit_missing = True
             log.warning("감사 기록기가 주입되지 않아 완화를 받아주지 않는다 : 엔진 %s", engine.name)
         body = (
-            "요청이 요구한 도구 제한을 이 엔진이 보장하지 못해 실행하지 않았습니다. "
-            f"요구 {required.tool_restriction}, {engine.name} 보장 {actual.tool_restriction}."
+            "요청이 요구한 실행 보장을 이 엔진이 맞추지 못해 실행하지 않았습니다. "
+            + " ".join(
+                f"{AXIS_NAMES[axis]} 요구 {getattr(required, axis)},"
+                f" {engine.name} 보장 {getattr(actual, axis)}."
+                for axis in unmet
+            )
         )
         if audit_missing:
             # Naming only the engine limit would read as an engine problem when
@@ -203,7 +214,7 @@ class EngineRunner:
             # Written for the person who asked: without it they only see the
             # failure mark and can't tell this from a crash (sca-5sc).
             user_facing=True,
-            failure_detail=FailureDetail(code=TOOL_AXIS),
+            failure_detail=FailureDetail(code=",".join(unmet)),
             elapsed_source=ElapsedSource.RUNNER,
             engine=engine.name,
         )
