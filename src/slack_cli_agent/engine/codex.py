@@ -45,6 +45,7 @@ from typing import Any
 
 from ..config.profile import McpServerSpec
 from .base import (
+    UNTRUSTED_INPUT_MARK,
     Engine,
     EngineRequest,
     EngineResponse,
@@ -124,6 +125,15 @@ class CodexEngine(Engine):
         return dataclasses.replace(
             self.capabilities,
             execution_isolation=isolation,
+            # A resumed turn carries this turn's instructions inside the prompt
+            # string, next to the Slack input. The CLI keeps the first turn's
+            # developer_instructions whatever we pass (measured 2026-09-19), so
+            # that layer is no longer where this turn's instructions live
+            # (sca-ivs).
+            instruction_boundary=(
+                InstructionBoundary.PROMPT_ONLY if request.resume
+                else InstructionBoundary.NATIVE
+            ),
             tool_restriction=(
                 ToolRestriction.COARSE_SANDBOX
                 if isolation is not ExecutionIsolation.NONE
@@ -154,10 +164,29 @@ class CodexEngine(Engine):
         if request.resume:
             # resume doesn't accept --sandbox or -C; achieve the same effect via config keys instead.
             cmd += ["-c", f"sandbox_mode={self._toml_string(sandbox)}",
-                   request.require_session_id(), "--", request.prompt]
+                   request.require_session_id(), "--", self._resume_prompt(request)]
         else:
             cmd += ["--sandbox", sandbox, "-C", str(request.workdir), "--", request.prompt]
         return cmd
+
+    def _resume_prompt(self, request: EngineRequest) -> str:
+        """Carries this turn's instructions in the prompt on a resumed turn.
+
+        developer_instructions is pinned to the session's first turn: passing a
+        new value on resume leaves the original in force (measured 2026-09-19).
+        Without this the bot would answer a resumed turn with instructions from
+        whenever the thread started -- a stale run id, prompt files edited since,
+        knowledge picked for a different question (sca-ivs). gemini puts the same
+        two parts in one string for the same reason.
+        """
+        if not request.system_prompt:
+            return request.prompt
+        return (
+            request.system_prompt
+            + self.readable_paths_note(request.readable_dirs)
+            + UNTRUSTED_INPUT_MARK
+            + request.prompt
+        )
 
     # 2026-09-19 실측 — item.started/item.completed 의 item.type 이 도구 이름
     # 자리다(command_execution, file_change, web_search, agent_message).
