@@ -417,6 +417,24 @@ class TestClaudeEngineParse:
         resp = engine.parse(json.dumps(payload), "", 0)
         assert resp.failure_reason == "usage_limit"
 
+    def test_is_error_한도_안내는_사람에게_보이는_문구다(self, tmp_path: Path) -> None:
+        """한도 감지·폴백 전환은 이 경로에서 일어나는데 안내만 안 나가면
+        사람은 실패 표식만 보고 이유를 모른다 (sca-5sc)."""
+        profile = claude_profile(tmp_path)
+        engine = ClaudeEngine(profile, SETTINGS)
+        payload = {"is_error": True, "subtype": "error_max_limit", "result": ""}
+        resp = engine.parse(json.dumps(payload), "", 0)
+        assert resp.user_facing is True
+        assert resp.body.strip()
+
+    def test_일반_is_error는_안내를_게시하지_않는다(self, tmp_path: Path) -> None:
+        """한도가 아닌 실패의 문구는 실패 표식에 더할 정보가 없다."""
+        profile = claude_profile(tmp_path)
+        engine = ClaudeEngine(profile, SETTINGS)
+        payload = {"is_error": True, "subtype": "error_during_execution"}
+        resp = engine.parse(json.dumps(payload), "", 0)
+        assert resp.user_facing is False
+
     def test_일반_is_error는_한도가_아니다(self, tmp_path: Path) -> None:
         profile = claude_profile(tmp_path)
         engine = ClaudeEngine(profile, SETTINGS)
