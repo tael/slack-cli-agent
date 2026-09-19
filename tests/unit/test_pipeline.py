@@ -567,6 +567,24 @@ class Test가드rerun:
         assert len(deps["runner"].calls) == 2
         assert deps["publisher"].posted[0]["text"] == "다시 쓴 답"
 
+    def test_재작성본이_침묵이면_앞의_답을_그대로_쓴다(self, tmp_path: Path) -> None:
+        """재작성을 시켰더니 모델이 답하지 않기로 했다면 그것은 재작성이
+        아니다. 침묵 표식을 그대로 발송하지 않고 앞의 답을 유지한다."""
+        from slack_cli_agent.prompt.sections import SILENT_MARK
+
+        pipeline, deps = build_pipeline(
+            responses=[
+                ok_response(body="원본"),
+                ok_response(body=f"{SILENT_MARK} 답할 것이 없습니다"),
+            ],
+            guards=[_RequestsRerunOnce()],
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx())
+
+        assert outcome.ok is True
+        assert deps["publisher"].posted[0]["text"] == "원본"
+
     def test_재호출은_한_번까지다_두번째는_is_rewrite_retry로_돈다(self, tmp_path: Path) -> None:
         """가드가 항상 rerun 을 요청해도 엔진은 두 번까지만 불린다."""
         pipeline, deps = build_pipeline(
@@ -1182,6 +1200,19 @@ class Test발송전재확인:
         )
         pipeline.handle(make_ctx())
         assert len(parts["runner"].calls) == 1
+
+    def test_반영본이_침묵이면_첫_답을_그대로_올린다(self) -> None:
+        """새 말을 담아 다시 돌렸더니 모델이 답하지 않기로 했다면, 첫 답은
+        이미 만들어 둔 것이므로 그대로 올린다. 표식을 올리지 않는다."""
+        from slack_cli_agent.prompt.sections import SILENT_MARK
+
+        checker = Fake늦은추가말("새 말", "1700000009.000000")
+        pipeline, parts = build_pipeline(
+            responses=[ok_response("첫 답"), ok_response(f"{SILENT_MARK} 덧붙일 것이 없습니다")],
+            late_addendum=checker,
+        )
+        pipeline.handle(make_ctx())
+        assert parts["publisher"].posted[-1]["text"] == "첫 답"
 
     def test_새_말을_반영하면_late_addendum으로_기록된다(self) -> None:
         checker = Fake늦은추가말("새 말", "1700000009.000000")
