@@ -10,7 +10,11 @@ from typing import ClassVar
 import pytest
 
 from slack_cli_agent.config import settings as config_settings
-from slack_cli_agent.config.channel import ChannelConfig, ChannelRegistry
+from slack_cli_agent.config.channel import (
+    TOOL_ENFORCEMENT_STRICT,
+    ChannelConfig,
+    ChannelRegistry,
+)
 from slack_cli_agent.config.paths import StatePaths
 from slack_cli_agent.config.profile import EngineSpec, McpServerSpec, Profile
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -323,6 +327,37 @@ class TestChannelRegistry:
         os.utime(path, (100, 100))
 
         assert registry.is_registered("C1")
+
+    def test_한_채널의_잘못된_값이_다른_채널을_막지_않는다(self, tmp_path: Path) -> None:
+        """조회 경로는 매 요청 파싱한다. 한 채널의 오편집으로 전체가 멈추면
+        무관한 채널의 요청까지 죽는다 (sca-xe0)."""
+        path = tmp_path / "channels.json"
+        write(path, {
+            "C1": {"mode": "default", "tool_enforcement": "strcit"},
+            "C2": {"mode": "helpdesk"},
+        })
+        registry = ChannelRegistry(path)
+        assert channel(registry, "C2").mode == "helpdesk"
+
+    def test_잘못된_값은_안전한_쪽으로_떨어진다(self, tmp_path: Path) -> None:
+        """읽어 낼 수 없는 값을 관대한 기본값으로 읽으면 오타 하나가 조용히
+        강제를 없앤다. 그 채널만 strict 로 둔다."""
+        path = tmp_path / "channels.json"
+        write(path, {"C1": {"tool_enforcement": "strcit"}})
+        assert channel(ChannelRegistry(path), "C1").tool_enforcement == TOOL_ENFORCEMENT_STRICT
+
+    def test_그_채널의_나머지_설정은_그대로_읽는다(self, tmp_path: Path) -> None:
+        path = tmp_path / "channels.json"
+        write(path, {"C1": {"mode": "helpdesk", "tool_enforcement": 3}})
+        읽은값 = channel(ChannelRegistry(path), "C1")
+        assert 읽은값.mode == "helpdesk"
+        assert 읽은값.tool_enforcement == TOOL_ENFORCEMENT_STRICT
+
+    def test_쓰기_경로는_잘못된_값을_그대로_거부한다(self, tmp_path: Path) -> None:
+        """조회는 그 채널만 낮추고 넘어가지만, 저장은 멈춘다. 잘못된 값이
+        파일에 굳으면 이후 모든 조회가 계속 안전값으로 떨어진다."""
+        with pytest.raises(ConfigError):
+            ChannelConfig.from_dict("C1", {"tool_enforcement": "strcit"})
 
     def test_모르는_키는_extra_에_보존한다(self, tmp_path: Path) -> None:
         path = tmp_path / "channels.json"
