@@ -27,6 +27,10 @@ class IncidentKind(StrEnum):
     #: What the request required of the engine and what that engine actually
     #: enforces. Baseline traffic like REQUEST, not an incident.
     CAPABILITY = "capability"
+    #: How many bytes one engine call put on the wire, and how the
+    #: instructions travelled. Sizes and kinds only, never the text. Baseline
+    #: traffic like REQUEST (sca-ygd).
+    PAYLOAD = "payload"
     #: One engine call made by a review task. Baseline traffic like REQUEST;
     #: its elapsed value is what timeout decisions are read from.
     REVIEW = "review"
@@ -68,6 +72,7 @@ WATCH_ABANDONED_KIND = IncidentKind.WATCH_ABANDONED.value
 BASELINE_KINDS: tuple[IncidentKind, ...] = (
     IncidentKind.REQUEST,
     IncidentKind.CAPABILITY,
+    IncidentKind.PAYLOAD,
     IncidentKind.REVIEW,
     IncidentKind.WATCH_CHECKED,
     IncidentKind.WATCH_FINISHED,

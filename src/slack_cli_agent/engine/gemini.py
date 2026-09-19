@@ -37,6 +37,7 @@ TestSkillDirectoryIsolation also stays xfail here.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import uuid
 from collections.abc import Mapping, Sequence
@@ -60,6 +61,11 @@ from .capability import (
     ExecutionIsolation,
     InstructionBoundary,
     ToolRestriction,
+)
+from .footprint import (
+    INSTRUCTION_TRANSPORT_USER_PROMPT,
+    PayloadFootprint,
+    utf8_bytes,
 )
 
 _VALID_EFFORTS = frozenset({"low", "medium", "high"})
@@ -154,6 +160,17 @@ class GeminiEngine(Engine):
         self._ensure_settings_file(self.spec.home_dir)
         self._ensure_keychain_link(self.spec.home_dir)
         self._ensure_mcp_config_file(request.workdir, self.profile.mcp_servers)
+
+    def footprint_for(self, request: EngineRequest) -> PayloadFootprint:
+        """agy takes one prompt argument, so instructions always ride in it.
+        On a resumed turn those bytes join the session context (sca-ygd)."""
+        base = super().footprint_for(request)
+        return dataclasses.replace(
+            base,
+            adapter_added_bytes=base.adapter_added_bytes + utf8_bytes(UNTRUSTED_INPUT_MARK),
+            instruction_transport=INSTRUCTION_TRANSPORT_USER_PROMPT,
+            instruction_replayed_on_resume=request.resume,
+        )
 
     def build_command(self, request: EngineRequest) -> list[str]:
         spec = self.spec
