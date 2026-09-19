@@ -306,3 +306,25 @@ stderr 에만 나온다.
    별도 건으로 등록했다 (sca-wudf).
 
 측정은 2회뿐이다. agy 판이 올라가면 다시 잰다.
+
+## 11. 제한에 걸려 잘린 답은 result 이벤트로 구분되지 않는다
+
+2026-09-20 측정. `--print-timeout 5s` 로 긴 작업을 자른 쪽과 정상 완료한 쪽의
+`result` 이벤트를 나란히 놨다.
+
+| 항목 | 잘림 | 정상 완료 |
+|---|---|---|
+| `status` | SUCCESS | SUCCESS |
+| 종료코드 | 0 | 0 |
+| `duration_seconds` | 0 | 1.55 |
+| `usage` | 전부 0 | input 12303, output 67 |
+| stderr | `[agy] print timeout after 5s with turn in progress; returning partial output` | 없음 |
+
+`response` 는 문장 중간에서 끊긴 채로 담긴다.
+
+판정은 stderr 문구로 한다. `duration_seconds` 와 `usage` 가 0 인 것은 간접
+신호이고 다른 이유로도 0 이 될 수 있어 쓰지 않는다. stderr 에 무엇이든 있으면
+잘림으로 읽는 것도 안 된다 - 경고 한 줄에 답이 바뀐다.
+
+받은 부분은 버리지 않고 안내를 덧붙여 낸다. `ok=False` 로 폴백을 돌리면 처음부터
+다시 도는데 같은 제한에 또 걸린다. 감사에는 `raw["truncated"]` 로 남긴다.
