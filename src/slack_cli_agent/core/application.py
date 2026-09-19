@@ -458,7 +458,10 @@ class Application:
         knowledge = KnowledgeLoader(
             paths.persona / "PERSONA.md", paths.knowledge, learned_dir=paths.learned,
         )
-        return SystemPromptComposer(library, knowledge, self._prompt_sections())
+        return SystemPromptComposer(
+            library, knowledge, self._prompt_sections(),
+            budget_bytes=self._settings.system_prompt_budget_bytes,
+        )
 
     def _guards(self) -> GuardPipeline:
         guards: list[OutputGuard] = [
