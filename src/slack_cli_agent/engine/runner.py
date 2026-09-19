@@ -96,7 +96,12 @@ def _level(value: ToolRestriction | ExecutionIsolation | InstructionBoundary | N
 
 
 class CapabilityAuditPort(Protocol):
-    """AuditLog.record's shape. Optional -- a runner without one still runs."""
+    """AuditLog.record's shape. Optional -- a runner without one still runs.
+
+    record() must raise when the record does not land. The runner grants an
+    audited downgrade only on a call that returned, so a port that swallows
+    its own failures turns that downgrade into an unrecorded one (sca-ckm).
+    """
 
     def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None: ...
 
@@ -147,8 +152,8 @@ class EngineRunner:
             # concrete engine is only known here (sca-dyb.10).
             request = dataclasses.replace(request, model=engine.spec.model)
         actual = engine.capabilities_for(request)
-        self._record_capabilities(engine, request, actual)
-        blocked = self._blocked_response(engine, request, actual)
+        recorded = self._record_capabilities(engine, request, actual)
+        blocked = self._blocked_response(engine, request, actual, recorded)
         if blocked is not None:
             return blocked
         engine.prepare(request)
@@ -209,7 +214,7 @@ class EngineRunner:
         return sink
 
     def _blocked_response(
-        self, engine: Engine, request: EngineRequest, actual: EngineCapabilities
+        self, engine: Engine, request: EngineRequest, actual: EngineCapabilities, recorded: bool
     ) -> EngineResponse | None:
         """Refuses before prepare() when a declared guarantee is weaker than required.
 
@@ -224,11 +229,16 @@ class EngineRunner:
         # granting it anyway would leave no trace that the guarantee was given
         # up, which is the one thing the name promises (sca-gpe).
         audit_missing = False
+        record_failed = False
         if required.downgraded(unmet):
-            if self._audit is not None:
+            if recorded:
                 return None
-            audit_missing = True
-            log.warning("감사 기록기가 주입되지 않아 완화를 받아주지 않는다 : 엔진 %s", engine.name)
+            if self._audit is None:
+                audit_missing = True
+                log.warning("감사 기록기가 주입되지 않아 완화를 받아주지 않는다 : 엔진 %s", engine.name)
+            else:
+                record_failed = True
+                log.warning("감사 기록에 실패해 완화를 받아주지 않는다 : 엔진 %s", engine.name)
         body = (
             "요청이 요구한 실행 보장을 이 엔진이 맞추지 못해 실행하지 않았습니다. "
             + " ".join(
@@ -242,6 +252,8 @@ class EngineRunner:
             # the direct condition is that this runner was built without an
             # audit recorder -- an assembly issue, not the engine's (sca-gpe).
             body += " 완화가 허용된 요청이지만 감사 기록기가 구성되지 않아 완화를 적용하지 않았습니다."
+        if record_failed:
+            body += " 완화가 허용된 요청이지만 감사 기록을 남기지 못해 완화를 적용하지 않았습니다."
         return EngineResponse(
             ok=False,
             body=body,
@@ -260,34 +272,44 @@ class EngineRunner:
 
     def _record_capabilities(
         self, engine: Engine, request: EngineRequest, actual: EngineCapabilities
-    ) -> None:
+    ) -> bool:
+        """True only when this request's record actually landed.
+
+        A failure here must not take down a request that met its guarantees --
+        the record is the basis for a downgrade, not for the run itself.
+        """
         if self._audit is None:
-            return
+            return False
         required = request.requirements
         unmet = required.unmet(actual)
         downgraded = required.downgraded(unmet)
-        self._audit.record(
-            CAPABILITY_KIND,
-            engine=engine.name,
-            required={
+        record_fields: dict[str, Any] = {
+            "engine": engine.name,
+            "required": {
                 axis: str(value)
                 for axis in ("tool_restriction", "execution_isolation", "instruction_boundary")
                 if (value := getattr(required, axis)) is not None
             },
-            actual=_as_audit(actual),
-            unmet=list(required.unmet(actual)),
-            downgradable_axes=sorted(required.downgradable_axes),
-            policy=required.policy,
+            "actual": _as_audit(actual),
+            "unmet": list(unmet),
+            "downgradable_axes": sorted(required.downgradable_axes),
+            "policy": required.policy,
             # Permitted and used are different questions. Counting relieved
             # requests needs the second one (sca-98k). Only axes the caller
             # named are counted, so a tool-only policy can't read as having
             # relieved isolation too.
-            downgraded_axes=list(downgraded),
-            downgrade_applied=bool(downgraded),
+            "downgraded_axes": list(downgraded),
+            "downgrade_applied": bool(downgraded),
             # One value for the counting side. Deriving it from unmet and the
             # downgrade list means every reader rewrites that rule (sca-98k).
-            outcome=_outcome(unmet, downgraded),
-        )
+            "outcome": _outcome(unmet, downgraded),
+        }
+        try:
+            self._audit.record(CAPABILITY_KIND, **record_fields)
+        except Exception as exc:  # noqa: BLE001 - the caller decides what an unrecorded run may do
+            log.warning("보장 감사 기록에 실패했다 : %s", exc)
+            return False
+        return True
 
     @staticmethod
     def _default_runner(
