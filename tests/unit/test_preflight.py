@@ -456,7 +456,9 @@ class TestOwnerSettingsInertCheck:
         result = check.run(PreflightContext(profile=profile))
         assert result.ok is True
 
-    def test_codex_엔진이면_건너뛴다(self, tmp_path: Path) -> None:
+    def test_codex_엔진에서도_경고를_낸다(self, tmp_path: Path) -> None:
+        """AccessPolicy 는 엔진 종류와 무관하게 소유자의 채널 model 과 낮은
+        effort 를 무시한다. 엔진별 예외를 두면 그 봇만 경고가 사라진다."""
         profile = make_profile(
             tmp_path,
             primary_engine={"type": "codex", "binary": "python3", "model": "m"},
@@ -464,7 +466,9 @@ class TestOwnerSettingsInertCheck:
         write_channels(profile, {"C1": {"name": "잡담방", "model": "haiku", "effort": "low"}})
         check = OwnerSettingsInertCheck()
         result = check.run(PreflightContext(profile=profile))
-        assert result.ok is True
+        assert result.ok is False
+        assert "haiku" in result.detail
+        assert "low" in result.detail
 
 
 # EngineHomeCredentialCheck
