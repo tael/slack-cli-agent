@@ -5,7 +5,6 @@ separate worker process consumes the queue for that.
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -30,8 +29,6 @@ log = logging.getLogger(__name__)
 # Admin commands match on `text.strip() in ("도움말", ...)`, but mention events
 # carry `<@U123> 도움말`, so this must be stripped before command dispatch. Matches
 # `<@U123|displayname>` too (no space inside the brackets), not just the bare form.
-MENTION_RE = re.compile(r"<@[^>\s]+>")
-
 #: Wraps the DB calls on the event's critical path so they can't hold a
 #: socket handler thread for the full lock timeout (sca-9l1).
 LockBudget = Callable[[], AbstractContextManager[None]]
@@ -71,6 +68,10 @@ class IngressService:
     def __init__(
         self,
         listener: EventListener,
+        # No default: a default here would be a second place deciding what the
+        # incoming body looks like, and an assembly that forgets it would go
+        # back to dropping every mention (sca-za2a).
+        strip_self_mention: Callable[[str], str],
         dedup: DeduplicationTracker,
         queue: JobQueue,
         reactions: ReactionMarker,
@@ -97,6 +98,7 @@ class IngressService:
         assistant: AssistantPanel | None = None,
     ) -> None:
         self._listener = listener
+        self._strip_self_mention = strip_self_mention
         self._dedup = dedup
         self._queue = queue
         self._reactions = reactions
@@ -155,7 +157,7 @@ class IngressService:
             if self._dedup.already_seen_event(ctx.channel, ctx.ts):
                 return
 
-            ctx = replace(ctx, text=MENTION_RE.sub("", ctx.text).strip())
+            ctx = replace(ctx, text=self._strip_self_mention(ctx.text))
 
             admin_ctx = self._admin_context_builder(ctx)
             admin_result = self._admin_router.dispatch(ctx.text, admin_ctx)

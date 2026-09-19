@@ -136,6 +136,7 @@ from ..slack.identity import BotIdentity, SlackBotIdentity
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption
 from ..slack.linked_threads import LinkedThreadReader
 from ..slack.listener import EventListener
+from ..slack.mentions import SelfMentionStripper
 from ..slack.names import BotUserResolver, DisplayNameResolver, UserGroupNameResolver
 from ..slack.owner_only_audit import OwnerOnlyChannelAudit
 from ..slack.participants import ThreadParticipants
@@ -555,10 +556,10 @@ class Application:
             settings=self._settings,
             notices=self._notices,
             name_resolver=self._names,
+            group_resolver=self._group_names,
             identity=self.identity,
             bot_display_name=self._profile.display_name,
             owner_user_id=self._profile.owner_user_id,
-            group_resolver=self._group_names,
         )
 
     def _late_addendum(self) -> LateAddendumChecker:
@@ -640,6 +641,7 @@ class Application:
                 reactions=self.reactions(),
                 name_resolver=self._names,
                 mention_table=self._names.name_table,
+                group_resolver=self._group_names,
                 slow_reporter=self._slow_reporter(),
                 # built lazily rather than as a field — eagerly building it here would
                 # look up the bot user ID, making assembly alone call out to Slack
@@ -1074,6 +1076,7 @@ class Application:
                     gate=ResponseGate(),
                     identity=self.identity,
                 ),
+                strip_self_mention=SelfMentionStripper(self.identity).remove_self,
                 dedup=DeduplicationTracker(),
                 queue=self.queue(),
                 reactions=self.reactions(),

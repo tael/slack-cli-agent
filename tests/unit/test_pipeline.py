@@ -39,6 +39,7 @@ from slack_cli_agent.prompt.sections import SILENT_MARK
 from slack_cli_agent.reliability.watchresult import WatchResultReader
 from slack_cli_agent.session.manager import SessionManager
 from slack_cli_agent.session.ports import SessionKey, SessionRecord
+from slack_cli_agent.slack.policy import addresses_someone_else
 
 # 대역
 
@@ -1944,3 +1945,46 @@ class Test실제로_돈_모델을_기록에_남긴다:
         pipeline.handle(make_ctx(user="U1"))
 
         assert deps["audit"].records[-1]["model_actual"] == "claude-haiku-4-5"
+
+
+class Test이번_턴_본문의_멘션도_이름으로_바꾼다:
+    """대화록에서는 이름이 나오고 지금 말에서는 <@U...> 가 나오면 같은 사람이
+    둘로 보인다 (sca-za2a). 대화록 쪽은 sca-hkmb 에서 바꿨다."""
+
+    def _프롬프트(self, deps: dict[str, Any]) -> str:
+        return deps["runner"].calls[0].prompt
+
+    def test_사람_멘션이_이름으로_나간다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[ok_response()],
+            name_resolver=lambda user_id: {"U9": "홍길동"}.get(user_id, ""),
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(user="U1", text="<@U9> 확인해줘"))
+
+        프롬프트 = self._프롬프트(deps)
+        assert "홍길동 확인해줘" in 프롬프트
+        # 원문이 함께 남으면 같은 사람이 둘로 보이는 문제가 그대로다
+        assert "<@U9>" not in 프롬프트
+
+    def test_해석이_안_되면_원문을_남긴다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[ok_response()], name_resolver=lambda user_id: "", tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(user="U1", text="<@U9> 확인해줘"))
+
+        assert self._프롬프트(deps).strip() == "<@U9> 확인해줘"
+
+    def test_수신자_판정이_보는_원문은_안_바뀐다(self, tmp_path: Path) -> None:
+        """슬랙 정책이 원문으로 수신자를 가린다. 치환을 앞에 두면 그 판정이
+        깨져 남에게 한 말을 이 봇이 가져간다."""
+        ctx = make_ctx(user="U1", text="<@U9> 확인해줘")
+        pipeline, _ = build_pipeline(
+            responses=[ok_response()],
+            name_resolver=lambda user_id: "홍길동",
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(ctx)
+
+        assert ctx.text == "<@U9> 확인해줘"
+        assert addresses_someone_else(ctx.text) is True

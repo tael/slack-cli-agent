@@ -28,6 +28,7 @@ from slack_cli_agent.slack.attachments import AttachmentStore, DownloadResult, S
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.gateway import SlackGateway
 from slack_cli_agent.slack.listener import EventListener
+from slack_cli_agent.slack.mentions import SelfMentionStripper
 from slack_cli_agent.slack.reactions import ReactionMarker
 
 # 대역들
@@ -197,6 +198,7 @@ def make_ingress(
 
     return IngressService(
         listener=listener,
+        strip_self_mention=SelfMentionStripper(fake_identity()).remove_self,
         dedup=dedup if dedup is not None else DeduplicationTracker(),
         queue=queue,
         reactions=reactions if reactions is not None else ReactionMarker(FakeWebClient()),
@@ -702,6 +704,18 @@ class Test멘션이_붙은_관리_명령:
         ingress.handle_app_mention(mention_event(text="<@U_BOT> 배포 상태 알려줘"))
 
         assert queue.enqueued[0].text == "배포 상태 알려줘"
+
+    def test_남을_부른_멘션은_큐에_남는다(self, listener, admin_router, tmp_path) -> None:
+        """전부 지우면 누구를 불렀는지가 모델에게 안 간다. 이름으로 바꾸는
+        것은 프롬프트를 만드는 자리가 한다 (sca-za2a)."""
+        queue = FakeJobQueue()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path
+        )
+
+        ingress.handle_app_mention(mention_event(text="<@U_BOT> <@U9> 에게 물어봐"))
+
+        assert queue.enqueued[0].text == "<@U9> 에게 물어봐"
 
 
 class Test삼킨_예외를_기록한다:

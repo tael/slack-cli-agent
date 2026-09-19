@@ -2095,3 +2095,36 @@ class Test점검느린보고연결:
         task = next(iter(app.review_tasks().values()))
         reporter = cast(Any, task._slow_reporter)
         assert reporter._settings.slow_report_sec == 111
+
+
+class Test멘션_치환이_조립에_꽂혀_있다:
+    """부품을 만든 것과 조립에 연결한 것은 다르다. 단위 시험은 대역을 직접
+    넣으므로 주입이 빠져도 통과한다 (sca-za2a)."""
+
+    def test_파이프라인이_사용자_그룹_해석기를_받는다(self, app: Application) -> None:
+        app._group_names._cache["S1"] = "데이터팀"  # type: ignore[attr-defined]
+        assert app.pipeline()._mentions.render("<!subteam^S1> 봐줘") == "@데이터팀 그룹 봐줘"
+
+    def test_파이프라인이_이름_해석기를_받는다(self, app: Application) -> None:
+        app._names._cache["U9"] = "홍길동"  # type: ignore[attr-defined]
+        assert app.pipeline()._mentions.render("<@U9> 봐줘") == "홍길동 봐줘"
+
+
+class Test들어온_본문에서_자기_멘션만_지운다:
+    """조립이 이 함수를 안 넘기면 ingress 가 옛 기본값으로 남의 멘션까지
+    지운다. 단위 시험은 대역을 직접 넣어 통과한다 (sca-za2a)."""
+
+    def test_남의_멘션은_큐에_남는다(self, app: Application, client: FakeSlackClient) -> None:
+        client.auth_test = lambda **kw: {  # type: ignore[method-assign]
+            "ok": True, "user_id": "U_BOT", "bot_id": "B_BOT", "team_id": "T1",
+        }
+        app.ingress()._process(
+            RequestContext(
+                channel="C1", user="U9", ts="1.0", thread_ts="1.0",
+                text="<@U_BOT> <@U9> 에게 물어봐",
+            ),
+            {},
+        )
+        job = app.queue().claim_next("시험")
+        assert job is not None
+        assert job.context.text == "<@U9> 에게 물어봐"
