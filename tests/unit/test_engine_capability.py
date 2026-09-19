@@ -195,6 +195,17 @@ class _감사:
         self.기록.append((kind, fields))
 
 
+class _기록실패감사:
+    """AuditLog 처럼 기록에 실패하면 예외를 낸다."""
+
+    def __init__(self) -> None:
+        self.시도 = 0
+
+    def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None:
+        self.시도 += 1
+        raise OSError("감사 파일을 쓰지 못했다")
+
+
 class Test보장을_감사에_남긴다:
     def _돌린다(self, tmp_path: Path, 감사: _감사, **요청: Any) -> None:
         from test_engine import FakeCompleted, RecordingEngine, 통과정책
@@ -418,7 +429,7 @@ class _준비기록엔진(RecordingEngine):
 
 
 class Test도구_제한을_못_맞추면_실행_전에_막는다:
-    def _돌린다(self, tmp_path: Path, 감사: _감사 | None = None, **요청: Any) -> tuple[Any, Any, list[int]]:
+    def _돌린다(self, tmp_path: Path, 감사: Any = None, **요청: Any) -> tuple[Any, Any, list[int]]:
         from test_engine import FakeCompleted, 통과정책
 
         실행 = []
@@ -481,6 +492,45 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
         assert 응답.ok is False
         assert 실행 == []
         assert 엔진.준비호출 == 0
+
+    def test_기록이_실패하면_완화를_받아주지_않는다(self, tmp_path: Path) -> None:
+        """audited downgrade 의 근거는 기록이 남았다는 사실이다. 포트가
+        주입됐는지가 아니라 이번 기록이 실제로 남았는지를 본다 (sca-ckm)."""
+        감사 = _기록실패감사()
+        응답, 엔진, 실행 = self._돌린다(
+            tmp_path,
+            감사=감사,
+            requirements=ExecutionRequirements(
+                tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+                downgradable_axes=frozenset({TOOL_AXIS}),
+            ),
+        )
+        assert 감사.시도 == 1
+        assert 응답.ok is False
+        assert 실행 == []
+        assert 엔진.준비호출 == 0
+
+    def test_기록_실패는_안내문에_드러난다(self, tmp_path: Path) -> None:
+        응답, _, _ = self._돌린다(
+            tmp_path,
+            감사=_기록실패감사(),
+            requirements=ExecutionRequirements(
+                tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+                downgradable_axes=frozenset({TOOL_AXIS}),
+            ),
+        )
+        assert "감사 기록을 남기지 못해" in 응답.body
+
+    def test_기록이_실패해도_요구를_맞춘_요청은_그대로_실행한다(self, tmp_path: Path) -> None:
+        """감사는 완화의 근거일 뿐이다. 완화가 필요 없는 요청까지 기록 실패로
+        막으면 감사 장애가 곧 서비스 중단이 된다."""
+        응답, _, 실행 = self._돌린다(
+            tmp_path,
+            감사=_기록실패감사(),
+            requirements=ExecutionRequirements(),
+        )
+        assert 응답.ok is True
+        assert 실행 == [1]
 
     def test_감사_경로_부재는_안내문에_드러난다(self, tmp_path: Path) -> None:
         """엔진 제약만 말하면 배선 문제를 엔진 탓으로 읽는다. 완화를 요청했는데
