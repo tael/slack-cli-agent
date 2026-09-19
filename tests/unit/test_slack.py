@@ -582,6 +582,40 @@ class Test메시지갱신:
             pub.update("C1", "100.0", "   ", rich=True)
         assert client.calls == []
 
+    def test_블록_거부는_평문으로_낮춰_다시_갱신한다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        """교정본이 통째로 사라지는 것보다 서식 없이라도 올라가는 것이 낫다.
+        게시 경로에는 이 낮추기가 있었고 갱신 경로에만 없었다(sca-a23)."""
+        client = FakeWebClient()
+        client.queue_update(SlackApiError("invalid_blocks"))
+        기록: list = []
+        pub = make_publisher(
+            client, settings, markdown, splitter, verifier, block_builder, audit=기록
+        )
+        assert pub.update("C1", "100.0", "**굵게**", rich=True) == []
+        kinds = [kind for kind, _ in client.calls]
+        assert kinds == ["chat_update", "chat_update"]
+        _, retry = client.calls[1]
+        assert "blocks" not in retry
+        assert retry["text"] == "*굵게*"
+        assert [a["kind"] for a in 기록] == ["blocks_rejected"]
+
+    def test_평문_갱신도_실패하면_감사에_남기고_예외를_낸다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        client.queue_update(SlackApiError("invalid_blocks"))
+        client.queue_update(RuntimeError("cant_update_message"))
+        기록: list = []
+        pub = make_publisher(
+            client, settings, markdown, splitter, verifier, block_builder, audit=기록
+        )
+        with pytest.raises(SlackError):
+            pub.update("C1", "100.0", "본문", rich=True)
+        assert [a["kind"] for a in 기록] == ["blocks_rejected", "post_failed"]
+        assert 기록[-1]["error"] == "cant_update_message"
+
     def test_갱신_실패는_감사에_남는다(
         self, settings, markdown, splitter, verifier, block_builder
     ) -> None:
