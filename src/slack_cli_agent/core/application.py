@@ -962,6 +962,9 @@ class Application:
             requirements=self.execution_policy.requirements_for(
                 config=config, allowed_tools=watch_tools,
             ),
+            # This check turn belongs to one watch run. Without it the audit
+            # cannot say which watch a capability record came from (sca-4ol).
+            request_id=f"watch-{job.id}-{job.run_id}",
             readable_dirs=self.readable_dirs,
             trust_level=job.trust,
         ), CallOrigin.BACKGROUND)

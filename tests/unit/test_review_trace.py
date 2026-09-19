@@ -122,7 +122,8 @@ class _FakeEngine:
     def __init__(self) -> None:
         self.calls: list = []
 
-    def run(self, prompt: str, session_id: str | None, resume: bool, progress_log=None):
+    def run(self, prompt: str, session_id: str | None, resume: bool, progress_log=None,
+            request_id: str = ""):
         from slack_cli_agent.engine.base import EngineResponse
 
         self.calls.append(prompt)

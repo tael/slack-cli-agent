@@ -109,7 +109,8 @@ class EngineCaller(Protocol):
     # wiring layer that knows about Profile/RuntimeSettings; this package only passes the
     # prompt and session id through.
     def run(
-        self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None
+        self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None,
+        request_id: str = "",
     ) -> EngineResponse: ...
 
     @property
@@ -394,8 +395,9 @@ class ReviewTask(ABC):
         # Minting a UUID here happened to work only because all three CLIs
         # accept one today (sca-k6s).
         started, mono_started = time.time(), time.monotonic()
+        request_id = f"{self.log_name}-{target.channel}-{target.ts}"
         with self._progress_display(target, thread_ts) as progress_log:
-            response = self._engine.run(prompt, None, False, progress_log)
+            response = self._engine.run(prompt, None, False, progress_log, request_id)
         self._record_run(target, response, attempt="main")
         self._report_if_slow(target, response, flagged, started, time.monotonic() - mono_started)
 
@@ -418,7 +420,9 @@ class ReviewTask(ABC):
             # Resume the session the engine actually used. Without an ID there
             # is nothing to continue, so the response goes out as it came.
             retry_started, retry_mono = time.time(), time.monotonic()
-            retry = self._engine.run(self.missing_split_prompt(), response.session_id, True)
+            retry = self._engine.run(
+                self.missing_split_prompt(), response.session_id, True, None, request_id,
+            )
             self._record_run(target, retry, attempt="split_retry")
             # The retry is a second engine call and can be the slow one on its
             # own -- the first response came back fast, it just had no marker.

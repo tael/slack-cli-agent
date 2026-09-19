@@ -88,12 +88,15 @@ class FakeEngine:
         self.effort = "medium"
         self.calls: list[tuple[str, str | None, bool]] = []
         self.progress_logs: list[Path | None] = []
+        self.request_ids: list[str] = []
 
     def run(
-        self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None
+        self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None,
+        request_id: str = "",
     ) -> EngineResponse:
         self.calls.append((prompt, session_id, resume))
         self.progress_logs.append(progress_log)
+        self.request_ids.append(request_id)
         return self._responses.pop(0)
 
 
@@ -413,6 +416,23 @@ class Test세션ID는엔진이정한다:
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
         _, 재시도_세션, 이어가기 = rig.engine.calls[1]
         assert (재시도_세션, 이어가기) == ("엔진이-정한-id", True)
+
+    def test_재시도도_같은_상관관계_키를_쓴다(self, database) -> None:
+        """점검 1건이 엔진을 두 번 부른다. 키가 갈리면 집계에서 점검 2건으로
+        읽힌다 (sca-4ol)."""
+        rig = _재시도_rig(
+            database,
+            [
+                EngineResponse(
+                    ok=True, body="구분선없는본문", session_id="엔진이-정한-id",
+                    model_actual=None, elapsed=1.0, turns=1, usage=None,
+                ),
+                _ok_response("요약===상세===상세내용"),
+            ],
+        )
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert rig.engine.request_ids[0]
+        assert rig.engine.request_ids[0] == rig.engine.request_ids[1]
 
     def test_1차가_세션_ID_를_안_주면_재시도하지_않는다(self, database) -> None:
         """이어갈 대상이 없는데 이어가기로 부르면 다른 대화에 붙거나 실패한다."""

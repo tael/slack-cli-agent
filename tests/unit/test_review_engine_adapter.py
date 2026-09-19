@@ -229,3 +229,18 @@ class Test진행_로그_전달:
         caller, invoker = make_caller()
         caller.run("프롬프트", "세션1", False)
         assert invoker.calls[0].progress_log is None
+
+
+class Test요청_상관관계_키:
+    """점검 한 건은 본 실행과 분할 재시도로 두 번 엔진을 부른다. 같은 키를
+    달아야 집계에서 점검 1건으로 읽힌다 (sca-4ol)."""
+
+    def test_받은_키를_요청에_넣는다(self) -> None:
+        caller, invoker = make_caller()
+        caller.run("프롬프트", "세션1", False, request_id="review-C1-1.1")
+        assert invoker.calls[0].request_id == "review-C1-1.1"
+
+    def test_안_주면_빈_값이다(self) -> None:
+        caller, invoker = make_caller()
+        caller.run("프롬프트", "세션1", False)
+        assert invoker.calls[0].request_id == ""

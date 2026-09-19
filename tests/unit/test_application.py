@@ -1085,6 +1085,26 @@ class Test감시확인연결:
 
         assert 보낸요청[0].requirements.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
 
+    def test_확인실행에도_요청_상관관계_키가_붙는다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """감시 확인도 엔진 실행이라 capability 기록이 남는다. 키가 없으면
+        어느 감시의 확인인지 집계에서 안 갈린다 (sca-4ol)."""
+        from slack_cli_agent.reliability.watchjobs import WatchJob
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        app._composer = lambda: _프롬프트조립대역()  # type: ignore[method-assign]
+        보낸요청: list[Any] = []
+        monkeypatch.setattr(
+            EngineRunner, "run",
+            lambda self, engine, request: 보낸요청.append(request),
+        )
+
+        app._watch_run_check(WatchJob(
+            id=7, channel="C1", thread_ts="1.1", condition="배포 확인",
+            created_at=0.0, last_run=None,
+        ), WatchOutcome.UNKNOWN)
+
+        assert 보낸요청[0].request_id
+
     def test_확인실행은_소유자_추가_도구와_스킬을_안_준다(
         self, tmp_path: Path, monkeypatch: Any
     ) -> None:
