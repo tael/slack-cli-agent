@@ -1,8 +1,8 @@
 """도구 허용 목록이 요청까지 전달되는지 본다.
 
 ToolPolicy 는 만들어져 있고 단위 시험도 있었지만 RequestPipeline 이 그것을
-부르지 않아 EngineRequest.allowed_tools 가 늘 비어 있었다. claude 엔진은 그
-목록을 `--allowedTools` 로 그대로 넘기므로 비면 도구를 하나도 못 쓴다.
+부르지 않아 EngineRequest.allowed_tools 가 늘 비어 있었다. 빈 목록은 금지가
+아니라 금지의 부재라, 그 구간에는 아무 경계도 안 걸려 있었다(sca-6ewc).
 """
 
 from __future__ import annotations

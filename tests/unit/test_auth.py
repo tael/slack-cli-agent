@@ -214,8 +214,8 @@ class TestToolPolicy:
         assert SKILL_TOOL not in 붙은것
 
     def test_읽기전용에서_전부_걸러지면_빈_목록이_아니다(self, tmp_path: Path) -> None:
-        """claude 는 빈 허용목록을 '도구 없음' 으로 읽는다. 아무것도 못 하는
-        턴이 되면 점검이 통째로 실패한다(sca-0ab 와 같은 계열)."""
+        """빈 목록은 금지가 아니라 금지의 부재다. 읽기 전용에서 전부 걸러져
+        빈 목록이 되면 아무것도 안 닫힌 턴이 된다(sca-6ewc)."""
         policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", {}))
         principal = policy.principal_for("D1", OWNER)
         tools = ToolPolicy(("Bash", "Write"), self.OWNER_EXTRA)

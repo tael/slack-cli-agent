@@ -6,8 +6,8 @@
 
 2026-09-19 실측 근거 : claude 는 --disallowedTools=* 로 도구 집합을 비운다
 (디버그 로그의 'Dynamic tool loading' 줄이 사라지고 tool_use 가 4회 모두
-0건이다). 개별 이름 거부는 다른 도구로 우회되므로 강제가 아니다. codex 와
-gemini 에는 대응 수단이 없다.
+0건이다). 2026-09-20 에 이름 기반 거부도 실제로 막는 것을 확인했다 - 사용자
+settings 의 allow 를 이긴다(sca-6ewc). codex 와 gemini 에는 대응 수단이 없다.
 """
 
 from __future__ import annotations
@@ -351,3 +351,65 @@ class Test강제할_수_없는_엔진은_말로_전한다:
         차이 = (gemini.footprint_for(금지).adapter_added_bytes
                 - gemini.footprint_for(없음).adapter_added_bytes)
         assert 차이 == len(gemini.tool_ban_note(금지).encode("utf-8"))
+
+
+class Test허용목록은_tools_로_건다:
+    """--allowedTools 는 자동 승인을 더할 뿐 목록 밖 도구를 닫지 않는다.
+
+    2026-09-20 실측 (claude 2.1.263). --allowedTools "Read" 만 주고 Bash 를
+    시키면 Bash 가 그대로 실행된다. --setting-sources project 와 빈 permissions
+    를 함께 줘도 같다. 같은 경로에 deny 를 넣으면 도구 자체가 사라지므로 그
+    설정이 읽히지 않아서가 아니다 (sca-6ewc).
+
+    닫는 수단은 --tools 다. "Specify the list of available tools from the
+    built-in set" 이라고 도움말이 적고, 실제로 --tools "Read,Grep,Glob" 에서
+    Write 호출이 'No such tool available' 로 막혔다. 붙은 도구를 물으면
+    Glob, Grep, Read 세 개만 답한다.
+    """
+
+    def cmd(self, tmp_path, selection):
+        from test_engine import claude_profile, request
+        from test_engine_capability import SETTINGS
+
+        from slack_cli_agent.engine.claude import ClaudeEngine
+
+        return ClaudeEngine(claude_profile(tmp_path), SETTINGS).build_command(
+            request(tools=selection)
+        )
+
+    def tools_arg(self, cmd) -> str:
+        return cmd[cmd.index("--tools") + 1]
+
+    def test_허용한_이름만_붙인다(self, tmp_path) -> None:
+        cmd = self.cmd(tmp_path, ToolSelection.allow(["Read", "Grep", "Glob"]))
+        assert self.tools_arg(cmd) == "Read,Grep,Glob"
+
+    def test_자동_승인도_함께_넘긴다(self, tmp_path) -> None:
+        """--tools 는 도구를 붙이는 것이고 승인은 별개다."""
+        cmd = self.cmd(tmp_path, ToolSelection.allow(["Read", "Grep"]))
+        assert cmd[cmd.index("--allowedTools") + 1] == "Read,Grep"
+
+    def test_MCP_이름은_tools_에서_뺀다(self, tmp_path) -> None:
+        """--tools 는 내장 도구 집합만 받는다. MCP 이름을 섞어도 오류는 안 나지만
+        그 자리에서 뜻이 없으므로 승인 쪽에만 남긴다."""
+        cmd = self.cmd(tmp_path, ToolSelection.allow(["Read", "mcp__slack__channels_list"]))
+        assert self.tools_arg(cmd) == "Read"
+        assert cmd[cmd.index("--allowedTools") + 1] == "Read,mcp__slack__channels_list"
+
+    def test_MCP_만_허용하면_tools_를_비운다(self, tmp_path) -> None:
+        """내장 도구를 하나도 안 허용한 것이므로 빈 값이 맞다. 인자를 빼면
+        전체 내장 도구가 열린다."""
+        cmd = self.cmd(tmp_path, ToolSelection.allow(["mcp__slack__channels_list"]))
+        assert self.tools_arg(cmd) == ""
+
+    def test_전부_금지는_와일드카드_하나를_쓴다(self, tmp_path) -> None:
+        """실측한 명령 모양이 그것이다."""
+        cmd = self.cmd(tmp_path, ToolSelection.forbid_all())
+        assert cmd[cmd.index("--disallowedTools") + 1] == "*"
+        assert "--tools" not in cmd
+
+    def test_제한_없음에는_도구_인자가_없다(self, tmp_path) -> None:
+        cmd = self.cmd(tmp_path, ToolSelection.unrestricted())
+        assert "--tools" not in cmd
+        assert "--disallowedTools" not in cmd
+        assert "--allowedTools" not in cmd
