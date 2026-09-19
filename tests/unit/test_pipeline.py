@@ -36,6 +36,7 @@ from slack_cli_agent.guard.rewrite import RewriteLossGuard
 from slack_cli_agent.guard.watch import WatchPromiseGuard
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.prompt.sections import SILENT_MARK
+from slack_cli_agent.reliability.watchresult import WatchResultReader
 from slack_cli_agent.session.manager import SessionManager
 from slack_cli_agent.session.ports import SessionKey, SessionRecord
 
@@ -368,6 +369,10 @@ def build_pipeline(
         extra_kwargs["now"] = now
     if new_run_id is not None:
         extra_kwargs["new_run_id"] = new_run_id
+    extra_kwargs.setdefault(
+        "watch_results",
+        WatchResultReader((tmp_path or Path("/tmp")) / ".watch-out"),
+    )
 
     pipeline = RequestPipeline(
         access_policy=access,
@@ -389,6 +394,7 @@ def build_pipeline(
         "access": access, "transcript": transcript, "composer": comp,
         "sessions": session_manager, "runner": runner, "publisher": pub,
         "audit": audit_log, "reactions": reacts, "watch_queue": watch_queue,
+        "watch_results": extra_kwargs["watch_results"],
     }
 
 
@@ -1876,3 +1882,15 @@ class Test요청_상관관계_키:
         pipeline.handle(make_ctx(ts="2.0"))
         runner: Any = parts["runner"]
         assert runner.calls[0].request_id != runner.calls[1].request_id
+
+
+class Test감시_안내가_실제_결과_자리를_받는다:
+    """안내문의 자리와 리더가 읽는 자리를 잇는 것은 파이프라인이다. 시험이
+    손으로 치환하면 이 연결이 끊겨도 통과한다 (sca-vokt 리뷰 지적)."""
+
+    def test_조립_맥락이_리더의_자리를_그대로_받는다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1"))
+
+        composed_ctx = deps["composer"].contexts[0]
+        assert composed_ctx.watch_out_dir == str(deps["watch_results"].result_dir)
