@@ -109,8 +109,10 @@ class Test그룹_이름_해석기:
         assert UserGroupNameResolver(터지는대역()).resolve("S1") == ""
 
 
-class Test대화록이_멘션을_바꾼다:
-    """TranscriptBuilder 가 본문에 그대로 두던 자리다 (sca-hkmb)."""
+class Test대화록은_본문을_그대로_두고_머리에_방향을_적는다:
+    """원본 bot.py:2722 와 같다. 본문을 이름으로 바꿨더니 모델이 그 표기를
+    답변에 옮겨 적었고, 그 이름은 슬랙에서 링크가 안 걸려 불러도 상대가 못
+    받았다(2026-08-26 12:02, 12:05). 방향은 줄 머리에 적는다 (sca-ddkf)."""
 
     class 대역클라이언트:
         def __init__(self, messages: list[dict[str, Any]]) -> None:
@@ -135,18 +137,27 @@ class Test대화록이_멘션을_바꾼다:
         )
         return builder.thread_transcript("C1", "1700000000.000001", before_ts=None)
 
-    def test_본문의_사용자_멘션을_이름으로_바꾼다(self) -> None:
+    def test_본문은_슬랙_원문_그대로다(self) -> None:
         body = self.대화록("<@U2> 어제 그거 봤어?")
-        assert "임꺽정 어제 그거 봤어?" in body
-        assert "<@U2>" not in body
+        assert "<@U2> 어제 그거 봤어?" in body
 
-    def test_본문의_그룹_멘션을_이름으로_바꾼다(self) -> None:
+    def test_부른_사람을_줄_머리에_적는다(self) -> None:
+        body = self.대화록("<@U2> 어제 그거 봤어?")
+        assert "김철수 <@U1> -> 임꺽정]" in body
+
+    def test_아무도_안_불렀으면_화자만_적는다(self) -> None:
+        body = self.대화록("혼잣말")
+        assert "->" not in body
+        assert "김철수 <@U1>]" in body
+
+    def test_그룹을_부른_것도_머리에_적는다(self) -> None:
         body = self.대화록("<!subteam^S1> 확인 부탁", group_resolver=lambda gid: "데이터팀")
-        assert "@데이터팀 그룹 확인 부탁" in body
-
-    def test_그룹_해석기가_없으면_원본을_남긴다(self) -> None:
-        body = self.대화록("<!subteam^S1> 확인 부탁")
+        assert "김철수 <@U1> -> @데이터팀 그룹]" in body
         assert "<!subteam^S1> 확인 부탁" in body
+
+    def test_방송_멘션도_머리에_적는다(self) -> None:
+        body = self.대화록("<!here> 잠깐만")
+        assert "김철수 <@U1> -> 이 자리 모두]" in body
 
 
 class Test경계_입력:
@@ -232,7 +243,7 @@ class Test공지는_원본으로_판정한다:
         from slack_cli_agent.slack.transcript import TranscriptBuilder
 
         공지 = "<@U1> 님 답이 늦었어요."
-        client = Test대화록이_멘션을_바꾼다.대역클라이언트(
+        client = Test대화록은_본문을_그대로_두고_머리에_방향을_적는다.대역클라이언트(
             [{"ts": "1700000000.000001", "user": "U1", "text": 공지}]
         )
         builder = TranscriptBuilder(
@@ -243,10 +254,10 @@ class Test공지는_원본으로_판정한다:
         assert builder.thread_transcript("C1", "1700000000.000001", before_ts=None) == ""
 
 
-class Test추가_메시지도_같은_치환을_쓴다:
+class Test추가_메시지도_대화록과_같은_형식이다:
     """대화록과 추가 메시지가 다른 표기를 내면 모델이 같은 사람을 둘로 본다."""
 
-    def test_멘션을_이름으로_바꾼다(self) -> None:
+    def test_본문은_원문이고_방향은_머리에_있다(self) -> None:
         from identity_support import fake_identity
 
         from slack_cli_agent.config.settings import RuntimeSettings
@@ -269,7 +280,8 @@ class Test추가_메시지도_같은_치환을_쓴다:
             RuntimeSettings(), identity=fake_identity(), bot_display_name="테스트봇",
         )
         body, _ = checker.check("C1", "1700000000.000001", "1700000001.000001")
-        assert "김철수 이것도 봐줘" in body
+        assert "임꺽정 <@U2> -> 김철수]" in body
+        assert "<@U1> 이것도 봐줘" in body
 
 
 class Test2차_리뷰_지적:
@@ -309,7 +321,7 @@ class Test2차_리뷰_지적:
         시계[0] = 20.0
         assert resolver.resolve("S1") == "data"
 
-    def test_추가_메시지도_그룹_멘션을_바꾼다(self) -> None:
+    def test_추가_메시지도_그룹_해석기를_쓴다(self) -> None:
         from identity_support import fake_identity
 
         from slack_cli_agent.config.settings import RuntimeSettings
@@ -333,7 +345,8 @@ class Test2차_리뷰_지적:
             group_resolver=lambda gid: "데이터팀",
         )
         body, _ = checker.check("C1", "1700000000.000001", "1700000001.000001")
-        assert "@데이터팀 그룹 봐줘" in body
+        assert "임꺽정 <@U2> -> @데이터팀 그룹]" in body
+        assert "<!subteam^S1> 봐줘" in body
 
 
 class Test자기_멘션만_지운다:
@@ -375,3 +388,129 @@ class Test자기_멘션만_지운다:
                 raise RuntimeError("조회 실패")
 
         assert SelfMentionStripper(터지는신원()).remove_self("<@U_BOT> !ping") == "!ping"
+
+
+class Test불린_사람_수집:
+    """원본 bot.py:2722 readable_mentions 가 본문 대신 만드는 것이다.
+    본문을 바꾸면 모델이 그 표기를 답변에 옮겨 적고, 그 이름은 슬랙에서
+    링크가 안 걸려 불러도 상대가 못 받는다 (sca-ddkf)."""
+
+    def 수집기(self, **kwargs: Any):
+        from slack_cli_agent.slack.mentions import CalledNames
+
+        return CalledNames(이름표({"U1": "김철수", "U2": "임꺽정"}), **kwargs)
+
+    def test_사용자_멘션에서_이름을_모은다(self) -> None:
+        assert self.수집기().called_in("<@U2> 어제 그거 봤어?") == ("임꺽정",)
+
+    def test_같은_사람을_두_번_안_센다(self) -> None:
+        assert self.수집기().called_in("<@U2> <@U2> 봐줘") == ("임꺽정",)
+
+    def test_나온_차례대로_모은다(self) -> None:
+        assert self.수집기().called_in("<@U2> 와 <@U1>") == ("임꺽정", "김철수")
+
+    def test_못_푼_사용자는_안_넣는다(self) -> None:
+        """이름을 모르면 방향을 말할 수 없다. 원본도 빈 이름은 버린다."""
+        assert self.수집기().called_in("<@U9> 봐줘") == ()
+
+    def test_그룹은_그룹_표시를_붙인다(self) -> None:
+        수집 = self.수집기(group_resolver=lambda gid: "데이터팀")
+        assert 수집.called_in("<!subteam^S1> 확인 부탁") == ("@데이터팀 그룹",)
+
+    def test_그룹_해석기가_없으면_안_넣는다(self) -> None:
+        assert self.수집기().called_in("<!subteam^S1> 확인") == ()
+
+    def test_여기_모두를_부른_것도_센다(self) -> None:
+        assert self.수집기().called_in("<!here> 잠깐만") == ("이 자리 모두",)
+
+    def test_채널_모두를_부른_것도_센다(self) -> None:
+        assert self.수집기().called_in("<!channel> 공지") == ("채널 모두",)
+
+    def test_사용자를_그룹보다_앞에_둔다(self) -> None:
+        """원본은 사용자, 그룹, 방송 순으로 훑는다."""
+        수집 = self.수집기(group_resolver=lambda gid: "데이터팀")
+        assert 수집.called_in("<!subteam^S1> 와 <@U1>") == ("김철수", "@데이터팀 그룹")
+
+    def test_부른_사람이_없으면_빈_값이다(self) -> None:
+        assert self.수집기().called_in("그냥 혼잣말") == ()
+
+    def test_조회가_터져도_요청을_안_깬다(self) -> None:
+        def 터짐(user_id: str) -> str:
+            raise RuntimeError("슬랙 오류")
+
+        from slack_cli_agent.slack.mentions import CalledNames
+
+        assert CalledNames(터짐).called_in("<@U1> 봐줘") == ()
+
+
+class Test안내문과_대화록_형식이_맞는다:
+    """안내문은 처음부터 원본 형식을 적고 있었다. 형식을 만드는 쪽만 안
+    따라와서, 모델은 없는 화살표를 찾고 지우라고 한 표기를 그대로 쓰라는
+    말을 들었다 (sca-ddkf)."""
+
+    def 안내문(self) -> str:
+        from pathlib import Path
+
+        import slack_cli_agent
+
+        path = Path(slack_cli_agent.__file__).parent / "assets" / "prompts" / "direction_note.md"
+        return path.read_text(encoding="utf-8")
+
+    def test_안내문이_말하는_화살표를_대화록이_실제로_낸다(self) -> None:
+        assert "[시각 화자 -> 수신자]" in self.안내문()
+        본문 = Test대화록은_본문을_그대로_두고_머리에_방향을_적는다().대화록("<@U2> 봐줘")
+        assert " -> " in 본문.splitlines()[0]
+
+    def test_안내문이_쓰라는_표기가_본문에_남아_있다(self) -> None:
+        """안내문은 '대화록 본문의 <@...> 표기를 그대로 쓴다' 고 한다.
+        본문을 이름으로 바꾸면 쓸 것이 없다."""
+        assert "대화록 본문의 <@...> 표기를 그대로 쓴다" in self.안내문()
+        본문 = Test대화록은_본문을_그대로_두고_머리에_방향을_적는다().대화록("<@U2> 봐줘")
+        assert "<@U2>" in 본문
+
+
+class Test중복_제거는_이름이_아니라_대상으로_한다:
+    """원본은 사용자를 ID 로, 방송을 낱말로 센다(bot.py:2733, 2749). 이름으로
+    세면 같은 이름을 쓰는 다른 사람이 한 명으로 합쳐진다 (코덱스 리뷰)."""
+
+    def 수집기(self, 표: dict[str, str], **kwargs: Any):
+        from slack_cli_agent.slack.mentions import CalledNames
+
+        return CalledNames(이름표(표), **kwargs)
+
+    def test_이름이_같은_다른_사람을_둘_다_센다(self) -> None:
+        수집 = self.수집기({"U1": "김민수", "U2": "김민수"})
+        assert 수집.called_in("<@U1> <@U2> 봐줘") == ("김민수", "김민수")
+
+    def test_채널과_전체는_따로_센다(self) -> None:
+        """원본은 낱말로 세므로 둘 다 남는다."""
+        수집 = self.수집기({})
+        assert 수집.called_in("<!channel> <!everyone>") == ("채널 모두", "채널 모두")
+
+    def test_같은_방송을_두_번_쓰면_한_번만_센다(self) -> None:
+        수집 = self.수집기({})
+        assert 수집.called_in("<!here> <!here>") == ("이 자리 모두",)
+
+    def test_같은_그룹을_두_번_쓰면_한_번만_센다(self) -> None:
+        수집 = self.수집기({}, group_resolver=lambda gid: "데이터팀")
+        assert 수집.called_in("<!subteam^S1> <!subteam^S1>") == ("@데이터팀 그룹",)
+
+
+class Test그룹_조회가_안_되면_붙어_있는_표기를_쓴다:
+    """원본 group_name 은 조회 실패 시 멘션에 붙어 있는 핸들로 되돌린다
+    (bot.py:2707). 이름을 못 얻었다고 방향을 통째로 버리면 안 된다."""
+
+    def 수집기(self, **kwargs: Any):
+        from slack_cli_agent.slack.mentions import CalledNames
+
+        return CalledNames(이름표({}), **kwargs)
+
+    def test_해석기가_없으면_붙어_있는_핸들을_쓴다(self) -> None:
+        assert self.수집기().called_in("<!subteam^S1|@ops> 봐줘") == ("@ops 그룹",)
+
+    def test_해석에_실패해도_붙어_있는_핸들을_쓴다(self) -> None:
+        수집 = self.수집기(group_resolver=lambda gid: "")
+        assert 수집.called_in("<!subteam^S1|@ops> 봐줘") == ("@ops 그룹",)
+
+    def test_붙어_있는_표기도_없으면_안_넣는다(self) -> None:
+        assert self.수집기().called_in("<!subteam^S1> 봐줘") == ()
