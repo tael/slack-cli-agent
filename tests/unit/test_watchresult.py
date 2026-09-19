@@ -327,3 +327,51 @@ class Test한_번도_안_띄운_것과_도는_중을_가른다:
         경로.parent.mkdir(parents=True)
         경로.write_text("도는 중\n", encoding="utf-8")
         assert 리더.read(작업디렉터리, "9f3a2b") is WatchOutcome.RUNNING
+
+
+class Test안내문대로_띄우면_실패가_실패로_남는다:
+    """실측 2026-09-19 18:14 — pytest 는 인자 오류로 죽고 ruff·mypy 는 모듈이
+    없어 못 돌았는데 종료 상태가 0 으로 남았다. 각 검사를 tail 로 파이프해
+    상태가 tail 것이 됐기 때문이다. 안내문이 내는 실행 줄 자체가 파이프의
+    실패를 올려야 한다 (sca-lofs)."""
+
+    NOTE = (
+        Path(__file__).resolve().parents[2]
+        / "src/slack_cli_agent/assets/prompts/watch_background_note.md"
+    )
+
+    def _실행줄(self, run_id: str) -> str:
+        for 줄 in self.NOTE.read_text(encoding="utf-8").splitlines():
+            if 줄.strip().startswith("nohup "):
+                return 줄.strip().replace("<<WATCH_RUN_ID>>", run_id)
+        raise AssertionError("안내문에 실행 줄이 없다")
+
+    def _돌린다(self, tmp_path: Path, 스크립트: str) -> WatchOutcome:
+        import subprocess
+        import time
+
+        자리 = tmp_path / ".watch-out"
+        자리.mkdir()
+        (자리 / "r1.sh").write_text(스크립트, encoding="utf-8")
+        subprocess.run(self._실행줄("r1"), shell=True, cwd=tmp_path, check=True)
+        리더 = WatchResultReader()
+        for _ in range(100):
+            결과 = 리더.read(str(tmp_path), "r1")
+            if 결과 is not WatchOutcome.RUNNING:
+                return 결과
+            time.sleep(0.05)
+        raise AssertionError("표식이 안 남았다")
+
+    def test_파이프_앞이_실패하면_실패로_남는다(self, tmp_path: Path) -> None:
+        결과 = self._돌린다(tmp_path, "python3 -c 'import sys; sys.exit(3)' | tail -1\n")
+        assert 결과 is WatchOutcome.FAILED
+
+    def test_전부_성공하면_성공으로_남는다(self, tmp_path: Path) -> None:
+        결과 = self._돌린다(tmp_path, "echo 확인 | tail -1\n")
+        assert 결과 is WatchOutcome.SUCCEEDED
+
+    def test_검사를_여러_개_이어_붙이는_법이_안내에_있다(self) -> None:
+        """파이프를 고쳐도 앞 검사의 실패는 마지막 검사가 성공하면 덮인다.
+        안내문에 실패를 모으는 형태가 없으면 모델이 매번 다르게 쓴다."""
+        본문 = self.NOTE.read_text(encoding="utf-8")
+        assert "status=$((status" in 본문 or "|| status=1" in 본문

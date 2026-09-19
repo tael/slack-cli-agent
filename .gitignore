@@ -17,6 +17,8 @@ persona/
 *.jsonl
 *.pid
 *.log
+# 백그라운드 감시 산출물. 봇이 작업 디렉터리에 만든다
+.watch-out/
 
 # 파이썬
 __pycache__/
