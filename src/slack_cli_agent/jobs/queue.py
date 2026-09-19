@@ -101,7 +101,7 @@ class SqliteJobQueue(SqliteRepository):
             (self._now(), job_id, JobStatus.RUNNING.value, attempt),
         )
 
-    def complete(self, job_id: int, ok: bool, failure: str = "", *, attempt: int) -> None:
+    def complete(self, job_id: int, ok: bool, failure: str = "", *, attempt: int) -> bool:
         """`attempt` fences the write against a worker that came back late.
 
         A reclaimed job is claimed again under a new attempt number. Without
@@ -118,16 +118,26 @@ class SqliteJobQueue(SqliteRepository):
             log.warning(
                 "이 시도의 결과가 아니라 기록하지 않았다 : 작업 %d, 시도 %d", job_id, attempt
             )
+            return False
+        return True
 
-    def requeue(self, job_id: int) -> None:
-        self._execute(
+    def requeue(self, job_id: int, *, attempt: int) -> bool:
+        """Puts a job back in the queue. Fenced the same way complete() is:
+        a worker shutting down must not requeue the attempt that replaced it,
+        which would let a third worker claim the same request (sca-d6i).
+        """
+        cursor = self._execute(
             """
             UPDATE jobs SET status = ?, worker_id = NULL,
                    started_at = NULL, heartbeat_ts = NULL
-             WHERE id = ? AND status = ?
+             WHERE id = ? AND status = ? AND attempts = ?
             """,
-            (JobStatus.QUEUED.value, job_id, JobStatus.RUNNING.value),
+            (JobStatus.QUEUED.value, job_id, JobStatus.RUNNING.value, attempt),
         )
+        if cursor.rowcount == 0:
+            log.warning("이 시도가 아니라 되돌리지 않았다 : 작업 %d, 시도 %d", job_id, attempt)
+            return False
+        return True
 
     def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult:
         requeued: list[RequestContext] = []
