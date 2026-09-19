@@ -73,10 +73,10 @@ class JobQueue(Protocol):
     def heartbeat(self, job_id: int, attempt: int) -> None:
         """Mark the job as still alive. Stale heartbeats get reclaimed."""
 
-    def complete(self, job_id: int, ok: bool, failure: str = "", *, attempt: int) -> None:
+    def complete(self, job_id: int, ok: bool, failure: str = "", *, attempt: int) -> bool:
         """Finish the job, unblocking the next one queued on its thread."""
 
-    def requeue(self, job_id: int) -> None:
+    def requeue(self, job_id: int, *, attempt: int) -> bool:
         """Cancel a running job back to queued, e.g. on shutdown."""
 
     def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult:

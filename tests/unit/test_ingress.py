@@ -87,10 +87,10 @@ class FakeJobQueue:
     def heartbeat(self, job_id: int, attempt: int) -> None:
         raise NotImplementedError
 
-    def complete(self, job_id: int, ok: bool, failure: str = "", *, attempt: int) -> None:
+    def complete(self, job_id: int, ok: bool, failure: str = "", *, attempt: int) -> bool:
         raise NotImplementedError
 
-    def requeue(self, job_id: int) -> None:
+    def requeue(self, job_id: int, *, attempt: int) -> bool:
         raise NotImplementedError
 
     def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult:
