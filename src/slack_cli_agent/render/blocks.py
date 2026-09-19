@@ -9,6 +9,10 @@ import re
 SPLIT_MARKER = "<<<SPLIT>>>"
 
 
+#: A table's divider row. Using it as a preview would notify "--- · ---".
+_TABLE_DIVIDER_CELLS = re.compile(r"^\|?(\s*:?-+:?\s*\|)+\s*:?-*:?\s*\|?\s*$")
+
+
 class BlockBuilder:
     # Only short trailing quotes get demoted to a context line -- some
     # answers legitimately end with a long quoted spec excerpt, and without
@@ -44,16 +48,34 @@ class BlockBuilder:
         # When blocks are sent, `text` isn't rendered but still drives the
         # notification preview, so pull a plain first line for it -- strip
         # markdown emphasis since notifications don't render it.
-        for line in text.split("\n"):
-            line = line.strip()
+        lines = [line.strip() for line in text.split("\n")]
+        for line in lines:
             if not line or line.startswith(("#", "|", ">", "```", "---")):
                 continue
-            line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
-            line = re.sub(r"[*_`~]", "", line)
-            line = line.lstrip("-+ ").strip()
-            if line:
-                return line[:150]
+            plain = self._plain(line)
+            if plain:
+                return plain[:150]
+        # An answer made only of headings or only of a table used to notify as
+        # "<봇> 답변", which says nothing about what arrived. Those lines are
+        # skipped above because they render badly, not because they are empty.
+        for line in lines:
+            if line.startswith("#"):
+                heading = self._plain(line.lstrip("# ").strip())
+                if heading:
+                    return heading[:150]
+        for line in lines:
+            if line.startswith("|") and not _TABLE_DIVIDER_CELLS.match(line):
+                cells = [self._plain(c.strip()) for c in line.strip("|").split("|")]
+                joined = " · ".join(c for c in cells if c)
+                if joined:
+                    return joined[:150]
         return self._bot_display_name + " 답변"
+
+    @staticmethod
+    def _plain(line: str) -> str:
+        line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
+        line = re.sub(r"[*_`~]", "", line)
+        return line.lstrip("-+ ").strip()
 
     def split_context(self, text: str) -> tuple[str, str]:
         # Trailing metadata (elapsed time, timestamp, etc.) reads like part
