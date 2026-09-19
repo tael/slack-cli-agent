@@ -101,6 +101,11 @@ class EngineRequest:
     #: never reads it, only the audit does, so Slack identifiers stay out of
     #: the engine layer (sca-4ol). Empty means the caller set none.
     request_id: str = ""
+    #: What the prompt budget did to this turn's instructions. Opaque here in
+    #: the same way request_id is: this layer never reads it, only the audit
+    #: does, so the engine layer stays out of how prompts are assembled
+    #: (sca-ygd). Empty means the caller composed nothing to report.
+    budget_report: Mapping[str, Any] = field(default_factory=dict)
 
     def require_session_id(self) -> str:
         """For build_command, which only ever runs after EngineRunner filled it in.

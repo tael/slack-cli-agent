@@ -85,6 +85,19 @@ class FakeComposer:
         self.contexts.append(ctx)
         return "시스템 프롬프트"
 
+    def compose_with_report(self, ctx: Any) -> tuple[str, Any]:
+        """실물과 같은 진입점을 갖는다. 파이프라인이 부르는 것이 이쪽이다."""
+        from slack_cli_agent.prompt.composer import PromptBudgetReport
+
+        text = self.compose(ctx)
+        return text, PromptBudgetReport(
+            budget_bytes=None,
+            bytes_before=len(text.encode("utf-8")),
+            bytes_after=len(text.encode("utf-8")),
+            omitted_document_count=0,
+            omitted_document_bytes=0,
+        )
+
 
 class FakeChannels:
     def __init__(self, configs: dict[str, ChannelConfig] | None = None) -> None:
@@ -269,6 +282,19 @@ class _Explodes:
 
     def compose(self, ctx: Any) -> str:
         raise RuntimeError("프롬프트 조립 중 고장")
+
+    def compose_with_report(self, ctx: Any) -> tuple[str, Any]:
+        """실물과 같은 진입점을 갖는다. 파이프라인이 부르는 것이 이쪽이다."""
+        from slack_cli_agent.prompt.composer import PromptBudgetReport
+
+        text = self.compose(ctx)
+        return text, PromptBudgetReport(
+            budget_bytes=None,
+            bytes_before=len(text.encode("utf-8")),
+            bytes_after=len(text.encode("utf-8")),
+            omitted_document_count=0,
+            omitted_document_bytes=0,
+        )
 
 
 # 조립 도움 함수

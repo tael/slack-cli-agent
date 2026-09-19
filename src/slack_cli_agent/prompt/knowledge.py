@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,11 +38,16 @@ class KnowledgeDocument:
     """One knowledge file as it would be sent, with the path to name it by.
 
     The path is what a budget-omitted note points at, so the model can read
-    the file itself instead of answering as if it did not exist.
+    the file itself instead of answering as if it did not exist. Documents
+    stay separate all the way to rendering: merging several into one would
+    drop them together and name only the first in that note.
     """
 
     path: Path
     text: str
+    #: Learned knowledge gets one shared header, printed once above the first
+    #: of them that survives the budget.
+    learned: bool = False
 
     @property
     def size(self) -> int:
@@ -84,19 +90,21 @@ class KnowledgeLoader:
         the rule it belongs to. None means no cap, which is the shape every
         caller had before the budget existed (sca-ygd).
         """
+        return self.knowledge_selection(channel_slug, prompt, budget)[0]
+
+    def knowledge_selection(
+        self, channel_slug: str, prompt: str = "", budget: int | None = None,
+    ) -> tuple[str, tuple[KnowledgeDocument, ...]]:
+        """The text plus what the budget left out, for the caller that has to
+        report it. A budget of 0 or less renders nothing at all -- printing the
+        omission list there would add bytes to a prompt that already has none
+        to spare (리뷰 2026-09-19)."""
+        if budget is not None and budget <= 0:
+            documents, _ = self.documents(channel_slug, prompt)
+            return "", documents
         documents, skipped = self.documents(channel_slug, prompt)
-        kept, omitted = _within_budget(documents, budget)
-        parts = [doc.text for doc in kept]
-        if skipped:
-            parts.append(
-                _SKIPPED_HEADER + "\n".join(f"- {p.stem.lstrip('_')} : {p}" for p in skipped)
-            )
-        if omitted:
-            parts.append(
-                BUDGET_OMITTED_HEADER
-                + "\n".join(f"- {doc.path.stem.lstrip('_')} : {doc.path}" for doc in omitted)
-            )
-        return "\n\n".join(parts).strip()
+        kept, omitted = _within_budget(documents, budget, skipped)
+        return _render(kept, omitted, skipped), tuple(omitted)
 
     def documents(
         self, channel_slug: str, prompt: str = "",
@@ -113,9 +121,7 @@ class KnowledgeLoader:
             if self._learned_dir is not None
             else []
         )
-        if learned:
-            merged = _LEARNED_HEADER + "\n\n".join(doc.text for doc in learned)
-            documents.append(KnowledgeDocument(path=learned[0].path, text=merged))
+        documents += [dataclasses.replace(doc, learned=True) for doc in learned]
         return tuple(documents), tuple(skipped)
 
     def _from_dir(
@@ -149,24 +155,54 @@ class KnowledgeLoader:
         return [w.strip().lower() for w in body.split(",") if w.strip()]
 
 
-def _within_budget(
-    documents: Sequence[KnowledgeDocument], budget: int | None,
-) -> tuple[list[KnowledgeDocument], list[KnowledgeDocument]]:
-    """Keeps documents in send order until the next one would not fit.
+def _render(
+    kept: Sequence[KnowledgeDocument],
+    omitted: Sequence[KnowledgeDocument],
+    skipped: Sequence[Path],
+) -> str:
+    parts: list[str] = []
+    for i, doc in enumerate(kept):
+        first_learned = doc.learned and not any(d.learned for d in kept[:i])
+        parts.append(_LEARNED_HEADER + doc.text if first_learned else doc.text)
+    if skipped:
+        parts.append(_SKIPPED_HEADER + _name_lines(skipped))
+    if omitted:
+        parts.append(BUDGET_OMITTED_HEADER + _name_lines([doc.path for doc in omitted]))
+    return "\n\n".join(parts).strip()
 
-    A later small document is still taken after a large one was dropped: the
-    order is a priority, and skipping one oversized file should not cost the
-    ones behind it.
+
+def _name_lines(paths: Sequence[Path]) -> str:
+    return "\n".join(f"- {path.stem.lstrip('_')} : {path}" for path in paths)
+
+
+def _within_budget(
+    documents: Sequence[KnowledgeDocument],
+    budget: int | None,
+    skipped: Sequence[Path] = (),
+) -> tuple[list[KnowledgeDocument], list[KnowledgeDocument]]:
+    """Picks the documents whose rendered text fits in `budget` bytes.
+
+    Not a prefix cut: a document that doesn't fit is skipped and the ones
+    behind it are still considered. File order is alphabetical, not a
+    priority, so one oversized file must not cost everything after it.
+
+    The size measured is the rendered text, headers and blank lines included.
+    Counting document bodies alone let the omission note push the result past
+    the budget it was supposed to keep (리뷰 2026-09-19).
     """
     if budget is None:
         return list(documents), []
     kept: list[KnowledgeDocument] = []
     omitted: list[KnowledgeDocument] = []
-    used = 0
     for doc in documents:
-        if used + doc.size <= budget:
+        candidate = [*kept, doc]
+        rest = [d for d in documents if d not in candidate]
+        if _size(_render(candidate, [*omitted, *rest], skipped)) <= budget:
             kept.append(doc)
-            used += doc.size
         else:
             omitted.append(doc)
     return kept, omitted
+
+
+def _size(text: str) -> int:
+    return len(text.encode("utf-8"))
