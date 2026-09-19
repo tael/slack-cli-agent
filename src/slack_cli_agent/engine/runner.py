@@ -77,6 +77,18 @@ LEVEL_NAMES: dict[ToolRestriction | ExecutionIsolation | InstructionBoundary, st
 }
 
 
+#: What this request's capability check came to.
+OUTCOME_COMPATIBLE = "compatible"
+OUTCOME_DOWNGRADED = "downgraded"
+OUTCOME_BLOCKED = "blocked"
+
+
+def _outcome(unmet: Sequence[str], downgraded: Sequence[str]) -> str:
+    if not unmet:
+        return OUTCOME_COMPATIBLE
+    return OUTCOME_DOWNGRADED if downgraded else OUTCOME_BLOCKED
+
+
 def _level(value: ToolRestriction | ExecutionIsolation | InstructionBoundary | None) -> str:
     if value is None:
         return "요구 없음"
@@ -252,7 +264,8 @@ class EngineRunner:
         if self._audit is None:
             return
         required = request.requirements
-        downgraded = required.downgraded(required.unmet(actual))
+        unmet = required.unmet(actual)
+        downgraded = required.downgraded(unmet)
         self._audit.record(
             CAPABILITY_KIND,
             engine=engine.name,
@@ -271,6 +284,9 @@ class EngineRunner:
             # relieved isolation too.
             downgraded_axes=list(downgraded),
             downgrade_applied=bool(downgraded),
+            # One value for the counting side. Deriving it from unmet and the
+            # downgrade list means every reader rewrites that rule (sca-98k).
+            outcome=_outcome(unmet, downgraded),
         )
 
     @staticmethod
