@@ -288,6 +288,35 @@ class TestFindMissed:
 
         assert service.find_missed("C1", window=3600).value() == []
 
+    def test_봇이_낀_스레드여도_다른_참가자를_부른_말은_안_찾는다(self) -> None:
+        """실시간 경로가 거른 것을 복구가 다시 집어 들면 안 된다.
+
+        2026-09-19 18:44 에 아스카만 부른 요청을 이 봇이 받았다. 실시간
+        판정만 고치면 같은 메시지가 다음 캐치업에서 되살아난다.
+        """
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "98000.0", "user": "U1", "text": "<@U_BOT> 처음 질문", "reply_count": 2},
+                ]
+            },
+            threads={
+                "98000.0": [
+                    {
+                        "ts": "98000.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 처음 질문",
+                        "reactions": [{"name": "white_check_mark"}],
+                    },
+                    {"ts": "98500.0", "bot_id": "B123", "text": "답했습니다"},
+                    {"ts": "99000.0", "user": "U1", "text": "<@U_BOT2> 리뷰해주세요"},
+                ]
+            },
+        )
+        service = make_service(history)
+
+        assert service.find_missed("C1", window=3600).value() == []
+
     def test_신원을_모르면_판정_불가로_올린다(self) -> None:
         """부름 판정의 근거가 없으면 "부른 말이 없다" 와 구분되지 않는다.
 
