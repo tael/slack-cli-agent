@@ -42,7 +42,7 @@ import json
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ..config.profile import McpServerSpec
 from .base import (
@@ -242,6 +242,18 @@ class GeminiEngine(Engine):
             "작업 디렉터리 밖이지만 읽을 수 있는 경로다. 조사할 때 여기를 본다.\n\n"
             f"{lines}\n"
         )
+
+    #: 2026-09-19 실측 (agy 바이너리) - 로그인이 풀리면 "Error: authentication
+    #: required. Run '<명령>' to log in." 을 내고, 로그인 상태 화면은 "You are
+    #: currently not signed in." 을 낸다. 인증 실패는 JSON 이 아니라 이 줄로
+    #: 나와 bad_json 으로 떨어지므로 실패 종류로는 못 가린다.
+    #: 문구는 CLI 가 내는 문장 형태 그대로 잡는다. 'authentication required'
+    #: 조각만 보면 MCP 서버가 낸 같은 말에도 엔진이 바뀐다.
+    AUTH_FAILURE_MARKERS: ClassVar[tuple[str, ...]] = (
+        "authentication required. Run",
+        "You are currently not signed in",
+    )
+    AUTH_FAILURE_NOTE = "gemini 로그인이 풀렸다. agy 를 실행해 다시 로그인해야 한다."
 
     def parse(self, stdout: str, stderr: str, returncode: int) -> EngineResponse:
         payload = self._payload_from(stdout)

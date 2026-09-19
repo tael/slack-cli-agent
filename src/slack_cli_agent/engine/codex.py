@@ -41,7 +41,7 @@ import json
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ..config.profile import McpServerSpec
 from .base import (
@@ -317,21 +317,13 @@ class CodexEngine(Engine):
     #: 종료코드 1 로 내서 코드로는 못 가린다. 401 이라는 상태 코드만으로
     #: 좁히지 않는 이유는 MCP 서버 하나가 401 을 내도 codex 자체의 로그인은
     #: 멀쩡하기 때문이다 (2026-09-19 실측, asuka 프로필).
-    AUTH_FAILURE_MARKERS = (
+    AUTH_FAILURE_MARKERS: ClassVar[tuple[str, ...]] = (
         "refresh_token_invalidated",
         "token_revoked",
         "Please log out and sign in again",
         "Your session has ended. Please log in again",
     )
-
-    def detect_auth_failure(self, response: EngineResponse) -> str | None:
-        if response.failure_reason != "nonzero_exit":
-            return None
-        raw = response.raw if isinstance(response.raw, Mapping) else {}
-        text = f"{raw.get('stderr') or ''}\n{raw.get('stdout') or ''}"
-        if not any(marker in text for marker in self.AUTH_FAILURE_MARKERS):
-            return None
-        return "codex 로그인이 풀렸다. codex login 으로 다시 로그인해야 한다."
+    AUTH_FAILURE_NOTE = "codex 로그인이 풀렸다. codex login 으로 다시 로그인해야 한다."
 
     @staticmethod
     def _parse_jsonl(output: str) -> tuple[str | None, str, dict[str, Any], list[str]]:
