@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
+from ..auth.execution_policy import ExecutionPolicy
 from ..auth.policy import OWNER_EFFORT_MIN
 from ..auth.principal import TrustLevel
 from ..config.profile import Profile
@@ -39,6 +40,7 @@ class ReviewEngineCaller:
         self._model = model or profile.primary_engine.model_for_owner()
         self._effort = effort or OWNER_EFFORT_MIN
         self._allowed_tools = tuple(allowed_tools)
+        self._execution_policy = ExecutionPolicy()
 
     @property
     def model(self) -> str:
@@ -61,6 +63,9 @@ class ReviewEngineCaller:
             workdir=self._workdir,
             readable_dirs=self._readable_dirs,
             allowed_tools=self._allowed_tools,
+            requirements=self._execution_policy.requirements_for(
+                config=None, allowed_tools=self._allowed_tools,
+            ),
             trust_level=TrustLevel.OWNER,
             progress_log=progress_log,
         )

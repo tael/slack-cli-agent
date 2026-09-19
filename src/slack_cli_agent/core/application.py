@@ -23,6 +23,7 @@ from typing import Any
 from ..admin.command import AdminContext
 from ..admin.defaults import default_admin_commands
 from ..admin.router import AdminRouter
+from ..auth.execution_policy import ExecutionPolicy
 from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
@@ -247,6 +248,7 @@ class Application:
         self._ingress: IngressService | None = None
         self._pipeline: RequestPipeline | None = None
         self._access_policy: AccessPolicy | None = None
+        self._execution_policy: ExecutionPolicy | None = None
         self._tool_policy: ToolPolicy | None = None
         self._audit: AuditLog | None = None
         self._owner_dm_channel = ""
@@ -395,6 +397,14 @@ class Application:
         fallback turn runs under the secondary's home rather than the primary's.
         """
         return EngineRunner(self._settings, audit=self.audit())
+
+    @property
+    def execution_policy(self) -> ExecutionPolicy:
+        """One answer to 'what must the engine guarantee' for every caller
+        that builds an EngineRequest outside the pipeline (sca-98k)."""
+        if self._execution_policy is None:
+            self._execution_policy = ExecutionPolicy()
+        return self._execution_policy
 
     @property
     def access_policy(self) -> AccessPolicy:
@@ -931,6 +941,9 @@ class Application:
             # to start new work, which watch_check_prompt forbids (sca-ejy).
             watch_check=True,
         ))
+        watch_tools = self.tool_policy().tool_list_for(
+            principal, prompt=prompt, readonly=True, skills_enabled=False,
+        )
         return self.engine_invoker.invoke(EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
@@ -945,8 +958,9 @@ class Application:
             # this turn start new work, which `watch_check_prompt` forbids.
             # Left empty before, and claude turns an empty list into
             # `--allowedTools ""` — a turn with no tools at all (sca-0ab).
-            allowed_tools=self.tool_policy().tool_list_for(
-                principal, prompt=prompt, readonly=True, skills_enabled=False,
+            allowed_tools=watch_tools,
+            requirements=self.execution_policy.requirements_for(
+                config=config, allowed_tools=watch_tools,
             ),
             readable_dirs=self.readable_dirs,
             trust_level=job.trust,
