@@ -21,7 +21,7 @@ from typing import Any
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.slack.identity import BotIdentity
-from slack_cli_agent.slack.mentions import MentionRenderer
+from slack_cli_agent.slack.mentions import CalledNames
 from slack_cli_agent.slack.message_kind import MessageKind
 from slack_cli_agent.slack.speaker import SpeakerNamer
 
@@ -168,9 +168,11 @@ class TranscriptBuilder:
         # Message classification lives in one place; duplicating it
         # here would let the criteria drift.
         self._kind = MessageKind()
-        # The body kept raw mention markup, so the model could not tell who
-        # called whom (sca-hkmb).
-        self._mentions = MentionRenderer(name_resolver, group_resolver)
+        # The body stays as Slack sent it and the direction goes in the line
+        # head, the same as the original (bot.py:2874). Rewriting the body
+        # made the model copy that form into its own reply, where a bare name
+        # does not link and the person called never finds out (sca-ddkf).
+        self._called = CalledNames(name_resolver, group_resolver)
 
     def thread_transcript(
         self,
@@ -225,10 +227,11 @@ class TranscriptBuilder:
             # mention markup, and rendering first would stop matching it.
             if not text or self._notices.is_notice(text):
                 continue
-            text = self._mentions.render(text)
             when = datetime.fromtimestamp(float(m.get("ts", 0)), KST).strftime("%H:%M:%S")
             who = self._speaker.speaker_of(m)
-            lines.append(f"[{when} {who}]\n{text}")
+            called = self._called.called_in(text)
+            head = f"{who} -> {', '.join(called)}" if called else who
+            lines.append(f"[{when} {head}]\n{text}")
 
         if not lines:
             return TranscriptRead(body="", read_ok=True)
