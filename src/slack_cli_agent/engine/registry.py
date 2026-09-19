@@ -10,10 +10,13 @@ Registration isn't an import-time side effect. The assembly layer
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from ..core.errors import ConfigError
 from .base import Engine
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..config.profile import Profile
@@ -67,12 +70,19 @@ def registry_for_profile(profile: Profile) -> EngineRegistry:
 
     For readers outside the assembly layer that only hold a profile. Without it
     a plugin engine looks unknown and its declarations are read as another
-    engine's defaults (sca-cs0). Plugin load failures are skipped, as elsewhere.
+    engine's defaults (sca-cs0).
+
+    A plugin that fails is skipped, like everywhere else plugins are loaded.
+    Callers here are read paths -- the web console polls one every few seconds
+    -- so one broken plugin must not take the whole reply down.
     """
     from ..plugin.loader import PluginLoader
 
     registry = default_registry()
     for plugin in PluginLoader().load(profile.plugins).plugins:
-        for engine_class in plugin.engines():
-            registry.register(engine_class)
+        try:
+            for engine_class in plugin.engines():
+                registry.register(engine_class)
+        except Exception as exc:  # noqa: BLE001 - a broken plugin loses its engines, nothing else
+            log.warning("플러그인 %s 의 엔진을 등록하지 못했다 : %s", plugin.name, exc)
     return registry

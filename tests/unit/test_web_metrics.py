@@ -7,6 +7,7 @@ None 이나 not_applicable 사유로 낸다. 0 으로 채우지 않는다.
 
 from __future__ import annotations
 
+import importlib
 import json
 import subprocess
 import sys
@@ -741,6 +742,59 @@ class Test사용량_블록:
         result = collector.collect(days=7)
         assert result["usage_block"]["kind"] != "engine_not_covered"
         assert "usage_block" not in result["bot"]["not_applicable"]
+
+    def test_플러그인이_고장나도_지표는_난다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """콘솔은 몇 초마다 이 경로를 부른다. 플러그인 하나가 예외를 내면
+        상태 조회 전체가 실패하는 것이 아니라 '모르는 엔진' 으로 내려가야 한다."""
+        module = "fake_metrics_broken_plugin"
+        (tmp_path / f"{module}.py").write_text(
+            "from slack_cli_agent.plugin.base import BotPlugin\n\n"
+            "class Plugin(BotPlugin):\n"
+            "    name = 'broken'\n"
+            "    def engines(self):\n        raise RuntimeError('고장')\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        sys.modules.pop(module, None)
+        profile = Profile.from_dict({
+            "name": "example",
+            "primary_engine": {"type": "claude", "binary": "bin", "model": "model-x"},
+            "state_dir": str(tmp_path / "bot"),
+            "owner_user_id": "U1",
+            "troubleshoot_channel": "C1",
+            "plugins": [module],
+        })
+        result = MetricsCollector(profile, now=lambda: 1_000.0).collect(days=7)
+        assert "usage_block" in result
+
+    def test_한_번_수집에_플러그인을_한_번만_적재한다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """엔진 선언을 두 자리에서 묻는다. 물을 때마다 플러그인을 새로 만들면
+        생성자의 부작용이 조회 횟수만큼 반복된다."""
+        module = "fake_metrics_counting_plugin"
+        (tmp_path / f"{module}.py").write_text(
+            "from slack_cli_agent.plugin.base import BotPlugin\n\n"
+            "호출 = []\n\n"
+            "class Plugin(BotPlugin):\n"
+            "    name = 'counting'\n"
+            "    def engines(self):\n        호출.append(1)\n        return ()\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        sys.modules.pop(module, None)
+        profile = Profile.from_dict({
+            "name": "example",
+            "primary_engine": {"type": "claude", "binary": "bin", "model": "model-x"},
+            "state_dir": str(tmp_path / "bot"),
+            "owner_user_id": "U1",
+            "troubleshoot_channel": "C1",
+            "plugins": [module],
+        })
+        MetricsCollector(profile, now=lambda: 1_000.0).collect(days=7)
+        assert len(importlib.import_module(module).호출) == 1
 
     def test_ccusage_실행파일이_없으면_사용_불가다(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

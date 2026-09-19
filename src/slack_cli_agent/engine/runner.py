@@ -184,16 +184,16 @@ class EngineRunner:
             if self._audit is not None:
                 return None
             audit_missing = True
-            log.warning("감사 기록 경로가 없어 완화를 받아주지 않는다 : 엔진 %s", engine.name)
+            log.warning("감사 기록기가 주입되지 않아 완화를 받아주지 않는다 : 엔진 %s", engine.name)
         body = (
             "요청이 요구한 도구 제한을 이 엔진이 보장하지 못해 실행하지 않았습니다. "
             f"요구 {required.tool_restriction}, {engine.name} 보장 {actual.tool_restriction}."
         )
         if audit_missing:
             # Naming only the engine limit would read as an engine problem when
-            # the direct condition is a missing audit path -- an operator wiring
-            # issue (sca-gpe).
-            body += " 완화가 허용된 요청이지만 감사 기록 경로가 없어 완화를 적용하지 않았습니다."
+            # the direct condition is that this runner was built without an
+            # audit recorder -- an assembly issue, not the engine's (sca-gpe).
+            body += " 완화가 허용된 요청이지만 감사 기록기가 구성되지 않아 완화를 적용하지 않았습니다."
         return EngineResponse(
             ok=False,
             body=body,
