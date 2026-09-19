@@ -364,6 +364,7 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
     def test_완화를_명시하면_그대로_실행한다(self, tmp_path: Path) -> None:
         응답, _, 실행 = self._돌린다(
             tmp_path,
+            감사=_감사(),
             requirements=ExecutionRequirements(
                 tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
                 allow_audited_downgrade=True,
@@ -371,6 +372,21 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
         )
         assert 응답.ok is True
         assert 실행 == [1]
+
+    def test_감사할_곳이_없으면_완화를_안_받아준다(self, tmp_path: Path) -> None:
+        """이름이 audited downgrade 다. 기록이 안 남는데 완화만 해 주면 그
+        이름이 거짓이 된다 (sca-gpe)."""
+        응답, 엔진, 실행 = self._돌린다(
+            tmp_path,
+            감사=None,
+            requirements=ExecutionRequirements(
+                tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+                allow_audited_downgrade=True,
+            ),
+        )
+        assert 응답.ok is False
+        assert 실행 == []
+        assert 엔진.준비호출 == 0
 
     def test_도구_외_축은_아직_막지_않는다(self, tmp_path: Path) -> None:
         응답, _, 실행 = self._돌린다(

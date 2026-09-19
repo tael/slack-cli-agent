@@ -13,6 +13,7 @@ they don't need to know whether a switch happened.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import subprocess
 import time
@@ -43,6 +44,8 @@ SubprocessRunner = Callable[..., Any]
 
 #: Audit kind for the capability record. Matches IncidentKind.CAPABILITY;
 #: kept as a literal here so this module doesn't import observability.
+log = logging.getLogger(__name__)
+
 CAPABILITY_KIND = "capability"
 
 #: The one axis enforced at run time. The other two are recorded only.
@@ -171,10 +174,15 @@ class EngineRunner:
         instruction boundary are recorded but still run.
         """
         required = request.requirements
-        if required.allow_audited_downgrade:
-            return None
         if TOOL_AXIS not in required.unmet(actual):
             return None
+        # The relief valve is an *audited* downgrade. With nowhere to record it,
+        # granting it anyway would leave no trace that the guarantee was given
+        # up, which is the one thing the name promises (sca-gpe).
+        if required.allow_audited_downgrade:
+            if self._audit is not None:
+                return None
+            log.warning("감사 기록 경로가 없어 완화를 받아주지 않는다 : 엔진 %s", engine.name)
         return EngineResponse(
             ok=False,
             body=(
