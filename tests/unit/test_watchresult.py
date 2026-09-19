@@ -360,11 +360,11 @@ class Test안내문대로_띄우면_실패가_실패로_남는다:
             if 결과 is not WatchOutcome.RUNNING:
                 return 결과
             time.sleep(0.05)
-        raise AssertionError("표식이 안 남았다")
+        raise AssertionError(f"표식이 안 남았다 : {(자리 / 'r1.out').read_text()!r}")
 
     def test_파이프_앞이_실패하면_실패로_남는다(self, tmp_path: Path) -> None:
         결과 = self._돌린다(tmp_path, "python3 -c 'import sys; sys.exit(3)' | tail -1\n")
-        assert 결과 is WatchOutcome.FAILED
+        assert 결과 is WatchOutcome.FAILED, (tmp_path / ".watch-out/r1.out").read_text()
 
     def test_전부_성공하면_성공으로_남는다(self, tmp_path: Path) -> None:
         결과 = self._돌린다(tmp_path, "echo 확인 | tail -1\n")
