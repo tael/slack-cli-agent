@@ -318,6 +318,9 @@ class ReviewTask(ABC):
         lost because its record could not be written."""
         if self._audit is None:
             return
+        extra: dict[str, Any] = {}
+        if response.model_actual:
+            extra["model_actual"] = response.model_actual
         try:
             self._audit.record(
                 REVIEW_KIND,
@@ -326,7 +329,8 @@ class ReviewTask(ABC):
                 review_kind=self.log_name,
                 attempt=attempt,
                 engine=response.engine,
-                model=response.model_actual or "",
+                model=response.model_asked,
+                **extra,
                 elapsed=response.elapsed,
                 ok=response.ok,
                 turns=response.turns,

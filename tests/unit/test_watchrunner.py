@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
@@ -1305,3 +1305,36 @@ class Test포기_사유를_가른다:
         from slack_cli_agent.reliability.watchrunner import _elapsed_text
 
         assert _elapsed_text(경과) == 기대
+
+
+class Test감시_기록의_모델_칸:
+    """watch_checked 기록 17건이 전부 model="" 였다. 실제 모델을 요청 칸에
+    넣었기 때문이다 (sca-cr2b)."""
+
+    def _기록(self, 큐, 응답값):
+        감사 = 가짜감사()
+        c = 체커(큐=큐, run_check=lambda job, outcome: 응답값, 감사=감사)
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        return dict(감사.기록)[WATCH_CHECKED_KIND]
+
+    def test_요청한_모델이_model_칸에_들어간다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        응답값 = 응답(ok=True, body=f"아직입니다 {WATCH_STILL_TAG}")
+        기록 = self._기록(큐, replace(응답값, model_asked="gpt-5.6-luna"))
+        assert 기록["model"] == "gpt-5.6-luna"
+
+    def test_실제로_돈_모델은_따로_들어간다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        응답값 = 응답(ok=True, body=f"아직입니다 {WATCH_STILL_TAG}")
+        기록 = self._기록(
+            큐, replace(응답값, model_asked="claude-opus-5", model_actual="claude-haiku-4-5"),
+        )
+        assert 기록["model"] == "claude-opus-5"
+        assert 기록["model_actual"] == "claude-haiku-4-5"
+
+    def test_모르면_실제_칸을_안_넣는다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        응답값 = 응답(ok=True, body=f"아직입니다 {WATCH_STILL_TAG}")
+        기록 = self._기록(큐, replace(응답값, model_asked="claude-opus-5"))
+        assert "model_actual" not in 기록

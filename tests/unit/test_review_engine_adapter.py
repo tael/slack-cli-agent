@@ -27,7 +27,12 @@ from slack_cli_agent.engine.base import (
     EngineResponse,
     UsageLimit,
 )
-from slack_cli_agent.engine.capability import ToolRestriction
+from slack_cli_agent.engine.capability import (
+    EngineCapabilities,
+    ExecutionIsolation,
+    InstructionBoundary,
+    ToolRestriction,
+)
 from slack_cli_agent.engine.runner import DirectInvoker, EngineInvoker, EngineRunner
 from slack_cli_agent.engine.tool_selection import ToolAccess, ToolSelection
 from slack_cli_agent.review.base import EngineCaller
@@ -245,3 +250,34 @@ class Test요청_상관관계_키:
         caller, invoker = make_caller()
         caller.run("프롬프트", "세션1", False)
         assert invoker.calls[0].request_id == ""
+
+
+class Test요청_모델이_실행기에서_호출자까지_온다:
+    """어댑터·실행기·기록을 각각 대역으로 시험하면 그 사이가 끊겨도 통과한다.
+    여기서는 실물 실행기를 거쳐 응답에 요청 모델이 실려 오는지를 본다
+    (코덱스 리뷰 지적, sca-cr2b)."""
+
+    def test_소유자_모델이_응답에_실려_온다(self, tmp_path: Path) -> None:
+        from test_engine import FakeCompleted, 통과정책
+
+        engine = FakeEngine(make_profile(), RuntimeSettings())
+        engine.capabilities_for = lambda request: EngineCapabilities(  # type: ignore[method-assign]
+            tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+            execution_isolation=ExecutionIsolation.READONLY_SANDBOX,
+            instruction_boundary=InstructionBoundary.NATIVE,
+        )
+        engine.parse = lambda stdout, stderr, returncode: _response()  # type: ignore[method-assign]
+        engine.build_command = lambda request: ["/usr/bin/true"]  # type: ignore[method-assign]
+        runner = EngineRunner(
+            RuntimeSettings(),
+            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(stdout="", returncode=0),
+            environment_policy=통과정책(),
+        )
+        caller, _ = make_caller(invoker=DirectInvoker(runner, engine), workdir=tmp_path)
+
+        response = caller.run("프롬프트", None, False)
+
+        # 차단 응답도 model_asked 를 채우므로 그 경로로 새면 이 시험이
+        # 실행기 경로를 안 본 것이 된다.
+        assert response.failure_reason is None
+        assert response.model_asked == "opus"
