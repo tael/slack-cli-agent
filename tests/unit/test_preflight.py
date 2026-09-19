@@ -20,6 +20,7 @@ from slack_cli_agent.core.errors import ConfigError
 from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
 from slack_cli_agent.preflight.check import CheckResult, PreflightCheck, PreflightContext
 from slack_cli_agent.preflight.checks import (
+    ChannelSettingsReadableCheck,
     EngineBinaryCheck,
     EngineHomeCredentialCheck,
     McpCredentialCheck,
@@ -620,6 +621,7 @@ class TestPreflightSuite:
             "engine_home_credentials",
             "mcp_server",
             "prompt_files",
+            "channel_settings_readable",
             "owner_settings_inert",
             "profile_permissions",
             "tool_allowlist_enforcement",
@@ -707,6 +709,7 @@ class TestPreflightSuite:
             "[경고] engine_home_credentials : 주의\n"
             "[통과] mcp_server : 좋음\n"
             "[통과] prompt_files : 좋음\n"
+            "[통과] channel_settings_readable : 좋음\n"
             "[통과] owner_settings_inert : 좋음\n"
             "[통과] profile_permissions : 좋음\n"
             "[통과] tool_allowlist_enforcement : 좋음\n"
@@ -1087,3 +1090,35 @@ class TestProfileKnownKeys:
         read |= set(_re.findall(r'_under\(data,\s*"([a-z_]+)"', source))
         assert read, "from_dict 에서 읽는 키를 하나도 못 찾았다"
         assert read <= PROFILE_KNOWN_KEYS
+
+
+class TestChannelSettingsReadableCheck:
+    """조회 경로는 잘못된 값을 안전한 쪽으로 읽고 넘어간다(sca-xe0). 그러면
+    로그만 남고 아무도 안 본다. 부트에서 한 번 경고를 내는 자리가 필요하다."""
+
+    def test_설정이_없으면_통과한다(self, tmp_path: Path) -> None:
+        result = ChannelSettingsReadableCheck().run(PreflightContext(profile=make_profile(tmp_path)))
+        assert result.ok is True
+
+    def test_읽을_수_있는_값은_통과한다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        write_channels(profile, {"C1": {"name": "잡담방", "tool_enforcement": "strict"}})
+        result = ChannelSettingsReadableCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
+
+    def test_잘못된_값은_채널과_함께_경고한다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        write_channels(profile, {"C1": {"name": "잡담방", "tool_enforcement": "strcit"}})
+        result = ChannelSettingsReadableCheck().run(PreflightContext(profile=profile))
+        assert result.ok is False
+        assert result.fatal is False
+        assert "C1" in result.detail
+        assert "strcit" in result.detail
+
+    def test_경고여도_부팅을_막지_않는다(self, tmp_path: Path) -> None:
+        """그 채널은 이미 strict 로 떨어져 돈다. 무관한 채널까지 봇을 내리는
+        것이 이 이슈가 고치려는 것이다."""
+        profile = make_profile(tmp_path)
+        write_channels(profile, {"C1": {"tool_enforcement": 3}, "C2": {"mode": "helpdesk"}})
+        result = ChannelSettingsReadableCheck().run(PreflightContext(profile=profile))
+        assert result.fatal is False
