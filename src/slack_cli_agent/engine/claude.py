@@ -133,6 +133,9 @@ class ClaudeEngine(Engine):
     #: ccusage reads Claude Code's session records, which is exactly this engine.
     ccusage_reports_consumption = True
 
+    #: --disallowedTools=* empties the tool set, so the ban needs no wording.
+    enforces_tool_ban = True
+
     # --allowedTools overrides settings.json's allow rules, and the system prompt
     # is its own flag. There is no filesystem sandbox: read-only is held by the
     # tool list, which is the tool axis rather than this one.

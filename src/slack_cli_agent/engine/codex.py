@@ -151,11 +151,11 @@ class CodexEngine(Engine):
         those bytes join the session context and are paid again every turn."""
         base = super().footprint_for(request)
         if not request.resume:
-            # build_command drops the whole instructions argument, path note
-            # included, when there are no instructions to send.
-            if not request.system_prompt:
-                return dataclasses.replace(base, adapter_added_bytes=0)
-            return base
+            # The ban rides on the turn prompt, not on the session-scoped
+            # instructions, so it is counted separately from the path note.
+            return dataclasses.replace(base, adapter_added_bytes=utf8_bytes(
+                self._session_path_note(request) + self._turn_ban_prefix(request),
+            ))
         return dataclasses.replace(
             base,
             adapter_added_bytes=base.adapter_added_bytes + utf8_bytes(UNTRUSTED_INPUT_MARK),
@@ -180,7 +180,7 @@ class CodexEngine(Engine):
             cmd += ["-c", f"model_reasoning_effort={self._toml_string(request.effort)}"]
         cmd += _codex_mcp_config_args(self.profile.mcp_servers)
         if not request.resume and request.system_prompt:
-            instructions = request.system_prompt + self.readable_paths_note(request.readable_dirs)
+            instructions = request.system_prompt + self._session_path_note(request)
             cmd += ["-c", f"developer_instructions={self._toml_string(instructions)}"]
 
         if request.resume:
@@ -188,8 +188,27 @@ class CodexEngine(Engine):
             cmd += ["-c", f"sandbox_mode={self._toml_string(sandbox)}",
                    request.require_session_id(), "--", self._resume_prompt(request)]
         else:
-            cmd += ["--sandbox", sandbox, "-C", str(request.workdir), "--", request.prompt]
+            cmd += ["--sandbox", sandbox, "-C", str(request.workdir), "--",
+                    self._turn_ban_prefix(request) + request.prompt]
         return cmd
+
+    def _session_path_note(self, request: EngineRequest) -> str:
+        """The path note rides on developer_instructions, which is dropped
+        whole when there are no instructions to open the session with."""
+        if not request.system_prompt:
+            return ""
+        return self.readable_paths_note(request.readable_dirs)
+
+    def _turn_ban_prefix(self, request: EngineRequest) -> str:
+        """The tool ban on a first turn.
+
+        It cannot go in developer_instructions: that value is fixed for the
+        session, so a banned first turn would keep banning turns that allow
+        tools. The mark comes with it -- without one the ban would sit next to
+        the Slack input with no boundary between them (sca-97n).
+        """
+        note = self.tool_ban_note(request)
+        return f"{note}{UNTRUSTED_INPUT_MARK}" if note else ""
 
     def _resume_prompt(self, request: EngineRequest) -> str:
         """Carries this turn's instructions in the prompt on a resumed turn.
@@ -208,6 +227,7 @@ class CodexEngine(Engine):
         return (
             request.system_prompt
             + self.readable_paths_note(request.readable_dirs)
+            + self.tool_ban_note(request)
             + UNTRUSTED_INPUT_MARK
             + request.prompt
         )
