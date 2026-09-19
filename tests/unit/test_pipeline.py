@@ -617,6 +617,43 @@ class Test침묵:
         assert outcome.posted_ts == ""
         assert not deps["publisher"].posted
 
+    def test_표식_뒤에_글자가_붙어도_침묵이다(self, tmp_path: Path) -> None:
+        """원본 bot.py is_silent() 는 startswith 다. 모델이 표식 뒤에 사유를
+        덧붙이는 일이 있어, 완전 일치로 보면 그 사유가 채널로 나간다."""
+        from slack_cli_agent.prompt.sections import SILENT_MARK
+
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body=f"{SILENT_MARK} 부를 이유가 없어 보입니다")],
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx())
+
+        assert outcome.silent is True
+        assert not deps["publisher"].posted
+
+    def test_표식_앞에_공백이_있어도_침묵이다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.prompt.sections import SILENT_MARK
+
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body=f"\n\n  {SILENT_MARK}\n")], tmp_path=tmp_path,
+        )
+
+        assert pipeline.handle(make_ctx()).silent is True
+        assert not deps["publisher"].posted
+
+    def test_표식이_본문_중간에_있으면_침묵이_아니다(self, tmp_path: Path) -> None:
+        """표식을 인용해 설명하는 답까지 삼키면 안 된다."""
+        from slack_cli_agent.prompt.sections import SILENT_MARK
+
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body=f"답하지 않을 때는 {SILENT_MARK} 를 씁니다")],
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx())
+
+        assert outcome.silent is False
+        assert deps["publisher"].posted
+
     def test_침묵을_표식이_아니라_결과로_알린다(self, tmp_path: Path) -> None:
         from slack_cli_agent.prompt.sections import SILENT_MARK
 
