@@ -280,6 +280,32 @@ class Test보장을_감사에_남긴다:
         )
         assert 감사.기록[0][1]["downgrade_applied"] is False
 
+    @pytest.mark.parametrize(
+        ("요구", "기대"),
+        [
+            (ExecutionRequirements(), "compatible"),
+            (
+                ExecutionRequirements(
+                    tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+                    downgradable_axes=frozenset({TOOL_AXIS}),
+                ),
+                "downgraded",
+            ),
+            (
+                ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
+                "blocked",
+            ),
+        ],
+    )
+    def test_이_요청이_어떻게_끝났는지_한_값으로_남는다(
+        self, tmp_path: Path, 요구: ExecutionRequirements, 기대: str
+    ) -> None:
+        """unmet 과 완화 목록을 조합해야 알 수 있으면 집계마다 그 규칙을 다시
+        쓴다. 세는 쪽이 한 값을 읽게 한다."""
+        감사 = _감사()
+        self._돌린다(tmp_path, 감사, requirements=요구)
+        assert 감사.기록[0][1]["outcome"] == 기대
+
     def test_요구가_없어도_실제_보장은_남는다(self, tmp_path: Path) -> None:
         """0건이 요구 없음인지 기록 자체가 안 도는 것인지 구분돼야 한다."""
         감사 = _감사()
