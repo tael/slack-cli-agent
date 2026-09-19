@@ -276,7 +276,7 @@ class Test보장을_감사에_남긴다:
                 policy="audited",
             ),
         )
-        assert 감사.기록[0][1]["downgrade_applied"] is True
+        assert 감사.기록[0][1]["downgrade_authorized"] is True
 
     def test_보장을_맞춘_요청은_완화로_세지_않는다(self, tmp_path: Path) -> None:
         감사 = _감사()
@@ -289,7 +289,7 @@ class Test보장을_감사에_남긴다:
                 policy="audited",
             ),
         )
-        assert 감사.기록[0][1]["downgrade_applied"] is False
+        assert 감사.기록[0][1]["downgrade_authorized"] is False
 
     @pytest.mark.parametrize(
         ("요구", "기대"),
@@ -531,6 +531,37 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
         )
         assert 응답.ok is True
         assert 실행 == [1]
+
+    def test_기록은_prepare_보다_먼저다(self, tmp_path: Path) -> None:
+        """기록이 실행 뒤면 완화 판단이 기록을 근거로 못 선다. 순서를 시험으로
+        고정한다 (sca-ckm 리뷰)."""
+        감사 = _감사()
+        _, 엔진, _ = self._돌린다(
+            tmp_path,
+            감사=감사,
+            requirements=ExecutionRequirements(
+                tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+                downgradable_axes=frozenset({TOOL_AXIS}),
+            ),
+        )
+        assert 엔진.준비호출 == 1
+        assert len(감사.기록) == 1
+
+    def test_완화_기록은_승인_시점의_사실로_남는다(self, tmp_path: Path) -> None:
+        """기록은 실행 전에 남는다. 실행이 뒤에 실패해도 그 값은 '완화를
+        승인했다' 는 뜻이지 '완화된 채로 끝났다' 가 아니다 (sca-ckm 리뷰)."""
+        감사 = _감사()
+        self._돌린다(
+            tmp_path,
+            감사=감사,
+            requirements=ExecutionRequirements(
+                tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+                downgradable_axes=frozenset({TOOL_AXIS}),
+            ),
+        )
+        _, 필드 = 감사.기록[0]
+        assert 필드["downgrade_authorized"] is True
+        assert "downgrade_applied" not in 필드
 
     def test_감사_경로_부재는_안내문에_드러난다(self, tmp_path: Path) -> None:
         """엔진 제약만 말하면 배선 문제를 엔진 탓으로 읽는다. 완화를 요청했는데

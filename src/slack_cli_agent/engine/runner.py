@@ -294,20 +294,28 @@ class EngineRunner:
             "unmet": list(unmet),
             "downgradable_axes": sorted(required.downgradable_axes),
             "policy": required.policy,
-            # Permitted and used are different questions. Counting relieved
-            # requests needs the second one (sca-98k). Only axes the caller
-            # named are counted, so a tool-only policy can't read as having
-            # relieved isolation too.
+            # Permitted and authorized are different questions. Counting
+            # relieved requests needs the second one (sca-98k). Only axes the
+            # caller named are counted, so a tool-only policy can't read as
+            # having relieved isolation too.
             "downgraded_axes": list(downgraded),
-            "downgrade_applied": bool(downgraded),
+            # Named for what this record can know. It is written before the run,
+            # so a later prepare() or process failure leaves it standing: it
+            # says the downgrade was authorized, not that the request finished
+            # under it (sca-ckm).
+            "downgrade_authorized": bool(downgraded),
             # One value for the counting side. Deriving it from unmet and the
             # downgrade list means every reader rewrites that rule (sca-98k).
+            # Same time frame as downgrade_authorized -- this is the capability
+            # decision, not how the request ended.
             "outcome": _outcome(unmet, downgraded),
         }
         try:
             self._audit.record(CAPABILITY_KIND, **record_fields)
-        except Exception as exc:  # noqa: BLE001 - the caller decides what an unrecorded run may do
-            log.warning("보장 감사 기록에 실패했다 : %s", exc)
+        except Exception:
+            # exc_info: a port bug and a disk failure both land here and the
+            # message alone does not separate them.
+            log.warning("보장 감사 기록에 실패했다", exc_info=True)
             return False
         return True
 

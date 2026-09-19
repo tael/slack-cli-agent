@@ -261,3 +261,26 @@ class Test열거형은_값_그대로_저장된다:
             con.execute("INSERT INTO t VALUES (?)", (member,))
         저장된 = [row[0] for row in con.execute("SELECT v FROM t")]
         assert 저장된 == [m.value for m in enum_cls]
+
+
+class Test감사_포트_계약:
+    """EngineRunner 는 record() 가 정상 반환한 것을 '기록이 남았다' 의 근거로
+    쓴다(sca-ckm). 그래서 실제 주입되는 AuditLog 가 실패를 삼키지 않는 것이
+    계약이다. 삼키는 구현이 들어오면 무기록 완화가 다시 생긴다."""
+
+    def test_jsonl_을_못_쓰면_예외를_낸다(self, database, tmp_path) -> None:
+        from slack_cli_agent.observability.audit import AuditLog
+
+        # 파일이 있어야 할 자리가 디렉터리라 append 가 실패한다.
+        경로 = tmp_path / "audit.jsonl"
+        경로.mkdir()
+        with pytest.raises(OSError):
+            AuditLog(database, 경로).record("capability", engine="fake")
+
+    def test_db_를_못_쓰면_예외를_낸다(self, tmp_path) -> None:
+        from slack_cli_agent.observability.audit import AuditLog
+        from slack_cli_agent.storage.database import Database
+
+        db = Database(tmp_path / "없는디렉터리" / "a.db")
+        with pytest.raises(sqlite3.Error):
+            AuditLog(db, tmp_path / "audit.jsonl").record("capability", engine="fake")
