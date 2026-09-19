@@ -81,6 +81,17 @@ _USAGE_KEY_MAP: Mapping[str, str] = {
 }
 
 
+def _builtin_names(names: tuple[str, ...]) -> list[str]:
+    """The built-in tools among what the caller allowed.
+
+    --tools takes names from the built-in set. MCP tools are named
+    mcp__<server>__<tool> and are not in it, so they ride on --allowedTools
+    alone. An empty result is still passed: dropping the argument opens every
+    built-in tool, which is the opposite of an allowlist naming none.
+    """
+    return [name for name in names if not name.startswith("mcp__")]
+
+
 def progress_hook_settings(log_path: Path) -> dict[str, Any]:
     """A settings fragment registering the tool-start hook for one request.
 
@@ -191,18 +202,22 @@ class ClaudeEngine(Engine):
             "--effort", request.effort,
         ]
         if request.tools.access is ToolAccess.FORBIDDEN:
-            # Denying tools by name does not hold -- the model reaches the same
-            # file through another one. The wildcard empties the tool set
-            # itself: the debug log stops loading tools and tool_use never
-            # appears (2026-09-19 measurement, sca-0a7). No --allowedTools
-            # beside it, so the command matches what was measured.
+            # The wildcard empties the tool set itself: the debug log stops
+            # loading tools and tool_use never appears (2026-09-19 measurement,
+            # sca-0a7). No --allowedTools beside it, so the command matches
+            # what was measured -- and the wildcard wins over it anyway.
             cmd += ["--disallowedTools", "*"]
-        else:
-            # --allowedTools overrides settings.json's allow rules (confirmed
-            # by testing). The read-only permission model is enforced by this
-            # list -- it's the caller's job, outside this module, to keep
-            # Bash/Edit/Write/NotebookEdit out of it.
+        elif request.tools.access is ToolAccess.ALLOWLIST:
+            # --allowedTools only adds auto-approval; it does not close the
+            # tools left out of it. Measured 2026-09-20 (claude 2.1.263):
+            # --allowedTools "Read" still ran Bash, with and without
+            # --setting-sources project and an empty permissions file. The same
+            # path with deny in it removed the tool, so the file was read.
+            # --tools is what closes them: it names the built-in set itself,
+            # and a Write call under --tools "Read,Grep,Glob" came back as
+            # "No such tool available" (sca-6ewc).
             cmd += ["--allowedTools", ",".join(request.tools.names)]
+            cmd += ["--tools", ",".join(_builtin_names(request.tools.names))]
         for path in request.readable_dirs:
             cmd += ["--add-dir", str(path)]
         skills_dir = self.profile.paths.skills

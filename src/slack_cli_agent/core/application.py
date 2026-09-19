@@ -1041,8 +1041,8 @@ class Application:
             workdir=workdir,
             # readonly: the check only looks. Owner extras and Skill would let
             # this turn start new work, which `watch_check_prompt` forbids.
-            # Left empty before, and claude turns an empty list into
-            # `--allowedTools ""` — a turn with no tools at all (sca-0ab).
+            # Left empty before, and an empty list is not a ban -- it is the
+            # absence of one, so nothing would be closed (sca-6ewc).
             tools=watch_tools,
             requirements=self.execution_policy.requirements_for(
                 config=config, tools=watch_tools,

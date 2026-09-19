@@ -24,8 +24,9 @@ log = logging.getLogger(__name__)
 
 #: Tools a read-only turn may use. An allowlist rather than a list of write
 #: tools: a new write tool, or an MCP tool whose name says nothing about what
-#: it does, would pass a denylist silently (sca-gy0). Used as the fallback too,
-#: since claude reads an empty --allowedTools as "no tools at all" (sca-0ab).
+#: it does, would pass a denylist silently (sca-gy0). Used as the fallback too:
+#: an empty list is not a ban but the absence of one, and the turn then runs
+#: with nothing closed at all (sca-6ewc).
 READ_ONLY_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob", "WebFetch", "WebSearch")
 
 
