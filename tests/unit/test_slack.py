@@ -300,6 +300,14 @@ def make_publisher(
     )
 
 
+class 펜스를_가르는_분할기(ContentSplitter):
+    """여는 펜스까지만 첫 조각에 담아 분할 손상을 만든다."""
+
+    def split_for_blocks(self, text: str, limit: int | None = None) -> list[str]:
+        head, _, tail = text.partition("\n```\n")
+        return [head, tail] if tail else [text.rsplit("\n```", 1)[0]]
+
+
 class TestMessagePublisher:
     def test_평문_채널은_mrkdwn으로_낮춰_스레드에_올린다(
         self, settings, markdown, splitter, verifier, block_builder
@@ -415,7 +423,11 @@ class TestMessagePublisher:
         pub = make_publisher(
             client, settings, markdown, splitter, verifier, block_builder, audit=audit
         )
-        pub.post("C1", "100.0", "설명\n```python\nprint(1)", rich=True)
+        # 실제 분할기는 표 헤더도 코드 펜스도 뒤 조각에 다시 붙여 주므로
+        # 게시 경로로는 손상을 못 만든다(2026-09-19 실측). 원장에 무엇이
+        # 남는지를 보는 시험이라 분할만 대역으로 바꾼다
+        pub._splitter = 펜스를_가르는_분할기(settings, block_builder)
+        pub.post("C1", "100.0", "설명\n```python\nprint(1)\n```", rich=True)
         (기록,) = [a for a in audit if a.get("kind") == "split_broken"]
         assert 기록["problems"] == ["0번 조각 코드블록 펜스 짝 안 맞음"]
         (근거,) = 기록["evidence"]
