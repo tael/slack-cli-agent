@@ -462,7 +462,7 @@ def _request() -> EngineRequest:
     return EngineRequest(
         prompt="안녕", system_prompt="", session_id="s", resume=False,
         model="claude-sonnet-5", effort="medium", workdir=Path("/tmp/work"),
-        readable_dirs=(), allowed_tools=(), trust_level=TrustLevel.GENERAL,
+        readable_dirs=(), trust_level=TrustLevel.GENERAL,
     )
 
 

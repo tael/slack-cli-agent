@@ -19,7 +19,7 @@ def test_일반_사용자는_기본_도구만_받는다() -> None:
 
     pipeline.handle(make_ctx(user="U1"))
 
-    assert parts["runner"].calls[0].allowed_tools == ("Read", "Grep")
+    assert parts["runner"].calls[0].tools.names == ("Read", "Grep")
 
 
 def test_소유자는_소유자_도구까지_받는다() -> None:
@@ -28,7 +28,7 @@ def test_소유자는_소유자_도구까지_받는다() -> None:
 
     pipeline.handle(make_ctx(user="UOWNER"))
 
-    assert parts["runner"].calls[0].allowed_tools == ("Read", "Grep", "Write", "Edit")
+    assert parts["runner"].calls[0].tools.names == ("Read", "Grep", "Write", "Edit")
 
 
 def test_채널에서_스킬을_켜면_Skill_이_붙는다() -> None:
@@ -41,7 +41,7 @@ def test_채널에서_스킬을_켜면_Skill_이_붙는다() -> None:
 
     pipeline.handle(make_ctx(user="U1"))
 
-    assert parts["runner"].calls[0].allowed_tools == ("Read", "Skill")
+    assert parts["runner"].calls[0].tools.names == ("Read", "Skill")
 
 
 def test_정책이_없으면_도구_목록이_비어_있다() -> None:
@@ -49,7 +49,7 @@ def test_정책이_없으면_도구_목록이_비어_있다() -> None:
 
     pipeline.handle(make_ctx(user="U1"))
 
-    assert parts["runner"].calls[0].allowed_tools == ()
+    assert parts["runner"].calls[0].tools.names == ()
 
 
 def test_Application_이_설정의_도구를_정책으로_조립한다(tmp_path) -> None:

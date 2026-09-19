@@ -29,6 +29,7 @@ from slack_cli_agent.engine.codex import CodexEngine
 from slack_cli_agent.engine.environment import create_environment_policy
 from slack_cli_agent.engine.gemini import GeminiEngine
 from slack_cli_agent.engine.runner import EngineRunner
+from slack_cli_agent.engine.tool_selection import ToolSelection
 
 pytestmark = pytest.mark.real_cli
 
@@ -79,7 +80,7 @@ def _request(spec: dict[str, Any], engine: Engine, workdir: Path, **over: Any) -
         "effort": spec["effort"],
         "workdir": workdir,
         "readable_dirs": (),
-        "allowed_tools": ("Read",),
+        "tools": ToolSelection.allow(["Read"]),
         "trust_level": TrustLevel.OWNER,
     }
     base.update(over)

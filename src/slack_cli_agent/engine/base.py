@@ -24,6 +24,7 @@ from .footprint import (
     PayloadFootprint,
     utf8_bytes,
 )
+from .tool_selection import ToolSelection
 
 if TYPE_CHECKING:
     from ..config.profile import EngineSpec, Profile
@@ -83,7 +84,9 @@ class EngineRequest:
     effort: str
     workdir: Path
     readable_dirs: tuple[Path, ...] = ()
-    allowed_tools: tuple[str, ...] = ()
+    #: Which tools this turn may use. A plain list could not say "none at
+    #: all" -- an empty one read as "nobody named any" (sca-0a7).
+    tools: ToolSelection = field(default_factory=ToolSelection)
     trust_level: TrustLevel = TrustLevel.GENERAL
     #: What this request needs the engine to enforce. Empty means no
     #: requirement -- recorded either way, so "no requirement" and "nothing
