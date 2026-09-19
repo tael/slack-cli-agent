@@ -18,6 +18,7 @@ from typing import TextIO
 from ..config.profile import Profile
 from .check import CheckResult, PreflightCheck, PreflightContext
 from .checks import (
+    ChannelSettingsReadableCheck,
     ChannelUserToolsCheck,
     EngineBinaryCheck,
     EngineHomeCredentialCheck,
@@ -62,6 +63,7 @@ class PreflightSuite:
             McpServerCheck(),
             PromptFileCheck(required_names=list(required_prompts or ())),
             # fatal=False: only meant to prevent a misread config, not to block boot.
+            ChannelSettingsReadableCheck(),
             OwnerSettingsInertCheck(),
             # fatal=False for the same reason: a chmod fixes it, taking the bot down does not.
             ProfilePermissionCheck(),

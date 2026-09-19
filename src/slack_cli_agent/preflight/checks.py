@@ -12,11 +12,12 @@ import os
 import re
 import shutil
 import stat
+from collections.abc import Mapping
 from pathlib import Path
 from typing import ClassVar
 
 from ..auth.policy import EFFORT_LEVELS, OWNER_EFFORT_MIN
-from ..config.channel import ChannelRegistry
+from ..config.channel import ChannelConfig, ChannelRegistry
 from ..config.profile import KNOWN_KEYS as PROFILE_KNOWN_KEYS
 from ..config.settings import RuntimeSettings
 from ..core.errors import ConfigError
@@ -245,6 +246,41 @@ class OwnerSettingsInertCheck(PreflightCheck):
             return CheckResult(ok=False, detail="; ".join(dead), fatal=False)
         return CheckResult(ok=True, detail="소유자에게 적용되는 채널 설정 점검 통과")
 
+
+
+class ChannelSettingsReadableCheck(PreflightCheck):
+    """Warns at boot about channel values the read path could not read.
+
+    The read path parses every channel on every request, so it falls back to
+    the safe side for a bad value rather than stopping unrelated channels
+    (sca-xe0). That leaves only a log line, which nobody opens. This is the
+    one place the operator is told the file says something the code ignores.
+
+    fatal=False -- the affected channel already runs on the strict fallback,
+    and taking the bot down for one typo is what this issue removed.
+    """
+
+    name: ClassVar[str] = "channel_settings_readable"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        path = ctx.profile.paths.channels
+        if not path.exists():
+            return CheckResult(ok=True, detail="채널 설정 파일이 없다")
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # Reading the file itself is another check's job.
+            return CheckResult(ok=True, detail=f"채널 설정 원본을 다시 읽지 못했다 : {path}")
+        if not isinstance(raw, dict):
+            return CheckResult(ok=True, detail="채널 설정의 최상위가 객체가 아니다")
+        rejected: list[str] = []
+        for channel_id, data in raw.items():
+            if not isinstance(data, Mapping):
+                continue
+            rejected.extend(ChannelConfig.lenient_from_dict(str(channel_id), data)[1])
+        if rejected:
+            return CheckResult(ok=False, detail="; ".join(rejected), fatal=False)
+        return CheckResult(ok=True, detail="채널 설정 값 점검 통과")
 
 
 class ToolAllowlistEnforcementCheck(PreflightCheck):

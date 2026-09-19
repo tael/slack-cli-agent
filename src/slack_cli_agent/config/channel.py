@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from collections.abc import Mapping
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ..core.errors import ConfigError
+
+log = logging.getLogger(__name__)
 
 #: Rendering and progress defaults, named once because the dataclass field and
 #: from_dict() both need them -- they were two literals and drifted, so a
@@ -80,7 +83,27 @@ class ChannelConfig:
 
     @classmethod
     def from_dict(cls, channel_id: str, data: Mapping[str, Any]) -> ChannelConfig:
+        """Refuses a value it can't read. For the write path and preflight,
+        where a bad value must not be persisted or pass a boot check."""
+        config, rejected = cls.lenient_from_dict(channel_id, data)
+        if rejected:
+            raise ConfigError(" / ".join(rejected))
+        return config
+
+    @classmethod
+    def lenient_from_dict(
+        cls, channel_id: str, data: Mapping[str, Any]
+    ) -> tuple[ChannelConfig, tuple[str, ...]]:
+        """Never raises; each unreadable value falls back to the safest one.
+
+        For the read path, which parses every channel on every request. Failing
+        the whole file there means one channel's typo stops requests in channels
+        that have nothing to do with it (sca-xe0). The fallback is the strict
+        side, not the permissive default, so a typo can't quietly drop
+        enforcement.
+        """
         workdir = data.get("workdir")
+        enforcement, rejected = cls._tool_enforcement(channel_id, data)
         return cls(
             channel_id=channel_id,
             name=str(data.get("name") or channel_id),
@@ -102,23 +125,24 @@ class ChannelConfig:
             light_context=bool(data.get("light_context", False)),
             rich=bool(data.get("rich", DEFAULT_RICH)),
             chat=str(data.get("chat") or CHAT_DEFAULT),
-            tool_enforcement=cls._tool_enforcement(channel_id, data),
+            tool_enforcement=enforcement,
             progress=bool(data.get("progress", DEFAULT_PROGRESS)),
             extra={k: v for k, v in data.items() if k not in KNOWN_KEYS},
-        )
+        ), rejected
 
     @staticmethod
-    def _tool_enforcement(channel_id: str, data: Mapping[str, Any]) -> str:
-        """Refuses an unknown value instead of falling back. A typo in `strict`
-        would otherwise read as the permissive default and drop enforcement
-        without a word (sca-98k)."""
+    def _tool_enforcement(channel_id: str, data: Mapping[str, Any]) -> tuple[str, tuple[str, ...]]:
+        """An unknown value never reads as the permissive default. A typo in
+        `strict` would otherwise drop enforcement without a word (sca-98k)."""
         if "tool_enforcement" not in data:
-            return TOOL_ENFORCEMENT_AUDITED
+            return TOOL_ENFORCEMENT_AUDITED, ()
         level = data["tool_enforcement"]
         if not isinstance(level, str) or level not in TOOL_ENFORCEMENT_LEVELS:
             known = ", ".join(TOOL_ENFORCEMENT_LEVELS)
-            raise ConfigError(f"채널 {channel_id} 의 tool_enforcement 값이 잘못됐다 : {level} (가능한 값: {known})")
-        return level
+            return TOOL_ENFORCEMENT_STRICT, (
+                f"채널 {channel_id} 의 tool_enforcement 값이 잘못됐다 : {level} (가능한 값: {known})",
+            )
+        return level, ()
 
 
 class HasRich(Protocol):
@@ -246,8 +270,12 @@ class ChannelRegistry:
             return dict(self._configs)
         if not isinstance(raw, Mapping):
             return {}
-        return {
-            cid: ChannelConfig.from_dict(cid, data)
-            for cid, data in raw.items()
-            if isinstance(data, Mapping)
-        }
+        configs: dict[str, ChannelConfig] = {}
+        for cid, data in raw.items():
+            if not isinstance(data, Mapping):
+                continue
+            config, rejected = ChannelConfig.lenient_from_dict(cid, data)
+            for message in rejected:
+                log.warning("채널 설정 값을 읽지 못해 안전한 쪽으로 읽는다 : %s", message)
+            configs[cid] = config
+        return configs
