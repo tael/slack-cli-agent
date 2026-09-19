@@ -283,3 +283,26 @@ enabled") 가 있다. 코덱스가 sandbox 모드로 실행 격리를 선언하�
     https://antigravity.google/docs/cli/troubleshooting
 
 전체 목록은 `https://antigravity.google/sitemap.xml` 에서 `/docs/` 로 거른다.
+
+## 10. --print-timeout 에 걸린 뒤에도 바로 안 끝난다 (2026-09-20 실측)
+
+`--print-timeout` 은 CLI 가 스스로 끊는 제한이다. 그 시각에 프로세스가 끝나는
+것이 아니라, 거기서부터 부분 답과 `result` 이벤트를 쓰고 나서 끝난다.
+
+    --print-timeout    실제 종료까지    초과분
+    5s                 13.24초         8.24초
+    15s                19.67초         4.67초
+
+종료코드는 0 이고 `result` 의 `status` 는 `SUCCESS` 다. 잘렸다는 사실은
+stderr 에만 나온다.
+
+    [agy] print timeout after 5s with turn in progress; returning partial output
+
+여기서 두 가지가 나온다.
+
+1. 실행기가 CLI 와 같은 제한을 쓰면 강제 종료가 항상 먼저 와서 그 부분 답이
+   사라진다. `GeminiEngine.PRINT_TIMEOUT_MARGIN_SEC` 이 그 차이다 (sca-ocie).
+2. `parse` 가 `status` 와 종료코드만 보므로 잘린 답을 정상 답으로 읽는다.
+   별도 건으로 등록했다 (sca-wudf).
+
+측정은 2회뿐이다. agy 판이 올라가면 다시 잰다.

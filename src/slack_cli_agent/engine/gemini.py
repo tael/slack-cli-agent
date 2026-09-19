@@ -173,12 +173,26 @@ class GeminiEngine(Engine):
             instruction_replayed_on_resume=request.resume,
         )
 
+    #: How long agy keeps running past --print-timeout before it exits.
+    #: Measured 2026-09-20: a 5s limit ended at 13.2s and a 15s limit at 19.7s,
+    #: 8.2s and 4.7s past. It writes the partial answer and a result event in
+    #: that stretch, so the runner's hard kill has to come after it -- told the
+    #: same figure, the runner always wins and that output is lost (sca-ocie).
+    PRINT_TIMEOUT_MARGIN_SEC: ClassVar[float] = 15.0
+
     def build_command(self, request: EngineRequest) -> list[str]:
         spec = self.spec
 
         base_model, suffix_effort = _split_model_suffix(request.require_model())
         effort = _normalize_effort(request.effort or suffix_effort or "")
-        timeout_sec = int(self.settings.request_timeout_sec)
+        limit = (
+            request.timeout_sec if request.timeout_sec is not None else self.settings.request_timeout_sec
+        )
+        # Floor, never round up: the CLI has to finish inside the runner's limit.
+        # Under a limit shorter than the margin this is best effort -- 1s is
+        # the floor because 0s means "no limit" to agy, the opposite of what
+        # is meant, and the runner will still get there first (codex review).
+        timeout_sec = max(1, int(limit - self.PRINT_TIMEOUT_MARGIN_SEC))
 
         cmd: list[str] = [
             str(spec.binary),
