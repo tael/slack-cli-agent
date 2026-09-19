@@ -674,6 +674,42 @@ class TestCodexEngineParse:
         assert resp.elapsed_source == "unknown"
 
 
+class Test지침이_비어도_경로_안내는_실린다:
+    """리뷰 경로는 빈 시스템 프롬프트로 부른다(core/application.py:1309).
+    codex 는 그 두 안내를 developer_instructions 하나에 묶어 둬서, 지침이
+    비면 안내도 함께 빠졌다. 읽을 수 있는 자리를 모르면 조사할 곳을 못 찾는다.
+    gemini 는 같은 조건에서 둘 다 붙인다 (sca-9u18)."""
+
+    def test_지침이_비어도_읽기_경로를_알려_준다(self, tmp_path: Path) -> None:
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        cmd = engine.build_command(
+            request(system_prompt="", readable_dirs=(tmp_path / "persona",))
+        )
+        assert any("읽을 수 있는 자리" in arg for arg in cmd)
+
+    def test_지침이_비어도_바깥_쓰기_수단을_알려_준다(self, tmp_path: Path) -> None:
+        profile = profile_with(
+            {"type": "codex", "binary": "codex", "model": "gpt-5",
+             "options": {"sandbox": "read-only"}},
+            tmp_path=tmp_path,
+        )
+        cmd = CodexEngine(profile, SETTINGS).build_command(request(system_prompt=""))
+        assert any("curl" in arg for arg in cmd)
+
+    def test_알릴_것이_없으면_안_붙인다(self, tmp_path: Path) -> None:
+        """빈 값을 넣으면 CLI 가 빈 지침으로 세션을 연다."""
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        cmd = engine.build_command(request(system_prompt="", readable_dirs=()))
+        assert not any("developer_instructions" in arg for arg in cmd)
+
+    def test_제미나이도_같은_조건에서_알려_준다(self, tmp_path: Path) -> None:
+        engine = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        cmd = engine.build_command(
+            request(system_prompt="", readable_dirs=(tmp_path / "persona",))
+        )
+        assert any("읽을 수 있는 자리" in arg for arg in cmd)
+
+
 class Test실패해도_CLI_가_발행한_값을_보존한다:
     """codex 는 세션 ID 를 CLI 가 발행한다. 실패 응답에서 그것을 버리면 느린
     요청 보고가 rollout transcript 를 못 찾는다 - 그 파일 이름이 thread ID 다
