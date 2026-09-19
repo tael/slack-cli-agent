@@ -224,6 +224,28 @@ class TestBlockBuilder:
     def test_본문이_전부_없으면_봇_이름으로_대체한다(self, blocks: BlockBuilder) -> None:
         assert blocks.preview("") == "테스트봇 답변"
 
+    def test_제목만_있는_답은_제목을_미리보기로_쓴다(self, blocks: BlockBuilder) -> None:
+        """미리보기는 알림에 뜨는 유일한 문구다. 봇 이름으로 떨어지면 무슨
+        답이 왔는지 열어 보기 전에는 알 수 없다 (2026-09-19 실측)."""
+        assert blocks.preview("## 배포 결과\n\n### 요약") == "배포 결과"
+
+    def test_표만_있는_답은_첫_행의_칸을_쓴다(self, blocks: BlockBuilder) -> None:
+        assert blocks.preview("| 대상 | 파일 |\n| 진행 표시 | progress.py |") == "대상 · 파일"
+
+    def test_구분행은_미리보기로_쓰지_않는다(self, blocks: BlockBuilder) -> None:
+        """'--- · ---' 이 알림에 뜨면 아무 뜻이 없다. 표 한가운데서 잘린
+        조각은 구분행으로 시작한다."""
+        assert blocks.preview("| --- | --- |\n| 1 | 2 |") == "1 · 2"
+
+    @pytest.mark.parametrize("구분행", ["| :---: | ---: |", "|:--|--:|", "| --- | --- |"])
+    def test_정렬_표기가_붙은_구분행도_거른다(self, blocks: BlockBuilder, 구분행: str) -> None:
+        """콜론이 붙으면 앞에서 대시만 떼는 정리로는 안 걸러진다."""
+        assert blocks.preview(f"{구분행}\n| 1 | 2 |") == "1 · 2"
+
+    def test_평문_줄이_있으면_그것이_먼저다(self, blocks: BlockBuilder) -> None:
+        """제목보다 본문 첫 줄이 무슨 답인지 더 잘 말한다."""
+        assert blocks.preview("# 제목\n\n본문 첫 줄") == "본문 첫 줄"
+
     def test_끝의_짧은_인용_줄을_보조_줄로_떼어낸다(self, blocks: BlockBuilder) -> None:
         text = '본문입니다\n두번째줄\n> 걸린시간: 3초\n> 기준: 2026-09-14'
         assert blocks.split_context(text) == ('본문입니다\n두번째줄', '걸린시간: 3초\n기준: 2026-09-14')
