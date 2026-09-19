@@ -21,6 +21,13 @@ from .ports import SessionKey, SessionRecord, SessionScope, SessionStore
 # A fresh session hits the same subscription limit, so this reason is
 # excluded from retry. Must match the failure string the engine layer returns.
 USAGE_LIMIT_REASON = "usage_limit"
+#: The engine refused before running because it can't hold the requested
+#: guarantee. Shared with EngineRunner, which writes it.
+CAPABILITY_UNMET_REASON = "capability_unmet"
+
+#: Failures a new session can't get past. Both are properties of the engine or
+#: the account, not of the conversation.
+NO_RETRY_REASONS = frozenset({USAGE_LIMIT_REASON, CAPABILITY_UNMET_REASON})
 
 
 @dataclass(frozen=True)
@@ -93,10 +100,9 @@ class SessionManager:
         self._store.touch(key, seen_ts)
 
     def should_retry_with_new_session(self, failure_reason: str) -> bool:
-        """A usage-limit failure hits the same wall on a fresh session too,
-        so it's excluded from retry.
-        """
-        return failure_reason != USAGE_LIMIT_REASON
+        """Some failures hit the same wall on a fresh session, so retrying
+        only doubles the cost. See NO_RETRY_REASONS."""
+        return failure_reason not in NO_RETRY_REASONS
 
     def _is_valid(
         self, record: SessionRecord, scope: str, now: float, engine: str

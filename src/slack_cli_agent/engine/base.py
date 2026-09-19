@@ -280,6 +280,13 @@ class EngineResponse:
     # nonzero_exit / bad_json / timeout / usage_limit / empty_response / is_error
     failure_reason: str | None = None
     failure_detail: FailureDetail = NO_DETAIL
+    #: True when `body` is a notice written for the person who asked, so the
+    #: pipeline posts it even though the request failed. Off by default: most
+    #: failure bodies are the engine's own error text, and gemini puts the CLI's
+    #: raw error string there (sca-5sc). The original bot.py always returned a
+    #: human-facing string on failure; this keeps that behaviour where the text
+    #: was actually written for a person.
+    user_facing: bool = False
     # sca-cfa — Codex's JSONL output has no duration field at all, so its
     # elapsed_source stays UNKNOWN until EngineRunner fills it from wall-clock time.
     elapsed_source: ElapsedSource = ElapsedSource.UNKNOWN
