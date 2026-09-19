@@ -144,6 +144,15 @@ def _split_model_suffix(model: str) -> tuple[str, str | None]:
 
 
 
+#: What the CLI writes to stderr when --print-timeout cuts a turn short.
+#: Measured 2026-09-20: the result event is indistinguishable from a finished
+#: one -- status=SUCCESS, exit 0. duration_seconds and usage come back as 0,
+#: but that is an indirect signal and is not used to decide (sca-wudf).
+_TRUNCATION_MARK = "print timeout after"
+
+TRUNCATION_NOTICE = "\n\n(제한 시간에 걸려 답이 여기서 끊겼습니다. 이어서 들으시려면 다시 물어봐 주십시오.)"
+
+
 class GeminiEngine(Engine):
     name = "gemini"
     shell_always_attached = True
@@ -310,6 +319,10 @@ class GeminiEngine(Engine):
                 elapsed_source=elapsed_source,
             )
 
+        truncated = _TRUNCATION_MARK in stderr
+        if truncated:
+            raw["truncated"] = True
+
         body = str(payload.get("response") or "").strip()
         if not body:
             return EngineResponse(
@@ -320,6 +333,8 @@ class GeminiEngine(Engine):
                 ),
                 elapsed_source=elapsed_source,
             )
+        if truncated:
+            body += TRUNCATION_NOTICE
         return EngineResponse(
             ok=True, body=body, session_id=session_id, model_actual=None, elapsed=elapsed,
             turns=turns, usage=usage, raw=raw, failure_reason=None, elapsed_source=elapsed_source,

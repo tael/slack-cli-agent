@@ -18,7 +18,7 @@ from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import UNTRUSTED_INPUT_MARK, EngineRequest
 from slack_cli_agent.engine.capability import InstructionBoundary
-from slack_cli_agent.engine.gemini import GeminiEngine
+from slack_cli_agent.engine.gemini import TRUNCATION_NOTICE, GeminiEngine
 from slack_cli_agent.engine.tool_selection import ToolSelection
 
 
@@ -452,3 +452,62 @@ class Test설정파일을바꿀것이없으면안쓴다:
         engine.prepare(_request(workdir=workdir))
 
         assert path.stat().st_mtime_ns == before
+
+
+class Test제한에_걸려_잘린_답을_그대로_안_낸다:
+    """agy 는 --print-timeout 에 걸려도 status=SUCCESS 와 종료코드 0 을 낸다.
+
+    2026-09-20 실측. 잘린 쪽과 정상 완료 쪽의 result 이벤트를 나란히 놨을 때
+    다른 것은 stderr 문구뿐이다. duration_seconds 와 usage 가 잘린 쪽에서
+    전부 0 이지만 그것은 간접 신호라 판정에 쓰지 않는다 (sca-wudf).
+
+        잘림   status=SUCCESS, exit 0, duration_seconds=0, usage 전부 0
+               stderr: [agy] print timeout after 5s with turn in progress;
+                       returning partial output
+        정상   status=SUCCESS, exit 0, duration_seconds=1.55, usage 에 실제 값
+               stderr 없음
+    """
+
+    TRUNCATED_ERR = (
+        "[agy] print timeout after 5s with turn in progress; returning partial output\n"
+    )
+
+    def stdout(self, response: str = "1. 첫 줄\n2. 둘째 줄 도중") -> str:
+        import json
+
+        return json.dumps({
+            "event": "result",
+            "result": {
+                "conversation_id": "c1", "status": "SUCCESS", "response": response,
+                "duration_seconds": 0, "num_turns": 1,
+                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            },
+        }, ensure_ascii=False)
+
+    def parse(self, tmp_path, stderr: str):
+        return _engine(tmp_path).parse(self.stdout(), stderr, 0)
+
+    def test_잘린_것을_알린다(self, tmp_path) -> None:
+        answer = self.parse(tmp_path, self.TRUNCATED_ERR)
+        assert TRUNCATION_NOTICE in answer.body
+
+    def test_받은_만큼은_버리지_않는다(self, tmp_path) -> None:
+        """부분 답에도 쓸 것이 있다. 폴백으로 처음부터 다시 돌리면 같은 제한에
+        또 걸린다."""
+        answer = self.parse(tmp_path, self.TRUNCATED_ERR)
+        assert answer.ok is True
+        assert "1. 첫 줄" in answer.body
+
+    def test_감사에_잘림을_남긴다(self, tmp_path) -> None:
+        answer = self.parse(tmp_path, self.TRUNCATED_ERR)
+        assert answer.raw.get("truncated") is True
+
+    def test_정상_완료에는_안_붙인다(self, tmp_path) -> None:
+        answer = self.parse(tmp_path, "")
+        assert TRUNCATION_NOTICE not in answer.body
+        assert answer.raw.get("truncated") is not True
+
+    def test_다른_경고는_잘림이_아니다(self, tmp_path) -> None:
+        """stderr 에 무엇이든 있으면 잘림으로 읽으면 경고 한 줄에 답이 바뀐다."""
+        answer = self.parse(tmp_path, "[agy] warning: something else\n")
+        assert answer.raw.get("truncated") is not True
