@@ -29,6 +29,7 @@ from slack_cli_agent.engine.base import (
 )
 from slack_cli_agent.engine.capability import ToolRestriction
 from slack_cli_agent.engine.runner import DirectInvoker, EngineInvoker, EngineRunner
+from slack_cli_agent.engine.tool_selection import ToolSelection
 from slack_cli_agent.review.base import EngineCaller
 from slack_cli_agent.review.engine_adapter import ReviewEngineCaller
 
@@ -99,7 +100,7 @@ def make_caller(**overrides) -> tuple[ReviewEngineCaller, FakeInvoker]:
         "workdir": Path("/code"),
         "system_prompt": "시스템 프롬프트",
         "readable_dirs": (Path("/persona"),),
-        "allowed_tools": ("Read",),
+        "tools": ToolSelection.allow(["Read"]),
     }
     kwargs.update(overrides)
     return ReviewEngineCaller(**kwargs), invoker
@@ -132,7 +133,7 @@ class TestEngineRequest조립:
         assert request.system_prompt == "시스템 프롬프트"
         assert request.workdir == Path("/code")
         assert request.readable_dirs == (Path("/persona"),)
-        assert request.allowed_tools == ("Read",)
+        assert request.tools.names == ("Read",)
 
     def test_도구를_준_요청에는_실행_보장_요구가_붙는다(self) -> None:
         """요구를 세우는 자리가 파이프라인만이면 이 경로의 도구 권한은 아무도
@@ -144,7 +145,7 @@ class TestEngineRequest조립:
         assert 요구.downgradable_axes == frozenset({"tool_restriction"})
 
     def test_도구가_없으면_요구도_없다(self) -> None:
-        caller, invoker = make_caller(allowed_tools=())
+        caller, invoker = make_caller(tools=None)
         caller.run("프롬프트", None, False)
         assert invoker.calls[0].requirements.tool_restriction is None
 
@@ -204,7 +205,7 @@ class Test기본값:
         caller.run("프롬프트", "세션1", False)
         request = invoker.calls[0]
         assert request.readable_dirs == ()
-        assert request.allowed_tools == ()
+        assert request.tools.names == ()
 
 
 class Test실패응답:

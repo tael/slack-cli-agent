@@ -18,6 +18,12 @@ class ToolRestriction(StrEnum):
     NONE = "none"
     COARSE_SANDBOX = "coarse_sandbox"
     EXACT_ALLOWLIST = "exact_allowlist"
+    #: No tools at all -- the allowlist taken to zero, so it belongs at the
+    #: top of this axis rather than on one of its own. Only claude holds it,
+    #: with --disallowedTools=* (2026-09-19 measurement: the debug log stops
+    #: loading tools and tool_use never appears). Denying tools by name is
+    #: not this -- the model reaches the same file through another tool.
+    ALL_FORBIDDEN = "all_forbidden"
 
 
 class ExecutionIsolation(StrEnum):

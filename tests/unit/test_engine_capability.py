@@ -30,6 +30,7 @@ from slack_cli_agent.engine.codex import CodexEngine
 from slack_cli_agent.engine.gemini import GeminiEngine
 from slack_cli_agent.engine.runner import CAPABILITY_KIND, EngineRunner, FallbackEngine
 from slack_cli_agent.engine.switcher import EngineSwitcher
+from slack_cli_agent.engine.tool_selection import ToolSelection
 from slack_cli_agent.observability.audit import INCIDENT_KINDS, IncidentKind
 
 SETTINGS = RuntimeSettings()
@@ -125,14 +126,14 @@ class Test요구와_대조:
 class Test엔진별_선언:
     def test_claude_는_허용목록을_정확히_강제한다(self, tmp_path: Path) -> None:
         엔진 = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
-        보장 = 엔진.capabilities_for(request(allowed_tools=("Read", "Grep")))
+        보장 = 엔진.capabilities_for(request(tools=ToolSelection.allow(["Read", "Grep"])))
         assert 보장.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
         assert 보장.instruction_boundary is InstructionBoundary.NATIVE
 
     def test_claude_도_허용목록이_비면_도구_제한이_없다(self, tmp_path: Path) -> None:
         """--allowedTools 를 빈 문자열로 넘긴 것은 제한을 건 것이 아니다."""
         엔진 = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
-        보장 = 엔진.capabilities_for(request(allowed_tools=()))
+        보장 = 엔진.capabilities_for(request(tools=ToolSelection.unrestricted()))
         assert 보장.tool_restriction is ToolRestriction.NONE
 
     def test_claude_는_파일계_격리가_없다(self, tmp_path: Path) -> None:

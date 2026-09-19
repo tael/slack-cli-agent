@@ -14,6 +14,7 @@ from ..auth.principal import TrustLevel
 from ..config.profile import Profile
 from ..engine.base import EngineRequest, EngineResponse
 from ..engine.runner import EngineInvoker
+from ..engine.tool_selection import ToolSelection
 
 
 class ReviewEngineCaller:
@@ -31,7 +32,7 @@ class ReviewEngineCaller:
         readable_dirs: Sequence[Path] = (),
         model: str | None = None,
         effort: str | None = None,
-        allowed_tools: Sequence[str] = (),
+        tools: ToolSelection | None = None,
     ) -> None:
         self._invoker = invoker
         self._workdir = workdir
@@ -39,7 +40,7 @@ class ReviewEngineCaller:
         self._readable_dirs = tuple(readable_dirs)
         self._model = model or profile.primary_engine.model_for_owner()
         self._effort = effort or OWNER_EFFORT_MIN
-        self._allowed_tools = tuple(allowed_tools)
+        self._tools = tools or ToolSelection.unrestricted()
         self._execution_policy = ExecutionPolicy()
 
     @property
@@ -63,9 +64,9 @@ class ReviewEngineCaller:
             effort=self._effort,
             workdir=self._workdir,
             readable_dirs=self._readable_dirs,
-            allowed_tools=self._allowed_tools,
+            tools=self._tools,
             requirements=self._execution_policy.requirements_for(
-                config=None, allowed_tools=self._allowed_tools,
+                config=None, tools=self._tools,
             ),
             trust_level=TrustLevel.OWNER,
             progress_log=progress_log,

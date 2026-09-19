@@ -8,10 +8,9 @@ review, learning -- asks the same question (sca-98k).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from ..config.channel import TOOL_ENFORCEMENT_AUDITED, TOOL_ENFORCEMENT_STRICT, ChannelConfig
-from ..engine.capability import TOOL_AXIS, ExecutionRequirements, ToolRestriction
+from ..engine.capability import TOOL_AXIS, ExecutionRequirements
+from ..engine.tool_selection import ToolAccess, ToolSelection
 
 #: Named so the audit record tells "this policy decided nothing is enforceable"
 #: apart from "no policy ran at all".
@@ -34,16 +33,16 @@ class ExecutionPolicy:
         self,
         *,
         config: ChannelConfig | None,
-        allowed_tools: Sequence[str],
+        tools: ToolSelection,
     ) -> ExecutionRequirements:
-        # An empty list is not a restriction -- for the Claude CLI it means no
+        # Unrestricted is not a restriction -- for the Claude CLI it means no
         # tools were named at all. Demanding enforcement of nothing would block
         # engines without giving anyone a boundary.
-        if not allowed_tools:
+        if tools.access is ToolAccess.UNRESTRICTED:
             return NO_REQUIREMENTS
         strict = config is not None and config.tool_enforcement == TOOL_ENFORCEMENT_STRICT
         return ExecutionRequirements(
-            tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+            tool_restriction=tools.restriction,
             # Only the tool axis: this setting speaks about tool enforcement
             # and must not lower a guarantee it never mentioned.
             downgradable_axes=frozenset() if strict else frozenset({TOOL_AXIS}),

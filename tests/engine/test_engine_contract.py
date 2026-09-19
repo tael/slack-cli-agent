@@ -23,6 +23,7 @@ from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
 from slack_cli_agent.engine.gemini import GeminiEngine
 from slack_cli_agent.engine.runner import EngineRunner
+from slack_cli_agent.engine.tool_selection import ToolSelection
 
 SETTINGS = RuntimeSettings()
 
@@ -203,7 +204,7 @@ def _request(**overrides: Any) -> EngineRequest:
         "effort": "medium",
         "workdir": Path("/tmp/contract-work"),
         "readable_dirs": (Path("/tmp/read-a"), Path("/tmp/read-b")),
-        "allowed_tools": ("Read", "Grep"),
+        "tools": ToolSelection.allow(["Read", "Grep"]),
         "trust_level": TrustLevel.GENERAL,
     }
     base.update(overrides)
@@ -330,7 +331,7 @@ def _allowed_tools_params() -> list[Any]:
 @pytest.mark.parametrize("fx", _allowed_tools_params())
 def test_허용_도구_목록이_명령에_반영된다(fx: EngineFixture, tmp_path: Path) -> None:
     engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
-    cmd = engine.build_command(_request(allowed_tools=("전용도구A", "전용도구B")))
+    cmd = engine.build_command(_request(tools=ToolSelection.allow(["전용도구A", "전용도구B"])))
     joined = _joined(cmd)
     assert "전용도구A" in joined
     assert "전용도구B" in joined
