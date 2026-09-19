@@ -60,3 +60,19 @@ def default_registry() -> EngineRegistry:
     registry.register(CodexEngine)
     registry.register(GeminiEngine)
     return registry
+
+
+def registry_for_profile(profile: Profile) -> EngineRegistry:
+    """default_registry() plus the engines this profile's plugins declare.
+
+    For readers outside the assembly layer that only hold a profile. Without it
+    a plugin engine looks unknown and its declarations are read as another
+    engine's defaults (sca-cs0). Plugin load failures are skipped, as elsewhere.
+    """
+    from ..plugin.loader import PluginLoader
+
+    registry = default_registry()
+    for plugin in PluginLoader().load(profile.plugins).plugins:
+        for engine_class in plugin.engines():
+            registry.register(engine_class)
+    return registry

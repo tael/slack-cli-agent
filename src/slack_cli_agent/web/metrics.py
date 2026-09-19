@@ -28,7 +28,7 @@ from ..config.channel import ChannelConfig, ChannelRegistry
 from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
 from ..core.channel_kind import is_direct_message_channel
-from ..engine.registry import default_registry
+from ..engine.registry import registry_for_profile
 from ..jobs.ports import JobStatus
 from ..observability.audit import (
     BASELINE_KIND_VALUES,
@@ -695,7 +695,8 @@ class MetricsCollector:
         rather than naming it keeps a new engine from silently inheriting
         another engine's numbers (sca-cs0). An engine we don't know about is
         treated as not covered."""
-        engine_class = default_registry().engine_class(self._profile.primary_engine.type)
+        registry = registry_for_profile(self._profile)
+        engine_class = registry.engine_class(self._profile.primary_engine.type)
         return bool(engine_class is not None and engine_class.ccusage_reports_consumption)
 
     def _usage_block(self) -> dict[str, Any]:
