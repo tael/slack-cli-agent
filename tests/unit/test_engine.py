@@ -996,6 +996,17 @@ class TestFallbackEngine:
 
         assert [r.session_id for r in secondary.built] == ["2차-형식"]
 
+    def test_한도_알림_응답에도_요청_모델이_실린다(self, tmp_path: Path) -> None:
+        """승인 전에는 실행 없이 알림만 돌려준다. 그 요청도 기록에 남으므로
+        모델 칸이 비면 안 된다 (sca-cr2b)."""
+        fallback, _primary, _secondary, switcher = self._fallback(tmp_path)
+        switcher.begin_switch("weekly limit", engine_name="codex")
+
+        resp = fallback.run(request(model="claude-opus-5"))
+
+        assert resp.ok is False
+        assert resp.model_asked == "claude-opus-5"
+
     def test_전환_뒤_2차로_도는_요청은_2차의_모델을_받는다(self, tmp_path: Path) -> None:
         """1차 모델명을 그대로 2차 CLI 에 넘기면 없는 모델이 된다(sca-dyb.10)."""
         fallback, _primary, secondary, switcher = self._fallback(tmp_path)
@@ -1923,3 +1934,37 @@ class Test실제로_돈_모델을_읽는다:
         resp = engine.parse(json.dumps(payload), "", 0)
         assert resp.ok is True
         assert resp.model_actual == "b"
+
+
+class Test요청_모델도_실행기가_찍는다:
+    """기록하는 자리마다 요청 모델을 따로 구하면, 엔진을 쥐고 있지 않은 자리
+    (감시 점검)는 그 값을 못 얻어 실제 모델을 요청 칸에 넣게 된다. 엔진 이름과
+    같은 자리에서 한 번 찍는다 (sca-cr2b)."""
+
+    def _실행기(self, stdout: str = "답변") -> Any:
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            return FakeCompleted(stdout=stdout, returncode=0)
+
+        return EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+
+    def test_요청한_모델이_응답에_실린다(self, tmp_path: Path) -> None:
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        resp = self._실행기().run(engine, request(model="claude-opus-5"))
+        assert resp.model_asked == "claude-opus-5"
+
+    def test_요청이_비면_엔진이_정한_모델이_실린다(self, tmp_path: Path) -> None:
+        """실행기가 채우는 값이 실제로 돈 요청이다. 호출자가 비워 보낸 값을
+        기록하면 그 요청의 모델이 빈 칸으로 남는다."""
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        resp = self._실행기('{"result": "답", "is_error": false}').run(engine, request(model=""))
+        assert resp.model_asked == engine.spec.model
+
+    def test_시간초과_응답에도_실린다(self, tmp_path: Path) -> None:
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        resp = runner.run(engine, request(model="claude-opus-5"))
+        assert resp.model_asked == "claude-opus-5"

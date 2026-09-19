@@ -186,12 +186,17 @@ class EngineRunner:
                 failure_detail=FailureDetail(timeout_sec=timeout_int),
                 elapsed_source=ElapsedSource.RUNNER,
                 engine=engine.name,
+                model_asked=request.model or "",
             )
         wall_elapsed = time.monotonic() - started
         # Stamped here rather than in each Engine.parse() so every engine reports
         # it the same way, including ones added later.
         response = dataclasses.replace(
-            engine.parse(completed.stdout, completed.stderr, completed.returncode), engine=engine.name,
+            engine.parse(completed.stdout, completed.stderr, completed.returncode),
+            engine=engine.name,
+            # request.model is the resolved one: the branch above fills it from
+            # the engine spec when the caller left it empty.
+            model_asked=request.model or "",
         )
         # sca-cfa — some engines (Codex) never report their own elapsed time.
         # Only fill in the runner's wall-clock measurement when the engine
@@ -274,6 +279,7 @@ class EngineRunner:
             failure_detail=FailureDetail(code=unmet[0]),
             elapsed_source=ElapsedSource.RUNNER,
             engine=engine.name,
+            model_asked=request.model or "",
         )
 
     def _record_payload(self, engine: Engine, request: EngineRequest) -> None:
@@ -504,6 +510,7 @@ class FallbackEngine(Engine):
                     # 실패까지 usage_limit 으로 세면 한도 통계가 거짓이 된다.
                     failure_reason=self.switcher.reason(), engine=self.primary.name,
                     failure_detail=FailureDetail(code=approval),
+                    model_asked=request.model or "",
                 )
 
             return self._run_secondary(request)

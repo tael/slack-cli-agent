@@ -304,6 +304,10 @@ class EngineResponse:
     elapsed: float
     turns: int | None
     usage: Usage | None
+    #: The model the request asked for, stamped by the runner next to the
+    #: engine name. Recording sites that hold no engine (the watch check) would
+    #: otherwise have to put the actual model in the asked column (sca-cr2b).
+    model_asked: str = ""
     raw: Mapping[str, Any] = field(default_factory=dict)
     # nonzero_exit / bad_json / timeout / usage_limit / empty_response / is_error
     failure_reason: str | None = None
