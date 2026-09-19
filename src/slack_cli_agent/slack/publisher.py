@@ -257,10 +257,12 @@ class MessagePublisher:
             )
 
         kwargs: dict[str, Any] = {"channel": channel, "ts": ts}
+        body, note = chunks[0], ""
         if rich:
             payload = self._rich_payload(
                 self._verifier.separate_tables(chunks[0]), split_note=True
             )
+            body, note = payload.body, payload.note
             kwargs["text"] = payload.text
             kwargs["blocks"] = payload.blocks
         else:
@@ -269,6 +271,22 @@ class MessagePublisher:
         try:
             self._client.chat_update(**kwargs)
         except Exception as exc:
+            # chat.update touches one ts, so a rejected block payload can't be
+            # split the way post() does it. Dropping the blocks is the only
+            # retry left, and it beats losing the correction (sca-a23).
+            if rich and self._verifier.blocks_rejected(exc):
+                self._audit(
+                    kind=IncidentKind.BLOCKS_REJECTED.value, channel=channel,
+                    thread_ts=ts, error=str(exc), body=body[:2000],
+                )
+                plain = {k: v for k, v in kwargs.items() if k != "blocks"}
+                whole = f"{body}\n\n> {note}" if note else body
+                plain["text"] = self._markdown.to_mrkdwn(whole)[:3900]
+                try:
+                    self._client.chat_update(**plain)
+                    return []
+                except Exception as retry_exc:  # noqa: BLE001 - fold the retry failure into the original for failure reporting
+                    exc = retry_exc
             # Recorded under the same incident kind as a failed post: this
             # writes to a channel the same way, and a correction that never
             # landed has to be visible in the audit log (sca-psr).
