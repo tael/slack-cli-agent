@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.context import RequestContext
@@ -745,17 +747,21 @@ class 동시계측핸들러:
         self._timeout = timeout
         self._gate = threading.Event()
         self.동시최대 = 0
+        self.진입 = 0
+        self.완료 = 0
         self._현재 = 0
 
     def handle(self, ctx: RequestContext) -> HandleOutcome:
         with self._lock:
             self._현재 += 1
+            self.진입 += 1
             self.동시최대 = max(self.동시최대, self._현재)
             if self._현재 >= self._expected:
                 self._gate.set()
         self._gate.wait(self._timeout)
         with self._lock:
             self._현재 -= 1
+            self.완료 += 1
         return HandleOutcome(ok=True)
 
 
@@ -763,6 +769,19 @@ class Test동시처리상한:
     """워커 1개가 한 번에 하나씩만 처리하면 서로 다른 스레드의 요청이 서로를
     기다린다. 실측에서 최대 42분이었다. max_concurrent 를 상한으로 쓴다
     (sca-si6)."""
+
+    #: 사건이 영영 안 오는 결함을 만나도 시험이 멈추지 않게 하는 상한이다.
+    #: 통과 경로는 이 값에 닿지 않는다.
+    _마감초 = 10.0
+
+    def _세_건이_다_진입할_때까지(self, handler: Any, 건수: int) -> Callable[[], bool]:
+        마감 = time.monotonic() + self._마감초
+        return lambda: handler.진입 >= 건수 or time.monotonic() > 마감
+
+    def _두_건이_다_끝날_때까지(self, handler: Any, 건수: int) -> Callable[[], bool]:
+        """상한이 1이면 둘이 동시에 진입할 수 없다. 완료로 센다."""
+        마감 = time.monotonic() + self._마감초
+        return lambda: handler.완료 >= 건수 or time.monotonic() > 마감
 
     def test_상한만큼_동시에_처리한다(self, database) -> None:
         handler = 동시계측핸들러(expected=3)
@@ -772,8 +791,9 @@ class Test동시처리상한:
         )
         for i in range(3):
             queue.enqueue(ctx(f"{i}.0", thread=f"t{i}"))
-        멈춤 = [False, False, False, True]
-        worker.run_forever(lambda: 멈춤.pop(0) if 멈춤 else True)
+        # 폴링 횟수로 끊지 않는다. 빈 폴링이 한 번만 섞여도 세 번째 건을
+        # 집기 전에 루프가 끝나 동시최대가 3에 못 미친다 (sca-2n2).
+        worker.run_forever(self._세_건이_다_진입할_때까지(handler, 3))
         assert handler.동시최대 == 3
 
     def test_상한을_넘지_않는다(self, database) -> None:
@@ -784,8 +804,7 @@ class Test동시처리상한:
         )
         for i in range(2):
             queue.enqueue(ctx(f"{i}.0", thread=f"t{i}"))
-        멈춤 = [False, False, True]
-        worker.run_forever(lambda: 멈춤.pop(0) if 멈춤 else True)
+        worker.run_forever(self._두_건이_다_끝날_때까지(handler, 2))
         assert handler.동시최대 == 1
 
     def test_반환하기_전에_처리_중인_건을_기다린다(self, database) -> None:
