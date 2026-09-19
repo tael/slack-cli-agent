@@ -18,6 +18,7 @@ from ..core.result import Outcome
 from ..observability.notices import NoticeCatalog
 from ..slack.gate import ResponseGate
 from ..slack.identity import BotIdentity
+from ..slack.mentions import SelfMentionStripper
 from ..slack.message_kind import MessageKind
 from ..slack.policy import addresses_someone_else
 from .ports import HistoryReader
@@ -118,6 +119,10 @@ class CatchupService:
         self._notices = notices
         self._settings = settings
         self._identity = identity
+        # The live path strips this through ingress. Built from the same class
+        # so a body recovered here reads like one received on the socket
+        # (sca-za2a).
+        self._self_mention = SelfMentionStripper(identity)
         self._message_text = message_text
         self._now = now
         self._started_at = started_at if started_at is not None else now()
@@ -220,7 +225,7 @@ class CatchupService:
                     user=m.get("user") or "",
                     ts=str(m.get("ts")),
                     thread_ts=str(thread_ts),
-                    text=m.get("text") or "",
+                    text=self._self_mention.remove_self(m.get("text") or ""),
                 )
             )
         missed.sort(key=lambda c: float(c.ts))
