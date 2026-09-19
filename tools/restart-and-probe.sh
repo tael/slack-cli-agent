@@ -23,7 +23,14 @@ if [ ${#bots[@]} -eq 0 ]; then
   bots=(shinji rei asuka)
 fi
 
+# 점검 도구가 슬랙에 못 닿았을 때의 종료코드. 봇 실패와 고칠 자리가 다르다
+# (tools/test-channel-probe.py 의 TRANSPORT_EXIT).
+TRANSPORT_EXIT=5
+
+# 처음 난 실패 코드를 남긴다. 전부 1 로 뭉개면 봇 실패와 멘션 미도달과
+# 시간 초과가 같아 보여, 점검 도구가 코드를 나눠 낸 뜻이 사라진다.
 failed=0
+unreachable=0
 results=()
 for bot in "${bots[@]}"; do
   for service in ingress worker; do
@@ -34,12 +41,24 @@ for bot in "${bots[@]}"; do
 
   "$PROBE" "$bot" "$QUESTION" < /dev/null
   code=$?
-  results+=("$bot : 종료코드 $code")
-  [ "$code" -eq 0 ] || failed=1
+  if [ "$code" -eq "$TRANSPORT_EXIT" ]; then
+    results+=("$bot : 슬랙에 못 닿음 (종료코드 $code)")
+    unreachable=1
+  else
+    results+=("$bot : 종료코드 $code")
+    if [ "$code" -ne 0 ] && [ "$failed" -eq 0 ]; then
+      failed="$code"
+    fi
+  fi
 done
 
 echo "--- 재기동 뒤 점검 결과 ---"
 for line in "${results[@]}"; do
   echo "$line"
 done
-exit "$failed"
+# 봇 쪽 실패가 하나라도 있으면 그쪽이 이긴다. 못 잰 것만 있으면 별도 코드로
+# 내보내 자동화가 재시도와 원인 조사를 가를 수 있게 한다.
+if [ "$failed" -ne 0 ]; then
+  exit "$failed"
+fi
+exit "$([ "$unreachable" -ne 0 ] && echo "$TRANSPORT_EXIT" || echo 0)"
