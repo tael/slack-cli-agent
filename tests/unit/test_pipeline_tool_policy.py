@@ -11,6 +11,7 @@ from test_pipeline import build_pipeline, make_ctx, ok_response
 
 from slack_cli_agent.auth.tools import ToolPolicy
 from slack_cli_agent.config.channel import ChannelConfig
+from slack_cli_agent.engine.tool_selection import ToolAccess
 
 
 def test_일반_사용자는_기본_도구만_받는다() -> None:
@@ -49,7 +50,9 @@ def test_정책이_없으면_도구_목록이_비어_있다() -> None:
 
     pipeline.handle(make_ctx(user="U1"))
 
-    assert parts["runner"].calls[0].tools.names == ()
+    # 이름만 보면 '전부 금지' 와 구분이 안 된다. 일반 대화 경로가 실수로
+    # 금지를 넘겨 도구를 다 막아도 그 시험은 통과한다 (리뷰 2026-09-19).
+    assert parts["runner"].calls[0].tools.access is ToolAccess.UNRESTRICTED
 
 
 def test_Application_이_설정의_도구를_정책으로_조립한다(tmp_path) -> None:

@@ -110,10 +110,11 @@ class Test엔진이_도구_금지를_다루는_법:
         from slack_cli_agent.engine.gemini import GeminiEngine
 
         요청 = request(tools=ToolSelection.forbid_all())
-        for 엔진 in (CodexEngine(codex_profile(tmp_path), SETTINGS),
-                    GeminiEngine(gemini_profile(tmp_path), SETTINGS)):
-            보장 = 엔진.capabilities_for(요청)
-            assert 보장.tool_restriction is not ToolRestriction.ALL_FORBIDDEN
+        codex = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        gemini = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        # codex 는 샌드박스가 꺼진 기본값이라 NONE 이고, agy 는 언제나 NONE 이다.
+        assert codex.capabilities_for(요청).tool_restriction is ToolRestriction.NONE
+        assert gemini.capabilities_for(요청).tool_restriction is ToolRestriction.NONE
 
 
 class Test실행_정책이_금지를_요구로_옮긴다:
@@ -136,3 +137,99 @@ class Test기록에_이름이_있다:
         from slack_cli_agent.engine.runner import LEVEL_NAMES
 
         assert LEVEL_NAMES[ToolRestriction.ALL_FORBIDDEN] == "도구 전부 금지"
+
+
+class Test팩토리를_우회해도_모순이_안_만들어진다:
+    """리뷰 지적 2026-09-19 - frozen 만으로는 부족하다. 생성자와
+    dataclasses.replace 로 모순 상태를 그대로 만들 수 있었다."""
+
+    def test_허용목록인데_이름이_없으면_거부한다(self) -> None:
+        with pytest.raises(ValueError, match="forbid_all"):
+            ToolSelection(access=ToolAccess.ALLOWLIST)
+
+    def test_금지인데_이름을_들면_거부한다(self) -> None:
+        with pytest.raises(ValueError, match="이름"):
+            ToolSelection(access=ToolAccess.FORBIDDEN, names=("Read",))
+
+    def test_제한_없음인데_이름을_들면_거부한다(self) -> None:
+        with pytest.raises(ValueError, match="이름"):
+            ToolSelection(names=("Read",))
+
+    def test_replace_도_같은_검사를_받는다(self) -> None:
+        import dataclasses
+
+        with pytest.raises(ValueError):
+            dataclasses.replace(ToolSelection.allow(["Read"]), names=())
+
+
+class Test축의_뜻을_고정한다:
+    """리뷰 지적 - 요구가 허용목록인데 엔진이 전부 금지면 미달로 안 잡힌다.
+    이 축은 '얼마나 조였는가' 를 재므로 더 조인 쪽이 약한 요구를 만족하는
+    것이 맞다. 그 판정이 해로워지는 조합이 실제로 생기지 않는다는 것을
+    여기서 고정한다 - 요구와 선언이 같은 ToolSelection 하나에서 나온다."""
+
+    def test_claude_의_선언은_요청의_선택에서_나온다(self, tmp_path) -> None:
+        from test_engine import claude_profile, request
+        from test_engine_capability import SETTINGS
+
+        from slack_cli_agent.auth.execution_policy import ExecutionPolicy
+        from slack_cli_agent.engine.claude import ClaudeEngine
+
+        엔진 = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        for 선택 in (ToolSelection.unrestricted(), ToolSelection.allow(["Read"]),
+                    ToolSelection.forbid_all()):
+            요구 = ExecutionPolicy().requirements_for(config=None, tools=선택)
+            보장 = 엔진.capabilities_for(request(tools=선택))
+            assert 요구.unmet(보장) == ()
+            assert 보장.tool_restriction is 선택.restriction
+
+
+class Test금지일_때_허용목록_인자를_안_넘긴다:
+    """실측은 --disallowedTools=* 단독으로 했다. 빈 허용목록을 함께 넘기는
+    것은 재보지 않은 조합이라 실측과 같은 모양으로 맞춘다."""
+
+    def test_allowedTools_가_없다(self, tmp_path) -> None:
+        from test_engine import claude_profile, request
+        from test_engine_capability import SETTINGS
+
+        from slack_cli_agent.engine.claude import ClaudeEngine
+
+        cmd = ClaudeEngine(claude_profile(tmp_path), SETTINGS).build_command(
+            request(tools=ToolSelection.forbid_all())
+        )
+        assert "--allowedTools" not in cmd
+
+    def test_허용목록일_때는_넘긴다(self, tmp_path) -> None:
+        from test_engine import claude_profile, request
+        from test_engine_capability import SETTINGS
+
+        from slack_cli_agent.engine.claude import ClaudeEngine
+
+        cmd = ClaudeEngine(claude_profile(tmp_path), SETTINGS).build_command(
+            request(tools=ToolSelection.allow(["Read"]))
+        )
+        assert cmd[cmd.index("--allowedTools") + 1] == "Read"
+
+
+class Test정책_출력을_옮기는_자리는_하나다:
+    """정책이 낸 이름 목록을 선택으로 옮기는 규칙이 호출자마다 따로 있으면
+    한쪽만 빈 목록을 방어한다. 감시 경로가 그래서 ValueError 를 낼 수 있었다
+    (리뷰 2026-09-19)."""
+
+    def test_이름이_있으면_허용목록이다(self) -> None:
+        선택 = ToolSelection.from_names(("Read", "Grep"))
+        assert 선택.access is ToolAccess.ALLOWLIST
+        assert 선택.names == ("Read", "Grep")
+
+    def test_이름이_없으면_제한_없음이다(self) -> None:
+        """정책이 아무것도 안 낸 것은 금지가 아니다. 금지는 호출자가 밝힌다."""
+        assert ToolSelection.from_names(()).access is ToolAccess.UNRESTRICTED
+
+    def test_감시_경로가_빈_목록에도_안_터진다(self) -> None:
+        import inspect
+
+        from slack_cli_agent.core import application
+
+        본문 = inspect.getsource(application.Application._watch_run_check)
+        assert "ToolSelection.allow(" not in 본문
+        assert "from_names" in 본문
