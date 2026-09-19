@@ -583,3 +583,51 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
         )
         assert 응답.failure_detail is not None
         assert "unknown" not in str(응답.failure_detail)
+
+
+class Test전환_승인_안내는_요구_충족까지_말한다:
+    """프로브는 '이차가 답하는가' 만 본다. 그것만 보고 승인하면 승인된 폴백이
+    그 요청을 처리할 수 있다는 뜻이 아니게 된다 (sca-42s)."""
+
+    def _전환한다(self, tmp_path: Path, 요구: ExecutionRequirements) -> dict[str, Any]:
+        from engine_support import named
+        from test_engine import FakeCompleted, RecordingEngine, profile_with, request, 통과정책
+
+        from slack_cli_agent.engine.base import EngineResponse
+
+        한도 = EngineResponse(
+            ok=False, body="한도 소진", session_id=None, model_actual=None,
+            elapsed=0, turns=None, usage=None, failure_reason="usage_limit",
+        )
+        프로필 = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            {"type": "gemini", "binary": "agy", "model": "gemini-3.8-flash"},
+            tmp_path=tmp_path,
+        )
+        일차 = named(RecordingEngine, "claude", capabilities=ClaudeEngine.capabilities)(
+            프로필, SETTINGS, response=한도
+        )
+        이차 = named(RecordingEngine, "gemini", capabilities=GeminiEngine.capabilities)(
+            프로필, SETTINGS
+        )
+        switcher = EngineSwitcher(tmp_path / "engine_state.json")
+        runner = EngineRunner(
+            SETTINGS,
+            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(
+                stdout="답변", returncode=0
+            ),
+            environment_policy=통과정책(),
+        )
+        FallbackEngine(일차, 이차, switcher, runner).run(request(requirements=요구))
+        return switcher.load()
+
+    def test_이차가_요구를_못_맞추면_안내에_적는다(self, tmp_path: Path) -> None:
+        상태 = self._전환한다(
+            tmp_path,
+            ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
+        )
+        assert "도구 제한" in 상태["probe_detail"]
+
+    def test_요구를_맞추면_그런_말을_안_적는다(self, tmp_path: Path) -> None:
+        상태 = self._전환한다(tmp_path, ExecutionRequirements())
+        assert "도구 제한" not in 상태["probe_detail"]
