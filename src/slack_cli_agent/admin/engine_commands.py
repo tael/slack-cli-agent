@@ -12,6 +12,17 @@ from ..engine.switcher import EngineSwitcher
 from .command import AdminCommand, AdminContext, AdminResult
 
 
+def _recovery_note(switcher: EngineSwitcher, primary: str) -> str:
+    """전환 계기별로 1차로 돌아오는 조건이 다르다.
+
+    인증 실패를 "한도가 풀리면" 으로 안내하면 기다리면 되는 것으로 읽혀
+    아무도 다시 로그인하지 않는다.
+    """
+    if switcher.reason() == EngineSwitcher.AUTH_FAILURE:
+        return f"{primary} 에 다시 로그인하면 알아서 되돌립니다."
+    return f"{primary} 한도가 풀리면 알아서 되돌립니다."
+
+
 class EngineApproveCommand(AdminCommand):
     name: ClassVar[str] = "engine_approve"
     usage: ClassVar[str] = "엔진 승인"
@@ -31,7 +42,7 @@ class EngineApproveCommand(AdminCommand):
         return AdminResult(
             message=(
                 f"{fallback} 로 답하겠습니다. "
-                f"{ctx.profile.primary_engine.type} 한도가 풀리면 알아서 되돌립니다."
+                f"{_recovery_note(switcher, ctx.profile.primary_engine.type)}"
             )
         )
 
@@ -52,9 +63,10 @@ class EngineDenyCommand(AdminCommand):
             )
         switcher.deny()
         fallback = ctx.profile.fallback_engine.type if ctx.profile.fallback_engine else "(없음)"
+        primary = ctx.profile.primary_engine.type
+        until = (f"{primary} 에 다시 로그인할 때까지"
+                 if switcher.reason() == EngineSwitcher.AUTH_FAILURE
+                 else f"{primary} 한도가 풀릴 때까지")
         return AdminResult(
-            message=(
-                f"{fallback} 를 쓰지 않겠습니다. "
-                f"{ctx.profile.primary_engine.type} 한도가 풀릴 때까지 한도 안내만 답합니다."
-            )
+            message=f"{fallback} 를 쓰지 않겠습니다. {until} 안내만 답합니다."
         )

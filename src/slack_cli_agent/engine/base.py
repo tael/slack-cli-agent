@@ -408,6 +408,19 @@ class Engine(ABC):
     @abstractmethod
     def detect_usage_limit(self, response: EngineResponse) -> UsageLimit | None: ...
 
+    def detect_auth_failure(self, response: EngineResponse) -> str | None:
+        """이 엔진의 로그인이 풀려 사람이 다시 로그인해야 하는 실패인지 본다.
+
+        사용량 한도와 계기는 다르지만 폴백 쪽에서 보면 같다 - 1차가 이 상태면
+        이 요청도 다음 요청도 전부 실패하므로 2차로 넘겨야 한다. 시간이 지나면
+        풀리는 실패(네트워크 오류, 타임아웃, 일시적 5xx)는 여기 해당하지
+        않는다. 그런 것까지 계기로 삼으면 한 번 끊긴 것으로 엔진이 바뀐다.
+
+        돌려주는 값은 사람에게 보일 한 줄이다. None 은 인증 실패가 아니라는
+        뜻이고, 판단할 근거를 아직 확보하지 못한 엔진도 None 을 낸다.
+        """
+        return None
+
     def session_id_from(self, response: EngineResponse) -> str | None:
         """Returns the engine's own session ID if it issues one, else None.
 
