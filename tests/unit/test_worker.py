@@ -636,7 +636,7 @@ class Test캐치업이_실패건을_되살린다:
         queue.enqueue(ctx("1.1", "T1"))
         job = queue.claim_next("w")
         assert job is not None
-        queue.complete(job.id, ok=False, failure="엔진 오류", attempt=job.attempts)
+        queue.complete(job.id, ok=False, failure="엔진 오류", lease=job.lease)
 
         report = CatchupReport(missed=[ctx("1.1", "T1")], skipped=[], unchecked_channels=[])
         worker._catchup = FakeCatchup(report)
@@ -652,7 +652,7 @@ class Test캐치업이_실패건을_되살린다:
         queue.enqueue(ctx("1.1", "T1"))
         job = queue.claim_next("w")
         assert job is not None
-        queue.complete(job.id, ok=False, failure="엔진 오류", attempt=job.attempts)
+        queue.complete(job.id, ok=False, failure="엔진 오류", lease=job.lease)
 
         report = CatchupReport(missed=[ctx("1.1", "T1")], skipped=[], unchecked_channels=[])
         worker._catchup = FakeCatchup(report)
@@ -666,7 +666,7 @@ class Test캐치업이_실패건을_되살린다:
         queue.enqueue(ctx("1.1", "T1"))
         job = queue.claim_next("w")
         assert job is not None
-        queue.complete(job.id, ok=True, attempt=job.attempts)
+        queue.complete(job.id, ok=True, lease=job.lease)
 
         report = CatchupReport(missed=[ctx("1.1", "T1")], skipped=[], unchecked_channels=[])
         worker._catchup = FakeCatchup(report)

@@ -6,6 +6,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Callable
+from uuid import uuid4
 
 from ..core.context import RequestContext
 from ..storage.database import Database
@@ -84,44 +85,45 @@ class SqliteJobQueue(SqliteRepository):
             ).fetchone()
             if row is None:
                 return None
+            lease = uuid4().hex
             conn.execute(
                 """
                 UPDATE jobs
                    SET status = ?, worker_id = ?, started_at = ?,
-                       heartbeat_ts = ?, attempts = attempts + 1
+                       heartbeat_ts = ?, attempts = attempts + 1, lease = ?
                  WHERE id = ?
                 """,
-                (JobStatus.RUNNING.value, worker_id, now, now, row["id"]),
+                (JobStatus.RUNNING.value, worker_id, now, now, lease, row["id"]),
             )
-        return self._to_job(row, attempts_delta=1)
+        return self._to_job(row, attempts_delta=1, lease=lease)
 
-    def heartbeat(self, job_id: int, attempt: int) -> None:
+    def heartbeat(self, job_id: int, lease: str) -> None:
         self._execute(
-            "UPDATE jobs SET heartbeat_ts = ? WHERE id = ? AND status = ? AND attempts = ?",
-            (self._now(), job_id, JobStatus.RUNNING.value, attempt),
+            "UPDATE jobs SET heartbeat_ts = ? WHERE id = ? AND status = ? AND lease = ?",
+            (self._now(), job_id, JobStatus.RUNNING.value, lease),
         )
 
-    def complete(self, job_id: int, ok: bool, failure: str = "", *, attempt: int) -> bool:
-        """`attempt` fences the write against a worker that came back late.
+    def complete(self, job_id: int, ok: bool, failure: str = "", *, lease: str) -> bool:
+        """`lease` fences the write against a worker that came back late.
 
-        A reclaimed job is claimed again under a new attempt number. Without
-        the fence, the old worker's result overwrote the attempt that is
-        actually running, and the thread stopped being serialized (sca-7qg).
+        A reclaimed job is claimed again under a new lease. Without the fence,
+        the old worker's result overwrote the claim that is actually running,
+        and the thread stopped being serialized (sca-7qg).
         """
         status = JobStatus.COMPLETED if ok else JobStatus.FAILED
         cursor = self._execute(
             "UPDATE jobs SET status = ?, finished_at = ?, failure = ?"
-            " WHERE id = ? AND status = ? AND attempts = ?",
-            (status.value, self._now(), failure, job_id, JobStatus.RUNNING.value, attempt),
+            " WHERE id = ? AND status = ? AND lease = ?",
+            (status.value, self._now(), failure, job_id, JobStatus.RUNNING.value, lease),
         )
         if cursor.rowcount == 0:
             log.warning(
-                "이 시도의 결과가 아니라 기록하지 않았다 : 작업 %d, 시도 %d", job_id, attempt
+                "이 점유의 결과가 아니라 기록하지 않았다 : 작업 %d, 점유 %s", job_id, lease
             )
             return False
         return True
 
-    def requeue(self, job_id: int, *, attempt: int) -> bool:
+    def requeue(self, job_id: int, *, lease: str) -> bool:
         """Puts a job back in the queue. Fenced the same way complete() is:
         a worker shutting down must not requeue the attempt that replaced it,
         which would let a third worker claim the same request (sca-d6i).
@@ -129,13 +131,13 @@ class SqliteJobQueue(SqliteRepository):
         cursor = self._execute(
             """
             UPDATE jobs SET status = ?, worker_id = NULL,
-                   started_at = NULL, heartbeat_ts = NULL
-             WHERE id = ? AND status = ? AND attempts = ?
+                   started_at = NULL, heartbeat_ts = NULL, lease = ''
+             WHERE id = ? AND status = ? AND lease = ?
             """,
-            (JobStatus.QUEUED.value, job_id, JobStatus.RUNNING.value, attempt),
+            (JobStatus.QUEUED.value, job_id, JobStatus.RUNNING.value, lease),
         )
         if cursor.rowcount == 0:
-            log.warning("이 시도가 아니라 되돌리지 않았다 : 작업 %d, 시도 %d", job_id, attempt)
+            log.warning("이 점유가 아니라 되돌리지 않았다 : 작업 %d, 점유 %s", job_id, lease)
             return False
         return True
 
@@ -214,10 +216,11 @@ class SqliteJobQueue(SqliteRepository):
         return cursor.rowcount
 
     @staticmethod
-    def _to_job(row: sqlite3.Row, attempts_delta: int = 0) -> Job:
+    def _to_job(row: sqlite3.Row, attempts_delta: int = 0, lease: str = "") -> Job:
         return Job(
             id=int(row["id"]),
             context=RequestContext.from_json(row["payload"]),
             attempts=int(row["attempts"]) + attempts_delta,
             created_at=float(row["created_at"]),
+            lease=lease,
         )

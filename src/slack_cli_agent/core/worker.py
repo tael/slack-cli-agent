@@ -94,7 +94,7 @@ class Worker:
 
         stop_event = threading.Event()
         beat = threading.Thread(
-            target=self._heartbeat_loop, args=(job.id, job.attempts, stop_event), daemon=True
+            target=self._heartbeat_loop, args=(job.id, job.lease, stop_event), daemon=True
         )
         beat.start()
         try:
@@ -169,27 +169,27 @@ class Worker:
             log.exception("처리기 예외로 작업 실패: channel=%s ts=%s", context.channel, context.ts)
             return HandleOutcome(ok=False, failure=str(exc))
 
-    def _heartbeat_loop(self, job_id: int, attempt: int, stop_event: threading.Event) -> None:
+    def _heartbeat_loop(self, job_id: int, lease: str, stop_event: threading.Event) -> None:
         interval = self._settings.heartbeat_interval_sec
         while not stop_event.is_set():
             self._sleep(interval)
             if stop_event.is_set():
                 break
-            self._queue.heartbeat(job_id, attempt)
+            self._queue.heartbeat(job_id, lease)
 
     def _finish(self, job: Job, context: RequestContext, outcome: HandleOutcome) -> None:
         if outcome.ok:
-            recorded = self._queue.complete(job.id, True, "", attempt=job.attempts)
+            recorded = self._queue.complete(job.id, True, "", lease=job.lease)
             mark, buried_mark = self._pick_done_marks(outcome)
         else:
-            recorded = self._queue.complete(job.id, False, outcome.failure, attempt=job.attempts)
+            recorded = self._queue.complete(job.id, False, outcome.failure, lease=job.lease)
             mark = buried_mark = self._markers.mark_failed
         if not recorded:
             # This attempt was already reclaimed and someone else is running the
             # request now. Marking it done would show the user a finished request
             # that is still in progress (sca-ubf).
             log.warning(
-                "이 시도의 결과가 아니라 표식을 안 단다 : %s:%s", context.channel, context.ts
+                "이 점유의 결과가 아니라 표식을 안 단다 : %s:%s", context.channel, context.ts
             )
             return
 
@@ -287,7 +287,7 @@ class Worker:
             running = list(self._running.values())
             self._running.clear()
         for job in running:
-            if not self._queue.requeue(job.id, attempt=job.attempts):
+            if not self._queue.requeue(job.id, lease=job.lease):
                 continue
             self._markers.clear_processing(job.context.channel, job.context.ts)
             self._markers.mark_waiting(job.context.channel, job.context.ts)
