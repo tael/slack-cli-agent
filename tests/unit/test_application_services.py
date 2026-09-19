@@ -571,3 +571,30 @@ class Test소유자전용점검이실제로조회한다:
         app = Application(write_profile(tmp_path), client)
         app._is_bot_user("U1")
         assert [name for name, _ in client.calls if name == "users_info"]
+
+
+class Test접수의_잠금예산:
+    """부품이 있는 것과 배선된 것은 다르다 (sca-9l1)."""
+
+    def test_접수에_잠금예산이_배선된다(self, app: Application) -> None:
+        assert app.ingress()._lock_budget is not None
+
+    def test_예산_안에서_DB_잠금_대기가_짧아진다(self, app: Application) -> None:
+        예산 = app.ingress()._lock_budget
+        assert 예산 is not None
+        database = app.database
+        기본 = int(database.connect().execute("PRAGMA busy_timeout").fetchone()[0])
+        with 예산():
+            안 = int(database.connect().execute("PRAGMA busy_timeout").fetchone()[0])
+        assert 기본 == 30_000
+        assert 안 == int(app._settings.ingress_lock_budget_sec * 1000)
+
+    def test_예산_합이_슬랙_ACK_한도보다_짧다(self, app: Application) -> None:
+        """처리 풀이 전부 막히면 뒤 이벤트의 콜백 시작이 그만큼 밀린다.
+        적재 시도의 잠금 대기와 백오프를 합쳐 3초 안이어야 한다."""
+        settings = app._settings
+        ingress = app.ingress()
+        시도 = ingress._enqueue_attempts
+        대기 = settings.ingress_lock_budget_sec * 시도
+        백오프 = sum(ingress._enqueue_retry_wait_sec * (n + 1) for n in range(시도 - 1))
+        assert 대기 + 백오프 <= 1.5

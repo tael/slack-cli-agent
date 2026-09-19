@@ -1054,6 +1054,11 @@ class Application:
                 allowed_reactions=self.allowed_reactions(),
                 on_reaction=self.on_reaction,
                 spawn=ThreadTaskSpawner(),
+                # The handler runs on one of slack-sdk's ten pool threads, so a
+                # long lock wait here delays every event behind it (sca-9l1).
+                lock_budget=lambda: self.database.latency_budget(
+                    self._settings.ingress_lock_budget_sec
+                ),
                 # failed jobs get resurrected via re-registration; capping attempts
                 # keeps a permanently-failing request from reviving on every redelivery
                 job_max_attempts=self._settings.job_max_attempts,
