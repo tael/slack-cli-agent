@@ -297,6 +297,9 @@ class EngineResponse:
     ok: bool
     body: str
     session_id: str | None
+    #: The model that actually spent tokens. None when the engine cannot say --
+    #: never the requested model, which would make "it was the same" and "we
+    #: did not know" the same record. codex and gemini report nothing here.
     model_actual: str | None
     elapsed: float
     turns: int | None

@@ -1852,3 +1852,74 @@ class Test제미나이_스트리밍_출력:
         resp = self.engine(tmp_path).parse(text, "", 0)
         assert resp.ok is True
         assert resp.body == "답"
+
+
+class Test실제로_돈_모델을_읽는다:
+    """claude 의 result 이벤트에는 `model` 키가 없다(2026-09-19 실측, 2.1.263).
+    모델별 사용량 표인 modelUsage 만 온다. 원본 bot.py:207 은 처음부터 그 표의
+    출력 토큰 최대값을 골랐다 (sca-asrp)."""
+
+    def _payload(self, **extra: Any) -> dict[str, Any]:
+        return {"result": "답", "session_id": "s1", "is_error": False, **extra}
+
+    def test_modelUsage_에서_고른다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = self._payload(modelUsage={"claude-sonnet-5": {"outputTokens": 4}})
+        assert engine.parse(json.dumps(payload), "", 0).model_actual == "claude-sonnet-5"
+
+    def test_여러_모델이_있으면_출력_토큰이_가장_많은_쪽이다(self, tmp_path: Path) -> None:
+        """이어받은 세션에서 모델을 바꾸면 표에 둘이 함께 온다."""
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = self._payload(modelUsage={
+            "claude-haiku-4-5": {"outputTokens": 3},
+            "claude-opus-5": {"outputTokens": 90},
+        })
+        assert engine.parse(json.dumps(payload), "", 0).model_actual == "claude-opus-5"
+
+    def test_표가_없으면_None_이다(self, tmp_path: Path) -> None:
+        """모르면 모른다고 남긴다. 요청 모델로 채우면 '같았다' 와 '몰랐다' 가
+        기록에서 영영 안 갈린다."""
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        assert engine.parse(json.dumps(self._payload()), "", 0).model_actual is None
+        assert engine.parse(json.dumps(self._payload(modelUsage={})), "", 0).model_actual is None
+
+    def test_표가_사전이_아니면_None_이다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = self._payload(modelUsage=["claude-sonnet-5"])
+        assert engine.parse(json.dumps(payload), "", 0).model_actual is None
+
+    def test_값이_사전이_아닌_항목도_견딘다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = self._payload(modelUsage={"a": None, "b": {"outputTokens": 1}})
+        assert engine.parse(json.dumps(payload), "", 0).model_actual == "b"
+
+    def test_하나뿐이면_토큰이_0_이어도_그것이다(self, tmp_path: Path) -> None:
+        """표에 올라온 것 자체가 그 모델이 돌았다는 기록이다."""
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = self._payload(modelUsage={"claude-opus-5": {}})
+        assert engine.parse(json.dumps(payload), "", 0).model_actual == "claude-opus-5"
+
+    def test_여럿인데_최대가_0_이면_None_이다(self, tmp_path: Path) -> None:
+        """어느 쪽이 답을 냈는지 자료로 안 갈린다. 삽입 순서로 고르면 기록이
+        틀린 값을 확정으로 남긴다 (코덱스 리뷰 지적)."""
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = self._payload(modelUsage={"a": {}, "b": {"outputTokens": 0}})
+        assert engine.parse(json.dumps(payload), "", 0).model_actual is None
+
+    def test_최대가_동률이면_None_이다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = self._payload(modelUsage={
+            "a": {"outputTokens": 5}, "b": {"outputTokens": 5},
+        })
+        assert engine.parse(json.dumps(payload), "", 0).model_actual is None
+
+    def test_토큰이_숫자가_아니면_요청이_안_깨진다(self, tmp_path: Path) -> None:
+        """표는 CLI 가 주는 값이다. 여기서 예외가 나면 답을 받고도 응답을
+        못 만든다 (코덱스 리뷰 지적)."""
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = self._payload(modelUsage={
+            "a": {"outputTokens": "unknown"}, "b": {"outputTokens": 2},
+        })
+        resp = engine.parse(json.dumps(payload), "", 0)
+        assert resp.ok is True
+        assert resp.model_actual == "b"
