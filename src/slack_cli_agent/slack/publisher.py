@@ -118,8 +118,12 @@ class MessagePublisher:
             if problems:
                 self._audit(
                     kind=IncidentKind.SPLIT_BROKEN.value, channel=channel, thread_ts=thread_ts,
-                    problems=problems, total=len(text),
+                    problems=[p.reason for p in problems], total=len(text),
                     sizes=[len(c) for c in chunks],
+                    evidence=[
+                        {"reason": p.reason, "line_no": p.line_no, "excerpt": p.excerpt}
+                        for p in problems
+                    ],
                 )
                 chunks = self._verifier.safe_fallback(separated)
             # separate_tables split tables and paragraphs into distinct
