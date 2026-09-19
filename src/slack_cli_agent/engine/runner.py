@@ -55,6 +55,8 @@ SubprocessRunner = Callable[..., Any]
 log = logging.getLogger(__name__)
 
 CAPABILITY_KIND = "capability"
+#: Matches IncidentKind.PAYLOAD, kept as a literal for the same reason.
+PAYLOAD_KIND = "payload"
 
 #: For the notice the person who asked reads. Axis names and levels are
 #: internal identifiers; putting them in a Slack reply tells nobody anything.
@@ -153,6 +155,7 @@ class EngineRunner:
             request = dataclasses.replace(request, model=engine.spec.model)
         actual = engine.capabilities_for(request)
         recorded = self._record_capabilities(engine, request, actual)
+        self._record_payload(engine, request)
         blocked = self._blocked_response(engine, request, actual, recorded)
         if blocked is not None:
             return blocked
@@ -269,6 +272,25 @@ class EngineRunner:
             elapsed_source=ElapsedSource.RUNNER,
             engine=engine.name,
         )
+
+    def _record_payload(self, engine: Engine, request: EngineRequest) -> None:
+        """What this call costs, apart from what it guarantees.
+
+        Failing here must not take the request down: this is measurement, and
+        a request that would have run fine should not die for a size record.
+        """
+        if self._audit is None:
+            return
+        try:
+            self._audit.record(
+                PAYLOAD_KIND,
+                engine=engine.name,
+                request_id=request.request_id,
+                resume=request.resume,
+                **engine.footprint_for(request).as_audit_dict(),
+            )
+        except Exception:
+            log.warning("전송량 기록에 실패했다", exc_info=True)
 
     def _record_capabilities(
         self, engine: Engine, request: EngineRequest, actual: EngineCapabilities

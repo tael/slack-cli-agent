@@ -194,15 +194,20 @@ class _감사:
     def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None:
         self.기록.append((kind, fields))
 
+    @property
+    def 보장기록(self) -> list[tuple[str, dict[str, Any]]]:
+        """전송량 기록도 같은 포트로 들어온다. 보장 쪽만 본다."""
+        return [(kind, 필드) for kind, 필드 in self.기록 if kind == "capability"]
+
 
 class _기록실패감사:
     """AuditLog 처럼 기록에 실패하면 예외를 낸다."""
 
     def __init__(self) -> None:
-        self.시도 = 0
+        self.시도: list[str] = []
 
     def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None:
-        self.시도 += 1
+        self.시도.append(kind)
         raise OSError("감사 파일을 쓰지 못했다")
 
 
@@ -228,7 +233,7 @@ class Test보장을_감사에_남긴다:
             감사,
             requirements=ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
         )
-        [(kind, 필드)] = 감사.기록
+        [(kind, 필드)] = 감사.보장기록
         assert kind == CAPABILITY_KIND
         assert 필드["required"]["tool_restriction"] == "exact_allowlist"
         assert 필드["actual"]["tool_restriction"] == "none"
@@ -245,7 +250,7 @@ class Test보장을_감사에_남긴다:
                 instruction_boundary=InstructionBoundary.NATIVE,
             ),
         )
-        assert 감사.기록[0][1]["unmet"] == ["tool_restriction", "instruction_boundary"]
+        assert 감사.보장기록[0][1]["unmet"] == ["tool_restriction", "instruction_boundary"]
 
     def test_어느_정책이_이_요구를_세웠는지_남는다(self, tmp_path: Path) -> None:
         """기록만 보고는 완화가 정책상 허용된 것인지 요구를 안 세운 것인지
@@ -260,7 +265,7 @@ class Test보장을_감사에_남긴다:
                 policy="audited",
             ),
         )
-        필드 = 감사.기록[0][1]
+        필드 = 감사.보장기록[0][1]
         assert 필드["policy"] == "audited"
 
     def test_완화가_실제로_적용된_경우를_구분해_남긴다(self, tmp_path: Path) -> None:
@@ -276,7 +281,7 @@ class Test보장을_감사에_남긴다:
                 policy="audited",
             ),
         )
-        assert 감사.기록[0][1]["downgrade_authorized"] is True
+        assert 감사.보장기록[0][1]["downgrade_authorized"] is True
 
     def test_보장을_맞춘_요청은_완화로_세지_않는다(self, tmp_path: Path) -> None:
         감사 = _감사()
@@ -289,7 +294,7 @@ class Test보장을_감사에_남긴다:
                 policy="audited",
             ),
         )
-        assert 감사.기록[0][1]["downgrade_authorized"] is False
+        assert 감사.보장기록[0][1]["downgrade_authorized"] is False
 
     @pytest.mark.parametrize(
         ("요구", "기대"),
@@ -315,13 +320,13 @@ class Test보장을_감사에_남긴다:
         쓴다. 세는 쪽이 한 값을 읽게 한다."""
         감사 = _감사()
         self._돌린다(tmp_path, 감사, requirements=요구)
-        assert 감사.기록[0][1]["outcome"] == 기대
+        assert 감사.보장기록[0][1]["outcome"] == 기대
 
     def test_요구가_없어도_실제_보장은_남는다(self, tmp_path: Path) -> None:
         """0건이 요구 없음인지 기록 자체가 안 도는 것인지 구분돼야 한다."""
         감사 = _감사()
         self._돌린다(tmp_path, 감사)
-        [(_, 필드)] = 감사.기록
+        [(_, 필드)] = 감사.보장기록
         assert 필드["required"] == {}
         assert 필드["unmet"] == []
 
@@ -505,7 +510,7 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
                 downgradable_axes=frozenset({TOOL_AXIS}),
             ),
         )
-        assert 감사.시도 == 1
+        assert 감사.시도.count("capability") == 1
         assert 응답.ok is False
         assert 실행 == []
         assert 엔진.준비호출 == 0
@@ -545,7 +550,7 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
             ),
         )
         assert 엔진.준비호출 == 1
-        assert len(감사.기록) == 1
+        assert len(감사.보장기록) == 1
 
     def test_완화_기록은_승인_시점의_사실로_남는다(self, tmp_path: Path) -> None:
         """기록은 실행 전에 남는다. 실행이 뒤에 실패해도 그 값은 '완화를
@@ -559,7 +564,7 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
                 downgradable_axes=frozenset({TOOL_AXIS}),
             ),
         )
-        _, 필드 = 감사.기록[0]
+        _, 필드 = 감사.보장기록[0]
         assert 필드["downgrade_authorized"] is True
         assert "downgrade_applied" not in 필드
 
@@ -652,7 +657,7 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
             감사,
             requirements=ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
         )
-        [(kind, 필드)] = 감사.기록
+        [(kind, 필드)] = 감사.보장기록
         assert kind == CAPABILITY_KIND
         assert 필드["unmet"] == ["tool_restriction"]
 
@@ -735,13 +740,13 @@ class Test보장_기록에_상관관계_키가_남는다:
     def test_요청의_키가_그대로_남는다(self, tmp_path: Path) -> None:
         감사 = _감사()
         self._돌린다(tmp_path, 감사, request_id="req-1")
-        assert 감사.기록[0][1]["request_id"] == "req-1"
+        assert 감사.보장기록[0][1]["request_id"] == "req-1"
 
     def test_키가_없으면_빈_값으로_남는다(self, tmp_path: Path) -> None:
         """없는 것과 안 남긴 것이 갈려야 한다. 필드 자체는 항상 있다."""
         감사 = _감사()
         self._돌린다(tmp_path, 감사)
-        assert 감사.기록[0][1]["request_id"] == ""
+        assert 감사.보장기록[0][1]["request_id"] == ""
 
 
 class Test폴백_시도도_같은_키로_묶인다:
