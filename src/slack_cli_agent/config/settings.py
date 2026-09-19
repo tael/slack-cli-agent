@@ -100,6 +100,12 @@ class RuntimeSettings:
     #: Above heartbeat_stale_sec, so a worker that is merely slow to beat once
     #: isn't treated as dead.
     stale_reclaim_interval_sec: float = 60
+    #: Lock wait for the DB calls a Slack event makes on the socket handler
+    #: thread. Slack acks before the handler runs, so this does not affect that
+    #: event's ack -- it caps how long one of the ten pool slots is held, which
+    #: is what delays the events behind it (sca-9l1). With the store retries and
+    #: their backoff the whole path stays about one second.
+    ingress_lock_budget_sec: float = 0.25
     job_max_attempts: int = 3
     # How long finished jobs are kept before deletion. Must exceed
     # catchup_max_window_sec — if shorter, catch-up would treat an

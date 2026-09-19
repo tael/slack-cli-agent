@@ -8,7 +8,8 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import replace
 from typing import Any, ClassVar
 
@@ -30,6 +31,10 @@ log = logging.getLogger(__name__)
 # carry `<@U123> 도움말`, so this must be stripped before command dispatch. Matches
 # `<@U123|displayname>` too (no space inside the brackets), not just the bare form.
 MENTION_RE = re.compile(r"<@[^>\s]+>")
+
+#: Wraps the DB calls on the event's critical path so they can't hold a
+#: socket handler thread for the full lock timeout (sca-9l1).
+LockBudget = Callable[[], AbstractContextManager[None]]
 
 # (emoji, channel, message_ts, actor)
 ReactionCallback = Callable[[str, str, str, str], None]
@@ -84,6 +89,9 @@ class IngressService:
         # that failed here — this retry is the only recovery (sca-9r6).
         enqueue_attempts: int = 3,
         sleep: Callable[[float], None] = time.sleep,
+        # None keeps the database's own long lock wait, which is right for
+        # every caller that is not on a socket handler thread.
+        lock_budget: LockBudget | None = None,
         # None means this bot has no agent panel wiring; the event is then
         # neither subscribed to nor handled.
         assistant: AssistantPanel | None = None,
@@ -103,6 +111,8 @@ class IngressService:
         self._enqueue_attempts = max(1, enqueue_attempts)
         self._not_accepted = RejectedRequests()
         self._sleep = sleep
+        self._lock_budget = lock_budget
+        self._clock = time.monotonic
         self._assistant = assistant
 
     def register(self, gateway: SlackGateway) -> None:
@@ -156,7 +166,8 @@ class IngressService:
             request = ctx
             try:
                 request = self._merge_attachments(ctx, event)
-                queued = self._store(request)
+                with self._budget():
+                    queued = self._store(request)
             except Exception:
                 # The dedup record was made before this point, so leaving it
                 # would block a later redelivery too (sca-if6). Past the admin
@@ -169,15 +180,22 @@ class IngressService:
                 # Already queued — don't mark it twice.
                 return
             self._clear_not_accepted(request)
-            self._mark_accepted(request)
+            with self._budget():
+                self._mark_accepted(request)
         except Exception:
             channel = ctx.channel if ctx is not None else event.get("channel")
             ts = ctx.ts if ctx is not None else event.get("ts")
             log.exception("요청 접수 실패: %s:%s", channel, ts)
 
+    @contextmanager
+    def _budget(self) -> Iterator[None]:
+        with self._lock_budget() if self._lock_budget is not None else nullcontext():
+            yield
+
     def _store(self, ctx: RequestContext) -> bool:
         last: Exception | None = None
         for attempt in range(self._enqueue_attempts):
+            started = self._clock()
             try:
                 return self._queue.enqueue(ctx, max_attempts=self._job_max_attempts)
             except Exception as exc:  # noqa: BLE001 - any storage error is worth one more try
@@ -185,11 +203,23 @@ class IngressService:
                 log.warning("요청 적재 실패, 다시 시도한다 (%d회차) : %s", attempt + 1, exc)
                 if attempt + 1 < self._enqueue_attempts:
                     self._sleep(self._enqueue_retry_wait_sec * (attempt + 1))
+            finally:
+                self._warn_if_slow(self._clock() - started, attempt + 1)
         raise last if last is not None else RuntimeError("요청을 적재하지 못했다")
+
+    def _warn_if_slow(self, elapsed: float, attempt: int) -> None:
+        """A store that fails is logged above; one that merely waits a long
+        time is not, and that wait is what holds the handler thread. Without
+        this the only visible signal is the lock timeout expiring (sca-9l1)."""
+        if elapsed >= self._slow_enqueue_sec:
+            log.warning("요청 적재가 오래 걸렸다 (%d회차, %.2f초)", attempt, elapsed)
 
     #: Backoff step between store attempts. Short — the socket handler is
     #: blocked while this runs and Slack's other events wait behind it.
-    _enqueue_retry_wait_sec: ClassVar[float] = 0.2
+    _enqueue_retry_wait_sec: ClassVar[float] = 0.1
+
+    #: Above this one store attempt is worth a line even when it succeeds.
+    _slow_enqueue_sec: ClassVar[float] = 0.5
 
     def _report_not_accepted(self, ctx: RequestContext) -> None:
         try:
