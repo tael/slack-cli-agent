@@ -867,6 +867,25 @@ class Test접수경로의_잠금예산:
         ingress.handle_app_mention(mention_event())
         assert 본_깊이 == [1]
 
+    def test_관리_명령_판정도_예산_안에서_한다(self, tmp_path: Path, listener: EventListener) -> None:
+        """판정이 점유 원장에 쓴다. 예산 밖이면 소켓 처리 스레드가 그 잠금에
+        30초까지 묶인다 (sca-8m5p)."""
+        예산 = 기록하는예산()
+        본_깊이: list[int] = []
+
+        class 깊이보는판정:
+            def handled(self, ctx: RequestContext) -> bool:
+                본_깊이.append(예산.깊이)
+                return False
+
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=AdminRouter([]),
+            tmp_path=tmp_path, lock_budget=예산,
+        )
+        ingress._admin = 깊이보는판정()  # type: ignore[assignment]
+        ingress.handle_app_mention(mention_event())
+        assert 본_깊이 == [1]
+
     def test_예산을_안_주면_그냥_돈다(self, tmp_path: Path, listener: EventListener) -> None:
         queue = FakeJobQueue()
         ingress = make_ingress(
@@ -943,3 +962,47 @@ class Test적재_뒤의_표식_실패:
         )
         ingress.handle_app_mention(mention_event())
         assert replies == []
+
+
+class Test관리_명령_점유를_못_했을_때:
+    """점유 원장에 못 쓰면 이 프로세스는 명령을 안 돌린다. 그런데 중복 방지
+    기록은 이미 남아 슬랙 재전달도 막히고, 캐치업은 창 안에서만 회수한다.
+    그대로 두면 그 명령이 영영 사라진다 (코덱스 리뷰, sca-8m5p).
+    """
+
+    class 점유불가판정:
+        def handled(self, ctx: RequestContext) -> bool:
+            from slack_cli_agent.admin.admission import ClaimUnavailable
+
+            raise ClaimUnavailable("DB 오류")
+
+    def test_중복_방지_기록을_지운다(self, tmp_path: Path, listener: EventListener) -> None:
+        dedup = DeduplicationTracker()
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=AdminRouter([]),
+            tmp_path=tmp_path, dedup=dedup,
+        )
+        ingress._admin = self.점유불가판정()  # type: ignore[assignment]
+        event = mention_event()
+        ingress.handle_app_mention(event)
+        assert dedup.already_seen_event(event["channel"], event["ts"]) is False
+
+    def test_다시_불러_달라고_알린다(self, tmp_path: Path, listener: EventListener) -> None:
+        보냄: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=AdminRouter([]),
+            tmp_path=tmp_path, replies=보냄,
+        )
+        ingress._admin = self.점유불가판정()  # type: ignore[assignment]
+        ingress.handle_app_mention(mention_event())
+        assert 보냄 and "다시" in 보냄[0][2]
+
+    def test_큐에_넣지_않는다(self, tmp_path: Path, listener: EventListener) -> None:
+        """모델로 보내면 권한 판정을 안 거친 명령이 모델 요청으로 돈다."""
+        queue = FakeJobQueue()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=AdminRouter([]), tmp_path=tmp_path,
+        )
+        ingress._admin = self.점유불가판정()  # type: ignore[assignment]
+        ingress.handle_app_mention(mention_event())
+        assert queue.enqueued == []

@@ -121,6 +121,22 @@ class RuntimeSettings:
     #: 지우면 그 구간의 공백을 회수할 근거가 사라진다 (sca-zb9).
     epoch_retention_sec: float = 7 * 86400
     epoch_purge_interval_sec: float = 3600
+    # Admin command claims. Retention must exceed the catch-up window for the
+    # same reason job rows do: a command whose reaction mark failed to post is
+    # found again, and the claim row is the only thing left stopping a second
+    # run (sca-8m5p).
+    admin_claim_retention_sec: float = 7 * 86400
+    # Failed claims are kept far longer: their mark is `x`, which catch-up
+    # does not read as done, so the message stays findable until it ages out
+    # of catchup_max_window_sec. This must outlast that by a wide margin.
+    admin_claim_failure_retention_sec: float = 30 * 86400
+    admin_claim_purge_interval_sec: float = 3600
+    # How long a claim may stay RUNNING before it is treated as a process that
+    # died mid-command. There is no heartbeat on a claim, so this is set well
+    # past any real command rather than close to it -- taking a claim from a
+    # process that is still working would post x on a command that then
+    # succeeds (codex review).
+    admin_claim_stale_sec: float = 3600
     # A process running for days keeps receiving new attachments after
     # boot, so cleanup can't be a one-time pass at startup.
     attachment_cleanup_interval_sec: float = 3600
