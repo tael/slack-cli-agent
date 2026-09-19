@@ -203,7 +203,7 @@ KNOWN_DETAIL_CODES = frozenset(
         # runner: engine switch approval state
         "pending", "approved", "denied",
         # runner: capability axis that blocked the run
-        "tool_restriction",
+        "tool_restriction", "execution_isolation", "instruction_boundary",
     }
 )
 

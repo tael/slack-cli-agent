@@ -491,6 +491,28 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
         assert 응답.ok is False
         assert 실행 == []
 
+    def test_안내문에_내부_식별자를_쓰지_않는다(self, tmp_path: Path) -> None:
+        """사람이 읽는 문구다. exact_allowlist 같은 값은 내부 이름이다."""
+        응답, _, _ = self._돌린다(
+            tmp_path,
+            requirements=ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
+        )
+        assert "exact_allowlist" not in 응답.body
+        assert "허용된 도구 목록" in 응답.body
+
+    def test_막은_축이_감사에_읽히는_값으로_남는다(self, tmp_path: Path) -> None:
+        """코드가 허용 목록에 없으면 unknown:N 으로 적혀 축 정보가 사라진다."""
+        from slack_cli_agent.engine.base import KNOWN_DETAIL_CODES
+
+        응답, _, _ = self._돌린다(
+            tmp_path,
+            requirements=ExecutionRequirements(
+                execution_isolation=ExecutionIsolation.READONLY_SANDBOX,
+            ),
+        )
+        assert 응답.failure_detail is not None
+        assert 응답.failure_detail.code in KNOWN_DETAIL_CODES
+
     def test_못_맞춘_축을_안내문에_적는다(self, tmp_path: Path) -> None:
         응답, _, _ = self._돌린다(
             tmp_path,
@@ -498,7 +520,7 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
                 execution_isolation=ExecutionIsolation.READONLY_SANDBOX,
             ),
         )
-        assert "execution_isolation" in (응답.failure_detail.code if 응답.failure_detail else "")
+        assert (응답.failure_detail.code if 응답.failure_detail else "") == "execution_isolation"
         assert "격리" in 응답.body
 
     def test_맞춘_축만_요구하면_그대로_실행한다(self, tmp_path: Path) -> None:

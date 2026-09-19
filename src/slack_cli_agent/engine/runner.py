@@ -35,7 +35,15 @@ from .base import (
     FailureDetail,
     UsageLimit,
 )
-from .capability import TOOL_AXIS, EngineCapabilities
+from .capability import (
+    BOUNDARY_AXIS,
+    ISOLATION_AXIS,
+    TOOL_AXIS,
+    EngineCapabilities,
+    ExecutionIsolation,
+    InstructionBoundary,
+    ToolRestriction,
+)
 from .environment import EngineEnvironmentPolicy
 from .stream import run_streaming
 from .switcher import EngineSwitcher
@@ -48,12 +56,29 @@ log = logging.getLogger(__name__)
 
 CAPABILITY_KIND = "capability"
 
-#: For the notice the person who asked reads. The axis names are internal.
+#: For the notice the person who asked reads. Axis names and levels are
+#: internal identifiers; putting them in a Slack reply tells nobody anything.
 AXIS_NAMES = {
     TOOL_AXIS: "도구 제한",
-    "execution_isolation": "실행 격리",
-    "instruction_boundary": "지침 경계",
+    ISOLATION_AXIS: "실행 격리",
+    BOUNDARY_AXIS: "지침 경계",
 }
+
+LEVEL_NAMES = {
+    ToolRestriction.NONE: "제한 없음",
+    ToolRestriction.COARSE_SANDBOX: "샌드박스 수준",
+    ToolRestriction.EXACT_ALLOWLIST: "허용된 도구 목록",
+    ExecutionIsolation.NONE: "격리 없음",
+    ExecutionIsolation.WORKSPACE_WRITE: "작업공간 쓰기",
+    ExecutionIsolation.READONLY_SANDBOX: "읽기 전용 샌드박스",
+    InstructionBoundary.UNAVAILABLE: "경계 없음",
+    InstructionBoundary.PROMPT_ONLY: "프롬프트 안 표식뿐",
+    InstructionBoundary.NATIVE: "엔진 자체 경계",
+}
+
+
+def _level(value: object) -> str:
+    return LEVEL_NAMES.get(value, str(value))  # type: ignore[arg-type]
 
 
 class CapabilityAuditPort(Protocol):
@@ -193,8 +218,8 @@ class EngineRunner:
         body = (
             "요청이 요구한 실행 보장을 이 엔진이 맞추지 못해 실행하지 않았습니다. "
             + " ".join(
-                f"{AXIS_NAMES[axis]} 요구 {getattr(required, axis)},"
-                f" {engine.name} 보장 {getattr(actual, axis)}."
+                f"{AXIS_NAMES[axis]} 요구 {_level(getattr(required, axis))},"
+                f" {engine.name} 보장 {_level(getattr(actual, axis))}."
                 for axis in unmet
             )
         )
@@ -212,7 +237,9 @@ class EngineRunner:
             # Written for the person who asked: without it they only see the
             # failure mark and can't tell this from a crash (sca-5sc).
             user_facing=True,
-            failure_detail=FailureDetail(code=",".join(unmet)),
+            # One axis, not a joined string: the audit reads this against an
+            # allowlist and a joined value lands in it as unknown.
+            failure_detail=FailureDetail(code=unmet[0]),
             elapsed_source=ElapsedSource.RUNNER,
             engine=engine.name,
         )
