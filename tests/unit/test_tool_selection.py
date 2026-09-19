@@ -233,3 +233,121 @@ class Test정책_출력을_옮기는_자리는_하나다:
         본문 = inspect.getsource(application.Application._watch_run_check)
         assert "ToolSelection.allow(" not in 본문
         assert "from_names" in 본문
+
+
+class Test강제할_수_없는_엔진은_말로_전한다:
+    """claude 만 도구 집합을 비울 수 있다. 나머지 둘이 아무 말도 안 하면
+    금지를 요구한 턴이 그 엔진에서는 아무 제약 없이 돈다 (sca-97n).
+
+    이것은 강제가 아니다. 축 선언은 그대로 두고 감사에 강등이 남는다."""
+
+    def _요청(self, **kw):
+        from test_engine import request
+
+        return request(**kw)
+
+    def _엔진들(self, tmp_path):
+        from test_engine import claude_profile, codex_profile, gemini_profile
+        from test_engine_capability import SETTINGS
+
+        from slack_cli_agent.engine.claude import ClaudeEngine
+        from slack_cli_agent.engine.codex import CodexEngine
+        from slack_cli_agent.engine.gemini import GeminiEngine
+
+        return (ClaudeEngine(claude_profile(tmp_path), SETTINGS),
+                CodexEngine(codex_profile(tmp_path), SETTINGS),
+                GeminiEngine(gemini_profile(tmp_path), SETTINGS))
+
+    def test_claude_는_말로_안_전한다(self, tmp_path) -> None:
+        """실제로 막으므로 지침에 한 줄을 더하면 바이트만 늘어난다."""
+        claude, _, _ = self._엔진들(tmp_path)
+        assert claude.tool_ban_note(self._요청(tools=ToolSelection.forbid_all())) == ""
+
+    def test_codex_와_gemini_는_전한다(self, tmp_path) -> None:
+        _, codex, gemini = self._엔진들(tmp_path)
+        요청 = self._요청(tools=ToolSelection.forbid_all())
+        for 엔진 in (codex, gemini):
+            assert "도구" in 엔진.tool_ban_note(요청)
+
+    def test_금지가_아니면_아무_말도_안_한다(self, tmp_path) -> None:
+        _, codex, gemini = self._엔진들(tmp_path)
+        for 엔진 in (codex, gemini):
+            for 선택 in (ToolSelection.unrestricted(), ToolSelection.allow(["Read"])):
+                assert 엔진.tool_ban_note(self._요청(tools=선택)) == ""
+
+    def test_codex_는_턴_프롬프트로_전한다(self, tmp_path) -> None:
+        """developer_instructions 는 세션 첫 턴에 고정된다. 거기 실으면 금지가
+        세션 수명 동안 남아, 도구를 허용한 뒤 턴까지 묶인다."""
+        _, codex, _ = self._엔진들(tmp_path)
+        cmd = codex.build_command(self._요청(tools=ToolSelection.forbid_all()))
+        assert "도구" in cmd[cmd.index("--") + 1]
+        assert not any("도구를 하나도" in tok for tok in cmd[: cmd.index("--")])
+
+    def test_codex_는_시스템_지침이_비어도_전한다(self, tmp_path) -> None:
+        """리뷰 경로가 빈 시스템 지침으로 돈다. 지침 인자에 실으면 그 경로에서
+        금지가 통째로 사라진다."""
+        _, codex, _ = self._엔진들(tmp_path)
+        cmd = codex.build_command(
+            self._요청(tools=ToolSelection.forbid_all(), system_prompt="")
+        )
+        assert "도구" in cmd[cmd.index("--") + 1]
+
+    def test_codex_첫_턴_금지문은_입력_표식_앞에_온다(self, tmp_path) -> None:
+        """표식 뒤는 사용자 입력 자리다. 제약이 그 뒤로 가면 입력이 제약을
+        덮어쓰는 것처럼 읽힌다."""
+        from slack_cli_agent.engine.base import UNTRUSTED_INPUT_MARK
+
+        _, codex, _ = self._엔진들(tmp_path)
+        prompt = codex.build_command(
+            self._요청(tools=ToolSelection.forbid_all())
+        )[-1]
+        assert prompt.index("도구를 하나도") < prompt.index(UNTRUSTED_INPUT_MARK)
+
+    def test_codex_재개_턴의_금지문도_표식_앞이다(self, tmp_path) -> None:
+        from slack_cli_agent.engine.base import UNTRUSTED_INPUT_MARK
+
+        _, codex, _ = self._엔진들(tmp_path)
+        prompt = codex.build_command(
+            self._요청(tools=ToolSelection.forbid_all(), resume=True)
+        )[-1]
+        assert prompt.index("도구를 하나도") < prompt.index(UNTRUSTED_INPUT_MARK)
+
+    def test_codex_전송량에_그_바이트가_들어간다(self, tmp_path) -> None:
+        """빈 시스템 지침이면 전송량을 0 으로 되돌리던 자리다. 금지문을 보내고도
+        0 으로 세면 감사 수치가 실제와 어긋난다."""
+        _, codex, _ = self._엔진들(tmp_path)
+        for 시스템지침 in ("시스템 지침", ""):
+            금지 = self._요청(tools=ToolSelection.forbid_all(), system_prompt=시스템지침)
+            없음 = self._요청(tools=ToolSelection.unrestricted(), system_prompt=시스템지침)
+            차이 = (codex.footprint_for(금지).adapter_added_bytes
+                    - codex.footprint_for(없음).adapter_added_bytes)
+            assert 차이 > 0
+            보낸것 = codex.build_command(금지)[-1]
+            안보낸것 = codex.build_command(없음)[-1]
+            assert 차이 == len(보낸것.encode("utf-8")) - len(안보낸것.encode("utf-8"))
+
+    def test_금지문이_뒤_입력으로_풀리지_않는다고_적는다(self, tmp_path) -> None:
+        """사용자 입력이 제약 해제를 요구하는 것이 가장 흔한 우회다."""
+        _, codex, _ = self._엔진들(tmp_path)
+        assert "해제" in codex.tool_ban_note(self._요청(tools=ToolSelection.forbid_all()))
+
+    def test_codex_재개_턴에도_실린다(self, tmp_path) -> None:
+        """재개는 지침을 프롬프트로 다시 싣는다. 거기에 빠지면 두 번째 턴부터
+        금지가 사라진다."""
+        _, codex, _ = self._엔진들(tmp_path)
+        cmd = codex.build_command(self._요청(tools=ToolSelection.forbid_all(), resume=True))
+        assert any("도구" in tok for tok in cmd[cmd.index("--") :])
+
+    def test_gemini_의_프롬프트에_실린다(self, tmp_path) -> None:
+        _, _, gemini = self._엔진들(tmp_path)
+        cmd = gemini.build_command(self._요청(tools=ToolSelection.forbid_all()))
+        assert "도구" in cmd[cmd.index("-p") + 1]
+
+    def test_전송량_계산에_그_바이트가_들어간다(self, tmp_path) -> None:
+        """감사가 세는 바이트와 실제로 보낸 바이트가 어긋나면 안 된다."""
+        _, _, gemini = self._엔진들(tmp_path)
+        금지 = self._요청(tools=ToolSelection.forbid_all())
+        없음 = self._요청(tools=ToolSelection.unrestricted())
+        차이 = (gemini.footprint_for(금지).adapter_added_bytes
+                - gemini.footprint_for(없음).adapter_added_bytes)
+        assert 차이 == len(gemini.tool_ban_note(금지).encode("utf-8"))
