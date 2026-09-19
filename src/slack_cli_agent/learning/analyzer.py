@@ -13,8 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from ..auth.execution_policy import ExecutionPolicy
 from ..engine.base import CallOrigin, EngineRequest
 from ..engine.runner import EngineInvoker
+from ..engine.tool_selection import ToolSelection
 from .decoder import ChannelAnalysisResult, ProposalDecoder
 from .progress import ChannelFailure, FailureKind
 
@@ -111,6 +113,7 @@ class ProposalAnalyzer:
         workdir: Path,
         bot_name: str,
         decoder: ProposalDecoder | None = None,
+        execution_policy: ExecutionPolicy | None = None,
     ) -> None:
         self._invoker = invoker
         self._model = model
@@ -118,12 +121,17 @@ class ProposalAnalyzer:
         self._workdir = workdir
         self._bot_name = bot_name
         self._decoder = decoder or ProposalDecoder()
+        self._execution_policy = execution_policy or ExecutionPolicy()
 
     # No tools. The day's history is already in the prompt, and the
     # "이미 지식 파일에 있는 내용" rule never worked through Read anyway --
-    # the prompt never names the knowledge file's path. Withholding the
-    # tool is firmer than declaring a requirement, since each engine
-    # enforces an allowlist differently (sca-0p5).
+    # the prompt never names the knowledge file's path.
+    #
+    # Passing no list used to mean the opposite of what this comment said:
+    # claude read it as "nobody named any tools" and ran the batch with every
+    # tool open, Bash and Edit included (sca-0a7). The ban is now stated, and
+    # the requirement rides with it so an engine that cannot hold it leaves a
+    # record instead of silently not holding it.
     def analyze_channel(
         self,
         day: str,
@@ -146,6 +154,13 @@ class ProposalAnalyzer:
             # The nightly batch runs one call per channel; this says which one
             # a capability record belongs to (sca-4ol).
             request_id=f"learning-{day}-{channel_name}",
+            tools=ToolSelection.forbid_all(),
+            # Audited rather than strict: nobody waits on the nightly batch,
+            # but stopping it on rei and asuka would end the learning path on
+            # two engines of three. The downgrade is recorded instead.
+            requirements=self._execution_policy.requirements_for(
+                config=None, tools=ToolSelection.forbid_all(),
+            ),
         )
         # Nobody is waiting on the nightly batch, so it must not spend the
         # fallback's recovery probe that an interactive request needs.
