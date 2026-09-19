@@ -180,8 +180,14 @@ class IngressService:
                 # Already queued — don't mark it twice.
                 return
             self._clear_not_accepted(request)
-            with self._budget():
-                self._mark_accepted(request)
+            try:
+                with self._budget():
+                    self._mark_accepted(request)
+            except Exception as exc:  # noqa: BLE001 - the request is already queued
+                # Reporting this as a failed intake would be wrong: the job is
+                # in the queue and the worker will run it. Only the reaction is
+                # missing (sca-9l1).
+                log.warning("접수 표식을 달지 못했다 : %s:%s : %s", request.channel, request.ts, exc)
         except Exception:
             channel = ctx.channel if ctx is not None else event.get("channel")
             ts = ctx.ts if ctx is not None else event.get("ts")
