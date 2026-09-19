@@ -7,6 +7,7 @@ claude 는 CLI 가 지침을 따로 받는다. 크기와 전달 방식을 선언
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -122,10 +123,37 @@ class Test감사에_남는다:
 
 class Test선언은_실제_명령과_맞는다:
     """선언과 build_command 가 어긋나면 이 측정으로 정한 상한이 틀린 값에
-    걸린다 (sca-ygd 리뷰 [중간])."""
+    걸린다 (sca-ygd 리뷰 [중간]). 엔진마다 지침이 실리는 인자가 달라서
+    마지막 인자만 보면 codex 신규턴을 못 본다."""
 
-    def _본문(self, cmd: list[str]) -> str:
-        return cmd[-1]
+    def _모델이_읽는_바이트(self, cmd: list[str], *, 값을_가진_플래그: tuple[str, ...]) -> int:
+        """argv 중 모델에게 그대로 전달되는 텍스트만 더한다. 플래그 이름과
+        TOML 따옴표는 CLI 가 벗겨내므로 세지 않는다. 플래그 이름을 엔진마다
+        받는 이유는 claude 의 -p 가 값 없는 플래그이기 때문이다."""
+        보낸것 = ""
+        for i, tok in enumerate(cmd):
+            if tok in 값을_가진_플래그:
+                보낸것 += cmd[i + 1]
+            elif tok.startswith("developer_instructions="):
+                보낸것 += tomllib.loads(tok)["developer_instructions"]
+            elif tok == "--":
+                보낸것 += cmd[i + 1]
+        return len(보낸것.encode("utf-8"))
+
+    def test_claude_합계가_실제_명령과_같다(self, tmp_path: Path) -> None:
+        엔진, 플래그 = ClaudeEngine(claude_profile(tmp_path), SETTINGS), ("--append-system-prompt",)
+        요청 = request(
+            system_prompt="지침", prompt="본문", session_id="s1", readable_dirs=(tmp_path,),
+        )
+        발자국 = 엔진.footprint_for(요청)
+        assert 발자국.total_bytes == self._모델이_읽는_바이트(엔진.build_command(요청), 값을_가진_플래그=플래그)
+
+    def test_codex_신규턴_합계가_실제_명령과_같다(self, tmp_path: Path) -> None:
+        """지침이 developer_instructions 에 실리는 유일한 경우다."""
+        엔진, 플래그 = CodexEngine(codex_profile(tmp_path), SETTINGS), ()
+        요청 = request(resume=False, system_prompt="지침", prompt="본문", readable_dirs=(tmp_path,))
+        발자국 = 엔진.footprint_for(요청)
+        assert 발자국.total_bytes == self._모델이_읽는_바이트(엔진.build_command(요청), 값을_가진_플래그=플래그)
 
     def test_codex_신규턴은_지침이_없으면_경로_안내도_안_보낸다(self, tmp_path: Path) -> None:
         엔진 = CodexEngine(codex_profile(tmp_path), SETTINGS)
@@ -133,23 +161,22 @@ class Test선언은_실제_명령과_맞는다:
         cmd = 엔진.build_command(요청)
         assert not any(tok.startswith("developer_instructions=") for tok in cmd)
         assert 엔진.footprint_for(요청).adapter_added_bytes == 0
+        assert 엔진.footprint_for(요청).total_bytes == self._모델이_읽는_바이트(cmd, 값을_가진_플래그=())
 
-    def test_codex_재개턴_합계가_실제_프롬프트와_같다(self, tmp_path: Path) -> None:
-        엔진 = CodexEngine(codex_profile(tmp_path), SETTINGS)
+    def test_codex_재개턴_합계가_실제_명령과_같다(self, tmp_path: Path) -> None:
+        엔진, 플래그 = CodexEngine(codex_profile(tmp_path), SETTINGS), ()
         요청 = request(
             resume=True, session_id="s1", system_prompt="지침", prompt="본문",
             readable_dirs=(tmp_path,),
         )
         발자국 = 엔진.footprint_for(요청)
-        보낸것 = len(self._본문(엔진.build_command(요청)).encode("utf-8"))
-        assert 발자국.total_bytes == 보낸것
+        assert 발자국.total_bytes == self._모델이_읽는_바이트(엔진.build_command(요청), 값을_가진_플래그=플래그)
 
-    def test_gemini_합계가_실제_프롬프트와_같다(self, tmp_path: Path) -> None:
-        엔진 = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+    def test_gemini_합계가_실제_명령과_같다(self, tmp_path: Path) -> None:
+        엔진, 플래그 = GeminiEngine(gemini_profile(tmp_path), SETTINGS), ("-p",)
         요청 = request(system_prompt="지침", prompt="본문", readable_dirs=(tmp_path,))
         발자국 = 엔진.footprint_for(요청)
-        보낸것 = len(self._본문(엔진.build_command(요청)).encode("utf-8"))
-        assert 발자국.total_bytes == 보낸것
+        assert 발자국.total_bytes == self._모델이_읽는_바이트(엔진.build_command(요청), 값을_가진_플래그=플래그)
 
 
 class Test안_보낸_요청은_안_센다:

@@ -16,6 +16,7 @@ from __future__ import annotations
 import collections
 import contextlib
 import json
+import math
 import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -109,6 +110,26 @@ def _quantile(sorted_values: Sequence[float], q: float) -> float | None:
     index = min(int(len(sorted_values) * q), len(sorted_values) - 1)
     value = sorted_values[index]
     return round(value, 2) if value < 10 else round(value)
+
+
+def _byte_count(value: object) -> int | None:
+    """A byte size the audit wrote, or None when it can't be one.
+
+    The audit takes whatever the recorder passed, so a bug upstream can leave
+    NaN, a string or a negative here. Dropping the row keeps one unreadable
+    record from taking the whole console down (sca-ygd).
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return int(value)
+
+
+def _audit_label(value: object) -> str:
+    """Only a string names a category. Anything else would put its repr in the
+    breakdown as if it were an engine name."""
+    return value if isinstance(value, str) else ""
 
 
 def _epoch_from_iso(text: object) -> float | None:
@@ -611,22 +632,29 @@ class MetricsCollector:
         total: list[float] = []
         replayed = 0
         replayed_bytes = 0
+        sampled = 0
         for row in rows:
-            by_engine[str(row.get("engine") or "")] += 1
-            by_transport[str(row.get("instruction_transport") or "")] += 1
-            바이트 = row.get("instruction_bytes")
-            if isinstance(바이트, (int, float)):
-                instruction.append(float(바이트))
-                if row.get("instruction_replayed_on_resume") is True:
-                    replayed_bytes += int(바이트)
-            if isinstance(row.get("total_bytes"), (int, float)):
-                total.append(float(row["total_bytes"]))
-            if row.get("instruction_replayed_on_resume") is True:
-                replayed += 1
+            by_engine[_audit_label(row.get("engine"))] += 1
+            by_transport[_audit_label(row.get("instruction_transport"))] += 1
+            지침 = _byte_count(row.get("instruction_bytes"))
+            if 지침 is not None:
+                sampled += 1
+                instruction.append(float(지침))
+                # A resume with no instructions pays nothing again, so counting
+                # it would raise the count without raising the bytes.
+                if 지침 > 0 and row.get("instruction_replayed_on_resume") is True:
+                    replayed += 1
+                    replayed_bytes += 지침
+            전체 = _byte_count(row.get("total_bytes"))
+            if 전체 is not None:
+                total.append(float(전체))
         instruction.sort()
         total.sort()
         return {
             "count": len(rows),
+            # Rows whose sizes were readable. Apart from count so the console
+            # can tell "no records" from "records nobody can measure".
+            "sample_count": sampled,
             "by_engine": dict(by_engine),
             "by_transport": dict(by_transport),
             "replayed_count": replayed,

@@ -995,3 +995,68 @@ class Test전송량_집계:
         insert_incident(open_db(profile), kind="payload", at=900.0, **self._행())
         결과 = MetricsCollector(profile, now=lambda: 1_000.0).collect(days=7)
         assert "payload" not in 결과["reliability"].get("incident_counts", {})
+
+
+class Test전송량_행이_깨져도_집계가_선다:
+    """감사는 사람이 못 쓰는 값도 받는다. 집계가 거기서 죽으면 전송량 한 종류
+    때문에 콘솔 전체가 안 열린다 (sca-ygd 리뷰)."""
+
+    def _수집(self, tmp_path: Path, 행: list[dict[str, Any]]) -> dict[str, Any]:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        for i, 값 in enumerate(행):
+            insert_incident(db, kind="payload", at=900.0 + i, **값)
+        return MetricsCollector(profile, now=lambda: 1_000.0).collect(days=7)["payload"]
+
+    def _행(self, **덮기: Any) -> dict[str, Any]:
+        기본: dict[str, Any] = {
+            "engine": "codex", "request_id": "r1", "resume": False,
+            "instruction_bytes": 100, "user_prompt_bytes": 10,
+            "adapter_added_bytes": 5, "total_bytes": 115,
+            "instruction_transport": "native_system",
+            "instruction_replayed_on_resume": False,
+        }
+        기본.update(덮기)
+        return 기본
+
+    def test_NaN_이_들어와도_집계가_선다(self, tmp_path: Path) -> None:
+        결과 = self._수집(tmp_path, [
+            self._행(instruction_bytes=float("nan"), instruction_replayed_on_resume=True),
+            self._행(instruction_bytes=200),
+        ])
+        assert 결과["instruction_bytes_median"] == 200
+        assert 결과["replayed_instruction_bytes_total"] == 0
+
+    def test_음수와_bool_은_바이트로_안_센다(self, tmp_path: Path) -> None:
+        결과 = self._수집(tmp_path, [
+            self._행(instruction_bytes=-5), self._행(instruction_bytes=True),
+            self._행(instruction_bytes=200),
+        ])
+        assert 결과["instruction_bytes_max"] == 200
+        assert 결과["sample_count"] == 1
+
+    def test_문자열_바이트는_안_센다(self, tmp_path: Path) -> None:
+        결과 = self._수집(tmp_path, [self._행(instruction_bytes="100", total_bytes="115")])
+        assert 결과["sample_count"] == 0
+        assert 결과["instruction_bytes_median"] is None
+        assert 결과["total_bytes_median"] is None
+
+    def test_유효_표본이_없는_것과_기록이_없는_것을_가른다(self, tmp_path: Path) -> None:
+        """둘 다 중앙값이 없다. 건수로만 갈린다."""
+        결과 = self._수집(tmp_path, [self._행(instruction_bytes=None)])
+        assert 결과["count"] == 1
+        assert 결과["sample_count"] == 0
+
+    def test_엔진_이름이_문자열이_아니면_빈_칸으로_센다(self, tmp_path: Path) -> None:
+        결과 = self._수집(tmp_path, [self._행(engine=["codex"]), self._행(engine="codex")])
+        assert 결과["by_engine"] == {"": 1, "codex": 1}
+
+    def test_지침이_빈_재개_턴은_재전송으로_안_센다(self, tmp_path: Path) -> None:
+        """리뷰 경로는 빈 지침으로 재개한다. 그 턴을 세면 다시 문 바이트가 없는데
+        건수만 오른다."""
+        결과 = self._수집(tmp_path, [
+            self._행(instruction_bytes=0, instruction_replayed_on_resume=True),
+            self._행(instruction_bytes=100, instruction_replayed_on_resume=True),
+        ])
+        assert 결과["replayed_count"] == 1
+        assert 결과["replayed_instruction_bytes_total"] == 100
