@@ -1795,3 +1795,38 @@ class Test감시_위임을_결과로_알린다:
             guards=[WatchPromiseGuard()], watch_queue=Fake감시큐(fail=True), tmp_path=tmp_path,
         )
         assert pipeline.handle(make_ctx()).watching is False
+
+
+class _도구정책:
+    def __init__(self, tools: tuple[str, ...]) -> None:
+        self._tools = tools
+
+    def tool_list_for(self, principal: Any, *, prompt: str, skills_enabled: bool) -> tuple[str, ...]:
+        return self._tools
+
+
+class Test실행_보장_요구를_세운다:
+    """부품은 runner 에 있는데 요구를 세우는 곳이 없어 운영에서 한 번도
+    발동하지 않았다 (sca-98k)."""
+
+    def _요청(self, tmp_path: Path, tools: tuple[str, ...], **채널설정: Any) -> EngineRequest:
+        channels = {"C1": ChannelConfig(channel_id="C1", **채널설정)} if 채널설정 else {}
+        pipeline, parts = build_pipeline(
+            responses=[ok_response()], tmp_path=tmp_path,
+            tool_policy=_도구정책(tools), channels=channels,
+        )
+        pipeline.handle(make_ctx())
+        runner: Any = parts["runner"]
+        return runner.calls[0]
+
+    def test_도구를_준_요청에는_허용목록_요구가_붙는다(self, tmp_path: Path) -> None:
+        요구 = self._요청(tmp_path, ("Read", "Grep")).requirements
+        assert 요구.tool_restriction is not None
+        assert 요구.allow_audited_downgrade is True
+
+    def test_strict_채널은_완화를_안_준다(self, tmp_path: Path) -> None:
+        요구 = self._요청(tmp_path, ("Read",), tool_enforcement="strict").requirements
+        assert 요구.allow_audited_downgrade is False
+
+    def test_도구가_없으면_요구도_없다(self, tmp_path: Path) -> None:
+        assert self._요청(tmp_path, ()).requirements.tool_restriction is None
