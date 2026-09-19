@@ -27,7 +27,7 @@ from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.reliability.ports import HistoryReader
 from slack_cli_agent.slack.identity import BotIdentity
-from slack_cli_agent.slack.mentions import MentionRenderer
+from slack_cli_agent.slack.mentions import CalledNames
 from slack_cli_agent.slack.message_kind import MessageKind
 from slack_cli_agent.slack.speaker import SpeakerNamer
 
@@ -96,9 +96,9 @@ class LateAddendumChecker:
         # Message classification lives in one place; duplicating it
         # here would let the criteria drift.
         self._kind = MessageKind()
-        # Same rendering as the transcript: a mention left as markup here
-        # would put the addendum and the transcript at odds (sca-hkmb).
-        self._mentions = MentionRenderer(name_resolver, group_resolver)
+        # Same shape as the transcript: body raw, direction in the head.
+        # Two different shapes would read as two different people (sca-ddkf).
+        self._called = CalledNames(name_resolver, group_resolver)
 
     def check(
         self,
@@ -137,7 +137,9 @@ class LateAddendumChecker:
                 continue
             when = datetime.fromtimestamp(mts, KST).strftime("%H:%M:%S")
             who = self._speaker.speaker_of(m)
-            lines.append(f"[{when} {who}]\n{self._mentions.render(text)}")
+            called = self._called.called_in(text)
+            head = f"{who} -> {', '.join(called)}" if called else who
+            lines.append(f"[{when} {head}]\n{text}")
             latest = m.get("ts")
         return "\n\n".join(lines), latest
 
