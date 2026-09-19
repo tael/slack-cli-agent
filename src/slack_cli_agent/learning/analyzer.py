@@ -17,8 +17,16 @@ from ..auth.execution_policy import ExecutionPolicy
 from ..engine.base import CallOrigin, EngineRequest
 from ..engine.runner import EngineInvoker
 from ..engine.tool_selection import ToolSelection
+from ..session.manager import AUTH_FAILURE_REASON, USAGE_LIMIT_REASON
 from .decoder import ChannelAnalysisResult, ProposalDecoder
 from .progress import ChannelFailure, FailureKind
+
+#: 엔진 실패 사유를 배치가 다루는 종류로 옮긴다. 여기 없는 사유는 재시도로
+#: 풀릴 수 있는 것이라 ENGINE_FAILED 로 떨어진다.
+_FAILURE_KINDS: Mapping[str, FailureKind] = {
+    USAGE_LIMIT_REASON: FailureKind.USAGE_LIMIT,
+    AUTH_FAILURE_REASON: FailureKind.AUTH_FAILURE,
+}
 
 # Re-exported: the result type moved to .decoder along with the shape checking
 # that produces it, and existing imports read it from here.
@@ -166,8 +174,7 @@ class ProposalAnalyzer:
         # fallback's recovery probe that an interactive request needs.
         response = self._invoker.invoke(request, CallOrigin.BACKGROUND)
         if not response.ok:
-            kind = (FailureKind.USAGE_LIMIT if response.failure_reason == "usage_limit"
-                    else FailureKind.ENGINE_FAILED)
+            kind = _FAILURE_KINDS.get(response.failure_reason or "", FailureKind.ENGINE_FAILED)
             return ChannelAnalysis.failed(ChannelFailure(
                 channel=channel_name, kind=kind,
                 detail=response.failure_reason or "분석 실행에 실패했다",

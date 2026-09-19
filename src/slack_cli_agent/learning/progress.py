@@ -27,6 +27,7 @@ MAX_ATTEMPTS = 3
 
 class FailureKind(StrEnum):
     USAGE_LIMIT = "usage_limit"
+    AUTH_FAILURE = "auth_failure"
     ENGINE_FAILED = "engine_failed"
     DECODE_FAILED = "decode_failed"
     ARCHIVE_UNREADABLE = "archive_unreadable"
@@ -37,8 +38,12 @@ class FailureKind(StrEnum):
 
     @property
     def waits_for_approval(self) -> bool:
-        """Whether this clears by itself once someone acts, rather than by retrying."""
-        return self is FailureKind.USAGE_LIMIT
+        """Whether this clears by itself once someone acts, rather than by retrying.
+
+        인증 실패도 사람이 다시 로그인하거나 엔진 전환을 승인해야 풀린다.
+        재시도 횟수를 깎으면 그 채널이 사람 손이 닿기 전에 포기된다.
+        """
+        return self in (FailureKind.USAGE_LIMIT, FailureKind.AUTH_FAILURE)
 
     @property
     def retry_delay(self) -> timedelta:
@@ -52,6 +57,7 @@ class FailureKind(StrEnum):
 
 _RETRY_DELAYS: Mapping[FailureKind, timedelta] = {
     FailureKind.USAGE_LIMIT: timedelta(minutes=30),
+    FailureKind.AUTH_FAILURE: timedelta(minutes=30),
     FailureKind.ENGINE_FAILED: timedelta(minutes=10),
     FailureKind.DECODE_FAILED: timedelta(minutes=10),
     FailureKind.ARCHIVE_UNREADABLE: timedelta(minutes=10),
@@ -59,6 +65,7 @@ _RETRY_DELAYS: Mapping[FailureKind, timedelta] = {
 
 _DESCRIPTIONS: Mapping[FailureKind, str] = {
     FailureKind.USAGE_LIMIT: "사용 한도에 걸렸습니다. 엔진 전환을 승인하시면 다시 시도합니다.",
+    FailureKind.AUTH_FAILURE: "실행기 로그인이 풀렸습니다. 다시 로그인하거나 엔진 전환을 승인하시면 다시 시도합니다.",
     FailureKind.ENGINE_FAILED: "분석 실행이 실패했습니다.",
     FailureKind.DECODE_FAILED: "분석 결과를 읽지 못했습니다.",
     FailureKind.ARCHIVE_UNREADABLE: "대화 기록 파일을 읽지 못했습니다.",

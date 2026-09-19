@@ -24,10 +24,15 @@ USAGE_LIMIT_REASON = "usage_limit"
 #: The engine refused before running because it can't hold the requested
 #: guarantee. Shared with EngineRunner, which writes it.
 CAPABILITY_UNMET_REASON = "capability_unmet"
+#: 엔진 로그인이 풀린 상태다. 새 세션도 같은 자격으로 붙으므로 다시 시도해도
+#: 똑같이 실패한다. EngineSwitcher 가 전환 계기 이름으로도 이 값을 쓴다.
+AUTH_FAILURE_REASON = "auth_failure"
 
-#: Failures a new session can't get past. Both are properties of the engine or
-#: the account, not of the conversation.
-NO_RETRY_REASONS = frozenset({USAGE_LIMIT_REASON, CAPABILITY_UNMET_REASON})
+#: Failures a new session can't get past. All three are properties of the
+#: engine or the account, not of the conversation.
+NO_RETRY_REASONS = frozenset({
+    USAGE_LIMIT_REASON, CAPABILITY_UNMET_REASON, AUTH_FAILURE_REASON,
+})
 
 
 @dataclass(frozen=True)
