@@ -206,3 +206,56 @@ class Test안_보낸_요청은_안_센다:
         )
         assert 응답.ok is False
         assert [kind for kind, _ in 감사.기록] == ["capability"]
+
+
+class Test예산_보고가_전송량_기록에_실린다:
+    """무엇이 상한에 걸려 빠졌는지는 조합기만 안다. 그 사실이 감사까지 닿아야
+    상한을 조정할 근거가 된다 (sca-ygd)."""
+
+    def test_요청이_실어온_값이_그대로_남는다(self, tmp_path: Path) -> None:
+        from test_engine import FakeCompleted, 통과정책
+        from test_engine_capability import _감사, _준비기록엔진
+
+        from slack_cli_agent.engine.runner import EngineRunner
+
+        감사 = _감사()
+        EngineRunner(
+            SETTINGS,
+            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(
+                stdout="답변", returncode=0
+            ),
+            environment_policy=통과정책(),
+            audit=감사,
+        ).run(
+            _준비기록엔진(claude_profile(tmp_path), SETTINGS),
+            request(
+                prompt="본문", system_prompt="지침", session_id="s1",
+                budget_report={"budget_limited": True, "omitted_document_count": 2},
+            ),
+        )
+        필드 = next(f for kind, f in 감사.기록 if kind == "payload")
+        assert 필드["budget_limited"] is True
+        assert 필드["omitted_document_count"] == 2
+
+    def test_값이_없으면_필드도_안_남는다(self, tmp_path: Path) -> None:
+        """조합기를 안 거친 요청도 있다. 빈 값을 0 으로 적으면 '상한에 안
+        걸렸다' 와 '조합기를 안 거쳤다' 가 같은 모습이 된다."""
+        from test_engine import FakeCompleted, 통과정책
+        from test_engine_capability import _감사, _준비기록엔진
+
+        from slack_cli_agent.engine.runner import EngineRunner
+
+        감사 = _감사()
+        EngineRunner(
+            SETTINGS,
+            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(
+                stdout="답변", returncode=0
+            ),
+            environment_policy=통과정책(),
+            audit=감사,
+        ).run(
+            _준비기록엔진(claude_profile(tmp_path), SETTINGS),
+            request(prompt="본문", system_prompt="지침", session_id="s1"),
+        )
+        필드 = next(f for kind, f in 감사.기록 if kind == "payload")
+        assert "budget_limited" not in 필드

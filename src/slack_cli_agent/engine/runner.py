@@ -290,6 +290,10 @@ class EngineRunner:
                 request_id=request.request_id,
                 resume=request.resume,
                 **engine.footprint_for(request).as_audit_dict(),
+                # Absent rather than zeroed when the caller composed nothing:
+                # "not budget-limited" and "never went through the composer"
+                # have to stay apart in the audit.
+                **dict(request.budget_report),
             )
         except Exception:
             log.warning("전송량 기록에 실패했다", exc_info=True)

@@ -98,6 +98,15 @@ class PromptSection(ABC):
     def render(self, ctx: CompositionContext) -> str: ...
 
 
+@dataclass(frozen=True)
+class BudgetedRender:
+    """What a budget-aware section produced, and what the budget cost it."""
+
+    text: str
+    omitted_count: int = 0
+    omitted_bytes: int = 0
+
+
 class BudgetAwareSection(PromptSection):
     """A section that can render smaller when the prompt budget is tight.
 
@@ -108,10 +117,11 @@ class BudgetAwareSection(PromptSection):
     """
 
     @abstractmethod
-    def render_within(self, ctx: CompositionContext, budget: int) -> str: ...
+    def render_within(self, ctx: CompositionContext, budget: int) -> BudgetedRender: ...
 
     def render(self, ctx: CompositionContext) -> str:
-        return self.render_within(ctx, budget=-1)
+        """Negative means no cap, which is what a caller with no budget wants."""
+        return self.render_within(ctx, budget=-1).text
 
 
 class PersonaSection(PromptSection):
@@ -129,11 +139,21 @@ class KnowledgeSection(BudgetAwareSection):
     def applies_to(self, ctx: CompositionContext) -> bool:
         return True
 
-    def render_within(self, ctx: CompositionContext, budget: int) -> str:
-        text = ctx._knowledge_or_raise().knowledge_within(
-            ctx.channel_slug, ctx.prompt, budget=None if budget < 0 else budget,
+    #: This section separates itself from the next with a blank line, which
+    #: the loader can't see. Left out of its budget the rendered section would
+    #: run two bytes over the cap.
+    _SEPARATOR = "\n\n"
+
+    def render_within(self, ctx: CompositionContext, budget: int) -> BudgetedRender:
+        for_loader = None if budget < 0 else max(0, budget - len(self._SEPARATOR.encode("utf-8")))
+        text, omitted = ctx._knowledge_or_raise().knowledge_selection(
+            ctx.channel_slug, ctx.prompt, budget=for_loader,
         )
-        return f"{text}\n\n" if text else ""
+        return BudgetedRender(
+            text=f"{text}{self._SEPARATOR}" if text else "",
+            omitted_count=len(omitted),
+            omitted_bytes=sum(doc.size for doc in omitted),
+        )
 
 
 class RosterSection(PromptSection):

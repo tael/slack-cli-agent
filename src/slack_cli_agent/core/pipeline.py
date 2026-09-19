@@ -259,7 +259,7 @@ class RequestPipeline:
         request_id = self._new_request_id()
 
         prompt = self._build_prompt(ctx, scope, decision)
-        system_prompt = self._compose_system_prompt(
+        system_prompt, budget_report = self._compose_system_prompt(
             ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id
         )
 
@@ -284,6 +284,7 @@ class RequestPipeline:
             trust_level=principal.trust,
             progress_log=progress_log,
             request_id=request_id,
+            budget_report=budget_report,
         )
         # Covers the retry too: a new-session retry is the same wait for the
         # person watching, and closing the display between the two attempts
@@ -300,11 +301,12 @@ class RequestPipeline:
                 # background command, and reusing the name puts two processes
                 # on one result file (codex review).
                 run_id = self._new_run_id()
+                retry_prompt, retry_budget = self._compose_system_prompt(
+                    ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id
+                )
                 request = replace(
                     request, session_id=decision.session_id, resume=False, prompt=prompt,
-                    system_prompt=self._compose_system_prompt(
-                        ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id
-                    ),
+                    system_prompt=retry_prompt, budget_report=retry_budget,
                 )
                 response = self._invoker.invoke(request)
 
@@ -416,7 +418,7 @@ class RequestPipeline:
         rich: bool,
         chat_level: str,
         run_id: str = "",
-    ) -> str:
+    ) -> tuple[str, dict[str, Any]]:
         is_owner = principal.trust is TrustLevel.OWNER
         asker_name = "" if is_owner else (self._name_resolver(ctx.user) or ctx.user)
         composition_ctx = CompositionContext(
@@ -432,7 +434,8 @@ class RequestPipeline:
             people=self._present_people(ctx),
             watch_run_id=run_id,
         )
-        return self._composer.compose(composition_ctx)
+        text, report = self._composer.compose_with_report(composition_ctx)
+        return text, report.as_audit_dict()
 
     def _present_people(self, ctx: RequestContext) -> tuple[tuple[str, str], ...]:
         # A lookup failure just omits this from the prompt; it must not block the reply.
