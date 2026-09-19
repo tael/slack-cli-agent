@@ -105,6 +105,17 @@ def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec]) -> list[str
     return args
 
 
+@dataclasses.dataclass(frozen=True)
+class _CodexStream:
+    """What one `codex exec --json` run left on stdout."""
+
+    thread_id: str | None
+    text: str
+    usage: dict[str, Any]
+    tool_errors: list[str]
+    malformed: bool
+
+
 #: options.sandbox values that mean something is actually enforced.
 _SANDBOX_ISOLATION = {
     "read-only": ExecutionIsolation.READONLY_SANDBOX,
@@ -284,19 +295,26 @@ class CodexEngine(Engine):
         )
 
     def parse(self, stdout: str, stderr: str, returncode: int) -> EngineResponse:
+        # Read first even when the run failed: the thread ID and the tokens
+        # already spent are the CLI's, not ours, and dropping them leaves the
+        # slow-request report looking for a rollout file under a provisional
+        # ID that names no transcript (core/pipeline.py:197) (sca-biud).
+        stream = self._parse_jsonl(stdout)
+        thread_id, text, usage_data, tool_errors = (
+            stream.thread_id, stream.text, stream.usage, stream.tool_errors
+        )
+        salvaged = Usage.from_native(usage_data, CODEX_USAGE_KEY_MAP) if usage_data else None
         if returncode != 0:
             return EngineResponse(
-                ok=False, body="Codex 실행에 실패했습니다.", session_id=None,
-                model_actual=None, elapsed=0.0, turns=None, usage=None,
+                ok=False, body="Codex 실행에 실패했습니다.", session_id=thread_id,
+                model_actual=None, elapsed=0.0, turns=None, usage=salvaged,
                 raw={"stdout": stdout, "stderr": stderr, "returncode": returncode},
                 failure_reason="nonzero_exit", failure_detail=FailureDetail(exit_code=returncode),
             )
-        try:
-            thread_id, text, usage_data, tool_errors = self._parse_jsonl(stdout)
-        except (json.JSONDecodeError, ValueError, TypeError):
+        if stream.malformed:
             return EngineResponse(
-                ok=False, body="Codex 응답 형식을 읽지 못했습니다.", session_id=None,
-                model_actual=None, elapsed=0.0, turns=None, usage=None,
+                ok=False, body="Codex 응답 형식을 읽지 못했습니다.", session_id=thread_id,
+                model_actual=None, elapsed=0.0, turns=None, usage=salvaged,
                 raw={"stdout": stdout}, failure_reason="bad_json",
                 failure_detail=FailureDetail(stdout_chars=len(stdout)),
             )
@@ -337,22 +355,42 @@ class CodexEngine(Engine):
     AUTH_FAILURE_NOTE = "codex 로그인이 풀렸다. codex login 으로 다시 로그인해야 한다."
 
     @staticmethod
-    def _parse_jsonl(output: str) -> tuple[str | None, str, dict[str, Any], list[str]]:
+    def _parse_jsonl(output: str) -> _CodexStream:
+        """Reads as far as the stream allows and says whether anything was
+        unreadable, rather than raising. A run cut off mid-write leaves a
+        truncated last line, and that is exactly when the events before it
+        are worth keeping."""
         thread_id: str | None = None
         text = ""
         usage: dict[str, Any] = {}
         tool_errors: list[str] = []
+        malformed = False
         for line in output.splitlines():
             if not line.strip():
                 continue
-            event = json.loads(line)
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                malformed = True
+                continue
             if not isinstance(event, dict):
-                raise TypeError("JSONL 이벤트가 객체가 아니다")
+                malformed = True
+                continue
             kind = event.get("type")
             if kind == "thread.started":
-                thread_id = event.get("thread_id")
+                started = event.get("thread_id")
+                if isinstance(started, str):
+                    thread_id = started
+                elif started is not None:
+                    # A non-string ID would fail further down, where the type
+                    # says it cannot happen (codex review).
+                    malformed = True
             elif kind == "item.completed":
-                item = event.get("item") or {}
+                item = event.get("item")
+                if item is not None and not isinstance(item, Mapping):
+                    malformed = True
+                    continue
+                item = item or {}
                 if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
                     text = item["text"]
                 elif item.get("type") == "error" and isinstance(item.get("message"), str):
@@ -361,7 +399,7 @@ class CodexEngine(Engine):
                 event_usage = event.get("usage")
                 if isinstance(event_usage, dict):
                     usage = event_usage
-        return thread_id, text, usage, tool_errors
+        return _CodexStream(thread_id, text, usage, tool_errors, malformed)
 
     @staticmethod
     def _toml_string(value: str) -> str:

@@ -674,6 +674,74 @@ class TestCodexEngineParse:
         assert resp.elapsed_source == "unknown"
 
 
+class Test실패해도_CLI_가_발행한_값을_보존한다:
+    """codex 는 세션 ID 를 CLI 가 발행한다. 실패 응답에서 그것을 버리면 느린
+    요청 보고가 rollout transcript 를 못 찾는다 - 그 파일 이름이 thread ID 다
+    (core/pipeline.py:197). gemini 는 같은 조건에서 보존한다 (sca-biud)."""
+
+    def _실패줄들(self) -> str:
+        return "\n".join([
+            json.dumps({"type": "thread.started", "thread_id": "th-1"}),
+            json.dumps({"type": "turn.completed",
+                        "usage": {"input_tokens": 5, "output_tokens": 6}}),
+        ])
+
+    def test_종료코드가_0이_아니어도_세션을_보존한다(self, tmp_path: Path) -> None:
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        resp = engine.parse(self._실패줄들(), "터짐", 1)
+        assert resp.ok is False
+        assert resp.failure_reason == "nonzero_exit"
+        assert resp.session_id == "th-1"
+
+    def test_종료코드가_0이_아니어도_사용량을_보존한다(self, tmp_path: Path) -> None:
+        """실패한 턴도 토큰을 쓴다. 안 세면 집계가 실제보다 작아진다."""
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        resp = engine.parse(self._실패줄들(), "터짐", 1)
+        assert resp.usage is not None and resp.usage.input_tokens == 5
+
+    def test_뒷줄이_깨져도_앞줄에서_읽은_것은_남긴다(self, tmp_path: Path) -> None:
+        """CLI 가 중간에 죽으면 마지막 줄이 잘린다. 그때가 transcript 가 가장
+        필요한 때다."""
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        stdout = self._실패줄들() + '\n{"type": "item.compl'
+        resp = engine.parse(stdout, "", 1)
+        assert resp.session_id == "th-1"
+
+    def test_읽을_것이_없으면_그대로_비운다(self, tmp_path: Path) -> None:
+        """없는 값을 지어내지 않는다."""
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        resp = engine.parse("", "터짐", 1)
+        assert resp.session_id is None
+        assert resp.usage is None
+
+    def test_이벤트_속_형식이_어긋나도_안_터진다(self, tmp_path: Path) -> None:
+        """item 이 객체가 아니면 AttributeError 로 죽었다. 잡는 예외 목록에
+        없어 실패 응답조차 못 냈다 (코덱스 리뷰)."""
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        stdout = "\n".join([
+            json.dumps({"type": "thread.started", "thread_id": "th-1"}),
+            json.dumps({"type": "item.completed", "item": "문자열"}),
+        ])
+        resp = engine.parse(stdout, "", 0)
+        assert resp.failure_reason == "bad_json"
+        assert resp.session_id == "th-1"
+
+    def test_세션_ID_가_문자열이_아니면_안_쓴다(self, tmp_path: Path) -> None:
+        """숫자를 그대로 넘기면 뒤에서 타입 오류가 난다."""
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        resp = engine.parse(json.dumps({"type": "thread.started", "thread_id": 7}), "", 0)
+        assert resp.session_id is None
+        assert resp.failure_reason == "bad_json"
+
+    def test_형식을_못_읽어도_세션은_보존한다(self, tmp_path: Path) -> None:
+        """bad_json 판정은 유지하되 읽은 것까지 버리지는 않는다."""
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        stdout = json.dumps({"type": "thread.started", "thread_id": "th-1"}) + "\n[1, 2]"
+        resp = engine.parse(stdout, "", 0)
+        assert resp.failure_reason == "bad_json"
+        assert resp.session_id == "th-1"
+
+
 class TestCodexEngineSessionIdFrom:
     def test_thread_id를_그대로_돌려준다(self, tmp_path: Path) -> None:
         profile = codex_profile(tmp_path)
