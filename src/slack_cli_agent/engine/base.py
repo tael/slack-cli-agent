@@ -417,9 +417,39 @@ class Engine(ABC):
         않는다. 그런 것까지 계기로 삼으면 한 번 끊긴 것으로 엔진이 바뀐다.
 
         돌려주는 값은 사람에게 보일 한 줄이다. None 은 인증 실패가 아니라는
-        뜻이고, 판단할 근거를 아직 확보하지 못한 엔진도 None 을 낸다.
+        뜻이고, 문구를 아직 확보하지 못한 엔진도 None 을 낸다.
+
+        판정은 여기 한 자리에 둔다. 엔진이 대는 것은 자기 CLI 가 내는 문구와
+        다시 로그인하는 법뿐이다 - 엔진마다 따로 구현하면 한쪽만 고쳐 어긋난다
+        (sca-sj8r).
         """
-        return None
+        # 실패 여부로 거르고 문구로 판정한다. 실패 종류로 거르지 않는 이유는
+        # 엔진마다 이 실패가 떨어지는 자리가 다르기 때문이다 - gemini 는 JSON
+        # 이 아닌 한 줄을 내서 bad_json 으로 떨어진다.
+        if response.ok or not self.AUTH_FAILURE_MARKERS:
+            return None
+        text = self._failure_text(response).lower()
+        if not any(marker.lower() in text for marker in self.AUTH_FAILURE_MARKERS):
+            return None
+        return self.AUTH_FAILURE_NOTE
+
+    #: 이 CLI 가 로그인이 풀렸을 때 내는 문구. 상태 코드만으로 좁히지 않는다 -
+    #: MCP 서버 하나가 401 을 내도 CLI 자체의 로그인은 멀쩡하다.
+    AUTH_FAILURE_MARKERS: ClassVar[tuple[str, ...]] = ()
+
+    #: 감지했을 때 사람에게 낼 한 줄. 다시 로그인하는 법이 엔진마다 다르다.
+    AUTH_FAILURE_NOTE: ClassVar[str] = ""
+
+    @staticmethod
+    def _failure_text(response: EngineResponse) -> str:
+        """CLI 가 낸 원문만 본다.
+
+        담기는 자리가 엔진마다 다르다 - codex 는 stderr, claude 의 is_error 는
+        result, gemini 는 error 다. body 는 보지 않는다: 사람이 쓴 말이 섞여,
+        인증 문구를 물어본 턴이 다른 이유로 실패하면 그것만으로 엔진이 바뀐다.
+        """
+        raw = response.raw if isinstance(response.raw, Mapping) else {}
+        return "\n".join(str(raw.get(key) or "") for key in ("stderr", "stdout", "result", "error"))
 
     def session_id_from(self, response: EngineResponse) -> str | None:
         """Returns the engine's own session ID if it issues one, else None.
