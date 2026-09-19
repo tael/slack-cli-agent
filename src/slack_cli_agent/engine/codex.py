@@ -60,6 +60,11 @@ from .capability import (
     InstructionBoundary,
     ToolRestriction,
 )
+from .footprint import (
+    INSTRUCTION_TRANSPORT_USER_PROMPT,
+    PayloadFootprint,
+    utf8_bytes,
+)
 
 # sca-dyb.4 — confirmed 2026-09-16 against the real CLI's turn.completed
 # event: Codex doesn't use Claude's cache_read_input_tokens/
@@ -139,6 +144,19 @@ class CodexEngine(Engine):
                 if isolation is not ExecutionIsolation.NONE
                 else ToolRestriction.NONE
             ),
+        )
+
+    def footprint_for(self, request: EngineRequest) -> PayloadFootprint:
+        """A resumed turn carries the instructions in the prompt (sca-ivs), so
+        those bytes join the session context and are paid again every turn."""
+        base = super().footprint_for(request)
+        if not request.resume:
+            return base
+        return dataclasses.replace(
+            base,
+            adapter_added_bytes=base.adapter_added_bytes + utf8_bytes(UNTRUSTED_INPUT_MARK),
+            instruction_transport=INSTRUCTION_TRANSPORT_USER_PROMPT,
+            instruction_replayed_on_resume=True,
         )
 
     def build_command(self, request: EngineRequest) -> list[str]:

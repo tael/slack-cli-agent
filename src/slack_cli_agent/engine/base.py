@@ -19,6 +19,11 @@ from ..auth.principal import TrustLevel
 from ..core.errors import ConfigError
 from .capability import EngineCapabilities, ExecutionRequirements
 from .environment import EngineEnvironmentPolicy, create_environment_policy
+from .footprint import (
+    INSTRUCTION_TRANSPORT_NATIVE,
+    PayloadFootprint,
+    utf8_bytes,
+)
 
 if TYPE_CHECKING:
     from ..config.profile import EngineSpec, Profile
@@ -429,3 +434,21 @@ class Engine(ABC):
     def readable_paths_note(self, paths: Sequence[Path]) -> str:
         """How to announce readable paths, for engines that don't take it as an argument. Default: empty."""
         return ""
+
+    def footprint_for(self, request: EngineRequest) -> PayloadFootprint:
+        """What this call puts on the wire, in bytes and by transport.
+
+        Declared here rather than derived from build_command's argv: reading
+        it back would tie the measurement to each CLI's flag shape, and the
+        adapter's own additions would be indistinguishable from the prompt.
+
+        Default is the CLI that takes instructions on their own argument.
+        An engine that folds them into the prompt overrides this (sca-ygd).
+        """
+        return PayloadFootprint(
+            instruction_bytes=utf8_bytes(request.system_prompt),
+            user_prompt_bytes=utf8_bytes(request.prompt),
+            adapter_added_bytes=utf8_bytes(self.readable_paths_note(request.readable_dirs)),
+            instruction_transport=INSTRUCTION_TRANSPORT_NATIVE,
+            instruction_replayed_on_resume=False,
+        )
