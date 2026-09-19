@@ -1168,6 +1168,98 @@ class TestFallbackEngine:
         assert resp.body == "다시 됩니다"
         assert switcher.is_switched() is False
 
+    # -- 로그인 만료로 전환하는 경로 (2026-09-19 asuka 실측)
+
+    def _인증실패_1차(self, tmp_path: Path):
+        """1차가 종료코드 1 로 끝나고 그 실패가 로그인 만료인 경우."""
+        failed = EngineResponse(
+            ok=False, body="Codex 실행에 실패했습니다.", session_id=None, model_actual=None,
+            elapsed=0, turns=None, usage=None, failure_reason="nonzero_exit",
+        )
+        probe_ok = EngineResponse(ok=True, body="OK", session_id=None, model_actual=None,
+                                  elapsed=0, turns=None, usage=None)
+        fallback, primary, secondary, switcher = self._fallback(
+            tmp_path, primary_response=failed, secondary_response=probe_ok)
+        primary.detect_auth_failure = (  # type: ignore[method-assign]
+            lambda response: "codex 로그인이 풀렸다."
+        )
+        return fallback, primary, secondary, switcher
+
+    def test_1차_로그인이_풀리면_전환_상태를_남긴다(self, tmp_path: Path) -> None:
+        """한도가 아니어도 1차가 당분간 아무 요청도 못 받는 상태면 전환한다.
+        전환 계기가 없어서 codex 로그인 만료 때 2차로 안 넘어갔다.
+        """
+        fallback, _primary, _secondary, switcher = self._인증실패_1차(tmp_path)
+
+        fallback.run(request())
+
+        assert switcher.is_switched() is True
+        assert switcher.reason() == EngineSwitcher.AUTH_FAILURE
+
+    def test_로그인이_풀린_전환은_한도와_다른_안내를_낸다(self, tmp_path: Path) -> None:
+        """한도로 안내하면 기다리면 되는 것으로 읽혀 아무도 다시 로그인하지 않는다."""
+        fallback, _primary, _secondary, _switcher = self._인증실패_1차(tmp_path)
+        fallback.run(request())
+
+        resp = fallback.run(request())
+
+        assert resp.failure_reason == EngineSwitcher.AUTH_FAILURE
+        assert "로그인" in resp.body
+        assert "한도" not in resp.body
+
+    def test_로그인_만료가_아닌_실패는_전환_계기가_아니다(self, tmp_path: Path) -> None:
+        """종료코드 1 전체를 계기로 삼으면 한 번 끊긴 것으로 엔진이 바뀐다."""
+        failed = EngineResponse(
+            ok=False, body="Codex 실행에 실패했습니다.", session_id=None, model_actual=None,
+            elapsed=0, turns=None, usage=None, failure_reason="nonzero_exit",
+        )
+        fallback, _primary, _secondary, switcher = self._fallback(
+            tmp_path, primary_response=failed)
+
+        fallback.run(request())
+
+        assert switcher.is_switched() is False
+
+    def test_로그인_만료는_복구_확인_주기가_한도보다_길다(self, tmp_path: Path) -> None:
+        """확인 자체가 실제 요청이라 주기마다 사람 하나가 1차 실패를 기다린다.
+        로그인 만료는 시간이 지나도 안 풀리므로 그 대기를 자주 만들지 않는다.
+        """
+        switcher = EngineSwitcher(tmp_path / "engine_state.json")
+        switcher.begin_switch("로그인 만료", engine_name="codex",
+                              reason=EngineSwitcher.AUTH_FAILURE)
+        시작 = switcher.load()["switched_at"]
+
+        assert switcher.should_probe(시작 + 700) is False
+        assert switcher.should_probe(시작 + 3700) is True
+
+
+class Test코덱스_로그인_만료_검출:
+    """codex CLI 는 로그인 만료도 다른 실패도 종료코드 1 로 낸다."""
+
+    def _응답(self, stderr: str) -> tuple[CodexEngine, EngineResponse]:
+        engine = CodexEngine(codex_profile(Path("/tmp")), SETTINGS)
+        return engine, engine.parse(stdout="", stderr=stderr, returncode=1)
+
+    def test_토큰_폐기_문구가_있으면_인증_실패로_본다(self) -> None:
+        engine, resp = self._응답(
+            "ERROR codex_login::auth::manager: Failed to refresh token: 401 Unauthorized: "
+            '{"code": "refresh_token_invalidated"}'
+        )
+        assert engine.detect_auth_failure(resp) is not None
+
+    def test_401만_있으면_인증_실패로_보지_않는다(self) -> None:
+        """MCP 서버 하나가 401 을 내도 codex 자체의 로그인은 멀쩡하다."""
+        engine, resp = self._응답(
+            "ERROR rmcp::transport::worker: worker quit with fatal: HTTP 401"
+        )
+        assert engine.detect_auth_failure(resp) is None
+
+    def test_정상_응답은_인증_실패가_아니다(self) -> None:
+        engine = CodexEngine(codex_profile(Path("/tmp")), SETTINGS)
+        resp = EngineResponse(ok=True, body="답", session_id=None, model_actual=None,
+                              elapsed=0, turns=None, usage=None)
+        assert engine.detect_auth_failure(resp) is None
+
 
 class Test엔진환경격리:
     """엔진 하위 프로세스에 넘길 환경 변수를 실행기가 실제로 제한하는가.

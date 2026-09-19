@@ -500,7 +500,9 @@ class FallbackEngine(Engine):
                     model_actual=None, elapsed=0.0, turns=None, usage=None,
                     user_facing=True,
                     raw={"engine_switch": approval},
-                    failure_reason="usage_limit", engine=self.primary.name,
+                    # 무엇 때문에 전환했는지가 실패 기록에 남아야 한다. 인증
+                    # 실패까지 usage_limit 으로 세면 한도 통계가 거짓이 된다.
+                    failure_reason=self.switcher.reason(), engine=self.primary.name,
                     failure_detail=FailureDetail(code=approval),
                 )
 
@@ -509,16 +511,30 @@ class FallbackEngine(Engine):
         return self._run_primary(request)
 
     def _run_primary(self, request: EngineRequest) -> EngineResponse:
+        """1차로 돌리고, 다음 요청도 똑같이 실패할 상태면 전환을 시작한다.
+
+        전환 계기는 둘이다. 사용량 한도와 로그인 만료다. 둘 다 그 요청 하나의
+        문제가 아니라 1차 엔진이 당분간 아무 요청도 처리하지 못하는 상태라서
+        2차로 넘긴다. 일반적인 실패(타임아웃, 형식 오류, 종료코드 1)는 계기가
+        아니다 - 그것까지 넣으면 한 번 끊긴 것으로 엔진이 바뀐다.
+        """
         self._active = self.primary
         response = self.runner.run(self.primary, request)
         limit = self.primary.detect_usage_limit(response)
         if limit is not None:
-            probe_ok, probe_detail = self._probe_secondary(request)
-            self.switcher.begin_switch(
-                limit.detail, engine_name=self.secondary.name,
-                probe_ok=probe_ok, probe_detail=probe_detail,
-            )
+            self._begin_switch(request, EngineSwitcher.USAGE_LIMIT, limit.detail)
+            return response
+        auth_failure = self.primary.detect_auth_failure(response)
+        if auth_failure is not None:
+            self._begin_switch(request, EngineSwitcher.AUTH_FAILURE, auth_failure)
         return response
+
+    def _begin_switch(self, request: EngineRequest, reason: str, detail: str) -> None:
+        probe_ok, probe_detail = self._probe_secondary(request)
+        self.switcher.begin_switch(
+            detail, engine_name=self.secondary.name, reason=reason,
+            probe_ok=probe_ok, probe_detail=probe_detail,
+        )
 
     def _run_secondary(self, request: EngineRequest) -> EngineResponse:
         """Handles this turn on the approved fallback engine.
