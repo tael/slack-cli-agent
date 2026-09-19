@@ -323,6 +323,7 @@ class RequestPipeline:
             self._record(
                 ctx, decision, model, effort, elapsed,
                 ok=False, usage=None, turns=response.turns, failure=failure,
+                model_actual=response.model_actual,
                 failure_detail=response.failure_detail,
             )
             return HandleOutcome(ok=False, failure=failure)
@@ -337,7 +338,8 @@ class RequestPipeline:
         self._sessions.touch(key, ctx.ts)
 
         if is_silent(response.body):
-            self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage, turns=response.turns)
+            self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
+                     turns=response.turns, model_actual=response.model_actual)
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
 
@@ -347,7 +349,8 @@ class RequestPipeline:
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich) or ""
         self._archive_response(ctx, channel_slug, body, response, elapsed)
 
-        self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage, turns=response.turns)
+        self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
+                     turns=response.turns, model_actual=response.model_actual)
         watch_desc = watch_desc or self._watch_desc_for_launched(workdir, run_id)
         watching = bool(watch_desc) and self._register_watch(ctx, principal, watch_desc, workdir, run_id)
         # The final mark belongs to the worker: it owns queue completion and the
@@ -592,10 +595,16 @@ class RequestPipeline:
         ok: bool,
         usage: Usage | None,
         turns: int | None = None,
+        # The model that actually spent tokens, when the engine reports one.
+        # Absent rather than empty when unknown: an empty value would read as
+        # "same as asked" in the troubleshooting table (sca-asrp).
+        model_actual: str | None = None,
         failure: str = "",
         failure_detail: FailureDetail = NO_DETAIL,
     ) -> None:
         extra: dict[str, Any] = {}
+        if model_actual:
+            extra["model_actual"] = model_actual
         if failure:
             extra["failure"] = failure
         if failure_detail:
