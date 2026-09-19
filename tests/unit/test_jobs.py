@@ -162,7 +162,7 @@ class TestPersistence:
     def test_실행_중_되돌리면_다시_나온다(self, queue: SqliteJobQueue) -> None:
         queue.enqueue(ctx("1.1"))
         job = claim(queue, "w1")
-        queue.requeue(job.id)
+        queue.requeue(job.id, attempt=job.attempts)
         assert queue.claim_next("w2") is not None
 
     def test_완료된_작업은_다시_안_나온다(self, queue: SqliteJobQueue) -> None:
@@ -244,6 +244,37 @@ class Test소유권검증:
         queue.heartbeat(옛시도.id, attempt=옛시도.attempts)
 
         assert queue.reclaim_stale(deadline=1150.0, max_attempts=9).total == 1
+
+
+    def test_회수된_뒤_옛_워커의_되돌리기는_안_먹힌다(self, queue: SqliteJobQueue) -> None:
+        """종료 중인 옛 워커가 지금 도는 시도를 대기로 되돌리면, 또 다른
+        워커가 같은 요청을 겹쳐 집는다."""
+        queue.enqueue(ctx("1.1"))
+        옛시도 = claim(queue, "죽은워커")
+        queue.reclaim_stale(deadline=time.time() + 1, max_attempts=9)
+        claim(queue, "산워커")
+
+        queue.requeue(옛시도.id, attempt=옛시도.attempts)
+
+        assert queue.claim_next("또다른워커") is None
+
+    def test_지금_도는_시도의_되돌리기는_먹힌다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.1"))
+        job = claim(queue, "w1")
+
+        queue.requeue(job.id, attempt=job.attempts)
+
+        assert queue.claim_next("w2") is not None
+
+    def test_안_먹힌_완료는_거짓을_돌려준다(self, queue: SqliteJobQueue) -> None:
+        """워커가 이 값을 보고 슬랙 표식을 달지 말지 정한다."""
+        queue.enqueue(ctx("1.1"))
+        옛시도 = claim(queue, "죽은워커")
+        queue.reclaim_stale(deadline=time.time() + 1, max_attempts=9)
+        새시도 = claim(queue, "산워커")
+
+        assert queue.complete(옛시도.id, True, "", attempt=옛시도.attempts) is False
+        assert queue.complete(새시도.id, True, "", attempt=새시도.attempts) is True
 
 
 @dataclass

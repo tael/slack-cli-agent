@@ -62,7 +62,7 @@ class Worker:
         # needs its own so shutdown knows whether to wait.
         self._inflight = inflight or InflightCounter()
         self._lock = threading.Lock()
-        self._running: dict[int, RequestContext] = {}
+        self._running: dict[int, Job] = {}
         # Catch-up-representative key -> the requests it absorbed, so the same
         # reaction mark gets applied to them once the representative finishes.
         self._skip_groups: dict[tuple[str, str], list[RequestContext]] = {}
@@ -86,7 +86,7 @@ class Worker:
     def _process(self, job: Job) -> None:
         context = job.context
         with self._lock:
-            self._running[job.id] = context
+            self._running[job.id] = job
         # The wait is over, so the queued mark gives way to the processing one.
         # Leaving it on would put both marks on every request at once.
         self._markers.clear_waiting(context.channel, context.ts)
@@ -179,11 +179,19 @@ class Worker:
 
     def _finish(self, job: Job, context: RequestContext, outcome: HandleOutcome) -> None:
         if outcome.ok:
-            self._queue.complete(job.id, True, "", attempt=job.attempts)
+            recorded = self._queue.complete(job.id, True, "", attempt=job.attempts)
             mark, buried_mark = self._pick_done_marks(outcome)
         else:
-            self._queue.complete(job.id, False, outcome.failure, attempt=job.attempts)
+            recorded = self._queue.complete(job.id, False, outcome.failure, attempt=job.attempts)
             mark = buried_mark = self._markers.mark_failed
+        if not recorded:
+            # This attempt was already reclaimed and someone else is running the
+            # request now. Marking it done would show the user a finished request
+            # that is still in progress (sca-ubf).
+            log.warning(
+                "이 시도의 결과가 아니라 표식을 안 단다 : %s:%s", context.channel, context.ts
+            )
+            return
 
         mark(context.channel, context.ts)
         # Handling now runs on several threads while catch-up fills this from
@@ -227,7 +235,7 @@ class Worker:
 
     def _enqueue_new(self, contexts: Sequence[RequestContext]) -> list[RequestContext]:
         with self._lock:
-            running_keys = {context.key for context in self._running.values()}
+            running_keys = {job.context.key for job in self._running.values()}
         pending_keys = {job.context.key for job in self._queue.pending()}
 
         accepted: list[RequestContext] = []
@@ -276,9 +284,10 @@ class Worker:
 
     def shutdown(self) -> None:
         with self._lock:
-            running = list(self._running.items())
+            running = list(self._running.values())
             self._running.clear()
-        for job_id, context in running:
-            self._queue.requeue(job_id)
-            self._markers.clear_processing(context.channel, context.ts)
-            self._markers.mark_waiting(context.channel, context.ts)
+        for job in running:
+            if not self._queue.requeue(job.id, attempt=job.attempts):
+                continue
+            self._markers.clear_processing(job.context.channel, job.context.ts)
+            self._markers.mark_waiting(job.context.channel, job.context.ts)

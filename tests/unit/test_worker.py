@@ -616,6 +616,21 @@ class Test캐치업이_실패건을_되살린다:
     영영 남는다.
     """
 
+    def test_안_먹힌_완료는_표식을_안_단다(self, database) -> None:
+        """옛 워커의 늦은 결과가 지금 도는 시도의 요청에 완료 표식을 달면,
+        사용자에게는 끝난 것으로 보이는데 실제로는 아직 돌고 있다."""
+        worker, queue, client = make_worker(database=database)
+        queue.enqueue(ctx("1.1", "T1"))
+        옛시도 = queue.claim_next("죽은워커")
+        assert 옛시도 is not None
+        queue.reclaim_stale(deadline=time.time() + 1, max_attempts=9)
+        assert queue.claim_next("산워커") is not None
+        client.calls.clear()
+
+        worker._finish(옛시도, 옛시도.context, HandleOutcome(ok=True))
+
+        assert client.calls == []
+
     def test_실패한_대표건은_다시_등록된다(self, database) -> None:
         worker, queue, _client = make_worker(database=database)
         queue.enqueue(ctx("1.1", "T1"))
