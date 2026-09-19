@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..admin.admission import AdminAdmission
 from ..admin.command import AdminContext
 from ..admin.defaults import default_admin_commands
 from ..admin.router import AdminRouter
@@ -249,6 +250,7 @@ class Application:
         self._engine: Engine | None = None
         self._gateway: SlackGateway | None = None
         self._ingress: IngressService | None = None
+        self._admin: AdminAdmission | None = None
         self._pipeline: RequestPipeline | None = None
         self._access_policy: AccessPolicy | None = None
         self._execution_policy: ExecutionPolicy | None = None
@@ -1046,12 +1048,24 @@ class Application:
             inflight=self.inflight,
             # reclaim picks the mark from this (sca-o1e).
             watch_jobs=self.watch_jobs(),
+            admin=self._admin_admission(),
         )
 
     def _admin_router(self) -> AdminRouter:
         commands = default_admin_commands(self._notices)
         commands.extend(c for p in self._plugins for c in p.admin_commands())
         return AdminRouter(commands)
+
+    def _admin_admission(self) -> AdminAdmission:
+        """Built once and shared: the socket path and catch-up have to reach
+        the same decision, and two instances would drift (sca-oyku)."""
+        if self._admin is None:
+            self._admin = AdminAdmission(
+                router=self._admin_router(),
+                context_builder=self._admin_context,
+                reply=self._reply,
+            )
+        return self._admin
 
     def _admin_context(self, ctx: RequestContext) -> AdminContext:
         return AdminContext(
@@ -1081,8 +1095,7 @@ class Application:
                 queue=self.queue(),
                 reactions=self.reactions(),
                 attachments=self.attachments(),
-                admin_router=self._admin_router(),
-                admin_context_builder=self._admin_context,
+                admin=self._admin_admission(),
                 reply=self._reply,
                 allowed_reactions=self.allowed_reactions(),
                 on_reaction=self.on_reaction,
