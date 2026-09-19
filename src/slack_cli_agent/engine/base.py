@@ -99,6 +99,11 @@ class EngineRequest:
     #: with no equivalent ignores this and the display shows its opening
     #: line only, rather than failing the request.
     progress_log: Path | None = None
+    #: The limit the runner will actually enforce on this call, filled in by
+    #: EngineRunner before build_command. None means it has not run yet -- an
+    #: engine that tells its CLI a limit must read this, not the setting, or
+    #: it names one figure while the runner kills it at another (sca-ocie).
+    timeout_sec: float | None = None
     #: Ties every engine attempt for one incoming request together -- primary,
     #: fallback, recovery probe, new-session retry. Opaque here: this layer
     #: never reads it, only the audit does, so Slack identifiers stay out of

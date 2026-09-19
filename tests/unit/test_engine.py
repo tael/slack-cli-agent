@@ -1029,7 +1029,70 @@ class TestEngineRunner:
         assert resp.ok is True
         assert resp.body == "답변"
         assert calls[0][0] == ["fake-bin", "안녕"]
-        assert engine.built == [request()]
+        # timeout_sec 은 실행기가 채운다 - 그 값이 실제로 적용되는 제한이다 (sca-ocie).
+        assert engine.built == [request(timeout_sec=SETTINGS.request_timeout_sec)]
+
+    def test_CLI_에_알리는_제한시간이_실제_제한과_같다(self, tmp_path: Path) -> None:
+        """agy 는 --print-timeout 으로 자기 제한을 받는다. 실행기가 더 짧은
+        값으로 죽이면 CLI 는 자기 제한 전이라 정리를 안 한 채 끊긴다.
+        폴백 프로브가 120초로 부른다(runner.py:441) (sca-ocie)."""
+        engine = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        잡힌명령: list[Any] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            잡힌명령.append(cmd)
+            return FakeCompleted(stdout=json.dumps(
+                {"conversation_id": "c1", "status": "SUCCESS", "response": "답"}
+            ), returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        runner.run(engine, request(), timeout_sec=120.0)
+        assert f"{120 - int(GeminiEngine.PRINT_TIMEOUT_MARGIN_SEC)}s" in 잡힌명령[0]
+
+    def test_실수_제한도_CLI_가_먼저_끝나게_자른다(self, tmp_path: Path) -> None:
+        """올림하면 CLI 가 실행기보다 늦게 끝나 강제 종료가 먼저 온다
+        (코덱스 리뷰)."""
+        engine = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        잡힌명령: list[Any] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            잡힌명령.append(cmd)
+            return FakeCompleted(stdout=json.dumps(
+                {"conversation_id": "c1", "status": "SUCCESS", "response": "답"}
+            ), returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        runner.run(engine, request(), timeout_sec=120.5)
+        assert f"{120 - int(GeminiEngine.PRINT_TIMEOUT_MARGIN_SEC)}s" in 잡힌명령[0]
+
+    def test_제한을_채워도_원본_요청은_그대로다(self, tmp_path: Path) -> None:
+        """부르는 쪽이 같은 요청을 다시 쓴다. 바꿔 버리면 두 번째가 달라진다."""
+        engine = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            return FakeCompleted(stdout=json.dumps(
+                {"conversation_id": "c1", "status": "SUCCESS", "response": "답"}
+            ), returncode=0)
+
+        요청 = request()
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        runner.run(engine, 요청, timeout_sec=120.0)
+        assert 요청.timeout_sec is None
+
+    def test_제한을_안_주면_설정값을_알린다(self, tmp_path: Path) -> None:
+        engine = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        잡힌명령: list[Any] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            잡힌명령.append(cmd)
+            return FakeCompleted(stdout=json.dumps(
+                {"conversation_id": "c1", "status": "SUCCESS", "response": "답"}
+            ), returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        runner.run(engine, request())
+        예상 = int(SETTINGS.request_timeout_sec - GeminiEngine.PRINT_TIMEOUT_MARGIN_SEC)
+        assert f"{예상}s" in 잡힌명령[0]
 
     def test_시간초과면_timeout_실패를_돌려준다(self, tmp_path: Path) -> None:
         profile = claude_profile(tmp_path)
@@ -1106,6 +1169,25 @@ class TestFallbackEngine:
         fallback.run(request(session_id=None))
 
         assert [r.session_id for r in secondary.built] == ["2차-형식"]
+
+    def test_프로브는_짧은_제한을_2차에_알린다(self, tmp_path: Path) -> None:
+        """프로브는 120초로 부른다. 2차가 설정값을 CLI 에 알리면 CLI 는
+        자기 제한 전이라 정리를 안 한 채 끊긴다 (sca-ocie)."""
+        fallback, _primary, secondary, switcher = self._fallback(tmp_path)
+        switcher.begin_switch("weekly limit", engine_name="codex")
+
+        fallback._probe_secondary(request())
+
+        assert [r.timeout_sec for r in secondary.built] == [FallbackEngine.PROBE_TIMEOUT_SEC]
+
+    def test_승인_뒤_일반_실행은_설정_제한을_알린다(self, tmp_path: Path) -> None:
+        fallback, _primary, secondary, switcher = self._fallback(tmp_path)
+        switcher.begin_switch("weekly limit", engine_name="codex")
+        switcher.approve()
+
+        fallback.run(request())
+
+        assert [r.timeout_sec for r in secondary.built] == [SETTINGS.request_timeout_sec]
 
     def test_한도_알림_응답에도_요청_모델이_실린다(self, tmp_path: Path) -> None:
         """승인 전에는 실행 없이 알림만 돌려준다. 그 요청도 기록에 남으므로

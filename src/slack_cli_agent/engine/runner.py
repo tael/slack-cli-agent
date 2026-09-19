@@ -161,10 +161,13 @@ class EngineRunner:
             return blocked
         # After the block check: a refused request never reaches the process,
         # and counting it would put bytes nobody sent into the measurement.
+        timeout = timeout_sec if timeout_sec is not None else self._settings.request_timeout_sec
+        # Set before build_command: an engine that passes its own limit to the
+        # CLI has to name the one enforced here (sca-ocie).
+        request = dataclasses.replace(request, timeout_sec=timeout)
         self._record_payload(engine, request)
         engine.prepare(request)
         cmd = engine.build_command(request)
-        timeout = timeout_sec if timeout_sec is not None else self._settings.request_timeout_sec
         source = self._source_env if self._source_env is not None else os.environ
         extra: dict[str, Any] = {"env": policy.build(source)}
         sink = self._progress_sink(engine, request)
