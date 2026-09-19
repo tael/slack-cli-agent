@@ -184,12 +184,6 @@ class ClaudeEngine(Engine):
             "-p",
             "--output-format", "json",
             "--permission-mode", "dontAsk",
-            # --allowedTools overrides settings.json's allow rules
-            # (confirmed by testing). The read-only permission model is
-            # enforced by this list — it's the caller's job (outside
-            # this module) to keep Bash/Edit/Write/NotebookEdit out of
-            # request.allowed_tools.
-            "--allowedTools", ",".join(request.tools.names),
             "--model", request.require_model(),
             "--effort", request.effort,
         ]
@@ -197,8 +191,15 @@ class ClaudeEngine(Engine):
             # Denying tools by name does not hold -- the model reaches the same
             # file through another one. The wildcard empties the tool set
             # itself: the debug log stops loading tools and tool_use never
-            # appears (2026-09-19 measurement, sca-0a7).
+            # appears (2026-09-19 measurement, sca-0a7). No --allowedTools
+            # beside it, so the command matches what was measured.
             cmd += ["--disallowedTools", "*"]
+        else:
+            # --allowedTools overrides settings.json's allow rules (confirmed
+            # by testing). The read-only permission model is enforced by this
+            # list -- it's the caller's job, outside this module, to keep
+            # Bash/Edit/Write/NotebookEdit out of it.
+            cmd += ["--allowedTools", ",".join(request.tools.names)]
         for path in request.readable_dirs:
             cmd += ["--add-dir", str(path)]
         skills_dir = self.profile.paths.skills

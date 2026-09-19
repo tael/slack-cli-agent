@@ -32,17 +32,30 @@ class ToolSelection:
     access: ToolAccess = ToolAccess.UNRESTRICTED
     names: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        # frozen keeps the value from changing; it does not keep a caller from
+        # building a contradictory one through the constructor or
+        # dataclasses.replace (review 2026-09-19).
+        if self.access is ToolAccess.ALLOWLIST and not self.names:
+            raise ValueError(
+                "허용할 도구 이름이 비어 있다. 도구를 쓰지 않으려면 forbid_all() 을 쓴다"
+            )
+        if self.access is not ToolAccess.ALLOWLIST and self.names:
+            raise ValueError(f"{self.access} 상태에는 도구 이름을 둘 수 없다 : {self.names}")
+
     @classmethod
     def unrestricted(cls) -> ToolSelection:
         return cls()
 
     @classmethod
     def allow(cls, names: Sequence[str]) -> ToolSelection:
-        if not names:
-            raise ValueError(
-                "허용할 도구 이름이 비어 있다. 도구를 쓰지 않으려면 forbid_all() 을 쓴다"
-            )
         return cls(access=ToolAccess.ALLOWLIST, names=tuple(names))
+
+    @classmethod
+    def from_names(cls, names: Sequence[str]) -> ToolSelection:
+        """What a tool policy produced. No names is not a ban -- only a caller
+        that means "this turn has no tools" says forbid_all()."""
+        return cls.allow(names) if names else cls.unrestricted()
 
     @classmethod
     def forbid_all(cls) -> ToolSelection:

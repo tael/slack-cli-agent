@@ -29,7 +29,7 @@ from slack_cli_agent.engine.base import (
 )
 from slack_cli_agent.engine.capability import ToolRestriction
 from slack_cli_agent.engine.runner import DirectInvoker, EngineInvoker, EngineRunner
-from slack_cli_agent.engine.tool_selection import ToolSelection
+from slack_cli_agent.engine.tool_selection import ToolAccess, ToolSelection
 from slack_cli_agent.review.base import EngineCaller
 from slack_cli_agent.review.engine_adapter import ReviewEngineCaller
 
@@ -205,7 +205,7 @@ class Test기본값:
         caller.run("프롬프트", "세션1", False)
         request = invoker.calls[0]
         assert request.readable_dirs == ()
-        assert request.tools.names == ()
+        assert request.tools.access is ToolAccess.UNRESTRICTED
 
 
 class Test실패응답:

@@ -217,12 +217,9 @@ class RequestPipeline:
     ) -> ToolSelection:
         if self._tool_policy is None:
             return ToolSelection.unrestricted()
-        names = self._tool_policy.tool_list_for(
+        return ToolSelection.from_names(self._tool_policy.tool_list_for(
             principal, prompt=prompt, skills_enabled=bool(config and config.skills),
-        )
-        # No policy output is not a ban. Only a caller that means "this turn
-        # has no tools" says so, and none of the chat paths do (sca-0a7).
-        return ToolSelection.allow(names) if names else ToolSelection.unrestricted()
+        ))
 
     def _progress_session(self, ctx: RequestContext, log_path: Path | None) -> AbstractContextManager[None]:
         """The progress display for this request, or a pass-through when it has none."""
