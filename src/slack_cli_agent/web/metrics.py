@@ -28,6 +28,7 @@ from ..config.channel import ChannelConfig, ChannelRegistry
 from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
 from ..core.channel_kind import is_direct_message_channel
+from ..engine.registry import default_registry
 from ..jobs.ports import JobStatus
 from ..observability.audit import (
     BASELINE_KIND_VALUES,
@@ -72,7 +73,7 @@ NOT_APPLICABLE_REASONS: dict[str, str] = {
     "tools": "감사 기록에 도구 호출 이름이 없다",
     "channels[].context_tokens": "세션 맥락 크기 계측은 이 수집기 범위 밖이다",
 }
-CODEX_USAGE_BLOCK_REASON = "Codex 세션 기록 스캔은 이 수집기 범위 밖이다"
+USAGE_BLOCK_NOT_APPLICABLE_REASON = "이 엔진의 사용량은 ccusage 가 세지 않는다"
 
 # Quality/reliability incident kinds this collector counts. REQUEST is the
 # baseline traffic kind, tallied separately by `_read_requests`.
@@ -345,8 +346,8 @@ class MetricsCollector:
             not_applicable.pop("usage.by_user", None)
         if "turns_median" in field_first_seen:
             not_applicable.pop("usage.turns_median", None)
-        if engine.type == "codex":
-            not_applicable["usage_block"] = CODEX_USAGE_BLOCK_REASON
+        if not self._ccusage_covers_engine():
+            not_applicable["usage_block"] = USAGE_BLOCK_NOT_APPLICABLE_REASON
         return {
             "name": self._profile.name,
             "display_name": self._profile.display_name,
@@ -689,12 +690,20 @@ class MetricsCollector:
         rows.sort(key=lambda r: str(r["last_seen"] or ""), reverse=True)
         return rows
 
+    def _ccusage_covers_engine(self) -> bool:
+        """ccusage reports Claude Code's own consumption. Asking the engine
+        rather than naming it keeps a new engine from silently inheriting
+        another engine's numbers (sca-cs0). An engine we don't know about is
+        treated as not covered."""
+        engine_class = default_registry().engine_class(self._profile.primary_engine.type)
+        return bool(engine_class is not None and engine_class.ccusage_reports_consumption)
+
     def _usage_block(self) -> dict[str, Any]:
-        if self._profile.primary_engine.type == "codex":
+        if not self._ccusage_covers_engine():
             return {
                 "available": False,
-                "kind": "codex_rate_limit",
-                "reason": CODEX_USAGE_BLOCK_REASON,
+                "kind": "engine_not_covered",
+                "reason": USAGE_BLOCK_NOT_APPLICABLE_REASON,
             }
         block = self._ccusage_block()
         block["kind"] = "ccusage_block"

@@ -683,6 +683,32 @@ class Test사용량_블록:
         usage_block = collector.collect(days=7)["usage_block"]
         assert usage_block["available"] is False
 
+    def test_gemini_봇도_사용량_블록을_낼_수_없다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ccusage 는 클로드 세션 기록을 읽는다. 제미나이 봇이 그 값을 내면
+        이 머신의 클로드 사용량을 자기 것으로 보여주게 된다 (sca-cs0)."""
+        binary = tmp_path / "ccusage"
+        binary.write_text("", encoding="utf-8")
+        monkeypatch.setattr(metrics_module, "CCUSAGE_BIN", str(binary))
+        profile = make_profile(tmp_path, engine="gemini")
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        usage_block = collector.collect(days=7)["usage_block"]
+        assert usage_block["available"] is False
+        assert usage_block["kind"] != "ccusage_block"
+
+    def test_사용량을_못_내는_엔진은_해당없음_표시가_붙는다(self, tmp_path: Path) -> None:
+        for engine in ("codex", "gemini"):
+            profile = make_profile(tmp_path, engine=engine)
+            collector = MetricsCollector(profile, now=lambda: 1_000.0)
+            표시 = collector.collect(days=7)["bot"]["not_applicable"]
+            assert "usage_block" in 표시, f"{engine} 에 표시가 없다"
+
+    def test_클로드_봇에는_해당없음_표시가_없다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path, engine="claude")
+        collector = MetricsCollector(profile, now=lambda: 1_000.0)
+        assert "usage_block" not in collector.collect(days=7)["bot"]["not_applicable"]
+
     def test_ccusage_실행파일이_없으면_사용_불가다(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
