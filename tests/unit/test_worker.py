@@ -11,7 +11,10 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+from test_admin_admission import 관리맥락
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.context import RequestContext
@@ -114,6 +117,7 @@ def make_worker(
     sleep=lambda s: None,
     now=time.time,
     heartbeat_queue=None,
+    admin=None,
 ):
     from slack_cli_agent.core.worker import Worker
 
@@ -131,6 +135,7 @@ def make_worker(
         settings=settings,
         now=now,
         sleep=sleep,
+        admin=admin,
     )
     return worker, queue, client
 
@@ -828,3 +833,129 @@ class Test동시처리상한:
         멈춤 = [False, True]
         worker.run_forever(lambda: 멈춤.pop(0) if 멈춤 else True)
         assert handler.끝났다
+
+
+class Test캐치업도_관리_명령_판정을_거친다:
+    """봇이 꺼져 있는 동안 받은 !ping 이 회수된 뒤 명령이 아니라 모델 요청으로
+    갔다. 소켓 경로만 AdminRouter 를 거쳤다 (sca-oyku)."""
+
+    def _명령판정(self, tmp_path: Path, 처리할본문: set[str], 보냄: list[Any]):
+        from slack_cli_agent.admin.admission import AdminAdmission
+        from slack_cli_agent.admin.command import AdminResult
+
+        class 대역라우터:
+            def dispatch(self, text, ctx):
+                return AdminResult(message="pong") if text in 처리할본문 else None
+
+        return AdminAdmission(
+            router=대역라우터(),
+            context_builder=관리맥락(tmp_path),
+            reply=lambda channel, thread_ts, message: 보냄.append(message),
+        )
+
+    def _요청(self, ts: str, text: str) -> RequestContext:
+        return RequestContext(channel="C1", user="U1", ts=ts, thread_ts="1.0", text=text)
+
+    def test_회수한_관리_명령은_큐에_안_들어간다(self, database, tmp_path: Path) -> None:
+        보냄: list[Any] = []
+        명령 = self._요청("1.1", "!ping")
+        worker, queue, _ = make_worker(
+            database=database,
+            catchup=FakeCatchup(CatchupReport(missed=[명령], skipped=[], unchecked_channels=[])),
+            admin=self._명령판정(tmp_path, {"!ping"}, 보냄),
+        )
+        report = worker.catch_up(["C1"])
+        assert queue.pending() == []
+        assert 보냄 == ["pong"]
+        assert report.missed == []
+
+    def test_명령이_아닌_것은_그대로_큐에_들어간다(self, database, tmp_path: Path) -> None:
+        보냄: list[Any] = []
+        일반 = self._요청("1.2", "오늘 일정 알려줘")
+        worker, queue, _ = make_worker(
+            database=database,
+            catchup=FakeCatchup(CatchupReport(missed=[일반], skipped=[], unchecked_channels=[])),
+            admin=self._명령판정(tmp_path, {"!ping"}, 보냄),
+        )
+        report = worker.catch_up(["C1"])
+        assert [job.context.ts for job in queue.pending()] == ["1.2"]
+        assert 보냄 == []
+        assert [c.ts for c in report.missed] == ["1.2"]
+
+    def test_회수한_관리_명령에_완료_표식을_단다(self, database, tmp_path: Path) -> None:
+        """큐에 안 들어가므로 _finish 가 안 돈다. 표식이 없으면 다음 캐치업이
+        같은 명령을 다시 찾아 또 실행한다 (코덱스 리뷰)."""
+        보냄: list[Any] = []
+        명령 = self._요청("1.1", "!ping")
+        worker, _queue, client = make_worker(
+            database=database,
+            catchup=FakeCatchup(CatchupReport(missed=[명령], skipped=[], unchecked_channels=[])),
+            admin=self._명령판정(tmp_path, {"!ping"}, 보냄),
+        )
+        worker.catch_up(["C1"])
+        assert ("add", "C1", "1.1", "white_check_mark") in client.calls
+
+    def test_관리_명령_뒤에_묻힌_요청도_표식을_받는다(self, database, tmp_path: Path) -> None:
+        """대표가 관리 명령이면 그 스레드의 묻힌 요청을 아무도 안 끝낸다."""
+        보냄: list[Any] = []
+        명령 = self._요청("1.5", "!ping")
+        묻힘 = self._요청("1.4", "이전 질문")
+        worker, _queue, client = make_worker(
+            database=database,
+            catchup=FakeCatchup(
+                CatchupReport(missed=[명령], skipped=[묻힘], unchecked_channels=[])
+            ),
+            admin=self._명령판정(tmp_path, {"!ping"}, 보냄),
+        )
+        worker.catch_up(["C1"])
+        assert ("add", "C1", "1.4", "white_check_mark") in client.calls
+
+    def test_재시도_캐치업도_판정을_거친다(self, database, tmp_path: Path) -> None:
+        """첫 조회가 실패한 뒤 재시도에서 찾은 관리 명령이 모델로 갔다."""
+        보냄: list[Any] = []
+        명령 = self._요청("1.6", "!ping")
+        catchup = FakeCatchup(
+            CatchupReport(missed=[], skipped=[], unchecked_channels=[]),
+            retry_statuses=[RetryStatus(channel="C1", stuck_sec=1.0, alert=False, missed=(명령,))],
+        )
+        worker, queue, _ = make_worker(
+            database=database, catchup=catchup, admin=self._명령판정(tmp_path, {"!ping"}, 보냄)
+        )
+        worker.retry_catchup()
+        assert queue.pending() == []
+        assert 보냄 == ["pong"]
+
+    def test_판정이_터지면_모델로_안_넘긴다(self, database, tmp_path: Path) -> None:
+        """dispatch 가 명령 일부를 이미 실행한 뒤 터질 수 있다. 모델로 넘기면
+        그 부작용이 두 번 일어난다 (코덱스 리뷰)."""
+        from slack_cli_agent.admin.admission import AdminAdmission
+
+        class 터지는라우터:
+            def dispatch(self, text, ctx):
+                raise RuntimeError("판정 실패")
+
+        판정 = AdminAdmission(
+            router=터지는라우터(),
+            context_builder=관리맥락(tmp_path),
+            reply=lambda channel, thread_ts, message: None,
+        )
+        worker, queue, client = make_worker(
+            database=database,
+            catchup=FakeCatchup(
+                CatchupReport(missed=[self._요청("1.7", "!ping")], skipped=[], unchecked_channels=[])
+            ),
+            admin=판정,
+        )
+        worker.catch_up(["C1"])
+        assert queue.pending() == []
+        assert ("add", "C1", "1.7", "x") in client.calls
+
+    def test_판정기가_없으면_예전처럼_전부_큐에_넣는다(self, database) -> None:
+        """조립이 주입을 빠뜨려도 요청이 사라지지는 않는다."""
+        명령 = self._요청("1.3", "!ping")
+        worker, queue, _ = make_worker(
+            database=database,
+            catchup=FakeCatchup(CatchupReport(missed=[명령], skipped=[], unchecked_channels=[])),
+        )
+        worker.catch_up(["C1"])
+        assert [job.context.ts for job in queue.pending()] == ["1.3"]

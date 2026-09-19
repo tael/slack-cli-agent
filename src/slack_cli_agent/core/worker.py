@@ -14,6 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 
+from ..admin.admission import AdminAdmission
 from ..config.settings import RuntimeSettings
 from ..core.context import RequestContext
 from ..core.lifecycle import InflightCounter
@@ -47,6 +48,9 @@ class Worker:
         # reclaim picks the mark from this: a watched message put back in the
         # queue would otherwise read as waiting while its watch runs (sca-o1e).
         watch_jobs: ActiveWatchPort | None = None,
+        # None keeps the old behavior: everything recovered goes to the model.
+        # A missing injection must not make a recovered request disappear.
+        admin: AdminAdmission | None = None,
     ) -> None:
         self._queue = queue
         self._handler = handler
@@ -54,6 +58,7 @@ class Worker:
         self._catchup = catchup
         self._markers = markers
         self._watch_jobs = watch_jobs
+        self._admin = admin
         self._settings = settings
         self._worker_id = worker_id
         self._now = now
@@ -233,6 +238,39 @@ class Worker:
             self._markers.mark_failed(context.channel, context.ts)
         return result
 
+    def _admit(
+        self, contexts: Sequence[RequestContext]
+    ) -> tuple[list[RequestContext], set[tuple[str, str]]]:
+        """Splits recovered requests into the ones the model still has to
+        answer and the threads that ended here.
+
+        An admin command never reaches the queue, so nothing else marks it.
+        Without a mark the next sweep finds it again and runs it a second
+        time (codex review).
+        """
+        if self._admin is None:
+            return list(contexts), set()
+
+        remaining: list[RequestContext] = []
+        ended: set[tuple[str, str]] = set()
+        for context in contexts:
+            try:
+                handled = self._admin.handled(context)
+            except Exception as exc:  # noqa: BLE001 - see below
+                # The dispatch may already have run part of the command
+                # before raising, so passing it to the model would repeat
+                # those effects (codex review).
+                log.warning("관리 명령 판정 실패 : %s:%s : %s", context.channel, context.ts, exc)
+                self._markers.mark_failed(context.channel, context.ts)
+                ended.add((context.channel, context.thread_ts))
+                continue
+            if handled:
+                self._markers.mark_done(context.channel, context.ts)
+                ended.add((context.channel, context.thread_ts))
+            else:
+                remaining.append(context)
+        return remaining, ended
+
     def _enqueue_new(self, contexts: Sequence[RequestContext]) -> list[RequestContext]:
         with self._lock:
             running_keys = {job.context.key for job in self._running.values()}
@@ -257,7 +295,9 @@ class Worker:
         statuses = self._catchup.retry_pending()
         for status in statuses:
             if status.missed:
-                self._enqueue_new(status.missed)
+                # Same gate as the sweep below: a command found only on the
+                # retry is still a command (codex review).
+                self._enqueue_new(self._admit(status.missed)[0])
         return statuses
 
     def catch_up(self, channels: list[str], window_sec: float | None = None) -> CatchupReport:
@@ -265,20 +305,29 @@ class Worker:
         # which would otherwise leave the earlier part of the gap unswept.
         window = window_sec if window_sec is not None else self._settings.catchup_window_sec
         report = self._catchup.sweep(channels, window)
-        accepted = self._enqueue_new(report.missed)
+        # The socket path decides this before queueing; a request recovered
+        # here has to meet the same decision or an admin command that arrived
+        # while the bot was down goes to the model (sca-oyku).
+        missed, ended = self._admit(report.missed)
+        accepted = self._enqueue_new(missed)
 
         # A representative that got filtered out (already pending/running) still
         # needs its buried messages tracked — otherwise they never get a reaction
         # mark, and the next catch-up picks one of them as its own representative
         # and answers something already answered.
         rep_key_by_thread = {
-            (context.channel, context.thread_ts): context.key for context in report.missed
+            (context.channel, context.thread_ts): context.key for context in missed
         }
         for buried in report.skipped:
-            rep_key = rep_key_by_thread.get((buried.channel, buried.thread_ts))
+            thread = (buried.channel, buried.thread_ts)
+            rep_key = rep_key_by_thread.get(thread)
             if rep_key is not None:
                 with self._lock:
                     self._skip_groups.setdefault(rep_key, []).append(buried)
+            elif thread in ended:
+                # Its representative was an admin command, so no job will
+                # ever finish and mark these (codex review).
+                self._markers.mark_done(buried.channel, buried.ts)
 
         return CatchupReport(missed=accepted, skipped=report.skipped, unchecked_channels=report.unchecked_channels)
 
