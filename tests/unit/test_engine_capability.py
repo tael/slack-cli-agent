@@ -18,6 +18,7 @@ from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import Engine
 from slack_cli_agent.engine.capability import (
+    TOOL_AXIS,
     EngineCapabilities,
     ExecutionIsolation,
     ExecutionRequirements,
@@ -93,9 +94,32 @@ class Test요구와_대조:
             "instruction_boundary",
         )
 
-    def test_완화_허용은_기본이_꺼져_있다(self) -> None:
-        """기본이 켜져 있으면 아무도 안 끄고 강제가 없는 것과 같아진다."""
-        assert self._요구().allow_audited_downgrade is False
+    def test_완화_대상_축은_기본이_비어_있다(self) -> None:
+        """기본이 전부 완화면 아무도 안 끄고 강제가 없는 것과 같아진다."""
+        assert self._요구().downgradable_axes == frozenset()
+
+    def test_완화는_명시한_축에만_적용된다(self) -> None:
+        """도구 축 설정 하나가 격리까지 낮추면 세 축을 따로 둔 뜻이 없다."""
+        요구 = self._요구(
+            tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+            execution_isolation=ExecutionIsolation.READONLY_SANDBOX,
+            downgradable_axes=frozenset({TOOL_AXIS}),
+        )
+        실제 = EngineCapabilities(
+            ToolRestriction.NONE, ExecutionIsolation.NONE, InstructionBoundary.NATIVE
+        )
+        # 완화 대상이 아닌 축이 하나라도 걸리면 아무것도 완화하지 않는다.
+        assert 요구.downgraded(요구.unmet(실제)) == ()
+
+    def test_미충족이_전부_완화_대상이면_그_축들을_돌려준다(self) -> None:
+        요구 = self._요구(
+            tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+            downgradable_axes=frozenset({TOOL_AXIS}),
+        )
+        실제 = EngineCapabilities(
+            ToolRestriction.NONE, ExecutionIsolation.NONE, InstructionBoundary.NATIVE
+        )
+        assert 요구.downgraded(요구.unmet(실제)) == (TOOL_AXIS,)
 
 
 class Test엔진별_선언:
@@ -221,7 +245,7 @@ class Test보장을_감사에_남긴다:
             감사,
             requirements=ExecutionRequirements(
                 tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
-                allow_audited_downgrade=True,
+                downgradable_axes=frozenset({TOOL_AXIS}),
                 policy="audited",
             ),
         )
@@ -237,7 +261,7 @@ class Test보장을_감사에_남긴다:
             감사,
             requirements=ExecutionRequirements(
                 tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
-                allow_audited_downgrade=True,
+                downgradable_axes=frozenset({TOOL_AXIS}),
                 policy="audited",
             ),
         )
@@ -250,7 +274,7 @@ class Test보장을_감사에_남긴다:
             감사,
             requirements=ExecutionRequirements(
                 tool_restriction=ToolRestriction.NONE,
-                allow_audited_downgrade=True,
+                downgradable_axes=frozenset({TOOL_AXIS}),
                 policy="audited",
             ),
         )
@@ -411,7 +435,7 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
             감사=_감사(),
             requirements=ExecutionRequirements(
                 tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
-                allow_audited_downgrade=True,
+                downgradable_axes=frozenset({TOOL_AXIS}),
             ),
         )
         assert 응답.ok is True
@@ -425,7 +449,7 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
             감사=None,
             requirements=ExecutionRequirements(
                 tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
-                allow_audited_downgrade=True,
+                downgradable_axes=frozenset({TOOL_AXIS}),
             ),
         )
         assert 응답.ok is False
@@ -440,7 +464,7 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
             감사=None,
             requirements=ExecutionRequirements(
                 tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
-                allow_audited_downgrade=True,
+                downgradable_axes=frozenset({TOOL_AXIS}),
             ),
         )
         assert "감사 기록기가 구성되지 않아" in 응답.body
