@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from slack_cli_agent.slack.names import DisplayNameResolver
+from slack_cli_agent.slack.names import DisplayNameResolver, UserNamer
 
 
 class _FakeSlackClient:
@@ -289,3 +289,67 @@ def test_빈_user_id_는_조회하지_않는다() -> None:
 
     assert BotUserResolver(client).is_bot("") is False
     assert client.call_count == 0
+
+
+class _가짜신원:
+    def __init__(self, user_id: str = "") -> None:
+        self.user_id = user_id
+
+
+class TestUserNamer:
+    """봇 자신이 화자 자리와 멘션 자리에서 같은 이름으로 나와야 한다.
+
+    화자 표기는 프로필의 display_name 을 쓰고 멘션은 users.info 의 real_name 을
+    써서, 같은 봇이 대화록 머리와 본문에서 다른 이름으로 나왔다 (sca-inw8).
+    """
+
+    def test_봇_자신은_프로필_표시명으로_부른다(self) -> None:
+        namer = UserNamer(
+            lambda uid: "Shinji Ikari Bot",
+            identity=_가짜신원("UBOT"),
+            bot_display_name="신지",
+        )
+        assert namer.name_of("UBOT") == "신지"
+
+    def test_다른_사람은_resolver_결과를_그대로_쓴다(self) -> None:
+        namer = UserNamer(
+            lambda uid: "홍길동", identity=_가짜신원("UBOT"), bot_display_name="신지"
+        )
+        assert namer.name_of("U1") == "홍길동"
+
+    def test_소유자_표시명이_있으면_그것을_쓴다(self) -> None:
+        namer = UserNamer(
+            lambda uid: "Gildong Hong",
+            identity=_가짜신원("UBOT"),
+            bot_display_name="신지",
+            owner_user_id="UOWNER",
+            owner_display_name="대표",
+        )
+        assert namer.name_of("UOWNER") == "대표"
+
+    def test_표시명이_비어_있으면_resolver_로_떨어진다(self) -> None:
+        namer = UserNamer(lambda uid: "Shinji Ikari Bot", identity=_가짜신원("UBOT"))
+        assert namer.name_of("UBOT") == "Shinji Ikari Bot"
+
+    def test_신원_조회가_터져도_resolver_로_떨어진다(self) -> None:
+        """신원은 슬랙 조회라 실패할 수 있다. 그때 이름이 안 나오면
+        대화록 전체가 빈 이름이 된다."""
+
+        class 터지는신원:
+            @property
+            def user_id(self) -> str:
+                raise RuntimeError("auth_test 실패")
+
+        namer = UserNamer(
+            lambda uid: "홍길동", identity=터지는신원(), bot_display_name="신지"
+        )
+        assert namer.name_of("U1") == "홍길동"
+
+    def test_resolver_자리에_그대로_넣을_수_있다(self) -> None:
+        """MentionRenderer·CalledNames 가 Callable[[str], str] 을 받는다."""
+        namer = UserNamer(
+            lambda uid: "Shinji Ikari Bot",
+            identity=_가짜신원("UBOT"),
+            bot_display_name="신지",
+        )
+        assert namer("UBOT") == "신지"
