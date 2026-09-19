@@ -498,7 +498,10 @@ class RequestPipeline:
             request, prompt=result.rerun.rewrite_prompt, resume=True, session_id=decision.session_id,
         )
         rerun_response = self._invoker.invoke(rerun_request)
-        if not rerun_response.ok:
+        # A rewrite that comes back silent is a refusal, not a rewrite. Sending
+        # it would put the mark itself in the channel, and RewriteLossGuard
+        # would then merge it onto the previous body (sca-2ak).
+        if not rerun_response.ok or is_silent(rerun_response.body):
             self._record_guard_incidents(ctx, result.details)
             return result.body, _watch_desc_of(result)
 
