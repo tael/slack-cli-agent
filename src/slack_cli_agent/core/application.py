@@ -136,7 +136,7 @@ from ..slack.identity import BotIdentity, SlackBotIdentity
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption
 from ..slack.linked_threads import LinkedThreadReader
 from ..slack.listener import EventListener
-from ..slack.names import BotUserResolver, DisplayNameResolver
+from ..slack.names import BotUserResolver, DisplayNameResolver, UserGroupNameResolver
 from ..slack.owner_only_audit import OwnerOnlyChannelAudit
 from ..slack.participants import ThreadParticipants
 from ..slack.progress import (
@@ -231,6 +231,7 @@ class Application:
 
         self._channels = ChannelRegistry(profile.paths.channels)
         self._names = DisplayNameResolver(client)
+        self._group_names = UserGroupNameResolver(client)
         self._bot_users = BotUserResolver(client)
         self._channel_name_resolver: ChannelNameResolver | None = None
         self._usage_check_run = run_command
@@ -549,6 +550,7 @@ class Application:
             identity=self.identity,
             bot_display_name=self._profile.display_name,
             owner_user_id=self._profile.owner_user_id,
+            group_resolver=self._group_names,
         )
 
     def _late_addendum(self) -> LateAddendumChecker:
@@ -561,6 +563,7 @@ class Application:
             identity=self.identity,
             bot_display_name=self._profile.display_name,
             owner_user_id=self._profile.owner_user_id,
+            group_resolver=self._group_names,
         )
 
     def _participants(self) -> ThreadParticipants:
