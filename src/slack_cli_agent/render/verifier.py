@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from slack_cli_agent.config.settings import RuntimeSettings
 
@@ -17,24 +18,51 @@ TABLE_DIVIDER = re.compile(r"^\|?(\s*:?-+:?\s*\|)+\s*:?-*:?\s*\|?\s*$")
 FENCE_LINE = re.compile(r"^\s*```")
 
 
-def _outside_fences(part: str) -> list[str]:
+@dataclass(frozen=True)
+class SplitProblem:
+    """One verification failure, with enough of the source to reproduce it.
+
+    The reason alone was not enough: a chunk that fails verification goes
+    through safe_fallback, so the thread keeps only the downgraded output and
+    the original markdown is gone. Investigating one meant guessing (sca-9uj).
+    """
+
+    reason: str
+    line_no: int | None = None
+    excerpt: str = ""
+
+
+def _outside_fences(part: str) -> list[tuple[int, str]]:
+    """Lines Slack renders as markdown, each with its 1-based line number.
+
+    The number is what ties a problem back to the source; without it the
+    caller can only report which chunk failed, not where.
+    """
     kept, in_fence = [], False
-    for line in part.split("\n"):
+    for no, line in enumerate(part.split("\n"), start=1):
         if FENCE_LINE.match(line):
             in_fence = not in_fence
             continue
         if not in_fence and line.strip():
-            kept.append(line)
+            kept.append((no, line))
     return kept
+
+
+def _excerpt(part: str, line_no: int) -> str:
+    """The offending line with one line on each side. The neighbours are what
+    show why it read that way -- a table row is only wrong given what follows."""
+    lines = part.split("\n")
+    start = max(0, line_no - 2)
+    return "\n".join(lines[start : line_no + 1])
 
 
 class SplitVerifier:
     def __init__(self, settings: RuntimeSettings) -> None:
         self._settings = settings
 
-    def verify_chunks(self, text: str, chunks: list[str]) -> list[str]:
+    def verify_chunks(self, text: str, chunks: list[str]) -> list[SplitProblem]:
         limit = self._settings.markdown_block_limit
-        problems = []
+        problems: list[SplitProblem] = []
         source = text.replace(SPLIT_MARKER, "")
         kept = sum(len(c) for c in chunks)
         missing = len(source.strip()) - kept
@@ -42,15 +70,19 @@ class SplitVerifier:
         # ratio-only check would false-positive on short answers, so this
         # also requires an absolute minimum gap.
         if missing > 200 and kept < len(source.strip()) * 0.97:
-            problems.append(f"내용 유실 의심 {len(source)} -> {kept}")
+            # No line to point at: the whole chunk set lost content.
+            problems.append(SplitProblem(f"내용 유실 의심 {len(source)} -> {kept}"))
         for i, part in enumerate(chunks):
             if len(part) > limit:
-                problems.append(f"{i}번 조각 상한 초과 {len(part)}")
+                problems.append(SplitProblem(f"{i}번 조각 상한 초과 {len(part)}"))
             # Only a line that opens or closes a fence counts. Counting every
             # occurrence made an inline code span carrying the three backticks
             # mid-sentence read as an unclosed fence (sca-a3b).
-            if sum(1 for x in part.split("\n") if FENCE_LINE.match(x)) % 2:
-                problems.append(f"{i}번 조각 코드블록 펜스 짝 안 맞음")
+            fences = [no for no, x in enumerate(part.split("\n"), start=1) if FENCE_LINE.match(x)]
+            if len(fences) % 2:
+                problems.append(SplitProblem(
+                    f"{i}번 조각 코드블록 펜스 짝 안 맞음", fences[-1], _excerpt(part, fences[-1])
+                ))
             # Checking only the chunk's start would miss tables that begin
             # mid-chunk, so scan every place a table row starts for the
             # header divider that must follow it. Lines inside a fence are
@@ -59,16 +91,18 @@ class SplitVerifier:
             # through safe_fallback (sca-a3b).
             lines = _outside_fences(part)
             prev_row = False
-            for j, line in enumerate(lines):
+            for j, (no, line) in enumerate(lines):
                 is_row = line.lstrip().startswith("|")
                 if is_row and not prev_row:
-                    nxt = lines[j + 1].strip() if j + 1 < len(lines) else ""
+                    nxt = lines[j + 1][1].strip() if j + 1 < len(lines) else ""
                     if not TABLE_DIVIDER.match(nxt):
-                        problems.append(f"{i}번 조각 표 열 이름 행 없음")
+                        problems.append(SplitProblem(
+                            f"{i}번 조각 표 열 이름 행 없음", no, _excerpt(part, no)
+                        ))
                         break
                 prev_row = is_row
             if SPLIT_MARKER in part:
-                problems.append(f"{i}번 조각 마커 잔존")
+                problems.append(SplitProblem(f"{i}번 조각 마커 잔존"))
         return problems
 
     def safe_fallback(self, text: str, limit: int | None = None) -> list[str]:
