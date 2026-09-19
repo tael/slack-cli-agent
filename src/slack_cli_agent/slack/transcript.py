@@ -21,6 +21,7 @@ from typing import Any
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.slack.identity import BotIdentity
+from slack_cli_agent.slack.mentions import MentionRenderer
 from slack_cli_agent.slack.message_kind import MessageKind
 from slack_cli_agent.slack.speaker import SpeakerNamer
 
@@ -145,6 +146,7 @@ class TranscriptBuilder:
         bot_display_name: str = "",
         owner_user_id: str = "",
         owner_display_name: str = "",
+        group_resolver: Callable[[str], str] | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -166,6 +168,9 @@ class TranscriptBuilder:
         # Message classification lives in one place; duplicating it
         # here would let the criteria drift.
         self._kind = MessageKind()
+        # The body kept raw mention markup, so the model could not tell who
+        # called whom (sca-hkmb).
+        self._mentions = MentionRenderer(name_resolver, group_resolver)
 
     def thread_transcript(
         self,
@@ -216,8 +221,11 @@ class TranscriptBuilder:
             if after_ts and float(m.get("ts", 0)) <= float(after_ts):
                 continue
             text = message_text(m).strip()
+            # The notice check runs on the raw text: a notice may itself carry
+            # mention markup, and rendering first would stop matching it.
             if not text or self._notices.is_notice(text):
                 continue
+            text = self._mentions.render(text)
             when = datetime.fromtimestamp(float(m.get("ts", 0)), KST).strftime("%H:%M:%S")
             who = self._speaker.speaker_of(m)
             lines.append(f"[{when} {who}]\n{text}")

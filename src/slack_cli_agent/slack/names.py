@@ -16,6 +16,9 @@ log = logging.getLogger(__name__)
 #: How long a failed users.info lookup stays un-retried for that user.
 DEFAULT_BOT_RETRY_INTERVAL_SEC = 60.0
 
+#: How long a failed usergroups.list call stays un-retried.
+DEFAULT_GROUP_RETRY_INTERVAL_SEC = 300.0
+
 
 class DisplayNameResolver:
     def __init__(self, client: Any) -> None:
@@ -113,3 +116,61 @@ class BotUserResolver:
             log.warning("사용자 조회 실패, 사람으로 본다 : %s : %s", user_id, exc)
             return None
         return bool(user.get("is_bot") or user.get("id") == "USLACKBOT")
+
+
+class UserGroupNameResolver:
+    """Slack user group ID to its handle.
+
+    One usergroups.list call fills the whole table; groups change rarely
+    (bot.py:2695). A miss is what triggers a refresh -- a group created after
+    startup would otherwise stay unresolved until a restart. The refresh is
+    rate-limited to retry_interval_sec, so a token without usergroups:read,
+    or a mention of a group that does not exist, does not call Slack once per
+    mention.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        retry_interval_sec: float = DEFAULT_GROUP_RETRY_INTERVAL_SEC,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._client = client
+        self._cache: dict[str, str] = {}
+        self._retry_interval_sec = retry_interval_sec
+        self._clock = clock
+        self._last_read_at: float | None = None
+
+    def resolve(self, group_id: str) -> str:
+        if not group_id:
+            return ""
+        if group_id not in self._cache and self._may_read():
+            self._load()
+        return self._cache.get(group_id, "")
+
+    def _may_read(self) -> bool:
+        if self._last_read_at is None:
+            return True
+        return self._clock() - self._last_read_at >= self._retry_interval_sec
+
+    def _load(self) -> None:
+        self._last_read_at = self._clock()
+        try:
+            answer = self._client.usergroups_list() or {}
+            # A WebClient raises on ok=False, but a stub or a transport that
+            # returns the body verbatim does not. Treating that as an empty
+            # list would cache nothing and mark the table loaded, so a scope
+            # added later would never take effect.
+            if not answer.get("ok", True):
+                raise RuntimeError(str(answer.get("error") or "ok=False"))
+            groups = answer.get("usergroups") or []
+        except Exception as exc:  # noqa: BLE001 - a missing scope must not fail the request
+            log.warning("사용자 그룹 조회 실패 : %s", exc)
+            return
+        for group in groups:
+            group_id = group.get("id")
+            if group_id:
+                self._cache[group_id] = group.get("handle") or group.get("name") or ""
+
+    def __call__(self, group_id: str) -> str:
+        return self.resolve(group_id)
