@@ -518,4 +518,19 @@ class FallbackEngine(Engine):
         )
         response = self.runner.run(self.secondary, probe_request, timeout_sec=self.PROBE_TIMEOUT_SEC)
         detail = response.body.strip() if response.body else ""
-        return bool(response.ok and detail), (detail[:200] or "응답이 비어 있다")
+        return bool(response.ok and detail), (
+            (detail[:200] or "응답이 비어 있다") + self._capability_note(request)
+        )
+
+    def _capability_note(self, request: EngineRequest) -> str:
+        """The probe asks whether the secondary answers at all. Approving on
+        that alone reads as 'this engine can take over', which is a different
+        question from whether it holds this request's guarantees (sca-42s)."""
+        required = request.requirements
+        unmet = required.unmet(self.secondary.capabilities_for(request))
+        if not unmet:
+            return ""
+        axes = ", ".join(AXIS_NAMES[axis] for axis in unmet)
+        if required.downgraded(unmet):
+            return f" 다만 {axes} 은 이 엔진이 보장하지 못해 완화 기록을 남기고 실행한다."
+        return f" 다만 {axes} 을 요구한 요청은 이 엔진에서 실행되지 않는다."
