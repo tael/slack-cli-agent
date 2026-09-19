@@ -48,6 +48,16 @@ def _outside_fences(part: str) -> list[tuple[int, str]]:
     return kept
 
 
+def _fence_lines(text: str) -> list[int]:
+    """1-based numbers of the lines that open or close a code fence.
+
+    Only a line that opens or closes one counts. Counting every occurrence
+    made an inline code span carrying the three backticks mid-sentence read
+    as an unclosed fence (sca-a3b).
+    """
+    return [no for no, line in enumerate(text.split("\n"), start=1) if FENCE_LINE.match(line)]
+
+
 def _header_less_rows(text: str) -> list[tuple[int, str]]:
     """Rows that open a table with no divider line following them.
 
@@ -84,6 +94,9 @@ class SplitVerifier:
         problems: list[SplitProblem] = []
         source = text.replace(SPLIT_MARKER, "")
         preexisting = {line.strip() for _, line in _header_less_rows(source)}
+        # An answer that opens a fence and ends is the model's own output, not
+        # damage the split caused, and safe_fallback cannot close it (sca-oga).
+        source_fence_odd = len(_fence_lines(source)) % 2 == 1
         kept = sum(len(c) for c in chunks)
         missing = len(source.strip()) - kept
         # Stripping markers/newlines naturally shrinks the text a bit; a
@@ -95,11 +108,8 @@ class SplitVerifier:
         for i, part in enumerate(chunks):
             if len(part) > limit:
                 problems.append(SplitProblem(f"{i}번 조각 상한 초과 {len(part)}"))
-            # Only a line that opens or closes a fence counts. Counting every
-            # occurrence made an inline code span carrying the three backticks
-            # mid-sentence read as an unclosed fence (sca-a3b).
-            fences = [no for no, x in enumerate(part.split("\n"), start=1) if FENCE_LINE.match(x)]
-            if len(fences) % 2:
+            fences = _fence_lines(part)
+            if len(fences) % 2 and not source_fence_odd:
                 problems.append(SplitProblem(
                     f"{i}번 조각 코드블록 펜스 짝 안 맞음", fences[-1], _excerpt(part, fences[-1])
                 ))

@@ -144,8 +144,22 @@ class TestSplitVerifier:
         assert [p.reason for p in 문제] == ["1번 조각 표 열 이름 행 없음"]
 
     def test_코드블록_펜스_짝이_안_맞으면_문제로_잡는다(self, verifier: SplitVerifier) -> None:
-        (문제,) = verifier.verify_chunks('```python\nprint(1)', ['```python\nprint(1)'])
+        본문 = '```python\nprint(1)\n```'
+        (문제,) = verifier.verify_chunks(본문, ['```python\nprint(1)'])
         assert 문제.reason == '0번 조각 코드블록 펜스 짝 안 맞음'
+
+    def test_원문이_이미_펜스를_안_닫았으면_분할_탓이_아니다(self, verifier: SplitVerifier) -> None:
+        """표 쪽과 같은 이유다. 모델이 코드블록을 열고 답을 끝내면 분할이
+        없어도 safe_fallback 으로 떨어져 서식을 잃는다 (sca-oga)."""
+        본문 = "설명\n```python\nprint(1)"
+        assert verifier.verify_chunks(본문, [본문]) == []
+
+    def test_분할이_펜스를_갈라도_원문이_짝이_맞으면_잡는다(self, verifier: SplitVerifier) -> None:
+        본문 = "```python\nprint(1)\n```"
+        문제 = verifier.verify_chunks(본문, ["```python\nprint(1)", "```"])
+        assert [p.reason for p in 문제] == [
+            "0번 조각 코드블록 펜스 짝 안 맞음", "1번 조각 코드블록 펜스 짝 안 맞음",
+        ]
 
     def test_내용이_크게_유실되면_문제로_잡는다(self, verifier: SplitVerifier) -> None:
         text = '가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가'
@@ -165,8 +179,8 @@ class TestSplitVerifier:
         assert "머리말" in 문제.excerpt and "꼬리말" in 문제.excerpt
 
     def test_펜스_문제에_여는_줄을_담는다(self, verifier: SplitVerifier) -> None:
-        본문 = "설명\n```python\nprint(1)"
-        (문제,) = verifier.verify_chunks(본문, [본문])
+        본문 = "설명\n```python\nprint(1)\n```"
+        (문제,) = verifier.verify_chunks(본문, ["설명\n```python\nprint(1)"])
         assert 문제.reason == "0번 조각 코드블록 펜스 짝 안 맞음"
         assert 문제.line_no == 2
         assert "```python" in 문제.excerpt
@@ -355,8 +369,9 @@ class Test검증기는_코드_문맥을_가린다:
         assert verifier.verify_chunks(본문, [본문]) == []
 
     def test_진짜로_펜스가_안_닫히면_여전히_잡는다(self, verifier: SplitVerifier) -> None:
-        본문 = "설명\n\n```python\nprint(1)\n"
-        assert "0번 조각 코드블록 펜스 짝 안 맞음" in [p.reason for p in verifier.verify_chunks(본문, [본문])]
+        본문 = "설명\n\n```python\nprint(1)\n```"
+        조각 = ["설명\n\n```python\nprint(1)\n"]
+        assert "0번 조각 코드블록 펜스 짝 안 맞음" in [p.reason for p in verifier.verify_chunks(본문, 조각)]
 
     def test_코드블록_밖의_열_이름_없는_표는_여전히_잡는다(self, verifier: SplitVerifier) -> None:
         본문 = "설명\n\n| 대상 | 파일 |\n|---|---|\n| 가 | 나 |"
