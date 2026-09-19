@@ -223,14 +223,14 @@ class OwnerSettingsInertCheck(PreflightCheck):
     look active while never actually applying. `fatal=False` — this only
     prevents misreading the config, it doesn't block boot.
 
-    Codex uses a different model-naming scheme, so it's skipped here.
+    Engine-agnostic on purpose: AccessPolicy overrides the owner's model and
+    effort whatever the engine is, so an engine exception here would only hide
+    the same dead setting for that bot.
     """
 
     name: ClassVar[str] = "owner_settings_inert"
 
     def run(self, ctx: PreflightContext) -> CheckResult:
-        if ctx.profile.primary_engine.type == "codex":
-            return CheckResult(ok=True, detail="codex 엔진은 점검 대상이 아니다")
         model_owner = ctx.profile.primary_engine.model_for_owner()
         registry = ChannelRegistry(ctx.profile.paths.channels)
         dead: list[str] = []
