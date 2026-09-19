@@ -106,6 +106,9 @@ class RequestPipeline:
         monotonic: Callable[[], float] = time.monotonic,
         # Injected so a test can state the name instead of matching a uuid.
         new_run_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
+        # Its own generator: run_id names a result file and is re-minted for the
+        # retry, so sharing one source would tie the two lifetimes together.
+        new_request_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
         watch_results: WatchResultReader | None = None,
     ) -> None:
         self._access = access_policy
@@ -120,6 +123,7 @@ class RequestPipeline:
         self._channels = channels
         self._default_workdir = default_workdir
         self._new_run_id = new_run_id
+        self._new_request_id = new_request_id
         self._watch_results = watch_results or WatchResultReader()
         self._owner_user_id = owner_user_id
         self._reactions = reactions
@@ -249,6 +253,10 @@ class RequestPipeline:
         # Leaving the name to the engine lets two watches share one file, and
         # then the check turn has no file to look at (sca-17p).
         run_id = self._new_run_id()
+        # Separate from run_id, which names a result file and is re-minted for
+        # the retry. This one has to survive the retry and the fallback so the
+        # audit can group one request's attempts (sca-4ol).
+        request_id = self._new_request_id()
 
         prompt = self._build_prompt(ctx, scope, decision)
         system_prompt = self._compose_system_prompt(
@@ -275,6 +283,7 @@ class RequestPipeline:
             readable_dirs=self._readable_dirs,
             trust_level=principal.trust,
             progress_log=progress_log,
+            request_id=request_id,
         )
         # Covers the retry too: a new-session retry is the same wait for the
         # person watching, and closing the display between the two attempts

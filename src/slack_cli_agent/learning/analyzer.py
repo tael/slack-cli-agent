@@ -143,6 +143,9 @@ class ProposalAnalyzer:
             model=self._model,
             effort=self._effort,
             workdir=self._workdir,
+            # The nightly batch runs one call per channel; this says which one
+            # a capability record belongs to (sca-4ol).
+            request_id=f"learning-{day}-{channel_name}",
         )
         # Nobody is waiting on the nightly batch, so it must not spend the
         # fallback's recovery probe that an interactive request needs.

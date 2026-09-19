@@ -712,3 +712,64 @@ class Test전환_승인_안내는_요구_충족까지_말한다:
     def test_요구를_맞추면_그런_말을_안_적는다(self, tmp_path: Path) -> None:
         상태 = self._전환한다(tmp_path, ExecutionRequirements())
         assert "도구 제한" not in 상태["probe_detail"]
+
+
+class Test보장_기록에_상관관계_키가_남는다:
+    """폴백·복구 프로브·재시도가 한 요청의 시도라는 것을 집계 쪽에서 알
+    방법이 지금 없다 (sca-4ol)."""
+
+    def _돌린다(self, tmp_path: Path, 감사: _감사, **요청: Any) -> None:
+        from test_engine import FakeCompleted, RecordingEngine, 통과정책
+
+        엔진 = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        runner = EngineRunner(
+            SETTINGS,
+            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(
+                stdout="답변", returncode=0
+            ),
+            environment_policy=통과정책(),
+            audit=감사,
+        )
+        runner.run(엔진, request(**요청))
+
+    def test_요청의_키가_그대로_남는다(self, tmp_path: Path) -> None:
+        감사 = _감사()
+        self._돌린다(tmp_path, 감사, request_id="req-1")
+        assert 감사.기록[0][1]["request_id"] == "req-1"
+
+    def test_키가_없으면_빈_값으로_남는다(self, tmp_path: Path) -> None:
+        """없는 것과 안 남긴 것이 갈려야 한다. 필드 자체는 항상 있다."""
+        감사 = _감사()
+        self._돌린다(tmp_path, 감사)
+        assert 감사.기록[0][1]["request_id"] == ""
+
+
+class Test폴백_시도도_같은_키로_묶인다:
+    """일차가 한도에 걸려 이차로 넘어간 것은 같은 요청의 다음 시도다. 키가
+    끊기면 집계에서 별개 요청 2건으로 보인다 (sca-4ol)."""
+
+    def test_이차로_넘길_때_키를_버리지_않는다(self, tmp_path: Path) -> None:
+        from engine_support import named
+        from test_engine import RecordingEngine, profile_with, 통과정책
+
+        프로필 = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            {"type": "gemini", "binary": "agy", "model": "gemini-3.8-flash"},
+            tmp_path=tmp_path,
+        )
+        이차종류 = named(RecordingEngine, "gemini", capabilities=GeminiEngine.capabilities)
+        폴백 = FallbackEngine(
+            ClaudeEngine(프로필, SETTINGS), 이차종류(프로필, SETTINGS),
+            EngineSwitcher(tmp_path / "engine_state.json"),
+            EngineRunner(SETTINGS, environment_policy=통과정책()),
+        )
+        받은: list[Any] = []
+
+        def 받아둔다(engine: Any, req: Any) -> Any:
+            받은.append(req)
+            raise _그만()
+
+        폴백.runner.run = 받아둔다  # type: ignore[assignment,method-assign]
+        with pytest.raises(_그만):
+            폴백._run_secondary(request(request_id="req-9"))
+        assert 받은[0].request_id == "req-9"

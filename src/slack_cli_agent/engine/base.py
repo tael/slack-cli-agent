@@ -91,6 +91,11 @@ class EngineRequest:
     #: with no equivalent ignores this and the display shows its opening
     #: line only, rather than failing the request.
     progress_log: Path | None = None
+    #: Ties every engine attempt for one incoming request together -- primary,
+    #: fallback, recovery probe, new-session retry. Opaque here: this layer
+    #: never reads it, only the audit does, so Slack identifiers stay out of
+    #: the engine layer (sca-4ol). Empty means the caller set none.
+    request_id: str = ""
 
     def require_session_id(self) -> str:
         """For build_command, which only ever runs after EngineRunner filled it in.
