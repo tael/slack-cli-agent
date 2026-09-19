@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from identity_support import fake_identity
 
+from slack_cli_agent.admin.admission import AdminAdmission
 from slack_cli_agent.admin.command import AdminCommand, AdminContext, AdminResult
 from slack_cli_agent.admin.router import AdminRouter
 from slack_cli_agent.auth.principal import Principal, TrustLevel
@@ -209,8 +210,11 @@ def make_ingress(
             token_provider=lambda: "",
             downloader=lambda url, token: DownloadResult("image/png", b""),
         ),
-        admin_router=admin_router,
-        admin_context_builder=admin_context_builder,
+        admin=AdminAdmission(
+            router=admin_router,
+            context_builder=admin_context_builder,
+            reply=reply,
+        ),
         reply=reply,
         allowed_reactions=frozenset({"dango"}),
         on_reaction=on_reaction,

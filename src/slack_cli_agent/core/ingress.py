@@ -12,8 +12,7 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import replace
 from typing import Any, ClassVar
 
-from ..admin.command import AdminContext
-from ..admin.router import AdminRouter
+from ..admin.admission import AdminAdmission
 from ..jobs.ports import JobQueue
 from ..reliability.dedup import DeduplicationTracker
 from ..slack.assistant import AssistantPanel
@@ -37,7 +36,6 @@ LockBudget = Callable[[], AbstractContextManager[None]]
 ReactionCallback = Callable[[str, str, str, str], None]
 # (channel, thread_ts, body)
 ReplyCallback = Callable[[str, str, str], None]
-AdminContextBuilder = Callable[[RequestContext], AdminContext]
 
 
 class RejectedRequests:
@@ -76,8 +74,10 @@ class IngressService:
         queue: JobQueue,
         reactions: ReactionMarker,
         attachments: AttachmentStore,
-        admin_router: AdminRouter,
-        admin_context_builder: AdminContextBuilder,
+        # The same object the worker gets: catch-up used to skip this check
+        # entirely, so a command received while the bot was down went to the
+        # model (sca-oyku).
+        admin: AdminAdmission,
         reply: ReplyCallback,
         allowed_reactions: frozenset[str],
         on_reaction: ReactionCallback,
@@ -103,8 +103,7 @@ class IngressService:
         self._queue = queue
         self._reactions = reactions
         self._attachments = attachments
-        self._admin_router = admin_router
-        self._admin_context_builder = admin_context_builder
+        self._admin = admin
         self._reply = reply
         self._allowed_reactions = allowed_reactions
         self._on_reaction = on_reaction
@@ -159,10 +158,7 @@ class IngressService:
 
             ctx = replace(ctx, text=self._strip_self_mention(ctx.text))
 
-            admin_ctx = self._admin_context_builder(ctx)
-            admin_result = self._admin_router.dispatch(ctx.text, admin_ctx)
-            if admin_result is not None:
-                self._reply(ctx.channel, ctx.thread_ts, admin_result.message)
+            if self._admin.handled(ctx):
                 return
 
             request = ctx
