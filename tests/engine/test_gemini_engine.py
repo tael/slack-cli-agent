@@ -17,6 +17,7 @@ from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import UNTRUSTED_INPUT_MARK, EngineRequest
 from slack_cli_agent.engine.capability import InstructionBoundary
 from slack_cli_agent.engine.gemini import GeminiEngine
+from slack_cli_agent.engine.tool_selection import ToolSelection
 
 
 def _profile(tmp_path: Path, home_dir: Path | None = None) -> Profile:
@@ -44,7 +45,7 @@ def _request(**overrides: object) -> EngineRequest:
         "effort": "medium",
         "workdir": Path("/tmp/gemini-work"),
         "readable_dirs": (),
-        "allowed_tools": (),
+        "tools": ToolSelection.unrestricted(),
         "trust_level": TrustLevel.GENERAL,
     }
     base.update(overrides)

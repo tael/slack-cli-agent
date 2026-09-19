@@ -58,6 +58,7 @@ from .capability import (
     InstructionBoundary,
     ToolRestriction,
 )
+from .tool_selection import ToolAccess
 
 # Same hint list as the original bot.py's usage_limit_message().
 _USAGE_LIMIT_HINTS = (
@@ -142,10 +143,12 @@ class ClaudeEngine(Engine):
     )
 
     def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
-        if request.allowed_tools:
-            return self.capabilities
-        # An empty --allowedTools is not a restriction the caller placed.
-        return dataclasses.replace(self.capabilities, tool_restriction=ToolRestriction.NONE)
+        # What the caller asked for maps straight onto this axis. An empty
+        # --allowedTools is not a restriction the caller placed, which is why
+        # "no tools" needs its own state rather than an empty list (sca-0a7).
+        return dataclasses.replace(
+            self.capabilities, tool_restriction=request.tools.restriction,
+        )
 
     def prepare(self, request: EngineRequest) -> None:
         self._ensure_skill_discovery_link()
@@ -186,10 +189,16 @@ class ClaudeEngine(Engine):
             # enforced by this list — it's the caller's job (outside
             # this module) to keep Bash/Edit/Write/NotebookEdit out of
             # request.allowed_tools.
-            "--allowedTools", ",".join(request.allowed_tools),
+            "--allowedTools", ",".join(request.tools.names),
             "--model", request.require_model(),
             "--effort", request.effort,
         ]
+        if request.tools.access is ToolAccess.FORBIDDEN:
+            # Denying tools by name does not hold -- the model reaches the same
+            # file through another one. The wildcard empties the tool set
+            # itself: the debug log stops loading tools and tool_use never
+            # appears (2026-09-19 measurement, sca-0a7).
+            cmd += ["--disallowedTools", "*"]
         for path in request.readable_dirs:
             cmd += ["--add-dir", str(path)]
         skills_dir = self.profile.paths.skills

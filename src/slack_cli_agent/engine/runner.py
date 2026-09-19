@@ -70,6 +70,7 @@ LEVEL_NAMES: dict[ToolRestriction | ExecutionIsolation | InstructionBoundary, st
     ToolRestriction.NONE: "제한 없음",
     ToolRestriction.COARSE_SANDBOX: "샌드박스 수준",
     ToolRestriction.EXACT_ALLOWLIST: "허용된 도구 목록",
+    ToolRestriction.ALL_FORBIDDEN: "도구 전부 금지",
     ExecutionIsolation.NONE: "격리 없음",
     ExecutionIsolation.WORKSPACE_WRITE: "작업공간 쓰기",
     ExecutionIsolation.READONLY_SANDBOX: "읽기 전용 샌드박스",
@@ -537,7 +538,7 @@ class FallbackEngine(Engine):
             session_id=None, resume=False,
             model=model, effort=request.effort,
             workdir=request.workdir, readable_dirs=request.readable_dirs,
-            allowed_tools=request.allowed_tools, trust_level=request.trust_level,
+            tools=request.tools, trust_level=request.trust_level,
             # The boundary the caller asked for does not stop applying because
             # the primary ran out of quota. Dropping it turned a rate limit into
             # a permission bypass (sca-93u).
@@ -578,7 +579,7 @@ class FallbackEngine(Engine):
             prompt=self.PROBE_PROMPT, system_prompt="",
             session_id=None, resume=False,
             model=None, effort="low", workdir=request.workdir,
-            readable_dirs=(), allowed_tools=(), trust_level=request.trust_level,
+            readable_dirs=(), trust_level=request.trust_level,
             request_id=request.request_id,
         )
         response = self.runner.run(self.secondary, probe_request, timeout_sec=self.PROBE_TIMEOUT_SEC)

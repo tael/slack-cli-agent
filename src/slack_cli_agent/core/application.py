@@ -40,6 +40,7 @@ from ..engine.runner import (
     FallbackInvoker,
 )
 from ..engine.switcher import EngineSwitcher
+from ..engine.tool_selection import ToolSelection
 from ..engine.transcript import (
     SessionTranscriptReader,
     TranscriptReaderRegistry,
@@ -944,9 +945,9 @@ class Application:
             # to start new work, which watch_check_prompt forbids (sca-ejy).
             watch_check=True,
         ))
-        watch_tools = self.tool_policy().tool_list_for(
+        watch_tools = ToolSelection.allow(self.tool_policy().tool_list_for(
             principal, prompt=prompt, readonly=True, skills_enabled=False,
-        )
+        ))
         return self.engine_invoker.invoke(EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
@@ -961,9 +962,9 @@ class Application:
             # this turn start new work, which `watch_check_prompt` forbids.
             # Left empty before, and claude turns an empty list into
             # `--allowedTools ""` — a turn with no tools at all (sca-0ab).
-            allowed_tools=watch_tools,
+            tools=watch_tools,
             requirements=self.execution_policy.requirements_for(
-                config=config, allowed_tools=watch_tools,
+                config=config, tools=watch_tools,
             ),
             # This check turn belongs to one watch run. Without it the audit
             # cannot say which watch a capability record came from (sca-4ol).

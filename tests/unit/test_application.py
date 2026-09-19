@@ -1062,7 +1062,7 @@ class Test감시확인연결:
             created_at=0.0, last_run=None,
         ), WatchOutcome.UNKNOWN)
 
-        assert "Read" in 보낸요청[0].allowed_tools
+        assert "Read" in 보낸요청[0].tools.names
 
     def test_확인실행에도_실행_보장_요구가_붙는다(self, tmp_path: Path, monkeypatch: Any) -> None:
         """감시 확인은 파이프라인을 안 거친다. 여기서 요구를 안 세우면 이
@@ -1128,8 +1128,8 @@ class Test감시확인연결:
             created_at=0.0, last_run=None, trust=TrustLevel.OWNER,
         ), WatchOutcome.UNKNOWN)
 
-        assert "Bash" not in 보낸요청[0].allowed_tools
-        assert "Skill" not in 보낸요청[0].allowed_tools
+        assert "Bash" not in 보낸요청[0].tools.names
+        assert "Skill" not in 보낸요청[0].tools.names
 
     def test_확인실행이_평상시와_같은_읽기_범위를_받는다(
         self, tmp_path: Path, monkeypatch: Any

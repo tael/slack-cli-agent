@@ -37,6 +37,7 @@ from slack_cli_agent.engine.gemini import GeminiEngine
 from slack_cli_agent.engine.registry import EngineRegistry
 from slack_cli_agent.engine.runner import EngineRunner, FallbackEngine
 from slack_cli_agent.engine.switcher import EngineSwitcher
+from slack_cli_agent.engine.tool_selection import ToolSelection
 
 SETTINGS = RuntimeSettings()
 
@@ -75,7 +76,7 @@ def request(**overrides: Any) -> EngineRequest:
         "effort": "medium",
         "workdir": Path("/tmp/work"),
         "readable_dirs": (Path("/tmp/a"), Path("/tmp/b")),
-        "allowed_tools": ("Read", "Grep"),
+        "tools": ToolSelection.allow(["Read", "Grep"]),
         "trust_level": TrustLevel.GENERAL,
     }
     base.update(overrides)
@@ -283,7 +284,7 @@ class TestClaudeEngineBuildCommand:
     def test_허용_도구_목록을_쉼표로_잇는다(self, tmp_path: Path) -> None:
         profile = claude_profile(tmp_path)
         engine = ClaudeEngine(profile, SETTINGS)
-        cmd = engine.build_command(request(allowed_tools=("Read", "Grep", "Glob")))
+        cmd = engine.build_command(request(tools=ToolSelection.allow(["Read", "Grep", "Glob"])))
         idx = cmd.index("--allowedTools")
         assert cmd[idx + 1] == "Read,Grep,Glob"
 

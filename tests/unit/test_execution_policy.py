@@ -16,6 +16,7 @@ from slack_cli_agent.config.channel import (
 )
 from slack_cli_agent.core.errors import ConfigError
 from slack_cli_agent.engine.capability import ToolRestriction
+from slack_cli_agent.engine.tool_selection import ToolSelection
 
 
 def 채널(**kw: object) -> ChannelConfig:
@@ -25,13 +26,13 @@ def 채널(**kw: object) -> ChannelConfig:
 class Test기본은_감사_완화다:
     def test_채널_설정이_없으면_완화를_허용한다(self) -> None:
         """기본이 STRICT 면 codex·gemini 봇의 모든 요청이 실행 전에 막힌다."""
-        요구 = ExecutionPolicy().requirements_for(config=None, allowed_tools=("Read",))
+        요구 = ExecutionPolicy().requirements_for(config=None, tools=ToolSelection.allow(["Read"]))
         assert 요구.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
         assert 요구.downgradable_axes == frozenset({"tool_restriction"})
 
     def test_audited_채널도_같다(self) -> None:
         요구 = ExecutionPolicy().requirements_for(
-            config=채널(tool_enforcement=TOOL_ENFORCEMENT_AUDITED), allowed_tools=("Read",)
+            config=채널(tool_enforcement=TOOL_ENFORCEMENT_AUDITED), tools=ToolSelection.allow(["Read"])
         )
         assert 요구.downgradable_axes == frozenset({"tool_restriction"})
 
@@ -39,7 +40,7 @@ class Test기본은_감사_완화다:
 class Test강제_채널:
     def test_strict_면_완화를_안_준다(self) -> None:
         요구 = ExecutionPolicy().requirements_for(
-            config=채널(tool_enforcement=TOOL_ENFORCEMENT_STRICT), allowed_tools=("Read",)
+            config=채널(tool_enforcement=TOOL_ENFORCEMENT_STRICT), tools=ToolSelection.allow(["Read"])
         )
         assert 요구.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
         assert 요구.downgradable_axes == frozenset()
@@ -49,13 +50,13 @@ class Test도구_목록이_비면_요구가_없다:
     def test_빈_목록에는_강제할_경계가_없다(self) -> None:
         """--allowedTools 를 빈 값으로 넘긴 것은 제한을 건 것이 아니다.
         여기서 요구를 세우면 지킬 것이 없는데 엔진만 막힌다."""
-        요구 = ExecutionPolicy().requirements_for(config=None, allowed_tools=())
+        요구 = ExecutionPolicy().requirements_for(config=None, tools=ToolSelection.unrestricted())
         assert 요구.tool_restriction is None
         assert 요구.downgradable_axes == frozenset()
 
     def test_strict_채널이어도_빈_목록은_요구가_없다(self) -> None:
         요구 = ExecutionPolicy().requirements_for(
-            config=채널(tool_enforcement=TOOL_ENFORCEMENT_STRICT), allowed_tools=()
+            config=채널(tool_enforcement=TOOL_ENFORCEMENT_STRICT), tools=ToolSelection.unrestricted()
         )
         assert 요구.tool_restriction is None
 
@@ -65,17 +66,17 @@ class Test정책_이름을_남긴다:
     구분돼야 한다 (sca-98k 3/3)."""
 
     def test_감사_완화는_audited_로_남는다(self) -> None:
-        요구 = ExecutionPolicy().requirements_for(config=None, allowed_tools=("Read",))
+        요구 = ExecutionPolicy().requirements_for(config=None, tools=ToolSelection.allow(["Read"]))
         assert 요구.policy == TOOL_ENFORCEMENT_AUDITED
 
     def test_강제_채널은_strict_로_남는다(self) -> None:
         요구 = ExecutionPolicy().requirements_for(
-            config=채널(tool_enforcement=TOOL_ENFORCEMENT_STRICT), allowed_tools=("Read",)
+            config=채널(tool_enforcement=TOOL_ENFORCEMENT_STRICT), tools=ToolSelection.allow(["Read"])
         )
         assert 요구.policy == TOOL_ENFORCEMENT_STRICT
 
     def test_도구가_없어_요구를_안_세운_것도_이름이_있다(self) -> None:
-        요구 = ExecutionPolicy().requirements_for(config=None, allowed_tools=())
+        요구 = ExecutionPolicy().requirements_for(config=None, tools=ToolSelection.unrestricted())
         assert 요구.policy == NO_TOOLS_POLICY
 
     def test_아무도_안_세운_요구는_이름이_비어_있다(self) -> None:

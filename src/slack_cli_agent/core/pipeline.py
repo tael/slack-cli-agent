@@ -20,6 +20,7 @@ from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelConfig, channel_is_rich
 from ..engine.base import NO_DETAIL, Engine, EngineRequest, EngineResponse, FailureDetail, Usage
 from ..engine.runner import EngineInvoker
+from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
 from ..guard.mentions import AddresseeGuard
 from ..guard.pipeline import GuardPipeline
@@ -211,14 +212,17 @@ class RequestPipeline:
     def readable_dirs(self) -> tuple[Path, ...]:
         return self._readable_dirs
 
-    def _allowed_tools(
+    def _tools(
         self, principal: Principal, prompt: str, config: ChannelConfig | None
-    ) -> tuple[str, ...]:
+    ) -> ToolSelection:
         if self._tool_policy is None:
-            return ()
-        return self._tool_policy.tool_list_for(
+            return ToolSelection.unrestricted()
+        names = self._tool_policy.tool_list_for(
             principal, prompt=prompt, skills_enabled=bool(config and config.skills),
         )
+        # No policy output is not a ban. Only a caller that means "this turn
+        # has no tools" says so, and none of the chat paths do (sca-0a7).
+        return ToolSelection.allow(names) if names else ToolSelection.unrestricted()
 
     def _progress_session(self, ctx: RequestContext, log_path: Path | None) -> AbstractContextManager[None]:
         """The progress display for this request, or a pass-through when it has none."""
@@ -267,7 +271,7 @@ class RequestPipeline:
             self._progress.log_path_for(config, ctx.channel, ctx.ts)
             if self._progress is not None else None
         )
-        allowed_tools = self._allowed_tools(principal, ctx.text, config)
+        tools = self._tools(principal, ctx.text, config)
         request = EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
@@ -276,9 +280,9 @@ class RequestPipeline:
             model=model,
             effort=effort,
             workdir=workdir,
-            allowed_tools=allowed_tools,
+            tools=tools,
             requirements=self._execution_policy.requirements_for(
-                config=config, allowed_tools=allowed_tools,
+                config=config, tools=tools,
             ),
             readable_dirs=self._readable_dirs,
             trust_level=principal.trust,

@@ -116,7 +116,7 @@ class TestProposalAnalyzer:
             workdir=Path("/tmp"), bot_name="봇",
         )
         analyzer.analyze_channel("2026-09-14", "공지", "기록 본문", [])
-        assert engine.built_requests[0].allowed_tools == ()
+        assert engine.built_requests[0].tools.names == ()
 
     def test_엔진_실행_실패는_실행_실패로_갈린다(self, tmp_path: Path) -> None:
         engine = FakeEngine()
