@@ -225,6 +225,10 @@ class EngineRunner:
             actual=_as_audit(actual),
             unmet=list(required.unmet(actual)),
             allow_audited_downgrade=required.allow_audited_downgrade,
+            policy=required.policy,
+            # Permitted and used are different questions. Counting relieved
+            # requests needs the second one (sca-98k).
+            downgrade_applied=bool(required.unmet(actual)) and required.allow_audited_downgrade,
         )
 
     @staticmethod
