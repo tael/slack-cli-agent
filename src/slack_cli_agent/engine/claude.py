@@ -264,6 +264,9 @@ class ClaudeEngine(Engine):
                 ok=False, body=body, session_id=session_id, model_actual=model_actual,
                 elapsed=elapsed, turns=turns, usage=usage, raw=raw, failure_reason=reason,
                 failure_detail=FailureDetail(code=subtype), elapsed_source=elapsed_source,
+                # Only the limit notice is written for the person who asked; the
+                # generic failure text adds nothing to the failure mark (sca-5sc).
+                user_facing=is_limit,
             )
 
         body = str(payload.get("result") or "").strip()
