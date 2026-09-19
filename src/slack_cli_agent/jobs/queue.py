@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from collections.abc import Callable
@@ -10,6 +11,8 @@ from ..core.context import RequestContext
 from ..storage.database import Database
 from ..storage.repository import SqliteRepository
 from .ports import Job, JobStatus, ReclaimResult
+
+log = logging.getLogger(__name__)
 
 
 class SqliteJobQueue(SqliteRepository):
@@ -92,18 +95,29 @@ class SqliteJobQueue(SqliteRepository):
             )
         return self._to_job(row, attempts_delta=1)
 
-    def heartbeat(self, job_id: int) -> None:
+    def heartbeat(self, job_id: int, attempt: int) -> None:
         self._execute(
-            "UPDATE jobs SET heartbeat_ts = ? WHERE id = ? AND status = ?",
-            (self._now(), job_id, JobStatus.RUNNING.value),
+            "UPDATE jobs SET heartbeat_ts = ? WHERE id = ? AND status = ? AND attempts = ?",
+            (self._now(), job_id, JobStatus.RUNNING.value, attempt),
         )
 
-    def complete(self, job_id: int, ok: bool, failure: str = "") -> None:
+    def complete(self, job_id: int, ok: bool, failure: str = "", *, attempt: int) -> None:
+        """`attempt` fences the write against a worker that came back late.
+
+        A reclaimed job is claimed again under a new attempt number. Without
+        the fence, the old worker's result overwrote the attempt that is
+        actually running, and the thread stopped being serialized (sca-7qg).
+        """
         status = JobStatus.COMPLETED if ok else JobStatus.FAILED
-        self._execute(
-            "UPDATE jobs SET status = ?, finished_at = ?, failure = ? WHERE id = ?",
-            (status.value, self._now(), failure, job_id),
+        cursor = self._execute(
+            "UPDATE jobs SET status = ?, finished_at = ?, failure = ?"
+            " WHERE id = ? AND status = ? AND attempts = ?",
+            (status.value, self._now(), failure, job_id, JobStatus.RUNNING.value, attempt),
         )
+        if cursor.rowcount == 0:
+            log.warning(
+                "이 시도의 결과가 아니라 기록하지 않았다 : 작업 %d, 시도 %d", job_id, attempt
+            )
 
     def requeue(self, job_id: int) -> None:
         self._execute(

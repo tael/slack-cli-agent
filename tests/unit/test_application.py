@@ -1359,7 +1359,7 @@ class Test끝난작업정리연결:
         queue.enqueue(RequestContext(channel="C1", user="U1", ts="1.0", thread_ts="1.0", text="x"))
         job = queue.claim_next("w")
         assert job is not None
-        queue.complete(job.id, ok=True)
+        queue.complete(job.id, ok=True, attempt=job.attempts)
         app.job_purge_runner()._task()
         assert queue.counts() == {}
         app.close()
@@ -1371,7 +1371,7 @@ class Test끝난작업정리연결:
         queue.enqueue(RequestContext(channel="C1", user="U1", ts="1.0", thread_ts="1.0", text="x"))
         job = queue.claim_next("w")
         assert job is not None
-        queue.complete(job.id, ok=True)
+        queue.complete(job.id, ok=True, attempt=job.attempts)
         application.job_purge_runner()._task()
         assert queue.counts() != {}
         application.close()

@@ -94,7 +94,7 @@ class Worker:
 
         stop_event = threading.Event()
         beat = threading.Thread(
-            target=self._heartbeat_loop, args=(job.id, stop_event), daemon=True
+            target=self._heartbeat_loop, args=(job.id, job.attempts, stop_event), daemon=True
         )
         beat.start()
         try:
@@ -113,7 +113,7 @@ class Worker:
             # shutdown() already requeued this job; don't finish it a second time.
             return
 
-        self._finish(job.id, context, outcome)
+        self._finish(job, context, outcome)
 
     def run_forever(self, should_stop: Callable[[], bool]) -> None:
         # Sleeps on an empty queue so this doesn't busy-poll SQLite; checks should_stop
@@ -169,20 +169,20 @@ class Worker:
             log.exception("처리기 예외로 작업 실패: channel=%s ts=%s", context.channel, context.ts)
             return HandleOutcome(ok=False, failure=str(exc))
 
-    def _heartbeat_loop(self, job_id: int, stop_event: threading.Event) -> None:
+    def _heartbeat_loop(self, job_id: int, attempt: int, stop_event: threading.Event) -> None:
         interval = self._settings.heartbeat_interval_sec
         while not stop_event.is_set():
             self._sleep(interval)
             if stop_event.is_set():
                 break
-            self._queue.heartbeat(job_id)
+            self._queue.heartbeat(job_id, attempt)
 
-    def _finish(self, job_id: int, context: RequestContext, outcome: HandleOutcome) -> None:
+    def _finish(self, job: Job, context: RequestContext, outcome: HandleOutcome) -> None:
         if outcome.ok:
-            self._queue.complete(job_id, True, "")
+            self._queue.complete(job.id, True, "", attempt=job.attempts)
             mark, buried_mark = self._pick_done_marks(outcome)
         else:
-            self._queue.complete(job_id, False, outcome.failure)
+            self._queue.complete(job.id, False, outcome.failure, attempt=job.attempts)
             mark = buried_mark = self._markers.mark_failed
 
         mark(context.channel, context.ts)

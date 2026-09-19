@@ -84,10 +84,10 @@ class FakeJobQueue:
     def claim_next(self, worker_id: str) -> Job | None:
         raise NotImplementedError
 
-    def heartbeat(self, job_id: int) -> None:
+    def heartbeat(self, job_id: int, attempt: int) -> None:
         raise NotImplementedError
 
-    def complete(self, job_id: int, ok: bool, failure: str = "") -> None:
+    def complete(self, job_id: int, ok: bool, failure: str = "", *, attempt: int) -> None:
         raise NotImplementedError
 
     def requeue(self, job_id: int) -> None:

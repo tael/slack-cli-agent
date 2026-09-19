@@ -13,6 +13,7 @@ from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.jobs.heartbeat import WorkerHeartbeat
 from slack_cli_agent.jobs.ports import Job, JobQueue, JobStatus, ReclaimResult
 from slack_cli_agent.jobs.queue import SqliteJobQueue
+from slack_cli_agent.storage.database import Database
 
 
 def ctx(ts: str, thread: str = "", channel: str = "C1") -> RequestContext:
@@ -31,6 +32,10 @@ def claim(queue: SqliteJobQueue, worker: str) -> Job:
     job = queue.claim_next(worker)
     assert job is not None
     return job
+
+
+def _완료(queue: SqliteJobQueue, job: Job, *, ok: bool = True) -> None:
+    queue.complete(job.id, ok=ok, attempt=job.attempts)
 
 
 class TestContract:
@@ -62,7 +67,7 @@ class TestClaim:
         assert first is not None and first.context.ts == "1.1"
         assert queue.claim_next("w2") is None
 
-        queue.complete(first.id, ok=True)
+        queue.complete(first.id, ok=True, attempt=first.attempts)
         second = queue.claim_next("w2")
         assert second is not None and second.context.ts == "1.2"
 
@@ -91,7 +96,7 @@ class TestClaim:
         queue.enqueue(ctx("1.1", "T1"))
         queue.enqueue(ctx("1.2", "T1"))
         first = claim(queue, "w1")
-        queue.complete(first.id, ok=False, failure="엔진 오류")
+        queue.complete(first.id, ok=False, failure="엔진 오류", attempt=first.attempts)
         assert queue.claim_next("w2") is not None
 
     def test_여러_워커가_동시에_불러도_한_번만_나온다(self, database) -> None:
@@ -143,7 +148,7 @@ class TestBlockedOnThread:
         queue.enqueue(ctx("1.1", "T1"))
         first = queue.claim_next("w1")
         assert first is not None
-        queue.complete(first.id, ok=True)
+        queue.complete(first.id, ok=True, attempt=first.attempts)
         queue.enqueue(ctx("1.2", "T1"))
         assert queue.blocked_on_thread("T1", "1.2") is False
 
@@ -162,13 +167,13 @@ class TestPersistence:
 
     def test_완료된_작업은_다시_안_나온다(self, queue: SqliteJobQueue) -> None:
         queue.enqueue(ctx("1.1"))
-        queue.complete(claim(queue, "w1").id, ok=True)
+        _완료(queue, claim(queue, "w1"))
         assert queue.claim_next("w2") is None
         assert queue.counts() == {JobStatus.COMPLETED.value: 1}
 
     def test_끝난_지_오래된_작업을_지운다(self, queue: SqliteJobQueue) -> None:
         queue.enqueue(ctx("1.1"))
-        queue.complete(claim(queue, "w1").id, ok=True)
+        _완료(queue, claim(queue, "w1"))
         assert queue.purge_finished(before=time.time() + 1) == 1
         assert queue.counts() == {}
 
@@ -195,8 +200,50 @@ class TestReclaim:
     def test_갱신한_작업은_정체로_보지_않는다(self, queue: SqliteJobQueue) -> None:
         queue.enqueue(ctx("1.1"))
         job = claim(queue, "w1")
-        queue.heartbeat(job.id)
+        queue.heartbeat(job.id, job.attempts)
         assert queue.reclaim_stale(deadline=time.time() - 1, max_attempts=3).total == 0
+
+
+class Test소유권검증:
+    """회수된 작업은 다음 claim 이 새 시도를 연다. 그 사이 옛 워커가 돌아와
+    결과를 쓰면 지금 도는 시도의 상태를 덮는다."""
+
+    def test_회수된_뒤_옛_워커의_완료는_안_먹힌다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.1"))
+        옛시도 = claim(queue, "죽은워커")
+        queue.reclaim_stale(deadline=time.time() + 1, max_attempts=3)
+        새시도 = claim(queue, "산워커")
+
+        queue.complete(옛시도.id, True, "", attempt=옛시도.attempts)
+
+        # 완료로 굳었으면 회수 대상에서 빠진다. 아직 도는 중이어야 한다.
+        assert queue.reclaim_stale(deadline=time.time() + 1, max_attempts=9).total == 1
+        assert 새시도.attempts != 옛시도.attempts
+
+    def test_지금_도는_시도의_완료는_먹힌다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.1"))
+        job = claim(queue, "w1")
+
+        queue.complete(job.id, True, "", attempt=job.attempts)
+
+        assert queue.reclaim_stale(deadline=time.time() + 1, max_attempts=9).total == 0
+
+    def test_회수된_뒤_옛_워커의_박동은_정체_판정을_늦추지_못한다(
+        self, database: Database
+    ) -> None:
+        """시계를 직접 쥔다. 옛 박동이 먹히면 판정 시점이 그만큼 밀린다."""
+        시각 = [1000.0]
+        queue = SqliteJobQueue(database, now=lambda: 시각[0])
+        queue.enqueue(ctx("1.1"))
+        옛시도 = claim(queue, "죽은워커")
+        시각[0] = 1100.0
+        queue.reclaim_stale(deadline=1050.0, max_attempts=9)
+        claim(queue, "산워커")
+
+        시각[0] = 1200.0
+        queue.heartbeat(옛시도.id, attempt=옛시도.attempts)
+
+        assert queue.reclaim_stale(deadline=1150.0, max_attempts=9).total == 1
 
 
 @dataclass
@@ -247,7 +294,7 @@ class Test실패건재등록:
         assert queue.enqueue(ctx("1.0")) is True
         job = queue.claim_next("w")
         assert job is not None
-        queue.complete(job.id, ok=False, failure="엔진 오류")
+        queue.complete(job.id, ok=False, failure="엔진 오류", attempt=job.attempts)
 
         assert queue.enqueue(ctx("1.0")) is True
         assert [j.context.ts for j in queue.pending()] == ["1.0"]
@@ -258,7 +305,7 @@ class Test실패건재등록:
         queue.enqueue(ctx("1.0"))
         job = queue.claim_next("w")
         assert job is not None
-        queue.complete(job.id, ok=False, failure="엔진 오류")
+        queue.complete(job.id, ok=False, failure="엔진 오류", attempt=job.attempts)
         queue.enqueue(ctx("1.0"))
         assert queue.counts().get(JobStatus.FAILED.value, 0) == 0
 
@@ -267,7 +314,7 @@ class Test실패건재등록:
         queue.enqueue(ctx("1.0"))
         job = queue.claim_next("w")
         assert job is not None
-        queue.complete(job.id, ok=True)
+        queue.complete(job.id, ok=True, attempt=job.attempts)
 
         assert queue.enqueue(ctx("1.0")) is False
         assert queue.pending() == []
@@ -279,7 +326,7 @@ class Test실패건재등록:
         for _ in range(3):
             job = queue.claim_next("w")
             assert job is not None
-            queue.complete(job.id, ok=False, failure="엔진 오류")
+            queue.complete(job.id, ok=False, failure="엔진 오류", attempt=job.attempts)
             queue.enqueue(ctx("1.0"), max_attempts=3)
         assert queue.enqueue(ctx("1.0"), max_attempts=3) is False
 
