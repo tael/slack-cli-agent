@@ -10,12 +10,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from ..config.channel import TOOL_ENFORCEMENT_STRICT, ChannelConfig
+from ..config.channel import TOOL_ENFORCEMENT_AUDITED, TOOL_ENFORCEMENT_STRICT, ChannelConfig
 from ..engine.capability import ExecutionRequirements, ToolRestriction
+
+#: Named so the audit record tells "this policy decided nothing is enforceable"
+#: apart from "no policy ran at all".
+NO_TOOLS_POLICY = "no_tools"
 
 #: No requirement at all. Separate name so the "nothing to enforce" case reads
 #: as a decision rather than a forgotten argument.
-NO_REQUIREMENTS = ExecutionRequirements()
+NO_REQUIREMENTS = ExecutionRequirements(policy=NO_TOOLS_POLICY)
 
 
 class ExecutionPolicy:
@@ -41,4 +45,5 @@ class ExecutionPolicy:
         return ExecutionRequirements(
             tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
             allow_audited_downgrade=not strict,
+            policy=TOOL_ENFORCEMENT_STRICT if strict else TOOL_ENFORCEMENT_AUDITED,
         )

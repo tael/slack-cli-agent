@@ -212,6 +212,50 @@ class Test보장을_감사에_남긴다:
         )
         assert 감사.기록[0][1]["unmet"] == ["tool_restriction", "instruction_boundary"]
 
+    def test_어느_정책이_이_요구를_세웠는지_남는다(self, tmp_path: Path) -> None:
+        """기록만 보고는 완화가 정책상 허용된 것인지 요구를 안 세운 것인지
+        구분되지 않는다 (sca-98k 3/3)."""
+        감사 = _감사()
+        self._돌린다(
+            tmp_path,
+            감사,
+            requirements=ExecutionRequirements(
+                tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+                allow_audited_downgrade=True,
+                policy="audited",
+            ),
+        )
+        필드 = 감사.기록[0][1]
+        assert 필드["policy"] == "audited"
+
+    def test_완화가_실제로_적용된_경우를_구분해_남긴다(self, tmp_path: Path) -> None:
+        """허용됐다는 것과 이번에 썼다는 것은 다르다. 완화 건수를 세려면
+        후자가 필요하다."""
+        감사 = _감사()
+        self._돌린다(
+            tmp_path,
+            감사,
+            requirements=ExecutionRequirements(
+                tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+                allow_audited_downgrade=True,
+                policy="audited",
+            ),
+        )
+        assert 감사.기록[0][1]["downgrade_applied"] is True
+
+    def test_보장을_맞춘_요청은_완화로_세지_않는다(self, tmp_path: Path) -> None:
+        감사 = _감사()
+        self._돌린다(
+            tmp_path,
+            감사,
+            requirements=ExecutionRequirements(
+                tool_restriction=ToolRestriction.NONE,
+                allow_audited_downgrade=True,
+                policy="audited",
+            ),
+        )
+        assert 감사.기록[0][1]["downgrade_applied"] is False
+
     def test_요구가_없어도_실제_보장은_남는다(self, tmp_path: Path) -> None:
         """0건이 요구 없음인지 기록 자체가 안 도는 것인지 구분돼야 한다."""
         감사 = _감사()
