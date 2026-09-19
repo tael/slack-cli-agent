@@ -76,6 +76,7 @@ RUNNER_ARGS: dict[str, Any] = {
     "catchup_retry_runner": lambda app: (app.worker(),),
     "startup_catchup_runner": lambda app: (app.worker(),),
     "connection_catchup_runner": lambda app: (app.worker(),),
+    "stale_reclaim_runner": lambda app: (app.worker(),),
     "pending_report_runner": lambda app: (),
     "stale_review_runner": lambda app: (),
     "learning_batch_runner": lambda app: (),
@@ -129,7 +130,17 @@ class Test묶음구성:
             "catchup_retry",
             "pending_report",
             "learning_batch",
+            "stale_reclaim",
         }
+
+    def test_정체_작업_회수는_주기로_돈다(self, app: Application) -> None:
+        """기동 때 1회만 회수하면, 워커 하나가 죽어도 다른 워커가 살아 있는
+        구성에서는 죽은 워커의 작업이 재기동 전까지 아무도 안 집는다."""
+        assert "stale_reclaim" in app.worker_services(app.worker()).runner_names
+
+    def test_회수_주기는_정체_판정_시간보다_길다(self, app: Application) -> None:
+        """짧으면 박동이 한 번 늦은 멀쩡한 워커의 작업까지 뺏는다."""
+        assert app.settings.stale_reclaim_interval_sec > app.settings.heartbeat_stale_sec
 
     def test_명부_갱신은_접수에만_있다(self, app: Application) -> None:
         """워커는 여럿 뜰 수 있어 거기서 갱신하면 같은 파일을 동시에 쓴다."""

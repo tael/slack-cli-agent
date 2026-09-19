@@ -96,6 +96,10 @@ class RuntimeSettings:
     # Stall detection fires at 3x the heartbeat interval.
     heartbeat_interval_sec: float = 5
     heartbeat_stale_sec: float = 15
+    #: How often a running worker sweeps for jobs a crashed worker left behind.
+    #: Above heartbeat_stale_sec, so a worker that is merely slow to beat once
+    #: isn't treated as dead.
+    stale_reclaim_interval_sec: float = 60
     job_max_attempts: int = 3
     # How long finished jobs are kept before deletion. Must exceed
     # catchup_max_window_sec — if shorter, catch-up would treat an
