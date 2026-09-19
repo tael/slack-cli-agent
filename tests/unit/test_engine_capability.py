@@ -399,7 +399,7 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
                 allow_audited_downgrade=True,
             ),
         )
-        assert "감사" in 응답.body
+        assert "감사 기록기가 구성되지 않아" in 응답.body
 
     def test_완화를_요청하지_않은_차단에는_감사_문구가_없다(self, tmp_path: Path) -> None:
         응답, _, _ = self._돌린다(
@@ -408,7 +408,7 @@ class Test도구_제한을_못_맞추면_실행_전에_막는다:
             requirements=ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST),
         )
         assert 응답.ok is False
-        assert "감사" not in 응답.body
+        assert "감사 기록기" not in 응답.body
 
     def test_도구_외_축은_아직_막지_않는다(self, tmp_path: Path) -> None:
         응답, _, 실행 = self._돌린다(

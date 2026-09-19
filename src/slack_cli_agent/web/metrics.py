@@ -163,6 +163,9 @@ class MetricsCollector:
     def __init__(self, profile: Profile, *, now: Callable[[], float] = time.time) -> None:
         self._profile = profile
         self._now = now
+        # Asked from two places in one collect(); loading the profile's plugins
+        # twice would repeat whatever their constructors do.
+        self._covered: bool | None = None
 
     def collect(self, days: int) -> dict[str, Any]:
         """Closes the connection it opens. The console polls every few
@@ -695,9 +698,11 @@ class MetricsCollector:
         rather than naming it keeps a new engine from silently inheriting
         another engine's numbers (sca-cs0). An engine we don't know about is
         treated as not covered."""
-        registry = registry_for_profile(self._profile)
-        engine_class = registry.engine_class(self._profile.primary_engine.type)
-        return bool(engine_class is not None and engine_class.ccusage_reports_consumption)
+        if self._covered is None:
+            registry = registry_for_profile(self._profile)
+            engine_class = registry.engine_class(self._profile.primary_engine.type)
+            self._covered = bool(engine_class is not None and engine_class.ccusage_reports_consumption)
+        return self._covered
 
     def _usage_block(self) -> dict[str, Any]:
         if not self._ccusage_covers_engine():
