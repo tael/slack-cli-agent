@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from ..prompt.composer import DEFAULT_SYSTEM_PROMPT_BUDGET_BYTES
+
 
 @dataclass(frozen=True)
 class RuntimeSettings:
@@ -39,6 +41,9 @@ class RuntimeSettings:
     history_read_pause_sec: float = 2.0
     history_max_msgs: int = 40
     history_max_chars: int = 12000
+    #: Cap on the assembled system prompt, in UTF-8 bytes. 0 or less turns the
+    #: cap off. Where the default comes from: docs/지침-예산.md.
+    system_prompt_budget_bytes: int = DEFAULT_SYSTEM_PROMPT_BUDGET_BYTES
     linked_thread_max: int = 3
 
     # 0 reconnects in 4h35m of normal operation; 128 in 22 minutes during an outage.

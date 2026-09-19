@@ -98,6 +98,22 @@ class PromptSection(ABC):
     def render(self, ctx: CompositionContext) -> str: ...
 
 
+class BudgetAwareSection(PromptSection):
+    """A section that can render smaller when the prompt budget is tight.
+
+    Only optional material implements this. Safety rules, the persona and
+    anything this turn's accuracy depends on render the same either way -- if
+    those alone exceed the budget that is a configuration error, not something
+    to drop at request time (sca-ygd).
+    """
+
+    @abstractmethod
+    def render_within(self, ctx: CompositionContext, budget: int) -> str: ...
+
+    def render(self, ctx: CompositionContext) -> str:
+        return self.render_within(ctx, budget=-1)
+
+
 class PersonaSection(PromptSection):
     """Persona, plus internal domain facts when running in a project working directory."""
 
@@ -109,12 +125,14 @@ class PersonaSection(PromptSection):
         return f"{text}\n\n" if text else ""
 
 
-class KnowledgeSection(PromptSection):
+class KnowledgeSection(BudgetAwareSection):
     def applies_to(self, ctx: CompositionContext) -> bool:
         return True
 
-    def render(self, ctx: CompositionContext) -> str:
-        text = ctx._knowledge_or_raise().knowledge_text(ctx.channel_slug, ctx.prompt)
+    def render_within(self, ctx: CompositionContext, budget: int) -> str:
+        text = ctx._knowledge_or_raise().knowledge_within(
+            ctx.channel_slug, ctx.prompt, budget=None if budget < 0 else budget,
+        )
         return f"{text}\n\n" if text else ""
 
 
