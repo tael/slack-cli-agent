@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import ast
 import inspect
-import json
 import logging
 import time
 from collections.abc import Sequence
@@ -403,12 +402,15 @@ class Test복구보고:
         assert any("MCP 서버" in str(kwargs) for kwargs in 보낸것), 보낸것
 
     def test_기동_못_하는_MCP_서버를_이름으로_알린다(
-        self, app: Application, client: FakeSlackClient
+        self, tmp_path: Path, client: FakeSlackClient
     ) -> None:
-        설정 = app.profile.paths.mcp_config
-        설정.parent.mkdir(parents=True, exist_ok=True)
-        설정.write_text(json.dumps({"mcpServers": {"없는서버": {"command": "/없는/경로/binary"}}}))
-        보낸것 = [kwargs for 이름, kwargs in self.복구시킨다(app) if 이름 == "chat_postMessage"]
+        profile = write_profile(
+            tmp_path, mcp_servers={"없는서버": {"command": "/없는/경로/binary"}}
+        )
+        보낸것 = [
+            kwargs for 이름, kwargs in self.복구시킨다(Application(profile, client))
+            if 이름 == "chat_postMessage"
+        ]
         합친것 = str(보낸것)
         assert "없는서버" in 합친것, 보낸것
         assert "도구가 빠진 채로" in 합친것, 보낸것

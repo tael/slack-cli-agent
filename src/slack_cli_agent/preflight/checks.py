@@ -380,10 +380,9 @@ class McpServerCheck(PreflightCheck):
     name: ClassVar[str] = "mcp_server"
 
     def run(self, ctx: PreflightContext) -> CheckResult:
-        mcp_config = ctx.profile.paths.mcp_config
-        if not mcp_config.exists():
-            return CheckResult(ok=True, detail=f"MCP 설정 없음 : {mcp_config}", fatal=False)
-        broken = broken_mcp_servers(mcp_config)
+        if not ctx.profile.mcp_servers:
+            return CheckResult(ok=True, detail="선언된 MCP 서버 없음", fatal=False)
+        broken = broken_mcp_servers(ctx.profile.mcp_servers)
         if broken:
             return CheckResult(ok=False, detail="; ".join(broken))
         return CheckResult(ok=True, detail="MCP 기동 점검 통과")

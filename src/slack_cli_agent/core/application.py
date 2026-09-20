@@ -1614,7 +1614,7 @@ class Application:
     def _report_recovery(self, outage_sec: float, recovered: int) -> None:
         # reports the recovered count explicitly — otherwise zero recovered
         # messages would look the same as catch-up never having run
-        broken = broken_mcp_servers(self._profile.paths.mcp_config)
+        broken = broken_mcp_servers(self._profile.mcp_servers)
         lines = [
             "*연결 복구*",
             "",
