@@ -490,8 +490,40 @@ class Test프로필_MCP_도구도_허용목록_밖이면_닫는다:
         cmd = self.cmd(tmp_path, ["Read"], mcp_servers={"jira": {"command": "jira-mcp"}})
         assert self.denied(cmd) == "mcp__*"
 
-    def test_MCP_를_허용했으면_안_닫는다(self, tmp_path) -> None:
-        """이름 하나를 열면서 접두어 전체를 닫으면 그 이름도 함께 닫힌다.
-        이 경우의 경계는 승인 목록이 맡는다."""
-        cmd = self.cmd(tmp_path, ["Read", "mcp__jira__jira_search"])
+    def test_허용한_서버만_남기고_나머지_서버를_닫는다(self, tmp_path) -> None:
+        """도구 하나를 허용했다고 전체 MCP 차단을 생략하면 fail-open 이다
+        (코덱스 리뷰). 서버 단위까지는 좁힐 수 있다.
+
+        2026-09-20 실측. mcp__playwright__* 를 닫으면 그 서버의 도구만
+        사라지고 mcp__playwright-daangn__ 은 남는다. 이름이 겹치는 접두어가
+        아니라 서버 단위로 끊긴다.
+        """
+        cmd = self.cmd(
+            tmp_path, ["Read", "mcp__jira__jira_search"],
+            mcp_servers={"jira": {"command": "jira-mcp"}, "github": {"command": "gh-mcp"}},
+        )
+        assert self.denied(cmd) == "mcp__github__*"
+
+    def test_허용한_서버_안의_다른_도구는_못_닫는다(self, tmp_path) -> None:
+        """서버가 어떤 도구를 내는지는 붙여 봐야 안다. 그 경계는 승인 목록이
+        맡는다. --disallowedTools 로 서버를 닫고 --allowedTools 로 이름 하나를
+        되살리는 것은 안 된다 - 와일드카드가 이긴다(실측)."""
+        cmd = self.cmd(
+            tmp_path, ["mcp__jira__jira_search"],
+            mcp_servers={"jira": {"command": "jira-mcp"}},
+        )
         assert self.denied(cmd) is None
+
+    def test_서버_이름에_하이픈이_있어도_닫는다(self, tmp_path) -> None:
+        cmd = self.cmd(
+            tmp_path, ["mcp__jira__jira_search"],
+            mcp_servers={"jira": {"command": "j"}, "local-rag": {"command": "r"}},
+        )
+        assert self.denied(cmd) == "mcp__local-rag__*"
+
+    def test_닫을_서버가_여럿이면_모두_적는다(self, tmp_path) -> None:
+        cmd = self.cmd(
+            tmp_path, ["mcp__jira__x"],
+            mcp_servers={"jira": {"command": "j"}, "b": {"command": "b"}, "a": {"command": "a"}},
+        )
+        assert self.denied(cmd) == "mcp__a__*,mcp__b__*"
