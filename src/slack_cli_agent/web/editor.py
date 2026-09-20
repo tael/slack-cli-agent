@@ -77,7 +77,7 @@ class ChannelEditor:
             "model": config.model,
             "effort": config.effort,
             "persona": config.persona,
-            "knowledge": list(config.knowledge),
+            "knowledge": config.knowledge,
             "trusted_users": sorted(config.trusted_users),
             "answer_unaddressed": config.answer_unaddressed,
             "session_scope": config.session_scope,

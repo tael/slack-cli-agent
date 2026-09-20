@@ -18,6 +18,7 @@ from ..auth.execution_policy import ExecutionPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelConfig, channel_is_rich
+from ..config.channel import channel_slug as slug_for
 from ..engine.base import NO_DETAIL, Engine, EngineRequest, EngineResponse, FailureDetail, Usage
 from ..engine.runner import EngineInvoker
 from ..engine.tool_selection import ToolSelection
@@ -249,7 +250,7 @@ class RequestPipeline:
         workdir = (config.workdir if (config and config.workdir) else self._default_workdir).resolve()
         rich = channel_is_rich(config)
         channel_mode = config.mode if config else "default"
-        channel_slug = config.name if config else ctx.channel
+        channel_slug = slug_for(ctx.channel, config)
         chat_level = config.chat if config else "normal"
         scope = config.session_scope if config else SessionScope.THREAD.value
 
