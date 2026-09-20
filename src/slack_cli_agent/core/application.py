@@ -30,6 +30,7 @@ from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelConfig, ChannelRegistry, channel_is_rich
+from ..config.channel import channel_slug as slug_for
 from ..config.profile import EngineSpec, Profile
 from ..config.settings import RuntimeSettings
 from ..engine.base import CallOrigin, Engine, EngineRequest, EngineResponse
@@ -1019,7 +1020,7 @@ class Application:
             principal=principal,
             prompt=prompt,
             channel_mode=config.mode if config else "default",
-            channel_slug=config.name if config else job.channel,
+            channel_slug=slug_for(job.channel, config),
             is_rich=channel_is_rich(config),
             chat_level=config.chat if config else "normal",
             # This turn only looks: the registration guidance would tell it how
