@@ -302,6 +302,12 @@ class TestClaudeEngineBuildCommand:
         assert cmd[cmd.index("--model") + 1] == "claude-opus-5"
         assert cmd[cmd.index("--effort") + 1] == "high"
 
+    def test_사용자_settings_를_배제한다(self, tmp_path: Path) -> None:
+        """원본 bot.py:1343 과 같다. 빼면 사용자 ~/.claude/settings.json 의
+        permissions.allow 와 훅이 봇 턴에 그대로 실린다."""
+        cmd = ClaudeEngine(claude_profile(tmp_path), SETTINGS).build_command(request())
+        assert cmd[cmd.index("--setting-sources") + 1] == "project"
+
     def test_기본_파일도_진행_로그도_없으면_settings를_안_붙인다(self, tmp_path: Path) -> None:
         profile = claude_profile(tmp_path)
         engine = ClaudeEngine(profile, SETTINGS)
