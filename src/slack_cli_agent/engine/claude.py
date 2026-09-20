@@ -95,11 +95,6 @@ def _builtin_names(names: tuple[str, ...]) -> list[str]:
     return [name for name in names if not name.startswith(MCP_PREFIX)]
 
 
-def _mcp_server_of(name: str) -> str:
-    """The server part of mcp__<server>__<tool>."""
-    return name[len(MCP_PREFIX) :].split("__", 1)[0]
-
-
 def _mcp_denials(names: tuple[str, ...], servers: Iterable[str]) -> list[str]:
     """Patterns closing the MCP servers the allowlist does not name.
 
@@ -115,11 +110,20 @@ def _mcp_denials(names: tuple[str, ...], servers: Iterable[str]) -> list[str]:
     naming one of its tools in --allowedTools did not bring that tool back, the
     wildcard wins. So a server holding an allowed tool stays open whole, and its
     other tools are left to the approval list (sca-6ewc).
+
+    A server counts as allowed only when a name actually sits under it. Reading
+    the server out of the name instead splits mcp__foo__bar__search at the first
+    __ and takes mcp__jira for the whole jira server, both of which open servers
+    the allowlist never named (codex review). `servers` is what --mcp-config
+    carries, so a disabled server is not among them and nothing opens under it.
     """
-    allowed_servers = {_mcp_server_of(name) for name in names if name.startswith(MCP_PREFIX)}
-    if not allowed_servers:
+    allowed = {
+        server for server in servers
+        if any(name.startswith(f"{MCP_PREFIX}{server}__") for name in names)
+    }
+    if not allowed:
         return [f"{MCP_PREFIX}*"]
-    return [f"{MCP_PREFIX}{server}__*" for server in sorted(servers) if server not in allowed_servers]
+    return [f"{MCP_PREFIX}{server}__*" for server in sorted(servers) if server not in allowed]
 
 
 def progress_hook_settings(log_path: Path) -> dict[str, Any]:
@@ -231,6 +235,7 @@ class ClaudeEngine(Engine):
             "--model", request.require_model(),
             "--effort", request.effort,
         ]
+        mcp_servers = _claude_mcp_servers(self.profile.mcp_servers)
         if request.tools.access is ToolAccess.FORBIDDEN:
             # The wildcard empties the tool set itself: the debug log stops
             # loading tools and tool_use never appears (2026-09-19 measurement,
@@ -248,7 +253,7 @@ class ClaudeEngine(Engine):
             # "No such tool available" (sca-6ewc).
             cmd += ["--allowedTools", ",".join(request.tools.names)]
             cmd += ["--tools", ",".join(_builtin_names(request.tools.names))]
-            denied = _mcp_denials(request.tools.names, self.profile.mcp_servers)
+            denied = _mcp_denials(request.tools.names, mcp_servers)
             if denied:
                 cmd += ["--disallowedTools", ",".join(denied)]
         for path in request.readable_dirs:
@@ -256,7 +261,6 @@ class ClaudeEngine(Engine):
         skills_dir = self.profile.paths.skills
         if skills_dir.exists():
             cmd += ["--add-dir", str(skills_dir)]
-        mcp_servers = _claude_mcp_servers(self.profile.mcp_servers)
         if mcp_servers:
             cmd += ["--mcp-config", json.dumps({"mcpServers": mcp_servers}, ensure_ascii=False)]
         # Unconditional: it used to ride along with --mcp-config, so a profile

@@ -521,6 +521,40 @@ class Test프로필_MCP_도구도_허용목록_밖이면_닫는다:
         )
         assert self.denied(cmd) == "mcp__local-rag__*"
 
+    def test_프로필에_없는_서버를_허용해도_전체를_닫는다(self, tmp_path) -> None:
+        """허용 이름이 어느 실제 서버에도 안 붙으면 열어 둘 서버가 없다.
+        여집합만 계산하면 빈 목록이 나와 아무것도 안 닫히는 fail-open 이
+        된다 (코덱스 리뷰)."""
+        cmd = self.cmd(tmp_path, ["Read", "mcp__ghost__x"])
+        assert self.denied(cmd) == "mcp__*"
+
+    def test_이름에_도구_부분이_없으면_허용으로_안_친다(self, tmp_path) -> None:
+        """mcp__jira 는 서버도 도구도 안 가리킨다. 이것을 jira 허용으로
+        읽으면 그 서버 전체가 열린다 (코덱스 리뷰)."""
+        cmd = self.cmd(
+            tmp_path, ["mcp__jira"],
+            mcp_servers={"jira": {"command": "j"}},
+        )
+        assert self.denied(cmd) == "mcp__*"
+
+    def test_서버_이름에_밑줄_둘이_있어도_맞게_가른다(self, tmp_path) -> None:
+        """이름을 왼쪽부터 쪼개면 foo__bar 서버가 foo 로 읽힌다. 프로필의
+        서버 이름으로 맞춰야 한다 (코덱스 리뷰)."""
+        cmd = self.cmd(
+            tmp_path, ["mcp__foo__bar__search"],
+            mcp_servers={"foo__bar": {"command": "f"}, "other": {"command": "o"}},
+        )
+        assert self.denied(cmd) == "mcp__other__*"
+
+    def test_꺼진_서버는_열린_것으로_안_친다(self, tmp_path) -> None:
+        """disabled 서버는 --mcp-config 에 안 들어가므로 붙지 않는다.
+        그 이름으로 허용해도 열어 둘 서버가 없다."""
+        cmd = self.cmd(
+            tmp_path, ["mcp__jira__x"],
+            mcp_servers={"jira": {"command": "j", "disabled": True}, "gh": {"command": "g"}},
+        )
+        assert self.denied(cmd) == "mcp__*"
+
     def test_닫을_서버가_여럿이면_모두_적는다(self, tmp_path) -> None:
         cmd = self.cmd(
             tmp_path, ["mcp__jira__x"],
