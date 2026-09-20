@@ -58,6 +58,7 @@ from .capability import (
     InstructionBoundary,
     ToolRestriction,
 )
+from .claude_settings import load_settings_file, merge_settings
 from .tool_selection import ToolAccess
 
 # Same hint list as the original bot.py's usage_limit_message().
@@ -268,11 +269,9 @@ class ClaudeEngine(Engine):
         # the 2026-09-20 measurement. With the built-in tools closed the model
         # reached for one of those anyway (sca-mo4g).
         cmd += ["--strict-mcp-config"]
-        if request.progress_log is not None:
-            cmd += [
-                "--settings",
-                json.dumps(progress_hook_settings(request.progress_log), ensure_ascii=False),
-            ]
+        settings = self._settings_value(request)
+        if settings:
+            cmd += ["--settings", json.dumps(settings, ensure_ascii=False)]
         cmd += ["--append-system-prompt", request.system_prompt]
         cmd += (["--resume", request.require_session_id()] if request.resume
                 else ["--session-id", request.require_session_id()])
@@ -280,6 +279,18 @@ class ClaudeEngine(Engine):
         # with a hyphen would be parsed as a flag.
         cmd += ["--", request.prompt]
         return cmd
+
+    def _settings_value(self, request: EngineRequest) -> dict[str, Any]:
+        """Everything --settings has to carry this turn, as one document.
+
+        The flag takes a single value, so the bot's own settings and the
+        per-request progress hook are merged here rather than passed as
+        two sources.
+        """
+        fragments = [load_settings_file(self.profile.paths.engine_settings(self.name))]
+        if request.progress_log is not None:
+            fragments.append(progress_hook_settings(request.progress_log))
+        return merge_settings(*fragments)
 
     #: 2026-09-19 실측 (claude 2.1.270 네이티브 바이너리) - 로그인이 풀리면
     #: 'Please run /login' 을, 인증 자체가 실패하면 'Failed to authenticate' 를
