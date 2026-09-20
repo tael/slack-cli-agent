@@ -449,3 +449,49 @@ class Test전역_MCP_서버가_안_붙는다:
     def test_서버가_없으면_설정_인자를_안_붙인다(self, tmp_path) -> None:
         """빈 mcpServers 를 넘길 자리가 아니다. 제한만 걸면 된다."""
         assert "--mcp-config" not in self.cmd(tmp_path)
+
+
+class Test프로필_MCP_도구도_허용목록_밖이면_닫는다:
+    """--tools 는 내장 도구 집합만 다룬다. 프로필이 MCP 서버를 붙였으면 그
+    도구들은 허용목록에 없어도 모델의 도구 목록에 남는다.
+
+    dontAsk 가 승인 단계에서 거부하지만 그것은 승인 규칙이라, 이름이
+    --allowedTools 나 settings 의 allow 에 들어가면 열린다. 모델이 존재를
+    보고 호출을 시도해 턴을 쓰는 것도 그대로다 (제미나이 리뷰).
+
+    2026-09-20 실측. --tools "Read,Grep,Glob" 만 준 turn 이 붙은 도구를
+    나열하면 전역 MCP 도구가 줄줄이 나온다. --disallowedTools "mcp__*" 를
+    더하면 Glob, Grep, Read 만 남는다.
+    """
+
+    def cmd(self, tmp_path, names, **kwargs):
+        from test_engine import profile_with, request
+        from test_engine_capability import SETTINGS
+
+        from slack_cli_agent.engine.claude import ClaudeEngine
+
+        profile = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            tmp_path=tmp_path,
+            **kwargs,
+        )
+        return ClaudeEngine(profile, SETTINGS).build_command(
+            request(tools=ToolSelection.allow(names))
+        )
+
+    def denied(self, cmd) -> str | None:
+        return cmd[cmd.index("--disallowedTools") + 1] if "--disallowedTools" in cmd else None
+
+    def test_MCP_를_안_허용했으면_통째로_닫는다(self, tmp_path) -> None:
+        assert self.denied(self.cmd(tmp_path, ["Read", "Grep"])) == "mcp__*"
+
+    def test_서버가_붙어_있어도_닫는다(self, tmp_path) -> None:
+        """서버를 붙인 것과 이번 턴이 그 도구를 써도 되는 것은 다르다."""
+        cmd = self.cmd(tmp_path, ["Read"], mcp_servers={"jira": {"command": "jira-mcp"}})
+        assert self.denied(cmd) == "mcp__*"
+
+    def test_MCP_를_허용했으면_안_닫는다(self, tmp_path) -> None:
+        """이름 하나를 열면서 접두어 전체를 닫으면 그 이름도 함께 닫힌다.
+        이 경우의 경계는 승인 목록이 맡는다."""
+        cmd = self.cmd(tmp_path, ["Read", "mcp__jira__jira_search"])
+        assert self.denied(cmd) is None

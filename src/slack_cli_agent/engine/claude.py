@@ -81,15 +81,18 @@ _USAGE_KEY_MAP: Mapping[str, str] = {
 }
 
 
+#: What every MCP tool name starts with: mcp__<server>__<tool>.
+MCP_PREFIX = "mcp__"
+
+
 def _builtin_names(names: tuple[str, ...]) -> list[str]:
     """The built-in tools among what the caller allowed.
 
-    --tools takes names from the built-in set. MCP tools are named
-    mcp__<server>__<tool> and are not in it, so they ride on --allowedTools
-    alone. An empty result is still passed: dropping the argument opens every
+    --tools takes names from the built-in set. MCP tools are not in it, so
+    they ride on --allowedTools alone. An empty result is still passed: dropping the argument opens every
     built-in tool, which is the opposite of an allowlist naming none.
     """
-    return [name for name in names if not name.startswith("mcp__")]
+    return [name for name in names if not name.startswith(MCP_PREFIX)]
 
 
 def progress_hook_settings(log_path: Path) -> dict[str, Any]:
@@ -218,6 +221,16 @@ class ClaudeEngine(Engine):
             # "No such tool available" (sca-6ewc).
             cmd += ["--allowedTools", ",".join(request.tools.names)]
             cmd += ["--tools", ",".join(_builtin_names(request.tools.names))]
+            if not any(name.startswith(MCP_PREFIX) for name in request.tools.names):
+                # --tools covers the built-in set only, so a profile's MCP
+                # tools stay on the model's list whatever the allowlist says.
+                # dontAsk refuses them at approval time, but that is a
+                # permission rule -- a name in --allowedTools or in settings'
+                # allow opens it. Measured 2026-09-20: with this added, a turn
+                # asked what it had answered Glob, Grep, Read and nothing else
+                # (sca-mo4g). Not added when the allowlist names an MCP tool:
+                # the pattern would close that one too.
+                cmd += ["--disallowedTools", f"{MCP_PREFIX}*"]
         for path in request.readable_dirs:
             cmd += ["--add-dir", str(path)]
         skills_dir = self.profile.paths.skills
