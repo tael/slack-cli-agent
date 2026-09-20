@@ -350,6 +350,41 @@ class TestClaudeEngineBuildCommand:
         실린것 = json.loads(cmd[cmd.index("--settings") + 1])
         assert len(실린것["hooks"]["PreToolUse"]) == 2
 
+    @staticmethod
+    def 덧씌움을_쓴다(profile, 수준: str, 내용: dict) -> None:
+        path = profile.paths.engine_settings(f"claude.{수준}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(내용), encoding="utf-8")
+
+    def test_신뢰_수준별_덧씌움이_실린다(self, tmp_path: Path) -> None:
+        """원본은 일반에게 더 막는 파일을 따로 둔다(bot.py:1345-1347).
+        수준마다 파일을 나누지 않고 공통 파일에 덧씌우는 쪽으로 옮겼다 -
+        원본의 owner 와 trusted 는 내용이 같아 두 벌을 같게 유지해야 했다."""
+        from slack_cli_agent.auth.principal import TrustLevel
+
+        profile = claude_profile(tmp_path)
+        self.기본_settings를_쓴다(profile, {"permissions": {"deny": ["공통"]}})
+        self.덧씌움을_쓴다(profile, "general", {"permissions": {"deny": ["일반만"]}})
+        engine = ClaudeEngine(profile, SETTINGS)
+
+        일반 = engine.build_command(request(trust_level=TrustLevel.GENERAL))
+        deny = json.loads(일반[일반.index("--settings") + 1])["permissions"]["deny"]
+        assert deny == ["공통", "일반만"]
+
+        소유자 = engine.build_command(request(trust_level=TrustLevel.OWNER))
+        assert json.loads(소유자[소유자.index("--settings") + 1])["permissions"]["deny"] == ["공통"]
+
+    def test_덧씌움이_없으면_기본만_실린다(self, tmp_path: Path) -> None:
+        """수준별 파일은 운영물이라 없을 수 있다."""
+        from slack_cli_agent.auth.principal import TrustLevel
+
+        profile = claude_profile(tmp_path)
+        self.기본_settings를_쓴다(profile, {"permissions": {"deny": ["공통"]}})
+        cmd = ClaudeEngine(profile, SETTINGS).build_command(
+            request(trust_level=TrustLevel.GENERAL)
+        )
+        assert json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"] == ["공통"]
+
     def test_기본_파일이_깨졌으면_ConfigError_다(self, tmp_path: Path) -> None:
         from slack_cli_agent.core.errors import ConfigError
 
