@@ -134,11 +134,30 @@ MCP 쪽은 프로필이 `--mcp-config` 로 붙이는 서버를 기준으로 계�
 `FORBIDDEN` 은 `--disallowedTools "*"` 그대로 두었다. 실측한 명령 모양이
 그것이다. `UNRESTRICTED` 에는 세 인자를 모두 안 붙인다.
 
-## 남은 구멍
+## 사용자 settings 의 env 가 도구 프로세스에 들어간다
 
-원본 `bot.py:1343-1348` 은 `--setting-sources project` 와 `--settings <봇 전용
-파일>` 로 사용자 settings 를 배제한다. 이식본에는 그 두 인자가 없다. 위에서
-보듯 그것만으로 Bash 가 막히지는 않으므로 이번 수정과는 별개다.
+`engine/environment.py` 는 봇 프로세스의 환경변수를 허용목록으로 좁힌다.
+그런데 사용자 `~/.claude/settings.json` 의 `env` 블록은 CLI 가 자기 프로세스에
+직접 주입하므로 그 허용목록을 우회한다. 그 파일의 `env` 에는 슬랙 사용자 토큰
+2개가 들어 있다.
+
+`env -i` 로 그 두 변수가 없는 환경을 만들고 잰 것이다. 프롬프트는 "Bash 로
+`env | grep -c SLACK_MCP_` 를 실행하고 숫자만 답하라" 다.
+
+| 조건 | 답 |
+|---|---|
+| `--setting-sources project` 없이 (모델 sonnet) | 2 |
+| `--setting-sources project` (모델 haiku) | 0 |
+
+같은 조건을 haiku 로 배제 없이 돌리면 `Prompt is too long` 으로 400 이 난다.
+사용자 settings 가 플러그인과 스킬, CLAUDE.md 를 함께 싣기 때문이다. 즉 이
+인자는 토큰 노출만이 아니라 봇 턴의 컨텍스트 크기에도 영향을 준다.
+
+`--setting-sources project` 는 `.claude/settings.json`(작업 디렉터리)만 남기고
+사용자·로컬 설정을 뺀다. 채널 workdir 을 git 체크아웃으로 잡으면 그 저장소의
+설정이 대신 실리므로, 그 자리에 무엇이 있는지는 따로 봐야 한다.
+
+## 남은 구멍
 
 `--restricted` 는 코드 실행 도구와 WebFetch 를 빼고 사용자·프로젝트 설정을
 무시하며 파일 도구를 작업 디렉터리에 가둔다. bypassPermissions 도 거부한다.
