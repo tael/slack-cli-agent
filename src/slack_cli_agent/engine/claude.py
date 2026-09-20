@@ -37,7 +37,7 @@ import logging
 import shlex
 import sys
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -93,6 +93,33 @@ def _builtin_names(names: tuple[str, ...]) -> list[str]:
     built-in tool, which is the opposite of an allowlist naming none.
     """
     return [name for name in names if not name.startswith(MCP_PREFIX)]
+
+
+def _mcp_server_of(name: str) -> str:
+    """The server part of mcp__<server>__<tool>."""
+    return name[len(MCP_PREFIX) :].split("__", 1)[0]
+
+
+def _mcp_denials(names: tuple[str, ...], servers: Iterable[str]) -> list[str]:
+    """Patterns closing the MCP servers the allowlist does not name.
+
+    --tools covers the built-in set only, so a profile's MCP tools stay on the
+    model's list whatever the allowlist says. dontAsk refuses them at approval
+    time, but that is a permission rule -- a name in --allowedTools or in
+    settings' allow opens it.
+
+    The server is as narrow as this gets. Measured 2026-09-20:
+    --disallowedTools "mcp__playwright__*" removed that server's tools and left
+    mcp__playwright-daangn__ alone, so the pattern cuts at the server and not at
+    the shared prefix. The other direction does not work -- closing a server and
+    naming one of its tools in --allowedTools did not bring that tool back, the
+    wildcard wins. So a server holding an allowed tool stays open whole, and its
+    other tools are left to the approval list (sca-6ewc).
+    """
+    allowed_servers = {_mcp_server_of(name) for name in names if name.startswith(MCP_PREFIX)}
+    if not allowed_servers:
+        return [f"{MCP_PREFIX}*"]
+    return [f"{MCP_PREFIX}{server}__*" for server in sorted(servers) if server not in allowed_servers]
 
 
 def progress_hook_settings(log_path: Path) -> dict[str, Any]:
@@ -221,16 +248,9 @@ class ClaudeEngine(Engine):
             # "No such tool available" (sca-6ewc).
             cmd += ["--allowedTools", ",".join(request.tools.names)]
             cmd += ["--tools", ",".join(_builtin_names(request.tools.names))]
-            if not any(name.startswith(MCP_PREFIX) for name in request.tools.names):
-                # --tools covers the built-in set only, so a profile's MCP
-                # tools stay on the model's list whatever the allowlist says.
-                # dontAsk refuses them at approval time, but that is a
-                # permission rule -- a name in --allowedTools or in settings'
-                # allow opens it. Measured 2026-09-20: with this added, a turn
-                # asked what it had answered Glob, Grep, Read and nothing else
-                # (sca-mo4g). Not added when the allowlist names an MCP tool:
-                # the pattern would close that one too.
-                cmd += ["--disallowedTools", f"{MCP_PREFIX}*"]
+            denied = _mcp_denials(request.tools.names, self.profile.mcp_servers)
+            if denied:
+                cmd += ["--disallowedTools", ",".join(denied)]
         for path in request.readable_dirs:
             cmd += ["--add-dir", str(path)]
         skills_dir = self.profile.paths.skills

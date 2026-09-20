@@ -98,8 +98,27 @@ settings 의 allow 에 이름이 들어가면 열린다.
 인자를 빼면 전체 내장 도구가 열려 뜻이 반대가 된다.
 
 허용목록에 MCP 이름이 하나도 없으면 `--disallowedTools "mcp__*"` 를 더한다.
-이름을 하나 열면서 접두어 전체를 닫으면 그 이름도 함께 닫히므로, MCP 를 허용한
-턴에는 안 붙이고 그 경계를 승인 목록에 맡긴다.
+있으면 그 이름이 속한 서버만 열어 두고 프로필의 나머지 서버를
+`mcp__<서버>__*` 로 닫는다. 근거는 아래 절이다.
+
+## MCP 차단은 서버 단위까지 좁혀진다
+
+| 조건 | 남은 MCP 서버 |
+|---|---|
+| 아무것도 안 닫음 | airbnb, claude_ai_*, context7, github, google-workspace, memory-bank-mcp, playwright, playwright-daangn, sequential-thinking |
+| `--disallowedTools "mcp__playwright__*"` | 위에서 playwright 만 빠짐. playwright-daangn 은 남음 |
+| `--disallowedTools "mcp__playwright__*,mcp__github__*"` | 둘 다 빠짐 |
+
+패턴이 접두어가 아니라 서버 이름 전체에서 끊긴다. 쉼표로 여러 패턴을 넘기는
+것도 된다.
+
+반대 방향은 안 된다. `--disallowedTools "mcp__playwright__*"` 와
+`--allowedTools "mcp__playwright__browser_snapshot"` 를 함께 넘겨도 그 도구는
+안 돌아온다. 와일드카드 거부가 개별 허용을 이긴다.
+
+그래서 허용한 도구가 속한 서버는 통째로 열려 있고 그 서버의 다른 도구는 못
+닫는다. 서버가 어떤 도구를 내는지는 붙여 봐야 알기 때문에 목록을 미리 만들
+수도 없다. 그 경계는 승인 목록이 맡는다.
 
 `FORBIDDEN` 은 `--disallowedTools "*"` 그대로 두었다. 실측한 명령 모양이
 그것이다. `UNRESTRICTED` 에는 세 인자를 모두 안 붙인다.
