@@ -690,7 +690,7 @@ async function saveProfile(){
 let channelsData = null;
 
 function channelRowHtml(c, idx){
-  const knowledge = (c.knowledge || []).join(", ");
+  const knowledge = c.knowledge || "";
   const trusted = (c.trusted_users || []).join(", ");
   return `<tr data-idx="${idx}">
     <td>${esc(c.name || c.channel_id)}<div class="dim" style="font-size:10.5px">${esc(c.channel_id)}</div></td>
@@ -701,7 +701,7 @@ function channelRowHtml(c, idx){
     <td class="editcell"><input class="cell-input" data-f="chat" value="${esc(c.chat||"")}"></td>
     <td class="editcell"><input class="cell-input" data-f="workdir" value="${esc(c.workdir||"")}"></td>
     <td class="editcell"><input class="cell-input" data-f="persona" value="${esc(c.persona||"")}"></td>
-    <td class="editcell"><input class="cell-input" data-f="knowledge" value="${esc(knowledge)}" title="쉼표로 구분"></td>
+    <td class="editcell"><input class="cell-input" data-f="knowledge" value="${esc(knowledge)}" title="지식을 함께 쓸 채널 슬러그 하나"></td>
     <td class="editcell"><input class="cell-input" data-f="trusted_users" value="${esc(trusted)}" title="쉼표로 구분"></td>
     <td><input type="checkbox" class="cell-check" data-f="answer_unaddressed" ${c.answer_unaddressed?"checked":""}></td>
     <td><input type="checkbox" class="cell-check" data-f="disclose_mechanism" ${c.disclose_mechanism?"checked":""}></td>
@@ -761,7 +761,7 @@ async function saveChannel(idx){
   const changes = {};
   row.querySelectorAll(".cell-input").forEach(inp => {
     const f = inp.dataset.f;
-    if (f === "knowledge" || f === "trusted_users"){
+    if (f === "trusted_users"){
       changes[f] = inp.value.split(",").map(s => s.trim()).filter(Boolean);
     } else {
       changes[f] = inp.value;

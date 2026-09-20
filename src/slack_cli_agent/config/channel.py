@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from ..core.channel_kind import is_direct_message_channel
 from ..core.errors import ConfigError
 
 log = logging.getLogger(__name__)
@@ -21,6 +22,9 @@ log = logging.getLogger(__name__)
 #: default said True (sca-75v).
 DEFAULT_RICH = True
 DEFAULT_PROGRESS = True
+
+#: The shared slug every DM uses (bot.py:133).
+DM_SLUG = "dm"
 
 KNOWN_KEYS = frozenset(
     {
@@ -57,7 +61,9 @@ class ChannelConfig:
     model: str = ""
     effort: str = ""
     persona: str = ""
-    knowledge: tuple[str, ...] = ()
+    #: Another channel's slug, so a pair that must know the same things
+    #: shares one knowledge file. Used by `channel_slug` below.
+    knowledge: str = ""
     trusted_users: frozenset[str] = frozenset()
     user_tools: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     """Per-user extra tools. The org-specific value (an ops script, say) lives
@@ -112,7 +118,7 @@ class ChannelConfig:
             model=str(data.get("model", "")),
             effort=str(data.get("effort", "")),
             persona=str(data.get("persona", "")),
-            knowledge=tuple(data.get("knowledge") or ()),
+            knowledge=_first_alias(data.get("knowledge")),
             trusted_users=frozenset(data.get("trusted_users") or ()),
             user_tools={
                 str(user): tuple(str(tool) for tool in (tools or ()))
@@ -279,3 +285,31 @@ class ChannelRegistry:
                 log.warning("채널 설정 값을 읽지 못해 안전한 쪽으로 읽는다 : %s", message)
             configs[cid] = config
         return configs
+
+
+def _first_alias(value: object) -> str:
+    """The knowledge alias, which is one slug.
+
+    An earlier pass parsed this as a tuple, so a deployed file may hold a
+    list. Reading the first entry keeps such a file loading; the rest is
+    dropped because there is nowhere to put a second slug.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)) and value:
+        return str(value[0])
+    return ""
+
+
+def channel_slug(channel: str, config: ChannelConfig | None) -> str:
+    """The name for this channel's knowledge file and response archive.
+
+    Matches bot.py:131. Every DM shares one name so personal conversations do
+    not each grow their own knowledge file. `knowledge` comes before `name` so
+    a pair of channels can share what they know.
+    """
+    if is_direct_message_channel(channel):
+        return DM_SLUG
+    if config is None:
+        return channel
+    return config.knowledge or config.name or channel

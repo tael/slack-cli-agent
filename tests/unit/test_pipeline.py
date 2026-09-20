@@ -1680,6 +1680,40 @@ def test_채널_설정이_없으면_채널_ID_로_기록한다():
     assert archive.calls[0]["channel_slug"] == "C1"
 
 
+def test_DM_은_한_슬러그로_기록한다():
+    """개인 대화마다 지식 파일과 아카이브가 갈리면 안 된다 (bot.py:133)."""
+    archive = FakeResponseArchive()
+    pipeline, _ = build_pipeline(responses=[ok_response()], response_archive=archive)
+
+    pipeline.handle(make_ctx(channel="D0AAA"))
+
+    assert archive.calls[0]["channel_slug"] == "dm"
+
+
+def test_knowledge_별칭이_기록_슬러그가_된다():
+    """지식을 함께 쓰는 짝은 아카이브도 같은 자리에 쌓인다."""
+    archive = FakeResponseArchive()
+    pipeline, _ = build_pipeline(
+        responses=[ok_response()],
+        channels={"C1": ChannelConfig(channel_id="C1", name="개발-비공개", knowledge="개발")},
+        response_archive=archive,
+    )
+
+    pipeline.handle(make_ctx())
+
+    assert archive.calls[0]["channel_slug"] == "개발"
+
+
+def test_DM_은_프롬프트_조립에도_같은_슬러그로_간다():
+    """아카이브만 맞고 지식 선택이 어긋나면 답이 그 채널 것이 아니게 된다."""
+    composer = FakeComposer()
+    pipeline, _ = build_pipeline(responses=[ok_response()], composer=composer)
+
+    pipeline.handle(make_ctx(channel="D0AAA"))
+
+    assert composer.contexts[0].channel_slug == "dm"
+
+
 def test_기록에_실패해도_응답은_그대로_나간다():
     """기록은 이미 끝난 요청의 부가 자료다. 그것 때문에 답을 버리지 않는다."""
     archive = FakeResponseArchive(fail=True)
