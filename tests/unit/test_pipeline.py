@@ -1704,6 +1704,20 @@ def test_knowledge_별칭이_기록_슬러그가_된다():
     assert archive.calls[0]["channel_slug"] == "개발"
 
 
+def test_knowledge_별칭도_프롬프트_조립에_간다():
+    """아카이브만 맞고 지식 선택이 어긋나면 별칭을 적은 뜻이 없다."""
+    composer = FakeComposer()
+    pipeline, _ = build_pipeline(
+        responses=[ok_response()],
+        channels={"C1": ChannelConfig(channel_id="C1", name="개발-비공개", knowledge="개발")},
+        composer=composer,
+    )
+
+    pipeline.handle(make_ctx())
+
+    assert composer.contexts[0].channel_slug == "개발"
+
+
 def test_DM_은_프롬프트_조립에도_같은_슬러그로_간다():
     """아카이브만 맞고 지식 선택이 어긋나면 답이 그 채널 것이 아니게 된다."""
     composer = FakeComposer()
