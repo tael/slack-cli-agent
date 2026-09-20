@@ -19,6 +19,7 @@ from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.errors import ConfigError
 from slack_cli_agent.engine.base import Engine, EngineRequest, Usage
+from slack_cli_agent.engine.capability import ToolRestriction
 from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
 from slack_cli_agent.engine.gemini import GeminiEngine
@@ -55,9 +56,6 @@ class EngineFixture(NamedTuple):
     expected_usage: Usage
     # Builds (stdout, stderr, returncode) for engine.parse() from a native usage dict.
     build_stdout: Callable[[dict[str, Any]], tuple[str, str, int]]
-    # None: allowed_tools reflects in the command like other engines.
-    # str: known engine gap; xfail(strict=True) with this reason.
-    allowed_tools_xfail_reason: str | None = None
     # The literal handed to build_command(effort=...) and expected back
     # verbatim in the command. Default is an arbitrary marker string;
     # engines that validate/normalize effort (e.g. Gemini's low/medium/high)
@@ -318,17 +316,7 @@ class TestEngineContract:
             engine.build_command(_request())
 
 
-def _allowed_tools_params() -> list[Any]:
-    params = []
-    for fx in ENGINE_FIXTURES:
-        marks: tuple[Any, ...] = ()
-        if fx.allowed_tools_xfail_reason:
-            marks = (pytest.mark.xfail(strict=True, reason=fx.allowed_tools_xfail_reason),)
-        params.append(pytest.param(fx, id=fx.id, marks=marks))
-    return params
-
-
-@pytest.mark.parametrize("fx", _allowed_tools_params())
+@pytest.mark.parametrize("fx", _fixture_params())
 def test_허용_도구_목록이_명령에_반영된다(fx: EngineFixture, tmp_path: Path) -> None:
     """명령에 나타나는 것과 그 엔진이 강제하는 것은 다르다.
 
@@ -342,6 +330,23 @@ def test_허용_도구_목록이_명령에_반영된다(fx: EngineFixture, tmp_p
     joined = _joined(cmd)
     assert "전용도구A" in joined
     assert "전용도구B" in joined
+
+
+@pytest.mark.parametrize("fx", _fixture_params())
+def test_허용목록을_강제하거나_문구로_싣거나_둘_중_하나다(fx: EngineFixture, tmp_path: Path) -> None:
+    """명령에 이름이 보이는 것으로는 강제와 알림이 구분되지 않는다.
+
+    도구 집합을 실제로 닫는 엔진은 문구를 안 싣는다. 같은 제약을 두 번
+    말하는 것이 되고 전송 바이트만 늘기 때문이다. 못 닫는 엔진은 반드시
+    싣는다. 안 실으면 허용목록이 모델에 아무 형태로도 안 닿는다.
+    """
+    engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
+    request = _request(tools=ToolSelection.allow(["전용도구A", "전용도구B"]))
+    note = engine.tool_allow_note(request)
+    강제한다 = engine.capabilities_for(request).tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+    assert 강제한다 is (note == "")
+    if note:
+        assert note in _joined(engine.build_command(request))
 
 
 @pytest.mark.parametrize("fx", _fixture_params())
