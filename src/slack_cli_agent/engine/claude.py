@@ -288,11 +288,21 @@ class ClaudeEngine(Engine):
     def _settings_value(self, request: EngineRequest) -> dict[str, Any]:
         """Everything --settings has to carry this turn, as one document.
 
-        The flag takes a single value, so the bot's own settings and the
-        per-request progress hook are merged here rather than passed as
-        two sources.
+        The flag takes a single value, so the bot's own settings, the
+        overlay for this trust level and the per-request progress hook are
+        merged here rather than passed as several sources.
+
+        The original keeps one whole file per trust level (bot.py:1345).
+        An overlay instead: its owner and trusted files hold the same
+        entries, so two copies had to be kept in step by hand.
         """
-        fragments = [load_settings_file(self.profile.paths.engine_settings(self.name))]
+        paths = self.profile.paths
+        fragments = [
+            load_settings_file(paths.engine_settings(self.name)),
+            load_settings_file(
+                paths.engine_settings(f"{self.name}.{request.trust_level.name.lower()}")
+            ),
+        ]
         if request.progress_log is not None:
             fragments.append(progress_hook_settings(request.progress_log))
         return merge_settings(*fragments)
