@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import logging
 import time
 from collections.abc import Sequence
@@ -394,6 +395,23 @@ class Test복구보고:
         """건수가 없으면 회수가 됐는지 0건이었는지 구분되지 않는다."""
         보낸것 = [kwargs for 이름, kwargs in self.복구시킨다(app) if 이름 == "chat_postMessage"]
         assert any("2건" in str(kwargs) for kwargs in 보낸것), 보낸것
+
+    def test_MCP_서버_상태를_함께_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        """원본 bot.py:6857 이 보고에 담는 줄이다. 노트북이 잠들었다 깨어난 뒤
+        MCP 가 조용히 빠진 상태를 알아챌 계기가 여기 말고 없다."""
+        보낸것 = [kwargs for 이름, kwargs in self.복구시킨다(app) if 이름 == "chat_postMessage"]
+        assert any("MCP 서버" in str(kwargs) for kwargs in 보낸것), 보낸것
+
+    def test_기동_못_하는_MCP_서버를_이름으로_알린다(
+        self, app: Application, client: FakeSlackClient
+    ) -> None:
+        설정 = app.profile.paths.mcp_config
+        설정.parent.mkdir(parents=True, exist_ok=True)
+        설정.write_text(json.dumps({"mcpServers": {"없는서버": {"command": "/없는/경로/binary"}}}))
+        보낸것 = [kwargs for 이름, kwargs in self.복구시킨다(app) if 이름 == "chat_postMessage"]
+        합친것 = str(보낸것)
+        assert "없는서버" in 합친것, 보낸것
+        assert "도구가 빠진 채로" in 합친것, 보낸것
 
     def test_끊기지_않았으면_안_알린다(self, app: Application, client: FakeSlackClient) -> None:
         워커 = app.worker()

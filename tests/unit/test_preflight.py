@@ -1,6 +1,6 @@
 """기동 전 점검. PreflightCheck, PreflightRunner, 구체 점검 4종.
 
-`McpServerCheck._mcp_ready` 는 원본 `bot.py` 의 `mcp_ready()` 를 그대로
+`engine.mcp_health.broken_mcp_servers` 는 원본 `bot.py` 의 `mcp_ready()` 를 그대로
 옮긴 이식 대상이다. 입력·기대 출력은 원본 소스를 읽어 로직을 따라간
 것이다 — 실행 파일이 없으면 "실행 파일 없음", 셰뱅 인터프리터를 PATH 에서
 못 찾으면 그 이름으로 실패 문구를 낸다.
