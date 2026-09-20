@@ -302,10 +302,57 @@ class TestClaudeEngineBuildCommand:
         assert cmd[cmd.index("--model") + 1] == "claude-opus-5"
         assert cmd[cmd.index("--effort") + 1] == "high"
 
-    def test_진행_로그가_없으면_settings를_안_붙인다(self, tmp_path: Path) -> None:
+    def test_기본_파일도_진행_로그도_없으면_settings를_안_붙인다(self, tmp_path: Path) -> None:
         profile = claude_profile(tmp_path)
         engine = ClaudeEngine(profile, SETTINGS)
         assert "--settings" not in engine.build_command(request())
+
+    @staticmethod
+    def 기본_settings를_쓴다(profile, 내용: dict) -> None:
+        path = profile.paths.engine_settings("claude")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(내용), encoding="utf-8")
+
+    def test_기본_파일이_있으면_진행_로그가_없어도_붙인다(self, tmp_path: Path) -> None:
+        """사용자 settings 를 배제하면 deny 가 여기 말고는 갈 자리가 없다."""
+        profile = claude_profile(tmp_path)
+        self.기본_settings를_쓴다(profile, {"permissions": {"deny": ["Bash"]}})
+        cmd = ClaudeEngine(profile, SETTINGS).build_command(request())
+        실린것 = json.loads(cmd[cmd.index("--settings") + 1])
+        assert 실린것["permissions"]["deny"] == ["Bash"]
+
+    def test_기본_파일과_진행_훅이_한_값으로_간다(self, tmp_path: Path) -> None:
+        """--settings 는 값 하나만 받는다. 두 번 붙이면 뒤가 앞을 덮는다."""
+        profile = claude_profile(tmp_path)
+        self.기본_settings를_쓴다(profile, {"permissions": {"deny": ["Bash"]}})
+        engine = ClaudeEngine(profile, SETTINGS)
+        cmd = engine.build_command(request(progress_log=tmp_path / "p.log"))
+        assert cmd.count("--settings") == 1
+        실린것 = json.loads(cmd[cmd.index("--settings") + 1])
+        assert 실린것["permissions"]["deny"] == ["Bash"]
+        assert 실린것["hooks"]["PreToolUse"]
+
+    def test_기본_파일의_훅도_함께_남는다(self, tmp_path: Path) -> None:
+        """운영자가 건 훅을 진행 훅이 덮으면 그 훅이 조용히 안 돈다."""
+        profile = claude_profile(tmp_path)
+        self.기본_settings를_쓴다(
+            profile,
+            {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"command": "운영자"}]}]}},
+        )
+        engine = ClaudeEngine(profile, SETTINGS)
+        cmd = engine.build_command(request(progress_log=tmp_path / "p.log"))
+        실린것 = json.loads(cmd[cmd.index("--settings") + 1])
+        assert len(실린것["hooks"]["PreToolUse"]) == 2
+
+    def test_기본_파일이_깨졌으면_ConfigError_다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.core.errors import ConfigError
+
+        profile = claude_profile(tmp_path)
+        path = profile.paths.engine_settings("claude")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("json 이 아니다", encoding="utf-8")
+        with pytest.raises(ConfigError):
+            ClaudeEngine(profile, SETTINGS).build_command(request())
 
     def test_진행_로그가_있으면_도구_시작_훅을_등록한다(self, tmp_path: Path) -> None:
         import sys
