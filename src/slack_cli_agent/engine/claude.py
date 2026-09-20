@@ -232,6 +232,11 @@ class ClaudeEngine(Engine):
             str(self.spec.binary),
             "-p",
             "--output-format", "json",
+            # Without this the operator's own ~/.claude/settings.json rides
+            # along: its permissions.allow, its env block and its hooks all
+            # apply to the bot's turn. The bot's own file goes in through
+            # --settings instead (bot.py:1343).
+            "--setting-sources", "project",
             "--permission-mode", "dontAsk",
             "--model", request.require_model(),
             "--effort", request.effort,
