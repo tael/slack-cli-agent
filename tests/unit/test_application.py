@@ -1941,6 +1941,24 @@ class Test감시확인턴의_조립맥락:
 
         assert 조립.받은맥락 and 조립.받은맥락[0].watch_check is True
 
+    def test_감시_확인_턴도_DM_은_한_슬러그를_쓴다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """이 자리도 슬러그를 따로 산출했다. 파이프라인만 고치면 감시 턴의
+        지식 선택이 어긋난다 (sca-pox7)."""
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.reliability.watchjobs import WatchJob
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        조립 = _프롬프트조립대역()
+        app._composer = lambda: 조립  # type: ignore[method-assign]
+        monkeypatch.setattr(EngineRunner, "run", lambda self, engine, request: None)
+
+        app._watch_run_check(WatchJob(
+            id=1, channel="D0AAA", thread_ts="1.1", condition="배포 확인",
+            created_at=0.0, last_run=None, trust=TrustLevel.OWNER,
+        ), WatchOutcome.UNKNOWN)
+
+        assert 조립.받은맥락[0].channel_slug == "dm"
+
     def test_평상시_경로는_거짓이다(self, tmp_path: Path) -> None:
         """기본값이 참이면 모든 턴이 확인 턴 안내를 받아 아무도 감시를 등록하지
         못한다. 확인 턴 쪽만 보면 그 뒤집힘을 못 잡는다."""

@@ -23,6 +23,16 @@ class Test슬러그_산출:
         """DM 을 등록부에 넣어도 개인 대화마다 지식 파일이 갈리면 안 된다."""
         assert channel_slug("D0AAA", _config(name="누구와의대화")) == "dm"
 
+    def test_DM_은_knowledge_보다도_앞선다(self) -> None:
+        """DM 에 별칭을 적어도 개인 대화가 갈리면 안 된다. 원본은 knowledge
+        를 보기 전에 DM 을 먼저 판정한다 (bot.py:137-143)."""
+        assert channel_slug("D0AAA", _config(name="n", knowledge="개발")) == "dm"
+
+    def test_그룹_DM_은_묶지_않는다(self) -> None:
+        """G 로 시작하는 그룹 DM 은 여럿이 보는 자리라 1:1 대화와 지식을
+        공유하면 안 된다. 원본도 D 만 본다 (bot.py:137)."""
+        assert channel_slug("G0AAA", _config(name="그룹")) == "그룹"
+
     def test_knowledge_가_이름보다_앞선다(self) -> None:
         assert channel_slug("C1", _config(name="개발-비공개", knowledge="개발")) == "개발"
 

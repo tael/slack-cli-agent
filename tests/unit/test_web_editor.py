@@ -187,6 +187,20 @@ class TestChannelEditor:
         assert result[0]["channel_id"] == "C1"
         assert result[0]["name"] == "일반"
 
+    def test_knowledge_는_문자열로_오가고_문자열로_저장된다(self, tmp_path: Path) -> None:
+        """원본은 별칭 하나다. 목록으로 주고받으면 둘째 값이 조용히 버려진다."""
+        path = tmp_path / "channels.json"
+        write(path, {"C1": {"name": "개발-비공개", "knowledge": "개발"}})
+        editor = ChannelEditor(ChannelRegistry(path))
+
+        assert editor.list()[0]["knowledge"] == "개발"
+
+        result = editor.update("C1", {"knowledge": "운영"})
+
+        assert result["knowledge"] == "운영"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        assert raw["C1"]["knowledge"] == "운영"
+
     def test_update_은_기존_ChannelRegistry_update_를_그대로_쓴다(self, tmp_path: Path) -> None:
         path = tmp_path / "channels.json"
         write(path, {"C1": {"name": "일반"}})
