@@ -221,6 +221,7 @@ class GeminiEngine(Engine):
             + self.readable_paths_note(request.readable_dirs)
             + self.write_paths_note(request)
             + self.tool_ban_note(request)
+            + self.tool_allow_note(request)
             + UNTRUSTED_INPUT_MARK
             + request.prompt
         )

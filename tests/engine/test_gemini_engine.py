@@ -511,3 +511,28 @@ class Test제한에_걸려_잘린_답을_그대로_안_낸다:
         """stderr 에 무엇이든 있으면 잘림으로 읽으면 경고 한 줄에 답이 바뀐다."""
         answer = self.parse(tmp_path, "[agy] warning: something else\n")
         assert answer.raw.get("truncated") is not True
+
+
+class Test허용목록을_문구로_싣는다:
+    """agy 는 ALLOWLIST 요청에 아무 인자도 못 건다. 강제가 없으면 최소한
+    프롬프트에 적어 세 엔진이 같은 방향으로 다루게 한다 (sca-f9k0).
+
+    문구를 만드는 것과 실제로 싣는 것은 다르다. 여기는 후자를 본다.
+    """
+
+    def _prompt(self, tmp_path: Path, tools: ToolSelection) -> str:
+        cmd = _engine(tmp_path).build_command(_request(tools=tools))
+        return cmd[cmd.index("-p") + 1]
+
+    def test_읽기_전용_요청에_문구가_실린다(self, tmp_path: Path) -> None:
+        prompt = self._prompt(tmp_path, ToolSelection.allow(["Read", "Grep"]))
+        assert "읽기만 한다" in prompt
+
+    def test_쓰기가_섞이면_이름이_실린다(self, tmp_path: Path) -> None:
+        prompt = self._prompt(tmp_path, ToolSelection.allow(["Read", "Write"]))
+        assert "Write" in prompt
+
+    def test_제한_없는_요청에는_안_실린다(self, tmp_path: Path) -> None:
+        prompt = self._prompt(tmp_path, ToolSelection.unrestricted())
+        assert "이번 턴은 읽기만 한다" not in prompt
+        assert "쓸 수 있는 것은 다음뿐이다" not in prompt

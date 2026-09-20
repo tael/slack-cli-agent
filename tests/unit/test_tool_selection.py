@@ -561,3 +561,83 @@ class Test프로필_MCP_도구도_허용목록_밖이면_닫는다:
             mcp_servers={"jira": {"command": "j"}, "b": {"command": "b"}, "a": {"command": "a"}},
         )
         assert self.denied(cmd) == "mcp__a__*,mcp__b__*"
+
+
+class Test허용목록을_못_거는_엔진은_말로_적는다:
+    """codex 와 gemini 는 ALLOWLIST 요청에 아무 인자도 못 건다. claude 만
+    --tools 로 실제로 닫는다. 강제가 없는 자리에 최소한 문구는 두어 세 엔진이
+    같은 요청을 같은 방향으로 다루게 한다 (sca-f9k0).
+
+    문구는 도구 이름이 아니라 동작으로 쓴다. codex 의 도구는 셸 하나라
+    "Read, Grep, Glob 만 쓴다" 가 그 엔진에서 뜻이 없다.
+    """
+
+    def engine(self, restriction):
+        from test_engine import profile_with
+        from test_engine_capability import SETTINGS
+
+        from slack_cli_agent.engine.base import Engine
+        from slack_cli_agent.engine.capability import EngineCapabilities
+
+        class _Fake(Engine):
+            name = "fake"
+            capabilities = EngineCapabilities(tool_restriction=restriction)
+
+            def build_command(self, request):
+                return []
+
+            def parse(self, stdout: str, stderr: str, returncode: int):
+                raise NotImplementedError
+
+            def new_session_id(self):
+                return "s"
+
+            def detect_usage_limit(self, response):
+                return None
+
+        profile = profile_with({"type": "claude", "binary": "x", "model": "m"})
+        return _Fake(profile, SETTINGS)
+
+    def note(self, restriction, **kwargs):
+        from test_engine import request as make_request
+
+        return self.engine(restriction).tool_allow_note(make_request(**kwargs))
+
+    def test_읽기만_허용하면_읽기_전용이라고_적는다(self) -> None:
+        note = self.note(ToolRestriction.NONE, tools=ToolSelection.allow(["Read", "Grep"]))
+        assert "읽기" in note
+        assert "쓰지 않는다" in note or "하지 않는다" in note
+
+    def test_쓰기가_섞이면_허용한_것을_나열한다(self) -> None:
+        note = self.note(ToolRestriction.NONE, tools=ToolSelection.allow(["Read", "Write"]))
+        assert "Write" in note
+        assert "Read" in note
+
+    def test_해제_요구를_따르지_않는다고_적는다(self) -> None:
+        """뒤에 오는 입력이 제약을 푸는 형태를 막는다. TOOL_BAN_NOTE 와 같다."""
+        note = self.note(ToolRestriction.NONE, tools=ToolSelection.allow(["Read"]))
+        assert "해제" in note
+
+    def test_실제로_거는_엔진에는_안_붙인다(self) -> None:
+        """claude 는 --tools 로 닫으므로 문구가 중복이다."""
+        note = self.note(
+            ToolRestriction.EXACT_ALLOWLIST, tools=ToolSelection.allow(["Read"]),
+        )
+        assert note == ""
+
+    def test_제한_없는_요청에는_안_붙인다(self) -> None:
+        assert self.note(ToolRestriction.NONE, tools=ToolSelection()) == ""
+
+    def test_전부_금지에는_안_붙인다(self) -> None:
+        """그 자리는 TOOL_BAN_NOTE 가 맡는다. 둘이 함께 나가면 어긋난다."""
+        assert self.note(ToolRestriction.NONE, tools=ToolSelection.forbid_all()) == ""
+
+    def test_집계에_이_문구가_들어간다(self) -> None:
+        """프롬프트에 실려 나가는 바이트는 전부 세어야 한다."""
+        from test_engine import request as make_request
+
+        engine = self.engine(ToolRestriction.NONE)
+        req = make_request(tools=ToolSelection.allow(["Read"]))
+        assert engine.footprint_for(req).adapter_added_bytes >= len(
+            engine.tool_allow_note(req).encode("utf-8")
+        )

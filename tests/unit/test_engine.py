@@ -513,7 +513,8 @@ class TestCodexEngineBuildCommand:
         assert any(tok.startswith("developer_instructions=") for tok in cmd)
         assert "--sandbox" in cmd
         assert "-C" in cmd
-        assert cmd[-1] == "안녕"
+        # 제약 문구가 앞에 붙으므로 끝으로 본다 (sca-f9k0).
+        assert cmd[-1].endswith("안녕")
 
     def test_재개_스레드는_resume과_sandbox_mode를_쓴다(self, tmp_path: Path) -> None:
         profile = codex_profile(tmp_path)
