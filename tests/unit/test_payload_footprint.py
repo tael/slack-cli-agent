@@ -20,6 +20,7 @@ from slack_cli_agent.engine.footprint import (
     INSTRUCTION_TRANSPORT_USER_PROMPT,
 )
 from slack_cli_agent.engine.gemini import GeminiEngine
+from slack_cli_agent.engine.tool_selection import ToolSelection
 
 
 class Test바이트를_센다:
@@ -167,7 +168,11 @@ class Test선언은_실제_명령과_맞는다:
 
     def test_codex_신규턴은_알릴_것이_없으면_안_보낸다(self, tmp_path: Path) -> None:
         엔진 = CodexEngine(codex_profile(tmp_path), SETTINGS)
-        요청 = request(resume=False, system_prompt="", readable_dirs=())
+        # 허용목록도 알릴 것에 든다. 제한 없는 요청이라야 전제가 성립한다.
+        요청 = request(
+            resume=False, system_prompt="", readable_dirs=(),
+            tools=ToolSelection.unrestricted(),
+        )
         cmd = 엔진.build_command(요청)
         assert not any(tok.startswith("developer_instructions=") for tok in cmd)
         assert 엔진.footprint_for(요청).adapter_added_bytes == 0

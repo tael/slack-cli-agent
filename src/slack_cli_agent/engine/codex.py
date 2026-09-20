@@ -166,7 +166,7 @@ class CodexEngine(Engine):
             # The ban rides on the turn prompt, not on the session-scoped
             # instructions, so it is counted separately from the path note.
             return dataclasses.replace(base, adapter_added_bytes=utf8_bytes(
-                self._session_path_note(request) + self._turn_ban_prefix(request),
+                self._session_path_note(request) + self._turn_constraint_prefix(request),
             ))
         return dataclasses.replace(
             base,
@@ -211,7 +211,7 @@ class CodexEngine(Engine):
                    request.require_session_id(), "--", self._resume_prompt(request)]
         else:
             cmd += ["--sandbox", sandbox, "-C", str(request.workdir), "--",
-                    self._turn_ban_prefix(request) + request.prompt]
+                    self._turn_constraint_prefix(request) + request.prompt]
         return cmd
 
     def _session_path_note(self, request: EngineRequest) -> str:
@@ -223,15 +223,18 @@ class CodexEngine(Engine):
         nothing about where it may read (sca-9u18)."""
         return self.readable_paths_note(request.readable_dirs) + self.write_paths_note(request)
 
-    def _turn_ban_prefix(self, request: EngineRequest) -> str:
+    def _turn_constraint_prefix(self, request: EngineRequest) -> str:
         """The tool ban on a first turn.
 
         It cannot go in developer_instructions: that value is fixed for the
         session, so a banned first turn would keep banning turns that allow
-        tools. The mark comes with it -- without one the ban would sit next to
-        the Slack input with no boundary between them (sca-97n).
+        tools. The mark comes with it -- without one the constraint would sit
+        next to the Slack input with no boundary between them (sca-97n).
+
+        Carries the allowlist wording too: codex has no tool argument, so this
+        is the only place an ALLOWLIST request reaches the model (sca-f9k0).
         """
-        note = self.tool_ban_note(request)
+        note = self.tool_ban_note(request) + self.tool_allow_note(request)
         return f"{note}{UNTRUSTED_INPUT_MARK}" if note else ""
 
     def _resume_prompt(self, request: EngineRequest) -> str:
@@ -253,6 +256,7 @@ class CodexEngine(Engine):
             + self.readable_paths_note(request.readable_dirs)
             + self.write_paths_note(request)
             + self.tool_ban_note(request)
+            + self.tool_allow_note(request)
             + UNTRUSTED_INPUT_MARK
             + request.prompt
         )

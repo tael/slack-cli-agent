@@ -154,10 +154,6 @@ ENGINE_FIXTURES: list[EngineFixture] = [
             unavailable=frozenset({"cache_creation_tokens", "cache_read_tokens"}),
         ),
         build_stdout=_codex_stdout,
-        allowed_tools_xfail_reason=(
-            "Codex CLI has no tool-allowlist flag; sandbox mode governs execution "
-            "scope instead (checked 2026-09-15)."
-        ),
     ),
     EngineFixture(
         id="gemini",
@@ -178,10 +174,6 @@ ENGINE_FIXTURES: list[EngineFixture] = [
             unavailable=frozenset({"cache_creation_tokens"}),
         ),
         build_stdout=_gemini_stdout,
-        allowed_tools_xfail_reason=(
-            "agy CLI has no tool-allowlist flag; access control is settings.json "
-            "permissions, opened wide per 2026-09-15 user instruction (checked 2026-09-15)."
-        ),
         # "high" is a valid effort value that agy's normalization passes
         # through unchanged, unlike the shared arbitrary marker string,
         # which would be normalized away (see docs/agy-실측.md 정규화 규칙).
@@ -338,6 +330,13 @@ def _allowed_tools_params() -> list[Any]:
 
 @pytest.mark.parametrize("fx", _allowed_tools_params())
 def test_허용_도구_목록이_명령에_반영된다(fx: EngineFixture, tmp_path: Path) -> None:
+    """명령에 나타나는 것과 그 엔진이 강제하는 것은 다르다.
+
+    claude 는 --tools 로 도구 집합 자체를 닫는다. codex 와 gemini 는 닫을
+    인자가 없어 프롬프트 문구로만 싣는다 (sca-f9k0). 강제 수준의 차이는
+    capabilities_for 가 내는 tool_restriction 에 남고, 이 계약은 "요청이
+    무엇을 허용했는지가 엔진에 전달은 된다" 까지만 본다.
+    """
     engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
     cmd = engine.build_command(_request(tools=ToolSelection.allow(["전용도구A", "전용도구B"])))
     joined = _joined(cmd)
