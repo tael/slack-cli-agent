@@ -34,6 +34,7 @@ from ..config.channel import channel_slug as slug_for
 from ..config.profile import EngineSpec, Profile
 from ..config.settings import RuntimeSettings
 from ..engine.base import CallOrigin, Engine, EngineRequest, EngineResponse
+from ..engine.mcp_health import broken_mcp_servers
 from ..engine.registry import EngineRegistry, default_registry
 from ..engine.runner import (
     DirectInvoker,
@@ -1613,12 +1614,20 @@ class Application:
     def _report_recovery(self, outage_sec: float, recovered: int) -> None:
         # reports the recovered count explicitly — otherwise zero recovered
         # messages would look the same as catch-up never having run
-        self._notify_owner(
-            "*연결 복구*\n\n"
-            f"- 끊긴 시간 : {outage_sec / 60:.0f}분\n"
-            f"- 복구 시각 : {datetime.now(KST).strftime('%m-%d %H:%M:%S')} KST\n"
-            f"- 캐치업으로 처리한 요청 : {recovered}건"
-        )
+        broken = broken_mcp_servers(self._profile.paths.mcp_config)
+        lines = [
+            "*연결 복구*",
+            "",
+            f"- 끊긴 시간 : {outage_sec / 60:.0f}분",
+            f"- 복구 시각 : {datetime.now(KST).strftime('%m-%d %H:%M:%S')} KST",
+            f"- 캐치업으로 처리한 요청 : {recovered}건",
+            f"- MCP 서버 : {'전부 정상' if not broken else f'{len(broken)}개 이상 기동 실패'}",
+        ]
+        if broken:
+            lines += ["", "*기동하지 못하는 MCP 서버*"]
+            lines += [f"- {name}" for name in broken]
+            lines += ["", "도구가 빠진 채로 답하게 됩니다. 확인이 필요합니다."]
+        self._notify_owner("\n".join(lines))
 
     def _catchup_retry_tick(self, worker: Worker) -> None:
         outage_sec = self.outage_tracker().check()

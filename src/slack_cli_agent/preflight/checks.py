@@ -23,10 +23,9 @@ from ..config.settings import RuntimeSettings
 from ..core.errors import ConfigError
 from ..engine.capability import ToolRestriction
 from ..engine.environment import registry
+from ..engine.mcp_health import broken_mcp_servers
 from ..engine.registry import default_registry
 from .check import CheckResult, PreflightCheck, PreflightContext
-
-_SHEBANG_ENV_RE = re.compile(r"#!\s*/usr/bin/env\s+(\S+)")
 
 #: Group and other bits. A login file readable past its owner is not isolated.
 _SHARED_BITS = stat.S_IRWXG | stat.S_IRWXO
@@ -384,35 +383,10 @@ class McpServerCheck(PreflightCheck):
         mcp_config = ctx.profile.paths.mcp_config
         if not mcp_config.exists():
             return CheckResult(ok=True, detail=f"MCP 설정 없음 : {mcp_config}", fatal=False)
-        broken = self._mcp_ready(mcp_config)
+        broken = broken_mcp_servers(mcp_config)
         if broken:
             return CheckResult(ok=False, detail="; ".join(broken))
         return CheckResult(ok=True, detail="MCP 기동 점검 통과")
-
-    @staticmethod
-    def _mcp_ready(mcp_config: Path) -> list[str]:
-        broken = []
-        try:
-            servers = json.loads(mcp_config.read_text()).get("mcpServers", {})
-        except (OSError, json.JSONDecodeError) as e:
-            return [f"MCP 설정을 읽지 못했습니다 : {e}"]
-        for name, cfg in servers.items():
-            command = cfg.get("command")
-            if not command:
-                continue
-            real = shutil.which(command) or command
-            if not os.path.exists(real):
-                broken.append(f"{name} : 실행 파일 없음")
-                continue
-            try:
-                with open(real, "rb") as f:
-                    first = f.readline(256).decode("utf-8", "replace").strip()
-            except OSError:
-                continue
-            m = _SHEBANG_ENV_RE.match(first)
-            if m and not shutil.which(m.group(1)):
-                broken.append(f"{name} : {m.group(1)} 를 PATH 에서 못 찾음")
-        return broken
 
 
 class EngineHomeCredentialCheck(PreflightCheck):
