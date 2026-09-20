@@ -641,3 +641,72 @@ class Test허용목록을_못_거는_엔진은_말로_적는다:
         assert engine.footprint_for(req).adapter_added_bytes >= len(
             engine.tool_allow_note(req).encode("utf-8")
         )
+
+
+class Test허용문구가_실제_명령에_실린다:
+    """가짜 엔진으로는 문구가 프롬프트의 어느 자리에 몇 번 들어가는지가 안
+    잡힌다. 금지 문구는 codex 신규·재개 두 경로를 다 고정해 두었는데
+    허용 문구는 그렇지 않았다 (codex 리뷰).
+    """
+
+    허용 = ("Read", "Write")
+    문구 = "이번 턴에 쓸 수 있는 것은"
+    금지문구 = "도구를 하나도"
+
+    def _요청(self, **kw):
+        from test_engine import request
+
+        return request(tools=ToolSelection.allow(list(self.허용)), **kw)
+
+    def _엔진들(self, tmp_path):
+        from test_engine import codex_profile, gemini_profile
+        from test_engine_capability import SETTINGS
+
+        from slack_cli_agent.engine.codex import CodexEngine
+        from slack_cli_agent.engine.gemini import GeminiEngine
+
+        return (CodexEngine(codex_profile(tmp_path), SETTINGS),
+                GeminiEngine(gemini_profile(tmp_path), SETTINGS))
+
+    def _프롬프트(self, engine, tmp_path, *, resume: bool) -> str:
+        return engine.build_command(self._요청(resume=resume))[-1]
+
+    @pytest.mark.parametrize("resume", [False, True])
+    @pytest.mark.parametrize("자리", [0, 1])
+    def test_허용_문구가_정확히_한_번_실린다(self, tmp_path, 자리, resume) -> None:
+        """두 번 나가면 같은 제약을 두 번 말하는 것이고 집계도 어긋난다."""
+        engine = self._엔진들(tmp_path)[자리]
+        assert self._프롬프트(engine, tmp_path, resume=resume).count(self.문구) == 1
+
+    @pytest.mark.parametrize("resume", [False, True])
+    @pytest.mark.parametrize("자리", [0, 1])
+    def test_금지_문구는_함께_안_나간다(self, tmp_path, 자리, resume) -> None:
+        """허용목록과 전부 금지는 배타적이다. 둘이 함께 나가면 어느 쪽을
+        따라야 하는지가 프롬프트 안에서 모순이 된다."""
+        engine = self._엔진들(tmp_path)[자리]
+        assert self.금지문구 not in self._프롬프트(engine, tmp_path, resume=resume)
+
+    @pytest.mark.parametrize("resume", [False, True])
+    @pytest.mark.parametrize("자리", [0, 1])
+    def test_허용_문구는_입력_표식_앞에_온다(self, tmp_path, 자리, resume) -> None:
+        from slack_cli_agent.engine.base import UNTRUSTED_INPUT_MARK
+
+        engine = self._엔진들(tmp_path)[자리]
+        prompt = self._프롬프트(engine, tmp_path, resume=resume)
+        assert prompt.index(self.문구) < prompt.index(UNTRUSTED_INPUT_MARK)
+
+    @pytest.mark.parametrize("resume", [False, True])
+    @pytest.mark.parametrize("자리", [0, 1])
+    def test_집계가_실제로_늘어난_바이트와_같다(self, tmp_path, 자리, resume) -> None:
+        """쓰기 도구가 섞인 허용목록은 문구가 길어 읽기 전용 분기보다
+        어긋남이 크게 드러난다."""
+        from test_engine import request
+
+        engine = self._엔진들(tmp_path)[자리]
+        실은것 = self._요청(resume=resume)
+        안실은것 = request(tools=ToolSelection.unrestricted(), resume=resume)
+        차이 = (engine.footprint_for(실은것).adapter_added_bytes
+                - engine.footprint_for(안실은것).adapter_added_bytes)
+        보낸것 = engine.build_command(실은것)[-1]
+        안보낸것 = engine.build_command(안실은것)[-1]
+        assert 차이 == len(보낸것.encode("utf-8")) - len(안보낸것.encode("utf-8"))
