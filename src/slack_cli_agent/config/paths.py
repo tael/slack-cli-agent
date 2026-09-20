@@ -160,10 +160,6 @@ class StatePaths:
         """Process state snapshot, rewritten wholesale on a timer."""
         return self.root / "state.json"
 
-    @property
-    def mcp_config(self) -> Path:
-        return self.engine_dir / "mcp.json"
-
     def engine_settings(self, engine_type: str) -> Path:
         return self.engine_dir / f"settings-{engine_type}.json"
 

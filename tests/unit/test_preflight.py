@@ -294,67 +294,61 @@ class TestProfilePermissionCheck:
 
 
 class TestMcpServerCheck:
-    def test_설정_파일이_없으면_경고만이고_기동을_막지_않는다(self, tmp_path: Path) -> None:
-        profile = make_profile(tmp_path)
-        check = McpServerCheck()
-        result = check.run(PreflightContext(profile=profile))
+    """점검 대상은 프로필이 선언한 MCP 서버다.
+
+    한때 상태 디렉터리의 engine/mcp.json 을 읽었는데 그 파일을 쓰는 코드가
+    이 저장소에 없다. 원본은 그 파일을 --mcp-config 로 넘기지만 이식본은
+    claude 에 인라인 JSON, codex 에 -c, gemini 에 작업 디렉터리 파일로
+    넘긴다. 파일을 읽는 동안 이 점검은 늘 통과였다 (codex 리뷰).
+    """
+
+    @staticmethod
+    def 서버를_단다(tmp_path: Path, **서버):
+        return make_profile(tmp_path, mcp_servers=서버)
+
+    def test_선언된_서버가_없으면_경고만이고_기동을_막지_않는다(self, tmp_path: Path) -> None:
+        result = McpServerCheck().run(PreflightContext(profile=make_profile(tmp_path)))
         assert result.ok is True
         assert result.fatal is False
 
     def test_실행_파일이_없는_서버는_실패한다(self, tmp_path: Path) -> None:
-        profile = make_profile(tmp_path)
-        mcp_config = profile.paths.mcp_config
-        mcp_config.parent.mkdir(parents=True)
-        mcp_config.write_text(
-            json.dumps({"mcpServers": {"broken": {"command": str(tmp_path / "no_such")}}}),
-            encoding="utf-8",
-        )
-        check = McpServerCheck()
-        result = check.run(PreflightContext(profile=profile))
+        profile = self.서버를_단다(tmp_path, broken={"command": str(tmp_path / "no_such")})
+        result = McpServerCheck().run(PreflightContext(profile=profile))
         assert result.ok is False
         assert "broken" in result.detail
         assert "실행 파일 없음" in result.detail
 
-    def test_셰뱅_인터프리터를_PATH에서_못_찾으면_실패한다(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_셰뱅_인터프리터를_PATH에서_못_찾으면_실패한다(self, tmp_path: Path) -> None:
         script = tmp_path / "server.js"
         script.write_text(
             "#!/usr/bin/env definitely-not-on-path\nconsole.log(1)\n", encoding="utf-8"
         )
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
-        profile = make_profile(tmp_path)
-        mcp_config = profile.paths.mcp_config
-        mcp_config.parent.mkdir(parents=True)
-        mcp_config.write_text(
-            json.dumps({"mcpServers": {"js-server": {"command": str(script)}}}),
-            encoding="utf-8",
-        )
-        check = McpServerCheck()
-        result = check.run(PreflightContext(profile=profile))
+        profile = self.서버를_단다(tmp_path, **{"js-server": {"command": str(script)}})
+        result = McpServerCheck().run(PreflightContext(profile=profile))
         assert result.ok is False
         assert "definitely-not-on-path" in result.detail
 
-    def test_설정을_읽지_못하면_실패한다(self, tmp_path: Path) -> None:
-        profile = make_profile(tmp_path)
-        mcp_config = profile.paths.mcp_config
-        mcp_config.parent.mkdir(parents=True)
-        mcp_config.write_text("이건 json이 아니다", encoding="utf-8")
-        check = McpServerCheck()
-        result = check.run(PreflightContext(profile=profile))
-        assert result.ok is False
-        assert "읽지 못했습니다" in result.detail
+    def test_원격_서버는_건너뛴다(self, tmp_path: Path) -> None:
+        """url 만 있는 서버에는 확인할 실행 파일이 없다."""
+        profile = self.서버를_단다(tmp_path, **{"url-only": {"url": "https://example.test"}})
+        result = McpServerCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
 
-    def test_command이_없는_서버는_건너뛴다(self, tmp_path: Path) -> None:
-        profile = make_profile(tmp_path)
-        mcp_config = profile.paths.mcp_config
-        mcp_config.parent.mkdir(parents=True)
-        mcp_config.write_text(
-            json.dumps({"mcpServers": {"url-only": {"serverUrl": "https://example.test"}}}),
-            encoding="utf-8",
+    def test_꺼진_서버는_건너뛴다(self, tmp_path: Path) -> None:
+        """꺼진 서버는 어느 엔진에도 안 붙는다. 그것을 결함으로 세면 고칠
+        수 없는 실패가 기동을 막는다."""
+        profile = self.서버를_단다(
+            tmp_path, off={"command": str(tmp_path / "no_such"), "disabled": True}
         )
-        check = McpServerCheck()
-        result = check.run(PreflightContext(profile=profile))
+        result = McpServerCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
+
+    def test_정상_서버는_통과한다(self, tmp_path: Path) -> None:
+        binary = tmp_path / "ok_server"
+        make_executable(binary)
+        profile = self.서버를_단다(tmp_path, ok={"command": str(binary)})
+        result = McpServerCheck().run(PreflightContext(profile=profile))
         assert result.ok is True
 
 
