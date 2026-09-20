@@ -80,12 +80,26 @@ settings 의 allow 에 이름이 들어가면 열린다.
 | `--strict-mcp-config` 없이 `--tools ""` + Read 요청 | `mcp__claude_ai_Google_Drive__read_file_content` 를 호출 |
 | `--strict-mcp-config` + `--tools "Read,Grep,Glob"` | Glob, Grep, Read 세 개뿐 |
 
+## MCP 도구는 접두어 패턴으로 닫는다
+
+`--tools` 는 내장 도구 집합만 다룬다. 프로필이 MCP 서버를 붙였으면 그 도구는
+허용목록에 없어도 모델의 도구 목록에 남는다.
+
+| 조건 | 붙은 도구 |
+|---|---|
+| `--tools "Read,Grep,Glob"` | Read, Glob, Grep 과 전역 MCP 도구 다수 |
+| 같은 조건 + `--disallowedTools "mcp__*"` | Glob, Grep, Read |
+
 ## 적용한 설계
 
 `ToolAccess.ALLOWLIST` 일 때 `--allowedTools <허용 전체>` 로 자동 승인을 주고
 `--tools <허용 중 내장 도구>` 로 도구 집합을 닫는다. MCP 이름은 `--tools` 에서
 빼고 승인 쪽에만 남긴다. 내장 도구를 하나도 허용하지 않았으면 빈 값을 넘긴다.
 인자를 빼면 전체 내장 도구가 열려 뜻이 반대가 된다.
+
+허용목록에 MCP 이름이 하나도 없으면 `--disallowedTools "mcp__*"` 를 더한다.
+이름을 하나 열면서 접두어 전체를 닫으면 그 이름도 함께 닫히므로, MCP 를 허용한
+턴에는 안 붙이고 그 경계를 승인 목록에 맡긴다.
 
 `FORBIDDEN` 은 `--disallowedTools "*"` 그대로 두었다. 실측한 명령 모양이
 그것이다. `UNRESTRICTED` 에는 세 인자를 모두 안 붙인다.
