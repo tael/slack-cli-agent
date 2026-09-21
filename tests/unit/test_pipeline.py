@@ -73,7 +73,11 @@ class FakeTranscriptBuilder:
         )
         return ""
 
-    def with_history(self, transcript: str, tagged: str) -> str:
+    def with_history(self, transcript: str, current: Any) -> str:
+        self.current = current
+        # Mirrors the real builder: the head is put on here, so a pipeline that
+        # hands over a bare body fails instead of passing silently.
+        tagged = f"[00:00:00 {current.user}]\n{current.body}"
         if not transcript:
             return tagged
         return f"{transcript}\n\n{tagged}"
@@ -1995,6 +1999,26 @@ class Test실제로_돈_모델을_기록에_남긴다:
         assert deps["audit"].records[-1]["model_actual"] == "claude-haiku-4-5"
 
 
+class Test현재_발언의_화자를_프롬프트에_넘긴다:
+    """대화록이 비면 화자 표시가 전혀 없었고, 주어가 생략된 문장에서 화자와
+    수신자가 뒤집혀 읽혔다 (2026-09-21 자동운영 채널)."""
+
+    def test_발신자와_시각을_실어_보낸다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1", text="질문받는다."))
+
+        current = deps["transcript"].current
+        assert current.user == "U1"
+        assert current.ts
+        assert current.raw_text == "질문받는다."
+
+    def test_대화록이_비어도_프롬프트가_화자_머리로_시작한다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1", text="질문받는다."))
+
+        assert deps["runner"].calls[0].prompt.startswith("[")
+
+
 class Test이번_턴_본문의_멘션도_이름으로_바꾼다:
     """대화록에서는 이름이 나오고 지금 말에서는 <@U...> 가 나오면 같은 사람이
     둘로 보인다 (sca-za2a). 대화록 쪽은 sca-hkmb 에서 바꿨다."""
@@ -2021,7 +2045,8 @@ class Test이번_턴_본문의_멘션도_이름으로_바꾼다:
         )
         pipeline.handle(make_ctx(user="U1", text="<@U9> 확인해줘"))
 
-        assert self._프롬프트(deps).strip() == "<@U9> 확인해줘"
+        # 첫 줄은 화자 머리다. 본문 줄이 원문 그대로인지를 본다
+        assert self._프롬프트(deps).strip().splitlines()[-1] == "<@U9> 확인해줘"
 
     def test_수신자_판정이_보는_원문은_안_바뀐다(self, tmp_path: Path) -> None:
         """슬랙 정책이 원문으로 수신자를 가린다. 치환을 앞에 두면 그 판정이
