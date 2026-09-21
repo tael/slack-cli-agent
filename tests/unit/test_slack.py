@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -41,7 +42,7 @@ from slack_cli_agent.slack.reactions import (
     UNFINISHED_EMOJI,
     ReactionMarker,
 )
-from slack_cli_agent.slack.transcript import TranscriptBuilder
+from slack_cli_agent.slack.transcript import CurrentMessage, TranscriptBuilder
 
 # 대역 슬랙 클라이언트
 
@@ -1052,24 +1053,51 @@ class TestTranscriptBuilder:
         body = builder.thread_transcript("C1", "1700000000.000001", before_ts=None)
         assert body == ""
 
-    def test_with_history는_지난_대화가_없으면_그대로_돌려준다(
+    def _builder(
+        self, settings: RuntimeSettings, notices: NoticeCatalog
+    ) -> TranscriptBuilder:
+        return TranscriptBuilder(
+            FakeWebClient(), settings, notices, name_resolver=lambda uid: "김철수",
+            identity=fake_identity(),
+        )
+
+    def test_with_history는_지난_대화가_없어도_화자_머리를_붙인다(
         self, settings: RuntimeSettings, notices: NoticeCatalog
     ) -> None:
-        builder = TranscriptBuilder(
-            FakeWebClient(), settings, notices, name_resolver=lambda uid: "", identity=fake_identity()
+        out = self._builder(settings, notices).with_history(
+            "", CurrentMessage(ts="1700000000.000001", user="U1", raw_text="지금 말", body="지금 말")
         )
-        assert builder.with_history("", "지금 말") == "지금 말"
+        assert out.startswith("[")
+        assert "김철수" in out.splitlines()[0]
+        assert out.endswith("지금 말")
 
     def test_with_history는_지난_대화를_앞에_붙이고_다시_답하지_말라고_못박는다(
         self, settings: RuntimeSettings, notices: NoticeCatalog
     ) -> None:
-        builder = TranscriptBuilder(
-            FakeWebClient(), settings, notices, name_resolver=lambda uid: "", identity=fake_identity()
+        out = self._builder(settings, notices).with_history(
+            "[10:00 김철수]\n안녕",
+            CurrentMessage(ts="1700000000.000001", user="U1", raw_text="지금 말", body="지금 말"),
         )
-        out = builder.with_history("[10:00 김철수]\n안녕", "지금 말")
         assert "지난 대화" in out
         assert "안녕" in out
         assert out.endswith("지금 말")
+        assert out.splitlines()[-2].startswith("[")
+
+    def test_현재_발언_머리는_대화록_줄과_같은_형식이다(
+        self, settings: RuntimeSettings, notices: NoticeCatalog
+    ) -> None:
+        builder = self._builder(settings, notices)
+        head = builder.tag_current(
+            CurrentMessage(ts="1700000000.000001", user="U1", raw_text="<@U9> 봐라", body="<@U9> 봐라")
+        ).splitlines()[0]
+        assert re.match(r"^\[\d\d:\d\d:\d\d .+ -> .+\]$", head), head
+
+    def test_with_history는_머리없는_문자열을_거부한다(
+        self, settings: RuntimeSettings, notices: NoticeCatalog
+    ) -> None:
+        # The regression itself: a bare body used to pass straight through.
+        with pytest.raises(TypeError):
+            self._builder(settings, notices).with_history("", "지금 말")  # type: ignore[arg-type]
 
 
 # AttachmentStore
