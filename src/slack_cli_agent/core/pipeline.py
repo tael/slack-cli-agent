@@ -39,6 +39,7 @@ from ..session.manager import SessionDecision, SessionManager
 from ..session.ports import SessionKey, SessionScope
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
 from ..slack.mentions import MentionRenderer
+from ..slack.transcript import CurrentMessage
 from .context import RequestContext
 from .pipeline_ports import (
     AccessPolicyPort,
@@ -404,11 +405,16 @@ class RequestPipeline:
             transcript = self._transcript.thread_transcript(
                 ctx.channel, ctx.thread_ts, ctx.ts, scope=scope,
             )
-        tagged = self._mentions.render(ctx.text)
+        body = self._mentions.render(ctx.text)
         note = self._linked_thread_note(ctx)
         if note:
-            tagged = f"{tagged}\n\n{note}"
-        return self._transcript.with_history(transcript, tagged)
+            body = f"{body}\n\n{note}"
+        # The head goes on inside with_history, from ts and user -- a caller
+        # cannot hand over a bare body and leave the speaker unstated (sca 2026-09-21).
+        return self._transcript.with_history(
+            transcript,
+            CurrentMessage(ts=ctx.ts, user=ctx.user, raw_text=ctx.text, body=body),
+        )
 
     def _linked_thread_note(self, ctx: RequestContext) -> str:
         # A lookup failure just omits this from the prompt; it must not block the reply.

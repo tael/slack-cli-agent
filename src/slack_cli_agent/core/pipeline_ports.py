@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 from ..auth.principal import Principal
 from ..config.channel import ChannelConfig
+from ..slack.transcript import CurrentMessage
 
 
 class AccessPolicyPort(Protocol):
@@ -33,7 +34,7 @@ class TranscriptPort(Protocol):
         after_ts: str | float | None = None,
     ) -> str: ...
 
-    def with_history(self, transcript: str, tagged: str) -> str: ...
+    def with_history(self, transcript: str, current: CurrentMessage) -> str: ...
 
 
 class PublisherPort(Protocol):

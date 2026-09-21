@@ -31,6 +31,37 @@ log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class CurrentMessage:
+    """The message being answered, with what the head needs to name its speaker.
+
+    with_history takes this instead of a plain string so no caller can hand in
+    a body with no speaker head. On 2026-09-21 the current utterance reached
+    the model as bare text -- a thread with no history carried no bracketed
+    head at all, and a subject-less Korean sentence got read with the speaker
+    and the listener swapped.
+    """
+
+    ts: str
+    user: str
+    raw_text: str
+    body: str
+
+
+def transcript_head(when: str, who: str, called: tuple[str, ...] = ()) -> str:
+    """The one place the `[time speaker -> called]` head is built. Past lines
+    and the current message share it so the two forms cannot drift apart."""
+    inner = f"{who} -> {', '.join(called)}" if called else who
+    return f"[{when} {inner}]"
+
+
+def _clock(ts: str | float) -> str:
+    try:
+        return datetime.fromtimestamp(float(ts), KST).strftime("%H:%M:%S")
+    except (TypeError, ValueError):
+        return "시각 불명"
+
+
+@dataclass(frozen=True)
 class TranscriptRead:
     """A read that failed and a thread with nothing to transcribe both produce
     an empty body. Callers that tell the model what happened need them apart
@@ -227,11 +258,12 @@ class TranscriptBuilder:
             # mention markup, and rendering first would stop matching it.
             if not text or self._notices.is_notice(text):
                 continue
-            when = datetime.fromtimestamp(float(m.get("ts", 0)), KST).strftime("%H:%M:%S")
-            who = self._speaker.speaker_of(m)
-            called = self._called.called_in(text)
-            head = f"{who} -> {', '.join(called)}" if called else who
-            lines.append(f"[{when} {head}]\n{text}")
+            head = transcript_head(
+                _clock(m.get("ts", 0)),
+                self._speaker.speaker_of(m),
+                self._called.called_in(text),
+            )
+            lines.append(f"{head}\n{text}")
 
         if not lines:
             return TranscriptRead(body="", read_ok=True)
@@ -246,9 +278,28 @@ class TranscriptBuilder:
             kept.append(line)
         return TranscriptRead(body="\n\n".join(reversed(kept)), read_ok=True)
 
-    def with_history(self, transcript: str, tagged: str) -> str:
+    def tag_current(self, current: CurrentMessage) -> str:
+        """Puts the speaker head on the message being answered.
+
+        The head carries the same form as a transcript line, so the prompt's
+        "read the speaker off the first bracket" instruction holds whether or
+        not the thread has history.
+        """
+        head = transcript_head(
+            _clock(current.ts),
+            self._speaker.speaker_of({"user": current.user, "ts": current.ts}),
+            self._called.called_in(current.raw_text),
+        )
+        return f"{head}\n{current.body}"
+
+    def with_history(self, transcript: str, current: CurrentMessage) -> str:
         """Prepends past conversation ahead of the current message,
         with an explicit instruction not to re-answer it."""
+        if not isinstance(current, CurrentMessage):
+            # A plain string used to be accepted here, and that is exactly how
+            # the current utterance reached the model with no speaker head.
+            raise TypeError("with_history 는 CurrentMessage 를 받는다")
+        tagged = self.tag_current(current)
         if not transcript:
             return tagged
         return (
