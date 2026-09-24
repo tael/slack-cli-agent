@@ -23,6 +23,7 @@ from slack_cli_agent.preflight.checks import (
     ChannelSettingsReadableCheck,
     EngineBinaryCheck,
     EngineHomeCredentialCheck,
+    EngineSettingsCheck,
     McpCredentialCheck,
     McpServerCheck,
     OwnerSettingsInertCheck,
@@ -352,6 +353,59 @@ class TestMcpServerCheck:
         assert result.ok is True
 
 
+class TestEngineSettingsCheck:
+    """봇 전용 settings 파일이 실제로 읽히는가를 기동에서 본다.
+
+    원본은 그 파일이 없으면 main 에서 종료한다(bot.py:7133). 이식본은
+    build_command 가 요청마다 읽으므로, 깨진 파일은 기동을 통과한 뒤 첫
+    요청부터 반복 실패한다. 그때 슬랙 사용자에게는 실패 반응만 남는다
+    (codex 리뷰).
+    """
+
+    @staticmethod
+    def 쓴다(profile, 이름: str, 내용: str) -> None:
+        path = profile.paths.engine_settings(이름)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(내용, encoding="utf-8")
+
+    def test_기본_파일이_없으면_경고하되_기동은_막지_않는다(self, tmp_path: Path) -> None:
+        """갓 설치한 봇에는 운영 파일이 없다. 그것으로 못 뜨게 하지 않는다."""
+        result = EngineSettingsCheck().run(PreflightContext(profile=make_profile(tmp_path)))
+        assert result.ok is False
+        assert result.fatal is False
+
+    def test_기본_파일이_있으면_통과한다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        self.쓴다(profile, "claude", '{"permissions": {"deny": ["Bash"]}}')
+        assert EngineSettingsCheck().run(PreflightContext(profile=profile)).ok is True
+
+    def test_깨진_파일은_기동을_막는다(self, tmp_path: Path) -> None:
+        """운영자가 쓴 deny 가 안 실린 채 도는 것보다 안 뜨는 쪽이 낫다."""
+        profile = make_profile(tmp_path)
+        self.쓴다(profile, "claude", "json 이 아니다")
+        result = EngineSettingsCheck().run(PreflightContext(profile=profile))
+        assert result.ok is False
+        assert result.fatal is True
+
+    def test_덧씌움이_깨져도_막는다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        self.쓴다(profile, "claude", "{}")
+        self.쓴다(profile, "claude.general", '{"permissions": []}')
+        result = EngineSettingsCheck().run(PreflightContext(profile=profile))
+        assert result.ok is False
+        assert result.fatal is True
+        assert "general" in result.detail
+
+    def test_claude_를_안_쓰면_건너뛴다(self, tmp_path: Path) -> None:
+        """codex 와 gemini 는 봇별 홈으로 사용자 설정을 가른다. 이 파일을
+        안 읽으므로 없는 것이 정상이다."""
+        profile = make_profile(
+            tmp_path,
+            primary_engine={"type": "codex", "binary": str(tmp_path / "codex_bin"), "model": "m"},
+        )
+        assert EngineSettingsCheck().run(PreflightContext(profile=profile)).ok is True
+
+
 # PreflightRunner
 
 
@@ -614,6 +668,7 @@ class TestPreflightSuite:
             "engine_binary",
             "engine_home_credentials",
             "mcp_server",
+            "engine_settings",
             "prompt_files",
             "channel_settings_readable",
             "owner_settings_inert",
@@ -702,6 +757,7 @@ class TestPreflightSuite:
             "[실패] engine_binary : 나쁨\n"
             "[경고] engine_home_credentials : 주의\n"
             "[통과] mcp_server : 좋음\n"
+            "[통과] engine_settings : 좋음\n"
             "[통과] prompt_files : 좋음\n"
             "[통과] channel_settings_readable : 좋음\n"
             "[통과] owner_settings_inert : 좋음\n"
