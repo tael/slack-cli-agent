@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from engine_support import named
 
+from slack_cli_agent.auth.policy import DEFAULT_EFFORT, EFFORT_LEVELS
 from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -28,6 +29,7 @@ from slack_cli_agent.engine.base import (
     Usage,
     UsageLimit,
     equivalent_values,
+    normalize_effort,
 )
 from slack_cli_agent.engine.capability import InstructionBoundary
 from slack_cli_agent.engine.claude import ClaudeEngine
@@ -237,6 +239,32 @@ class TestEngineABC:
         assert not hasattr(FallbackEngine, "directives_for_turn")
 
 
+class TestEffortNormalization:
+    """호출자는 EFFORT_LEVELS 한 어휘로 말하고 엔진마다 받는 범위가 다르다.
+    옮기는 자리를 엔진마다 따로 두면 같은 프로필 값이 엔진마다 다른 뜻이
+    된다(sca-3kzk). 어느 값으로 내릴지는 사다리 순서로만 정한다."""
+
+    def test_받는_값은_그대로_간다(self) -> None:
+        assert normalize_effort("high", ("low", "medium", "high")) == "high"
+
+    def test_빈_값은_기본값이다(self) -> None:
+        assert normalize_effort("", EFFORT_LEVELS) == DEFAULT_EFFORT
+
+    def test_사다리에_없는_값은_기본값이다(self) -> None:
+        assert normalize_effort("고유-effort-값", EFFORT_LEVELS) == DEFAULT_EFFORT
+
+    def test_못_받는_상위_값은_받는_것_중_가장_높은_것이_된다(self) -> None:
+        """기본값으로 떨어뜨리면 채널이 요청한 것보다 조용히 얕게 돈다."""
+        assert normalize_effort("max", ("low", "medium", "high")) == "high"
+        assert normalize_effort("xhigh", ("low", "medium", "high")) == "high"
+
+    def test_못_받는_하위_값은_받는_것_중_가장_낮은_것이_된다(self) -> None:
+        assert normalize_effort("low", ("high", "max")) == "high"
+
+    def test_기본값을_안_받는_엔진도_사다리를_따른다(self) -> None:
+        assert normalize_effort("", ("low", "high")) == "low"
+
+
 class TestEngineRegistry:
     def test_등록한_엔진을_이름으로_만든다(self, tmp_path: Path) -> None:
         registry = EngineRegistry()
@@ -307,6 +335,24 @@ class TestClaudeEngineBuildCommand:
         cmd = engine.build_command(request(model="claude-opus-5", effort="high"))
         assert cmd[cmd.index("--model") + 1] == "claude-opus-5"
         assert cmd[cmd.index("--effort") + 1] == "high"
+
+    def test_effort가_비면_기본값을_싣는다(self, tmp_path: Path) -> None:
+        """빈 값을 그대로 실으면 --effort 가 값 없는 인자로 CLI 에 닿는다(sca-3kzk)."""
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        cmd = engine.build_command(request(effort=""))
+        assert cmd[cmd.index("--effort") + 1] == DEFAULT_EFFORT
+
+    def test_사다리에_없는_effort는_기본값이_된다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        cmd = engine.build_command(request(effort="아무값"))
+        assert cmd[cmd.index("--effort") + 1] == DEFAULT_EFFORT
+
+    def test_claude는_사다리_전체를_받는다(self, tmp_path: Path) -> None:
+        """원본이 EFFORT_LEVELS 값을 그대로 넘겨 돌고 있다(bot.py:1359)."""
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        assert ClaudeEngine.supported_efforts == EFFORT_LEVELS
+        cmd = engine.build_command(request(effort="max"))
+        assert cmd[cmd.index("--effort") + 1] == "max"
 
     def test_사용자_settings_를_배제한다(self, tmp_path: Path) -> None:
         """빼면 사용자 ~/.claude/settings.json 의 permissions.allow 와 훅이
@@ -637,6 +683,23 @@ class TestCodexEngineBuildCommand:
         )
         assert cmd[cmd.index("--sandbox") + 1] == "danger-full-access"
 
+    def test_MCP_도구가_섞이면_내리지_않는다(self, tmp_path: Path) -> None:
+        """READ_ONLY_TOOLS 는 내장 도구만 담는다. MCP 도구가 밖으로 쓰는지를
+        코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰)."""
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        cmd = engine.build_command(request(
+            resume=False, model="gpt-5.6-sol",
+            tools=ToolSelection.allow(["Read", "mcp__github__search_code"]),
+        ))
+        assert cmd[cmd.index("--sandbox") + 1] == "danger-full-access"
+
+    def test_요청_때문에_내려간_턴에도_바깥_쓰기_안내가_붙는다(self, tmp_path: Path) -> None:
+        """프로필이 아니라 요청이 내린 경우에도 같은 안내가 나가야 한다."""
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        요청 = request(resume=False, model="gpt-5.6-sol", tools=ToolSelection.allow(["Read"]))
+        assert engine.blocks_outbound_writes(요청)
+        assert "curl" in engine.write_paths_note(요청)
+
     def test_명령의_sandbox_와_선언한_격리가_같다(self, tmp_path: Path) -> None:
         """선언이 명령과 다르면 감사 기록이 실행된 것을 안 가리킨다."""
         from slack_cli_agent.engine.capability import ExecutionIsolation
@@ -719,6 +782,34 @@ class TestCodexEngineBuildCommand:
         ))
         idx = cmd.index("--sandbox")
         assert cmd[idx + 1] == "workspace-write"
+
+    def test_effort가_비어도_추론_강도를_명시한다(self, tmp_path: Path) -> None:
+        """생략하면 CLI 기본값으로 돌면서 감사 기록의 effort 와 어긋난다(sca-3kzk)."""
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        cmd = engine.build_command(request(model="gpt-5.6-sol", effort=""))
+        assert f'model_reasoning_effort="{DEFAULT_EFFORT}"' in cmd
+
+    def test_사다리에_없는_effort는_기본값이_된다(self, tmp_path: Path) -> None:
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        cmd = engine.build_command(request(model="gpt-5.6-sol", effort="아무값"))
+        assert f'model_reasoning_effort="{DEFAULT_EFFORT}"' in cmd
+
+
+class TestCodexEngineDetectUsageLimit:
+    def test_어떤_응답이어도_None이다(self, tmp_path: Path) -> None:
+        """codex 에는 구독 한도 개념이 없다. 여기서 한도로 읽으면 한도가 아닌
+        실패에 폴백이 돈다. 한도 문구가 본문에 있어도 마찬가지다."""
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        정상 = EngineResponse(
+            ok=True, body="답", session_id="th-1", model_actual=None,
+            elapsed=0.0, turns=None, usage=None,
+        )
+        한도_문구 = EngineResponse(
+            ok=False, body="usage limit reached", session_id=None, model_actual=None,
+            elapsed=0.0, turns=None, usage=None, failure_reason="nonzero_exit",
+        )
+        assert engine.detect_usage_limit(정상) is None
+        assert engine.detect_usage_limit(한도_문구) is None
 
 
 class TestCodexEngineParse:
@@ -947,8 +1038,54 @@ class TestCodexEngineTurnBehavior:
 
 
 # GeminiEngine — 계약 시험(tests/engine/test_engine_contract.py, test_gemini_engine.py)이
-# 이미 다루는 것은 다시 안 만든다. 여기서는 sca-cfa/sca-dyb.4 로 새로 생긴
-# elapsed_source·unavailable 판정만 본다.
+# 이미 다루는 것은 다시 안 만든다. 프롬프트가 마지막 인자라는 제약, --print-timeout
+# 계산, 정규화한 effort 값, --dangerously-skip-permissions 는 test_gemini_engine.py
+# 에 있다. 여기서는 sca-cfa/sca-dyb.4 로 새로 생긴 elapsed_source·unavailable
+# 판정과, 어느 쪽에도 없던 build_command 인자들을 본다(sca-usnn).
+
+
+class TestGeminiEngineBuildCommand:
+    def engine(self, tmp_path: Path) -> GeminiEngine:
+        return GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+
+    def test_읽기_경로마다_add_dir을_붙인다(self, tmp_path: Path) -> None:
+        cmd = self.engine(tmp_path).build_command(request(model="gemini-3.8-flash"))
+        positions = [i for i, tok in enumerate(cmd) if tok == "--add-dir"]
+        assert len(positions) == 2
+        assert cmd[positions[0] + 1] == "/tmp/a"
+        assert cmd[positions[1] + 1] == "/tmp/b"
+
+    def test_읽을_경로가_없으면_add_dir도_없다(self, tmp_path: Path) -> None:
+        cmd = self.engine(tmp_path).build_command(
+            request(model="gemini-3.8-flash", readable_dirs=()),
+        )
+        assert "--add-dir" not in cmd
+
+    def test_재개는_conversation에_세션_id를_준다(self, tmp_path: Path) -> None:
+        cmd = self.engine(tmp_path).build_command(request(model="gemini-3.8-flash", resume=True))
+        assert cmd[cmd.index("--conversation") + 1] == "11111111-1111-1111-1111-111111111111"
+
+    def test_새_세션에는_conversation이_없다(self, tmp_path: Path) -> None:
+        """agy 는 새 대화 ID 를 스스로 발행한다. 아직 없는 ID 를 --conversation
+        으로 주면 그 턴이 통째로 거부된다(docs/agy-실측.md)."""
+        cmd = self.engine(tmp_path).build_command(request(model="gemini-3.8-flash", resume=False))
+        assert "--conversation" not in cmd
+
+    def test_받는_effort는_low_medium_high_뿐이다(self, tmp_path: Path) -> None:
+        """agy 는 xhigh 를 invalid --effort 로 거부한다(docs/agy-실측.md)."""
+        assert GeminiEngine.supported_efforts == ("low", "medium", "high")
+
+    def test_session_id_from은_응답에_없으면_None이다(self, tmp_path: Path) -> None:
+        """placeholder 를 실제 대화 ID 로 바꾸는 자리다. 없는데 값을 내면
+        다음 턴이 존재하지 않는 대화를 재개하려 든다."""
+        engine = self.engine(tmp_path)
+        없음 = EngineResponse(
+            ok=False, body="", session_id=None, model_actual=None,
+            elapsed=0.0, turns=None, usage=None,
+        )
+        있음 = dataclasses.replace(없음, session_id="conv-9")
+        assert engine.session_id_from(없음) is None
+        assert engine.session_id_from(있음) == "conv-9"
 
 
 class TestGemini종료코드:

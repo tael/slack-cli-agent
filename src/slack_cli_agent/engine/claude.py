@@ -244,7 +244,7 @@ class ClaudeEngine(Engine):
             "--setting-sources", "",
             "--permission-mode", "dontAsk",
             "--model", request.require_model(),
-            "--effort", request.effort,
+            "--effort", self.resolve_effort(request),
         ]
         mcp_servers = _claude_mcp_servers(self.profile.mcp_servers)
         if request.tools.access is ToolAccess.FORBIDDEN:

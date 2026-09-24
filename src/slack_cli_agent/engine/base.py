@@ -15,6 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from ..auth.policy import DEFAULT_EFFORT, EFFORT_LEVELS
 from ..auth.principal import TrustLevel
 from ..auth.tools import READ_ONLY_TOOLS
 from ..core.errors import ConfigError
@@ -358,6 +359,31 @@ def json_object_line(line: str) -> Mapping[str, Any] | None:
     return event if isinstance(event, Mapping) else None
 
 
+def normalize_effort(value: str, supported: Sequence[str]) -> str:
+    """The effort this engine's CLI takes, from the one the caller asked for.
+
+    Callers speak a single vocabulary (auth/policy.py's EFFORT_LEVELS) and
+    each CLI takes a subset of it -- agy rejects xhigh outright
+    (docs/agy-실측.md). Which subset is the engine's own declaration, but
+    moving a value into it happens here, so the same profile value does not
+    mean three different things depending on which engine ran (sca-3kzk).
+
+    A value the engine has no name for comes down to the strongest one it
+    does have below it, not to the default: dropping xhigh to medium would
+    make the turn quietly shallower than the channel asked for. Empty or
+    off-ladder input is DEFAULT_EFFORT, put through the same descent.
+    """
+    if value in supported:
+        return value
+    ranked = [level for level in EFFORT_LEVELS if level in supported]
+    if not ranked:
+        return DEFAULT_EFFORT
+    target = value if value in EFFORT_LEVELS else DEFAULT_EFFORT
+    rank = EFFORT_LEVELS.index(target)
+    below = [level for level in ranked if EFFORT_LEVELS.index(level) <= rank]
+    return below[-1] if below else ranked[0]
+
+
 class Engine(ABC):
     """Contract for one engine. Has shared default implementations below, hence ABC rather than Protocol."""
 
@@ -381,6 +407,15 @@ class Engine(ABC):
     #: Declared here rather than branched on the engine name at each reader, so
     #: a new engine answers the question once.
     ccusage_reports_consumption: ClassVar[bool] = False
+
+    #: Which EFFORT_LEVELS values this engine's CLI accepts, in ladder order.
+    #: Declared on the engine rather than in the profile because it is a
+    #: property of the CLI, not of one bot -- a profile table would have to be
+    #: copied into every bot and would drift from what the CLI takes. The
+    #: original kept it per profile (bot_profile.py:159 codex_effort).
+    #: Values outside EFFORT_LEVELS don't belong here: normalize_effort only
+    #: moves along that ladder, so a CLI-only name would need a rename step.
+    supported_efforts: ClassVar[tuple[str, ...]] = EFFORT_LEVELS
 
     def __init__(self, profile: Profile, settings: RuntimeSettings) -> None:
         self.profile = profile
@@ -408,6 +443,16 @@ class Engine(ABC):
         format, or is a partial write. Only consulted when streams_progress.
         """
         return ""
+
+    def resolve_effort(self, request: EngineRequest, fallback: str = "") -> str:
+        """The effort value build_command passes to this engine's CLI.
+
+        fallback is what the engine read somewhere else when the request
+        named none -- gemini takes it from the model name suffix. Every
+        engine goes through here, so an empty request effort never reaches
+        a CLI as a blank argument or as a silently omitted one.
+        """
+        return normalize_effort(request.effort or fallback, self.supported_efforts)
 
     @abstractmethod
     def build_command(self, request: EngineRequest) -> list[str]: ...
