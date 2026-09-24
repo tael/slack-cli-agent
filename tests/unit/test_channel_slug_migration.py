@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+from pathlib import Path
 
 import pytest
 
@@ -203,3 +205,137 @@ class Test등록부가_이사를_부른다:
         registry.update("D1", {"name": "누구와의대화"})
 
         assert 불린것 == []
+
+
+class Test두_프로세스_경합:
+    """worker 와 ingress 가 각각 등록부를 다시 읽으면 이사가 두 번 돈다.
+    `channel.py` 의 락은 프로세스 안에서만 듣는다(sca-uk55)."""
+
+    def test_다른_프로세스가_이사_중이면_손대지_않고_실패로_알린다(self, 상태, tmp_path) -> None:
+        knowledge, learned, responses = 상태
+        (learned / "C1.md").write_text("배운 것", encoding="utf-8")
+        잠금 = tmp_path / "slug-migration.lock"
+        이사 = ChannelSlugMigrator(
+            file_dirs=(knowledge, learned),
+            tree_roots=(responses,),
+            lock_path=잠금,
+            lock_timeout=0.05,
+        )
+
+        잠금.parent.mkdir(parents=True, exist_ok=True)
+        with open(잠금, "w") as 남의손:
+            fcntl.flock(남의손, fcntl.LOCK_EX)
+            결과 = 이사.migrate("C1", "테스트")
+
+        assert 결과 is False
+        assert (learned / "C1.md").exists()
+        assert not (learned / "테스트.md").exists()
+
+    def test_락이_비어_있으면_평소대로_옮긴다(self, 상태, tmp_path) -> None:
+        knowledge, learned, responses = 상태
+        (learned / "C1.md").write_text("배운 것", encoding="utf-8")
+        이사 = ChannelSlugMigrator(
+            file_dirs=(knowledge, learned),
+            tree_roots=(responses,),
+            lock_path=tmp_path / "slug-migration.lock",
+        )
+
+        assert 이사.migrate("C1", "테스트") is True
+        assert (learned / "테스트.md").exists()
+
+    def test_옮기는_중_원본_디렉터리가_사라져도_예외가_나가지_않는다(
+        self, 상태, 이사, monkeypatch
+    ) -> None:
+        """다른 프로세스가 같은 이사를 먼저 끝내면 `iterdir` 이 깨진다."""
+        _, _, responses = 상태
+        (responses / "C1").mkdir()
+        (responses / "C1" / "2026-09-20.md").write_text("응답", encoding="utf-8")
+        (responses / "테스트").mkdir()
+
+        원래 = Path.iterdir
+
+        def 사라진다(self):
+            if self.name == "C1":
+                raise FileNotFoundError(2, "No such file or directory", str(self))
+            return 원래(self)
+
+        monkeypatch.setattr(Path, "iterdir", 사라진다)
+
+        assert 이사.migrate("C1", "테스트") is False
+
+
+class Test이사_실패는_다시_시도된다:
+    """등록부가 슬러그를 먼저 갱신해 버리면 일시 실패가 영구 미이사가
+    된다(sca-tl2q). 옛 슬러그를 남겨 다음 재파싱에서 다시 부른다."""
+
+    @pytest.fixture
+    def 설정파일(self, tmp_path):
+        return tmp_path / "channels.json"
+
+    @staticmethod
+    def _기록(설정파일, 내용):
+        설정파일.write_text(json.dumps(내용, ensure_ascii=False), encoding="utf-8")
+
+    def test_실패하면_다음_접근에서_같은_이사를_다시_부른다(self, 설정파일) -> None:
+        시도: list[tuple[str, str]] = []
+        남은실패 = [True]
+
+        def 콜백(old: str, new: str) -> bool:
+            시도.append((old, new))
+            if 남은실패:
+                남은실패.pop()
+                return False
+            return True
+
+        self._기록(설정파일, {})
+        registry = ChannelRegistry(설정파일, on_slug_change=콜백)
+        registry.all()
+
+        registry.update("C1", {"name": "테스트"})
+        assert 시도 == [("C1", "테스트")]
+
+        registry.all()
+
+        assert 시도 == [("C1", "테스트"), ("C1", "테스트")]
+
+    def test_성공하면_다시_부르지_않는다(self, 설정파일) -> None:
+        시도: list[tuple[str, str]] = []
+
+        def 콜백(old: str, new: str) -> bool:
+            시도.append((old, new))
+            return True
+
+        self._기록(설정파일, {})
+        registry = ChannelRegistry(설정파일, on_slug_change=콜백)
+        registry.all()
+
+        registry.update("C1", {"name": "테스트"})
+        registry.all()
+        registry.all()
+
+        assert 시도 == [("C1", "테스트")]
+
+    def test_실패한_이사가_끝나면_더는_부르지_않는다(self, 상태, 설정파일, tmp_path) -> None:
+        """락을 쥔 다른 프로세스 때문에 못 옮긴 뒤, 락이 풀리면 옮긴다."""
+        knowledge, learned, responses = 상태
+        (learned / "C1.md").write_text("배운 것", encoding="utf-8")
+        잠금 = tmp_path / "slug-migration.lock"
+        이사 = ChannelSlugMigrator(
+            file_dirs=(knowledge, learned),
+            tree_roots=(responses,),
+            lock_path=잠금,
+            lock_timeout=0.05,
+        )
+        self._기록(설정파일, {})
+        registry = ChannelRegistry(설정파일, on_slug_change=이사.migrate)
+        registry.all()
+
+        잠금.parent.mkdir(parents=True, exist_ok=True)
+        with open(잠금, "w") as 남의손:
+            fcntl.flock(남의손, fcntl.LOCK_EX)
+            registry.update("C1", {"name": "테스트"})
+            assert (learned / "C1.md").exists()
+
+        registry.all()
+
+        assert (learned / "테스트.md").exists()

@@ -18,7 +18,6 @@ class NoticeKey(StrEnum):
     ASK_WHAT = "ask_what"
     NOT_LISTED = "not_listed"
     MODE_MENTION_ONLY = "mode_mention_only"
-    MODE_STRUCTURED = "mode_structured"
     MODE_PLAIN = "mode_plain"
     CHAT_ACTIVE = "chat_active"
     CHAT_NORMAL = "chat_normal"
@@ -37,7 +36,6 @@ DEFAULT_NOTICES: Mapping[NoticeKey, str] = {
     NoticeKey.ASK_WHAT: "무엇을 확인할까요.",
     NoticeKey.NOT_LISTED: "이 채널은 목록에 없습니다.",
     NoticeKey.MODE_MENTION_ONLY: "멘션 전용 모드로 바꿨어요. 이제 이름을 불러야 답합니다.",
-    NoticeKey.MODE_STRUCTURED: "지정된 응답 형식으로 바꿨습니다.",
     NoticeKey.MODE_PLAIN: "일반 응답 형식으로 되돌렸습니다.",
     NoticeKey.CHAT_ACTIVE: "말수를 늘렸어요.",
     NoticeKey.CHAT_NORMAL: "말수를 기본으로 되돌렸어요.",

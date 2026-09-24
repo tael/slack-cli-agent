@@ -127,3 +127,25 @@ class Test조립:
             assert server.bound_address[0] == "127.0.0.1"
         finally:
             server.stop()
+
+
+class Test슬러그_이사가_웹에도_걸린다:
+    """콜백을 application.py 에서만 걸면 웹에서 이름을 바꿨을 때 파일이 옛
+    이름에 남는다(sca-a26x)."""
+
+    def test_웹에서_이름을_바꾸면_배운_것이_따라_옮겨진다(self, tmp_path: Path) -> None:
+        console = make_console(tmp_path)
+        state = tmp_path / "state"
+        learned = state / "persona" / "learned"
+        learned.mkdir(parents=True)
+        (learned / "C9.md").write_text("배운 것", encoding="utf-8")
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "channels.json").write_text(
+            json.dumps({"C9": {"name": "C9", "mode": "default"}}), encoding="utf-8"
+        )
+
+        res = console.router().handle("PUT", "/api/channels/example/C9", {}, {"name": "잡담"})
+
+        assert res.status == 200
+        assert (learned / "잡담.md").read_text(encoding="utf-8") == "배운 것"
+        assert not (learned / "C9.md").exists()

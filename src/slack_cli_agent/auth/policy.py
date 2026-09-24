@@ -60,6 +60,20 @@ class AccessPolicy:
             trust = TrustLevel.GENERAL
         return Principal(user_id=user, channel=channel, trust=trust, is_direct_message=is_dm)
 
+    def accepts_request(self, principal: Principal) -> bool:
+        """Whether this conversation gets an answer at all (bot.py:3695).
+
+        The owner passes anywhere. Any other DM is refused, and a channel
+        passes only if it is registered. An empty owner_user_id makes nobody
+        the owner, which is stricter than the original -- there `user` and
+        `OWNER_USER_ID` both being empty would have passed.
+        """
+        if principal.trust is TrustLevel.OWNER:
+            return True
+        if principal.is_direct_message:
+            return False
+        return self._channels.is_registered(principal.channel)
+
     def may_disclose_mechanism(self, principal: Principal) -> bool:
         """True in the owner's own DM, when the channel's
         disclose_mechanism is on, or when an extension allows it."""

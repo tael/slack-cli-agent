@@ -33,7 +33,7 @@ from ..config.channel import ChannelConfig, ChannelRegistry, channel_is_rich
 from ..config.channel import channel_slug as slug_for
 from ..config.profile import EngineSpec, Profile
 from ..config.settings import RuntimeSettings
-from ..config.slug_migration import ChannelSlugMigrator
+from ..config.slug_migration import SLUG_MIGRATION_LOCK, ChannelSlugMigrator
 from ..engine.base import CallOrigin, Engine, EngineRequest, EngineResponse
 from ..engine.mcp_health import broken_mcp_servers
 from ..engine.registry import EngineRegistry, default_registry
@@ -169,6 +169,7 @@ from ..slack.transcript import TranscriptBuilder
 from ..storage.admin_claims import AdminClaims
 from ..storage.connection_epochs import SqliteConnectionEpochs
 from ..storage.database import Database
+from .access import RequestAccess
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
 from .errors import AgentError
@@ -243,6 +244,7 @@ class Application:
             on_slug_change=ChannelSlugMigrator(
                 file_dirs=(profile.paths.knowledge, profile.paths.learned),
                 tree_roots=(profile.paths.responses,),
+                lock_path=profile.paths.root / SLUG_MIGRATION_LOCK,
             ).migrate,
         )
         self._names = DisplayNameResolver(client)
@@ -1172,6 +1174,16 @@ class Application:
                     channel_registry=self._channels,
                     gate=ResponseGate(),
                     identity=self.identity,
+                ),
+                # The one place the access check runs. Catch-up needs no second
+                # one: it only sweeps channels that are already registered
+                # (channel_ids()), which every user passes anyway (sca-a8pp).
+                access=RequestAccess(
+                    policy=self.access_policy,
+                    channels=self._channels,
+                    channel_name=self._channel_names(),
+                    notices=self._notices,
+                    reply=self._reply,
                 ),
                 strip_self_mention=SelfMentionStripper(self.identity).remove_self,
                 dedup=DeduplicationTracker(),

@@ -142,7 +142,7 @@ class TestUnaddressedCommandsAreMutuallyExclusive:
 
 
 class TestCoachModeCommand:
-    @pytest.mark.parametrize("text", ["코치 모드", "코치모드"])
+    @pytest.mark.parametrize("text", ["코치 모드", "코치모드", "에이전트 코치"])
     def test_별칭을_받는다(self, text: str) -> None:
         cmd = CoachModeCommand(NoticeCatalog())
         assert cmd.matches(text) is True

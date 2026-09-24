@@ -110,7 +110,7 @@ class CoachModeCommand(AdminCommand):
         self._notices = notices
 
     def matches(self, text: str) -> bool:
-        return text.strip() in ("코치 모드", "코치모드")
+        return text.strip() in ("코치 모드", "코치모드", "에이전트 코치")
 
     def execute(self, ctx: AdminContext) -> AdminResult:
         ctx.channels.update(
