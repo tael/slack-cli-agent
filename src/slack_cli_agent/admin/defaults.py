@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ..observability.notices import NoticeCatalog
 from .channel_commands import (
+    ApiModeCommand,
     ChannelUnregisterCommand,
     ChatActiveCommand,
     ChatNormalCommand,
@@ -35,6 +36,7 @@ def default_admin_commands(notices: NoticeCatalog) -> list[AdminCommand]:
         ChatQuietCommand(notices),
         UnaddressedOnCommand(notices),
         UnaddressedOffCommand(notices),
+        ApiModeCommand(notices),
         CoachModeCommand(notices),
         DefaultModeCommand(notices),
         ChannelUnregisterCommand(notices),

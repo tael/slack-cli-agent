@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from slack_cli_agent.admin.channel_commands import (
+    ApiModeCommand,
     ChannelUnregisterCommand,
     ChatActiveCommand,
     ChatNormalCommand,
@@ -197,3 +198,23 @@ class TestChannelUnregisterCommand:
         result = cmd.execute(ctx)
         assert ctx.channels.is_registered("C1") is False
         assert "테스트채널" in result.message
+
+
+class TestApiModeCommand:
+    """원본 bot.py:3950 의 `api 모드`. 이식에서 명령만 빠지고 안내문 키가 남아
+    있었다 (sca-6k65)."""
+
+    @pytest.mark.parametrize("text", ["api 모드", "api모드", "API 모드"])
+    def test_별칭을_받는다(self, text: str) -> None:
+        assert ApiModeCommand(NoticeCatalog()).matches(text) is True
+
+    def test_채널_모드를_api_helpdesk_로_적는다(self, tmp_path: Path) -> None:
+        ctx = make_context(tmp_path)
+        result = ApiModeCommand(NoticeCatalog()).execute(ctx)
+        assert read_channel(tmp_path)["mode"] == "api_helpdesk"
+        assert result.message
+
+    def test_알려진_모드에_들어_있다(self) -> None:
+        from slack_cli_agent.core.application import KNOWN_MODES
+
+        assert "api_helpdesk" in KNOWN_MODES
