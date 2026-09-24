@@ -17,11 +17,14 @@ from pathlib import Path
 from typing import ClassVar
 
 from ..auth.policy import EFFORT_LEVELS, OWNER_EFFORT_MIN
+from ..auth.principal import TrustLevel
 from ..config.channel import ChannelConfig, ChannelRegistry
 from ..config.profile import KNOWN_KEYS as PROFILE_KNOWN_KEYS
+from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
 from ..core.errors import ConfigError
 from ..engine.capability import ToolRestriction
+from ..engine.claude_settings import load_settings_file
 from ..engine.environment import registry
 from ..engine.mcp_health import broken_mcp_servers
 from ..engine.registry import default_registry
@@ -386,6 +389,47 @@ class McpServerCheck(PreflightCheck):
         if broken:
             return CheckResult(ok=False, detail="; ".join(broken))
         return CheckResult(ok=True, detail="MCP 기동 점검 통과")
+
+
+class EngineSettingsCheck(PreflightCheck):
+    """Checks the bot's own claude settings load before a request needs them.
+
+    claude reads these through --settings, which build_command assembles per
+    request. A broken file therefore passes boot and fails every request
+    after it, and the requester only sees a failure reaction. The original
+    exits at startup when its settings file is missing (bot.py:7133).
+
+    Absent is a warning, not fatal: a freshly installed bot has no
+    operational files yet. Present but unreadable is fatal -- the operator
+    wrote a deny list and it is not reaching the engine.
+    """
+
+    name: ClassVar[str] = "engine_settings"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        if not self._uses_claude(ctx.profile):
+            return CheckResult(ok=True, detail="claude 를 안 쓰는 프로필")
+        paths = ctx.profile.paths
+        names = ["claude"] + [f"claude.{level.name.lower()}" for level in TrustLevel]
+        for name in names:
+            try:
+                load_settings_file(paths.engine_settings(name))
+            except ConfigError as e:
+                return CheckResult(ok=False, detail=str(e))
+        if not paths.engine_settings("claude").exists():
+            return CheckResult(
+                ok=False,
+                detail=f"봇 전용 settings 가 없습니다 : {paths.engine_settings('claude')}",
+                fatal=False,
+            )
+        return CheckResult(ok=True, detail="봇 전용 settings 점검 통과")
+
+    @staticmethod
+    def _uses_claude(profile: Profile) -> bool:
+        specs = [profile.primary_engine]
+        if profile.fallback_engine:
+            specs.append(profile.fallback_engine)
+        return any(spec.type == "claude" for spec in specs)
 
 
 class EngineHomeCredentialCheck(PreflightCheck):

@@ -22,6 +22,7 @@ from .checks import (
     ChannelUserToolsCheck,
     EngineBinaryCheck,
     EngineHomeCredentialCheck,
+    EngineSettingsCheck,
     McpCredentialCheck,
     McpServerCheck,
     OwnerSettingsInertCheck,
@@ -61,6 +62,8 @@ class PreflightSuite:
             EngineBinaryCheck(),
             EngineHomeCredentialCheck(),
             McpServerCheck(),
+            # fatal 은 EngineSettingsCheck 가 결과마다 정한다 - 부재는 경고, 깨짐은 기동 정지.
+            EngineSettingsCheck(),
             PromptFileCheck(required_names=list(required_prompts or ())),
             # fatal=False: only meant to prevent a misread config, not to block boot.
             ChannelSettingsReadableCheck(),
