@@ -1169,6 +1169,26 @@ class TestAttachmentStore:
         ]})
         assert saved == []
 
+    def test_attach_dir이_상대경로여도_local_path는_절대경로다(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """profile 이 attach_dir 을 상대경로로 설정할 수 있다(config/profile.py
+        Profile._under 가 그대로 통과시킨다). local_path 가 상대경로면
+        pipeline 이 readable_dirs 에 넣는 부모 디렉터리도 상대경로가 되고,
+        엔진 프로세스의 cwd 는 workdir 이라 실제 저장 위치와 달라진다
+        (코덱스 9차 리뷰)."""
+        monkeypatch.chdir(tmp_path)
+        store = AttachmentStore(
+            attach_dir=Path("relative-attach"),
+            token_provider=lambda: "xoxb-token",
+            downloader=lambda url, token: DownloadResult("image/png", b"x"),
+        )
+        saved = store.save({"ts": "1", "files": [
+            {"name": "a.png", "url_private_download": "u", "size": 1}
+        ]})
+        assert len(saved) == 1
+        assert Path(saved[0].path).is_absolute()
+
     def test_저장_실패는_그_파일만_건너뛴다(self, tmp_path: Path) -> None:
         """디렉터리를 못 만들거나 못 쓰면 write_bytes/mkdir 이 그대로 예외를
         던졌다. 캐치업 경로에서는 이 호출이 sweep() 밖 try 없이 불려, 첨부

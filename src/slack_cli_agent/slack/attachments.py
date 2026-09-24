@@ -92,7 +92,11 @@ class AttachmentStore:
                 continue
             saved.append(
                 SavedAttachment(
-                    path=str(dest),
+                    # Absolute regardless of how attach_dir was configured --
+                    # the engine subprocess's cwd is workdir, not whatever
+                    # this process's cwd was when a relative attach_dir got
+                    # resolved (코덱스 9차 리뷰).
+                    path=str(dest.resolve()),
                     name=f.get("name") or name,
                     kind=f.get("mimetype") or result.content_type,
                 )
