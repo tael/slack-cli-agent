@@ -215,8 +215,9 @@ class CodexEngine(Engine):
             # The read-only sandbox blocks network too; the profile decides whether to open it.
             cmd += ["-c", "sandbox_workspace_write.network_access=true"]
         cmd += ["-m", request.require_model()]
-        if request.effort:
-            cmd += ["-c", f"model_reasoning_effort={self._toml_string(request.effort)}"]
+        # Always sent, never omitted: leaving it out lets the CLI pick its own
+        # default while the audit records the requested value (sca-3kzk).
+        cmd += ["-c", f"model_reasoning_effort={self._toml_string(self.resolve_effort(request))}"]
         cmd += _codex_mcp_config_args(self.profile.mcp_servers)
         if not request.resume:
             instructions = request.system_prompt + self._session_path_note(request)
