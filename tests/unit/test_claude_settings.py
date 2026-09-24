@@ -93,3 +93,52 @@ class Test파일을_읽는다:
         path.write_text("[1, 2]", encoding="utf-8")
         with pytest.raises(ConfigError):
             load_settings_file(path)
+
+
+class Test모양이_어긋나면_거부한다:
+    """종류가 다르면 나중 값이 이기는 병합 규칙 때문에, 덧씌움의 permissions
+    가 실수로 목록이면 기본 파일의 deny 가 통째로 사라진다. 합치기 전에
+    거른다 (codex 리뷰).
+    """
+
+    @staticmethod
+    def 쓴다(tmp_path, 내용: str):
+        path = tmp_path / "s.json"
+        path.write_text(내용, encoding="utf-8")
+        return path
+
+    @pytest.mark.parametrize("내용", [
+        '{"permissions": []}',
+        '{"permissions": "dontAsk"}',
+        '{"permissions": {"deny": "Bash"}}',
+        '{"permissions": {"allow": {"a": 1}}}',
+        '{"permissions": {"ask": 1}}',
+        '{"hooks": []}',
+        '{"hooks": {"PreToolUse": {"matcher": "*"}}}',
+        '{"env": []}',
+    ])
+    def test_거부한다(self, tmp_path, 내용: str) -> None:
+        from slack_cli_agent.core.errors import ConfigError
+        from slack_cli_agent.engine.claude_settings import load_settings_file
+
+        with pytest.raises(ConfigError):
+            load_settings_file(self.쓴다(tmp_path, 내용))
+
+    @pytest.mark.parametrize("내용", [
+        '{"permissions": {"deny": ["Bash"], "allow": [], "ask": []}}',
+        '{"hooks": {"PreToolUse": [{"matcher": "*"}]}}',
+        '{"env": {"A": "1"}}',
+        '{"모르는키": 1}',
+    ])
+    def test_통과한다(self, tmp_path, 내용: str) -> None:
+        from slack_cli_agent.engine.claude_settings import load_settings_file
+
+        assert load_settings_file(self.쓴다(tmp_path, 내용))
+
+    def test_어느_키가_문제인지_적는다(self, tmp_path) -> None:
+        """파일 하나에 키가 수십 개다. 이름이 없으면 운영자가 못 찾는다."""
+        from slack_cli_agent.core.errors import ConfigError
+        from slack_cli_agent.engine.claude_settings import load_settings_file
+
+        with pytest.raises(ConfigError, match="deny"):
+            load_settings_file(self.쓴다(tmp_path, '{"permissions": {"deny": "Bash"}}'))
