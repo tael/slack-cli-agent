@@ -81,8 +81,15 @@ class AttachmentStore:
                 continue
             if len(result.data) > self._max_bytes:
                 continue
-            where.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(result.data)
+            try:
+                where.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(result.data)
+            except OSError:
+                # 한 파일의 쓰기 실패가 나머지 첨부까지, 나아가 catchup 이면
+                # sweep() 밖 try 없이 이 메서드를 부르므로 채널 전체 처리를
+                # 끊는다 (코덱스 8차 리뷰).
+                log.warning("첨부 저장 실패 : %s", name)
+                continue
             saved.append(
                 SavedAttachment(
                     path=str(dest),

@@ -1301,6 +1301,28 @@ class Test첨부파일:
         assert parts["composer"].contexts[0].missed_files == 0
 
 
+class Test첨부_디렉터리는_해당_파일의_자리로만_열린다:
+    """attach_dir 전체를 readable_dirs 에 넣으면 한 요청의 엔진이 그 뿌리를
+    나열해 다른 대화의 첨부까지 본다. 파이프라인은 이번 요청이 실제로 받은
+    파일의 부모 디렉터리만 넣어야 한다 (코덱스 8차 리뷰, sca-h2dr)."""
+
+    def test_첨부_파일의_부모_디렉터리가_요청에_실린다(self, tmp_path: Path) -> None:
+        parent = tmp_path / "attach" / "1700000001.000100"
+        files = ({"name": "a.png", "local_path": str(parent / "a.png")},)
+        pipeline, parts = build_pipeline(responses=[ok_response()])
+
+        pipeline.handle(make_ctx(files=files))
+
+        assert parent in parts["runner"].calls[0].readable_dirs
+
+    def test_첨부가_없으면_추가되지_않는다(self) -> None:
+        pipeline, parts = build_pipeline(responses=[ok_response()])
+
+        pipeline.handle(make_ctx())
+
+        assert parts["runner"].calls[0].readable_dirs == ()
+
+
 class Test링크된스레드:
     """본문에 걸린 슬랙 링크의 스레드가 실제 요청 프롬프트에 들어가는가.
 

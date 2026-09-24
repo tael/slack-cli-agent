@@ -1169,6 +1169,26 @@ class TestAttachmentStore:
         ]})
         assert saved == []
 
+    def test_저장_실패는_그_파일만_건너뛴다(self, tmp_path: Path) -> None:
+        """디렉터리를 못 만들거나 못 쓰면 write_bytes/mkdir 이 그대로 예외를
+        던졌다. 캐치업 경로에서는 이 호출이 sweep() 밖 try 없이 불려, 첨부
+        하나의 쓰기 실패가 그 채널 전체 처리를 끊는다 (코덱스 8차 리뷰)."""
+        attach_dir = tmp_path / "attach"
+        # 저장할 자리에 파일을 미리 둬서 mkdir(그 이름의 디렉터리를 만들려는
+        # 시도)이 실제로 실패하게 만든다.
+        attach_dir.parent.mkdir(parents=True, exist_ok=True)
+        attach_dir.write_text("이미 파일이다", encoding="utf-8")
+
+        store = AttachmentStore(
+            attach_dir=attach_dir,
+            token_provider=lambda: "xoxb-token",
+            downloader=lambda url, token: DownloadResult("image/png", b"x"),
+        )
+        saved = store.save({"ts": "1", "files": [
+            {"name": "a.png", "url_private_download": "u", "size": 1}
+        ]})
+        assert saved == []
+
     def test_cleanup은_보관기한이_지난_파일을_지운다(self, tmp_path: Path) -> None:
         attach_dir = tmp_path / "attach"
         sub = attach_dir / "1700000000.0"

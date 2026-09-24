@@ -231,6 +231,21 @@ class RequestPipeline:
     def readable_dirs(self) -> tuple[Path, ...]:
         return self._readable_dirs
 
+    @staticmethod
+    def _attachment_dirs(ctx: RequestContext) -> tuple[Path, ...]:
+        """Scopes read access to this request's own saved files, not the
+        whole attach_dir tree -- that would let one request's engine browse
+        every other conversation's attachments (코덱스 8차 리뷰, sca-h2dr)."""
+        dirs: list[Path] = []
+        for f in ctx.files:
+            local_path = f.get("local_path")
+            if not local_path:
+                continue
+            parent = Path(local_path).parent
+            if parent not in dirs:
+                dirs.append(parent)
+        return tuple(dirs)
+
     def _tools(
         self, principal: Principal, prompt: str, config: ChannelConfig | None
     ) -> ToolSelection:
@@ -300,7 +315,7 @@ class RequestPipeline:
             requirements=self._execution_policy.requirements_for(
                 config=config, tools=tools,
             ),
-            readable_dirs=self._readable_dirs,
+            readable_dirs=self._readable_dirs + self._attachment_dirs(ctx),
             trust_level=principal.trust,
             progress_log=progress_log,
             request_id=request_id,

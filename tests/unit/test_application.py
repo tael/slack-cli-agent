@@ -2236,13 +2236,14 @@ class Test엔진_상태는_preflight_판정을_그대로_쓴다:
             load_settings_file(path)
 
 
-class Test읽기범위에_첨부_디렉터리:
-    """세 엔진 모두 readable_dirs 하나로 --add-dir/노트 텍스트를 만든다
-    (claude.py, gemini.py 의 --add-dir, codex.py 의 readable_paths_note).
-    이 목록에 attach_dir 이 없으면 정상 경로로 받은 첨부조차 그 경로를
-    엔진이 못 읽는다 (코덱스 7차 리뷰, sca-h2dr)."""
+class Test읽기범위는_첨부_디렉터리_전체를_안_담는다:
+    """attach_dir 은 모든 대화의 첨부를 한 뿌리 아래 담는다. 이 값을 그대로
+    readable_dirs 에 넣으면 한 요청의 엔진이 그 디렉터리를 나열해 다른 대화의
+    첨부까지 볼 수 있다. 각 요청이 실제로 받은 파일의 하위 폴더만 파이프라인이
+    따로 추가한다(Test첨부_디렉터리는_해당_파일의_자리로만_열린다 참조,
+    코덱스 8차 리뷰, sca-h2dr)."""
 
-    def test_attach_dir_이_포함된다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+    def test_attach_dir_자체는_없다(self, tmp_path: Path, client: FakeSlackClient) -> None:
         app = Application.from_profile(write_profile(tmp_path), client=client)
-        assert app._profile.attach_dir in app.readable_dirs
+        assert app._profile.attach_dir not in app.readable_dirs
         app.close()
