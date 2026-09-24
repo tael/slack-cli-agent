@@ -52,7 +52,7 @@ class AdminRouter:
             if ctx.principal.trust < command.required_trust:
                 return AdminResult(
                     message="이 명령은 권한이 없어 실행할 수 없습니다.",
-                    handled=False,
+                    applied=False,
                 )
             # Filled in here rather than by every call site building context,
             # so no call site can forget it and break the command's argument
@@ -64,5 +64,5 @@ class AdminRouter:
                 # command that stops on a bad config file would look to the
                 # user exactly like one that worked (sca-zvk).
                 log.warning("관리 명령 중단 : %s : %s", command.name, exc)
-                return AdminResult(message=f"설정을 읽지 못해 실행하지 않았습니다. {exc}", handled=False)
+                return AdminResult(message=f"설정을 읽지 못해 실행하지 않았습니다. {exc}", applied=False)
         return None

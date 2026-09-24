@@ -405,7 +405,7 @@ class Test재시도_간격:
 
     def test_간격이_지나면_다시_부른다(self, 설정파일, monkeypatch) -> None:
         시계 = [1000.0]
-        monkeypatch.setattr(channel_module.time, "monotonic", lambda: 시계[0])
+        monkeypatch.setattr(channel_module, "_now", lambda: 시계[0])
         시도: list[tuple[str, str]] = []
         self._기록(설정파일, {})
         registry = ChannelRegistry(설정파일, on_slug_change=self._늘_실패하는_콜백(시도))
@@ -420,8 +420,9 @@ class Test재시도_간격:
 
         assert 시도 == [("C1", "테스트"), ("C1", "테스트")]
 
-    def test_설정_파일이_바뀌면_간격을_기다리지_않는다(self, 설정파일) -> None:
-        """사람이 파일을 고친 것은 새 사건이라 그 자리에서 다시 시도한다."""
+    def test_다른_채널이_추가돼도_실패한_이사는_간격을_지킨다(self, 설정파일) -> None:
+        """파일이 바뀌었다는 것만으로 재시도하면 간격이 무의미해진다. 실제로
+        슬러그가 바뀐 채널만 그 자리에서 시도한다(sca-vtqq)."""
         시도: list[tuple[str, str]] = []
         self._기록(설정파일, {})
         registry = ChannelRegistry(설정파일, on_slug_change=self._늘_실패하는_콜백(시도))
@@ -434,4 +435,57 @@ class Test재시도_간격:
         registry._mtime = -1.0
         registry.all()
 
-        assert ("C1", "테스트") in 시도[1:]
+        assert 시도 == [("C1", "테스트"), ("C2", "둘")]
+
+    def test_슬러그가_다시_바뀌면_간격을_기다리지_않는다(self, 설정파일) -> None:
+        """이름이 또 바뀐 것은 앞선 실패와 다른 사건이다."""
+        시도: list[tuple[str, str]] = []
+        self._기록(설정파일, {})
+        registry = ChannelRegistry(설정파일, on_slug_change=self._늘_실패하는_콜백(시도))
+        registry.all()
+
+        registry.update("C1", {"name": "테스트"})
+        registry.update("C1", {"name": "둘째"})
+
+        assert 시도 == [("C1", "테스트"), ("C1", "둘째")]
+
+    def test_설정_명령이_파일을_다시_써도_간격을_지킨다(self, 설정파일) -> None:
+        """설정 명령은 channels.json 을 다시 쓴다. 그 mtime 변화가 간격을
+        무력화하면 락 장애 중 명령마다 락 타임아웃을 문다(sca-vtqq)."""
+        시도: list[tuple[str, str]] = []
+        self._기록(설정파일, {})
+        registry = ChannelRegistry(설정파일, on_slug_change=self._늘_실패하는_콜백(시도))
+        registry.all()
+
+        registry.update("C1", {"name": "테스트"})
+        assert 시도 == [("C1", "테스트")]
+
+        registry.update("C1", {"chat": "quiet"})
+        registry.update("C1", {"chat": "normal"})
+
+        assert 시도 == [("C1", "테스트")]
+
+    def test_다른_프로세스와_재시도_간격을_공유한다(self, 설정파일, monkeypatch) -> None:
+        """간격이 인스턴스 상태면 프로세스 수만큼 락 타임아웃이 쌓인다
+        (sca-vtqq). 표식 파일로 간격을 프로세스 밖에 둔다."""
+        시계 = [1000.0]
+        monkeypatch.setattr(channel_module, "_now", lambda: 시계[0])
+        갑시도: list[tuple[str, str]] = []
+        을시도: list[tuple[str, str]] = []
+        self._기록(설정파일, {})
+        갑 = ChannelRegistry(설정파일, on_slug_change=self._늘_실패하는_콜백(갑시도))
+        을 = ChannelRegistry(설정파일, on_slug_change=self._늘_실패하는_콜백(을시도))
+        갑.all()
+        을.all()
+
+        갑.update("C1", {"name": "테스트"})
+        을.all()
+        assert 갑시도 == [("C1", "테스트")]
+        assert 을시도 == [("C1", "테스트")]
+
+        시계[0] += channel_module.SLUG_RETRY_INTERVAL_SEC
+        갑.all()
+        을.all()
+
+        assert 갑시도 == [("C1", "테스트"), ("C1", "테스트")]
+        assert 을시도 == [("C1", "테스트")]

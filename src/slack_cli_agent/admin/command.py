@@ -40,8 +40,16 @@ class AdminResult:
     """The reply text shown to the user as-is."""
 
     message: str
-    handled: bool = True
-    """False means the command matched but was denied for lack of permission."""
+    applied: bool = True
+    """False means the command matched but changed nothing -- denied for lack
+    of permission, refused because the config could not be read, or aimed at a
+    channel that is not registered.
+
+    It says nothing about whether the request is finished. It was named
+    `handled` and read as that, while AdminAdmission never looks at it and
+    ends every matched command in place: passing a refused command on would
+    run it as a model request (sca-id1h).
+    """
 
 
 class AdminCommand(ABC):
