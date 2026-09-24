@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -25,6 +25,9 @@ DEFAULT_PROGRESS = True
 
 #: The shared slug every DM uses (bot.py:133).
 DM_SLUG = "dm"
+
+#: Called with the old and the new slug when a channel's slug moves.
+SlugChange = Callable[[str, str], None]
 
 KNOWN_KEYS = frozenset(
     {
@@ -171,11 +174,19 @@ class ChannelRegistry:
     """Re-reads the channel-config file on every access, but only reparses
     when mtime changes, so hand-edits apply without a restart."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self, path: Path, *, on_slug_change: SlugChange | None = None
+    ) -> None:
         self._path = path
         self._lock = threading.Lock()
         self._mtime: float = -1.0
         self._configs: dict[str, ChannelConfig] = {}
+        self._on_slug_change = on_slug_change
+        #: Slug per channel as of the last parse. Empty before the first one,
+        #: which makes every registered channel read as "was the channel ID" --
+        #: exactly the state a bot starts in when it was registered while the
+        #: process was down (sca-do8s).
+        self._slugs: dict[str, str] = {}
 
     def get(self, channel_id: str) -> ChannelConfig | None:
         return self._current().get(channel_id)
@@ -253,6 +264,7 @@ class ChannelRegistry:
             self._mtime = self._path.stat().st_mtime
         except OSError:
             self._mtime = -1.0
+        self._announce_slugs()
 
     def _current(self) -> dict[str, ChannelConfig]:
         with self._lock:
@@ -264,7 +276,34 @@ class ChannelRegistry:
             if mtime != self._mtime:
                 self._configs = self._parse()
                 self._mtime = mtime
+                self._announce_slugs()
             return self._configs
+
+    def _announce_slugs(self) -> None:
+        """Reports every channel whose slug moved since the last parse.
+
+        An unknown channel counts as having been unregistered, which is the
+        channel ID for a channel and `dm` for a DM -- naming a DM by its ID
+        here would report a move that never happened. Runs under the lock so
+        the move it triggers cannot race a second reparse.
+        """
+        previous, self._slugs = self._slugs, {
+            cid: channel_slug(cid, config) for cid, config in self._configs.items()
+        }
+        if self._on_slug_change is None:
+            return
+        moved = [
+            (previous.get(cid) or channel_slug(cid, None), new)
+            for cid, new in self._slugs.items()
+        ]
+        moved.extend(
+            (old, channel_slug(cid, None))
+            for cid, old in previous.items()
+            if cid not in self._slugs
+        )
+        for old, new in moved:
+            if old != new:
+                self._on_slug_change(old, new)
 
     def _parse(self) -> dict[str, ChannelConfig]:
         try:

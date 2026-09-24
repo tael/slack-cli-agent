@@ -370,6 +370,25 @@ class TestChannels:
         )
         assert sorted(Application(profile, client).channel_ids()) == ["C_ONE", "C_TWO"]
 
+    def test_등록된_채널의_옛_채널ID_지식이_이름으로_옮겨진다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        """등록 전에 쌓인 지식은 채널 ID 이름으로 있다. 조립이 이사 계층을
+        걸지 않으면 그대로 안 읽히고 로그에도 안 남는다 (sca-do8s)."""
+        profile.paths.learned.mkdir(parents=True, exist_ok=True)
+        (profile.paths.learned / "C_ONE.md").write_text("배운 것", encoding="utf-8")
+        profile.paths.responses.mkdir(parents=True, exist_ok=True)
+        (profile.paths.responses / "C_ONE").mkdir()
+        (profile.paths.responses / "C_ONE" / "2026-09-20.md").write_text("응답", encoding="utf-8")
+        profile.paths.channels.write_text(
+            json.dumps({"C_ONE": {"name": "하나"}}), encoding="utf-8"
+        )
+
+        Application(profile, client).channel_ids()
+
+        assert (profile.paths.learned / "하나.md").read_text(encoding="utf-8") == "배운 것"
+        assert (profile.paths.responses / "하나" / "2026-09-20.md").exists()
+
 
 class TestReviewReactions:
     """리액션으로 부검·디버그 추적·서식 점검을 부르는 경로.
