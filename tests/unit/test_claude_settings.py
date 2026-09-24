@@ -169,3 +169,88 @@ class Test모양이_어긋나면_거부한다:
 
         with pytest.raises(ConfigError, match="deny"):
             load_settings_file(self.쓴다(tmp_path, '{"permissions": {"deny": "Bash"}}'))
+
+
+class Test기동_뒤_사라진_파일을_거부한다:
+    """기동 점검을 통과한 settings 가 그 뒤 지워지면 요청은 deny 없이 돈다.
+
+    EngineSettingsCheck 는 기동 시점만 본다. 운영자가 그 뒤 파일을 지우거나
+    deny 를 비우면 다음 요청부터 아무 제약 없이 도는데 로그에도 안 남는다.
+    조용히 도는 것이 가장 나쁜 결과라, 한 번 본 파일이 사라지면 그 턴을
+    세운다 (sca-1aji).
+    """
+
+    @staticmethod
+    def 쓴다(tmp_path, 내용: str):
+        path = tmp_path / "s.json"
+        path.write_text(내용, encoding="utf-8")
+        return path
+
+    def test_한_번_본_파일이_사라지면_ConfigError_다(self, tmp_path) -> None:
+        from slack_cli_agent.core.errors import ConfigError
+        from slack_cli_agent.engine.claude_settings import load_settings_file
+
+        path = self.쓴다(tmp_path, '{"permissions": {"deny": ["Bash"]}}')
+        load_settings_file(path)
+        path.unlink()
+        with pytest.raises(ConfigError, match="사라"):
+            load_settings_file(path)
+
+    def test_예외에_경로가_적힌다(self, tmp_path) -> None:
+        """운영자가 어느 파일을 되살려야 하는지 알아야 한다."""
+        from slack_cli_agent.core.errors import ConfigError
+        from slack_cli_agent.engine.claude_settings import load_settings_file
+
+        path = self.쓴다(tmp_path, "{}")
+        load_settings_file(path)
+        path.unlink()
+        with pytest.raises(ConfigError, match=str(path)):
+            load_settings_file(path)
+
+    def test_한_번도_없던_파일은_빈_조각_그대로다(self, tmp_path) -> None:
+        """신뢰 수준별 덧씌움은 없는 것이 정상이다. 갓 설치한 봇도 떠야 한다."""
+        from slack_cli_agent.engine.claude_settings import load_settings_file
+
+        path = tmp_path / "없다.json"
+        assert load_settings_file(path) == {}
+        assert load_settings_file(path) == {}
+
+    def test_deny_가_있던_파일에서_deny_가_비면_ConfigError_다(self, tmp_path) -> None:
+        """파일을 지우는 것과 deny 만 비우는 것은 결과가 같다."""
+        from slack_cli_agent.core.errors import ConfigError
+        from slack_cli_agent.engine.claude_settings import load_settings_file
+
+        path = self.쓴다(tmp_path, '{"permissions": {"deny": ["Bash"]}}')
+        load_settings_file(path)
+        path.write_text('{"permissions": {"deny": []}}', encoding="utf-8")
+        with pytest.raises(ConfigError, match="deny"):
+            load_settings_file(path)
+
+    def test_deny_가_없던_파일은_계속_통과한다(self, tmp_path) -> None:
+        """훅만 든 덧씌움 파일에 deny 를 요구하면 안 된다."""
+        from slack_cli_agent.engine.claude_settings import load_settings_file
+
+        path = self.쓴다(tmp_path, '{"env": {"A": "1"}}')
+        load_settings_file(path)
+        assert load_settings_file(path) == {"env": {"A": "1"}}
+
+    def test_deny_가_늘어도_통과한다(self, tmp_path) -> None:
+        from slack_cli_agent.engine.claude_settings import load_settings_file
+
+        path = self.쓴다(tmp_path, '{"permissions": {"deny": ["Bash"]}}')
+        load_settings_file(path)
+        path.write_text('{"permissions": {"deny": ["Bash", "Write"]}}', encoding="utf-8")
+        assert load_settings_file(path)["permissions"]["deny"] == ["Bash", "Write"]
+
+    def test_기억을_지우면_다시_빈_조각이다(self, tmp_path) -> None:
+        """봇을 다시 띄우면 그때 본 것이 새 기준이다. 시험 격리에도 쓴다."""
+        from slack_cli_agent.engine.claude_settings import (
+            load_settings_file,
+            reset_settings_ledger,
+        )
+
+        path = self.쓴다(tmp_path, '{"permissions": {"deny": ["Bash"]}}')
+        load_settings_file(path)
+        path.unlink()
+        reset_settings_ledger()
+        assert load_settings_file(path) == {}

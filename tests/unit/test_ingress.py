@@ -194,6 +194,7 @@ def make_ingress(
     assistant: Any = None,
     lock_budget: Any = None,
     channels: ChannelRegistry | None = None,
+    is_shutting_down: Callable[[], bool] | None = None,
 ) -> IngressService:
     profile = make_profile(tmp_path)
     channels = channels if channels is not None else make_channels(tmp_path)
@@ -250,6 +251,8 @@ def make_ingress(
         enqueue_attempts=enqueue_attempts,
         sleep=lambda _초: None,
         lock_budget=lock_budget,
+        notices=NoticeCatalog(),
+        is_shutting_down=is_shutting_down,
     )
 
 
@@ -1253,3 +1256,71 @@ class Test관리_명령_점유를_못_했을_때:
         ingress._admin = self.점유불가판정()  # type: ignore[assignment]
         ingress.handle_app_mention(mention_event())
         assert queue.enqueued == []
+
+
+class Test빈_본문은_되묻는다:
+    """원본 bot.py:4973-4976. 자기 멘션만 뗀 본문이 비면 엔진을 안 부르고
+    되묻는다. 이식본은 이 판정이 없어 빈 멘션이 큐를 거쳐 엔진까지 갔다
+    (sca-yb8q, sca-vww0)."""
+
+    def test_이름만_부르면_되묻고_큐에_안_넣는다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        queue = FakeJobQueue()
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router,
+            tmp_path=tmp_path, replies=replies,
+        )
+
+        ingress.handle_app_mention(mention_event(text="<@U_BOT>   "))
+
+        assert replies == [("C1", "1.0", NoticeCatalog().render(NoticeKey.ASK_WHAT))]
+        assert queue.enqueued == []
+
+    def test_본문이_있으면_그대로_접수된다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        queue = FakeJobQueue()
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router,
+            tmp_path=tmp_path, replies=replies,
+        )
+
+        ingress.handle_app_mention(mention_event())
+
+        assert replies == []
+        assert len(queue.enqueued) == 1
+
+
+class Test재시작_중에는_안내한다:
+    """원본 bot.py:4978-4986. 재시작 중이면 그 사실을 알린다."""
+
+    def test_재시작_중이면_안내가_나간다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        queue = FakeJobQueue()
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router,
+            tmp_path=tmp_path, replies=replies, is_shutting_down=lambda: True,
+        )
+
+        ingress.handle_app_mention(mention_event())
+
+        assert ("C1", "1.0", NoticeCatalog().render(NoticeKey.RESTART)) in replies
+        # 원본과 달리 버리지 않는다. 이식본의 큐는 프로세스가 죽어도 남아
+        # 다음 기동의 워커가 그대로 집는다.
+        assert len(queue.enqueued) == 1
+
+    def test_평소에는_안_나간다(self, listener, admin_router, tmp_path) -> None:
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, replies=replies,
+        )
+
+        ingress.handle_app_mention(mention_event())
+
+        assert replies == []
