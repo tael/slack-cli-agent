@@ -190,12 +190,46 @@ class ClaudeEngine(Engine):
         instruction_boundary=InstructionBoundary.NATIVE,
     )
 
+    def _tool_args(self, request: EngineRequest, mcp_servers: Mapping[str, Any]) -> list[str]:
+        """The arguments that close this turn's tool set, if anything does.
+
+        capabilities_for reads the same list rather than the request: a
+        declaration taken from what the caller asked for is always equal to
+        what the policy requires, so the audit could never record a turn where
+        the tools did not actually close (sca-wu50).
+        """
+        args: list[str] = []
+        if request.tools.access is ToolAccess.FORBIDDEN:
+            # The wildcard empties the tool set itself: the debug log stops
+            # loading tools and tool_use never appears (2026-09-19 measurement,
+            # sca-0a7). No --allowedTools beside it, so the command matches
+            # what was measured -- and the wildcard wins over it anyway.
+            args += ["--disallowedTools", "*"]
+        elif request.tools.access is ToolAccess.ALLOWLIST:
+            # --allowedTools only adds auto-approval; it does not close the
+            # tools left out of it. Measured 2026-09-20 (claude 2.1.263):
+            # --allowedTools "Read" still ran Bash, with and without
+            # --setting-sources project and an empty permissions file. The same
+            # path with deny in it removed the tool, so the file was read.
+            # --tools is what closes them: it names the built-in set itself,
+            # and a Write call under --tools "Read,Grep,Glob" came back as
+            # "No such tool available" (sca-6ewc).
+            args += ["--allowedTools", ",".join(request.tools.names)]
+            args += ["--tools", ",".join(_builtin_names(request.tools.names))]
+            denied = _mcp_denials(request.tools.names, mcp_servers)
+            if denied:
+                args += ["--disallowedTools", ",".join(denied)]
+        return args
+
     def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
-        # What the caller asked for maps straight onto this axis. An empty
-        # --allowedTools is not a restriction the caller placed, which is why
-        # "no tools" needs its own state rather than an empty list (sca-0a7).
+        # "no tools" needs its own state rather than an empty list (sca-0a7),
+        # so the axis comes from the request -- but only once the command
+        # built for it actually carries the closing argument.
+        args = self._tool_args(request, _claude_mcp_servers(self.profile.mcp_servers))
+        closed = "--tools" in args or "*" in args
         return dataclasses.replace(
-            self.capabilities, tool_restriction=request.tools.restriction,
+            self.capabilities,
+            tool_restriction=request.tools.restriction if closed else ToolRestriction.NONE,
         )
 
     def prepare(self, request: EngineRequest) -> None:
@@ -247,26 +281,7 @@ class ClaudeEngine(Engine):
             "--effort", self.resolve_effort(request),
         ]
         mcp_servers = _claude_mcp_servers(self.profile.mcp_servers)
-        if request.tools.access is ToolAccess.FORBIDDEN:
-            # The wildcard empties the tool set itself: the debug log stops
-            # loading tools and tool_use never appears (2026-09-19 measurement,
-            # sca-0a7). No --allowedTools beside it, so the command matches
-            # what was measured -- and the wildcard wins over it anyway.
-            cmd += ["--disallowedTools", "*"]
-        elif request.tools.access is ToolAccess.ALLOWLIST:
-            # --allowedTools only adds auto-approval; it does not close the
-            # tools left out of it. Measured 2026-09-20 (claude 2.1.263):
-            # --allowedTools "Read" still ran Bash, with and without
-            # --setting-sources project and an empty permissions file. The same
-            # path with deny in it removed the tool, so the file was read.
-            # --tools is what closes them: it names the built-in set itself,
-            # and a Write call under --tools "Read,Grep,Glob" came back as
-            # "No such tool available" (sca-6ewc).
-            cmd += ["--allowedTools", ",".join(request.tools.names)]
-            cmd += ["--tools", ",".join(_builtin_names(request.tools.names))]
-            denied = _mcp_denials(request.tools.names, mcp_servers)
-            if denied:
-                cmd += ["--disallowedTools", ",".join(denied)]
+        cmd += self._tool_args(request, mcp_servers)
         for path in request.readable_dirs:
             cmd += ["--add-dir", str(path)]
         skills_dir = self.profile.paths.skills

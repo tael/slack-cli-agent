@@ -31,7 +31,7 @@ from slack_cli_agent.engine.base import (
     equivalent_values,
     normalize_effort,
 )
-from slack_cli_agent.engine.capability import InstructionBoundary
+from slack_cli_agent.engine.capability import InstructionBoundary, ToolRestriction
 from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
 from slack_cli_agent.engine.environment import EngineEnvironmentPolicy
@@ -642,6 +642,36 @@ def codex_profile(tmp_path: Path, options: dict | None = None) -> Profile:
         {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
         fallback=fallback, tmp_path=tmp_path,
     )
+
+
+class Test도구축_선언은_명령에서_끌어온다:
+    """선언이 요청 값을 그대로 되돌리면 요구와 항상 같아 감사가 아무것도 못
+    잡는다. 명령이 실제로 도구를 닫았을 때만 그 축을 선언한다 (sca-wu50)."""
+
+    def test_허용목록이면_닫는_인자가_실리고_축도_그렇게_선언한다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        요청 = request(tools=ToolSelection.allow(["Read"]))
+        assert "--tools" in engine.build_command(요청)
+        assert engine.capabilities_for(요청).tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+
+    def test_닫는_인자가_빠지면_축이_내려간다(self, tmp_path: Path) -> None:
+        class 닫지않는클로드(ClaudeEngine):
+            def _tool_args(self, request: EngineRequest, mcp_servers: Mapping[str, Any]) -> list[str]:
+                return ["--allowedTools", ",".join(request.tools.names)]
+
+        engine = 닫지않는클로드(claude_profile(tmp_path), SETTINGS)
+        요청 = request(tools=ToolSelection.allow(["Read"]))
+        assert engine.capabilities_for(요청).tool_restriction is ToolRestriction.NONE
+
+    def test_전면_금지도_같은_자리에서_본다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        요청 = request(tools=ToolSelection.forbid_all())
+        assert engine.capabilities_for(요청).tool_restriction is ToolRestriction.ALL_FORBIDDEN
+
+    def test_제한이_없으면_그대로_none_이다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        요청 = request(tools=ToolSelection.unrestricted())
+        assert engine.capabilities_for(요청).tool_restriction is ToolRestriction.NONE
 
 
 class TestCodexEngineBuildCommand:
