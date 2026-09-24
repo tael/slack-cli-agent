@@ -19,7 +19,15 @@ from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelConfig, channel_is_rich
 from ..config.channel import channel_slug as slug_for
-from ..engine.base import NO_DETAIL, Engine, EngineRequest, EngineResponse, FailureDetail, Usage
+from ..engine.base import (
+    NO_DETAIL,
+    TRUNCATED_RAW_KEY,
+    Engine,
+    EngineRequest,
+    EngineResponse,
+    FailureDetail,
+    Usage,
+)
 from ..engine.runner import EngineInvoker
 from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
@@ -62,12 +70,6 @@ sentence in it become that turn's instruction. What the work did comes from
 the result file, not from here (codex review).
 """
 
-TRUNCATED_RAW_KEY = "truncated"
-"""Key gemini's parser sets on EngineResponse.raw when the CLI's
---print-timeout cut the answer off (engine/gemini.py). The response still
-comes back ok=True on purpose -- flipping it to ok=False would stop the
-engine session_id from being adopted -- so the ledger carries the cut as its
-own field instead (sca-l279)."""
 
 
 class RequestPipeline:
@@ -368,7 +370,7 @@ class RequestPipeline:
         body, watch_desc = self._apply_guards(body, ctx, principal, request, decision, previous_body)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich) or ""
-        self._archive_response(ctx, channel_slug, body, response, elapsed)
+        self._archive_response(ctx, body, response, elapsed)
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
@@ -383,14 +385,18 @@ class RequestPipeline:
         return HandleOutcome(ok=True, posted_ts=posted_ts, watching=watching)
 
     def _archive_response(
-        self, ctx: RequestContext, channel_slug: str, body: str, response: EngineResponse, elapsed: float,
+        self, ctx: RequestContext, body: str, response: EngineResponse, elapsed: float,
     ) -> None:
         # The message is already sent; an archive failure must not flip this to a failure.
         if self._response_archive is None:
             return
         try:
             self._response_archive.record(
-                channel_slug=channel_slug,
+                # Re-read rather than reuse the slug pinned at the start of the
+                # request: a rename that lands mid-request already moved the
+                # archive directory, and writing the old name recreates the
+                # directory that was just emptied (sca-8aow).
+                channel_slug=slug_for(ctx.channel, self._channels.get(ctx.channel)),
                 user=ctx.user,
                 thread_ts=ctx.thread_ts,
                 question=ctx.text,
@@ -636,7 +642,7 @@ class RequestPipeline:
     ) -> None:
         extra: dict[str, Any] = {}
         if truncated is not None:
-            extra["truncated"] = truncated
+            extra[TRUNCATED_RAW_KEY] = truncated
         if model_actual:
             extra["model_actual"] = model_actual
         if failure:

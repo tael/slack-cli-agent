@@ -309,7 +309,7 @@ class _Explodes:
 def build_pipeline(
     *,
     responses: list[EngineResponse],
-    channels: dict[str, ChannelConfig] | None = None,
+    channels: dict[str, ChannelConfig] | Any = None,
     guards: list[OutputGuard] | None = None,
     composer: Any = None,
     publisher: FakePublisher | None = None,
@@ -344,7 +344,7 @@ def build_pipeline(
     guard_pipeline = GuardPipeline(guards or [])
     pub = publisher or FakePublisher()
     audit_log = audit or FakeAuditLog()
-    ch = FakeChannels(channels or {})
+    ch = channels if channels is not None and not isinstance(channels, dict) else FakeChannels(channels or {})
     reacts = reactions if reactions is not None else FakeReactions()
 
     extra_kwargs: dict[str, Any] = {}
@@ -2136,3 +2136,31 @@ class Test이번_턴_본문의_멘션도_이름으로_바꾼다:
 
         assert ctx.text == "<@U9> 확인해줘"
         assert addresses_someone_else(ctx.text) is True
+
+
+class 이사중인채널:
+    """요청을 처리하는 사이에 슬러그가 바뀐 등록부. 첫 조회는 옛 이름,
+    그 뒤는 새 이름을 낸다."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get(self, channel_id: str) -> ChannelConfig:
+        self.calls += 1
+        name = "옛이름" if self.calls == 1 else "새이름"
+        return ChannelConfig(channel_id=channel_id, name=name)
+
+
+def test_요청_중_이사가_끝나면_새_슬러그로_기록한다():
+    """슬러그를 요청 시작에 고정하면 이사가 끝난 뒤에도 옛 경로에 다시 써서
+    방금 옮긴 디렉터리가 되살아난다(sca-8aow)."""
+    archive = FakeResponseArchive()
+    pipeline, _ = build_pipeline(
+        responses=[ok_response("최종 답변")],
+        channels=이사중인채널(),
+        response_archive=archive,
+    )
+
+    pipeline.handle(make_ctx())
+
+    assert archive.calls[0]["channel_slug"] == "새이름"

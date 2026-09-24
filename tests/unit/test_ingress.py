@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -17,13 +18,16 @@ from identity_support import fake_identity
 from slack_cli_agent.admin.admission import AdminAdmission
 from slack_cli_agent.admin.command import AdminCommand, AdminContext, AdminResult
 from slack_cli_agent.admin.router import AdminRouter
+from slack_cli_agent.auth.policy import AccessPolicy
 from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import Profile
+from slack_cli_agent.core.access import RequestAccess
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ingress import IngressService
 from slack_cli_agent.core.spawn import InlineTaskSpawner, TaskSpawner
 from slack_cli_agent.jobs.ports import Job, JobQueue, ReclaimResult
+from slack_cli_agent.observability.notices import NoticeCatalog, NoticeKey
 from slack_cli_agent.reliability.dedup import DeduplicationTracker
 from slack_cli_agent.slack.attachments import AttachmentStore, DownloadResult, SavedAttachment
 from slack_cli_agent.slack.gate import ResponseGate
@@ -159,6 +163,20 @@ def admin_router() -> AdminRouter:
     return AdminRouter([RecordingAdminCommand()])
 
 
+#: 등록 채널이 없는 상태. 같은 뜻의 빈 사전을 시험마다 새로 쓰면 무엇을 뜻하는지
+#: 안 보인다.
+NO_CHANNELS: Mapping[str, Any] = {}
+
+
+def make_channels(tmp_path: Path, registered: Mapping[str, Any] | None = None) -> ChannelRegistry:
+    """채널 설정 파일을 실제로 만들어 준다. 자동 등록은 이 파일에 쓰므로
+    읽기만 하는 대역으로는 그 경로를 못 본다."""
+    path = tmp_path / "channels.json"
+    entries = {"C1": {"name": "테스트"}} if registered is None else registered
+    path.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+    return ChannelRegistry(path)
+
+
 def make_ingress(
     *,
     listener: EventListener,
@@ -175,9 +193,10 @@ def make_ingress(
     spawn: TaskSpawner | None = None,
     assistant: Any = None,
     lock_budget: Any = None,
+    channels: ChannelRegistry | None = None,
 ) -> IngressService:
     profile = make_profile(tmp_path)
-    channels = ChannelRegistry(Path("/nonexistent.json"))
+    channels = channels if channels is not None else make_channels(tmp_path)
     reply_log = replies if replies is not None else []
     reaction_log = reactions_seen if reactions_seen is not None else []
 
@@ -199,6 +218,13 @@ def make_ingress(
 
     return IngressService(
         listener=listener,
+        access=RequestAccess(
+            policy=AccessPolicy(profile, channels),
+            channels=channels,
+            channel_name=lambda channel: f"이름-{channel}",
+            notices=NoticeCatalog(),
+            reply=reply,
+        ),
         strip_self_mention=SelfMentionStripper(fake_identity()).remove_self,
         dedup=dedup if dedup is not None else DeduplicationTracker(),
         queue=queue,
@@ -228,12 +254,22 @@ def make_ingress(
 
 
 def mention_event(
-    ts: str = "1.0", text: str = "<@U_BOT> 안녕", files: list[dict] | None = None
+    ts: str = "1.0",
+    text: str = "<@U_BOT> 안녕",
+    files: list[dict] | None = None,
+    user: str = "U1",
+    channel: str = "C1",
 ) -> dict:
-    event: dict[str, Any] = {"channel": "C1", "user": "U1", "ts": ts, "text": text}
+    event: dict[str, Any] = {"channel": channel, "user": user, "ts": ts, "text": text}
     if files is not None:
         event["files"] = files
     return event
+
+
+def dm_event(ts: str = "1.0", text: str = "안녕", user: str = "U1", channel: str = "D1") -> dict:
+    return {
+        "channel": channel, "channel_type": "im", "user": user, "ts": ts, "text": text,
+    }
 
 
 # 시험
@@ -334,6 +370,169 @@ class TestReactionMark:
         assert client.reaction_add_calls == []  # 표식은 안 달았다
 
 
+class Test접근_판정:
+    """원본 bot.py:3695 `is_allowed` 를 접수 경로에 되살린 것이다.
+
+    소유자는 어디서든 통과하고, 그 밖의 DM 은 거절하고, 채널은 등록된 것만
+    통과한다. 거절은 조용하다 - 안내를 올리면 모르는 사람에게 봇이 있다는 것을
+    알리게 되고 원본과도 달라진다.
+    """
+
+    def test_소유자는_미등록_채널에서도_통과한다(self, listener, admin_router, tmp_path) -> None:
+        queue = FakeJobQueue()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+            channels=make_channels(tmp_path, NO_CHANNELS),
+        )
+
+        ingress.handle_app_mention(mention_event(channel="C9", user="U_OWNER"))
+
+        assert len(queue.enqueued) == 1
+
+    def test_미등록_채널의_제삼자는_무시된다(self, listener, admin_router, tmp_path) -> None:
+        queue = FakeJobQueue()
+        replies: list[tuple[str, str, str]] = []
+        client = FakeWebClient()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+            replies=replies, reactions=ReactionMarker(client),
+            channels=make_channels(tmp_path, NO_CHANNELS),
+        )
+
+        ingress.handle_app_mention(mention_event(channel="C9", user="U1"))
+
+        assert queue.enqueued == []
+        assert replies == [], "거절을 알리면 모르는 사람에게 봇을 알리게 된다"
+        assert client.reaction_add_calls == []
+
+    def test_등록된_채널의_제삼자는_통과한다(self, listener, admin_router, tmp_path) -> None:
+        queue = FakeJobQueue()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+            channels=make_channels(tmp_path, {"C1": {"name": "테스트"}}),
+        )
+
+        ingress.handle_app_mention(mention_event(channel="C1", user="U1"))
+
+        assert len(queue.enqueued) == 1
+
+    def test_소유자가_아닌_DM은_무시된다(self, listener, admin_router, tmp_path) -> None:
+        queue = FakeJobQueue()
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+            replies=replies,
+        )
+
+        ingress.handle_message(dm_event(user="U1"))
+
+        assert queue.enqueued == []
+        assert replies == []
+
+    def test_등록된_DM이라도_소유자가_아니면_무시된다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """DM 은 등록 여부를 보기 전에 거른다. 관리 명령은 DM 에서도 채널 설정을
+        쓰므로 채널 파일에 D 로 시작하는 항목이 남을 수 있다."""
+        queue = FakeJobQueue()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+            channels=make_channels(tmp_path, {"D1": {"name": "쪽지"}}),
+        )
+
+        ingress.handle_message(dm_event(user="U1", channel="D1"))
+
+        assert queue.enqueued == []
+
+    def test_소유자_DM은_통과한다(self, listener, admin_router, tmp_path) -> None:
+        queue = FakeJobQueue()
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+        )
+
+        ingress.handle_message(dm_event(user="U_OWNER"))
+
+        assert len(queue.enqueued) == 1
+
+    def test_미등록_채널의_제삼자는_관리_명령도_못_쓴다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """판정이 관리 명령 처리보다 앞이다. 뒤에 두면 명령만 통과한다."""
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, replies=replies,
+            channels=make_channels(tmp_path, NO_CHANNELS),
+        )
+
+        ingress.handle_app_mention(mention_event(channel="C9", user="U1", text="!ping"))
+
+        assert replies == []
+
+
+class Test소유자_호출로_채널이_등록된다:
+    """원본 bot.py:4996. 접근 판정만 넣고 이것을 빼면 미등록 채널이 통째로
+    조용해진다."""
+
+    def test_소유자가_부르면_등록되고_그때만_안내가_나간다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        channels = make_channels(tmp_path, NO_CHANNELS)
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, replies=replies, channels=channels,
+        )
+
+        ingress.handle_app_mention(mention_event(channel="C9", user="U_OWNER"))
+
+        등록 = channels.get("C9")
+        assert 등록 is not None
+        assert 등록.name == "이름-C9"
+        assert replies == [("C9", "1.0", NoticeCatalog().render(NoticeKey.JOINED))]
+
+    def test_이미_등록된_채널에서는_안내가_안_나간다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        channels = make_channels(tmp_path, {"C1": {"name": "테스트"}})
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, replies=replies, channels=channels,
+        )
+
+        ingress.handle_app_mention(mention_event(channel="C1", user="U_OWNER"))
+
+        assert replies == []
+        남은것 = channels.get("C1")
+        assert 남은것 is not None and 남은것.name == "테스트", "기존 설정을 덮어쓰면 안 된다"
+
+    def test_소유자의_DM은_등록하지_않는다(self, listener, admin_router, tmp_path) -> None:
+        channels = make_channels(tmp_path, NO_CHANNELS)
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, replies=replies, channels=channels,
+        )
+
+        ingress.handle_message(dm_event(user="U_OWNER"))
+
+        assert channels.channel_ids() == []
+        assert replies == []
+
+    def test_관리_명령은_채널을_등록하지_않는다(self, listener, admin_router, tmp_path) -> None:
+        """원본은 관리 명령 처리가 등록보다 앞이라 명령만으로는 안 등록된다."""
+        channels = make_channels(tmp_path, NO_CHANNELS)
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, channels=channels,
+        )
+
+        ingress.handle_app_mention(mention_event(channel="C9", user="U_OWNER", text="!ping"))
+
+        assert channels.channel_ids() == []
+
+
 class TestAdminCommand:
     def test_관리_명령은_큐에_안_들어가고_그_자리에서_답한다(
         self, listener, admin_router, tmp_path
@@ -403,6 +602,28 @@ class TestReactionEvent:
         spawned[0][1]()
         assert reaction_seen == [("dango", "C1", "1.0", "U1")]
 
+    def test_미등록_채널의_리액션도_그대로_넘어간다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """원본 bot.py:6143 의 리액션 처리에는 `is_allowed` 가 없다. 이 봇이
+        자기 답변을 올린 자리에만 붙는 것이라 이미 응답한 대화다."""
+        reaction_seen: list[tuple[str, str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, reactions_seen=reaction_seen,
+            channels=make_channels(tmp_path, NO_CHANNELS),
+        )
+        event = {
+            "reaction": "dango",
+            "item": {"type": "message", "channel": "C9", "ts": "1.0"},
+            "item_user": "U_BOT",
+            "user": "U1",
+        }
+
+        ingress.handle_reaction(event)
+
+        assert reaction_seen == [("dango", "C9", "1.0", "U1")]
+
     def test_대상이_아닌_이모지는_콜백이_안_불린다(
         self, listener, admin_router, tmp_path
     ) -> None:
@@ -460,9 +681,32 @@ class Test에이전트패널:
         gateway = SlackGateway(client=FakeWebClient())
         ingress.register(gateway)
 
-        gateway.dispatch("assistant_thread_started", {"assistant_thread": {"channel_id": "D1"}})
+        열림 = {"assistant_thread": {"channel_id": "D1", "user_id": "U_OWNER"}}
+        gateway.dispatch("assistant_thread_started", 열림)
 
-        assert 본것 == [{"assistant_thread": {"channel_id": "D1"}}]
+        assert 본것 == [열림]
+
+    def test_소유자가_아닌_사람의_패널에는_인사하지_않는다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """패널은 DM 이다. 인사를 올리면 뒤이어 보내는 말은 전부 무시되는데
+        봇이 있다는 것만 알리게 된다."""
+        본것: list[dict] = []
+
+        class Fake패널:
+            def thread_started(self, event):
+                본것.append(dict(event))
+
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, assistant=Fake패널(),
+        )
+
+        ingress.handle_assistant_thread_started(
+            {"assistant_thread": {"channel_id": "D1", "user_id": "U1"}}
+        )
+
+        assert 본것 == []
 
     def test_패널이_없으면_아무_일도_하지_않는다(self, listener, admin_router, tmp_path) -> None:
         ingress = make_ingress(
@@ -470,7 +714,10 @@ class Test에이전트패널:
         )
         gateway = SlackGateway(client=FakeWebClient())
         ingress.register(gateway)
-        gateway.dispatch("assistant_thread_started", {"assistant_thread": {"channel_id": "D1"}})
+        gateway.dispatch(
+            "assistant_thread_started",
+            {"assistant_thread": {"channel_id": "D1", "user_id": "U_OWNER"}},
+        )
 
 
 class TestResilience:

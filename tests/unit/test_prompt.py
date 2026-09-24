@@ -520,3 +520,26 @@ class Test학습지식을_함께_싣는다:
         loader = self._로더(tmp_path)
         assert "배포 지식" not in loader.knowledge_text("", prompt="잡담 얘기")
         assert "배포 지식" in loader.knowledge_text("", prompt="배포 얘기")
+
+
+class Test이사_중_읽기:
+    """이사가 도는 동안 채널 지식 파일은 `exists()` 와 읽기 사이에 사라질 수
+    있다. 그때 요청이 죽으면 안 된다(sca-8aow)."""
+
+    def test_읽는_사이에_사라진_채널_파일은_건너뛴다(self, tmp_path, monkeypatch) -> None:
+        knowledge_dir = tmp_path / "knowledge"
+        knowledge_dir.mkdir()
+        (knowledge_dir / "_공통.md").write_text("공통 지식", encoding="utf-8")
+        (knowledge_dir / "잡담.md").write_text("채널 지식", encoding="utf-8")
+        loader = KnowledgeLoader(tmp_path / "없음.md", knowledge_dir)
+
+        원래 = Path.read_text
+
+        def 사라진다(self, *args, **kwargs):
+            if self.name == "잡담.md":
+                raise FileNotFoundError(2, "No such file or directory", str(self))
+            return 원래(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", 사라진다)
+
+        assert "공통 지식" in loader.knowledge_text("잡담")

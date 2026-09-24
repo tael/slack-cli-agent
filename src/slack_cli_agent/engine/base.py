@@ -139,7 +139,17 @@ class EngineRequest:
         return self.model
 
 
-_USAGE_FIELDS: tuple[str, ...] = (
+TRUNCATED_RAW_KEY = "truncated"
+"""Key gemini's parser sets on EngineResponse.raw when the CLI's
+--print-timeout cut the answer off (engine/gemini.py), and the name the
+pipeline writes it under in the audit record. Lives here rather than in
+either caller because engine, ledger and the metrics rollup all have to
+agree on one spelling. The response still comes back ok=True on purpose --
+flipping it to ok=False would stop the engine session_id from being adopted
+-- so the ledger carries the cut as its own field instead (sca-l279)."""
+
+
+USAGE_FIELDS: tuple[str, ...] = (
     "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
 )
 
@@ -172,16 +182,16 @@ class Usage:
     def from_native(cls, data: Mapping[str, Any] | None, key_map: Mapping[str, str]) -> Usage:
         """Translates another engine's native usage dict via key_map.
 
-        key_map maps a common field name (one of _USAGE_FIELDS) to that
+        key_map maps a common field name (one of USAGE_FIELDS) to that
         engine's own key for it. A common field with no entry in key_map, or
         whose native key isn't present in data, is recorded in unavailable
         instead of being read as a measured zero.
         """
         if not isinstance(data, Mapping):
-            return cls(unavailable=frozenset(_USAGE_FIELDS))
+            return cls(unavailable=frozenset(USAGE_FIELDS))
         values: dict[str, int] = {}
         unavailable: set[str] = set()
-        for field_name in _USAGE_FIELDS:
+        for field_name in USAGE_FIELDS:
             native_key = key_map.get(field_name)
             if native_key is None or native_key not in data:
                 unavailable.add(field_name)
@@ -196,7 +206,7 @@ class Usage:
         call site because every engine goes through the same audit path, and a
         frozenset leaking into json.dumps dropped the whole request (sca-kwv).
         """
-        record: dict[str, Any] = {name: getattr(self, name) for name in _USAGE_FIELDS}
+        record: dict[str, Any] = {name: getattr(self, name) for name in USAGE_FIELDS}
         record["unavailable"] = sorted(self.unavailable)
         return record
 
@@ -209,7 +219,7 @@ def equivalent_values(a: Usage, b: Usage) -> bool:
     every field — they want to know the numbers it does have line up, not
     whether both sides agree on what's unavailable.
     """
-    return tuple(getattr(a, name) for name in _USAGE_FIELDS) == tuple(getattr(b, name) for name in _USAGE_FIELDS)
+    return tuple(getattr(a, name) for name in USAGE_FIELDS) == tuple(getattr(b, name) for name in USAGE_FIELDS)
 
 
 # Values these CLIs are known to put in the fields we read as enums. Anything

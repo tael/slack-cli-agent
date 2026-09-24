@@ -18,6 +18,7 @@ import pytest
 
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import Profile
+from slack_cli_agent.engine.base import TRUNCATED_RAW_KEY, USAGE_FIELDS
 from slack_cli_agent.jobs.ports import JobStatus
 from slack_cli_agent.observability.audit import REQUEST_KIND, IncidentKind
 from slack_cli_agent.storage.database import Database
@@ -72,10 +73,11 @@ def insert_request(
     effort: str = "medium",
     first_reaction_sec: float | None = None,
     queue_wait_sec: float | None = None,
-    usage: dict[str, int] | None = None,
+    usage: dict[str, object] | None = None,
     failure: str = "",
     user: object = _UNSET,
     turns: object = _UNSET,
+    truncated: object = _UNSET,
 ) -> None:
     payload: dict[str, object] = {
         "message_ts": thread_ts,
@@ -95,6 +97,8 @@ def insert_request(
         payload["user"] = user
     if turns is not _UNSET:
         payload["turns"] = turns
+    if truncated is not _UNSET:
+        payload[TRUNCATED_RAW_KEY] = truncated
     db.connect().execute(
         "INSERT INTO audit (at, kind, channel, thread_ts, payload) VALUES (?, ?, ?, ?, ?)",
         (at, REQUEST_KIND, channel, thread_ts, json.dumps(payload, ensure_ascii=False)),
@@ -269,6 +273,31 @@ class Test신뢰성:
         assert reliability["context_reset"] is None
         assert reliability["restarts"] is None
         assert reliability["incidents"] == []
+
+    def test_잘림_건수와_비율을_낸다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", truncated=True)
+        insert_request(db, at=1_001.0, channel="C1", truncated=False)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        result = collector.collect(days=7)
+        reliability = result["reliability"]
+        assert reliability["truncated"] == 1
+        assert reliability["truncated_pct"] == 50.0
+        assert reliability["tracked_since"]["truncated"] is not None
+        assert "reliability.truncated" not in result["bot"]["not_applicable"]
+
+    def test_잘림_기록_이전이면_0이_아니라_None이다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        result = collector.collect(days=7)
+        reliability = result["reliability"]
+        assert reliability["truncated"] is None
+        assert reliability["truncated_pct"] is None
+        assert reliability["tracked_since"]["truncated"] is None
+        assert "reliability.truncated" in result["bot"]["not_applicable"]
 
 
 class Test검수_원장_기반_품질:
@@ -495,6 +524,50 @@ class Test사용_현황:
         assert usage["tokens"] == {
             "input": 10, "output": 5, "cache_write": 2, "cache_read": 3, "total": 20,
         }
+        assert usage["tokens_sample"] == 1
+
+    def test_측정값이_없는_usage는_표본에서_뺀다(self, tmp_path: Path) -> None:
+        """실패 응답도 usage 를 남기지만 네 항목이 전부 unavailable 이라
+        합계는 0이다. 표본에 넣으면 평균만 묽어진다."""
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", usage={
+            "input_tokens": 10, "output_tokens": 5,
+            "cache_creation_tokens": 2, "cache_read_tokens": 3,
+            "unavailable": [],
+        })
+        insert_request(db, at=1_001.0, channel="C1", ok=False, usage={
+            "input_tokens": 0, "output_tokens": 0,
+            "cache_creation_tokens": 0, "cache_read_tokens": 0,
+            "unavailable": sorted(USAGE_FIELDS),
+        })
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        usage = collector.collect(days=7)["usage"]
+        assert usage["tokens_sample"] == 1
+        assert usage["tokens"]["total"] == 20
+
+    def test_일부만_측정된_usage는_표본에_남긴다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", usage={
+            "input_tokens": 7, "output_tokens": 0,
+            "cache_creation_tokens": 0, "cache_read_tokens": 0,
+            "unavailable": ["cache_creation_tokens", "cache_read_tokens"],
+        })
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        usage = collector.collect(days=7)["usage"]
+        assert usage["tokens_sample"] == 1
+        assert usage["tokens"]["input"] == 7
+
+    def test_unavailable_키가_없는_옛_기록은_그대로_센다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", usage={
+            "input_tokens": 0, "output_tokens": 0,
+            "cache_creation_tokens": 0, "cache_read_tokens": 0,
+        })
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        usage = collector.collect(days=7)["usage"]
         assert usage["tokens_sample"] == 1
 
     def test_사용자_식별자가_없어_by_user는_빈다(self, tmp_path: Path) -> None:
