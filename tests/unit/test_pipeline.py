@@ -702,6 +702,25 @@ class Test세션이어받기실패:
         assert deps["runner"].calls[1].resume is False
         assert deps["runner"].calls[1].session_id != deps["runner"].calls[0].session_id
 
+    def test_새_세션_재시도가_감사_기록에_남는다(self, tmp_path: Path) -> None:
+        """sca-er9n. 재시도 동작은 이식됐는데 흔적이 없어 맥락 끊김 빈도를
+        셀 수단이 없었다. 원본 bot.py:5142 의 meta["context_reset"] 자리다."""
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("nonzero_exit"), ok_response(body="새 세션 답")],
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert deps["audit"].records[0]["context_reset"] is True
+
+    def test_재시도가_없으면_거짓으로_남는다(self, tmp_path: Path) -> None:
+        """키를 늘 쓴다. 안 쓰면 0건이 "재설정 없음" 인지 "계측 이전" 인지
+        구분되지 않는다."""
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx())
+
+        assert deps["audit"].records[0]["context_reset"] is False
+
     def test_한도_소진은_새_세션으로_재시도하지_않는다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(
             responses=[fail_response("usage_limit")], tmp_path=tmp_path,

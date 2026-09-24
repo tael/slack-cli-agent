@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -64,14 +65,48 @@ def _join(base: list[Any], overlay: list[Any]) -> list[Any]:
     return joined
 
 
+@dataclass(frozen=True)
+class _Seen:
+    """What one path held the last time this process read it."""
+
+    present: bool
+    denies: bool
+
+
+#: Per path, the last reading. The boot check reads every settings path
+#: (preflight/checks.py EngineSettingsCheck), so the first entries are the
+#: boot-time picture without a separate snapshot call; a process that skips
+#: preflight still gets its baseline from the first request.
+_LEDGER: dict[Path, _Seen] = {}
+
+
+def reset_settings_ledger() -> None:
+    """Forget the readings so far. A restart makes a new baseline."""
+    _LEDGER.clear()
+
+
 def load_settings_file(path: Path) -> dict[str, Any]:
     """One operator-written settings file, or an empty fragment.
 
     Absent is normal: these files are operational, and the bot has to boot
     without them. Present but unreadable is not -- ignoring it would run
     the turn with the deny list missing and nothing in the log to say so.
+
+    Absent *after* this process already read it is not normal either. The
+    boot check only looks once, so a file removed afterwards would leave
+    every later turn running with no deny and nothing in the log (sca-1aji).
+    A deny list that was there and is now empty ends the same way, so both
+    stop the turn rather than run it quietly. Restarting clears the
+    baseline, which is how an operator retires a deny list on purpose.
     """
+    seen = _LEDGER.get(path)
     if not path.exists():
+        if seen is not None and seen.present:
+            raise ConfigError(
+                f"기동 때 읽은 settings 파일이 사라졌습니다 : {path}"
+                " - deny 목록 없이 실행하지 않습니다"
+            )
+        _LEDGER[path] = _Seen(present=False, denies=False)
         return {}
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
@@ -80,6 +115,13 @@ def load_settings_file(path: Path) -> dict[str, Any]:
     if not isinstance(loaded, dict):
         raise ConfigError(f"settings 파일의 최상위가 객체가 아닙니다 : {path}")
     _check_shape(loaded, path)
+    denies = bool((loaded.get("permissions") or {}).get("deny"))
+    if seen is not None and seen.denies and not denies:
+        raise ConfigError(
+            f"기동 때 읽은 settings 의 deny 목록이 비었습니다 : {path}"
+            " - deny 목록 없이 실행하지 않습니다"
+        )
+    _LEDGER[path] = _Seen(present=True, denies=denies)
     return loaded
 
 
