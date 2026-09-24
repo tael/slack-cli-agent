@@ -14,6 +14,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
+from slack_cli_agent.auth.policy import DEFAULT_EFFORT, EFFORT_LEVELS
 from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -56,12 +57,6 @@ class EngineFixture(NamedTuple):
     expected_usage: Usage
     # Builds (stdout, stderr, returncode) for engine.parse() from a native usage dict.
     build_stdout: Callable[[dict[str, Any]], tuple[str, str, int]]
-    # The literal handed to build_command(effort=...) and expected back
-    # verbatim in the command. Default is an arbitrary marker string;
-    # engines that validate/normalize effort (e.g. Gemini's low/medium/high)
-    # override it with a value their own normalization passes through
-    # unchanged, instead of the shared test special-casing engines.
-    effort_value: str = "고유-effort-값"
 
 
 def _claude_configured(tmp_path: Path) -> Profile:
@@ -172,10 +167,6 @@ ENGINE_FIXTURES: list[EngineFixture] = [
             unavailable=frozenset({"cache_creation_tokens"}),
         ),
         build_stdout=_gemini_stdout,
-        # "high" is a valid effort value that agy's normalization passes
-        # through unchanged, unlike the shared arbitrary marker string,
-        # which would be normalized away (see docs/agy-실측.md 정규화 규칙).
-        effort_value="high",
     ),
 ]
 
@@ -290,9 +281,31 @@ class TestEngineContract:
         assert "고유-모델-이름-9" in _joined(cmd)
 
     def test_effort가_명령에_반영된다(self, fx: EngineFixture, tmp_path: Path) -> None:
+        """엔진마다 받는 값의 집합이 달라 그 엔진이 받는 값으로 확인한다.
+        집합은 엔진이 선언하고, 호출자의 어휘에서 그 집합으로 옮기는 자리는
+        Engine 한 곳이다(sca-3kzk)."""
         engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
-        cmd = engine.build_command(_request(effort=fx.effort_value))
-        assert fx.effort_value in _joined(cmd)
+        value = engine.supported_efforts[-1]
+        cmd = engine.build_command(_request(effort=value))
+        assert value in _joined(cmd)
+
+    def test_effort가_비어도_명령에_유효한_값이_실린다(self, fx: EngineFixture, tmp_path: Path) -> None:
+        """비었다고 생략하거나 빈 값을 그대로 실으면 그 턴이 어느 강도로 돌았는지가
+        엔진마다 달라지고 감사 기록과도 어긋난다(sca-3kzk)."""
+        engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
+        assert engine.resolve_effort(_request(effort="")) == DEFAULT_EFFORT
+        assert DEFAULT_EFFORT in _joined(engine.build_command(_request(effort="")))
+
+    def test_못_받는_effort는_그_엔진이_받는_값으로_내려간다(
+        self, fx: EngineFixture, tmp_path: Path
+    ) -> None:
+        """사다리 맨 위 값은 엔진에 따라 거부된다(agy 는 xhigh 를 거부한다).
+        그래도 명령에는 그 엔진이 받는 값이 하나 실려 있어야 한다."""
+        engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
+        for value in (*EFFORT_LEVELS, "사다리에-없는-값"):
+            resolved = engine.resolve_effort(_request(effort=value))
+            assert resolved in engine.supported_efforts, f"{fx.id}: {value}"
+            assert resolved in _joined(engine.build_command(_request(effort=value)))
 
     def test_usage_매핑이_엔진_고유_출력에서_올바로_들어간다(self, fx: EngineFixture, tmp_path: Path) -> None:
         engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)

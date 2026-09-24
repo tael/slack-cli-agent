@@ -68,7 +68,6 @@ from .footprint import (
     utf8_bytes,
 )
 
-_VALID_EFFORTS = frozenset({"low", "medium", "high"})
 _MODEL_EFFORT_SUFFIXES = ("high", "medium", "low")
 
 _SETTINGS_CONTENT: Mapping[str, Any] = {
@@ -124,16 +123,6 @@ def _write_if_changed(path: Path, content: Mapping[str, Any]) -> None:
     path.write_text(rendered, encoding="utf-8")
 
 
-def _normalize_effort(value: str) -> str:
-    if not value:
-        return "medium"
-    if value in _VALID_EFFORTS:
-        return value
-    # Unrecognized values, including xhigh/max, fall to the highest valid
-    # tier rather than silently downgrading to medium.
-    return "high"
-
-
 def _split_model_suffix(model: str) -> tuple[str, str | None]:
     for suffix in _MODEL_EFFORT_SUFFIXES:
         marker = f"-{suffix}"
@@ -156,6 +145,10 @@ TRUNCATION_NOTICE = "\n\n(제한 시간에 걸려 답이 여기서 끊겼습니�
 class GeminiEngine(Engine):
     name = "gemini"
     shell_always_attached = True
+
+    #: agy rejects xhigh/max with `invalid --effort` (docs/agy-실측.md 3).
+    #: Engine.resolve_effort brings the caller's value down into this set.
+    supported_efforts = ("low", "medium", "high")
 
     # --dangerously-skip-permissions is always passed (headless mode auto-denies
     # otherwise), so nothing is restricted. system_prompt and prompt go into one
@@ -193,7 +186,7 @@ class GeminiEngine(Engine):
         spec = self.spec
 
         base_model, suffix_effort = _split_model_suffix(request.require_model())
-        effort = _normalize_effort(request.effort or suffix_effort or "")
+        effort = self.resolve_effort(request, fallback=suffix_effort or "")
         limit = (
             request.timeout_sec if request.timeout_sec is not None else self.settings.request_timeout_sec
         )
