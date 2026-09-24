@@ -85,14 +85,15 @@ _LIST_KEYS = ("allow", "ask", "deny")
 
 
 def _check_shape(loaded: Mapping[str, Any], path: Path) -> None:
+    # A written-out null is a wrong kind, not an absent key: the merge takes
+    # the later value, so an overlay saying {"permissions": null} drops the
+    # base file's deny list. Absence is the only way to say nothing here.
     for key in _DICT_KEYS:
-        value = loaded.get(key)
-        if value is not None and not isinstance(value, dict):
+        if key in loaded and not isinstance(loaded[key], dict):
             raise ConfigError(f"settings 의 {key} 가 객체가 아닙니다 : {path}")
     permissions = loaded.get("permissions") or {}
     for key in _LIST_KEYS:
-        value = permissions.get(key)
-        if value is not None and not isinstance(value, list):
+        if key in permissions and not isinstance(permissions[key], list):
             raise ConfigError(f"settings 의 permissions.{key} 가 목록이 아닙니다 : {path}")
     for event, groups in (loaded.get("hooks") or {}).items():
         if not isinstance(groups, list):
