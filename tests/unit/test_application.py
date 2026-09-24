@@ -2234,3 +2234,15 @@ class Test엔진_상태는_preflight_판정을_그대로_쓴다:
 
         with pytest.raises(ConfigError):
             load_settings_file(path)
+
+
+class Test읽기범위에_첨부_디렉터리:
+    """세 엔진 모두 readable_dirs 하나로 --add-dir/노트 텍스트를 만든다
+    (claude.py, gemini.py 의 --add-dir, codex.py 의 readable_paths_note).
+    이 목록에 attach_dir 이 없으면 정상 경로로 받은 첨부조차 그 경로를
+    엔진이 못 읽는다 (코덱스 7차 리뷰, sca-h2dr)."""
+
+    def test_attach_dir_이_포함된다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        app = Application.from_profile(write_profile(tmp_path), client=client)
+        assert app._profile.attach_dir in app.readable_dirs
+        app.close()

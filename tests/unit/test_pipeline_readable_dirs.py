@@ -40,5 +40,5 @@ def test_Application이_상태_경로를_파이프라인에_넘긴다(tmp_path) 
     app = Application(profile, FakeSlackClient())
 
     assert app.pipeline().readable_dirs == (
-        profile.paths.persona, profile.paths.prompts, profile.paths.watch_out,
+        profile.paths.persona, profile.paths.prompts, profile.paths.watch_out, profile.attach_dir,
     )
