@@ -476,6 +476,8 @@ class RequestPipeline:
             unaddressed=ctx.unaddressed,
             chat_level=chat_level,
             people=self._present_people(ctx),
+            files=ctx.files,
+            missed_files=ctx.missed_files,
             watch_run_id=run_id,
             watch_out_dir=str(self._watch_results.result_dir),
         )

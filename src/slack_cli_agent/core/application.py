@@ -88,6 +88,7 @@ from ..prompt.library import PromptLibrary
 from ..prompt.linked_threads import LinkedThreadNote
 from ..prompt.sections import (
     AskerSection,
+    AttachmentSection,
     AuthoritySection,
     ChannelModeSection,
     CompositionContext,
@@ -471,6 +472,7 @@ class Application:
             SlackFormatSection(),
             ReviewFormatSection(),
             AskerSection(),
+            AttachmentSection(),
             PresentPeopleSection(),
             TrustedSection(),
             SensitiveGuardSection(),
