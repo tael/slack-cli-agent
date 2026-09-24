@@ -13,8 +13,10 @@ permissions.deny 가 하나도 안 걸린다. 그래서 설치물 쪽에 본보�
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
+from typing import Any
 
 REPO = Path(__file__).resolve().parents[1]
 ASSET_DIR = REPO / "src" / "slack_cli_agent" / "assets" / "engine"
@@ -30,18 +32,36 @@ ASSET_NAMES = ("settings-claude.json", "settings-claude.general.json")
 
 
 def permission_path(state_dir: Path, home: Path) -> str:
-    """claude 권한 규칙이 쓰는 경로 표기. 홈 아래면 ~, 밖이면 // 절대경로."""
+    """claude 권한 규칙이 쓰는 경로 표기. 홈 아래면 ~, 밖이면 // 절대경로.
+
+    Both sides get resolved first: a relative state dir would otherwise never
+    match home and get written as a bogus //relative/path rule.
+    """
+    resolved = state_dir.expanduser().resolve()
+    home = home.expanduser().resolve()
     try:
-        relative = state_dir.relative_to(home)
+        relative = resolved.relative_to(home)
     except ValueError:
-        return "//" + str(state_dir).lstrip("/")
+        return "//" + str(resolved).lstrip("/")
     return "~/" + relative.as_posix()
 
 
+def substitute(node: Any, value: str) -> Any:
+    if isinstance(node, str):
+        return node.replace(PLACEHOLDER, value)
+    if isinstance(node, list):
+        return [substitute(item, value) for item in node]
+    if isinstance(node, dict):
+        return {substitute(key, value): substitute(item, value) for key, item in node.items()}
+    return node
+
+
 def render(source: Path, state_dir: Path, home: Path) -> str:
-    return source.read_text(encoding="utf-8").replace(
-        PLACEHOLDER, permission_path(state_dir, home)
-    )
+    """Substitution happens on parsed values, not on the raw text: a state
+    path holding a quote, a backslash or a newline breaks the JSON otherwise."""
+    document = json.loads(source.read_text(encoding="utf-8"))
+    rendered = substitute(document, permission_path(state_dir, home))
+    return json.dumps(rendered, ensure_ascii=False, indent=2) + "\n"
 
 
 def install(

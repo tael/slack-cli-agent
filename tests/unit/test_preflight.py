@@ -660,8 +660,8 @@ class Test도구강제_점검은_프로필_값을_본다:
 
     @staticmethod
     def 결과(tmp_path: Path, sandbox: str | None):
+        from slack_cli_agent.preflight.check import PreflightContext
         from slack_cli_agent.preflight.checks import ToolAllowlistEnforcementCheck
-        from slack_cli_agent.preflight.runner import PreflightContext
 
         options = {"sandbox": sandbox} if sandbox else {}
         profile = make_profile(

@@ -435,14 +435,19 @@ class Engine(ABC):
 class EngineRequest:
     prompt: str
     system_prompt: str
-    session_id: str
+    session_id: str | None    # None 이면 실제로 도는 엔진이 발급한다
     resume: bool
-    model: str
+    model: str | None         # None 이면 엔진 spec.model 을 쓴다
     effort: str
     workdir: Path
-    readable_dirs: tuple[Path, ...]
-    tools: ToolSelection    # 허용 없음·허용목록·전면 금지 세 상태
-    trust_level: TrustLevel
+    readable_dirs: tuple[Path, ...] = ()
+    tools: ToolSelection = field(default_factory=ToolSelection)    # 허용 없음·허용목록·전면 금지 세 상태
+    trust_level: TrustLevel = TrustLevel.GENERAL
+    requirements: ExecutionRequirements = field(default_factory=ExecutionRequirements)
+    progress_log: Path | None = None    # 진행 표시용 도구 이름 적을 곳. None 이면 표시 없음
+    timeout_sec: float | None = None    # EngineRunner 가 채운다. None 이면 아직 안 돌았다
+    request_id: str = ""                # 한 요청의 모든 엔진 시도를 묶는 값. 감사만 읽는다
+    budget_report: Mapping[str, Any] = field(default_factory=dict)    # 프롬프트 예산 결과. 감사만 읽는다
 
 
 @dataclass(frozen=True)
