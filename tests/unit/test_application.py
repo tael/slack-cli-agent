@@ -524,6 +524,39 @@ class TestReviewReactions:
         app = self._점검채널앱(profile, client)
         assert self._부른것(app, monkeypatch, "U_STRANGER") == []
 
+    def test_미등록_대화의_신뢰_사용자는_점검을_못_돌린다(
+        self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """리액션 경로도 일반 요청과 같은 accepts_request 를 탄다. 채널 파일에
+        DM 항목이 남으면 그 DM 의 신뢰 사용자가 리액션만으로 엔진을 돌릴 수
+        있었다 (sca-gr5n)."""
+        app = self._DM앱(profile, client)
+        assert self._부른것DM(app, monkeypatch, "U_TRUSTED") == []
+
+    def test_소유자는_DM에서도_점검을_돌린다(
+        self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """등록 판정을 얹으면서 소유자 DM 까지 막으면 원본보다 좁아진다."""
+        app = self._DM앱(profile, client)
+        assert self._부른것DM(app, monkeypatch, "U_OWNER") == ["dango"]
+
+    def _DM앱(self, profile: Profile, client: FakeSlackClient) -> Application:
+        profile.paths.root.mkdir(parents=True, exist_ok=True)
+        profile.paths.channels.write_text(
+            json.dumps({"D9": {"name": "dm", "trusted_users": ["U_TRUSTED"]}}),
+            encoding="utf-8",
+        )
+        return Application(profile, client)
+
+    def _부른것DM(
+        self, app: Application, monkeypatch: pytest.MonkeyPatch, by_user: str
+    ) -> list[str]:
+        불린것: list[str] = []
+        for 이모지, task in app.review_tasks().items():
+            monkeypatch.setattr(task, "run", lambda _t, 이름=이모지: 불린것.append(이름))
+        app.on_reaction("dango", "D9", "1.0", by_user)
+        return 불린것
+
     def test_거른_사실을_로그에_남긴다(
         self,
         profile: Profile,
