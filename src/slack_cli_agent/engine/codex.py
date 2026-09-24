@@ -100,8 +100,12 @@ def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec]) -> list[str
                 args += ["-c", f"{prefix}.args={json.dumps(list(server.args))}"]
             if server.cwd:
                 args += ["-c", f"{prefix}.cwd={CodexEngine._toml_string(str(server.cwd))}"]
-        for key, value in server.resolved_env().items():
-            args += ["-c", f"{prefix}.env.{key}={CodexEngine._toml_string(value)}"]
+            # env belongs to the process this engine spawns. A remote server
+            # has none, so it goes in the stdio branch only -- claude and agy
+            # have no place for it on a remote entry either, and outside the
+            # branch the same profile ran differently per engine (sca-wdzh).
+            for key, value in server.resolved_env().items():
+                args += ["-c", f"{prefix}.env.{key}={CodexEngine._toml_string(value)}"]
         if server.disabled_tools:
             args += ["-c", f"{prefix}.disabled_tools={json.dumps(list(server.disabled_tools))}"]
     return args

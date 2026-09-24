@@ -17,6 +17,13 @@ from enum import StrEnum
 class ToolRestriction(StrEnum):
     NONE = "none"
     COARSE_SANDBOX = "coarse_sandbox"
+    #: Exact for the built-in set, per server for MCP. claude's --tools closes
+    #: built-ins by name, but MCP tools only close with a per-server wildcard:
+    #: a server holding one allowed tool stays open whole and its other tools
+    #: are left to the approval rules (2026-09-20 measurement, sca-6ewc). Below
+    #: EXACT_ALLOWLIST because the allowlist does not hold at tool granularity
+    #: there (sca-vo05).
+    SERVER_SCOPED_ALLOWLIST = "server_scoped_allowlist"
     EXACT_ALLOWLIST = "exact_allowlist"
     #: No tools at all -- the allowlist taken to zero, so it belongs at the
     #: top of this axis rather than on one of its own. Only claude holds it,

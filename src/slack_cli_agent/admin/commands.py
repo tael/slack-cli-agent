@@ -29,7 +29,7 @@ class HelpCommand(AdminCommand):
 
 # Channel mode as the user sees it. The stored value is a code-internal
 # name and shouldn't reach the user.
-_MODE_LABELS = {"": "기본", "agent_coach": "코치", "private": "비공개"}
+_MODE_LABELS = {"": "기본", "agent_coach": "코치", "api_helpdesk": "연동 API", "private": "비공개"}
 
 # Session scope as the user sees it, same reason as _MODE_LABELS.
 _SCOPE_LABELS = {"channel": "채널", "thread": "스레드"}

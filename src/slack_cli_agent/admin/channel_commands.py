@@ -120,6 +120,22 @@ class CoachModeCommand(AdminCommand):
         return AdminResult(message=self._notices.render(NoticeKey.MODE_MENTION_ONLY))
 
 
+class ApiModeCommand(AdminCommand):
+    name: ClassVar[str] = "api_mode"
+    usage: ClassVar[str] = "api 모드"
+    description: ClassVar[str] = "이 채널을 연동 API 문의 응답 형식으로 바꾼다"
+
+    def __init__(self, notices: NoticeCatalog) -> None:
+        self._notices = notices
+
+    def matches(self, text: str) -> bool:
+        return text.strip() in ("api 모드", "api모드", "API 모드")
+
+    def execute(self, ctx: AdminContext) -> AdminResult:
+        ctx.channels.update(ctx.channel, {"mode": "api_helpdesk"})
+        return AdminResult(message=self._notices.render(NoticeKey.MODE_STRUCTURED))
+
+
 class DefaultModeCommand(AdminCommand):
     name: ClassVar[str] = "default_mode"
     usage: ClassVar[str] = "기본 모드"
