@@ -160,8 +160,11 @@ cmd += ["--", prompt]
 마지막 `--` 가 중요하다. 하이픈으로 시작하는 사용자 입력이 옵션으로 해석되는
 것을 막는다.
 
-**읽기 전용 권한 모델** — `--allowedTools` 화이트리스트가 settings 의 allow
-규칙보다 우선한다(실측 확인). Bash·Edit·Write·NotebookEdit 를 차단한다.
+**읽기 전용 권한 모델** — 원본은 `--allowedTools` 화이트리스트가 settings 의
+allow 규칙보다 우선해 Bash·Edit·Write·NotebookEdit 를 차단한다고 보았다.
+**이 전제는 2026-09-20 실측에서 반증됐다** - `--allowedTools` 는 자동승인을
+더하는 인자일 뿐 목록 밖을 막지 않는다. 근거와 이 저장소가 대신 쓰는 인자는
+[claude CLI 의 도구 제한 실측](/docs/claude-도구제한-실측.md) 에 있다.
 
 **과금** — OAuth 구독 토큰(`sk-ant-oat`)을 쓰면 `--max-budget-usd` 를 쓰면 안
 된다. 정상 요청을 끊는다. seat allowance 를 소모한다.
