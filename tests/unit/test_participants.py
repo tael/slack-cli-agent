@@ -24,6 +24,49 @@ def names(user_id: str) -> str:
     return {"U1": "말한사람", "U2": "불린사람"}.get(user_id, "")
 
 
+def group_names(group_id: str) -> str:
+    return {"S1": "개발팀"}.get(group_id, "")
+
+
+class Test그룹_호명:
+    """그룹으로 불려 들어온 사람이 목록에 아예 안 잡혔다 (sca-ccyv).
+
+    구성원을 펼치지 않고 그룹 한 줄로 넣는다 - 펼치면 50명 그룹 하나가 목록을
+    통째로 채우고 이름 조회가 구성원 수만큼 늘어난다. 모델이 그 그룹을 다시
+    부를 수 있으면 목적은 채워진다.
+    """
+
+    def test_그룹_멘션을_한_줄로_넣는다(self) -> None:
+        history = FakeHistory([{"user": "U1", "text": "<!subteam^S1|@개발팀> 봐 주십시오"}])
+        people = ThreadParticipants(
+            history, names, bot_user_id="UBOT", group_resolver=group_names,
+        ).of("C1", "1.0")
+        assert people == (("말한사람", "<@U1>"), ("개발팀", "<!subteam^S1>"))
+
+    def test_같은_그룹을_두_번_안_넣는다(self) -> None:
+        history = FakeHistory([
+            {"user": "U1", "text": "<!subteam^S1>"},
+            {"user": "U1", "text": "<!subteam^S1|@개발팀>"},
+        ])
+        people = ThreadParticipants(
+            history, names, bot_user_id="UBOT", group_resolver=group_names,
+        ).of("C1", "1.0")
+        assert [mention for _, mention in people] == ["<@U1>", "<!subteam^S1>"]
+
+    def test_이름을_못_찾으면_핸들_자리를_비우지_않는다(self) -> None:
+        history = FakeHistory([{"user": "U1", "text": "<!subteam^S9>"}])
+        people = ThreadParticipants(
+            history, names, bot_user_id="UBOT", group_resolver=group_names,
+        ).of("C1", "1.0")
+        assert people[-1][1] == "<!subteam^S9>"
+        assert people[-1][0]
+
+    def test_해석기가_없으면_그룹을_안_넣는다(self) -> None:
+        history = FakeHistory([{"user": "U1", "text": "<!subteam^S1>"}])
+        people = ThreadParticipants(history, names, bot_user_id="UBOT").of("C1", "1.0")
+        assert people == (("말한사람", "<@U1>"),)
+
+
 class TestThreadParticipants:
     def test_말한_사람과_멘션된_사람을_함께_센다(self) -> None:
         history = FakeHistory([{"user": "U1", "text": "<@U2> 봐 주십시오"}])
