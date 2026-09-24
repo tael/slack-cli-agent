@@ -57,7 +57,7 @@ from .capability import (
     InstructionBoundary,
     ToolRestriction,
 )
-from .claude_settings import load_settings_file, merge_settings
+from .claude_settings import load_merged_settings, merge_settings
 from .tool_selection import ToolAccess
 
 # Same hint list as the original bot.py's usage_limit_message().
@@ -228,7 +228,7 @@ class ClaudeEngine(Engine):
 
     @classmethod
     def configured_capabilities(
-        cls, spec: EngineSpec, mcp_servers: Mapping[str, McpServerSpec] | None = None
+        cls, spec: EngineSpec, mcp_servers: Mapping[str, McpServerSpec]
     ) -> EngineCapabilities:
         """The ceiling a claude profile can reach, whatever a request asks.
 
@@ -244,7 +244,7 @@ class ClaudeEngine(Engine):
         that one resolves ${env:...} references and would raise here for a
         missing credential, which is McpCredentialCheck's finding to report.
         """
-        attached = [server for server in (mcp_servers or {}).values() if not server.disabled]
+        attached = [server for server in mcp_servers.values() if not server.disabled]
         if not attached:
             return cls.capabilities
         return dataclasses.replace(
@@ -354,15 +354,17 @@ class ClaudeEngine(Engine):
         entries, so two copies had to be kept in step by hand.
         """
         paths = self.profile.paths
-        fragments = [
-            load_settings_file(paths.engine_settings(self.name)),
-            load_settings_file(
-                paths.engine_settings(f"{self.name}.{request.trust_level.name.lower()}")
-            ),
-        ]
-        if request.progress_log is not None:
-            fragments.append(progress_hook_settings(request.progress_log))
-        return merge_settings(*fragments)
+        level = request.trust_level.name.lower()
+        # The deny check reads the merged document, so the files go in
+        # together and the progress hook is layered on after: that fragment
+        # is per request and carries no permissions (sca-e34p).
+        merged = load_merged_settings(
+            paths.engine_settings(self.name),
+            paths.engine_settings(f"{self.name}.{level}"),
+        )
+        if request.progress_log is None:
+            return merged
+        return merge_settings(merged, progress_hook_settings(request.progress_log))
 
     #: 2026-09-19 실측 (claude 2.1.270 네이티브 바이너리) - 로그인이 풀리면
     #: 'Please run /login' 을, 인증 자체가 실패하면 'Failed to authenticate' 를
