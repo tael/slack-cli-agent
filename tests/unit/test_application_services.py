@@ -538,6 +538,28 @@ class Test사용량확인실행기:
 
         assert 기록 == []
 
+    def test_첫_확인은_기동_직후가_아니라_잠시_뒤에_돈다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """원본 bot.py:6939 usage_watch 는 첫 실행을 기동 60초 뒤에 둔다.
+
+        판정은 운영자가 건 명령이 한다. 그 명령이 표본을 몇 개부터 보는지는
+        설치물이 알 수 없으므로 원본의 지연을 그대로 둔다.
+        """
+        app = Application(write_profile(tmp_path, usage_check_command=["usage.py", "--check"]), client)
+
+        assert app.usage_check_runner().initial_delay_sec == 60
+
+    def test_다른_주기_실행기는_기동_즉시_돈다(self, app: Application) -> None:
+        """지연은 그것을 요구한 실행기에만 건다."""
+        지연된 = [
+            이름
+            for 이름 in runner_factory_names()
+            if 이름 != "usage_check_runner"
+            and getattr(app, 이름)(*RUNNER_ARGS[이름](app)).initial_delay_sec != 0
+        ]
+        assert 지연된 == []
+
 
 class Test묶음자기감시:
     """주기 실행기 스레드가 끝나도 프로세스는 계속 산다. 그것을 보는 자리가
