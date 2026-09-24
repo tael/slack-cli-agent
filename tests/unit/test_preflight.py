@@ -405,6 +405,19 @@ class TestEngineSettingsCheck:
         )
         assert EngineSettingsCheck().run(PreflightContext(profile=profile)).ok is True
 
+    def test_통과한_뒤_파일이_사라지면_다음_점검을_막는다(self, tmp_path: Path) -> None:
+        """기동 점검은 그 시점만 본다. 그 뒤 지워진 것을 부재로 읽으면 경고에
+        그쳐 deny 없이 도는 것을 못 막는다 (sca-1aji)."""
+        profile = make_profile(tmp_path)
+        self.쓴다(profile, "claude", '{"permissions": {"deny": ["Bash"]}}')
+        assert EngineSettingsCheck().run(PreflightContext(profile=profile)).ok is True
+
+        profile.paths.engine_settings("claude").unlink()
+        result = EngineSettingsCheck().run(PreflightContext(profile=profile))
+        assert result.ok is False
+        assert result.fatal is True
+        assert "사라" in result.detail
+
 
 # PreflightRunner
 
