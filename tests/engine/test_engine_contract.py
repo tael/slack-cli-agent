@@ -253,6 +253,16 @@ class TestEngineContract:
         cmd = engine.build_command(_request(resume=True, system_prompt="고유한-지침-문구"))
         assert ("고유한-지침-문구" in _joined(cmd)) == fx.resend_system_prompt_on_resume
 
+    def test_재개_턴의_시스템_지침은_그_턴의_값이다(self, fx: EngineFixture, tmp_path: Path) -> None:
+        """턴마다 바뀌는 값은 system_prompt 로 실려 재개 턴에도 갱신된다.
+        엔진별 턴 지시 훅이 따로 필요 없는 근거다(sca-r1hc)."""
+        engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
+        앞턴 = engine.build_command(_request(resume=True, system_prompt="앞턴-지침-문구"))
+        뒤턴 = engine.build_command(_request(resume=True, system_prompt="뒤턴-지침-문구"))
+        assert "뒤턴-지침-문구" in _joined(뒤턴)
+        assert "앞턴-지침-문구" not in _joined(뒤턴)
+        assert 앞턴 != 뒤턴
+
     def test_작업_디렉터리는_실행기가_그대로_넘긴다(self, fx: EngineFixture, tmp_path: Path) -> None:
         engine = fx.engine_class(fx.configured_profile(tmp_path), SETTINGS)
         seen: dict[str, Any] = {}

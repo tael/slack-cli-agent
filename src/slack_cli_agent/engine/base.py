@@ -491,10 +491,6 @@ class Engine(ABC):
         own config file. Separate from build_command() so building a
         command stays free of filesystem writes. Default: nothing."""
 
-    def directives_for_turn(self, request: EngineRequest) -> str:
-        """Per-turn directives, for engines with a pinned system prompt. Default: empty."""
-        return ""
-
     #: Whether this engine can actually empty its tool set. Only claude can,
     #: with --disallowedTools=* (2026-09-19 measurement). The others say it in
     #: words, which is not enforcement -- the capability axis stays where it

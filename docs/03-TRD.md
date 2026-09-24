@@ -425,10 +425,6 @@ class Engine(ABC):
     def detect_usage_limit(self, response: EngineResponse) -> UsageLimit | None:
         """한도 소진 판정."""
 
-    def directives_for_turn(self, request: EngineRequest) -> str:
-        """턴마다 바뀌는 지시. 시스템 프롬프트가 고정되는 엔진용. 기본은 빈 문자열."""
-        return ""
-
     def readable_paths_note(self, paths: Sequence[Path]) -> str:
         """읽기 허용 경로를 알리는 방식. 인자로 되는 엔진은 빈 문자열."""
         return ""
@@ -466,11 +462,12 @@ class EngineResponse:
 
     Claude   --add-dir 로 경로를 넘긴다      readable_paths_note 는 빈 문자열
              세션 ID 를 우리가 발급한다      session_id_from 은 None
-             시스템 프롬프트가 턴마다 갱신   directives_for_turn 은 빈 문자열
+             시스템 프롬프트가 턴마다 갱신   --append-system-prompt 로 매 턴 다시 싣는다
 
     Codex    경로 인자가 없다               readable_paths_note 가 문장을 만든다
              CLI 가 thread_id 를 발급한다    session_id_from 이 그것을 돌려준다
-             최초 지시가 끝까지 우선한다     directives_for_turn 이 화자·침묵만 앞에 붙인다
+             최초 지시가 끝까지 우선한다     재개 턴은 그 턴 지침을 프롬프트 본문에 싣는다
+                                            (engine/codex.py 의 _resume_prompt, sca-ivs)
 
 ### 3.5 EngineRegistry
 

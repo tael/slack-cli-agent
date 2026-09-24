@@ -473,9 +473,6 @@ class FallbackEngine(Engine):
     def session_id_from(self, response: EngineResponse) -> str | None:
         return self._active.session_id_from(response)
 
-    def directives_for_turn(self, request: EngineRequest) -> str:
-        return self._active.directives_for_turn(request)
-
     def environment_policy(self) -> EngineEnvironmentPolicy:
         # This class has no profile block of its own; the policy belongs to
         # whichever engine is actually running this turn.

@@ -152,7 +152,7 @@ class Test엔진별_선언:
 
     def test_codex_기본은_전체_접근이라_격리가_없다(self, tmp_path: Path) -> None:
         엔진 = CodexEngine(codex_profile(tmp_path), SETTINGS)
-        보장 = 엔진.capabilities_for(request(model="gpt-5"))
+        보장 = 엔진.capabilities_for(request(model="gpt-5", tools=ToolSelection.unrestricted()))
         assert 보장.execution_isolation is ExecutionIsolation.NONE
         assert 보장.tool_restriction is ToolRestriction.NONE
 
@@ -165,7 +165,7 @@ class Test엔진별_선언:
 
     def test_codex_작업공간_쓰기는_읽기전용보다_약하다(self, tmp_path: Path) -> None:
         엔진 = CodexEngine(codex_profile(tmp_path, sandbox="workspace-write"), SETTINGS)
-        보장 = 엔진.capabilities_for(request(model="gpt-5"))
+        보장 = 엔진.capabilities_for(request(model="gpt-5", tools=ToolSelection.unrestricted()))
         assert 보장.execution_isolation is ExecutionIsolation.WORKSPACE_WRITE
         요구 = ExecutionRequirements(execution_isolation=ExecutionIsolation.READONLY_SANDBOX)
         assert 요구.unmet(보장) == ("execution_isolation",)
