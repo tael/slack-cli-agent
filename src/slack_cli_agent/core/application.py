@@ -612,6 +612,7 @@ class Application:
             self.user_namer(),
             self.identity.user_id,
             limit=self._settings.history_max_msgs,
+            group_resolver=self._group_names.resolve,
         )
 
     def _linked_threads(self) -> LinkedThreadNote:
