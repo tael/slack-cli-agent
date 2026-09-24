@@ -789,3 +789,63 @@ class Test폴백_시도도_같은_키로_묶인다:
         with pytest.raises(_그만):
             폴백._run_secondary(request(request_id="req-9"))
         assert 받은[0].request_id == "req-9"
+
+
+class Test허용목록_축은_MCP_차단_단위까지_본다:
+    """--tools 는 내장 도구 집합만 닫는다. 허용목록이 어느 MCP 서버의 도구를
+    하나라도 이름하면 그 서버는 통째로 열린 채 남고(sca-6ewc 실측), 그 서버의
+    나머지 도구는 승인 규칙에만 맡겨진다. 그 턴을 exact_allowlist 로 적으면
+    감사 기록이 실제보다 강하게 남는다 (sca-vo05).
+    """
+
+    def _보장(
+        self, tmp_path: Path, names: list[str], mcp_servers: dict[str, Any] | None = None
+    ) -> EngineCapabilities:
+        profile = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            tmp_path=tmp_path, mcp_servers=mcp_servers,
+        )
+        engine = ClaudeEngine(profile, SETTINGS)
+        return engine.capabilities_for(request(tools=ToolSelection.allow(names)))
+
+    def test_MCP_서버가_열린_채_남으면_서버단위로_내려간다(self, tmp_path: Path) -> None:
+        보장 = self._보장(
+            tmp_path, ["Read", "mcp__jira__jira_search"],
+            {"jira": {"command": "jira-mcp"}, "github": {"command": "gh-mcp"}},
+        )
+        assert 보장.tool_restriction is ToolRestriction.SERVER_SCOPED_ALLOWLIST
+
+    def test_MCP_를_통째로_닫으면_정확한_허용목록이다(self, tmp_path: Path) -> None:
+        보장 = self._보장(tmp_path, ["Read"], {"jira": {"command": "jira-mcp"}})
+        assert 보장.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+
+    def test_붙은_서버가_없으면_정확한_허용목록이다(self, tmp_path: Path) -> None:
+        보장 = self._보장(tmp_path, ["Read"])
+        assert 보장.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+
+    def test_꺼둔_서버는_열린_서버로_안_센다(self, tmp_path: Path) -> None:
+        """--mcp-config 에 안 실리므로 그 이름으로 열리는 도구가 없다."""
+        보장 = self._보장(
+            tmp_path, ["mcp__jira__jira_search"],
+            {"jira": {"command": "jira-mcp", "disabled": True}},
+        )
+        assert 보장.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+
+    def test_서버단위는_정확한_허용목록_요구를_못_채운다(self, tmp_path: Path) -> None:
+        보장 = self._보장(
+            tmp_path, ["mcp__jira__jira_search"], {"jira": {"command": "jira-mcp"}}
+        )
+        요구 = ExecutionRequirements(tool_restriction=ToolRestriction.EXACT_ALLOWLIST)
+        assert 요구.unmet(보장) == ("tool_restriction",)
+
+    def test_서버단위도_샌드박스_수준보다는_세다(self) -> None:
+        """축을 새로 끼워 넣은 자리가 맞는지 본다. 내장 도구는 정확히 닫힌다."""
+        보장 = EngineCapabilities(tool_restriction=ToolRestriction.SERVER_SCOPED_ALLOWLIST)
+        요구 = ExecutionRequirements(tool_restriction=ToolRestriction.COARSE_SANDBOX)
+        assert 요구.unmet(보장) == ()
+
+    def test_사람이_읽는_이름이_있다(self) -> None:
+        """없으면 슬랙 알림에 내부 식별자가 그대로 나간다."""
+        from slack_cli_agent.engine.runner import LEVEL_NAMES
+
+        assert LEVEL_NAMES[ToolRestriction.SERVER_SCOPED_ALLOWLIST] == "허용 목록, MCP 는 서버 단위"

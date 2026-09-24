@@ -117,13 +117,18 @@ def _mcp_denials(names: tuple[str, ...], servers: Iterable[str]) -> list[str]:
     the allowlist never named (codex review). `servers` is what --mcp-config
     carries, so a disabled server is not among them and nothing opens under it.
     """
-    allowed = {
-        server for server in servers
-        if any(name.startswith(f"{MCP_PREFIX}{server}__") for name in names)
-    }
+    allowed = _open_mcp_servers(names, servers)
     if not allowed:
         return [f"{MCP_PREFIX}*"]
     return [f"{MCP_PREFIX}{server}__*" for server in sorted(servers) if server not in allowed]
+
+
+def _open_mcp_servers(names: tuple[str, ...], servers: Iterable[str]) -> set[str]:
+    """The servers left open, tools the allowlist never named included."""
+    return {
+        server for server in servers
+        if any(name.startswith(f"{MCP_PREFIX}{server}__") for name in names)
+    }
 
 
 def progress_hook_settings(log_path: Path) -> dict[str, Any]:
@@ -225,12 +230,19 @@ class ClaudeEngine(Engine):
         # "no tools" needs its own state rather than an empty list (sca-0a7),
         # so the axis comes from the request -- but only once the command
         # built for it actually carries the closing argument.
-        args = self._tool_args(request, _claude_mcp_servers(self.profile.mcp_servers))
+        mcp_servers = _claude_mcp_servers(self.profile.mcp_servers)
+        args = self._tool_args(request, mcp_servers)
         closed = "--tools" in args or "*" in args
-        return dataclasses.replace(
-            self.capabilities,
-            tool_restriction=request.tools.restriction if closed else ToolRestriction.NONE,
-        )
+        restriction = request.tools.restriction if closed else ToolRestriction.NONE
+        if restriction is ToolRestriction.EXACT_ALLOWLIST and _open_mcp_servers(
+            request.tools.names, mcp_servers
+        ):
+            # An open server also carries the tools the allowlist never named.
+            # The block cuts at the server, so that is the unit actually held
+            # and the axis says so rather than claiming tool granularity
+            # (sca-vo05).
+            restriction = ToolRestriction.SERVER_SCOPED_ALLOWLIST
+        return dataclasses.replace(self.capabilities, tool_restriction=restriction)
 
     def prepare(self, request: EngineRequest) -> None:
         self._ensure_skill_discovery_link()

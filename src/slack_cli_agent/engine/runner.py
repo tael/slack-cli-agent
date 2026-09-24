@@ -69,6 +69,7 @@ AXIS_NAMES = {
 LEVEL_NAMES: dict[ToolRestriction | ExecutionIsolation | InstructionBoundary, str] = {
     ToolRestriction.NONE: "제한 없음",
     ToolRestriction.COARSE_SANDBOX: "샌드박스 수준",
+    ToolRestriction.SERVER_SCOPED_ALLOWLIST: "허용 목록, MCP 는 서버 단위",
     ToolRestriction.EXACT_ALLOWLIST: "허용된 도구 목록",
     ToolRestriction.ALL_FORBIDDEN: "도구 전부 금지",
     ExecutionIsolation.NONE: "격리 없음",
