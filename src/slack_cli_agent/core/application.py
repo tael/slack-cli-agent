@@ -1195,6 +1195,8 @@ class Application:
                 allowed_reactions=self.allowed_reactions(),
                 on_reaction=self.on_reaction,
                 spawn=ThreadTaskSpawner(),
+                notices=self._notices,
+                is_shutting_down=lambda: self._shutting_down,
                 # The handler runs on one of slack-sdk's ten pool threads, so a
                 # long lock wait here delays every event behind it (sca-9l1).
                 lock_budget=lambda: self.database.latency_budget(

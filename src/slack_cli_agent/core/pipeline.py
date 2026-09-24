@@ -305,6 +305,10 @@ class RequestPipeline:
             request_id=request_id,
             budget_report=budget_report,
         )
+        # Counted rather than derived: the reset is the only trace a broken
+        # resume leaves, and without it nothing can say how often context is
+        # lost (sca-er9n, bot.py:5142).
+        context_reset = False
         # Covers the retry too: a new-session retry is the same wait for the
         # person watching, and closing the display between the two attempts
         # would read as the request having finished.
@@ -315,6 +319,7 @@ class RequestPipeline:
                 response.failure_reason or ""
             ):
                 decision = self._sessions.reset(key, engine=self._engine.name)
+                context_reset = True
                 prompt = self._build_prompt(ctx, scope, decision)
                 # A fresh name: the first attempt may already have launched the
                 # background command, and reusing the name puts two processes
@@ -347,6 +352,7 @@ class RequestPipeline:
                 model_actual=response.model_actual,
                 failure_detail=response.failure_detail,
                 truncated=_truncated(response),
+                context_reset=context_reset,
             )
             return HandleOutcome(ok=False, failure=failure)
 
@@ -362,7 +368,7 @@ class RequestPipeline:
         if is_silent(response.body):
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
-                     truncated=_truncated(response))
+                     truncated=_truncated(response), context_reset=context_reset)
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
 
@@ -374,7 +380,7 @@ class RequestPipeline:
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
-                     truncated=_truncated(response))
+                     truncated=_truncated(response), context_reset=context_reset)
         watch_desc = watch_desc or self._watch_desc_for_launched(workdir, run_id)
         watching = bool(watch_desc) and self._register_watch(ctx, principal, watch_desc, workdir, run_id)
         # The final mark belongs to the worker: it owns queue completion and the
@@ -639,8 +645,12 @@ class RequestPipeline:
         # was not cut" have to stay apart. Where a response exists the key is
         # always written, so its presence marks when the count started.
         truncated: bool | None = None,
+        # Always written where a response reached this point, so its presence
+        # in a row marks when the count started -- a window with no key at all
+        # is "before this was instrumented", not "no resets".
+        context_reset: bool = False,
     ) -> None:
-        extra: dict[str, Any] = {}
+        extra: dict[str, Any] = {"context_reset": context_reset}
         if truncated is not None:
             extra[TRUNCATED_RAW_KEY] = truncated
         if model_actual:
