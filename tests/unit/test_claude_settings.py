@@ -116,6 +116,12 @@ class Test모양이_어긋나면_거부한다:
         '{"hooks": []}',
         '{"hooks": {"PreToolUse": {"matcher": "*"}}}',
         '{"env": []}',
+        # null 은 값이 없는 것이 아니라 종류가 어긋난 것이다. 병합에서 기본
+        # 파일의 deny 를 통째로 지운다 (codex 리뷰).
+        '{"permissions": null}',
+        '{"permissions": {"deny": null}}',
+        '{"hooks": null}',
+        '{"env": null}',
     ])
     def test_거부한다(self, tmp_path, 내용: str) -> None:
         from slack_cli_agent.core.errors import ConfigError
