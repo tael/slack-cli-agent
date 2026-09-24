@@ -148,6 +148,11 @@ agree on one spelling. The response still comes back ok=True on purpose --
 flipping it to ok=False would stop the engine session_id from being adopted
 -- so the ledger carries the cut as its own field instead (sca-l279)."""
 
+CONTEXT_RESET_RAW_KEY = "context_reset"
+"""Name the pipeline writes a session-reset retry under in the audit record.
+Same reason as TRUNCATED_RAW_KEY: the writer and the metrics rollup have to
+agree on one spelling (sca-4ry5)."""
+
 
 USAGE_FIELDS: tuple[str, ...] = (
     "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",

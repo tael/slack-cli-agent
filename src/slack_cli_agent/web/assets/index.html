@@ -413,7 +413,8 @@ function renderStateTab(d){
       ${(rel.incidents||[]).length ? bars(rel.incidents.map(i => ({label:i.kind, value:i.count})), "건")
         : '<div class="dim">해당 없음</div>'}
       <div class="dim" style="margin-top:8px;font-size:11.5px">
-        재기동 ${num(rel.restarts, "회")} · 컨텍스트 초기화 ${rel.context_reset}회<br>
+        재기동 ${num(rel.restarts, "회")} · 컨텍스트 초기화 ${isNA("reliability.context_reset") ? na("reliability.context_reset") : num(rel.context_reset, "회") + (rel.context_reset_pct === null || rel.context_reset_pct === undefined ? "" : " · " + rel.context_reset_pct + "%")}
+        <span title="한 세션이 이어지지 못해 맥락을 새로 시작한 건수">(?)</span><br>
         응답 잘림 ${num(rel.truncated, "건")}${rel.truncated_pct === null || rel.truncated_pct === undefined ? "" : " · " + rel.truncated_pct + "%"}
         <span title="--print-timeout 에 걸려 답이 중간에 끊긴 건수">(?)</span></div></div>
     <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">세션 이어가기</div>

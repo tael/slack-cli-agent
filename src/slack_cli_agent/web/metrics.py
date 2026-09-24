@@ -29,7 +29,7 @@ from ..config.channel import ChannelConfig, ChannelRegistry
 from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
 from ..core.channel_kind import is_direct_message_channel
-from ..engine.base import TRUNCATED_RAW_KEY, USAGE_FIELDS
+from ..engine.base import CONTEXT_RESET_RAW_KEY, TRUNCATED_RAW_KEY, USAGE_FIELDS
 from ..engine.registry import registry_for_profile
 from ..jobs.ports import JobStatus
 from ..observability.audit import (
@@ -58,7 +58,7 @@ _NO_USER_ID = "감사 기록에 사용자 식별자가 없다"
 # already had traffic — sca-qi5.2. Rows written before that carry neither
 # field at all, so a 0 count in the window can mean "not instrumented yet"
 # as easily as "really zero". _usage_field_first_seen() tells them apart the
-# same way quality.tracked_since does for incident kinds; these two entries
+# same way quality.tracked_since does for incident kinds; those entries
 # are removed from the dict dynamically once a field's first appearance is known.
 NOT_APPLICABLE_REASONS: dict[str, str] = {
     "usage.by_user": _NO_USER_ID,
@@ -324,8 +324,8 @@ class MetricsCollector:
 
     def _usage_field_first_seen(self, db: Database) -> dict[str, float]:
         """Earliest `at` of a REQUEST row whose payload carries the `user`,
-        `turns` or `truncated` key at all (regardless of value), unbounded by
-        the window.
+        `turns`, `truncated` or `context_reset` key at all (regardless of
+        value), unbounded by the window.
 
         These two fields were added to the audit record after request
         traffic already existed (sca-qi5.2), so a row can be missing the
@@ -339,7 +339,7 @@ class MetricsCollector:
         ).fetchall()
         result: dict[str, float] = {}
         for row in rows:
-            if {"by_user", "turns_median", "truncated"} <= result.keys():
+            if {"by_user", "turns_median", "truncated", "context_reset"} <= result.keys():
                 break
             try:
                 payload = json.loads(row["payload"])
@@ -354,6 +354,8 @@ class MetricsCollector:
                 result["turns_median"] = at
             if TRUNCATED_RAW_KEY in payload and "truncated" not in result:
                 result["truncated"] = at
+            if CONTEXT_RESET_RAW_KEY in payload and "context_reset" not in result:
+                result["context_reset"] = at
         return result
 
     def _read_reviews(self, db: Database) -> list[dict[str, Any]]:
@@ -405,6 +407,8 @@ class MetricsCollector:
             not_applicable.pop("usage.turns_median", None)
         if "truncated" in field_first_seen:
             not_applicable.pop("reliability.truncated", None)
+        if "context_reset" in field_first_seen:
+            not_applicable.pop("reliability.context_reset", None)
         if not self._ccusage_covers_engine():
             not_applicable["usage_block"] = USAGE_BLOCK_NOT_APPLICABLE_REASON
         return {
@@ -489,6 +493,8 @@ class MetricsCollector:
         # read the same as "the count hadn't started yet" (sca-gcc1).
         truncated_tracked = "truncated" in field_first_seen
         truncated = sum(1 for r in requests if r.get(TRUNCATED_RAW_KEY) is True)
+        context_reset_tracked = "context_reset" in field_first_seen
+        context_reset = sum(1 for r in requests if r.get(CONTEXT_RESET_RAW_KEY) is True)
         return {
             "total": len(requests),
             "ok": len(ok),
@@ -496,7 +502,10 @@ class MetricsCollector:
             "success_pct": _pct(len(ok), len(requests)),
             "resumed": len(resumed),
             "resumed_pct": _pct(len(resumed), len(requests)),
-            "context_reset": None,
+            "context_reset": context_reset if context_reset_tracked else None,
+            "context_reset_pct": (
+                _pct(context_reset, len(requests)) if context_reset_tracked else None
+            ),
             "truncated": truncated if truncated_tracked else None,
             "truncated_pct": _pct(truncated, len(requests)) if truncated_tracked else None,
             "incidents": incidents,
@@ -504,6 +513,9 @@ class MetricsCollector:
             "recent_failures": recent_failures,
             "tracked_since": {
                 "truncated": _kst(field_first_seen["truncated"]) if truncated_tracked else None,
+                "context_reset": (
+                    _kst(field_first_seen["context_reset"]) if context_reset_tracked else None
+                ),
             },
         }
 

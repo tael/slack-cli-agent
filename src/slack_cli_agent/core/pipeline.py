@@ -20,6 +20,7 @@ from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelConfig, channel_is_rich
 from ..config.channel import channel_slug as slug_for
 from ..engine.base import (
+    CONTEXT_RESET_RAW_KEY,
     NO_DETAIL,
     TRUNCATED_RAW_KEY,
     Engine,
@@ -650,7 +651,7 @@ class RequestPipeline:
         # is "before this was instrumented", not "no resets".
         context_reset: bool = False,
     ) -> None:
-        extra: dict[str, Any] = {"context_reset": context_reset}
+        extra: dict[str, Any] = {CONTEXT_RESET_RAW_KEY: context_reset}
         if truncated is not None:
             extra[TRUNCATED_RAW_KEY] = truncated
         if model_actual:
