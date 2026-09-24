@@ -38,9 +38,18 @@ def make_profile(tmp_path: Path) -> Profile:
     )
 
 
-def make_context(tmp_path: Path, *, channel: str = "C1", channels_path: Path | None = None) -> AdminContext:
+def make_context(
+    tmp_path: Path,
+    *,
+    channel: str = "C1",
+    channels_path: Path | None = None,
+    registered: bool = True,
+) -> AdminContext:
     profile = make_profile(tmp_path)
-    registry = ChannelRegistry(channels_path or (tmp_path / "channels.json"))
+    path = channels_path or (tmp_path / "channels.json")
+    if channels_path is None and registered:
+        path.write_text(json.dumps({channel: {"name": channel}}, ensure_ascii=False), encoding="utf-8")
+    registry = ChannelRegistry(path)
     principal = Principal(user_id="U_OWNER", channel=channel, trust=TrustLevel.OWNER, is_direct_message=False)
     return AdminContext(principal=principal, channel=channel, thread_ts="1.0", channels=registry, profile=profile)
 
@@ -185,7 +194,7 @@ class TestChannelUnregisterCommand:
         assert cmd.matches(text) is True
 
     def test_등록_안_된_채널이면_그_사실을_답한다(self, tmp_path: Path) -> None:
-        ctx = make_context(tmp_path)
+        ctx = make_context(tmp_path, registered=False)
         cmd = ChannelUnregisterCommand(NoticeCatalog())
         result = cmd.execute(ctx)
         assert "목록에 없습니다" in result.message
@@ -218,3 +227,33 @@ class TestApiModeCommand:
         from slack_cli_agent.core.application import KNOWN_MODES
 
         assert "api_helpdesk" in KNOWN_MODES
+
+
+# 미등록 채널 보호
+
+
+SETTING_COMMANDS = [
+    ApiModeCommand, CoachModeCommand, DefaultModeCommand,
+    ChatActiveCommand, ChatNormalCommand, ChatQuietCommand,
+    UnaddressedOnCommand, UnaddressedOffCommand,
+]
+
+
+class Test미등록채널에서는_설정을_안_바꾼다:
+    """`ChannelRegistry.update` 는 없는 채널을 새로 만든다. 그래서 설정 명령
+    하나가 등록 안내 없이 채널을 등록 상태로 만들었고, 그 뒤로 제3자 요청이
+    통과했다 (sca-5z6h)."""
+
+    @pytest.mark.parametrize("cmd_class", SETTING_COMMANDS)
+    def test_채널_파일에_아무것도_안_쓴다(self, tmp_path: Path, cmd_class: type) -> None:
+        ctx = make_context(tmp_path, registered=False)
+        result = cmd_class(NoticeCatalog()).execute(ctx)
+        assert (tmp_path / "channels.json").exists() is False
+        assert ctx.channels.is_registered("C1") is False
+        assert "목록에 없습니다" in result.message
+        assert result.handled is False
+
+    def test_DM_식별자가_채널_파일에_안_남는다(self, tmp_path: Path) -> None:
+        ctx = make_context(tmp_path, channel="D1", registered=False)
+        ApiModeCommand(NoticeCatalog()).execute(ctx)
+        assert (tmp_path / "channels.json").exists() is False
