@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 from slack_cli_agent.core.periodic import PeriodicRunner
 
@@ -96,3 +97,51 @@ class TestPeriodicRunner스레드:
         finally:
             runner.stop()
             runner.join(timeout=5)
+
+
+class TestPeriodicRunner첫실행지연:
+    """기동 직후 한 회차를 미루는 실행기가 있다.
+
+    원본 bot.py:6939 usage_watch 는 첫 실행을 기동 60초 뒤에 둔다. 지연을
+    요구한 실행기에만 걸고 나머지는 기동 즉시 도는 것이 기본이다.
+    """
+
+    def test_기본값은_지연이_없다(self) -> None:
+        calls: list[int] = []
+        runner: PeriodicRunner
+
+        def task() -> None:
+            calls.append(1)
+            runner.stop()
+
+        runner = PeriodicRunner(task, interval_sec=0)
+        assert runner.initial_delay_sec == 0
+        시작 = time.monotonic()
+        runner.run_until_stopped()
+        assert calls == [1]
+        assert time.monotonic() - 시작 < 0.5
+
+    def test_지연을_주면_첫_실행이_그만큼_미뤄진다(self) -> None:
+        calls: list[int] = []
+        runner: PeriodicRunner
+
+        def task() -> None:
+            calls.append(1)
+            runner.stop()
+
+        runner = PeriodicRunner(task, interval_sec=0, initial_delay_sec=0.2)
+        시작 = time.monotonic()
+        runner.run_until_stopped()
+        경과 = time.monotonic() - 시작
+        assert calls == [1]
+        assert 경과 >= 0.15, f"첫 실행이 미뤄지지 않았다 (경과 {경과:.3f}초)"
+
+    def test_지연_중에_중단하면_한_번도_실행되지_않는다(self) -> None:
+        """기동 직후 종료되는 프로세스가 외부 명령을 한 번 더 부르지 않는다."""
+        calls: list[int] = []
+        runner = PeriodicRunner(lambda: calls.append(1), interval_sec=0, initial_delay_sec=30)
+        runner.start()
+        runner.stop()
+        runner.join(timeout=5)
+        assert calls == []
+        assert not runner.is_running()

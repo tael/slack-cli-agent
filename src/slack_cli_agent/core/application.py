@@ -191,6 +191,8 @@ KNOWN_MODES: tuple[str, ...] = ("private", "agent_coach")
 
 # Loggers whose socket-connection warnings the connection watch attaches to.
 SOCKET_LOGGERS: tuple[str, ...] = ("slack_sdk.socket_mode", "slack_bolt")
+# bot.py:6939 delays the first usage check so one sample is stored before any judgement.
+USAGE_CHECK_FIRST_DELAY_SEC = 60.0
 
 
 def mode_prompt_names(modes: Sequence[str] = KNOWN_MODES) -> dict[str, str]:
@@ -1447,6 +1449,7 @@ class Application:
             check.check_once,
             self._settings.usage_check_interval_sec,
             name="usage_check",
+            initial_delay_sec=USAGE_CHECK_FIRST_DELAY_SEC,
         )
 
     def _channel_members(self, channel: str) -> list[str]:

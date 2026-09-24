@@ -13,9 +13,17 @@ log = logging.getLogger(__name__)
 
 
 class PeriodicRunner:
-    def __init__(self, task: Callable[[], object], interval_sec: float, *, name: str = "periodic") -> None:
+    def __init__(
+        self,
+        task: Callable[[], object],
+        interval_sec: float,
+        *,
+        name: str = "periodic",
+        initial_delay_sec: float = 0.0,
+    ) -> None:
         self._task = task
         self._interval_sec = interval_sec
+        self._initial_delay_sec = initial_delay_sec
         self._name = name
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -25,10 +33,16 @@ class PeriodicRunner:
         return self._name
 
     @property
+    def initial_delay_sec(self) -> float:
+        return self._initial_delay_sec
+
+    @property
     def thread(self) -> threading.Thread | None:
         return self._thread
 
     def run_until_stopped(self) -> None:
+        if self._initial_delay_sec > 0:
+            self._stop.wait(self._initial_delay_sec)
         # Check the stop flag before running, not after — otherwise a shutting-down
         # process makes one more external API call than it needs to.
         while not self._stop.is_set():
