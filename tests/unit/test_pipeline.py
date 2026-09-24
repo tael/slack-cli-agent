@@ -532,6 +532,81 @@ class Test엔진실패:
         assert outcome.ok is False
         assert outcome.failure
 
+    def test_실패해도_엔진이_보고한_사용량은_감사에_남는다(self, tmp_path: Path) -> None:
+        """실패한 턴도 토큰을 쓴다. 안 세면 사용량 집계가 실제보다 작게 나오고
+        소진 예상이 늦게 발동한다(sca-3g3a). gemini 와 codex 는 실패 응답에도
+        usage 를 담아 돌려준다."""
+        실패 = replace(
+            fail_response("nonzero_exit"),
+            usage=Usage(input_tokens=11, output_tokens=22),
+        )
+        pipeline, deps = build_pipeline(responses=[실패] * 2, tmp_path=tmp_path)
+        pipeline.handle(make_ctx())
+
+        기록 = deps["audit"].records[0]
+        assert 기록["ok"] is False
+        assert 기록["usage"] == {
+            "input_tokens": 11, "output_tokens": 22,
+            "cache_creation_tokens": 0, "cache_read_tokens": 0,
+            "unavailable": [],
+        }
+
+    def test_엔진이_사용량을_안_주면_감사에도_없음으로_남는다(self, tmp_path: Path) -> None:
+        """0 으로 채우면 못 잰 것과 정말 0 인 것이 같아진다."""
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("nonzero_exit")] * 2, tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert deps["audit"].records[0]["usage"] is None
+
+
+class Test잘린응답기록:
+    """gemini 가 --print-timeout 에 걸려 잘라낸 답은 ok=True 로 돌아온다.
+    실패의 형태는 예외가 아니라 값(raw["truncated"])이고, 원장에 별도 필드로
+    남기지 않으면 잘림 빈도를 셀 수 없다(sca-l279)."""
+
+    def test_잘린_응답은_감사에_잘림으로_남는다(self, tmp_path: Path) -> None:
+        잘림 = replace(ok_response(), raw={"truncated": True})
+        pipeline, deps = build_pipeline(responses=[잘림], tmp_path=tmp_path)
+        outcome = pipeline.handle(make_ctx())
+
+        assert outcome.ok is True
+        assert deps["audit"].records[0]["truncated"] is True
+
+    def test_안_잘린_응답도_잘림_아님으로_남는다(self, tmp_path: Path) -> None:
+        """항목을 빼면 계측 시작 이전 구간과 안 잘린 구간이 구분되지 않는다."""
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx())
+
+        assert deps["audit"].records[0]["truncated"] is False
+
+    def test_잘려도_성공으로_남아_세션_id_가_채택된다(self, tmp_path: Path) -> None:
+        """ok=False 로 바꾸면 engine session_id 를 못 채택해 대화 ID 를 잃는다."""
+        잘림 = replace(ok_response(session_id="sess-잘림"), raw={"truncated": True})
+        pipeline, deps = build_pipeline(responses=[잘림], tmp_path=tmp_path)
+        pipeline.handle(make_ctx())
+
+        assert deps["audit"].records[0]["ok"] is True
+        assert deps["audit"].records[0]["session_id"] == "sess-잘림"
+
+    def test_침묵한_잘린_응답도_잘림으로_남는다(self, tmp_path: Path) -> None:
+        잘림 = replace(ok_response(body=SILENT_MARK), raw={"truncated": True})
+        pipeline, deps = build_pipeline(responses=[잘림], tmp_path=tmp_path)
+        outcome = pipeline.handle(make_ctx())
+
+        assert outcome.silent is True
+        assert deps["audit"].records[0]["truncated"] is True
+
+    def test_실패한_응답의_잘림도_남는다(self, tmp_path: Path) -> None:
+        """gemini 는 잘린 뒤 본문이 비면 empty_response 실패로 돌려준다."""
+        잘림 = replace(fail_response("empty_response"), raw={"truncated": True})
+        pipeline, deps = build_pipeline(responses=[잘림] * 2, tmp_path=tmp_path)
+        pipeline.handle(make_ctx())
+
+        assert deps["audit"].records[0]["ok"] is False
+        assert deps["audit"].records[0]["truncated"] is True
+
 
 class Test예외처리:
     def test_어느_단계에서_예외가_나도_밖으로_안_나간다(self, tmp_path: Path) -> None:
