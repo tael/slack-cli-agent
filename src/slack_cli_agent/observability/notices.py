@@ -10,6 +10,20 @@ from typing import Any
 
 
 class NoticeKey(StrEnum):
+    # LATE, BUSY and FULL are in the table but nothing emits them, checked
+    # against the original rather than assumed (sca-vww0):
+    #   LATE, BUSY -- bot.py:798-799 defines them and bot.py:810-811 lists them
+    #     in NOTICE_TEXTS, and no other line references either. BUSY was dropped
+    #     on 2026-08-25 (bot.py:5048) because a notice posted as the bot's own
+    #     reply made catch-up count the request as answered. Emitting it here
+    #     would bring that loss back; the hourglass mark carries the same news.
+    #   FULL -- bot.py:5050, posted when the concurrency semaphore could not be
+    #     acquired within TIMEOUT_SEC and the request was then dropped. The port
+    #     has no such drop: the job sits in the durable queue and the worker
+    #     takes it when a slot frees (core/worker.py:140-150), so the condition
+    #     this notice reports does not occur.
+    # They stay in the table because is_notice() has to keep recognizing text
+    # already posted in Slack by older versions.
     LATE = "late"
     BUSY = "busy"
     FULL = "full"

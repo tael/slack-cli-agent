@@ -14,6 +14,7 @@ from typing import Any, ClassVar
 
 from ..admin.admission import AdminAdmission, ClaimUnavailable
 from ..jobs.ports import JobQueue
+from ..observability.notices import NoticeCatalog, NoticeKey
 from ..reliability.dedup import DeduplicationTracker
 from ..slack.assistant import AssistantPanel
 from ..slack.attachments import AttachmentStore
@@ -87,6 +88,10 @@ class IngressService:
         allowed_reactions: frozenset[str],
         on_reaction: ReactionCallback,
         spawn: TaskSpawner,
+        # No default: the empty-body reply and the restart notice are the only
+        # things standing between a content-free mention and an engine turn,
+        # and an assembly that left the catalog out would silently drop both.
+        notices: NoticeCatalog,
         # Retry cap for a failed job; 0 means unlimited. Takes just this value rather
         # than the whole settings object since ingress doesn't need anything else from it.
         job_max_attempts: int = 0,
@@ -101,6 +106,9 @@ class IngressService:
         # None means this bot has no agent panel wiring; the event is then
         # neither subscribed to nor handled.
         assistant: AssistantPanel | None = None,
+        # None means this caller has no shutdown flag to read, so no restart
+        # notice goes out. The request is queued either way.
+        is_shutting_down: Callable[[], bool] | None = None,
     ) -> None:
         self._listener = listener
         self._access = access
@@ -114,6 +122,7 @@ class IngressService:
         self._allowed_reactions = allowed_reactions
         self._on_reaction = on_reaction
         self._spawn = spawn
+        self._notices = notices
         self._job_max_attempts = job_max_attempts
         self._enqueue_attempts = max(1, enqueue_attempts)
         self._not_accepted = RejectedRequests()
@@ -121,6 +130,7 @@ class IngressService:
         self._lock_budget = lock_budget
         self._clock = time.monotonic
         self._assistant = assistant
+        self._is_shutting_down = is_shutting_down
 
     def register(self, gateway: SlackGateway) -> None:
         gateway.on("app_mention", self.handle_app_mention)
@@ -176,6 +186,18 @@ class IngressService:
 
             ctx = replace(ctx, text=self._strip_self_mention(ctx.text))
 
+            # bot.py:4973. Asked back instead of queued, so a mention with no
+            # request in it never costs an engine turn (sca-yb8q). Attachments
+            # do not count: the original checks the text before it saves them
+            # (bot.py:5075), so a file with no words is asked back too.
+            if not ctx.text.strip():
+                self._reply(
+                    ctx.channel, ctx.thread_ts, self._notices.render(NoticeKey.ASK_WHAT)
+                )
+                return
+
+            self._warn_if_restarting(ctx)
+
             # Inside the budget: the check writes a claim row, and a socket
             # handler thread waiting on that lock holds up every later event
             # (sca-9l1, sca-8m5p).
@@ -224,6 +246,18 @@ class IngressService:
             channel = ctx.channel if ctx is not None else event.get("channel")
             ts = ctx.ts if ctx is not None else event.get("ts")
             log.exception("요청 접수 실패: %s:%s", channel, ts)
+
+    def _warn_if_restarting(self, ctx: RequestContext) -> None:
+        """bot.py:4978. The original posted this and dropped the request,
+        saving the event to replay on the next boot. Here the queue below is
+        durable, so the request is kept and this only says the reply is late.
+        A failed notice must not cost the request, hence the catch."""
+        if self._is_shutting_down is None or not self._is_shutting_down():
+            return
+        try:
+            self._reply(ctx.channel, ctx.thread_ts, self._notices.render(NoticeKey.RESTART))
+        except Exception as exc:  # noqa: BLE001 - the request still gets queued below
+            log.warning("재시작 안내를 보내지 못했다 : %s", exc)
 
     @contextmanager
     def _budget(self) -> Iterator[None]:
