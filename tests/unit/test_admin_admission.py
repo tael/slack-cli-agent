@@ -86,8 +86,21 @@ class Test명령이면_그_자리에서_끝낸다:
 
     def test_권한이_모자란_명령도_그_자리에서_끝낸다(self, tmp_path: Path) -> None:
         """모델에게 넘기면 권한 없는 명령이 모델 요청으로 처리된다."""
-        판정 = 판정기(tmp_path, AdminResult(message="권한 없음", handled=False))
+        판정 = 판정기(tmp_path, AdminResult(message="권한 없음", applied=False))
         assert 판정.handled(요청()) is True
+
+    def test_아무것도_안_바꾼_명령도_그_자리에서_끝낸다(self, tmp_path: Path) -> None:
+        """AdminResult.applied 는 설정을 바꿨는지를 뜻한다. 요청이 끝났는지가
+        아니라서 판정기는 이 값을 보지 않는다(sca-id1h)."""
+        판정 = 판정기(tmp_path, AdminResult(message="목록에 없습니다", applied=False))
+        assert 판정.handled(요청()) is True
+
+    def test_아무것도_안_바꿔도_답은_보낸다(self, tmp_path: Path) -> None:
+        보냄: list[Any] = []
+        판정기(
+            tmp_path, AdminResult(message="목록에 없습니다", applied=False), 보냄
+        ).handled(요청())
+        assert 보냄 == [("C1", "1.0", "목록에 없습니다")]
 
     def test_답을_못_보내도_명령_처리는_유지된다(self, tmp_path: Path) -> None:
         """게시 실패로 요청이 모델에게 넘어가면 같은 명령이 두 번 처리된다."""

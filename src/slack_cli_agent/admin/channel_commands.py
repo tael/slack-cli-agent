@@ -36,9 +36,9 @@ class _ChannelSettingCommand(AdminCommand):
 
     def execute(self, ctx: AdminContext) -> AdminResult:
         if ctx.channels.get(ctx.channel) is None:
-            # handled=False: nothing was applied, so this must not read as a
-            # command that ran.
-            return AdminResult(message=self._notices.render(NoticeKey.NOT_LISTED), handled=False)
+            # applied=False records that nothing was written. The reply still
+            # goes out and the request still ends here.
+            return AdminResult(message=self._notices.render(NoticeKey.NOT_LISTED), applied=False)
         return self._apply(ctx)
 
     @abstractmethod
@@ -179,6 +179,6 @@ class ChannelUnregisterCommand(AdminCommand):
     def execute(self, ctx: AdminContext) -> AdminResult:
         config = ctx.channels.get(ctx.channel)
         if config is None:
-            return AdminResult(message=self._notices.render(NoticeKey.NOT_LISTED))
+            return AdminResult(message=self._notices.render(NoticeKey.NOT_LISTED), applied=False)
         ctx.channels.remove(ctx.channel)
         return AdminResult(message=self._notices.render(NoticeKey.CHANNEL_UNREGISTERED, name=config.name))
