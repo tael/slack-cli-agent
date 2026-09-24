@@ -449,6 +449,7 @@ class Application:
             self._profile.paths.persona,
             self._profile.paths.prompts,
             self._profile.paths.watch_out,
+            self._profile.attach_dir,
         )
 
     def tool_policy(self) -> ToolPolicy:
@@ -1115,6 +1116,7 @@ class Application:
                 notices=self._notices,
                 settings=self._settings,
                 identity=self.identity,
+                attachments=self.attachments(),
             )
         return self._catchup_service
 

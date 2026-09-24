@@ -16,6 +16,7 @@ from ..config.settings import RuntimeSettings
 from ..core.context import RequestContext
 from ..core.result import Outcome
 from ..observability.notices import NoticeCatalog
+from ..slack.attachments import AttachmentStore
 from ..slack.gate import ResponseGate
 from ..slack.identity import BotIdentity
 from ..slack.mentions import SelfMentionStripper
@@ -113,12 +114,14 @@ class CatchupService:
         message_text: Callable[[Mapping[str, Any]], str] = lambda m: m.get("text") or "",
         now: Callable[[], float] = time.time,
         started_at: float | None = None,
+        attachments: AttachmentStore | None = None,
     ) -> None:
         self._history = history
         self._gate = gate
         self._notices = notices
         self._settings = settings
         self._identity = identity
+        self._attachments = attachments
         # The live path strips this through ingress. Built from the same class
         # so a body recovered here reads like one received on the socket
         # (sca-za2a).
@@ -219,13 +222,18 @@ class CatchupService:
             if key in seen:
                 continue
             seen.add(key)
+            if self._attachments is not None:
+                files, missed_files = self._attachments.download(m)
+            else:
+                files, missed_files = tuple(m.get("files") or ()), 0
             recovered = RequestContext(
                 channel=channel,
                 user=m.get("user") or "",
                 ts=str(m.get("ts")),
                 thread_ts=str(thread_ts),
                 text=self._self_mention.remove_self(m.get("text") or ""),
-                files=tuple(m.get("files") or ()),
+                files=files,
+                missed_files=missed_files,
             )
             # The socket path asks back instead of queueing this (sca-yb8q);
             # without the same judgment here the call costs an engine turn

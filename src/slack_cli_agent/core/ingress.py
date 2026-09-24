@@ -344,22 +344,7 @@ class IngressService:
     def _merge_attachments(
         self, ctx: RequestContext, event: Mapping[str, Any]
     ) -> RequestContext:
-        # Keeps the original Slack file fields and just adds local_path — files is
-        # meant to hold whatever shape Slack sent, not a save-result-only type.
-        saved = self._attachments.save(event)
-        requested = len(event.get("files") or ())
-        # Missed count travels even when nothing was saved: a prompt section
-        # reads it to tell the model it's answering without having seen a
-        # file that was attached (sca-q45r).
-        missed = max(0, requested - len(saved))
-        if not saved:
+        files, missed = self._attachments.download(event)
+        if not files:
             return replace(ctx, missed_files=missed) if missed else ctx
-        originals = {f.get("name"): f for f in (event.get("files") or [])}
-        merged_files = []
-        for item in saved:
-            original = dict(originals.get(item.name) or {})
-            original["name"] = item.name
-            original["mimetype"] = item.kind
-            original["local_path"] = item.path
-            merged_files.append(original)
-        return replace(ctx, files=tuple(merged_files), missed_files=missed)
+        return replace(ctx, files=files, missed_files=missed)

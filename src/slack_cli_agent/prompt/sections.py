@@ -373,7 +373,7 @@ class AttachmentSection(PromptSection):
             lines.append(f"- {f.get('name')} ({f.get('mimetype')}) : {f.get('local_path')}")
         if ctx.files:
             lines.append(
-                "Read 로 열어 내용을 직접 보고 답한다. 열어 보지 않고 이름만으로 짐작하지 않는다."
+                "그 경로를 열어 내용을 직접 보고 답한다. 열어 보지 않고 이름만으로 짐작하지 않는다."
             )
         if ctx.missed_files:
             lines.append(
