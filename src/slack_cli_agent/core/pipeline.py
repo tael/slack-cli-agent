@@ -62,6 +62,14 @@ sentence in it become that turn's instruction. What the work did comes from
 the result file, not from here (codex review).
 """
 
+TRUNCATED_RAW_KEY = "truncated"
+"""Key gemini's parser sets on EngineResponse.raw when the CLI's
+--print-timeout cut the answer off (engine/gemini.py). The response still
+comes back ok=True on purpose -- flipping it to ok=False would stop the
+engine session_id from being adopted -- so the ledger carries the cut as its
+own field instead (sca-l279)."""
+
+
 class RequestPipeline:
     def __init__(
         self,
@@ -330,9 +338,13 @@ class RequestPipeline:
                 self._publisher.post(ctx.channel, ctx.thread_ts, response.body, rich)
             self._record(
                 ctx, decision, model, effort, elapsed,
-                ok=False, usage=None, turns=response.turns, failure=failure,
+                # A failed turn spends tokens too (sca-3g3a). gemini and codex
+                # both fill usage on their failure responses; leaving it out
+                # made the usage rollup read lower than actual.
+                ok=False, usage=response.usage, turns=response.turns, failure=failure,
                 model_actual=response.model_actual,
                 failure_detail=response.failure_detail,
+                truncated=_truncated(response),
             )
             return HandleOutcome(ok=False, failure=failure)
 
@@ -347,7 +359,8 @@ class RequestPipeline:
 
         if is_silent(response.body):
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
-                     turns=response.turns, model_actual=response.model_actual)
+                     turns=response.turns, model_actual=response.model_actual,
+                     truncated=_truncated(response))
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
 
@@ -358,7 +371,8 @@ class RequestPipeline:
         self._archive_response(ctx, channel_slug, body, response, elapsed)
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
-                     turns=response.turns, model_actual=response.model_actual)
+                     turns=response.turns, model_actual=response.model_actual,
+                     truncated=_truncated(response))
         watch_desc = watch_desc or self._watch_desc_for_launched(workdir, run_id)
         watching = bool(watch_desc) and self._register_watch(ctx, principal, watch_desc, workdir, run_id)
         # The final mark belongs to the worker: it owns queue completion and the
@@ -614,8 +628,15 @@ class RequestPipeline:
         model_actual: str | None = None,
         failure: str = "",
         failure_detail: FailureDetail = NO_DETAIL,
+        # None only where no EngineResponse reached this point, so the key is
+        # left out rather than written as False -- "we never looked" and "it
+        # was not cut" have to stay apart. Where a response exists the key is
+        # always written, so its presence marks when the count started.
+        truncated: bool | None = None,
     ) -> None:
         extra: dict[str, Any] = {}
+        if truncated is not None:
+            extra["truncated"] = truncated
         if model_actual:
             extra["model_actual"] = model_actual
         if failure:
@@ -687,6 +708,10 @@ class RequestPipeline:
 
 
 
+
+
+def _truncated(response: EngineResponse) -> bool:
+    return response.raw.get(TRUNCATED_RAW_KEY) is True
 
 
 def _watch_desc_of(result: Any) -> str:
