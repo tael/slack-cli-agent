@@ -23,7 +23,7 @@ from slack_cli_agent.jobs.ports import JobStatus
 from slack_cli_agent.observability.audit import REQUEST_KIND, IncidentKind
 from slack_cli_agent.storage.database import Database
 from slack_cli_agent.web import metrics as metrics_module
-from slack_cli_agent.web.metrics import MetricsCollector
+from slack_cli_agent.web.metrics import CONTEXT_RESET_RAW_KEY, MetricsCollector
 
 # bots 는 뺐다. 봇 명부는 /api/bots 가 낸다 - 지표는 봇 하나만 보므로
 # 여기 담으면 선택줄에 봇이 1개만 나온다.
@@ -78,6 +78,7 @@ def insert_request(
     user: object = _UNSET,
     turns: object = _UNSET,
     truncated: object = _UNSET,
+    context_reset: object = _UNSET,
 ) -> None:
     payload: dict[str, object] = {
         "message_ts": thread_ts,
@@ -99,6 +100,8 @@ def insert_request(
         payload["turns"] = turns
     if truncated is not _UNSET:
         payload[TRUNCATED_RAW_KEY] = truncated
+    if context_reset is not _UNSET:
+        payload[CONTEXT_RESET_RAW_KEY] = context_reset
     db.connect().execute(
         "INSERT INTO audit (at, kind, channel, thread_ts, payload) VALUES (?, ?, ?, ?, ?)",
         (at, REQUEST_KIND, channel, thread_ts, json.dumps(payload, ensure_ascii=False)),
@@ -298,6 +301,43 @@ class Test신뢰성:
         assert reliability["truncated_pct"] is None
         assert reliability["tracked_since"]["truncated"] is None
         assert "reliability.truncated" in result["bot"]["not_applicable"]
+
+    def test_컨텍스트_재설정_건수와_비율을_낸다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", context_reset=True)
+        insert_request(db, at=1_001.0, channel="C1", context_reset=False)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        result = collector.collect(days=7)
+        reliability = result["reliability"]
+        assert reliability["context_reset"] == 1
+        assert reliability["context_reset_pct"] == 50.0
+        assert reliability["tracked_since"]["context_reset"] == metrics_module._kst(1_000.0)
+        assert "reliability.context_reset" not in result["bot"]["not_applicable"]
+
+    def test_재설정_기록_이전이면_0이_아니라_None이다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        result = collector.collect(days=7)
+        reliability = result["reliability"]
+        assert reliability["context_reset"] is None
+        assert reliability["context_reset_pct"] is None
+        assert reliability["tracked_since"]["context_reset"] is None
+        assert "reliability.context_reset" in result["bot"]["not_applicable"]
+
+    def test_재설정_첫_등장은_창_밖_기록에서도_잡는다(self, tmp_path: Path) -> None:
+        """첫 등장 시각은 조회 창에 매이지 않는다. 창 안에 재설정 건이
+        하나도 없어도 계측이 시작된 뒤라면 0건이 실제 0건이다."""
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", context_reset=False)
+        collector = MetricsCollector(profile, now=lambda: 1_000_000.0)
+        result = collector.collect(days=7)
+        reliability = result["reliability"]
+        assert reliability["context_reset"] == 0
+        assert reliability["tracked_since"]["context_reset"] == metrics_module._kst(1_000.0)
 
 
 class Test검수_원장_기반_품질:
