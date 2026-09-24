@@ -605,11 +605,12 @@ class TestReactionEvent:
         spawned[0][1]()
         assert reaction_seen == [("dango", "C1", "1.0", "U1")]
 
-    def test_미등록_채널의_리액션도_그대로_넘어간다(
+    def test_미등록_채널의_리액션도_콜백까지는_간다(
         self, listener, admin_router, tmp_path
     ) -> None:
-        """원본 bot.py:6143 의 리액션 처리에는 `is_allowed` 가 없다. 이 봇이
-        자기 답변을 올린 자리에만 붙는 것이라 이미 응답한 대화다."""
+        """원본 bot.py:6143 의 리액션 처리에는 `is_allowed` 가 없다. 접수기는
+        원본과 같이 거르지 않고 넘기고, 누가 점검을 돌릴 수 있는지는 콜백인
+        `Application.on_reaction` 이 판정한다(sca-gr5n)."""
         reaction_seen: list[tuple[str, str, str, str]] = []
         ingress = make_ingress(
             listener=listener, queue=FakeJobQueue(), admin_router=admin_router,

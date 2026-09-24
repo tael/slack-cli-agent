@@ -1348,8 +1348,13 @@ class Application:
         # review runs on the owner's model at medium effort or higher, so anyone
         # adding the emoji repeatedly spends that. Owner and the channel's
         # trusted_users only (사용자 결정 2026-09-18, sca-cg9).
+        # `accepts_request` on top of that: trust alone let a DM entry in the
+        # channel file hand a non-owner a conversation a normal request would
+        # have been refused in (sca-gr5n).
         principal = self.access_policy.principal_for(channel, by_user)
-        if principal.trust is TrustLevel.GENERAL:
+        if principal.trust is TrustLevel.GENERAL or not self.access_policy.accepts_request(
+            principal
+        ):
             log.info("점검 권한이 없다 : %s %s:%s %s", emoji, channel, ts, by_user)
             return
         config = self._channels.get(channel)
