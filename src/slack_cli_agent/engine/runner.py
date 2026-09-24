@@ -24,6 +24,7 @@ from typing import Any, Protocol
 
 from ..auth.principal import TrustLevel
 from ..config.settings import RuntimeSettings
+from ..core.errors import ConfigError
 from ..observability.progress_hook import append_tool
 from ..session.manager import CAPABILITY_UNMET_REASON
 from .base import (
@@ -57,6 +58,11 @@ log = logging.getLogger(__name__)
 CAPABILITY_KIND = "capability"
 #: Matches IncidentKind.PAYLOAD, kept as a literal for the same reason.
 PAYLOAD_KIND = "payload"
+
+#: Failure reason for a turn whose command could not be assembled. Its own
+#: name so the audit does not count a settings fault as a CLI crash, and so
+#: the new-session retry does not run it again at the same disadvantage.
+ENGINE_CONFIG_REASON = "engine_config"
 
 #: For the notice the person who asked reads. Axis names and levels are
 #: internal identifiers; putting them in a Slack reply tells nobody anything.
@@ -167,8 +173,11 @@ class EngineRunner:
         # CLI has to name the one enforced here (sca-ocie).
         request = dataclasses.replace(request, timeout_sec=timeout)
         self._record_payload(engine, request)
-        engine.prepare(request)
-        cmd = engine.build_command(request)
+        try:
+            engine.prepare(request)
+            cmd = engine.build_command(request)
+        except ConfigError as e:
+            return self._config_error_response(engine, request, e)
         source = self._source_env if self._source_env is not None else os.environ
         extra: dict[str, Any] = {"env": policy.build(source)}
         sink = self._progress_sink(engine, request)
@@ -209,6 +218,41 @@ class EngineRunner:
         if response.elapsed_source == ElapsedSource.UNKNOWN:
             response = dataclasses.replace(response, elapsed=wall_elapsed, elapsed_source=ElapsedSource.RUNNER)
         return response
+
+    @staticmethod
+    def _config_error_response(
+        engine: Engine, request: EngineRequest, error: ConfigError
+    ) -> EngineResponse:
+        """A turn that could not be assembled, as a response rather than a raise.
+
+        Command assembly reads the settings files, and a missing deny list
+        raises there. Letting it out of run() skipped everything that acts on
+        a response -- the reply the asker gets, the failure reason the audit
+        records, and FallbackEngine's switch decision, which only reads
+        responses (sca-z1et).
+
+        Not a switch trigger. Switching is persistent and waits for a human
+        to approve it, and its two triggers -- usage limit, login expiry --
+        are states the primary cannot leave on its own. A settings fault is
+        the operator's to fix now, and moving the bot onto the secondary
+        would park it there while hiding the fault that sent it. The deny
+        list also exists to hold this turn down; answering its loss by
+        running the turn somewhere else is the opposite of what sca-1aji
+        chose.
+        """
+        return EngineResponse(
+            ok=False,
+            body=f"엔진 설정을 읽지 못해 실행하지 않았습니다. {error}",
+            session_id=request.session_id, model_actual=None,
+            elapsed=0.0, turns=None, usage=None,
+            raw={}, failure_reason=ENGINE_CONFIG_REASON,
+            # Without it the asker sees only the failure mark and cannot tell
+            # this from a crash, and a settings fault needs an operator.
+            user_facing=True,
+            elapsed_source=ElapsedSource.RUNNER,
+            engine=engine.name,
+            model_asked=request.model or "",
+        )
 
     @staticmethod
     def _progress_sink(engine: Engine, request: EngineRequest) -> Callable[[str], None] | None:

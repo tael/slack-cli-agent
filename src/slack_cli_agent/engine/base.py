@@ -411,7 +411,7 @@ class Engine(ABC):
 
     @classmethod
     def configured_capabilities(
-        cls, spec: EngineSpec, mcp_servers: Mapping[str, McpServerSpec] | None = None
+        cls, spec: EngineSpec, mcp_servers: Mapping[str, McpServerSpec]
     ) -> EngineCapabilities:
         """What the profile alone settles, before a request narrows it.
 
@@ -424,6 +424,11 @@ class Engine(ABC):
         allowlist drops to server granularity as soon as a server is attached
         (sca-qqtl). Without them the boot answer and the per-request answer
         come from different inputs and can disagree.
+
+        Required rather than defaulted. A caller that left it out got the
+        exact-allowlist answer from claude while its requests could run at
+        server granularity, so silence read as "no servers" and overstated
+        the guarantee (sca-h0zz). An empty mapping is how a caller says it.
         """
         return cls.capabilities
 

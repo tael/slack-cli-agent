@@ -144,7 +144,7 @@ class CodexEngine(Engine):
 
     @classmethod
     def configured_capabilities(
-        cls, spec: EngineSpec, mcp_servers: Mapping[str, McpServerSpec] | None = None
+        cls, spec: EngineSpec, mcp_servers: Mapping[str, McpServerSpec]
     ) -> EngineCapabilities:
         # MCP servers do not move this engine's axis: codex takes no tool
         # argument at all, so its restriction comes from the sandbox alone.

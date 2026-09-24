@@ -2211,3 +2211,22 @@ class Test들어온_본문에서_자기_멘션만_지운다:
         job = app.queue().claim_next("시험")
         assert job is not None
         assert job.context.text == "<@U9> 에게 물어봐"
+
+
+class Test엔진_상태는_기동마다_새로_잡힌다:
+    """settings 판독 기준선이 프로세스 수명 내내 남으면, 한 프로세스에서
+    Application 을 다시 만든 뒤에도 앞의 판독이 판정에 쓰인다 (sca-vlaj)."""
+
+    def test_새_Application_은_앞의_판독을_안_들고_간다(
+        self, profile: Profile, client: FakeSlackClient, tmp_path: Path
+    ) -> None:
+        from slack_cli_agent.engine.claude_settings import load_settings_file
+
+        path = tmp_path / "settings.json"
+        path.write_text('{"permissions": {"deny": ["Bash"]}}', encoding="utf-8")
+        load_settings_file(path)
+        path.unlink()
+
+        Application(profile, client)
+
+        assert load_settings_file(path) == {}

@@ -215,16 +215,15 @@ class Test기동_뒤_사라진_파일을_거부한다:
         assert load_settings_file(path) == {}
         assert load_settings_file(path) == {}
 
-    def test_deny_가_있던_파일에서_deny_가_비면_ConfigError_다(self, tmp_path) -> None:
-        """파일을 지우는 것과 deny 만 비우는 것은 결과가 같다."""
-        from slack_cli_agent.core.errors import ConfigError
+    def test_파일_하나만_보고_deny_축소를_막지_않는다(self, tmp_path) -> None:
+        """조각 하나의 deny 가 빈 것은 판정 근거가 아니다. 덧씌움이 자기 deny 를
+        비워도 공통 파일의 것이 그 턴에 실린다 (sca-e34p)."""
         from slack_cli_agent.engine.claude_settings import load_settings_file
 
         path = self.쓴다(tmp_path, '{"permissions": {"deny": ["Bash"]}}')
         load_settings_file(path)
         path.write_text('{"permissions": {"deny": []}}', encoding="utf-8")
-        with pytest.raises(ConfigError, match="deny"):
-            load_settings_file(path)
+        assert load_settings_file(path) == {"permissions": {"deny": []}}
 
     def test_deny_가_없던_파일은_계속_통과한다(self, tmp_path) -> None:
         """훅만 든 덧씌움 파일에 deny 를 요구하면 안 된다."""
@@ -254,3 +253,69 @@ class Test기동_뒤_사라진_파일을_거부한다:
         path.unlink()
         reset_settings_ledger()
         assert load_settings_file(path) == {}
+
+
+class Test병합_결과로_deny_소멸을_판정한다:
+    """판정 단위는 claude 에 실제로 가는 문서다. 파일 단위로 보면 정당한
+    축소가 막히고, 축소와 소멸이 구분되지 않는다 (sca-e34p).
+    """
+
+    @staticmethod
+    def 쓴다(tmp_path, 이름: str, 내용: str):
+        path = tmp_path / 이름
+        path.write_text(내용, encoding="utf-8")
+        return path
+
+    def test_덧씌움의_deny_만_비면_통과한다(self, tmp_path) -> None:
+        from slack_cli_agent.engine.claude_settings import load_merged_settings
+
+        공통 = self.쓴다(tmp_path, "공통.json", '{"permissions": {"deny": ["Bash"]}}')
+        덧씌움 = self.쓴다(tmp_path, "덧.json", '{"permissions": {"deny": ["Write"]}}')
+        load_merged_settings(공통, 덧씌움)
+        덧씌움.write_text('{"permissions": {"deny": []}}', encoding="utf-8")
+        assert load_merged_settings(공통, 덧씌움)["permissions"]["deny"] == ["Bash"]
+
+    def test_병합_결과가_비면_ConfigError_다(self, tmp_path) -> None:
+        from slack_cli_agent.core.errors import ConfigError
+        from slack_cli_agent.engine.claude_settings import load_merged_settings
+
+        공통 = self.쓴다(tmp_path, "공통.json", '{"permissions": {"deny": ["Bash"]}}')
+        덧씌움 = self.쓴다(tmp_path, "덧.json", "{}")
+        load_merged_settings(공통, 덧씌움)
+        공통.write_text('{"permissions": {"deny": []}}', encoding="utf-8")
+        with pytest.raises(ConfigError, match="deny"):
+            load_merged_settings(공통, 덧씌움)
+
+    def test_예외에_경로가_적힌다(self, tmp_path) -> None:
+        """운영자가 어느 파일을 되살려야 하는지 알아야 한다."""
+        from slack_cli_agent.core.errors import ConfigError
+        from slack_cli_agent.engine.claude_settings import load_merged_settings
+
+        공통 = self.쓴다(tmp_path, "공통.json", '{"permissions": {"deny": ["Bash"]}}')
+        load_merged_settings(공통)
+        공통.write_text("{}", encoding="utf-8")
+        with pytest.raises(ConfigError, match=str(공통)):
+            load_merged_settings(공통)
+
+    def test_조각_집합이_다르면_기준도_다르다(self, tmp_path) -> None:
+        """신뢰 수준마다 다른 문서다. 한 기준으로 보면 deny 를 안 든 수준이
+        앞 수준의 기준에 걸린다."""
+        from slack_cli_agent.engine.claude_settings import load_merged_settings
+
+        공통 = self.쓴다(tmp_path, "공통.json", '{"env": {"A": "1"}}')
+        소유자 = self.쓴다(tmp_path, "owner.json", '{"permissions": {"deny": ["Bash"]}}')
+        일반 = self.쓴다(tmp_path, "general.json", "{}")
+        load_merged_settings(공통, 소유자)
+        assert load_merged_settings(공통, 일반) == {"env": {"A": "1"}}
+
+    def test_deny_가_는_것은_새_기준이_된다(self, tmp_path) -> None:
+        from slack_cli_agent.core.errors import ConfigError
+        from slack_cli_agent.engine.claude_settings import load_merged_settings
+
+        공통 = self.쓴다(tmp_path, "공통.json", "{}")
+        load_merged_settings(공통)
+        공통.write_text('{"permissions": {"deny": ["Bash"]}}', encoding="utf-8")
+        load_merged_settings(공통)
+        공통.write_text("{}", encoding="utf-8")
+        with pytest.raises(ConfigError, match="deny"):
+            load_merged_settings(공통)
