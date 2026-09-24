@@ -3,8 +3,7 @@
 Paths go through --add-dir. We mint the session ID and pass it via
 --session-id; continuing turns pass the same value via --resume. The
 system prompt is resent every turn via --append-system-prompt — Claude
-refreshes it each turn, so directives_for_turn() isn't needed here (it
-keeps the default empty string).
+refreshes it each turn, so nothing has to ride on the turn prompt.
 
 MCP servers (sca-kos.2): claude --help documents "--mcp-config <configs...>
 Load MCP servers from JSON files or strings (space-separated)", so the

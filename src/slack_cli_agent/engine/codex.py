@@ -5,8 +5,8 @@ Three differences from Claude:
 - System prompt: Codex only accepts developer_instructions when
   opening a thread. A new value on a resumed turn is ignored — the
   first value wins (confirmed 2026-09-11). So the system prompt is
-  only sent on the first turn, and directives_for_turn() carries only
-  what changes per turn.
+  only sent on the first turn, and a resumed turn carries this turn's
+  value inside the prompt string instead (_resume_prompt, sca-ivs).
 - Session: the Codex CLI mints its own thread_id, returned by
   session_id_from(). new_session_id() only produces a placeholder used
   until then.
@@ -43,6 +43,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ..auth.tools import READ_ONLY_TOOLS
 from ..config.profile import McpServerSpec
 from .base import (
     UNTRUSTED_INPUT_MARK,
@@ -65,6 +66,7 @@ from .footprint import (
     PayloadFootprint,
     utf8_bytes,
 )
+from .tool_selection import ToolAccess
 
 # sca-dyb.4 — confirmed 2026-09-16 against the real CLI's turn.completed
 # event: Codex doesn't use Claude's cache_read_input_tokens/
@@ -136,8 +138,26 @@ class CodexEngine(Engine):
         instruction_boundary=InstructionBoundary.NATIVE,
     )
 
+    def _sandbox_for(self, request: EngineRequest) -> str:
+        """The sandbox this turn actually runs under.
+
+        One place, because build_command and capabilities_for both need the
+        answer: a declaration the command does not match makes the audit
+        record point at something that did not run.
+
+        A turn whose allowlist holds only read tools comes down to read-only
+        whatever the profile asks for. codex takes no tool argument, so the
+        allowlist would otherwise reach it as a sentence the model may
+        ignore; the sandbox is the OS refusing the write (sca-f9k0).
+        """
+        if request.tools.access is ToolAccess.ALLOWLIST and all(
+            name in READ_ONLY_TOOLS for name in request.tools.names
+        ):
+            return "read-only"
+        return str(self.spec.options.get("sandbox", "danger-full-access"))
+
     def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
-        sandbox = str(self.spec.options.get("sandbox", "danger-full-access"))
+        sandbox = self._sandbox_for(request)
         isolation = _SANDBOX_ISOLATION.get(sandbox, ExecutionIsolation.NONE)
         return dataclasses.replace(
             self.capabilities,
@@ -186,9 +206,7 @@ class CodexEngine(Engine):
 
     def build_command(self, request: EngineRequest) -> list[str]:
         binary = str(self.spec.binary)
-        # The bot is meant to read and write freely; a profile can still narrow
-        # this with options.sandbox.
-        sandbox = str(self.spec.options.get("sandbox", "danger-full-access"))
+        sandbox = self._sandbox_for(request)
         cmd: list[str] = [binary, "exec"]
         if request.resume:
             cmd.append("resume")
@@ -286,10 +304,6 @@ class CodexEngine(Engine):
     def session_id_from(self, response: EngineResponse) -> str | None:
         return response.session_id
 
-    def directives_for_turn(self, request: EngineRequest) -> str:
-        if not request.resume:
-            return ""
-        return f"[신뢰 등급 : {request.trust_level.name}]\n\n"
 
     def readable_paths_note(self, paths: Sequence[Path]) -> str:
         if not paths:
