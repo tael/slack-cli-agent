@@ -72,4 +72,28 @@ def load_settings_file(path: Path) -> dict[str, Any]:
         raise ConfigError(f"settings 파일을 읽지 못했습니다 : {path} : {e}") from e
     if not isinstance(loaded, dict):
         raise ConfigError(f"settings 파일의 최상위가 객체가 아닙니다 : {path}")
+    _check_shape(loaded, path)
     return loaded
+
+
+#: Keys whose kind the merge depends on. A list where a dict belongs makes
+#: the merge take the later value wholesale, so an overlay written as
+#: {"permissions": []} would drop the base file's deny list without a word.
+#: Only the keys we merge are listed; claude warns about the rest itself.
+_DICT_KEYS = ("permissions", "hooks", "env")
+_LIST_KEYS = ("allow", "ask", "deny")
+
+
+def _check_shape(loaded: Mapping[str, Any], path: Path) -> None:
+    for key in _DICT_KEYS:
+        value = loaded.get(key)
+        if value is not None and not isinstance(value, dict):
+            raise ConfigError(f"settings 의 {key} 가 객체가 아닙니다 : {path}")
+    permissions = loaded.get("permissions") or {}
+    for key in _LIST_KEYS:
+        value = permissions.get(key)
+        if value is not None and not isinstance(value, list):
+            raise ConfigError(f"settings 의 permissions.{key} 가 목록이 아닙니다 : {path}")
+    for event, groups in (loaded.get("hooks") or {}).items():
+        if not isinstance(groups, list):
+            raise ConfigError(f"settings 의 hooks.{event} 가 목록이 아닙니다 : {path}")
