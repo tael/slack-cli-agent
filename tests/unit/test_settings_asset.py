@@ -133,3 +133,34 @@ class Test합친결과:
         깨진것.write_text('{"permissions": {"deny": {}}}', encoding="utf-8")
         with pytest.raises(ConfigError):
             load_settings_file(깨진것)
+
+
+class Test까다로운_경로:
+    """따옴표·백슬래시·개행이 든 상태 경로에서도 JSON 이 깨지지 않는다(sca-pp19).
+
+    자리표시자를 원문 문자열에 그대로 끼워 넣으면 이런 글자가 JSON 문법을
+    깨뜨린다. 값 단위로 치환해야 한다.
+    """
+
+    @pytest.mark.parametrize(
+        "이름",
+        [
+            '.shi"nji',
+            ".shi\\nji",
+            ".shi\nnji",
+            ".shi nji",
+        ],
+    )
+    def test_깨지는_글자가_들어도_설치된다(self, tmp_path: Path, 이름: str) -> None:
+        상태 = tmp_path / 이름
+        install_settings.install(상태, home=tmp_path)
+        deny = load_settings_file(상태 / "engine" / 공통)["permissions"]["deny"]
+        assert f"Read(~/{이름}/credentials.json)" in deny
+
+    def test_상대_경로는_절대_경로로_기록된다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        install_settings.install(Path(".shinji"), home=tmp_path)
+        deny = load_settings_file(tmp_path / ".shinji" / "engine" / 공통)["permissions"]["deny"]
+        assert "Read(~/.shinji/credentials.json)" in deny
