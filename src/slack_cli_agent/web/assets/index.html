@@ -396,7 +396,7 @@ function renderStateTab(d){
   const resp = d.responsiveness || {}, rel = d.reliability || {}, qa = d.quality || {}, us = d.usage || {};
   const fr = resp.first_reaction || {}, blk = d.usage_block || {};
   const bot = d.bot || {};
-  notApplicable = d.not_applicable || {};
+  notApplicable = bot.not_applicable || d.not_applicable || {};
 
   const respPanel = `<div class="grid cols2">
     <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">지연 분포</div>
@@ -413,7 +413,9 @@ function renderStateTab(d){
       ${(rel.incidents||[]).length ? bars(rel.incidents.map(i => ({label:i.kind, value:i.count})), "건")
         : '<div class="dim">해당 없음</div>'}
       <div class="dim" style="margin-top:8px;font-size:11.5px">
-        재기동 ${num(rel.restarts, "회")} · 컨텍스트 초기화 ${rel.context_reset}회</div></div>
+        재기동 ${num(rel.restarts, "회")} · 컨텍스트 초기화 ${rel.context_reset}회<br>
+        응답 잘림 ${num(rel.truncated, "건")}${rel.truncated_pct === null || rel.truncated_pct === undefined ? "" : " · " + rel.truncated_pct + "%"}
+        <span title="--print-timeout 에 걸려 답이 중간에 끊긴 건수">(?)</span></div></div>
     <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">세션 이어가기</div>
       ${bars([{label:"이어감", value:rel.resumed||0},
               {label:"새로 시작", value:(rel.total||0) - (rel.resumed||0)}], "건")}

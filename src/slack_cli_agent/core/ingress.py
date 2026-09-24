@@ -20,6 +20,7 @@ from ..slack.attachments import AttachmentStore
 from ..slack.gateway import SlackGateway
 from ..slack.listener import EventListener
 from ..slack.reactions import ReactionMarker
+from .access import RequestAccess
 from .context import RequestContext
 from .spawn import TaskSpawner
 
@@ -66,6 +67,10 @@ class IngressService:
     def __init__(
         self,
         listener: EventListener,
+        # No default: this is the only place the access check runs, so an
+        # assembly that could leave it out would put the bot back to answering
+        # any third party and any DM sender (sca-a8pp).
+        access: RequestAccess,
         # No default: a default here would be a second place deciding what the
         # incoming body looks like, and an assembly that forgets it would go
         # back to dropping every mention (sca-za2a).
@@ -98,6 +103,7 @@ class IngressService:
         assistant: AssistantPanel | None = None,
     ) -> None:
         self._listener = listener
+        self._access = access
         self._strip_self_mention = strip_self_mention
         self._dedup = dedup
         self._queue = queue
@@ -132,6 +138,14 @@ class IngressService:
     def handle_assistant_thread_started(self, event: Mapping[str, Any]) -> None:
         if self._assistant is None:
             return
+        thread = event.get("assistant_thread") or {}
+        # The panel opens a DM, so the same rule applies. Greeting someone the
+        # bot will then ignore only tells a stranger it is here. The original
+        # has no panel, so this follows its DM rule rather than a rule of its own.
+        if not self._access.allows(
+            str(thread.get("channel_id") or ""), str(thread.get("user_id") or "")
+        ):
+            return
         self._assistant.thread_started(event)
 
     def handle_reaction(self, event: Mapping[str, Any]) -> None:
@@ -155,6 +169,10 @@ class IngressService:
                 return
             if self._dedup.already_seen_event(ctx.channel, ctx.ts):
                 return
+            # Same position as the original (bot.py:4969): ahead of admin
+            # dispatch, so a third party cannot run commands either.
+            if not self._access.allows(ctx.channel, ctx.user):
+                return
 
             ctx = replace(ctx, text=self._strip_self_mention(ctx.text))
 
@@ -172,6 +190,10 @@ class IngressService:
                 self._dedup.forget_event(ctx.channel, ctx.ts)
                 self._report_not_accepted(ctx)
                 return
+
+            # After admin dispatch, as in the original (bot.py:4996): a command
+            # alone does not register the channel.
+            self._access.register_owner_channel(ctx.channel, ctx.user, ctx.thread_ts)
 
             request = ctx
             try:

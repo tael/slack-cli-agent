@@ -284,3 +284,21 @@ class Test감사_포트_계약:
         db = Database(tmp_path / "없는디렉터리" / "a.db")
         with pytest.raises(sqlite3.Error):
             AuditLog(db, tmp_path / "audit.jsonl").record("capability", engine="fake")
+
+
+class TestNoticeKeyOrphan:
+    """모드 안내문은 모드 전환 명령만 낸다. 명령 없이 안내문만 남으면(sca-6k65)
+    도움말·채널 목록이 실제로 되는 명령과 어긋나고, is_notice() 가 아무도 안
+    내는 문구를 안내로 판정한다. 원본 bot.py:3950 의 'api 모드' 가 이식에서
+    빠지면서 MODE_STRUCTURED 만 남았던 자리다."""
+
+    def test_MODE_안내문은_모두_admin_명령이_낸다(self) -> None:
+        from pathlib import Path
+
+        import slack_cli_agent
+
+        admin = Path(slack_cli_agent.__file__).parent / "admin"
+        본문 = "\n".join(경로.read_text(encoding="utf-8") for 경로 in admin.rglob("*.py"))
+        모드키 = [키.name for 키 in NoticeKey if 키.name.startswith("MODE_")]
+        미사용 = [이름 for 이름 in 모드키 if f"NoticeKey.{이름}" not in 본문]
+        assert 미사용 == []

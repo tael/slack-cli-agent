@@ -139,10 +139,11 @@ class KnowledgeLoader:
                 parts.append(KnowledgeDocument(path=common, text=text))
         if channel_slug:
             channel_file = directory / f"{channel_slug}.md"
-            if channel_file.exists():
+            channel_text = _read_or_none(channel_file)
+            if channel_text is not None:
                 parts.append(KnowledgeDocument(
                     path=channel_file,
-                    text=_CHANNEL_HEADER + channel_file.read_text(encoding="utf-8"),
+                    text=_CHANNEL_HEADER + channel_text,
                 ))
         return parts
 
@@ -153,6 +154,17 @@ class KnowledgeLoader:
             return None
         body = first[len(WHEN_MARK) :].split("-->", 1)[0]
         return [w.strip().lower() for w in body.split(",") if w.strip()]
+
+
+def _read_or_none(path: Path) -> str | None:
+    """None when the file is not there to read. A slug migration renames this
+    file while a request is being served, so exists() then read_text() can hit
+    the gap between the two (sca-8aow), and a missing knowledge file must not
+    stop the reply."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 def _render(

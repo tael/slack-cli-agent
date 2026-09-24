@@ -26,8 +26,11 @@ DEFAULT_PROGRESS = True
 #: The shared slug every DM uses (bot.py:133).
 DM_SLUG = "dm"
 
-#: Called with the old and the new slug when a channel's slug moves.
-SlugChange = Callable[[str, str], None]
+#: Called with the old and the new slug when a channel's slug moves. Only an
+#: explicit False means "still under the old slug, come back to it" -- a
+#: callback that returns nothing is taken as done, which is what every
+#: notification-shaped callback does.
+SlugChange = Callable[[str, str], bool | None]
 
 KNOWN_KEYS = frozenset(
     {
@@ -211,6 +214,23 @@ class ChannelRegistry:
             self._write_raw(raw)
             return self._configs[channel_id]
 
+    def register(self, channel_id: str, name: str = "") -> bool:
+        """Registers a channel the owner called the bot in (bot.py:2356).
+        False means it was already registered, so nothing was written and no
+        notice is due.
+
+        The mode is `default`, not the original's `private`: an unregistered
+        channel already answers under `default` here, and writing `private`
+        would change how channels that work today are answered.
+        """
+        with self._lock:
+            raw = self._read_raw()
+            if channel_id in raw:
+                return False
+            raw[channel_id] = {"name": name or channel_id, "mode": "default"}
+            self._write_raw(raw)
+            return True
+
     def remove(self, channel_id: str) -> bool:
         """Unregisters a channel. Returns False if it wasn't registered."""
         with self._lock:
@@ -293,17 +313,26 @@ class ChannelRegistry:
         if self._on_slug_change is None:
             return
         moved = [
-            (previous.get(cid) or channel_slug(cid, None), new)
+            (cid, previous.get(cid) or channel_slug(cid, None), new)
             for cid, new in self._slugs.items()
         ]
         moved.extend(
-            (old, channel_slug(cid, None))
+            (cid, old, channel_slug(cid, None))
             for cid, old in previous.items()
             if cid not in self._slugs
         )
-        for old, new in moved:
-            if old != new:
-                self._on_slug_change(old, new)
+        retry = False
+        for cid, old, new in moved:
+            if old == new:
+                continue
+            if self._on_slug_change(old, new) is False:
+                # Recording the new slug here would mean this channel never
+                # reads as moved again, turning one failed attempt into a
+                # permanent miss (sca-tl2q).
+                self._slugs[cid] = old
+                retry = True
+        if retry:
+            self._mtime = -1.0
 
     def _parse(self) -> dict[str, ChannelConfig]:
         try:

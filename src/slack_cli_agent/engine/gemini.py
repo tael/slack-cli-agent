@@ -46,6 +46,7 @@ from typing import Any, ClassVar
 
 from ..config.profile import McpServerSpec
 from .base import (
+    TRUNCATED_RAW_KEY,
     UNTRUSTED_INPUT_MARK,
     ElapsedSource,
     Engine,
@@ -315,7 +316,7 @@ class GeminiEngine(Engine):
 
         truncated = _TRUNCATION_MARK in stderr
         if truncated:
-            raw["truncated"] = True
+            raw[TRUNCATED_RAW_KEY] = True
 
         body = str(payload.get("response") or "").strip()
         if not body:

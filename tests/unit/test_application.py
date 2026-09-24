@@ -2166,6 +2166,8 @@ class Test들어온_본문에서_자기_멘션만_지운다:
         client.auth_test = lambda **kw: {  # type: ignore[method-assign]
             "ok": True, "user_id": "U_BOT", "bot_id": "B_BOT", "team_id": "T1",
         }
+        # 접수 경로의 접근 판정이 미등록 채널의 제삼자를 거른다 (sca-a8pp).
+        app._channels.register("C1", "테스트")
         app.ingress()._process(
             RequestContext(
                 channel="C1", user="U9", ts="1.0", thread_ts="1.0",

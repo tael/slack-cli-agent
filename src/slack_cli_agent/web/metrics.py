@@ -29,6 +29,7 @@ from ..config.channel import ChannelConfig, ChannelRegistry
 from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
 from ..core.channel_kind import is_direct_message_channel
+from ..engine.base import TRUNCATED_RAW_KEY, USAGE_FIELDS
 from ..engine.registry import registry_for_profile
 from ..jobs.ports import JobStatus
 from ..observability.audit import (
@@ -70,6 +71,7 @@ NOT_APPLICABLE_REASONS: dict[str, str] = {
     "usage.question_len_median": "감사 기록에 질문 원문이 없다",
     "usage.answer_len_median": "감사 기록에 답변 원문이 없다",
     "reliability.context_reset": "감사 기록에 컨텍스트 재설정 표시가 없다",
+    "reliability.truncated": "감사 기록에 응답 잘림 표시가 없다",
     "reliability.restarts": "신규 저장소에 재기동 이력이 없다",
     "followup.same_user_repeat": _NO_USER_ID,
     "tools": "감사 기록에 도구 호출 이름이 없다",
@@ -124,6 +126,21 @@ def _byte_count(value: object) -> int | None:
     if not math.isfinite(value) or value < 0:
         return None
     return int(value)
+
+
+def _has_measured_tokens(usage: Mapping[str, Any]) -> bool:
+    """Whether this usage record carries a real measurement.
+
+    A failed engine call still writes a usage dict: gemini and codex build a
+    Usage with no native data, which is all zeros with every field listed in
+    `unavailable`. Counting it raises the sample without raising the sum, so
+    the average reads lower than it was (sca-y2s3). Records written before
+    the `unavailable` key existed have no way to say, and stay counted.
+    """
+    unavailable = usage.get("unavailable")
+    if not isinstance(unavailable, list):
+        return True
+    return any(name not in unavailable for name in USAGE_FIELDS)
 
 
 def _audit_label(value: object) -> str:
@@ -224,7 +241,7 @@ class MetricsCollector:
             "last_answer_kst": latest or None,
             "channels": self._channel_rows(requests, channels, sessions, queued_by_channel, now),
             "responsiveness": self._responsiveness(requests),
-            "reliability": self._reliability(requests, incident_counts),
+            "reliability": self._reliability(requests, incident_counts, field_first_seen),
             "quality": self._quality(reviews, requests, incident_counts, first_seen),
             "usage": self._usage(requests, channels, field_first_seen),
             "followup": self._followup(requests),
@@ -306,8 +323,9 @@ class MetricsCollector:
         return result
 
     def _usage_field_first_seen(self, db: Database) -> dict[str, float]:
-        """Earliest `at` of a REQUEST row whose payload carries the `user` or
-        `turns` key at all (regardless of value), unbounded by the window.
+        """Earliest `at` of a REQUEST row whose payload carries the `user`,
+        `turns` or `truncated` key at all (regardless of value), unbounded by
+        the window.
 
         These two fields were added to the audit record after request
         traffic already existed (sca-qi5.2), so a row can be missing the
@@ -321,7 +339,7 @@ class MetricsCollector:
         ).fetchall()
         result: dict[str, float] = {}
         for row in rows:
-            if "by_user" in result and "turns_median" in result:
+            if {"by_user", "turns_median", "truncated"} <= result.keys():
                 break
             try:
                 payload = json.loads(row["payload"])
@@ -334,6 +352,8 @@ class MetricsCollector:
                 result["by_user"] = at
             if "turns" in payload and "turns_median" not in result:
                 result["turns_median"] = at
+            if TRUNCATED_RAW_KEY in payload and "truncated" not in result:
+                result["truncated"] = at
         return result
 
     def _read_reviews(self, db: Database) -> list[dict[str, Any]]:
@@ -383,6 +403,8 @@ class MetricsCollector:
             not_applicable.pop("usage.by_user", None)
         if "turns_median" in field_first_seen:
             not_applicable.pop("usage.turns_median", None)
+        if "truncated" in field_first_seen:
+            not_applicable.pop("reliability.truncated", None)
         if not self._ccusage_covers_engine():
             not_applicable["usage_block"] = USAGE_BLOCK_NOT_APPLICABLE_REASON
         return {
@@ -446,7 +468,10 @@ class MetricsCollector:
         }
 
     def _reliability(
-        self, requests: Sequence[Mapping[str, Any]], incident_counts: collections.Counter[str]
+        self,
+        requests: Sequence[Mapping[str, Any]],
+        incident_counts: collections.Counter[str],
+        field_first_seen: Mapping[str, float],
     ) -> dict[str, Any]:
         ok = [r for r in requests if r.get("ok")]
         failed = [r for r in requests if not r.get("ok")]
@@ -460,6 +485,10 @@ class MetricsCollector:
             for r in sorted(failed, key=lambda x: str(x.get("ts_kst") or ""), reverse=True)[:10]
         ]
         incidents = [{"kind": kind, "count": count} for kind, count in incident_counts.most_common()]
+        # The key is absent on rows written before sca-l279, so a 0 here would
+        # read the same as "the count hadn't started yet" (sca-gcc1).
+        truncated_tracked = "truncated" in field_first_seen
+        truncated = sum(1 for r in requests if r.get(TRUNCATED_RAW_KEY) is True)
         return {
             "total": len(requests),
             "ok": len(ok),
@@ -468,9 +497,14 @@ class MetricsCollector:
             "resumed": len(resumed),
             "resumed_pct": _pct(len(resumed), len(requests)),
             "context_reset": None,
+            "truncated": truncated if truncated_tracked else None,
+            "truncated_pct": _pct(truncated, len(requests)) if truncated_tracked else None,
             "incidents": incidents,
             "restarts": None,
             "recent_failures": recent_failures,
+            "tracked_since": {
+                "truncated": _kst(field_first_seen["truncated"]) if truncated_tracked else None,
+            },
         }
 
     def _quality(
@@ -551,7 +585,7 @@ class MetricsCollector:
         seen = 0
         for r in requests:
             usage = r.get("usage")
-            if not isinstance(usage, dict):
+            if not isinstance(usage, dict) or not _has_measured_tokens(usage):
                 continue
             seen += 1
             tokens["input"] += int(usage.get("input_tokens") or 0)
