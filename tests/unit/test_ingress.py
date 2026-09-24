@@ -926,6 +926,40 @@ class TestAttachments:
         assert ctx.files[0]["name"] == "photo.png"
         assert "local_path" in ctx.files[0]
         assert Path(ctx.files[0]["local_path"]).read_bytes() == b"pngdata"
+        assert ctx.missed_files == 0
+
+    def test_일부_다운로드_실패는_missed_files_로_남는다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """저장 안 된 것도 몇 개인지 컨텍스트에 남아야 프롬프트가 그 존재를
+        알릴 수 있다 (sca-q45r)."""
+        queue = FakeJobQueue()
+
+        def downloader(url: str, token: str) -> DownloadResult:
+            if "ok" in url:
+                return DownloadResult(content_type="image/png", data=b"pngdata")
+            return DownloadResult(content_type="text/html", data=b"<html>login</html>")
+
+        attachments = AttachmentStore(
+            attach_dir=tmp_path / "attach",
+            token_provider=lambda: "xoxb-token",
+            downloader=downloader,
+        )
+        ingress = make_ingress(
+            listener=listener, queue=queue, attachments=attachments,
+            admin_router=admin_router, tmp_path=tmp_path,
+        )
+        event = mention_event()
+        event["files"] = [
+            {"name": "ok.png", "url_private_download": "https://slack/ok", "size": 10},
+            {"name": "bad.png", "url_private_download": "https://slack/bad", "size": 10},
+        ]
+
+        ingress.handle_app_mention(event)
+
+        ctx = queue.enqueued[0]
+        assert len(ctx.files) == 1
+        assert ctx.missed_files == 1
 
 
 class Test멘션이_붙은_관리_명령:

@@ -1282,6 +1282,25 @@ class Test함께있는사람:
         assert parts["composer"].contexts[0].people == ()
 
 
+class Test첨부파일:
+    """섹션과 저장은 갖춰도 파이프라인이 files/missed_files 를 안 채우면
+    그 대목은 어떤 요청에서도 안 붙는다 (sca-q45r, Test함께있는사람과 같은
+    형태의 배선 누락을 막는다)."""
+
+    def test_첨부를_프롬프트_맥락에_넣는다(self) -> None:
+        files = ({"name": "a.png", "mimetype": "image/png", "local_path": "/tmp/a.png"},)
+        pipeline, parts = build_pipeline(responses=[ok_response()])
+        pipeline.handle(make_ctx(files=files, missed_files=1))
+        assert parts["composer"].contexts[0].files == files
+        assert parts["composer"].contexts[0].missed_files == 1
+
+    def test_첨부가_없으면_빈_맥락이다(self) -> None:
+        pipeline, parts = build_pipeline(responses=[ok_response()])
+        pipeline.handle(make_ctx())
+        assert parts["composer"].contexts[0].files == ()
+        assert parts["composer"].contexts[0].missed_files == 0
+
+
 class Test링크된스레드:
     """본문에 걸린 슬랙 링크의 스레드가 실제 요청 프롬프트에 들어가는가.
 

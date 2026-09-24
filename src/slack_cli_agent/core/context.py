@@ -18,6 +18,7 @@ class RequestContext:
     thread_ts: str
     text: str
     files: tuple[Mapping[str, Any], ...] = ()
+    missed_files: int = 0
     unaddressed: bool = False
     late: bool = False
     requeued: bool = False
