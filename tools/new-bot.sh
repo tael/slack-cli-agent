@@ -81,7 +81,10 @@ case "$ENGINE" in
           chmod 600 "$D/engine/gemini-home/.gemini/antigravity-cli/antigravity-oauth-token" 2>/dev/null || true ;;
   codex)  mkdir -p "$D/engine/codex-home"
           cp ~/.codex/auth.json "$D/engine/codex-home/" 2>/dev/null || echo "  ! codex auth.json 을 손으로 복사해야 한다" ;;
-  claude) mkdir -p "$D/engine/claude-home" ;;
+  claude) mkdir -p "$D/engine/claude-home"
+          # settings 가 없으면 엔진이 빈 조각으로 돌아 deny 가 하나도 안 걸린다
+          # (sca-j2zp). 이미 있는 파일은 이 명령이 건너뛴다.
+          "$REPO/tools/install-settings.py" "$NAME" --state-dir "$D" ;;
 esac
 
 # 기동 wrapper 는 저장소 템플릿에서 만든다. 여기서 따로 쓰면 봇마다 갈리고,

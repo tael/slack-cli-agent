@@ -26,7 +26,7 @@ where = ["src"]
 "slack_cli_agent.web" = ["assets/*.html"]
 # Default prompts so a freshly installed bot can boot before an operator has
 # written any org-specific prompt files under the state directory.
-"slack_cli_agent.assets" = ["prompts/*.md", "*.png"]
+"slack_cli_agent.assets" = ["prompts/*.md", "engine/*.json", "*.png"]
 # Marks the package as typed. Without it mypy treats every import of this
 # package from outside src/ as untyped, so the test suite could not be
 # type-checked at all (sca-rzk).
