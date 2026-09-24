@@ -225,6 +225,7 @@ class CatchupService:
                 ts=str(m.get("ts")),
                 thread_ts=str(thread_ts),
                 text=self._self_mention.remove_self(m.get("text") or ""),
+                files=tuple(m.get("files") or ()),
             )
             # The socket path asks back instead of queueing this (sca-yb8q);
             # without the same judgment here the call costs an engine turn

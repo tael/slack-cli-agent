@@ -250,6 +250,28 @@ class TestFindMissed:
 
         assert [m.ts for m in outcome.value()] == ["99000.0"]
 
+    def test_붙은_파일을_그대로_싣는다(self) -> None:
+        """접수 경로는 event["files"] 를 RequestContext 에 담는다. 캐치업이 그것을
+        안 담으면 재기동 중에 들어온 요청만 첨부 없이 엔진에 간다."""
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {
+                        "ts": "99000.0",
+                        "user": "U1",
+                        "subtype": "file_share",
+                        "text": "<@U_BOT> 이거 봐줘",
+                        "files": [{"id": "F1", "name": "a.png", "url_private": "https://x/a.png"}],
+                    },
+                ]
+            }
+        )
+        service = make_service(history)
+
+        missed = service.find_missed("C1", window=3600).value()
+
+        assert [f.get("id") for f in missed[0].files] == ["F1"]
+
     def test_본문_없는_부름은_안_찾는다(self) -> None:
         """접수 경로는 빈 본문을 되묻고 큐에 안 넣는다(ingress). 캐치업이 같은
         판정을 안 하면 그 부름이 캐치업으로만 엔진 한 턴을 쓴다."""
