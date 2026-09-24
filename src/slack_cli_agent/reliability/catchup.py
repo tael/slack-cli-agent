@@ -219,15 +219,19 @@ class CatchupService:
             if key in seen:
                 continue
             seen.add(key)
-            missed.append(
-                RequestContext(
-                    channel=channel,
-                    user=m.get("user") or "",
-                    ts=str(m.get("ts")),
-                    thread_ts=str(thread_ts),
-                    text=self._self_mention.remove_self(m.get("text") or ""),
-                )
+            recovered = RequestContext(
+                channel=channel,
+                user=m.get("user") or "",
+                ts=str(m.get("ts")),
+                thread_ts=str(thread_ts),
+                text=self._self_mention.remove_self(m.get("text") or ""),
             )
+            # The socket path asks back instead of queueing this (sca-yb8q);
+            # without the same judgment here the call costs an engine turn
+            # anyway, just one outage later (sca-zct1).
+            if recovered.has_no_request:
+                continue
+            missed.append(recovered)
         missed.sort(key=lambda c: float(c.ts))
         return Outcome.found(missed)
 

@@ -250,6 +250,20 @@ class TestFindMissed:
 
         assert [m.ts for m in outcome.value()] == ["99000.0"]
 
+    def test_본문_없는_부름은_안_찾는다(self) -> None:
+        """접수 경로는 빈 본문을 되묻고 큐에 안 넣는다(ingress). 캐치업이 같은
+        판정을 안 하면 그 부름이 캐치업으로만 엔진 한 턴을 쓴다."""
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "99000.0", "user": "U1", "text": "<@U_BOT>"},
+                ]
+            }
+        )
+        service = make_service(history)
+
+        assert service.find_missed("C1", window=3600).value() == []
+
     def test_채널_참여_알림은_안_찾는다(self) -> None:
         history = FakeHistoryReader(
             history={
