@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from slack_cli_agent.config import channel as channel_module
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.slug_migration import ChannelSlugMigrator
 
@@ -231,6 +232,27 @@ class Test두_프로세스_경합:
         assert (learned / "C1.md").exists()
         assert not (learned / "테스트.md").exists()
 
+    def test_잠금_파일을_열지_못하면_옮기지_않고_실패로_알린다(self, 상태, tmp_path, caplog) -> None:
+        """상태 디렉터리가 망가져 락을 못 만들면 두 프로세스가 같은 파일을
+        동시에 옮길 수 있다. 열기 실패는 미획득으로 본다(sca-tlgp)."""
+        knowledge, learned, responses = 상태
+        (learned / "C1.md").write_text("배운 것", encoding="utf-8")
+        막힌자리 = tmp_path / "막힌곳"
+        막힌자리.write_text("디렉터리가 아니다", encoding="utf-8")
+        이사 = ChannelSlugMigrator(
+            file_dirs=(knowledge, learned),
+            tree_roots=(responses,),
+            lock_path=막힌자리 / "slug-migration.lock",
+            lock_timeout=0.05,
+        )
+
+        with caplog.at_level("WARNING"):
+            결과 = 이사.migrate("C1", "테스트")
+
+        assert 결과 is False
+        assert (learned / "C1.md").exists()
+        assert not (learned / "테스트.md").exists()
+
     def test_락이_비어_있으면_평소대로_옮긴다(self, 상태, tmp_path) -> None:
         knowledge, learned, responses = 상태
         (learned / "C1.md").write_text("배운 것", encoding="utf-8")
@@ -276,7 +298,8 @@ class Test이사_실패는_다시_시도된다:
     def _기록(설정파일, 내용):
         설정파일.write_text(json.dumps(내용, ensure_ascii=False), encoding="utf-8")
 
-    def test_실패하면_다음_접근에서_같은_이사를_다시_부른다(self, 설정파일) -> None:
+    def test_실패하면_다음_접근에서_같은_이사를_다시_부른다(self, 설정파일, monkeypatch) -> None:
+        monkeypatch.setattr(channel_module, "SLUG_RETRY_INTERVAL_SEC", 0.0)
         시도: list[tuple[str, str]] = []
         남은실패 = [True]
 
@@ -315,8 +338,11 @@ class Test이사_실패는_다시_시도된다:
 
         assert 시도 == [("C1", "테스트")]
 
-    def test_실패한_이사가_끝나면_더는_부르지_않는다(self, 상태, 설정파일, tmp_path) -> None:
+    def test_실패한_이사가_끝나면_더는_부르지_않는다(
+        self, 상태, 설정파일, tmp_path, monkeypatch
+    ) -> None:
         """락을 쥔 다른 프로세스 때문에 못 옮긴 뒤, 락이 풀리면 옮긴다."""
+        monkeypatch.setattr(channel_module, "SLUG_RETRY_INTERVAL_SEC", 0.0)
         knowledge, learned, responses = 상태
         (learned / "C1.md").write_text("배운 것", encoding="utf-8")
         잠금 = tmp_path / "slug-migration.lock"
@@ -339,3 +365,73 @@ class Test이사_실패는_다시_시도된다:
         registry.all()
 
         assert (learned / "테스트.md").exists()
+
+
+class Test재시도_간격:
+    """이사가 계속 실패하면 조회마다 재파싱과 재이사가 돌아, 락 타임아웃 5초가
+    붙은 장애 구간에서 호출마다 지연과 경고가 반복된다(sca-c2e7). 횟수 상한이
+    아니라 간격을 두어, 실패가 영구 미이사로 굳는 것은 막는다(sca-tl2q)."""
+
+    @pytest.fixture
+    def 설정파일(self, tmp_path):
+        return tmp_path / "channels.json"
+
+    @staticmethod
+    def _기록(설정파일, 내용):
+        설정파일.write_text(json.dumps(내용, ensure_ascii=False), encoding="utf-8")
+
+    @staticmethod
+    def _늘_실패하는_콜백(시도):
+        def 콜백(old: str, new: str) -> bool:
+            시도.append((old, new))
+            return False
+
+        return 콜백
+
+    def test_간격_안의_조회는_다시_부르지_않는다(self, 설정파일) -> None:
+        시도: list[tuple[str, str]] = []
+        self._기록(설정파일, {})
+        registry = ChannelRegistry(설정파일, on_slug_change=self._늘_실패하는_콜백(시도))
+        registry.all()
+
+        registry.update("C1", {"name": "테스트"})
+        assert 시도 == [("C1", "테스트")]
+
+        registry.all()
+        registry.is_registered("C1")
+        registry.get("C1")
+
+        assert 시도 == [("C1", "테스트")]
+
+    def test_간격이_지나면_다시_부른다(self, 설정파일, monkeypatch) -> None:
+        시계 = [1000.0]
+        monkeypatch.setattr(channel_module.time, "monotonic", lambda: 시계[0])
+        시도: list[tuple[str, str]] = []
+        self._기록(설정파일, {})
+        registry = ChannelRegistry(설정파일, on_slug_change=self._늘_실패하는_콜백(시도))
+        registry.all()
+
+        registry.update("C1", {"name": "테스트"})
+        registry.all()
+        assert 시도 == [("C1", "테스트")]
+
+        시계[0] += channel_module.SLUG_RETRY_INTERVAL_SEC
+        registry.all()
+
+        assert 시도 == [("C1", "테스트"), ("C1", "테스트")]
+
+    def test_설정_파일이_바뀌면_간격을_기다리지_않는다(self, 설정파일) -> None:
+        """사람이 파일을 고친 것은 새 사건이라 그 자리에서 다시 시도한다."""
+        시도: list[tuple[str, str]] = []
+        self._기록(설정파일, {})
+        registry = ChannelRegistry(설정파일, on_slug_change=self._늘_실패하는_콜백(시도))
+        registry.all()
+
+        registry.update("C1", {"name": "테스트"})
+        assert 시도 == [("C1", "테스트")]
+
+        self._기록(설정파일, {"C1": {"name": "테스트"}, "C2": {"name": "둘"}})
+        registry._mtime = -1.0
+        registry.all()
+
+        assert ("C1", "테스트") in 시도[1:]

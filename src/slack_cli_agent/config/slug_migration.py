@@ -64,7 +64,7 @@ class ChannelSlugMigrator:
         with self._exclusive() as acquired:
             if not acquired:
                 log.warning(
-                    "다른 프로세스가 채널 파일을 옮기는 중이라 이번에는 건너뛴다 : %s -> %s",
+                    "채널 파일 이사 잠금을 얻지 못해 이번에는 건너뛴다 : %s -> %s",
                     old_slug, new_slug,
                 )
                 return False
@@ -85,7 +85,7 @@ class ChannelSlugMigrator:
             return
         handle = self._open_lock(self._lock_path)
         if handle is None:
-            yield True
+            yield False
             return
         try:
             yield self._acquire(handle)
@@ -100,9 +100,9 @@ class ChannelSlugMigrator:
             path.parent.mkdir(parents=True, exist_ok=True)
             return open(path, "a+")
         except OSError as exc:
-            # A lock we cannot create must not stop the move; one process
-            # moving is still better than none.
-            log.warning("이사 잠금 파일을 열지 못해 잠금 없이 옮긴다 : %s : %s", path, exc)
+            # No lock means no way to keep two processes off the same file,
+            # so this counts as not acquired and the caller retries (sca-tlgp).
+            log.warning("이사 잠금 파일을 열지 못해 이번에는 건너뛴다 : %s : %s", path, exc)
             return None
 
     def _acquire(self, handle: IO[str]) -> bool:

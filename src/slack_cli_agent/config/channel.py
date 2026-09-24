@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +32,15 @@ DM_SLUG = "dm"
 #: callback that returns nothing is taken as done, which is what every
 #: notification-shaped callback does.
 SlugChange = Callable[[str, str], bool | None]
+
+SLUG_RETRY_INTERVAL_SEC = 60.0
+"""How long to wait before retrying a move the callback reported as failed.
+
+An attempt cap would turn a long outage into a permanent miss, which is the
+defect sca-tl2q fixed, so the retry never stops -- only its rate is bounded.
+Without a bound every get/is_registered/all pays the migrator's lock timeout
+again (sca-c2e7). A change to the config file still retries immediately.
+"""
 
 KNOWN_KEYS = frozenset(
     {
@@ -190,6 +200,9 @@ class ChannelRegistry:
         #: exactly the state a bot starts in when it was registered while the
         #: process was down (sca-do8s).
         self._slugs: dict[str, str] = {}
+        #: When the next retry of a failed move is allowed. None means none is
+        #: pending.
+        self._slug_retry_at: float | None = None
 
     def get(self, channel_id: str) -> ChannelConfig | None:
         return self._current().get(channel_id)
@@ -297,7 +310,17 @@ class ChannelRegistry:
                 self._configs = self._parse()
                 self._mtime = mtime
                 self._announce_slugs()
+            elif self._slug_retry_due():
+                # The config is unchanged, so only the failed move is retried;
+                # reparsing the file would read the same bytes again.
+                self._announce_slugs()
             return self._configs
+
+    def _slug_retry_due(self) -> bool:
+        return (
+            self._slug_retry_at is not None
+            and time.monotonic() >= self._slug_retry_at
+        )
 
     def _announce_slugs(self) -> None:
         """Reports every channel whose slug moved since the last parse.
@@ -331,8 +354,9 @@ class ChannelRegistry:
                 # permanent miss (sca-tl2q).
                 self._slugs[cid] = old
                 retry = True
-        if retry:
-            self._mtime = -1.0
+        self._slug_retry_at = (
+            time.monotonic() + SLUG_RETRY_INTERVAL_SEC if retry else None
+        )
 
     def _parse(self) -> dict[str, ChannelConfig]:
         try:
