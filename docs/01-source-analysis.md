@@ -171,8 +171,12 @@ allow 규칙보다 우선해 Bash·Edit·Write·NotebookEdit 를 차단한다고
 
 ### Codex 의 다른 점
 
-- `developer_instructions` 는 스레드 최초 값이 끝까지 우선한다. 그래서
-  `turn_directives()` 로 턴마다 바뀌는 것(화자·침묵 규칙)만 본문 앞에 붙인다
+- `developer_instructions` 는 스레드 최초 값이 끝까지 우선한다. 원본은
+  `turn_directives()` 로 턴마다 바뀌는 것(화자·침묵 규칙)만 본문 앞에 붙였다.
+  **이식본은 그 훅을 두지 않는다**(sca-r1hc) - resume 턴의 시스템 지침 전체를
+  프롬프트 본문에 싣는 쪽으로 바꿨다(sca-ivs, `engine/codex.py` 의
+  `_resume_prompt`). 화자 규칙만 싣던 원본과 달리 그 턴의 지식·프롬프트 갱신이
+  함께 따라온다
 - `--add-dir` 에 해당하는 인자가 없다. `readable_paths_note()` 로 읽을 수 있는
   경로를 문장으로 알린다
 - 셸이 항상 붙어 있어 모델이 curl 로 무엇이든 된다고 판단한다.

@@ -441,7 +441,7 @@ class EngineRequest:
     effort: str
     workdir: Path
     readable_dirs: tuple[Path, ...]
-    allowed_tools: tuple[str, ...]
+    tools: ToolSelection    # 허용 없음·허용목록·전면 금지 세 상태
     trust_level: TrustLevel
 
 
