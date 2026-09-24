@@ -294,6 +294,10 @@ class ToolAllowlistEnforcementCheck(PreflightCheck):
     fact belongs at configuration time: recording it per request would repeat
     the same sentence on every request that bot ever serves (sca-dyb.11).
 
+    A claude profile with an MCP server attached is reported too: the
+    allowlist drops to server granularity for every request on it (sca-qqtl),
+    and calling that "enforced" states more than the bot can hold.
+
     fatal=False -- running without an allowlist is a choice an operator may
     have made knowingly, and blocking boot would take the bot down for it.
     An engine this package does not ship (a plugin's) is not judged: reading
@@ -312,8 +316,19 @@ class ToolAllowlistEnforcementCheck(PreflightCheck):
             engine_class = engines.engine_class(spec.type)
             if engine_class is None:
                 continue
-            actual = engine_class.configured_capabilities(spec).tool_restriction
+            actual = engine_class.configured_capabilities(
+                spec, ctx.profile.mcp_servers
+            ).tool_restriction
             if actual is ToolRestriction.EXACT_ALLOWLIST:
+                continue
+            if actual is ToolRestriction.SERVER_SCOPED_ALLOWLIST:
+                # Named apart from the weaker engines: the allowlist does hold
+                # for the built-in tools here, and what an operator would act on
+                # is the MCP server, not the engine choice.
+                weak.append(
+                    f"{label} {spec.type} : MCP 서버가 붙어 있어 도구 제한이 {actual} 로"
+                    " 내려간다 — 허용목록이 이름한 도구를 가진 서버는 통째로 열린다"
+                )
                 continue
             weak.append(f"{label} {spec.type} : 도구 제한이 {actual} 라 허용목록이 그대로 적용되지 않는다")
         if weak:
