@@ -1,0 +1,28 @@
+{
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50"
+  },
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.config/**)",
+      "Read(~/.claude/**)",
+      "Read(~/.mcp.json)",
+      "Read(~/Library/**)",
+      "Read(~/.*credentials*)",
+      "Read(~/**/.env*)",
+      "Read(__STATE__/credentials.json)",
+      "Write(__STATE__/credentials.json)",
+      "Edit(__STATE__/credentials.json)",
+      "Read(__STATE__/engine/**)",
+      "Write(__STATE__/engine/**)",
+      "Edit(__STATE__/engine/**)",
+      "Write(__STATE__/state.db)",
+      "Edit(__STATE__/state.db)",
+      "Write(__STATE__/audit.jsonl)",
+      "Edit(__STATE__/audit.jsonl)"
+    ]
+  }
+}
