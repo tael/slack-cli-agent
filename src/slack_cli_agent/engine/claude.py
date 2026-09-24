@@ -236,7 +236,13 @@ class ClaudeEngine(Engine):
             # along: its permissions.allow, its env block and its hooks all
             # apply to the bot's turn. The bot's own file goes in through
             # --settings instead (bot.py:1343).
-            "--setting-sources", "project",
+            #
+            # Empty rather than the original's "project": a channel's work
+            # directory can be any checkout, and a .claude/settings.json
+            # there set an env var inside the bot's own tool call (measured
+            # 2026-09-24). Nothing the bot needs comes from that source --
+            # persona, knowledge, skills and MCP all arrive as arguments.
+            "--setting-sources", "",
             "--permission-mode", "dontAsk",
             "--model", request.require_model(),
             "--effort", request.effort,
