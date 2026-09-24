@@ -227,8 +227,14 @@ class TestEngineABC:
             ok=True, body="", session_id=None, model_actual=None,
             elapsed=0, turns=None, usage=None,
         )) is None
-        assert engine.directives_for_turn(request()) == ""
         assert engine.readable_paths_note((Path("/x"),)) == ""
+
+    def test_턴별_지시_훅은_기반_클래스에_없다(self) -> None:
+        """재개 턴의 지침은 세 엔진 모두 system_prompt 로 다시 싣는다
+        (tests/engine/test_engine_contract.py 의 resend_system_prompt_on_resume).
+        훅을 남겨 두면 같은 값이 두 경로로 실린다(sca-r1hc)."""
+        assert not hasattr(Engine, "directives_for_turn")
+        assert not hasattr(FallbackEngine, "directives_for_turn")
 
 
 class TestEngineRegistry:
@@ -606,6 +612,40 @@ class TestCodexEngineBuildCommand:
         # 제약 문구가 앞에 붙으므로 끝으로 본다 (sca-f9k0).
         assert cmd[-1].endswith("안녕")
 
+    def test_읽기_전용_허용목록이면_프로필과_무관하게_read_only_로_내린다(self, tmp_path: Path) -> None:
+        """codex 는 도구 인자가 없어 허용목록을 이름으로 못 건다. 허용된 것이
+        전부 읽기 도구면 sandbox 를 내려 OS 가 쓰기를 막게 한다 - 프롬프트
+        문구와 달리 모델이 안 지켜도 실효가 있다 (sca-f9k0)."""
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        cmd = engine.build_command(
+            request(resume=False, model="gpt-5.6-sol", tools=ToolSelection.allow(["Read", "Grep"]))
+        )
+        assert cmd[cmd.index("--sandbox") + 1] == "read-only"
+
+    def test_읽기_전용_허용목록은_재개_턴에서도_내려간다(self, tmp_path: Path) -> None:
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        cmd = engine.build_command(request(
+            resume=True, model="gpt-5.6-sol", session_id="t-1",
+            tools=ToolSelection.allow(["Read"]),
+        ))
+        assert 'sandbox_mode="read-only"' in cmd
+
+    def test_쓰기_도구가_섞이면_프로필_값을_그대로_쓴다(self, tmp_path: Path) -> None:
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        cmd = engine.build_command(
+            request(resume=False, model="gpt-5.6-sol", tools=ToolSelection.allow(["Read", "Write"]))
+        )
+        assert cmd[cmd.index("--sandbox") + 1] == "danger-full-access"
+
+    def test_명령의_sandbox_와_선언한_격리가_같다(self, tmp_path: Path) -> None:
+        """선언이 명령과 다르면 감사 기록이 실행된 것을 안 가리킨다."""
+        from slack_cli_agent.engine.capability import ExecutionIsolation
+
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        요청 = request(resume=False, model="gpt-5.6-sol", tools=ToolSelection.allow(["Read"]))
+        assert engine.capabilities_for(요청).execution_isolation is ExecutionIsolation.READONLY_SANDBOX
+        assert engine.build_command(요청)[engine.build_command(요청).index("--sandbox") + 1] == "read-only"
+
     def test_재개_스레드는_resume과_sandbox_mode를_쓴다(self, tmp_path: Path) -> None:
         profile = codex_profile(tmp_path)
         engine = CodexEngine(profile, SETTINGS)
@@ -660,17 +700,23 @@ class TestCodexEngineBuildCommand:
 
     def test_기본_sandbox는_제한하지_않는다(self, tmp_path: Path) -> None:
         """봇이 읽기와 쓰기를 다 할 수 있어야 한다(2026-09-15 사용자 지시).
-        전에는 기본이 read-only 라 프로필에 옵션을 안 적으면 조용히 막혔다."""
+        전에는 기본이 read-only 라 프로필에 옵션을 안 적으면 조용히 막혔다.
+        도구 제한이 없는 요청으로 본다 - 읽기 전용 허용목록은 프로필과
+        무관하게 내려가므로(sca-f9k0) 프로필 기본값을 못 본다."""
         profile = codex_profile(tmp_path)
         engine = CodexEngine(profile, SETTINGS)
-        cmd = engine.build_command(request(resume=False, model="gpt-5.6-sol"))
+        cmd = engine.build_command(request(
+            resume=False, model="gpt-5.6-sol", tools=ToolSelection.unrestricted(),
+        ))
         idx = cmd.index("--sandbox")
         assert cmd[idx + 1] == "danger-full-access"
 
     def test_옵션의_sandbox값을_쓴다(self, tmp_path: Path) -> None:
         profile = codex_profile(tmp_path, options={"sandbox": "workspace-write"})
         engine = CodexEngine(profile, SETTINGS)
-        cmd = engine.build_command(request(resume=False, model="gpt-5.6-sol"))
+        cmd = engine.build_command(request(
+            resume=False, model="gpt-5.6-sol", tools=ToolSelection.unrestricted(),
+        ))
         idx = cmd.index("--sandbox")
         assert cmd[idx + 1] == "workspace-write"
 
@@ -790,7 +836,9 @@ class Test지침이_비어도_경로_안내는_실린다:
     def test_알릴_것이_없으면_안_붙인다(self, tmp_path: Path) -> None:
         """빈 값을 넣으면 CLI 가 빈 지침으로 세션을 연다."""
         engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
-        cmd = engine.build_command(request(system_prompt="", readable_dirs=()))
+        cmd = engine.build_command(request(
+            system_prompt="", readable_dirs=(), tools=ToolSelection.unrestricted(),
+        ))
         assert not any("developer_instructions" in arg for arg in cmd)
 
     def test_제미나이도_같은_조건에서_알려_준다(self, tmp_path: Path) -> None:
@@ -896,12 +944,6 @@ class TestCodexEngineTurnBehavior:
         profile = codex_profile(tmp_path)
         engine = CodexEngine(profile, SETTINGS)
         assert engine.readable_paths_note(()) == ""
-
-    def test_directives_for_turn은_재개_턴에만_붙는다(self, tmp_path: Path) -> None:
-        profile = codex_profile(tmp_path)
-        engine = CodexEngine(profile, SETTINGS)
-        assert engine.directives_for_turn(request(resume=False)) == ""
-        assert engine.directives_for_turn(request(resume=True)) != ""
 
 
 # GeminiEngine — 계약 시험(tests/engine/test_engine_contract.py, test_gemini_engine.py)이
@@ -2281,7 +2323,8 @@ class Test셸이_붙는_엔진에_바깥_쓰기_수단을_알려_준다:
 
     def test_샌드박스가_안_막으면_안_붙인다(self, tmp_path: Path) -> None:
         """막힌 적이 없는데 막혔다고 적으면 할 수 있는 일을 안 한다."""
-        assert self._codex(tmp_path, sandbox="danger-full-access").write_paths_note(request()) == ""
+        engine = self._codex(tmp_path, sandbox="danger-full-access")
+        assert engine.write_paths_note(request(tools=ToolSelection.unrestricted())) == ""
 
     def test_이번_턴에_허용된_도구를_적는다(self, tmp_path: Path) -> None:
         note = self._codex(tmp_path, sandbox="read-only").write_paths_note(
@@ -2336,7 +2379,7 @@ class Test셸이_붙는_엔진에_바깥_쓰기_수단을_알려_준다:
         """workspace-write 는 프로필이 network 를 열면 바깥으로 나간다
         (codex.py:176). 막혔다고 적으면 되는 일을 안 한다 (코덱스 리뷰)."""
         engine = self._codex(tmp_path, sandbox="workspace-write", network=True)
-        assert engine.write_paths_note(request()) == ""
+        assert engine.write_paths_note(request(tools=ToolSelection.unrestricted())) == ""
 
     def test_workspace_write_는_기본으로_막힌다(self, tmp_path: Path) -> None:
         engine = self._codex(tmp_path, sandbox="workspace-write")
@@ -2370,7 +2413,7 @@ class Test셸이_붙는_엔진에_바깥_쓰기_수단을_알려_준다:
 
     def test_이어가는_턴의_바이트가_footprint_에_잡힌다(self, tmp_path: Path) -> None:
         """실제로 보내는데 안 세면 예산이 실제보다 작게 나온다 (코덱스 리뷰)."""
-        요청 = request(resume=True, session_id="S1")
+        요청 = request(resume=True, session_id="S1", tools=ToolSelection.unrestricted())
         막힌쪽 = self._codex(tmp_path, sandbox="read-only")
         열린쪽 = self._codex(tmp_path, sandbox="danger-full-access")
         차이 = (
