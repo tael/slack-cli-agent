@@ -2594,3 +2594,190 @@ class Test셸이_붙는_엔진에_바깥_쓰기_수단을_알려_준다:
         engine = self._codex(tmp_path, sandbox="read-only")
         붙은것 = engine._session_path_note(request())
         assert "curl" in 붙은것
+
+
+class Test덧씌움의_deny_축소는_병합_결과로_판정한다:
+    """판정 단위가 파일이면 정당한 축소가 막힌다.
+
+    공통 파일에 deny 가 남아 있는데 덧씌움 파일의 deny 만 비우는 것은 운영자가
+    할 수 있는 정당한 축소다. 실제로 그 턴은 공통의 deny 를 달고 돈다. 파일마다
+    따로 기억하면 그 축소가 예외가 된다 (sca-e34p).
+    """
+
+    @staticmethod
+    def 공통(profile, 내용: dict) -> None:
+        TestClaudeEngineBuildCommand.기본_settings를_쓴다(profile, 내용)
+
+    @staticmethod
+    def 덧씌움(profile, 수준: str, 내용: dict) -> None:
+        TestClaudeEngineBuildCommand.덧씌움을_쓴다(profile, 수준, 내용)
+
+    def test_덧씌움의_deny_를_비워도_공통에_남으면_통과한다(self, tmp_path: Path) -> None:
+        profile = claude_profile(tmp_path)
+        self.공통(profile, {"permissions": {"deny": ["공통"]}})
+        self.덧씌움(profile, "general", {"permissions": {"deny": ["일반만"]}})
+        engine = ClaudeEngine(profile, SETTINGS)
+        engine.build_command(request(trust_level=TrustLevel.GENERAL))
+
+        self.덧씌움(profile, "general", {"permissions": {"deny": []}})
+        cmd = engine.build_command(request(trust_level=TrustLevel.GENERAL))
+        assert json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"] == ["공통"]
+
+    def test_병합_결과의_deny_가_비면_ConfigError_다(self, tmp_path: Path) -> None:
+        """축소가 아니라 소멸이다. deny 없이 도는 턴은 세운다."""
+        profile = claude_profile(tmp_path)
+        self.공통(profile, {"permissions": {"deny": ["공통"]}})
+        self.덧씌움(profile, "general", {"permissions": {"deny": ["일반만"]}})
+        engine = ClaudeEngine(profile, SETTINGS)
+        engine.build_command(request(trust_level=TrustLevel.GENERAL))
+
+        self.공통(profile, {"permissions": {"deny": []}})
+        self.덧씌움(profile, "general", {"permissions": {"deny": []}})
+        with pytest.raises(ConfigError, match="deny"):
+            engine.build_command(request(trust_level=TrustLevel.GENERAL))
+
+    def test_신뢰_수준마다_따로_기억한다(self, tmp_path: Path) -> None:
+        """owner 만 deny 를 든 구성에서 general 요청이 예외가 되면 안 된다.
+        병합 결과는 수준마다 다른 문서다."""
+        profile = claude_profile(tmp_path)
+        self.공통(profile, {"env": {"A": "1"}})
+        self.덧씌움(profile, "owner", {"permissions": {"deny": ["소유자만"]}})
+        engine = ClaudeEngine(profile, SETTINGS)
+        engine.build_command(request(trust_level=TrustLevel.OWNER))
+        cmd = engine.build_command(request(trust_level=TrustLevel.GENERAL))
+        assert "--settings" in cmd
+
+    def test_사라진_파일은_여전히_거부한다(self, tmp_path: Path) -> None:
+        """병합으로 판정을 옮겨도 파일 부재 판정은 파일 단위로 남는다."""
+        profile = claude_profile(tmp_path)
+        self.공통(profile, {"permissions": {"deny": ["공통"]}})
+        engine = ClaudeEngine(profile, SETTINGS)
+        engine.build_command(request(trust_level=TrustLevel.GENERAL))
+        profile.paths.engine_settings("claude").unlink()
+        with pytest.raises(ConfigError, match="사라"):
+            engine.build_command(request(trust_level=TrustLevel.GENERAL))
+
+
+class ConfigErrorEngine(RecordingEngine):
+    """설정을 못 읽어 명령을 못 만드는 엔진 대역."""
+
+    name = "설정오류"
+
+    def build_command(self, request: EngineRequest) -> list[str]:
+        raise ConfigError("settings 파일이 사라졌습니다 : /없다.json")
+
+
+class PrepareErrorEngine(RecordingEngine):
+    name = "준비오류"
+
+    def prepare(self, request: EngineRequest) -> None:
+        raise ConfigError("설정 파일을 쓰지 못했습니다")
+
+
+class Test설정_예외는_응답이_된다:
+    """build_command 가 try 밖이라 ConfigError 가 실행기를 그대로 뚫었다.
+
+    응답이 아니면 전환 판정도 사람에게 보일 문구도 돌지 않는다 (sca-z1et).
+    """
+
+    def _runner(self):
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            raise AssertionError("명령을 못 만들었는데 실행했다")
+
+        return EngineRunner(SETTINGS, subprocess_runner=fake_subprocess,
+                            environment_policy=통과정책())
+
+    def test_명령_조립의_ConfigError_는_실패_응답이_된다(self, tmp_path: Path) -> None:
+        engine = ConfigErrorEngine(claude_profile(tmp_path), SETTINGS)
+        resp = self._runner().run(engine, request())
+        assert resp.ok is False
+        assert resp.failure_reason == "engine_config"
+
+    def test_준비_단계의_ConfigError_도_실패_응답이_된다(self, tmp_path: Path) -> None:
+        engine = PrepareErrorEngine(claude_profile(tmp_path), SETTINGS)
+        resp = self._runner().run(engine, request())
+        assert resp.failure_reason == "engine_config"
+
+    def test_사람에게_보일_문구에_원인이_담긴다(self, tmp_path: Path) -> None:
+        """운영자가 어느 파일을 되살려야 하는지 답에 있어야 한다."""
+        engine = ConfigErrorEngine(claude_profile(tmp_path), SETTINGS)
+        resp = self._runner().run(engine, request())
+        assert resp.user_facing is True
+        assert "없다.json" in resp.body
+
+    def test_어느_엔진이_막혔는지_남긴다(self, tmp_path: Path) -> None:
+        engine = ConfigErrorEngine(claude_profile(tmp_path), SETTINGS)
+        resp = self._runner().run(engine, request())
+        assert resp.engine == "설정오류"
+
+    def test_설정_오류로_엔진을_전환하지_않는다(self, tmp_path: Path) -> None:
+        """전환은 한도·인증처럼 시간이 지나야 풀리는 상태에만 건다. 운영자가
+        지금 고칠 수 있는 설정 오류로 2차에 눌러앉으면 그 오류가 가려진다."""
+        profile = codex_profile(tmp_path)
+        primary = named(ConfigErrorEngine, "claude")(profile, SETTINGS)
+        secondary = named(RecordingEngine, "codex")(profile, SETTINGS)
+        switcher = EngineSwitcher(tmp_path / "engine_state.json")
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            return FakeCompleted(stdout="2차 답", returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess,
+                              environment_policy=통과정책())
+        fallback = FallbackEngine(primary, secondary, switcher, runner)
+
+        resp = fallback.run(request())
+        assert resp.failure_reason == "engine_config"
+        assert switcher.load() == {}
+        assert secondary.built == []
+
+
+class Test엔진_상태_초기화_진입점:
+    """한 프로세스에서 Application 을 다시 만들면 앞의 판독이 남는다.
+
+    core/ 를 못 고치므로 engine 쪽에 진입점만 둔다. 부르는 자리는 보고서에
+    적었다 (sca-vlaj).
+    """
+
+    def test_초기화하면_판독_기록이_비워진다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.engine.claude_settings import load_settings_file
+        from slack_cli_agent.engine.lifecycle import reset_engine_state
+
+        path = tmp_path / "s.json"
+        path.write_text('{"permissions": {"deny": ["Bash"]}}', encoding="utf-8")
+        load_settings_file(path)
+        path.unlink()
+        reset_engine_state()
+        assert load_settings_file(path) == {}
+
+    def test_초기화는_병합_판정_기억도_비운다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.engine.lifecycle import reset_engine_state
+
+        profile = claude_profile(tmp_path)
+        TestClaudeEngineBuildCommand.기본_settings를_쓴다(
+            profile, {"permissions": {"deny": ["공통"]}}
+        )
+        engine = ClaudeEngine(profile, SETTINGS)
+        engine.build_command(request(trust_level=TrustLevel.GENERAL))
+        TestClaudeEngineBuildCommand.기본_settings를_쓴다(profile, {"env": {"A": "1"}})
+        reset_engine_state()
+        assert "--settings" in engine.build_command(request(trust_level=TrustLevel.GENERAL))
+
+
+class Test보장_조회는_MCP_서버를_밝혀야_한다:
+    """안 넘기면 claude 가 정확한 허용목록을 돌려준다. 실제 요청은 서버 단위로
+    내려갈 수 있어 과대평가가 된다 (sca-h0zz)."""
+
+    def test_서버를_안_넘기면_거부한다(self, tmp_path: Path) -> None:
+        profile = claude_profile(tmp_path)
+        with pytest.raises(TypeError):
+            ClaudeEngine.configured_capabilities(profile.primary_engine)  # type: ignore[call-arg]
+
+    def test_코덱스도_같은_계약이다(self, tmp_path: Path) -> None:
+        profile = codex_profile(tmp_path)
+        with pytest.raises(TypeError):
+            CodexEngine.configured_capabilities(profile.primary_engine)  # type: ignore[call-arg]
+
+    def test_빈_사전은_명시한_없음이라_받는다(self, tmp_path: Path) -> None:
+        profile = claude_profile(tmp_path)
+        보장 = ClaudeEngine.configured_capabilities(profile.primary_engine, {})
+        assert 보장.tool_restriction is ToolRestriction.EXACT_ALLOWLIST

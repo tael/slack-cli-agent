@@ -24,7 +24,7 @@ from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
 from ..core.errors import ConfigError
 from ..engine.capability import ToolRestriction
-from ..engine.claude_settings import load_settings_file
+from ..engine.claude_settings import load_merged_settings
 from ..engine.environment import registry
 from ..engine.mcp_health import broken_mcp_servers
 from ..engine.registry import default_registry
@@ -425,12 +425,16 @@ class EngineSettingsCheck(PreflightCheck):
         if not self._uses_claude(ctx.profile):
             return CheckResult(ok=True, detail="claude 를 안 쓰는 프로필")
         paths = ctx.profile.paths
-        names = ["claude"] + [f"claude.{level.name.lower()}" for level in TrustLevel]
-        for name in names:
-            try:
-                load_settings_file(paths.engine_settings(name))
-            except ConfigError as e:
-                return CheckResult(ok=False, detail=str(e))
+        common = paths.engine_settings("claude")
+        try:
+            # Merged rather than per file: the deny baseline lives on the
+            # document a turn runs under, so reading the files one by one
+            # would leave it to be taken at that level's first request
+            # instead of here (sca-e34p).
+            for level in TrustLevel:
+                load_merged_settings(common, paths.engine_settings(f"claude.{level.name.lower()}"))
+        except ConfigError as e:
+            return CheckResult(ok=False, detail=str(e))
         if not paths.engine_settings("claude").exists():
             return CheckResult(
                 ok=False,

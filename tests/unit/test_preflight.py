@@ -1233,3 +1233,34 @@ class TestChannelSettingsReadableCheck:
         write_channels(profile, {"C1": {"tool_enforcement": 3}, "C2": {"mode": "helpdesk"}})
         result = ChannelSettingsReadableCheck().run(PreflightContext(profile=profile))
         assert result.fatal is False
+
+
+class Test기동에서_deny_기준선을_잡는다:
+    """deny 판정이 병합 문서 단위로 옮겨졌으므로, 점검이 파일마다 읽기만 하면
+    기준선이 기동이 아니라 그 신뢰 수준의 첫 요청에서 잡힌다 (sca-e34p)."""
+
+    def test_점검_뒤_deny_를_비우면_그_수준이_막힌다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.engine.claude_settings import (
+            ConfigError,
+            load_merged_settings,
+            reset_settings_ledger,
+        )
+        from slack_cli_agent.preflight.check import PreflightContext
+        from slack_cli_agent.preflight.checks import EngineSettingsCheck
+
+        reset_settings_ledger()
+        profile = make_profile(tmp_path)
+        common = profile.paths.engine_settings("claude")
+        common.parent.mkdir(parents=True, exist_ok=True)
+        common.write_text('{"permissions": {"deny": ["Bash"]}}', encoding="utf-8")
+        level = f"claude.{TrustLevel.GENERAL.name.lower()}"
+        overlay = profile.paths.engine_settings(level)
+        overlay.write_text('{"permissions": {"deny": ["Write"]}}', encoding="utf-8")
+
+        assert EngineSettingsCheck().run(PreflightContext(profile=profile)).ok is True
+
+        common.write_text("{}", encoding="utf-8")
+        overlay.write_text("{}", encoding="utf-8")
+        with pytest.raises(ConfigError):
+            load_merged_settings(common, overlay)

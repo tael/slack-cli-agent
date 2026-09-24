@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -65,24 +64,25 @@ def _join(base: list[Any], overlay: list[Any]) -> list[Any]:
     return joined
 
 
-@dataclass(frozen=True)
-class _Seen:
-    """What one path held the last time this process read it."""
+#: Per path, whether it was there the last time this process read it. The
+#: boot check reads every settings path (preflight/checks.py
+#: EngineSettingsCheck), so the first entries are the boot-time picture
+#: without a separate snapshot call; a process that skips preflight still
+#: gets its baseline from the first request.
+_LEDGER: dict[Path, bool] = {}
 
-    present: bool
-    denies: bool
-
-
-#: Per path, the last reading. The boot check reads every settings path
-#: (preflight/checks.py EngineSettingsCheck), so the first entries are the
-#: boot-time picture without a separate snapshot call; a process that skips
-#: preflight still gets its baseline from the first request.
-_LEDGER: dict[Path, _Seen] = {}
+#: Per set of files, whether the document they merge into denied anything.
+#: Kept apart from _LEDGER because a deny list is a property of the document
+#: that actually reaches claude, not of any one file it was assembled from
+#: (sca-e34p). The paths are the key: the same file names under two profiles
+#: are two documents.
+_DENY_LEDGER: dict[tuple[Path, ...], bool] = {}
 
 
 def reset_settings_ledger() -> None:
     """Forget the readings so far. A restart makes a new baseline."""
     _LEDGER.clear()
+    _DENY_LEDGER.clear()
 
 
 def load_settings_file(path: Path) -> dict[str, Any]:
@@ -95,18 +95,21 @@ def load_settings_file(path: Path) -> dict[str, Any]:
     Absent *after* this process already read it is not normal either. The
     boot check only looks once, so a file removed afterwards would leave
     every later turn running with no deny and nothing in the log (sca-1aji).
-    A deny list that was there and is now empty ends the same way, so both
-    stop the turn rather than run it quietly. Restarting clears the
-    baseline, which is how an operator retires a deny list on purpose.
+    Restarting clears the baseline, which is how an operator retires a
+    settings file on purpose.
+
+    Whether a deny list shrank is not judged here. One file is a fragment,
+    and an overlay may empty its own deny while the merged document still
+    denies; that judgment belongs to load_merged_settings (sca-e34p).
     """
     seen = _LEDGER.get(path)
     if not path.exists():
-        if seen is not None and seen.present:
+        if seen:
             raise ConfigError(
                 f"기동 때 읽은 settings 파일이 사라졌습니다 : {path}"
                 " - deny 목록 없이 실행하지 않습니다"
             )
-        _LEDGER[path] = _Seen(present=False, denies=False)
+        _LEDGER[path] = False
         return {}
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
@@ -115,14 +118,33 @@ def load_settings_file(path: Path) -> dict[str, Any]:
     if not isinstance(loaded, dict):
         raise ConfigError(f"settings 파일의 최상위가 객체가 아닙니다 : {path}")
     _check_shape(loaded, path)
-    denies = bool((loaded.get("permissions") or {}).get("deny"))
-    if seen is not None and seen.denies and not denies:
-        raise ConfigError(
-            f"기동 때 읽은 settings 의 deny 목록이 비었습니다 : {path}"
-            " - deny 목록 없이 실행하지 않습니다"
-        )
-    _LEDGER[path] = _Seen(present=True, denies=denies)
+    _LEDGER[path] = True
     return loaded
+
+
+def load_merged_settings(*paths: Path) -> dict[str, Any]:
+    """The named files as the one document this turn would run under.
+
+    The deny check sits on the merged result rather than on each file. Per
+    file it refused a legitimate narrowing: an operator emptying an
+    overlay's deny still leaves the common file's entries in the document
+    that reaches claude (sca-e34p).
+
+    The baseline is per path set. Trust levels merge different overlays, so
+    they are different documents and each keeps its own; one baseline for
+    all of them would read the level whose overlay carries the only deny as
+    a loss as soon as another level runs.
+    """
+    merged = merge_settings(*(load_settings_file(path) for path in paths))
+    denies = bool((merged.get("permissions") or {}).get("deny"))
+    if _DENY_LEDGER.get(paths) and not denies:
+        raise ConfigError(
+            "기동 때 읽은 settings 의 deny 목록이 비었습니다 : "
+            + ", ".join(str(path) for path in paths)
+            + " - deny 목록 없이 실행하지 않습니다"
+        )
+    _DENY_LEDGER[paths] = denies
+    return merged
 
 
 #: Keys whose kind the merge depends on. A list where a dict belongs makes
