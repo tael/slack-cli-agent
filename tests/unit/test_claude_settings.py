@@ -61,6 +61,27 @@ class Test병합규칙:
         assert merge_settings({"a": {"b": 1}}, {"a": [1]})["a"] == [1]
 
 
+class Test대체되는_키:
+    """claude 는 모든 목록을 이어 붙이지 않는다. 모델 선택 계열은 나중 값이
+    앞을 대체한다 (sca-rrmq). 이어 붙이면 신뢰 수준 덧씌움이 좁히려던 모델
+    목록에 기본 파일의 것이 그대로 남는다."""
+
+    @pytest.mark.parametrize("키", ["availableModels", "modelPicker", "modelSettings", "fallbackModel"])
+    def test_나중_값이_앞을_대체한다(self, 키: str) -> None:
+        from slack_cli_agent.engine.claude_settings import merge_settings
+
+        합친것 = merge_settings({키: ["a", "b"]}, {키: ["c"]})
+        assert 합친것[키] == ["c"]
+
+    def test_다른_목록은_그대로_이어_붙인다(self) -> None:
+        from slack_cli_agent.engine.claude_settings import merge_settings
+
+        합친것 = merge_settings(
+            {"permissions": {"deny": ["a"]}}, {"permissions": {"deny": ["b"]}},
+        )
+        assert 합친것["permissions"]["deny"] == ["a", "b"]
+
+
 class Test파일을_읽는다:
     def test_없는_파일은_빈_조각이다(self, tmp_path) -> None:
         """운영물 부재로 기동이 막히면 안 된다."""
