@@ -2213,20 +2213,24 @@ class Test들어온_본문에서_자기_멘션만_지운다:
         assert job.context.text == "<@U9> 에게 물어봐"
 
 
-class Test엔진_상태는_기동마다_새로_잡힌다:
-    """settings 판독 기준선이 프로세스 수명 내내 남으면, 한 프로세스에서
-    Application 을 다시 만든 뒤에도 앞의 판독이 판정에 쓰인다 (sca-vlaj)."""
+class Test엔진_상태는_preflight_판정을_그대로_쓴다:
+    """실제 기동 순서는 preflight -> Application 생성 -> 첫 요청, 전부 한
+    프로세스다. Application 생성이 판독 기록을 비우면 preflight 가 잡은 deny
+    기준선이 그 사이에 사라져, 파일이 삭제됐어도 첫 요청은 처음 보는 것으로
+    처리돼 deny 없이 실행된다 (코덱스 6차 리뷰 결함1·2, sca-e34p 재확인)."""
 
-    def test_새_Application_은_앞의_판독을_안_들고_간다(
+    def test_Application_생성은_앞선_판독을_지우지_않는다(
         self, profile: Profile, client: FakeSlackClient, tmp_path: Path
     ) -> None:
+        from slack_cli_agent.core.errors import ConfigError
         from slack_cli_agent.engine.claude_settings import load_settings_file
 
         path = tmp_path / "settings.json"
         path.write_text('{"permissions": {"deny": ["Bash"]}}', encoding="utf-8")
-        load_settings_file(path)
+        load_settings_file(path)  # preflight 가 기동 때 읽는 것과 같은 호출
         path.unlink()
 
         Application(profile, client)
 
-        assert load_settings_file(path) == {}
+        with pytest.raises(ConfigError):
+            load_settings_file(path)

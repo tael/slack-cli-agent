@@ -27,11 +27,16 @@ CAPABILITY_UNMET_REASON = "capability_unmet"
 #: 엔진 로그인이 풀린 상태다. 새 세션도 같은 자격으로 붙으므로 다시 시도해도
 #: 똑같이 실패한다. EngineSwitcher 가 전환 계기 이름으로도 이 값을 쓴다.
 AUTH_FAILURE_REASON = "auth_failure"
+#: settings 파일이 없거나 비어 명령을 못 만든 상태다. 새 세션을 열어도 같은
+#: 파일이 그대로다. Must match EngineRunner.ENGINE_CONFIG_REASON (코덱스 6차
+#: 리뷰 결함4) -- kept a literal here rather than imported, same reason as
+#: USAGE_LIMIT_REASON above.
+ENGINE_CONFIG_REASON = "engine_config"
 
-#: Failures a new session can't get past. All three are properties of the
-#: engine or the account, not of the conversation.
+#: Failures a new session can't get past. All four are properties of the
+#: engine, the account, or its settings, not of the conversation.
 NO_RETRY_REASONS = frozenset({
-    USAGE_LIMIT_REASON, CAPABILITY_UNMET_REASON, AUTH_FAILURE_REASON,
+    USAGE_LIMIT_REASON, CAPABILITY_UNMET_REASON, AUTH_FAILURE_REASON, ENGINE_CONFIG_REASON,
 })
 
 

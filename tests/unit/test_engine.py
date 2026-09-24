@@ -1851,11 +1851,12 @@ class Test엔진환경격리:
 
     def test_정책을_못_만들면_준비_단계_전에_멈춘다(self, tmp_path: Path) -> None:
         """prepare() 는 설정 파일을 쓴다. 정책 확인이 그 뒤면 실행되지도 않을
-        요청이 파일을 남긴다."""
+        요청이 파일을 남긴다. 실패는 응답으로 돌아온다 -- raise 그대로 두면
+        사용자 대면 안내도 감사 기록도 안 남는다 (코덱스 6차 리뷰 결함3)."""
         engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)  # 프로필에 fake 블록이 없다
         runner = EngineRunner(RuntimeSettings(), subprocess_runner=lambda *a, **k: None)
-        with pytest.raises(ConfigError):
-            runner.run(engine, request())
+        resp = runner.run(engine, request())
+        assert resp.failure_reason == "engine_config"
         assert engine.built == []
 
     def test_정책을_안_주면_엔진_자신의_정책을_쓴다(self, tmp_path: Path) -> None:
@@ -2729,6 +2730,22 @@ class Test설정_예외는_응답이_된다:
         assert resp.failure_reason == "engine_config"
         assert switcher.load() == {}
         assert secondary.built == []
+
+
+    def test_환경정책_조회의_ConfigError_도_실패_응답이_된다(self, tmp_path: Path) -> None:
+        """environment_policy() 는 prepare/build_command 를 감싼 try 밖에서
+        불린다. 등록되지 않은 엔진 이름으로 부르면 이 자리에서 그대로
+        ConfigError 가 실행기를 뚫는다 (코덱스 6차 리뷰 결함3)."""
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            raise AssertionError("정책을 못 구했는데 실행했다")
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess)
+        resp = runner.run(engine, request())
+
+        assert resp.ok is False
+        assert resp.failure_reason == "engine_config"
 
 
 class Test엔진_상태_초기화_진입점:
