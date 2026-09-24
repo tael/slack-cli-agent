@@ -29,7 +29,7 @@ from .footprint import (
 from .tool_selection import ToolAccess, ToolSelection
 
 if TYPE_CHECKING:
-    from ..config.profile import EngineSpec, Profile
+    from ..config.profile import EngineSpec, McpServerSpec, Profile
     from ..config.settings import RuntimeSettings
 
 
@@ -405,12 +405,20 @@ class Engine(ABC):
     capabilities: ClassVar[EngineCapabilities] = EngineCapabilities()
 
     @classmethod
-    def configured_capabilities(cls, spec: EngineSpec) -> EngineCapabilities:
+    def configured_capabilities(
+        cls, spec: EngineSpec, mcp_servers: Mapping[str, McpServerSpec] | None = None
+    ) -> EngineCapabilities:
         """What the profile alone settles, before a request narrows it.
 
         Boot-time checks need an answer without a request. Reading the
         ClassVar there described every codex profile the same way whatever
         its sandbox said (sca-ymx4).
+
+        Takes the profile's MCP servers beside the spec because one axis
+        capabilities_for() narrows lives there, not on EngineSpec: claude's
+        allowlist drops to server granularity as soon as a server is attached
+        (sca-qqtl). Without them the boot answer and the per-request answer
+        come from different inputs and can disagree.
         """
         return cls.capabilities
 

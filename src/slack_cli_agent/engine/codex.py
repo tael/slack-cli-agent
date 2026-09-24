@@ -143,7 +143,11 @@ class CodexEngine(Engine):
     )
 
     @classmethod
-    def configured_capabilities(cls, spec: EngineSpec) -> EngineCapabilities:
+    def configured_capabilities(
+        cls, spec: EngineSpec, mcp_servers: Mapping[str, McpServerSpec] | None = None
+    ) -> EngineCapabilities:
+        # MCP servers do not move this engine's axis: codex takes no tool
+        # argument at all, so its restriction comes from the sandbox alone.
         return cls._capabilities_for_sandbox(
             str(spec.options.get("sandbox", "danger-full-access"))
         )

@@ -998,6 +998,24 @@ class TestToolAllowlistEnforcementCheck:
         result = ToolAllowlistEnforcementCheck().run(PreflightContext(profile=profile))
         assert result.ok is True
 
+    def test_MCP_서버가_붙은_클로드는_서버_단위임을_알린다(self, tmp_path: Path) -> None:
+        """허용목록이 어느 MCP 서버의 도구를 이름하면 그 서버는 통째로 열린다
+        (sca-6ewc 실측). 통과로 적으면 실제 보장보다 세게 말한다 (sca-qqtl)."""
+        profile = make_profile(tmp_path, mcp_servers={"jira": {"command": "jira-mcp"}})
+        result = ToolAllowlistEnforcementCheck().run(PreflightContext(profile=profile))
+        assert result.ok is False
+        assert result.fatal is False
+        assert "MCP" in result.detail
+        assert "server_scoped_allowlist" in result.detail
+
+    def test_꺼둔_MCP_서버만_있으면_통과한다(self, tmp_path: Path) -> None:
+        """--mcp-config 에 안 실리므로 그 이름으로 열리는 도구가 없다."""
+        profile = make_profile(
+            tmp_path, mcp_servers={"jira": {"command": "jira-mcp", "disabled": True}}
+        )
+        result = ToolAllowlistEnforcementCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
+
     def test_표준_점검_목록에_들어_있다(self) -> None:
         names = [check.name for check in PreflightSuite().checks]
         assert ToolAllowlistEnforcementCheck.name in names
