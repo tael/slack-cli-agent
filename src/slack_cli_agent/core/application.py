@@ -444,12 +444,17 @@ class Application:
         check and the normal path cannot drift apart (sca-0ab).
 
         The watch results moved out of the work directory, so the check turn
-        now reads them from outside its cwd (sca-vokt)."""
+        now reads them from outside its cwd (sca-vokt).
+
+        attach_dir is deliberately not here: it holds every conversation's
+        saved files under one root, so listing it would let one request's
+        engine browse every other conversation's attachments. The pipeline
+        adds only the specific subdirectory a request's own files live in
+        (코덱스 8차 리뷰, sca-h2dr)."""
         return (
             self._profile.paths.persona,
             self._profile.paths.prompts,
             self._profile.paths.watch_out,
-            self._profile.attach_dir,
         )
 
     def tool_policy(self) -> ToolPolicy:
