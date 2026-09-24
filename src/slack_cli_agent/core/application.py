@@ -33,6 +33,7 @@ from ..config.channel import ChannelConfig, ChannelRegistry, channel_is_rich
 from ..config.channel import channel_slug as slug_for
 from ..config.profile import EngineSpec, Profile
 from ..config.settings import RuntimeSettings
+from ..config.slug_migration import ChannelSlugMigrator
 from ..engine.base import CallOrigin, Engine, EngineRequest, EngineResponse
 from ..engine.mcp_health import broken_mcp_servers
 from ..engine.registry import EngineRegistry, default_registry
@@ -237,7 +238,13 @@ class Application:
             for engine_class in plugin.engines():
                 self._registry.register(engine_class)
 
-        self._channels = ChannelRegistry(profile.paths.channels)
+        self._channels = ChannelRegistry(
+            profile.paths.channels,
+            on_slug_change=ChannelSlugMigrator(
+                file_dirs=(profile.paths.knowledge, profile.paths.learned),
+                tree_roots=(profile.paths.responses,),
+            ).migrate,
+        )
         self._names = DisplayNameResolver(client)
         self._user_namer: UserNamer | None = None
         self._group_names = UserGroupNameResolver(client)
