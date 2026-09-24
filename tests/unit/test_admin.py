@@ -66,8 +66,8 @@ class TestAdminCommandContract:
 
 
 class TestAdminResult:
-    def test_기본은_handled_True다(self) -> None:
-        assert AdminResult(message="x").handled is True
+    def test_기본은_applied_True다(self) -> None:
+        assert AdminResult(message="x").applied is True
 
 
 # AdminRouter — 매칭과 권한 대조
@@ -97,7 +97,7 @@ class TestAdminRouter:
         ctx = make_context(tmp_path, trust=TrustLevel.TRUSTED)
         result = router.dispatch("에코", ctx)
         assert result is not None
-        assert result.handled is True
+        assert result.applied is True
         assert result.message == "에코 응답"
 
     def test_권한이_모자라면_실행하지_않고_거절한다(self, tmp_path: Path) -> None:
@@ -105,14 +105,14 @@ class TestAdminRouter:
         ctx = make_context(tmp_path, trust=TrustLevel.GENERAL)
         result = router.dispatch("에코", ctx)
         assert result is not None
-        assert result.handled is False
+        assert result.applied is False
 
     def test_소유자는_TRUSTED_요구_명령도_쓴다(self, tmp_path: Path) -> None:
         router = AdminRouter([_EchoCommand()])
         ctx = make_context(tmp_path, trust=TrustLevel.OWNER)
         result = router.dispatch("에코", ctx)
         assert result is not None
-        assert result.handled is True
+        assert result.applied is True
 
 
 # HelpCommand
@@ -255,5 +255,5 @@ class Test설정오류를사용자에게알린다:
         result = router.dispatch("터짐", ctx)
 
         assert result is not None
-        assert result.handled is False
+        assert result.applied is False
         assert "채널 설정을 읽지 못해" in result.message

@@ -73,7 +73,7 @@ class TestChatActiveCommand:
         cmd = ChatActiveCommand(NoticeCatalog())
         result = cmd.execute(ctx)
         assert read_channel(tmp_path)["chat"] == "active"
-        assert result.handled is True
+        assert result.applied is True
         assert result.message
 
 
@@ -122,7 +122,7 @@ class TestUnaddressedOnCommand:
         ctx = make_context(tmp_path)
         result = UnaddressedOnCommand(NoticeCatalog()).execute(ctx)
         assert read_channel(tmp_path)["answer_unaddressed"] is True
-        assert result.handled is True
+        assert result.applied is True
         assert result.message
 
 
@@ -165,7 +165,7 @@ class TestCoachModeCommand:
         assert saved["mode"] == "agent_coach"
         assert saved["answer_unaddressed"] is False
         assert saved["light_context"] is True
-        assert result.handled is True
+        assert result.applied is True
 
 
 # 기본 모드
@@ -198,6 +198,14 @@ class TestChannelUnregisterCommand:
         cmd = ChannelUnregisterCommand(NoticeCatalog())
         result = cmd.execute(ctx)
         assert "목록에 없습니다" in result.message
+        assert result.applied is False
+
+    def test_뺐으면_적용으로_적는다(self, tmp_path: Path) -> None:
+        channels_path = tmp_path / "channels.json"
+        channels_path.write_text(json.dumps({"C1": {"name": "테스트채널"}}), encoding="utf-8")
+        ctx = make_context(tmp_path, channels_path=channels_path)
+        result = ChannelUnregisterCommand(NoticeCatalog()).execute(ctx)
+        assert result.applied is True
 
     def test_등록된_채널이면_목록에서_뺀다(self, tmp_path: Path) -> None:
         channels_path = tmp_path / "channels.json"
@@ -251,7 +259,7 @@ class Test미등록채널에서는_설정을_안_바꾼다:
         assert (tmp_path / "channels.json").exists() is False
         assert ctx.channels.is_registered("C1") is False
         assert "목록에 없습니다" in result.message
-        assert result.handled is False
+        assert result.applied is False
 
     def test_DM_식별자가_채널_파일에_안_남는다(self, tmp_path: Path) -> None:
         ctx = make_context(tmp_path, channel="D1", registered=False)

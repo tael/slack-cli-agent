@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -39,8 +40,25 @@ SLUG_RETRY_INTERVAL_SEC = 60.0
 An attempt cap would turn a long outage into a permanent miss, which is the
 defect sca-tl2q fixed, so the retry never stops -- only its rate is bounded.
 Without a bound every get/is_registered/all pays the migrator's lock timeout
-again (sca-c2e7). A change to the config file still retries immediately.
+again (sca-c2e7). A move whose target slug is different from the one that
+failed is a new event and is attempted at once.
 """
+
+SLUG_RETRY_MARKER_SUFFIX = ".slug-retry"
+"""Marker file holding the next retry deadline, kept beside the channel file.
+
+The deadline used to be instance state, so every process paid the migrator's
+lock timeout once per interval and the wait added up with the process count
+(sca-vtqq). It is a wall-clock epoch because monotonic clocks are not
+comparable between processes.
+"""
+
+
+def _now() -> float:
+    """Wall clock, named so the retry deadline can be moved in tests without
+    patching the time module for everything else."""
+    return time.time()
+
 
 KNOWN_KEYS = frozenset(
     {
@@ -200,9 +218,12 @@ class ChannelRegistry:
         #: exactly the state a bot starts in when it was registered while the
         #: process was down (sca-do8s).
         self._slugs: dict[str, str] = {}
-        #: When the next retry of a failed move is allowed. None means none is
-        #: pending.
+        #: Moves the callback refused, per channel. Read to tell a retry from
+        #: a slug that moved again, which must not wait for the interval.
+        self._slug_retry_pending: dict[str, tuple[str, str]] = {}
+        #: Fallback deadline for when the marker file cannot be written.
         self._slug_retry_at: float | None = None
+        self._slug_retry_marker = path.with_name(path.name + SLUG_RETRY_MARKER_SUFFIX)
 
     def get(self, channel_id: str) -> ChannelConfig | None:
         return self._current().get(channel_id)
@@ -317,10 +338,39 @@ class ChannelRegistry:
             return self._configs
 
     def _slug_retry_due(self) -> bool:
-        return (
-            self._slug_retry_at is not None
-            and time.monotonic() >= self._slug_retry_at
-        )
+        if not self._slug_retry_pending:
+            return False
+        deadline = self._read_retry_deadline()
+        # An unreadable or missing marker reads as due: a failed move that
+        # never retries is the permanent miss sca-tl2q fixed.
+        return deadline is None or _now() >= deadline
+
+    def _read_retry_deadline(self) -> float | None:
+        try:
+            text = self._slug_retry_marker.read_text(encoding="utf-8")
+        except OSError:
+            return self._slug_retry_at
+        try:
+            return float(text.strip())
+        except ValueError:
+            # A torn write from another process; the in-process deadline still
+            # bounds the rate.
+            return self._slug_retry_at
+
+    def _write_retry_deadline(self, deadline: float | None) -> None:
+        self._slug_retry_at = deadline
+        if deadline is None:
+            with suppress(OSError):
+                self._slug_retry_marker.unlink()
+            return
+        try:
+            self._slug_retry_marker.parent.mkdir(parents=True, exist_ok=True)
+            self._slug_retry_marker.write_text(f"{deadline}", encoding="utf-8")
+        except OSError as exc:
+            log.warning(
+                "이사 재시도 표식을 쓰지 못해 이 프로세스 안에서만 간격을 둔다 : %s : %s",
+                self._slug_retry_marker, exc,
+            )
 
     def _announce_slugs(self) -> None:
         """Reports every channel whose slug moved since the last parse.
@@ -344,19 +394,32 @@ class ChannelRegistry:
             for cid, old in previous.items()
             if cid not in self._slugs
         )
-        retry = False
+        due = self._slug_retry_due()
+        pending: dict[str, tuple[str, str]] = {}
+        failed = False
         for cid, old, new in moved:
             if old == new:
+                continue
+            if not due and self._slug_retry_pending.get(cid) == (old, new):
+                # The same move that already failed. Gated here rather than at
+                # the caller because a config command rewrites the channel
+                # file, and reading the mtime change as a new event made every
+                # command pay the migrator's lock timeout (sca-vtqq).
+                self._slugs[cid] = old
+                pending[cid] = (old, new)
                 continue
             if self._on_slug_change(old, new) is False:
                 # Recording the new slug here would mean this channel never
                 # reads as moved again, turning one failed attempt into a
                 # permanent miss (sca-tl2q).
                 self._slugs[cid] = old
-                retry = True
-        self._slug_retry_at = (
-            time.monotonic() + SLUG_RETRY_INTERVAL_SEC if retry else None
-        )
+                pending[cid] = (old, new)
+                failed = True
+        self._slug_retry_pending = pending
+        if failed:
+            self._write_retry_deadline(_now() + SLUG_RETRY_INTERVAL_SEC)
+        elif not pending:
+            self._write_retry_deadline(None)
 
     def _parse(self) -> dict[str, ChannelConfig]:
         try:
