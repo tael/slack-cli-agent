@@ -35,7 +35,6 @@ from ..config.profile import EngineSpec, Profile
 from ..config.settings import RuntimeSettings
 from ..config.slug_migration import SLUG_MIGRATION_LOCK, ChannelSlugMigrator
 from ..engine.base import CallOrigin, Engine, EngineRequest, EngineResponse
-from ..engine.lifecycle import reset_engine_state
 from ..engine.mcp_health import broken_mcp_servers
 from ..engine.registry import EngineRegistry, default_registry
 from ..engine.runner import (
@@ -223,9 +222,6 @@ class Application:
         # injected so tests can control identity-refresh timing
         self._clock = clock
         profile.paths.ensure()
-        # The settings baselines are process-global, so a second Application in
-        # one process would judge this one's files against the first's readings.
-        reset_engine_state()
 
         base = settings or RuntimeSettings()
         self._settings = base.override(profile.settings_override)

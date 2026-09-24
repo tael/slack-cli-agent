@@ -149,19 +149,25 @@ class EngineRunner:
 
     def run(self, engine: Engine, request: EngineRequest,
            timeout_sec: float | None = None) -> EngineResponse:
-        # Resolved before prepare() so an engine with no policy fails before
-        # writing its config file.
-        policy = self._environment_policy or engine.environment_policy()
-        if request.session_id is None:
-            # Only here is the concrete engine known: FallbackEngine picks
-            # primary or secondary in its own run(), and the recovery probe
-            # sends a switched-state request back to the primary.
-            request = dataclasses.replace(request, session_id=engine.new_session_id())
-        if not request.model:
-            # Same reason as session_id: model naming is per-engine and the
-            # concrete engine is only known here (sca-dyb.10).
-            request = dataclasses.replace(request, model=engine.spec.model)
-        actual = engine.capabilities_for(request)
+        try:
+            # Resolved before prepare() so an engine with no policy fails before
+            # writing its config file. engine.spec (for the model name below)
+            # and capabilities_for() can raise the same way, so they share this
+            # try -- none of the three ever reached the block below uncaught
+            # (코덱스 6차 리뷰 결함3).
+            policy = self._environment_policy or engine.environment_policy()
+            if request.session_id is None:
+                # Only here is the concrete engine known: FallbackEngine picks
+                # primary or secondary in its own run(), and the recovery probe
+                # sends a switched-state request back to the primary.
+                request = dataclasses.replace(request, session_id=engine.new_session_id())
+            if not request.model:
+                # Same reason as session_id: model naming is per-engine and the
+                # concrete engine is only known here (sca-dyb.10).
+                request = dataclasses.replace(request, model=engine.spec.model)
+            actual = engine.capabilities_for(request)
+        except ConfigError as e:
+            return self._config_error_response(engine, request, e)
         recorded = self._record_capabilities(engine, request, actual)
         blocked = self._blocked_response(engine, request, actual, recorded)
         if blocked is not None:

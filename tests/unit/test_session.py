@@ -247,6 +247,12 @@ class TestSessionManagerRetryPolicy:
         mgr, _clock = manager
         assert mgr.should_retry_with_new_session("capability_unmet") is False
 
+    def test_엔진_설정_오류도_재시도하지_않는다(self, manager) -> None:
+        """설정 오류는 새 세션을 열어도 같은 파일이 여전히 없거나 비어 있다.
+        재시도가 같은 오류를 한 번 더 만들 뿐이다 (코덱스 6차 리뷰 결함4)."""
+        mgr, _clock = manager
+        assert mgr.should_retry_with_new_session("engine_config") is False
+
 
 class TestSqliteSessionStoreReassignSessionId:
     """실행기가 새로 발급한 세션 ID로 갈아 끼운다. 원본 persist_runner_session 이식.
