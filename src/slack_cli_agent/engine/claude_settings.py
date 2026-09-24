@@ -34,11 +34,18 @@ def merge_settings(*fragments: Mapping[str, Any]) -> dict[str, Any]:
     return merged
 
 
+#: Keys claude replaces rather than joins across settings levels. Joining a
+#: narrowed model list would leave the wider one from the base file in it.
+_REPLACE_KEYS = ("fallbackModel", "modelPicker", "availableModels", "modelSettings")
+
+
 def _merge_pair(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(base)
     for key, value in overlay.items():
         current = result.get(key)
-        if isinstance(current, Mapping) and isinstance(value, Mapping):
+        if key in _REPLACE_KEYS:
+            result[key] = value
+        elif isinstance(current, Mapping) and isinstance(value, Mapping):
             result[key] = _merge_pair(current, value)
         elif isinstance(current, list) and isinstance(value, list):
             result[key] = _join(current, value)
