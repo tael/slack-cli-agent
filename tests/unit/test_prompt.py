@@ -334,7 +334,8 @@ class TestAttachmentSection:
         text = section.render(ctx)
         assert "이 말에 파일이 붙어 있다." in text
         assert "- photo.png (image/png) : /tmp/a/photo.png" in text
-        assert "Read 로 열어 내용을 직접 보고 답한다." in text
+        assert "그 경로를 열어 내용을 직접 보고 답한다." in text
+        assert "Read" not in text
 
     def test_다운로드_실패_건수를_알린다(self) -> None:
         from slack_cli_agent.prompt.sections import AttachmentSection, CompositionContext

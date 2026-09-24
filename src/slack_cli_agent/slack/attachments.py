@@ -92,6 +92,30 @@ class AttachmentStore:
             )
         return saved
 
+    def download(self, event: Mapping[str, Any]) -> tuple[tuple[dict[str, Any], ...], int]:
+        """Downloads an event's files and merges the local path back onto
+        Slack's own file fields, so callers keep whatever shape Slack sent
+        plus `local_path`/`mimetype`. Shared by the live path (ingress) and
+        catch-up recovery so a recovered request gets the same attachment
+        handling a live one does (sca-h2dr)."""
+        saved = self.save(event)
+        requested = len(event.get("files") or ())
+        # Missed count travels even when nothing was saved: a prompt section
+        # reads it to tell the model it's answering without having seen a
+        # file that was attached (sca-q45r).
+        missed = max(0, requested - len(saved))
+        if not saved:
+            return (), missed
+        originals = {f.get("name"): f for f in (event.get("files") or [])}
+        merged: list[dict[str, Any]] = []
+        for item in saved:
+            original = dict(originals.get(item.name) or {})
+            original["name"] = item.name
+            original["mimetype"] = item.kind
+            original["local_path"] = item.path
+            merged.append(original)
+        return tuple(merged), missed
+
     def cleanup(self, now: float | None = None) -> int:
         """지운 파일 수를 돌려준다. 건수가 없으면 0건과 아예 안 돈 것이
         로그에서 같아 보인다(sca-mf6)."""

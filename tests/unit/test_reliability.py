@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -190,6 +191,7 @@ def make_service(
     identity=None,
     settings: RuntimeSettings | None = None,
     now: float = 100_000.0,
+    attachments=None,
 ):
     from slack_cli_agent.reliability.catchup import CatchupService
 
@@ -201,6 +203,7 @@ def make_service(
         identity=identity or fake_identity(user_id=bot_user_id, bot_id="B123"),
         now=lambda: now,
         started_at=0.0,  # 이 프로세스가 아주 예전에 떴다고 가정 — 유예 창을 검사 대상에서 뺀다
+        attachments=attachments,
     )
 
 
@@ -987,3 +990,47 @@ class Test캐치업_본문도_실시간과_같게_만든다:
 
     def test_남을_부른_멘션은_남긴다(self) -> None:
         assert self._본문("<@U_BOT> <@U9> 에게 물어봐") == "<@U9> 에게 물어봐"
+
+
+class Test캐치업도_첨부를_내려받는다:
+    """캐치업은 슬랙 원본 files 딕셔너리를 그대로 담을 뿐 다운로드를 안 해
+    local_path 가 없다. 정상 경로(ingress)로 받은 같은 메시지와 달리 엔진이
+    파일을 못 연다 (코덱스 7차 리뷰, sca-h2dr)."""
+
+    def test_저장된_첨부의_local_path_를_담는다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.slack.attachments import AttachmentStore, DownloadResult
+
+        attachments = AttachmentStore(
+            attach_dir=tmp_path / "attach",
+            token_provider=lambda: "xoxb-token",
+            downloader=lambda url, token: DownloadResult("image/png", b"pngdata"),
+        )
+        history = FakeHistoryReader(
+            history={
+                "C1": [{
+                    "ts": "99000.0", "user": "U1", "text": "<@U_BOT> 질문",
+                    "files": [{"name": "photo.png", "url_private_download": "https://slack/x", "size": 10}],
+                }]
+            }
+        )
+        service = make_service(history, attachments=attachments)
+
+        outcome = service.find_missed("C1", window=3600)
+
+        ctx = outcome.value()[0]
+        assert len(ctx.files) == 1
+        assert ctx.files[0]["name"] == "photo.png"
+        assert Path(ctx.files[0]["local_path"]).read_bytes() == b"pngdata"
+        assert ctx.missed_files == 0
+
+    def test_첨부_저장소가_없으면_원본_그대로다(self) -> None:
+        """기존 시험이 attachments 인자 없이 make_service 를 부르므로,
+        주입이 없을 때의 하위호환도 지킨다."""
+        history = FakeHistoryReader(
+            history={"C1": [{"ts": "99000.0", "user": "U1", "text": "<@U_BOT> 질문"}]}
+        )
+        service = make_service(history)
+
+        outcome = service.find_missed("C1", window=3600)
+
+        assert outcome.value()[0].files == ()
