@@ -394,6 +394,16 @@ class Engine(ABC):
     #: options, and claude's allowlist only holds if the request has one.
     capabilities: ClassVar[EngineCapabilities] = EngineCapabilities()
 
+    @classmethod
+    def configured_capabilities(cls, spec: EngineSpec) -> EngineCapabilities:
+        """What the profile alone settles, before a request narrows it.
+
+        Boot-time checks need an answer without a request. Reading the
+        ClassVar there described every codex profile the same way whatever
+        its sandbox said (sca-ymx4).
+        """
+        return cls.capabilities
+
     #: True when this engine's own stdout carries structured progress events,
     #: so EngineRunner streams stdout and feeds each line to
     #: progress_tool_name(). Claude reports progress through a separate hook

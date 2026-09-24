@@ -312,7 +312,7 @@ class ToolAllowlistEnforcementCheck(PreflightCheck):
             engine_class = engines.engine_class(spec.type)
             if engine_class is None:
                 continue
-            actual = engine_class.capabilities.tool_restriction
+            actual = engine_class.configured_capabilities(spec).tool_restriction
             if actual is ToolRestriction.EXACT_ALLOWLIST:
                 continue
             weak.append(f"{label} {spec.type} : 도구 제한이 {actual} 라 허용목록이 그대로 적용되지 않는다")

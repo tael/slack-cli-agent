@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from ..auth.tools import READ_ONLY_TOOLS
-from ..config.profile import McpServerSpec
+from ..config.profile import EngineSpec, McpServerSpec
 from .base import (
     UNTRUSTED_INPUT_MARK,
     Engine,
@@ -138,6 +138,25 @@ class CodexEngine(Engine):
         instruction_boundary=InstructionBoundary.NATIVE,
     )
 
+    @classmethod
+    def configured_capabilities(cls, spec: EngineSpec) -> EngineCapabilities:
+        return cls._capabilities_for_sandbox(
+            str(spec.options.get("sandbox", "danger-full-access"))
+        )
+
+    @classmethod
+    def _capabilities_for_sandbox(cls, sandbox: str) -> EngineCapabilities:
+        isolation = _SANDBOX_ISOLATION.get(sandbox, ExecutionIsolation.NONE)
+        return dataclasses.replace(
+            cls.capabilities,
+            execution_isolation=isolation,
+            tool_restriction=(
+                ToolRestriction.COARSE_SANDBOX
+                if isolation is not ExecutionIsolation.NONE
+                else ToolRestriction.NONE
+            ),
+        )
+
     def _sandbox_for(self, request: EngineRequest) -> str:
         """The sandbox this turn actually runs under.
 
@@ -157,11 +176,8 @@ class CodexEngine(Engine):
         return str(self.spec.options.get("sandbox", "danger-full-access"))
 
     def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
-        sandbox = self._sandbox_for(request)
-        isolation = _SANDBOX_ISOLATION.get(sandbox, ExecutionIsolation.NONE)
         return dataclasses.replace(
-            self.capabilities,
-            execution_isolation=isolation,
+            self._capabilities_for_sandbox(self._sandbox_for(request)),
             # A resumed turn carries this turn's instructions inside the prompt
             # string, next to the Slack input. The CLI keeps the first turn's
             # developer_instructions whatever we pass (measured 2026-09-19), so
@@ -170,11 +186,6 @@ class CodexEngine(Engine):
             instruction_boundary=(
                 InstructionBoundary.PROMPT_ONLY if request.resume
                 else InstructionBoundary.NATIVE
-            ),
-            tool_restriction=(
-                ToolRestriction.COARSE_SANDBOX
-                if isolation is not ExecutionIsolation.NONE
-                else ToolRestriction.NONE
             ),
         )
 

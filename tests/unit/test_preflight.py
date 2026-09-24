@@ -654,6 +654,31 @@ class TestEngineHomeCredentialCheck:
 # suite.py — 표준 점검 목록을 한 자리에
 
 
+class Test도구강제_점검은_프로필_값을_본다:
+    """같은 codex 라도 sandbox 값에 따라 실제 축이 다르다. 클래스 선언만 보면
+    read-only 프로필과 전체 접근 프로필이 같은 경고를 받는다 (sca-ymx4)."""
+
+    @staticmethod
+    def 결과(tmp_path: Path, sandbox: str | None):
+        from slack_cli_agent.preflight.checks import ToolAllowlistEnforcementCheck
+        from slack_cli_agent.preflight.runner import PreflightContext
+
+        options = {"sandbox": sandbox} if sandbox else {}
+        profile = make_profile(
+            tmp_path,
+            primary_engine={"type": "codex", "binary": "codex", "model": "gpt-5", "options": options},
+        )
+        return ToolAllowlistEnforcementCheck().run(PreflightContext(profile=profile))
+
+    def test_읽기전용_프로필과_전체접근_프로필의_안내가_다르다(self, tmp_path: Path) -> None:
+        읽기전용 = self.결과(tmp_path, "read-only")
+        전체접근 = self.결과(tmp_path, None)
+        assert 읽기전용.detail != 전체접근.detail
+
+    def test_전체접근이면_아무것도_안_막힌다고_적는다(self, tmp_path: Path) -> None:
+        assert "none" in self.결과(tmp_path, None).detail
+
+
 class TestPreflightSuite:
     """점검 목록이 명령 안에만 있으면 기동 게이트가 따로 만들게 되고, 그
     순간 두 목록이 갈라진다(sca-s5r).
@@ -928,7 +953,12 @@ class TestToolAllowlistEnforcementCheck:
     def test_코덱스는_샌드박스라는_다른_축임을_알린다(self, tmp_path: Path) -> None:
         profile = make_profile(
             tmp_path,
-            primary_engine={"type": "codex", "binary": str(tmp_path / "codex"), "model": "m"},
+            primary_engine={
+                "type": "codex",
+                "binary": str(tmp_path / "codex"),
+                "model": "m",
+                "options": {"sandbox": "workspace-write"},
+            },
         )
         result = ToolAllowlistEnforcementCheck().run(PreflightContext(profile=profile))
         assert result.ok is False
