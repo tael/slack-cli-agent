@@ -311,6 +311,42 @@ class TestPresentPeopleSection:
         assert "- 김영희 <@U2>  (지금 말을 건 사람)" not in text
 
 
+class TestAttachmentSection:
+    """원본 attachment_note() 이식 — 첨부는 저장되지만 그 존재가 프롬프트에
+    안 실리던 것을 고친다 (sca-q45r)."""
+
+    def test_첨부가_없으면_붙지_않는다(self) -> None:
+        from slack_cli_agent.prompt.sections import AttachmentSection, CompositionContext
+
+        section = AttachmentSection()
+        ctx = CompositionContext(principal=STRANGER)
+        assert section.applies_to(ctx) is False
+
+    def test_저장된_첨부를_이름과_경로로_알린다(self) -> None:
+        from slack_cli_agent.prompt.sections import AttachmentSection, CompositionContext
+
+        section = AttachmentSection()
+        ctx = CompositionContext(
+            principal=STRANGER,
+            files=({"name": "photo.png", "mimetype": "image/png", "local_path": "/tmp/a/photo.png"},),
+        )
+        assert section.applies_to(ctx) is True
+        text = section.render(ctx)
+        assert "이 말에 파일이 붙어 있다." in text
+        assert "- photo.png (image/png) : /tmp/a/photo.png" in text
+        assert "Read 로 열어 내용을 직접 보고 답한다." in text
+
+    def test_다운로드_실패_건수를_알린다(self) -> None:
+        from slack_cli_agent.prompt.sections import AttachmentSection, CompositionContext
+
+        section = AttachmentSection()
+        ctx = CompositionContext(principal=STRANGER, missed_files=2)
+        assert section.applies_to(ctx) is True
+        text = section.render(ctx)
+        assert "내려받지 못한 파일이 2개 있다." in text
+        assert "그 파일 내용은 모르는 채로 답한다는 것을 밝힌다." in text
+
+
 class TestPromptLibraryDefaultsFallback:
     """상태 디렉터리에 없으면 패키지 동봉 기본 프롬프트로 대체한다."""
 

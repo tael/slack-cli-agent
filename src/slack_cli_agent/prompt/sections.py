@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -65,6 +66,10 @@ class CompositionContext:
     knowledge: KnowledgeLoader | None = None
     # (display name, mention) pairs; caller collects these, we just render them (PresentPeopleSection).
     people: tuple[tuple[str, str], ...] = ()
+    # Saved-attachment dicts (name/mimetype/local_path); caller merges these onto
+    # RequestContext, we just render them (AttachmentSection).
+    files: tuple[Mapping[str, Any], ...] = ()
+    missed_files: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -350,6 +355,32 @@ class WatchSection(PromptSection):
                 self.RUN_ID_SLOT, ctx.watch_run_id,
             ).replace(self.OUT_DIR_SLOT, ctx.watch_out_dir)
         return text
+
+
+class AttachmentSection(PromptSection):
+    """Tells the engine what got attached to this turn: bot.py:4699-4712's
+    attachment_note ported. Attachments are downloaded and their local path
+    lands on RequestContext.files, but nothing used to read that field back
+    out into the prompt -- the engine answered without knowing a file had
+    even arrived (sca-q45r)."""
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return bool(ctx.files) or ctx.missed_files > 0
+
+    def render(self, ctx: CompositionContext) -> str:
+        lines = ["", "", "이 말에 파일이 붙어 있다."]
+        for f in ctx.files:
+            lines.append(f"- {f.get('name')} ({f.get('mimetype')}) : {f.get('local_path')}")
+        if ctx.files:
+            lines.append(
+                "Read 로 열어 내용을 직접 보고 답한다. 열어 보지 않고 이름만으로 짐작하지 않는다."
+            )
+        if ctx.missed_files:
+            lines.append(
+                f"내려받지 못한 파일이 {ctx.missed_files}개 있다. "
+                "그 파일 내용은 모르는 채로 답한다는 것을 밝힌다."
+            )
+        return "\n".join(lines)
 
 
 class PresentPeopleSection(PromptSection):
