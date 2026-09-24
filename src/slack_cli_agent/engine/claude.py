@@ -40,7 +40,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
-from ..config.profile import McpServerSpec
+from ..config.profile import EngineSpec, McpServerSpec
 from ..observability.progress_hook import HOOK_SCRIPT
 from .base import (
     ElapsedSource,
@@ -225,6 +225,31 @@ class ClaudeEngine(Engine):
             if denied:
                 args += ["--disallowedTools", ",".join(denied)]
         return args
+
+    @classmethod
+    def configured_capabilities(
+        cls, spec: EngineSpec, mcp_servers: Mapping[str, McpServerSpec] | None = None
+    ) -> EngineCapabilities:
+        """The ceiling a claude profile can reach, whatever a request asks.
+
+        An attached server is what capabilities_for() drops to server
+        granularity for, and which servers a turn leaves open depends on that
+        turn's allowlist. Boot has no request, so the answer here is the
+        weakest a request could make it: one attached server is enough. The
+        other direction -- reporting exact_allowlist -- would tell the operator
+        the allowlist holds per tool when no turn on that profile can promise
+        it (sca-qqtl).
+
+        Reads `disabled` directly rather than through _claude_mcp_servers:
+        that one resolves ${env:...} references and would raise here for a
+        missing credential, which is McpCredentialCheck's finding to report.
+        """
+        attached = [server for server in (mcp_servers or {}).values() if not server.disabled]
+        if not attached:
+            return cls.capabilities
+        return dataclasses.replace(
+            cls.capabilities, tool_restriction=ToolRestriction.SERVER_SCOPED_ALLOWLIST
+        )
 
     def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
         # "no tools" needs its own state rather than an empty list (sca-0a7),

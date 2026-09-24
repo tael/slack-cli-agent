@@ -849,3 +849,45 @@ class Test허용목록_축은_MCP_차단_단위까지_본다:
         from slack_cli_agent.engine.runner import LEVEL_NAMES
 
         assert LEVEL_NAMES[ToolRestriction.SERVER_SCOPED_ALLOWLIST] == "허용 목록, MCP 는 서버 단위"
+
+
+class Test기동_판정도_MCP_서버를_본다:
+    """기동 점검은 요청이 없어 configured_capabilities 를 본다. 그 값이
+    프로필의 MCP 서버를 안 보면 요청 시 판정(capabilities_for)과 어긋난다 —
+    붙은 서버가 있는 claude 프로필은 요청마다 서버 단위로 내려가는데 기동
+    때는 정확한 허용목록으로 적혔다 (sca-qqtl).
+    """
+
+    def _프로필(self, tmp_path: Path, mcp_servers: dict[str, Any] | None = None) -> Profile:
+        return profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            tmp_path=tmp_path, mcp_servers=mcp_servers,
+        )
+
+    def test_붙은_서버가_없으면_정확한_허용목록이다(self, tmp_path: Path) -> None:
+        profile = self._프로필(tmp_path)
+        보장 = ClaudeEngine.configured_capabilities(profile.primary_engine, profile.mcp_servers)
+        assert 보장.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+
+    def test_서버가_붙어_있으면_서버단위로_내려간다(self, tmp_path: Path) -> None:
+        """어느 서버가 열릴지는 요청의 허용목록이 정한다. 기동 때는 어느
+        요청도 없으므로 열릴 수 있다는 사실 자체가 그 프로필의 상한이다."""
+        profile = self._프로필(tmp_path, {"jira": {"command": "jira-mcp"}})
+        보장 = ClaudeEngine.configured_capabilities(profile.primary_engine, profile.mcp_servers)
+        assert 보장.tool_restriction is ToolRestriction.SERVER_SCOPED_ALLOWLIST
+
+    def test_꺼둔_서버만_있으면_정확한_허용목록이다(self, tmp_path: Path) -> None:
+        """--mcp-config 에 안 실리므로 그 이름으로 열리는 도구가 없다."""
+        profile = self._프로필(tmp_path, {"jira": {"command": "jira-mcp", "disabled": True}})
+        보장 = ClaudeEngine.configured_capabilities(profile.primary_engine, profile.mcp_servers)
+        assert 보장.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+
+    def test_MCP_를_안_받는_엔진은_서버가_있어도_그대로다(self, tmp_path: Path) -> None:
+        """codex 의 축은 샌드박스다. 서버 유무가 그 축을 바꾸지 않는다."""
+        profile = profile_with(
+            {"type": "codex", "binary": "codex", "model": "gpt-5",
+             "options": {"sandbox": "read-only"}},
+            tmp_path=tmp_path, mcp_servers={"jira": {"command": "jira-mcp"}},
+        )
+        보장 = CodexEngine.configured_capabilities(profile.primary_engine, profile.mcp_servers)
+        assert 보장.tool_restriction is ToolRestriction.COARSE_SANDBOX
