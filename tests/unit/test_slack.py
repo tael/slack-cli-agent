@@ -953,6 +953,18 @@ class TestEventListener:
         assert listener.from_reaction(event, frozenset({POSTMORTEM_EMOJI})) is None
         assert client.calls == []
 
+    def test_신원을_모르면_리액션을_받지_않는다(self, gate: ResponseGate) -> None:
+        """신원 조회가 실패한 구간에서는 item_user 대조를 못 한다. 그대로 받으면
+        소유자나 신뢰 사용자가 남의 메시지에 이모지를 달아도 점검이 돈다."""
+        registry = ChannelRegistry(Path("/nonexistent.json"))
+        listener = EventListener(
+            FakeWebClient(), registry, gate, identity=fake_identity(user_id="", bot_id="")
+        )
+        event = {"reaction": POSTMORTEM_EMOJI,
+                 "item": {"type": "message", "channel": "C1", "ts": "1.0"},
+                 "item_user": "U1", "user": "U2"}
+        assert listener.from_reaction(event, frozenset({POSTMORTEM_EMOJI})) is None
+
 
 # TranscriptBuilder
 
