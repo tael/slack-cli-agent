@@ -30,6 +30,17 @@ class RequestContext:
     def key(self) -> tuple[str, str]:
         return (self.channel, self.ts)
 
+    @property
+    def has_no_request(self) -> bool:
+        """Nothing left to act on once the bot's own mention is stripped.
+
+        Both the socket path and catch-up ask this before queueing; written
+        twice, one side would be fixed and the other left behind (sca-zct1).
+        Attachments do not count — the original checks the text before it
+        saves them (bot.py:5075).
+        """
+        return not self.text.strip()
+
     def marked_late(self) -> RequestContext:
         return replace(self, late=True)
 

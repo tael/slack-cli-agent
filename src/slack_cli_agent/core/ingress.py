@@ -190,7 +190,7 @@ class IngressService:
             # request in it never costs an engine turn (sca-yb8q). Attachments
             # do not count: the original checks the text before it saves them
             # (bot.py:5075), so a file with no words is asked back too.
-            if not ctx.text.strip():
+            if ctx.has_no_request:
                 self._reply(
                     ctx.channel, ctx.thread_ts, self._notices.render(NoticeKey.ASK_WHAT)
                 )
@@ -251,7 +251,20 @@ class IngressService:
         """bot.py:4978. The original posted this and dropped the request,
         saving the event to replay on the next boot. Here the queue below is
         durable, so the request is kept and this only says the reply is late.
-        A failed notice must not cost the request, hence the catch."""
+        A failed notice must not cost the request, hence the catch.
+
+        No live caller reaches this as wired today (sca-uahw). The only thing
+        that sets the flag in the ingress process is SelfRestarter's
+        on_shutdown_start (application.py:1737, wired at cli.py:451), and
+        SelfRestarter.__call__ runs _drain() then os._exit(1) right after it.
+        _drain reads Application.inflight, which only the worker increments
+        (worker.py:109), so in this process the count is always 0 and the
+        drain returns on its first iteration — the flag holds for microseconds.
+        The worker sets the same flag on SIGTERM (cli.py:498) but has no
+        ingress, and an ingress SIGTERM installs no handler at all. The restart
+        reason still reaches the owner through SelfRestarter._announce, so this
+        is left as is rather than grown; re-check if ingress gains a graceful
+        shutdown or starts counting in-flight work."""
         if self._is_shutting_down is None or not self._is_shutting_down():
             return
         try:

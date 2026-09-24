@@ -124,9 +124,14 @@ class EventListener:
         item = event.get("item") or {}
         if item.get("type") != "message":
             return None
-        if self._identity.user_id and event.get("item_user") != self._identity.user_id:
+        # Fails closed while identity is unknown: with nothing to compare
+        # item_user against, skipping the check would accept an emoji on any
+        # message, wider than "this bot's own reply" (sca-8o5f).
+        if not self._identity.user_id:
             return None
-        if self._identity.user_id and event.get("user") == self._identity.user_id:
+        if event.get("item_user") != self._identity.user_id:
+            return None
+        if event.get("user") == self._identity.user_id:
             return None
         return reaction, item.get("channel") or "", item.get("ts") or "", event.get("user") or ""
 
