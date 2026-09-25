@@ -553,6 +553,59 @@ class TestSweep:
         assert report.unchecked_channels == ["C1"]
         assert report.missed == []
 
+    def test_대표로_안_뽑힌_후보는_첨부를_안_받는다(self) -> None:
+        """find_missed 가 후보마다 다운로드하면 대표 선정에서 버려지는
+        메시지의 첨부까지 받는다. worker.py 는 skipped 의 .files 를 안 읽으니
+        그 다운로드는 버려지는 작업이다 (코덱스 8차 리뷰, sca-b8gn)."""
+
+        class SpyAttachmentStore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def download(self, event: Mapping[str, Any]) -> tuple[tuple[dict[str, Any], ...], int]:
+                self.calls.append(str(event.get("ts")))
+                return tuple(event.get("files") or ()), 0
+
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {
+                        "ts": "99000.0",
+                        "thread_ts": "99000.0",
+                        "reply_count": 1,
+                        "latest_reply": "99010.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 1",
+                        "files": [{"id": "F1", "name": "a.png", "url_private": "https://x/a.png"}],
+                    },
+                ]
+            },
+            threads={
+                "99000.0": [
+                    {
+                        "ts": "99000.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 1",
+                        "files": [{"id": "F1", "name": "a.png", "url_private": "https://x/a.png"}],
+                    },
+                    {
+                        "ts": "99010.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 2",
+                        "files": [{"id": "F2", "name": "b.png", "url_private": "https://x/b.png"}],
+                    },
+                ]
+            },
+        )
+        attachments = SpyAttachmentStore()
+        service = make_service(history, attachments=attachments)
+
+        report = service.sweep(["C1"], window=3600)
+
+        assert [c.ts for c in report.missed] == ["99010.0"]
+        assert [c.ts for c in report.skipped] == ["99000.0"]
+        assert attachments.calls == ["99010.0"]
+
 
 class TestRetryPending:
     def test_아직_유예_안의_채널은_다시_보지_않는다(self) -> None:
@@ -1034,7 +1087,12 @@ class Test캐치업_본문도_실시간과_같게_만든다:
 class Test캐치업도_첨부를_내려받는다:
     """캐치업은 슬랙 원본 files 딕셔너리를 그대로 담을 뿐 다운로드를 안 해
     local_path 가 없다. 정상 경로(ingress)로 받은 같은 메시지와 달리 엔진이
-    파일을 못 연다 (코덱스 7차 리뷰, sca-h2dr)."""
+    파일을 못 연다 (코덱스 7차 리뷰, sca-h2dr).
+
+    다운로드는 find_missed 가 아니라 대표 선정(_pick_representatives) 시점에
+    일어난다 - 버려지는 후보의 첨부까지 받지 않기 위해서다 (sca-b8gn). 그래서
+    이 시험은 find_missed 대신 sweep 을 통해 확인한다.
+    """
 
     def test_저장된_첨부의_local_path_를_담는다(self, tmp_path: Path) -> None:
         from slack_cli_agent.slack.attachments import AttachmentStore, DownloadResult
@@ -1054,9 +1112,9 @@ class Test캐치업도_첨부를_내려받는다:
         )
         service = make_service(history, attachments=attachments)
 
-        outcome = service.find_missed("C1", window=3600)
+        report = service.sweep(["C1"], window=3600)
 
-        ctx = outcome.value()[0]
+        ctx = report.missed[0]
         assert len(ctx.files) == 1
         assert ctx.files[0]["name"] == "photo.png"
         assert Path(ctx.files[0]["local_path"]).read_bytes() == b"pngdata"
