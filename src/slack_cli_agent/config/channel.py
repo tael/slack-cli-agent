@@ -65,7 +65,7 @@ KNOWN_KEYS = frozenset(
         "name", "mode", "workdir", "model", "effort", "persona", "knowledge",
         "trusted_users", "answer_unaddressed", "session_scope",
         "disclose_mechanism", "skills", "light_context", "rich", "chat",
-        "progress",
+        "progress", "bot_mentions",
         "user_tools", "tool_enforcement",
     }
 )
@@ -119,6 +119,12 @@ class ChannelConfig:
     same reason as `rich`: opting in per channel meant the task card almost
     never appeared and a long request looked like nothing was happening
     (sca-stj). A channel that wants a quiet thread turns it off."""
+    bot_mentions: bool = False
+    """Whether this bot may call another bot by mention. Off by default: a
+    mention another bot posts wakes this one, so two bots naming each other
+    keep each other awake. A channel where bots hand work to each other turns
+    it on; BotMentionGuard still strips the mention of whoever asked, which is
+    the leg that closes the loop."""
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -167,6 +173,7 @@ class ChannelConfig:
             chat=str(data.get("chat") or CHAT_DEFAULT),
             tool_enforcement=enforcement,
             progress=bool(data.get("progress", DEFAULT_PROGRESS)),
+            bot_mentions=bool(data.get("bot_mentions", False)),
             extra={k: v for k, v in data.items() if k not in KNOWN_KEYS},
         ), rejected
 
