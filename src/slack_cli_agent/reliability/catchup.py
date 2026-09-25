@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ..config.settings import RuntimeSettings
@@ -224,18 +224,18 @@ class CatchupService:
             if key in seen:
                 continue
             seen.add(key)
-            if self._attachments is not None:
-                files, missed_files = self._attachments.download(m)
-            else:
-                files, missed_files = tuple(m.get("files") or ()), 0
             recovered = RequestContext(
                 channel=channel,
                 user=m.get("user") or "",
                 ts=str(m.get("ts")),
                 thread_ts=str(thread_ts),
                 text=self._self_mention.remove_self(m.get("text") or ""),
-                files=files,
-                missed_files=missed_files,
+                # Raw event files carried through untouched; downloading here
+                # would fetch every candidate's attachment even though only
+                # the thread's representative survives _pick_representatives
+                # (코덱스 8차 리뷰, sca-b8gn).
+                files=tuple(m.get("files") or ()),
+                missed_files=0,
                 # Mirrors listener.py's from_app_mention (mentioned ->
                 # unaddressed=False) vs from_message (thread continuation
                 # without a mention -> True). Left unset, SilenceRuleSection
@@ -293,9 +293,17 @@ class CatchupService:
         rest: list[RequestContext] = []
         for items in groups.values():
             items.sort(key=lambda c: float(c.ts))
-            representatives.append(items[-1].marked_late())
+            representatives.append(self._with_attachments(items[-1]).marked_late())
             rest.extend(items[:-1])
         return representatives, rest
+
+    def _with_attachments(self, ctx: RequestContext) -> RequestContext:
+        """Downloads attachments only for the representative a thread group
+        actually keeps, not every candidate find_missed produced (sca-b8gn)."""
+        if self._attachments is None or not ctx.files:
+            return ctx
+        files, missed_files = self._attachments.download({"ts": ctx.ts, "files": list(ctx.files)})
+        return replace(ctx, files=files, missed_files=missed_files)
 
     def retry_pending(self) -> list[RetryStatus]:
         """Re-checks channels whose last catch-up attempt couldn't confirm history."""
