@@ -464,6 +464,45 @@ class TestFindMissed:
 
         assert [m.ts for m in outcome.value()] == ["99005.0"]
 
+    def test_직접_안_불러도_답한_스레드_계속은_unaddressed_다(self) -> None:
+        """listener.py:113 의 from_message 는 같은 조건(멘션 없이 봇이 낀
+        스레드에서 이어진 말)에 unaddressed=True 를 매긴다. find_missed 가
+        RequestContext 를 직접 만들 때 이 필드를 안 채우면 기본값 False 로
+        남아 SilenceRuleSection 이 그 요청에서 빠진다 (코덱스 8차 리뷰,
+        sca-f6ii)."""
+        history = FakeHistoryReader(
+            history={
+                "C1": [{
+                    "ts": "99000.0", "thread_ts": "99000.0", "reply_count": 2,
+                    "latest_reply": "99010.0", "user": "U1", "text": "<@U_BOT> 질문",
+                }]
+            },
+            threads={
+                "99000.0": [
+                    {"ts": "99000.0", "user": "U1", "text": "<@U_BOT> 질문"},
+                    {"ts": "99005.0", "user": "U_BOT", "bot_id": "B123", "text": "답변입니다"},
+                    {"ts": "99010.0", "user": "U1", "text": "다음 단계도 알려줘"},
+                ]
+            },
+        )
+        service = make_service(history)
+
+        outcome = service.find_missed("C1", window=3600)
+
+        ctx = outcome.value()[0]
+        assert ctx.ts == "99010.0"
+        assert ctx.unaddressed is True
+
+    def test_직접_부른_말은_unaddressed가_아니다(self) -> None:
+        history = FakeHistoryReader(
+            history={"C1": [{"ts": "99000.0", "user": "U1", "text": "<@U_BOT> 질문"}]}
+        )
+        service = make_service(history)
+
+        outcome = service.find_missed("C1", window=3600)
+
+        assert outcome.value()[0].unaddressed is False
+
 
 class TestSweep:
     def test_한_스레드에_여럿이면_최근_것만_대표로_남는다(self) -> None:

@@ -152,7 +152,8 @@ class CatchupService:
             # Can't tell an empty result apart from a Slack-side glitch.
             return Outcome.unknown("기록을 여러 번 읽어도 비어 판정 불가")
 
-        candidates: list[tuple[Mapping[str, Any], str]] = []  # (asking message, its thread)
+        # (asking message, its thread, was the bot directly mentioned)
+        candidates: list[tuple[Mapping[str, Any], str, bool]] = []
 
         for msg in hist:
             ts = str(msg.get("ts") or "")
@@ -213,11 +214,12 @@ class CatchupService:
             for m in unanswered(
                 thread, asked, is_self=self._identity.is_self, is_notice=self._notices.is_notice
             ):
-                candidates.append((m, thread_ts))
+                called = self._identity.is_mentioned(m.get("text") or "")
+                candidates.append((m, thread_ts, called))
 
         missed: list[RequestContext] = []
         seen: set[tuple[str, Any]] = set()
-        for m, thread_ts in candidates:
+        for m, thread_ts, called in candidates:
             key = (channel, m.get("ts"))
             if key in seen:
                 continue
@@ -234,6 +236,12 @@ class CatchupService:
                 text=self._self_mention.remove_self(m.get("text") or ""),
                 files=files,
                 missed_files=missed_files,
+                # Mirrors listener.py's from_app_mention (mentioned ->
+                # unaddressed=False) vs from_message (thread continuation
+                # without a mention -> True). Left unset, SilenceRuleSection
+                # never applies to a recovered continuation (코덱스 8차
+                # 리뷰, sca-f6ii).
+                unaddressed=not called,
             )
             # The socket path asks back instead of queueing this (sca-yb8q);
             # without the same judgment here the call costs an engine turn
