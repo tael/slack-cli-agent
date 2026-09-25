@@ -143,19 +143,42 @@ class BotMentionGuard(OutputGuard):
 
     Human mentions are left alone. Calling a person is a feature of this bot,
     and PlainMentionGuard exists to create exactly those mentions.
+
+    A channel with `bot_mentions` on keeps the mentions of every bot except
+    the one that asked. Handing work to another bot needs a real mention --
+    a plain name neither links nor wakes it -- and the loop this guard exists
+    to stop needs the answer to name the asker back, so only that leg is cut
+    (sca-c4m).
     """
 
     name: ClassVar[str] = "bot_mention"
 
     def __init__(
-        self, is_bot: Callable[[str], bool], display_name: Callable[[str], str]
+        self,
+        is_bot: Callable[[str], bool],
+        display_name: Callable[[str], str],
+        allowed_in: Callable[[str], bool] | None = None,
     ) -> None:
         self._is_bot = is_bot
         self._display_name = display_name
+        self._allowed_in = allowed_in
+
+    def _allowed(self, channel: str) -> bool:
+        if self._allowed_in is None:
+            return False
+        try:
+            return bool(self._allowed_in(channel))
+        except Exception:  # noqa: BLE001 - an unreadable setting falls back to stripping
+            return False
 
     def apply(self, body: str, ctx: GuardContext) -> GuardResult:
         if not body or "<@" not in body:
             return GuardResult(body=body, changed=False)
+
+        # Only the asker's own mention closes the loop; the rest are calls
+        # this channel is configured to allow.
+        keep_others = self._allowed(ctx.channel)
+        asker = ctx.asker_id or ""
 
         mask = CodeSpanMask(body)
         out = mask.masked
@@ -168,6 +191,8 @@ class BotMentionGuard(OutputGuard):
             if user_id not in verdicts:
                 verdicts[user_id] = self._is_bot(user_id)
             if not verdicts[user_id]:
+                return m.group(0)
+            if keep_others and user_id != asker:
                 return m.group(0)
             if user_id not in targets:
                 targets.append(user_id)
