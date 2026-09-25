@@ -436,6 +436,71 @@ class Test봇_멘션을_지운다:
         assert result.changed is False
 
 
+class Test봇_호출을_허용한_채널:
+    """bot_mentions 를 켠 채널은 다른 봇에게 일을 넘길 수 있어야 한다.
+
+    평문 이름은 링크도 알림도 안 되므로 넘기려면 진짜 멘션이 필요하다.
+    루프는 답이 물어본 봇을 되부를 때 닫히므로 그 갈래만 자른다.
+    """
+
+    def _guard(self, allowed: bool):
+        from slack_cli_agent.guard.mentions import BotMentionGuard
+
+        return BotMentionGuard(
+            is_bot=lambda uid: uid.startswith("UB"),
+            display_name=lambda uid: {"UBASKER": "아스카", "UBOTHER": "레이"}[uid],
+            allowed_in=lambda channel: allowed,
+        )
+
+    def test_다른_봇_멘션은_남는다(self) -> None:
+        guard = self._guard(allowed=True)
+
+        result = guard.apply(
+            "<@UBOTHER> 조사 부탁드립니다",
+            GuardContext(channel="C1", asker_id="U0HUMAN"),
+        )
+
+        assert result.body == "<@UBOTHER> 조사 부탁드립니다"
+        assert result.changed is False
+
+    def test_물어본_봇_멘션은_지운다(self) -> None:
+        """이 갈래를 남기면 그 봇이 다시 깨어나 서로를 계속 깨운다."""
+        guard = self._guard(allowed=True)
+
+        result = guard.apply(
+            "<@UBASKER> 확인했습니다",
+            GuardContext(channel="C1", asker_id="UBASKER"),
+        )
+
+        assert result.body == "아스카 확인했습니다"
+        assert result.detail == {"targets": ["UBASKER"]}
+
+    def test_끄면_모든_봇_멘션을_지운다(self) -> None:
+        guard = self._guard(allowed=False)
+
+        result = guard.apply(
+            "<@UBOTHER> 부탁드립니다",
+            GuardContext(channel="C1", asker_id="U0HUMAN"),
+        )
+
+        assert result.body == "레이 부탁드립니다"
+
+    def test_설정_조회가_실패하면_지운다(self) -> None:
+        """읽을 수 없는 설정은 허용이 아니라 기존 동작으로 떨어진다."""
+        from slack_cli_agent.guard.mentions import BotMentionGuard
+
+        def raises(channel: str) -> bool:
+            raise RuntimeError("설정 파일 없음")
+
+        guard = BotMentionGuard(
+            is_bot=lambda uid: True, display_name=lambda uid: "레이", allowed_in=raises
+        )
+
+        result = guard.apply("<@UBOTHER> 부탁", GuardContext(channel="C1"))
+
+        assert result.body == "레이 부탁"
+
+
 class Test코드_구간_보호가_안_샌다:
     """가드가 코드 구간을 비켜 가는 절차의 결함 2건 (sca-9qv, 코덱스 리뷰).
 

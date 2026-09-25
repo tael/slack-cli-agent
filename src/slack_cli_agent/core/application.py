@@ -502,12 +502,22 @@ class Application:
             budget_bytes=self._settings.system_prompt_budget_bytes,
         )
 
+    def _bot_mentions_allowed(self, channel: str) -> bool:
+        """Read per request, not captured at build time, so turning the key on
+        in channels.json applies without a restart like every other key."""
+        config = self._channels.get(channel)
+        return bool(config and config.bot_mentions)
+
     def _guards(self) -> GuardPipeline:
         guards: list[OutputGuard] = [
             PlainMentionGuard(),
             # Before AddresseeGuard so a bot mention at the head is turned
             # into a name here rather than cut with a note meant for people.
-            BotMentionGuard(is_bot=self._bot_users.is_bot, display_name=self._names.resolve),
+            BotMentionGuard(
+                is_bot=self._bot_users.is_bot,
+                display_name=self._names.resolve,
+                allowed_in=self._bot_mentions_allowed,
+            ),
             AddresseeGuard(),
             WatchPromiseGuard(),
             RewriteLossGuard(self._settings),
