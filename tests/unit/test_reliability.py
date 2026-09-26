@@ -1067,6 +1067,60 @@ class Test재시도도대표건만남긴다:
 
         assert statuses[0].missed[0].late
 
+    def test_재시도도_대표에게만_첨부를_받는다(self) -> None:
+        """sweep() 은 _pick_representatives 에서 대표에게만 첨부를 받는다
+        (sca-b8gn). retry_pending() 도 같은 메서드를 거치는지 직접 검증한다
+        (10차 코덱스 리뷰 지적, sca-qmai)."""
+
+        class SpyAttachmentStore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def download(self, event: Mapping[str, Any]) -> tuple[tuple[dict[str, Any], ...], int]:
+                self.calls.append(str(event.get("ts")))
+                return tuple(event.get("files") or ()), 0
+
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {
+                        "ts": "99000.0",
+                        "thread_ts": "99000.0",
+                        "reply_count": 1,
+                        "latest_reply": "99001.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 첫 물음",
+                    },
+                ]
+            },
+            threads={
+                "99000.0": [
+                    {
+                        "ts": "99000.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 첫 물음",
+                        "files": [{"id": "F1", "name": "a.png", "url_private": "https://x/a.png"}],
+                    },
+                    {
+                        "ts": "99001.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 두 번째",
+                        "files": [{"id": "F2", "name": "b.png", "url_private": "https://x/b.png"}],
+                    },
+                ]
+            },
+        )
+        attachments = SpyAttachmentStore()
+        service = make_service(FakeHistoryReader(history={"C1": None}), attachments=attachments)
+        service.sweep(["C1"], window=3600)
+        service._history = history  # type: ignore[attr-defined]
+        service._now = lambda: 100_030.0 + 1  # type: ignore[attr-defined]
+
+        statuses = service.retry_pending()
+
+        assert [m.ts for m in statuses[0].missed] == ["99001.0"]
+        assert attachments.calls == ["99001.0"]
+
 
 class Test캐치업_본문도_실시간과_같게_만든다:
     """캐치업은 ingress 를 안 거쳐 본문을 그대로 큐에 넣었다. 실시간으로 받은
