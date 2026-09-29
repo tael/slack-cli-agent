@@ -249,7 +249,7 @@ enabled") 가 있다. 코덱스가 sandbox 모드로 실행 격리를 선언하�
 띄운 뒤 셸로 `pwd` 를 찍게 했더니 이렇게 나왔다.
 
     $ pwd
-    /Users/example/.gemini/antigravity-cli/scratch
+    ~/.gemini/antigravity-cli/scratch
     $ ls
     analyze.py	out.txt
 

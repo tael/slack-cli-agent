@@ -16,7 +16,7 @@
 
 ## 동작이 다르면 원본을 먼저 본다 (2026-09-15 사용자 지시)
 
-이 저장소는 `/Users/example/Projects/mametchi-slack-bot/bot.py` 를 다시 쓴
+이 저장소는 `~/Projects/mametchi-slack-bot/bot.py` 를 다시 쓴
 것이다. **그 파일이 동작의 기준이다.** 읽기 전용으로만 참조한다.
 
 - 기능이 안 도는 것을 발견하면 원인을 추정하기 전에 원본에서 같은 기능을 찾아
