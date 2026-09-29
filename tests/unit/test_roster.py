@@ -226,7 +226,7 @@ class TestRosterBuilderFailurePolicy:
         users.list 는 17명을 돌려주고 그중 핸들 형식에 맞는 사람이 0명이었다.
         조회 실패와 같은 문구를 쓰면 스코프나 네트워크를 의심하게 된다."""
         output = tmp_path / "roster.md"
-        client = _FakeSlackClient(pages=[_page([_member(handle="tael", real_name="홍길동")])])
+        client = _FakeSlackClient(pages=[_page([_member(handle="example", real_name="홍길동")])])
         builder = RosterBuilder(client, output, now=lambda: 1_700_000_000.0)
 
         with caplog.at_level(logging.WARNING):

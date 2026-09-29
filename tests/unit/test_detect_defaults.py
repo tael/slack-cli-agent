@@ -40,11 +40,11 @@ class Test워크스페이스:
     def test_설정_토큰이_있는_워크스페이스를_찾는다(self, tmp_path: Path) -> None:
         cfg = tmp_path / "slack-app-config"
         cfg.mkdir()
-        (cfg / "tael.access").write_text("x", encoding="utf-8")
-        (cfg / "tael.refresh").write_text("x", encoding="utf-8")
+        (cfg / "example.access").write_text("x", encoding="utf-8")
+        (cfg / "example.refresh").write_text("x", encoding="utf-8")
         (cfg / "other.access").write_text("x", encoding="utf-8")
 
-        assert detect_defaults.workspaces(cfg) == ["other", "tael"]
+        assert detect_defaults.workspaces(cfg) == ["example", "other"]
 
     def test_디렉터리가_없으면_빈_목록(self, tmp_path: Path) -> None:
         assert detect_defaults.workspaces(tmp_path / "없음") == []
