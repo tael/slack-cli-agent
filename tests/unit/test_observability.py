@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from enum import StrEnum
+from typing import ClassVar
 
 import pytest
 
-from slack_cli_agent.observability.audit import AuditLog
+from slack_cli_agent.jobs.ports import JobStatus
+from slack_cli_agent.observability.audit import AuditLog, IncidentKind, normalize_kind
 from slack_cli_agent.observability.notices import NoticeCatalog, NoticeKey
+from slack_cli_agent.reliability.connection import ConnectionKind
+from slack_cli_agent.session.ports import SessionScope
 
 
 @pytest.fixture
@@ -16,7 +22,7 @@ def jsonl_path(tmp_path):
 
 
 @pytest.fixture
-def audit_log(database, jsonl_path) -> AuditLog:
+def audit_log(database, jsonl_path) -> tuple[AuditLog, dict[str, float]]:
     clock = {"now": 1_700_000_000.0}
     return AuditLog(database, jsonl_path, now=lambda: clock["now"]), clock
 
@@ -85,6 +91,53 @@ class TestAuditLogRecordRequest:
         assert entry["model"] == "claude-x"
         assert entry["ok"] is True
 
+    def test_사용자와_턴_수가_담긴다(self, audit_log, jsonl_path) -> None:
+        log, _clock = audit_log
+        log.record_request(
+            channel="C1", thread_ts="T1", message_ts="T1",
+            session_id="sid-1", resumed=True, model="claude-x", effort="high",
+            elapsed=12.3, ok=True, user="U1", turns=3,
+        )
+        row = log._fetch_all("SELECT * FROM audit")[0]
+        payload = json.loads(row["payload"])
+        assert payload["user"] == "U1"
+        assert payload["turns"] == 3
+
+        entry = json.loads(jsonl_path.read_text(encoding="utf-8").splitlines()[0])
+        assert entry["user"] == "U1"
+        assert entry["turns"] == 3
+
+    def test_턴_수를_안_주면_모름으로_None이_담긴다(self, audit_log) -> None:
+        """0턴과 모름을 구분해야 한다 — codex 는 턴 수를 아예 안 낸다."""
+        log, _clock = audit_log
+        log.record_request(
+            channel="C1", thread_ts="T1", message_ts="T1",
+            session_id="sid-1", resumed=False, model="codex-x", effort="high",
+            elapsed=1.0, ok=True,
+        )
+        payload = json.loads(log._fetch_all("SELECT * FROM audit")[0]["payload"])
+        assert payload["turns"] is None
+        assert payload["user"] == ""
+
+
+class TestIncidentKind:
+    def test_새_사건_종류가_문자열_리터럴과_같다(self) -> None:
+        assert IncidentKind.LATE_ADDENDUM.value == "late_addendum"
+        assert IncidentKind.WRONG_ADDRESSEE.value == "wrong_addressee"
+        assert IncidentKind.REWRITE_LOSS.value == "rewrite_loss"
+        assert IncidentKind.SILENT.value == "silent"
+
+    def test_기록에_그대로_쓸_수_있다(self, audit_log) -> None:
+        log, _clock = audit_log
+        log.record(IncidentKind.LATE_ADDENDUM, channel="C1", thread_ts="T1", ok=True)
+        row = log._fetch_all("SELECT * FROM audit")[0]
+        assert row["kind"] == "late_addendum"
+
+    def test_kind이_비어있으면_request로_본다(self) -> None:
+        assert normalize_kind(None) == "request"
+        assert normalize_kind("") == "request"
+        assert normalize_kind("late_addendum") == "late_addendum"
+
 
 class TestNoticeCatalog:
     @pytest.fixture
@@ -120,3 +173,132 @@ class TestNoticeCatalog:
     def test_모르는_키를_render하면_예외(self, catalog: NoticeCatalog) -> None:
         with pytest.raises(KeyError):
             catalog.render("존재하지않는키")
+
+
+class TestAudit기록직렬화:
+    """audit 한 줄이 못 써지면 그 요청 기록 전체가 사라지고, 호출 경로에서는
+    요청 자체가 실패한다(sca-kwv). 기록은 필드 하나를 잃더라도 남아야 한다.
+    """
+
+    def _감사(self, database, tmp_path):
+        from slack_cli_agent.observability.audit import AuditLog
+        return AuditLog(database, tmp_path / "audit.jsonl"), tmp_path / "audit.jsonl"
+
+    def test_엔진이_만든_usage가_그대로_기록된다(self, database, tmp_path) -> None:
+        from slack_cli_agent.engine.base import Usage
+        감사, 경로 = self._감사(database, tmp_path)
+        usage = Usage.from_native({"input_tokens": 7}, {"input_tokens": "input_tokens"})
+        감사.record_request(
+            channel="C1", thread_ts="1.1", message_ts="1.1", session_id="s",
+            resumed=False, model="m", effort="low", elapsed=1.0, ok=True,
+            usage=usage.as_audit_dict(),
+        )
+        기록 = json.loads(경로.read_text(encoding="utf-8").strip())
+        assert 기록["usage"]["input_tokens"] == 7
+        assert "output_tokens" in 기록["usage"]["unavailable"]
+
+    def test_json으로_못_쓰는_값이_와도_기록이_남는다(self, database, tmp_path) -> None:
+        감사, 경로 = self._감사(database, tmp_path)
+        감사.record("request", channel="C1", 이상한값=frozenset({"b", "a"}))
+        기록 = json.loads(경로.read_text(encoding="utf-8").strip())
+        assert 기록["이상한값"] == ["a", "b"]
+
+    @pytest.mark.parametrize(
+        ("이름", "값"),
+        [
+            # sorted() 가 TypeError 를 낸다.
+            ("비교_불가_집합", {1, "x"}),
+            # 비문자열 키에는 default 가 아예 안 불린다.
+            ("튜플_키_사전", {(1, 2): "값"}),
+            ("객체", object()),
+        ],
+    )
+    def test_어떤_타입이_와도_그_요청_기록은_남는다(self, database, tmp_path, 이름, 값) -> None:
+        감사, 경로 = self._감사(database, tmp_path)
+        감사.record("request", channel="C1", 이상한값=값, 멀쩡한값=7)
+        기록 = json.loads(경로.read_text(encoding="utf-8").strip())
+        assert 기록["멀쩡한값"] == 7
+        assert 기록["channel"] == "C1"
+
+    def test_순환_참조가_있어도_기록이_남는다(self, database, tmp_path) -> None:
+        감사, 경로 = self._감사(database, tmp_path)
+        고리: dict = {"이름": "고리"}
+        고리["자신"] = 고리
+        감사.record("request", channel="C1", 이상한값=고리, 멀쩡한값=7)
+        기록 = json.loads(경로.read_text(encoding="utf-8").strip())
+        assert 기록["멀쩡한값"] == 7
+        # 깊이 제한만으로도 예외는 안 나지만 20겹이 그대로 기록에 남는다.
+        # 고리는 처음 만난 자리에서 끊는다.
+        assert 기록["이상한값"] == {"이름": "고리", "자신": "<순환 참조>"}
+
+
+class Test열거형은_값_그대로_저장된다:
+    """StrEnum 전환(sca-c0u) 을 되돌리면 str() 이 'IncidentKind.REQUEST' 가 된다.
+
+    저장 자리는 sqlite 바인딩과 json.dumps 라 str+Enum 이어도 값이 같았지만,
+    로그 문구와 f-string 은 달라진다. 운영 audit 의 kind 는 'request' 형태다.
+    """
+
+    열거형: ClassVar[tuple[type[StrEnum], ...]] = (
+        IncidentKind, JobStatus, NoticeKey, ConnectionKind, SessionScope,
+    )
+
+    @pytest.mark.parametrize("enum_cls", 열거형)
+    def test_StrEnum_이다(self, enum_cls: type[StrEnum]) -> None:
+        assert issubclass(enum_cls, StrEnum), enum_cls.__name__
+
+    @pytest.mark.parametrize("enum_cls", 열거형)
+    def test_str_과_json_이_값과_같다(self, enum_cls: type[StrEnum]) -> None:
+        for member in enum_cls:
+            assert str(member) == member.value
+            assert json.dumps(member) == json.dumps(member.value)
+
+    @pytest.mark.parametrize("enum_cls", 열거형)
+    def test_sqlite_에도_값으로_들어간다(self, enum_cls: type[StrEnum]) -> None:
+        con = sqlite3.connect(":memory:")
+        con.execute("CREATE TABLE t(v TEXT)")
+        for member in enum_cls:
+            con.execute("INSERT INTO t VALUES (?)", (member,))
+        저장된 = [row[0] for row in con.execute("SELECT v FROM t")]
+        assert 저장된 == [m.value for m in enum_cls]
+
+
+class Test감사_포트_계약:
+    """EngineRunner 는 record() 가 정상 반환한 것을 '기록이 남았다' 의 근거로
+    쓴다(sca-ckm). 그래서 실제 주입되는 AuditLog 가 실패를 삼키지 않는 것이
+    계약이다. 삼키는 구현이 들어오면 무기록 완화가 다시 생긴다."""
+
+    def test_jsonl_을_못_쓰면_예외를_낸다(self, database, tmp_path) -> None:
+        from slack_cli_agent.observability.audit import AuditLog
+
+        # 파일이 있어야 할 자리가 디렉터리라 append 가 실패한다.
+        경로 = tmp_path / "audit.jsonl"
+        경로.mkdir()
+        with pytest.raises(OSError):
+            AuditLog(database, 경로).record("capability", engine="fake")
+
+    def test_db_를_못_쓰면_예외를_낸다(self, tmp_path) -> None:
+        from slack_cli_agent.observability.audit import AuditLog
+        from slack_cli_agent.storage.database import Database
+
+        db = Database(tmp_path / "없는디렉터리" / "a.db")
+        with pytest.raises(sqlite3.Error):
+            AuditLog(db, tmp_path / "audit.jsonl").record("capability", engine="fake")
+
+
+class TestNoticeKeyOrphan:
+    """모드 안내문은 모드 전환 명령만 낸다. 명령 없이 안내문만 남으면(sca-6k65)
+    도움말·채널 목록이 실제로 되는 명령과 어긋나고, is_notice() 가 아무도 안
+    내는 문구를 안내로 판정한다. 원본 bot.py:3950 의 'api 모드' 가 이식에서
+    빠지면서 MODE_STRUCTURED 만 남았던 자리다."""
+
+    def test_MODE_안내문은_모두_admin_명령이_낸다(self) -> None:
+        from pathlib import Path
+
+        import slack_cli_agent
+
+        admin = Path(slack_cli_agent.__file__).parent / "admin"
+        본문 = "\n".join(경로.read_text(encoding="utf-8") for 경로 in admin.rglob("*.py"))
+        모드키 = [키.name for 키 in NoticeKey if 키.name.startswith("MODE_")]
+        미사용 = [이름 for 이름 in 모드키 if f"NoticeKey.{이름}" not in 본문]
+        assert 미사용 == []

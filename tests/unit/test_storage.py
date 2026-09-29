@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,25 @@ def table_names(db: Database) -> set[str]:
 
 
 class TestMigration:
+    def test_코드보다_새_스키마면_경고를_남긴다(self, tmp_path: Path, caplog) -> None:
+        """editable 설치에서 한쪽 프로세스만 재기동하면 옛 코드가 새 스키마
+        위에서 돈다. 막지는 않되 로그에는 남겨야 그 상태를 확인할 수 있다
+        (sca-4cg)."""
+        path = tmp_path / "state.db"
+        db = Database(path)
+        db.migrate()
+        db.connect().execute(f"PRAGMA user_version={SCHEMA_VERSION + 3}")
+        with caplog.at_level("WARNING"):
+            assert Database(path).migrate() == SCHEMA_VERSION + 3
+        assert [r for r in caplog.records if str(SCHEMA_VERSION + 3) in r.getMessage()]
+
+    def test_같은_판이면_경고하지_않는다(self, tmp_path: Path, caplog) -> None:
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        with caplog.at_level("WARNING"):
+            db.migrate()
+        assert not caplog.records
+
     def test_새_DB_는_최신_버전으로_생성된다(self, tmp_path: Path) -> None:
         db = Database(tmp_path / "state.db")
         assert db.migrate() == SCHEMA_VERSION
@@ -61,6 +82,61 @@ class TestConnection:
         worker.join()
 
         assert seen and seen[0] != id(db.connect())
+
+
+class FakeConn:
+    """journal_mode 만 흉내내는 대역. 실제 잠금 충돌은 다른 프로세스가
+    있어야 나므로 단위 시험에서는 예외로 대신한다."""
+
+    def __init__(self, mode: str, fail_times: int = 0) -> None:
+        self.mode = mode
+        self.fail_times = fail_times
+        self.executed: list[str] = []
+
+    def execute(self, sql: str):  # type: ignore[no-untyped-def]
+        self.executed.append(sql)
+        if sql == "PRAGMA journal_mode":
+            return FakeCursor((self.mode,))
+        if sql == "PRAGMA journal_mode=WAL":
+            if self.fail_times > 0:
+                self.fail_times -= 1
+                raise sqlite3.OperationalError("database is locked")
+            self.mode = "wal"
+            return FakeCursor(("wal",))
+        return FakeCursor(None)
+
+
+class FakeCursor:
+    def __init__(self, row) -> None:  # type: ignore[no-untyped-def]
+        self._row = row
+
+    def fetchone(self):  # type: ignore[no-untyped-def]
+        return self._row
+
+
+class TestWAL전환:
+    """sca-fly — 첫 기동에서 ingress 와 worker 가 같은 새 DB 를 동시에 열다
+    PRAGMA journal_mode=WAL 이 잠금으로 죽었다."""
+
+    def test_이미_WAL_이면_다시_설정하지_않는다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        conn = FakeConn(mode="wal")
+        db._enable_wal(conn)  # type: ignore[arg-type]
+        assert "PRAGMA journal_mode=WAL" not in conn.executed
+
+    def test_잠금이면_다시_시도한다(self, tmp_path: Path) -> None:
+        잔_시간: list[float] = []
+        db = Database(tmp_path / "state.db", sleep=잔_시간.append)
+        conn = FakeConn(mode="delete", fail_times=2)
+        db._enable_wal(conn)  # type: ignore[arg-type]
+        assert conn.mode == "wal"
+        assert len(잔_시간) == 2
+
+    def test_끝까지_잠겨_있으면_예외를_낸다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db", sleep=lambda _: None)
+        conn = FakeConn(mode="delete", fail_times=99)
+        with pytest.raises(sqlite3.OperationalError):
+            db._enable_wal(conn)  # type: ignore[arg-type]
 
 
 class TestTransaction:
@@ -120,3 +196,164 @@ class TestSqliteRepository:
         with pytest.raises(RuntimeError):
             Repo(db).insert_twice_and_fail()
         assert db.connect().execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 0
+
+
+def busy_timeout(db: Database) -> int:
+    return int(db.connect().execute("PRAGMA busy_timeout").fetchone()[0])
+
+
+class Test잠금대기예산:
+    """소켓 처리 스레드가 잠금 대기로 오래 묶이지 않게 하는 경로다 (sca-9l1)."""
+
+    def test_기본은_30초다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        assert busy_timeout(db) == 30_000
+
+    def test_예산_안에서는_대기가_짧아진다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        with db.latency_budget(0.25):
+            assert busy_timeout(db) == 250
+
+    def test_예산을_나가면_기본값으로_돌아온다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        with db.latency_budget(0.25):
+            pass
+        assert busy_timeout(db) == 30_000
+
+    def test_예외가_나도_기본값으로_돌아온다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        with pytest.raises(RuntimeError), db.latency_budget(0.25):
+            raise RuntimeError("실패")
+        assert busy_timeout(db) == 30_000
+
+    def test_예산_안에서_처음_연결해도_대기가_짧다(self, tmp_path: Path) -> None:
+        """연결 생성 자체가 잠금 대기를 쓴다. 컨텍스트에 들어간 뒤 PRAGMA 로
+        낮추는 방식이면 첫 접속의 상한을 못 잡는다."""
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        측정: list[int] = []
+
+        def 새_스레드에서() -> None:
+            with db.latency_budget(0.25):
+                측정.append(busy_timeout(db))
+
+        worker = threading.Thread(target=새_스레드에서)
+        worker.start()
+        worker.join()
+        assert 측정 == [250]
+
+    def test_예산_안에서_만든_연결도_나가면_기본값이_된다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        측정: list[int] = []
+
+        def 새_스레드에서() -> None:
+            with db.latency_budget(0.25):
+                db.connect()
+            측정.append(busy_timeout(db))
+
+        worker = threading.Thread(target=새_스레드에서)
+        worker.start()
+        worker.join()
+        assert 측정 == [30_000]
+
+    def test_예산은_스레드마다_따로다(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "state.db")
+        db.migrate()
+        측정: list[int] = []
+
+        def 예산_없는_스레드() -> None:
+            측정.append(busy_timeout(db))
+
+        with db.latency_budget(0.25):
+            worker = threading.Thread(target=예산_없는_스레드)
+            worker.start()
+            worker.join()
+        assert 측정 == [30_000]
+
+
+class Test예산은_실제_잠금대기를_줄인다:
+    """PRAGMA 값만 보는 시험은 '연결 뒤에 낮추는' 구현도 통과시킨다.
+    실제로 잠긴 DB 에 써 보는 것이 그 둘을 가른다 (sca-9l1)."""
+
+    def test_잠긴_DB_에_쓸_때_예산_안에서_금방_포기한다(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.db"
+        db = Database(path)
+        db.migrate()
+        db.connect().execute("CREATE TABLE t (v INTEGER)")
+
+        잠근쪽 = sqlite3.connect(path, isolation_level=None)
+        잠근쪽.execute("PRAGMA busy_timeout=0")
+        잠근쪽.execute("BEGIN EXCLUSIVE")
+        걸린시간: list[float] = []
+        오류: list[str] = []
+
+        def 새_스레드에서() -> None:
+            시작 = time.monotonic()
+            try:
+                with db.latency_budget(0.2):
+                    db.connect().execute("INSERT INTO t VALUES (1)")
+            except sqlite3.OperationalError as exc:
+                오류.append(str(exc))
+            걸린시간.append(time.monotonic() - 시작)
+
+        worker = threading.Thread(target=새_스레드에서)
+        worker.start()
+        worker.join(timeout=10)
+        잠근쪽.execute("ROLLBACK")
+        잠근쪽.close()
+
+        assert 오류, "잠긴 DB 에 썼는데 오류가 안 났다"
+        assert 걸린시간[0] < 2.0, f"예산을 안 쓰고 기본 대기를 썼다 : {걸린시간[0]:.1f}초"
+
+
+class TestWAL전환은_예산_안에서_재시도를_안_한다:
+    """WAL 전환 재시도는 0.5초와 1초를 쉰다. 접수 스레드가 그것까지 하면
+    예산이 무의미해진다 (sca-9l1)."""
+
+    @staticmethod
+    def 전환이_막힌_DB(tmp_path: Path, 쉰시간: list[float]) -> tuple[Database, sqlite3.Connection]:
+        """DELETE 모드에서 다른 연결이 쓰기 잠금을 쥐면 journal_mode 조회는
+        되고 WAL 전환만 막힌다."""
+        path = tmp_path / "state.db"
+        준비 = sqlite3.connect(path, isolation_level=None)
+        준비.execute("PRAGMA journal_mode=DELETE")
+        준비.execute("CREATE TABLE t (v INTEGER)")
+        준비.close()
+
+        잠근쪽 = sqlite3.connect(path, isolation_level=None)
+        잠근쪽.execute("PRAGMA busy_timeout=0")
+        잠근쪽.execute("BEGIN IMMEDIATE")
+        잠근쪽.execute("INSERT INTO t VALUES (1)")
+        return Database(path, sleep=쉰시간.append), 잠근쪽
+
+    def test_예산_안에서는_한_번만_시도한다(self, tmp_path: Path) -> None:
+        쉰시간: list[float] = []
+        db, 잠근쪽 = self.전환이_막힌_DB(tmp_path, 쉰시간)
+        시험연결 = sqlite3.connect(db.path, isolation_level=None, timeout=0)
+        시험연결.execute("PRAGMA busy_timeout=0")
+        try:
+            with db.latency_budget(0.2), pytest.raises(sqlite3.OperationalError):
+                db._enable_wal(시험연결)
+        finally:
+            잠근쪽.execute("ROLLBACK")
+            잠근쪽.close()
+            시험연결.close()
+        assert 쉰시간 == [], f"예산 안에서 재시도를 쉬었다 : {쉰시간}"
+
+    def test_예산_밖에서는_재시도한다(self, tmp_path: Path) -> None:
+        쉰시간: list[float] = []
+        db, 잠근쪽 = self.전환이_막힌_DB(tmp_path, 쉰시간)
+        시험연결 = sqlite3.connect(db.path, isolation_level=None, timeout=0)
+        시험연결.execute("PRAGMA busy_timeout=0")
+        try:
+            with pytest.raises(sqlite3.OperationalError):
+                db._enable_wal(시험연결)
+        finally:
+            잠근쪽.execute("ROLLBACK")
+            잠근쪽.close()
+            시험연결.close()
+        assert len(쉰시간) == Database.WAL_ATTEMPTS - 1

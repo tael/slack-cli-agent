@@ -1,12 +1,9 @@
-"""AttachmentStore — 첨부 파일 저장.
+"""Downloads and stores message attachments.
 
-원본 `save_attachments`, `cleanup_attach` 를 재구성했다. 슬랙 이벤트는
-파일을 본문에 담아 주지 않고 주소만 준다. 내려받아 로컬에 두지 않으면
-모델은 그림을 보지 못한 채 답한다.
-
-실제 다운로드(HTTP 요청)는 `downloader` 로 주입받는다 — 단위 시험이 실제
-네트워크를 부르지 않는다. 권한 없는 다운로드가 200 과 함께 HTML 로그인
-화면을 주는 경우가 있어(원본 실측), `Content-Type` 을 확인해 걸러낸다.
+The downloader is injected so unit tests never hit the network. A
+download can come back 200 with an HTML login page when the token
+lacks access, so Content-Type is checked instead of trusting the
+status code.
 """
 
 from __future__ import annotations
@@ -39,8 +36,6 @@ Downloader = Callable[[str, str], DownloadResult]
 
 
 class AttachmentStore:
-    """메시지에 붙은 파일을 내려받아 저장하고, 오래된 것은 지운다."""
-
     def __init__(
         self,
         attach_dir: Path,
@@ -58,7 +53,6 @@ class AttachmentStore:
         self._keep_hours = keep_hours
 
     def save(self, event: Mapping[str, Any]) -> list[SavedAttachment]:
-        """메시지에 붙은 파일을 내려받고 그 결과 목록을 돌려준다."""
         files = event.get("files") or []
         if not files:
             return []
@@ -79,34 +73,74 @@ class AttachmentStore:
             dest = where / name
             try:
                 result = self._downloader(url, token)
-            except Exception:  # noqa: BLE001 — 파일 하나의 다운로드 실패로 나머지 첨부 처리를 막지 않는다
+            except Exception:  # noqa: BLE001 - one attachment failing shouldn't block the rest
                 log.warning("첨부 다운로드 실패 : %s", name)
                 continue
             if "text/html" in (result.content_type or ""):
-                # 권한이 없으면 슬랙이 로그인 화면을 준다. 200 이라 성공처럼 보인다.
+                # Slack returns a login page (still HTTP 200) when we lack access to the file.
                 continue
             if len(result.data) > self._max_bytes:
                 continue
-            where.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(result.data)
+            try:
+                where.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(result.data)
+            except OSError:
+                # 한 파일의 쓰기 실패가 나머지 첨부까지, 나아가 catchup 이면
+                # sweep() 밖 try 없이 이 메서드를 부르므로 채널 전체 처리를
+                # 끊는다 (코덱스 8차 리뷰).
+                log.warning("첨부 저장 실패 : %s", name)
+                continue
             saved.append(
                 SavedAttachment(
-                    path=str(dest),
+                    # Absolute regardless of how attach_dir was configured --
+                    # the engine subprocess's cwd is workdir, not whatever
+                    # this process's cwd was when a relative attach_dir got
+                    # resolved (코덱스 9차 리뷰).
+                    path=str(dest.resolve()),
                     name=f.get("name") or name,
                     kind=f.get("mimetype") or result.content_type,
                 )
             )
         return saved
 
-    def cleanup(self, now: float | None = None) -> None:
-        """오래된 첨부를 지운다. 받아 놓고 쌓아 두지 않는다."""
+    def download(self, event: Mapping[str, Any]) -> tuple[tuple[dict[str, Any], ...], int]:
+        """Downloads an event's files and merges the local path back onto
+        Slack's own file fields, so callers keep whatever shape Slack sent
+        plus `local_path`/`mimetype`. Shared by the live path (ingress) and
+        catch-up recovery so a recovered request gets the same attachment
+        handling a live one does (sca-h2dr)."""
+        saved = self.save(event)
+        requested = len(event.get("files") or ())
+        # Missed count travels even when nothing was saved: a prompt section
+        # reads it to tell the model it's answering without having seen a
+        # file that was attached (sca-q45r).
+        missed = max(0, requested - len(saved))
+        if not saved:
+            return (), missed
+        originals = {f.get("name"): f for f in (event.get("files") or [])}
+        merged: list[dict[str, Any]] = []
+        for item in saved:
+            original = dict(originals.get(item.name) or {})
+            original["name"] = item.name
+            original["mimetype"] = item.kind
+            original["local_path"] = item.path
+            merged.append(original)
+        return tuple(merged), missed
+
+    def cleanup(self, now: float | None = None) -> int:
+        """지운 파일 수를 돌려준다. 건수가 없으면 0건과 아예 안 돈 것이
+        로그에서 같아 보인다(sca-mf6)."""
         cut = (now if now is not None else time.time()) - self._keep_hours * 3600
+        removed = 0
         try:
             for p in self._attach_dir.glob("*/*"):
                 if p.is_file() and p.stat().st_mtime < cut:
                     p.unlink()
+                    removed += 1
             for d in self._attach_dir.glob("*"):
                 if d.is_dir() and not any(d.iterdir()):
                     d.rmdir()
-        except OSError:
-            pass
+        except OSError as exc:
+            # 조용히 넘기면 권한 문제로 한 번도 못 지운 상태가 정상과 같아 보인다.
+            log.warning("첨부 정리 실패 : %s", exc)
+        return removed

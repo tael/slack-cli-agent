@@ -14,19 +14,33 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from typing import Any
 
 from slack_cli_agent.auth.policy import OWNER_EFFORT_MIN
 from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
-from slack_cli_agent.engine.base import Engine, EngineRequest, EngineResponse, UsageLimit
+from slack_cli_agent.engine.base import (
+    CallOrigin,
+    Engine,
+    EngineRequest,
+    EngineResponse,
+    UsageLimit,
+)
+from slack_cli_agent.engine.capability import (
+    EngineCapabilities,
+    ExecutionIsolation,
+    InstructionBoundary,
+    ToolRestriction,
+)
 from slack_cli_agent.engine.runner import DirectInvoker, EngineInvoker, EngineRunner
+from slack_cli_agent.engine.tool_selection import ToolAccess, ToolSelection
 from slack_cli_agent.review.base import EngineCaller
 from slack_cli_agent.review.engine_adapter import ReviewEngineCaller
 
 
 def make_profile(**overrides) -> Profile:
-    data = {
+    data: dict[str, Any] = {
         "name": "테스트봇",
         "primary_engine": {
             "type": "claude",
@@ -65,9 +79,12 @@ class FakeInvoker(EngineInvoker):
     def __init__(self, response: EngineResponse) -> None:
         self._response = response
         self.calls: list[EngineRequest] = []
+        self.origins: list[CallOrigin] = []
 
-    def invoke(self, request: EngineRequest) -> EngineResponse:
+    def invoke(self, request: EngineRequest,
+               origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse:
         self.calls.append(request)
+        self.origins.append(origin)
         return self._response
 
 
@@ -82,13 +99,13 @@ def _response(ok: bool = True, body: str = "결과") -> EngineResponse:
 def make_caller(**overrides) -> tuple[ReviewEngineCaller, FakeInvoker]:
     profile = overrides.pop("profile", None) or make_profile()
     invoker = overrides.pop("invoker", None) or FakeInvoker(_response())
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "invoker": invoker,
         "profile": profile,
         "workdir": Path("/code"),
         "system_prompt": "시스템 프롬프트",
         "readable_dirs": (Path("/persona"),),
-        "allowed_tools": ("Read",),
+        "tools": ToolSelection.allow(["Read"]),
     }
     kwargs.update(overrides)
     return ReviewEngineCaller(**kwargs), invoker
@@ -121,7 +138,21 @@ class TestEngineRequest조립:
         assert request.system_prompt == "시스템 프롬프트"
         assert request.workdir == Path("/code")
         assert request.readable_dirs == (Path("/persona"),)
-        assert request.allowed_tools == ("Read",)
+        assert request.tools.names == ("Read",)
+
+    def test_도구를_준_요청에는_실행_보장_요구가_붙는다(self) -> None:
+        """요구를 세우는 자리가 파이프라인만이면 이 경로의 도구 권한은 아무도
+        강제하지 않는다 (sca-98k)."""
+        caller, invoker = make_caller()
+        caller.run("프롬프트", None, False)
+        요구 = invoker.calls[0].requirements
+        assert 요구.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+        assert 요구.downgradable_axes == frozenset({"tool_restriction"})
+
+    def test_도구가_없으면_요구도_없다(self) -> None:
+        caller, invoker = make_caller(tools=None)
+        caller.run("프롬프트", None, False)
+        assert invoker.calls[0].requirements.tool_restriction is None
 
     def test_resume_True로부르면_EngineRequest_resume도_True다(self) -> None:
         caller, invoker = make_caller()
@@ -138,7 +169,7 @@ class TestEngineRequest조립:
     def test_주입받은_invoker로_실행한다(self) -> None:
         """실행기를 직접 받아 엔진을 고르지 않는다. 어느 엔진을 쓸지는 조립이 정한다."""
         profile = make_profile()
-        engine = FakeEngine(profile, None)
+        engine = FakeEngine(profile, RuntimeSettings())
         invoker = DirectInvoker(EngineRunner(RuntimeSettings()), engine)
         caller, _ = make_caller(profile=profile, invoker=invoker)
         assert caller._invoker is invoker
@@ -169,13 +200,17 @@ class Test기본값:
 
     def test_readable_dirs와allowed_tools기본값은빈튜플이다(self) -> None:
         profile = make_profile()
+        invoker = FakeInvoker(_response())
         caller = ReviewEngineCaller(
-            invoker=FakeInvoker(_response()),
+            invoker=invoker,
             profile=profile,
             workdir=Path("/code"),
             system_prompt="프롬프트",
         )
         caller.run("프롬프트", "세션1", False)
+        request = invoker.calls[0]
+        assert request.readable_dirs == ()
+        assert request.tools.access is ToolAccess.UNRESTRICTED
 
 
 class Test실패응답:
@@ -186,3 +221,63 @@ class Test실패응답:
         assert response.ok is False
         assert response.body == "한도 초과"
         assert response is failure
+
+
+class Test진행_로그_전달:
+    """점검도 진행 표시를 받는다(sca-tfd). 엔진의 도구 훅이 이 파일에 쓴다."""
+
+    def test_받은_경로를_요청에_넣는다(self) -> None:
+        caller, invoker = make_caller()
+        caller.run("프롬프트", "세션1", False, Path("/tmp/진행.log"))
+        assert invoker.calls[0].progress_log == Path("/tmp/진행.log")
+
+    def test_안_주면_진행_로그가_없다(self) -> None:
+        caller, invoker = make_caller()
+        caller.run("프롬프트", "세션1", False)
+        assert invoker.calls[0].progress_log is None
+
+
+class Test요청_상관관계_키:
+    """점검 한 건은 본 실행과 분할 재시도로 두 번 엔진을 부른다. 같은 키를
+    달아야 집계에서 점검 1건으로 읽힌다 (sca-4ol)."""
+
+    def test_받은_키를_요청에_넣는다(self) -> None:
+        caller, invoker = make_caller()
+        caller.run("프롬프트", "세션1", False, request_id="review-C1-1.1")
+        assert invoker.calls[0].request_id == "review-C1-1.1"
+
+    def test_안_주면_빈_값이다(self) -> None:
+        caller, invoker = make_caller()
+        caller.run("프롬프트", "세션1", False)
+        assert invoker.calls[0].request_id == ""
+
+
+class Test요청_모델이_실행기에서_호출자까지_온다:
+    """어댑터·실행기·기록을 각각 대역으로 시험하면 그 사이가 끊겨도 통과한다.
+    여기서는 실물 실행기를 거쳐 응답에 요청 모델이 실려 오는지를 본다
+    (코덱스 리뷰 지적, sca-cr2b)."""
+
+    def test_소유자_모델이_응답에_실려_온다(self, tmp_path: Path) -> None:
+        from test_engine import FakeCompleted, 통과정책
+
+        engine = FakeEngine(make_profile(), RuntimeSettings())
+        engine.capabilities_for = lambda request: EngineCapabilities(  # type: ignore[method-assign]
+            tool_restriction=ToolRestriction.EXACT_ALLOWLIST,
+            execution_isolation=ExecutionIsolation.READONLY_SANDBOX,
+            instruction_boundary=InstructionBoundary.NATIVE,
+        )
+        engine.parse = lambda stdout, stderr, returncode: _response()  # type: ignore[method-assign]
+        engine.build_command = lambda request: ["/usr/bin/true"]  # type: ignore[method-assign]
+        runner = EngineRunner(
+            RuntimeSettings(),
+            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(stdout="", returncode=0),
+            environment_policy=통과정책(),
+        )
+        caller, _ = make_caller(invoker=DirectInvoker(runner, engine), workdir=tmp_path)
+
+        response = caller.run("프롬프트", None, False)
+
+        # 차단 응답도 model_asked 를 채우므로 그 경로로 새면 이 시험이
+        # 실행기 경로를 안 본 것이 된다.
+        assert response.failure_reason is None
+        assert response.model_asked == "opus"

@@ -1,30 +1,74 @@
-"""채널 기록을 분석해 학습 제안 항목을 뽑는다.
+"""Analyzes channel history to extract learning proposals.
 
-원본 learn.py 의 ``build_proposal()`` 과 ``main()`` 의 채널별 취합 루프를
-대응한다. 분석 자체는 기존 엔진 계층(``Engine``/``EngineRunner``)을 그대로
-재사용한다 — learn.py 가 Claude CLI 를 ``-p --output-format json`` 으로 불러
-``result`` 필드를 읽는 방식과, ``ClaudeEngine.parse()`` 가 이미 하는 일이
-같다. subprocess 호출과 JSON 파싱을 다시 구현하지 않는다.
-
-원본은 그날 전 채널 기록을 한 프롬프트에 이어 붙이다가 40000자에서 잘라 뒤
-채널이 조용히 누락된 적이 있다(2026-08-31). 그래서 채널마다 따로 분석한다 —
-이 클래스의 analyze_channel() 이 채널 하나만 맡는 것이 그 교훈을 반영한 것이다.
+Each channel is analyzed separately rather than concatenated into one prompt —
+a prior version truncated combined text at 40000 chars and silently dropped
+later channels.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
-from ..core.result import Outcome
-from ..engine.base import Engine, EngineRequest
-from ..engine.runner import EngineRunner
-from .proposal import LearningProposal
+from ..auth.execution_policy import ExecutionPolicy
+from ..engine.base import CallOrigin, EngineRequest
+from ..engine.runner import EngineInvoker
+from ..engine.tool_selection import ToolSelection
+from ..session.manager import AUTH_FAILURE_REASON, USAGE_LIMIT_REASON
+from .decoder import ChannelAnalysisResult, ProposalDecoder
+from .progress import ChannelFailure, FailureKind
 
-# 원본 PROMPT 를 그대로 옮긴다. 조직 고유값이 없어 코어에 둘 수 있다.
+#: 엔진 실패 사유를 배치가 다루는 종류로 옮긴다. 여기 없는 사유는 재시도로
+#: 풀릴 수 있는 것이라 ENGINE_FAILED 로 떨어진다.
+_FAILURE_KINDS: Mapping[str, FailureKind] = {
+    USAGE_LIMIT_REASON: FailureKind.USAGE_LIMIT,
+    AUTH_FAILURE_REASON: FailureKind.AUTH_FAILURE,
+}
+
+# Re-exported: the result type moved to .decoder along with the shape checking
+# that produces it, and existing imports read it from here.
+__all__ = [
+    "BuildResult", "ChannelAnalysis", "ChannelAnalysisResult",
+    "ProposalAnalyzer", "ProposalBuilder",
+]
+
+
+@dataclass(frozen=True)
+class ChannelAnalysis:
+    """One channel's analysis: either a parsed result or a classified failure.
+
+    A plain Outcome flattened the reason to a string, which lost the engine
+    layer's already-structured usage_limit signal — and the batch needs that to
+    tell "approve the switch and it works" from "this channel just fails"
+    (sca-b4o).
+    """
+
+    result: ChannelAnalysisResult | None = None
+    failure: ChannelFailure | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.result is not None
+
+    @classmethod
+    def succeeded(cls, result: ChannelAnalysisResult) -> ChannelAnalysis:
+        return cls(result=result)
+
+    @classmethod
+    def failed(cls, failure: ChannelFailure) -> ChannelAnalysis:
+        return cls(failure=failure)
+
+
+@dataclass(frozen=True)
+class BuildResult:
+    """What one analysis round produced, per channel."""
+
+    results: Mapping[str, ChannelAnalysisResult]
+    failures: tuple[ChannelFailure, ...]
+
 _PROMPT_TEMPLATE = """아래는 슬랙봇 <<봇>>가 오늘 <<채널>> 채널에서 낸 응답과, 그 뒤에 사람이 남긴 말이다.
 
 이 기록에서 <<봇>>가 앞으로 기억해야 할 것을 뽑아라.
@@ -59,43 +103,50 @@ _ARCHIVE_LIMIT = 60000
 _REACTIONS_LIMIT = 15000
 
 
-@dataclass(frozen=True)
-class ChannelAnalysisResult:
-    """채널 하나를 분석한 결과. 원본 build_proposal() 의 반환값에 대응한다."""
-
-    writing_style: tuple[str, ...] = ()
-    channel_facts: tuple[str, ...] = ()
-    corrections: tuple[str, ...] = ()
-    note: str = ""
-
-
 class ProposalAnalyzer:
-    """채널 기록 하나를 분석기에 보내 제안 항목을 받는다."""
+    """Sends one channel's history to the engine and parses the proposal.
+
+    Goes through EngineInvoker rather than EngineRunner so this path gets the
+    same fallback routing as a normal request. Calling the runner directly
+    skipped FallbackEngine.run() entirely, so a usage limit hit during the
+    learning batch never switched engines or recorded state (sca-dyb.9).
+    """
 
     def __init__(
         self,
-        engine: Engine,
-        runner: EngineRunner,
+        invoker: EngineInvoker,
         *,
-        model: str,
+        model: str | None,
         effort: str,
         workdir: Path,
         bot_name: str,
+        decoder: ProposalDecoder | None = None,
+        execution_policy: ExecutionPolicy | None = None,
     ) -> None:
-        self._engine = engine
-        self._runner = runner
+        self._invoker = invoker
         self._model = model
         self._effort = effort
         self._workdir = workdir
         self._bot_name = bot_name
+        self._decoder = decoder or ProposalDecoder()
+        self._execution_policy = execution_policy or ExecutionPolicy()
 
+    # No tools. The day's history is already in the prompt, and the
+    # "이미 지식 파일에 있는 내용" rule never worked through Read anyway --
+    # the prompt never names the knowledge file's path.
+    #
+    # Passing no list used to mean the opposite of what this comment said:
+    # claude read it as "nobody named any tools" and ran the batch with every
+    # tool open, Bash and Edit included (sca-0a7). The ban is now stated, and
+    # the requirement rides with it so an engine that cannot hold it leaves a
+    # record instead of silently not holding it.
     def analyze_channel(
         self,
         day: str,
         channel_name: str,
         archive_text: str,
         reactions: Sequence[Mapping[str, object]],
-    ) -> Outcome[ChannelAnalysisResult]:
+    ) -> ChannelAnalysis:
         system_prompt = _PROMPT_TEMPLATE.replace("<<채널>>", channel_name).replace(
             "<<봇>>", self._bot_name
         )
@@ -103,35 +154,38 @@ class ProposalAnalyzer:
         request = EngineRequest(
             prompt=body,
             system_prompt=system_prompt,
-            session_id=self._engine.new_session_id(),
+            session_id=None,
             resume=False,
             model=self._model,
             effort=self._effort,
             workdir=self._workdir,
-            allowed_tools=("Read",),
+            # The nightly batch runs one call per channel; this says which one
+            # a capability record belongs to (sca-4ol).
+            request_id=f"learning-{day}-{channel_name}",
+            tools=ToolSelection.forbid_all(),
+            # Audited rather than strict: nobody waits on the nightly batch,
+            # but stopping it on rei and asuka would end the learning path on
+            # two engines of three. The downgrade is recorded instead.
+            requirements=self._execution_policy.requirements_for(
+                config=None, tools=ToolSelection.forbid_all(),
+            ),
         )
-        response = self._runner.run(self._engine, request)
+        # Nobody is waiting on the nightly batch, so it must not spend the
+        # fallback's recovery probe that an interactive request needs.
+        response = self._invoker.invoke(request, CallOrigin.BACKGROUND)
         if not response.ok:
-            return Outcome.unknown(response.failure_reason or "분석 실행에 실패했다")
+            kind = _FAILURE_KINDS.get(response.failure_reason or "", FailureKind.ENGINE_FAILED)
+            return ChannelAnalysis.failed(ChannelFailure(
+                channel=channel_name, kind=kind,
+                detail=response.failure_reason or "분석 실행에 실패했다",
+            ))
 
-        match = re.search(r"\{.*\}", response.body, re.DOTALL)
-        if not match:
-            return Outcome.unknown("제안 형식이 맞지 않다")
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return Outcome.unknown("제안 JSON 파싱에 실패했다")
-        if not isinstance(data, Mapping):
-            return Outcome.unknown("제안 형식이 맞지 않다")
-
-        return Outcome.found(
-            ChannelAnalysisResult(
-                writing_style=tuple(data.get("writing_style") or ()),
-                channel_facts=tuple(data.get("channel_facts") or ()),
-                corrections=tuple(data.get("corrections") or ()),
-                note=str(data.get("note") or ""),
-            )
-        )
+        outcome = self._decoder.decode(response.body)
+        if not outcome.is_found:
+            return ChannelAnalysis.failed(ChannelFailure(
+                channel=channel_name, kind=FailureKind.DECODE_FAILED, detail=outcome.reason,
+            ))
+        return ChannelAnalysis.succeeded(outcome.value())
 
     def _build_body(
         self,
@@ -152,10 +206,27 @@ class ProposalAnalyzer:
         return body
 
 
-class ProposalBuilder:
-    """채널별 분석 결과를 하루치 제안 하나로 합친다. 원본 main() 의 취합 루프."""
+class ChannelAnalyzer(Protocol):
+    """What ProposalBuilder needs. ProposalAnalyzer satisfies it."""
 
-    def __init__(self, analyzer: ProposalAnalyzer) -> None:
+    def analyze_channel(
+        self,
+        day: str,
+        channel_name: str,
+        archive_text: str,
+        reactions: Sequence[Mapping[str, object]],
+    ) -> ChannelAnalysis: ...
+
+
+class ProposalBuilder:
+    """Runs one analysis round over the channels it is given.
+
+    Returns per-channel results rather than a merged proposal: the batch has to
+    know which channels finished, and flattening failures into the proposal's
+    note left it unable to tell a failed day from an uneventful one (sca-b4o).
+    """
+
+    def __init__(self, analyzer: ChannelAnalyzer) -> None:
         self._analyzer = analyzer
 
     def build(
@@ -163,32 +234,17 @@ class ProposalBuilder:
         day: str,
         channel_archives: Mapping[str, str],
         reactions_by_channel: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
-    ) -> LearningProposal:
+    ) -> BuildResult:
         reactions_by_channel = reactions_by_channel or {}
-        writing_style: list[str] = []
-        channel_knowledge: dict[str, tuple[str, ...]] = {}
-        corrections: list[str] = []
-        notes: list[str] = []
+        results: dict[str, ChannelAnalysisResult] = {}
+        failures: list[ChannelFailure] = []
 
         for channel_name, archive_text in channel_archives.items():
             reactions = reactions_by_channel.get(channel_name, ())
-            outcome = self._analyzer.analyze_channel(day, channel_name, archive_text, reactions)
-            if not outcome.is_found:
-                notes.append(f"{channel_name} 분석 실패 : {outcome.reason}")
-                continue
-            result = outcome.value()
-            writing_style += list(result.writing_style)
-            if result.channel_facts:
-                channel_knowledge[channel_name] = result.channel_facts
-            corrections += list(result.corrections)
-            has_picked = bool(result.channel_facts or result.writing_style or result.corrections)
-            if result.note and not has_picked:
-                notes.append(f"{channel_name} : {result.note}")
+            analysis = self._analyzer.analyze_channel(day, channel_name, archive_text, reactions)
+            if analysis.result is not None:
+                results[channel_name] = analysis.result
+            elif analysis.failure is not None:
+                failures.append(analysis.failure)
 
-        return LearningProposal(
-            day=day,
-            writing_style=tuple(writing_style),
-            channel_knowledge=channel_knowledge,
-            corrections=tuple(corrections),
-            note=" / ".join(notes),
-        )
+        return BuildResult(results=results, failures=tuple(failures))

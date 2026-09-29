@@ -14,7 +14,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from engine_support import named
+
 from slack_cli_agent.auth.policy import EFFORT_LEVELS, OWNER_EFFORT_MIN
+from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.channel import CHAT_DEFAULT
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -22,11 +25,11 @@ from slack_cli_agent.engine.base import (
     Engine,
     EngineRequest,
     EngineResponse,
-    TrustLevel,
     UsageLimit,
 )
 from slack_cli_agent.engine.runner import EngineRunner, FallbackEngine
 from slack_cli_agent.engine.switcher import EngineSwitcher
+from slack_cli_agent.engine.transcript import SessionTranscriptReader, TranscriptEvent
 from slack_cli_agent.guard.watch import (
     PROMISE_WITHOUT_WATCH_RE,
     WATCH_DONE_TAG,
@@ -45,7 +48,7 @@ from slack_cli_agent.reliability.health import SOCKET_ERROR_WINDOW_SEC
 from slack_cli_agent.render.blocks import SPLIT_MARKER, BlockBuilder
 from slack_cli_agent.render.splitter import ATOMIC_HEADS
 from slack_cli_agent.review.base import REVIEW_SPLIT
-from slack_cli_agent.slack.attachments import AttachmentStore
+from slack_cli_agent.slack.attachments import AttachmentStore, DownloadResult
 from slack_cli_agent.slack.gate import ASKED_BACK, REACTION_MAX_LEN, ResponseGate
 from slack_cli_agent.slack.reactions import (
     DEBUG_TRACE_EMOJI,
@@ -102,18 +105,18 @@ class Test세션_유지_기간:
         assert SETTINGS.channel_session_ttl_days == 7
 
 
-class Test되짚기_창_상수:
+class Test캐치업_창_상수:
     """원본 bot.py:859, 861, 909, 936 과 같아야 한다."""
 
-    def test_되짚기_기본_창이_7200초다(self) -> None:
+    def test_캐치업_기본_창이_7200초다(self) -> None:
         # 원본 bot.py:859 CATCHUP_WINDOW_SEC = 7200
         assert SETTINGS.catchup_window_sec == 7200
 
-    def test_되짚기_최대_창이_86400초다(self) -> None:
+    def test_캐치업_최대_창이_86400초다(self) -> None:
         # 원본 bot.py:861 CATCHUP_MAX_WINDOW_SEC = 86400
         assert SETTINGS.catchup_max_window_sec == 86400
 
-    def test_스레드_되짚기_창이_7일이다(self) -> None:
+    def test_스레드_캐치업_창이_7일이다(self) -> None:
         # 원본 bot.py:909 CATCHUP_THREAD_LOOKBACK_SEC = 7 * 86400
         assert SETTINGS.catchup_thread_lookback_sec == 7 * 86400
 
@@ -241,7 +244,7 @@ class Test첨부_저장_상수:
     def _store(self, tmp_path: Path) -> AttachmentStore:
         return AttachmentStore(
             attach_dir=tmp_path, token_provider=lambda: "tok",
-            downloader=lambda url, token: None,  # type: ignore[return-value]
+            downloader=lambda url, token: DownloadResult(content_type="text/plain", data=b""),
         )
 
     def test_최대_첨부_파일_수가_5다(self, tmp_path: Path) -> None:
@@ -266,11 +269,11 @@ class Test상태_표식_이모지:
 
     def test_완료_표식_집합에_체크와_침묵이_들어있다(self) -> None:
         # 원본 bot.py:616 DONE_EMOJI = frozenset({"white_check_mark", SILENT_MARK_EMOJI})
-        assert DONE_EMOJI == frozenset({"white_check_mark", "zipper_mouth_face"})
+        assert frozenset({"white_check_mark", "zipper_mouth_face"}) == DONE_EMOJI
 
     def test_미완료_표식_집합이_eyes_hourglass_x다(self) -> None:
         # 원본 bot.py:618 UNFINISHED_EMOJI = frozenset({"eyes", "hourglass", "x"})
-        assert UNFINISHED_EMOJI == frozenset({"eyes", "hourglass", "x"})
+        assert frozenset({"eyes", "hourglass", "x"}) == UNFINISHED_EMOJI
 
     def test_부검_이모지가_dango다(self) -> None:
         # 원본 bot.py:621 POSTMORTEM_EMOJI = "dango"
@@ -359,7 +362,7 @@ class Test분할_마커와_상수:
         assert BlockBuilder.CONTEXT_MAX_CHARS == 120
 
 
-class Test되짚기_재시도_상수:
+class Test캐치업_재시도_상수:
     """원본 bot.py:957, 959, 900, 960 과 같아야 한다."""
 
     def test_재시도_대기_간격이_같다(self) -> None:
@@ -378,8 +381,8 @@ class Test되짚기_재시도_상수:
         """
         assert CATCHUP_MAX_THREADS_PER_CHANNEL == 60
 
-    def test_완료_표식_집합이_되짚기_모듈에서도_같다(self) -> None:
-        assert DONE_EMOJI == frozenset({"white_check_mark", "zipper_mouth_face"})
+    def test_완료_표식_집합이_캐치업_모듈에서도_같다(self) -> None:
+        assert frozenset({"white_check_mark", "zipper_mouth_face"}) == DONE_EMOJI
 
 
 class TestEngineProbe_주기와_문구:
@@ -394,7 +397,6 @@ class TestEngineProbe_주기와_문구:
         assert FallbackEngine.PROBE_PROMPT == "준비됐으면 OK 두 글자만 답해라."
 
 
-# ---------------------------------------------------------------------------
 # 불일치를 발견하고 고친 자리.
 #
 # 원본 bot.py:1725 ENGINE_PROBE_TIMEOUT = 120 은 대체 실행기가 실제로 쓸 수
@@ -460,7 +462,7 @@ def _request() -> EngineRequest:
     return EngineRequest(
         prompt="안녕", system_prompt="", session_id="s", resume=False,
         model="claude-sonnet-5", effort="medium", workdir=Path("/tmp/work"),
-        readable_dirs=(), allowed_tools=(), trust_level=TrustLevel.GENERAL,
+        readable_dirs=(), trust_level=TrustLevel.GENERAL,
     )
 
 
@@ -476,15 +478,13 @@ class TestEngineProbe_타임아웃:
         probe_ok = EngineResponse(ok=True, body="OK", session_id=None,
                                   model_actual=None, elapsed=0, turns=None, usage=None)
         profile = _profile(tmp_path)
-        primary = RecordingEngine(profile, SETTINGS, response=limit_response)
-        primary.name = "claude"
-        secondary = RecordingEngine(profile, SETTINGS, response=probe_ok)
-        secondary.name = "codex"
+        primary = named(RecordingEngine, "claude")(profile, SETTINGS, response=limit_response)
+        secondary = named(RecordingEngine, "codex")(profile, SETTINGS, response=probe_ok)
         switcher = EngineSwitcher(tmp_path / "engine_state.json")
 
         seen_timeouts: list[Any] = []
 
-        def fake_subprocess(cmd, cwd, timeout):
+        def fake_subprocess(cmd, cwd, timeout, env=None):
             seen_timeouts.append(timeout)
             return FakeCompleted(stdout="", returncode=0)
 
@@ -518,9 +518,9 @@ class Test사용량_노출_규칙:
         """원본 bot.py:3400 근처 `session_context()` 의 한도 None 경로다.
         표에 없는 모델에 임의 한도를 쓰면 소진 임박 판정이 틀린다.
         """
-        class 빈기록:
-            def read(self, session_id: str) -> list:
+        class 빈기록(SessionTranscriptReader):
+            def read(self, session_id: str) -> list[TranscriptEvent]:
                 return []
 
-        calculator = SessionContextCalculator(빈기록(), context_limit={})
-        assert calculator.compute("s1", model="어떤모델").limit is None
+        calculator = SessionContextCalculator(context_limit={})
+        assert calculator.compute(빈기록(), "s1", model="어떤모델").limit is None

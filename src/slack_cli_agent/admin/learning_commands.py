@@ -1,12 +1,9 @@
-"""학습 제안·반영·되돌리기 관리 명령.
+"""Learning suggest/apply/revert admin commands.
 
-원본 `handle_admin` 의 학습 3종 분기와 대응한다. 판정과 문구는 전부
-`LearningService` 가 맡고 이 계층은 본문을 그 서비스로 넘기기만 한다 —
-`learning/service.py` 의 세 메서드가 원본 세 함수와 1:1 로 대응한다.
-
-서비스를 생성자로 주입받지 않고 실행 시점에 조립한다. 다른 관리 명령이
-`ctx.profile` 에서 필요한 것을 만드는 방식과 같다 — 명령 등록부가 경로를
-알 필요가 없다.
+Judgment and message text live entirely in `LearningService`; this layer
+only forwards the body to it. The service is assembled per call rather than
+injected, the same way other admin commands pull what they need from
+`ctx.profile` — the command registry doesn't need to know any paths.
 """
 
 from __future__ import annotations
@@ -25,16 +22,16 @@ def _service(ctx: AdminContext) -> LearningService:
     paths = StatePaths(ctx.profile.state_dir)
     return LearningService(
         store=ProposalStore(paths.proposals),
-        applier=LearningApplier(paths.knowledge, ctx.profile.display_name),
-        reverter=LearningReverter(paths.knowledge),
+        applier=LearningApplier(paths.learned, ctx.profile.display_name),
+        reverter=LearningReverter(paths.learned),
         renderer=ProposalRenderer(),
     )
 
 
 class LearningShowCommand(AdminCommand):
-    """가장 최근 학습 제안을 보여준다. 아직 반영하지는 않는다."""
-
     name: ClassVar[str] = "learning_show"
+    usage: ClassVar[str] = "학습 제안"
+    description: ClassVar[str] = "최근 배치가 만든 지식 갱신안을 보여준다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("학습 제안", "학습제안", "배운 거")
@@ -44,9 +41,9 @@ class LearningShowCommand(AdminCommand):
 
 
 class LearningApplyCommand(AdminCommand):
-    """최근 제안을 지식 파일에 반영한다. 같은 항목은 두 번 들어가지 않는다."""
-
     name: ClassVar[str] = "learning_apply"
+    usage: ClassVar[str] = "학습 반영"
+    description: ClassVar[str] = "그 갱신안을 지식 파일에 반영한다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("학습 반영", "학습반영", "배운 거 반영")
@@ -56,15 +53,16 @@ class LearningApplyCommand(AdminCommand):
 
 
 class LearningRevertCommand(AdminCommand):
-    """그날 반영한 줄을 지운다. 날짜를 본문에서 뽑는다.
+    """Reverts what was applied on a given day.
 
-    원본은 `cmd.split()[-1]` 로 마지막 토막을 날짜로 봤다. 날짜 형식 검사는
-    서비스가 하므로 여기서는 마지막 토막만 넘긴다 — 날짜를 안 붙이면
-    명령어 자체가 마지막 토막이 되고, 그것이 날짜 형식이 아니라 서비스가
-    형식 안내를 낸다.
+    Takes the last whitespace-separated token as the date and lets the
+    service validate its format — if no date is given, that token is the
+    command word itself, and the service reports the format error instead.
     """
 
     name: ClassVar[str] = "learning_revert"
+    usage: ClassVar[str] = "학습 되돌리기 YYYY-MM-DD"
+    description: ClassVar[str] = "그날 반영한 줄만 지운다"
 
     def matches(self, text: str) -> bool:
         return text.strip().startswith(("학습 되돌리기", "학습되돌리기"))

@@ -1,16 +1,15 @@
-"""부검·디버그 추적·서식 점검의 중복 방지 원장.
-
-원본 bot.py 는 이 세 점검을 각각 별도의 jsonl 파일로
-관리했다(load_postmortems/save_postmortem/drop_postmortem 계열이 셋 반복).
-새 코드베이스에는 이미 이 목적을 위한 `reviews` 테이블
-(kind, channel, target_ts, at, result — PK 는 앞의 세 열)이 스키마 V1 에
-있어, ReviewLedger 하나로 세 벌을 합친다. `kind` 값으로 점검 종류를 가른다
-("postmortem", "debug_trace", "format_review").
-
-`result` 열에는 상태를 JSON 문자열로 담는다. 사람이 직접 손댔거나 예전 판이
-남긴 값이 JSON 이 아닐 수 있으므로, 그런 값은 예외를 내지 않고 빈 상태로
-본다.
-"""
+# One `reviews` table (kind, channel, target_ts, at, result) backs
+# dedup/status tracking for all three review kinds ("postmortem",
+# "debug_trace", "format_review"). A `result` value that isn't valid JSON
+# (hand-edited or left over from an older format) is treated as empty
+# rather than raising.
+#
+# A row in "진행" only blocks a retry for a while. The review runs the engine
+# for minutes; a restart in that window leaves a row neither completed nor
+# dropped, and treating it like a completed one made re-adding the emoji do
+# nothing, permanently -- while retry_hint() kept promising a retry (observed
+# on rei, 2026-09-16). Blocking for a bounded window still keeps a review that
+# is genuinely running from being started twice.
 
 from __future__ import annotations
 
@@ -22,36 +21,86 @@ from dataclasses import dataclass
 from slack_cli_agent.storage.database import Database
 from slack_cli_agent.storage.repository import SqliteRepository
 
+#: Status values stored in `result`. Kept as constants because is_reviewed()
+#: compares against them and the dashboard reads the same strings.
+IN_PROGRESS = "진행"
+DONE = "완료"
+
 
 @dataclass(frozen=True)
 class ReviewRecord:
-    """`reviews.result` 열의 JSON 을 풀어낸 값.
-
-    status 는 "진행" 또는 "완료" 다. 빈 문자열은 JSON 파싱에 실패했거나
-    아직 채워지지 않은 값을 뜻한다.
-    """
-
     status: str = ""
     by: str = ""
     link: str = ""
     report: str = ""
 
 
-class ReviewLedger(SqliteRepository):
-    """`reviews` 테이블을 감싸 점검 종류별 중복 방지·상태 조회를 제공한다."""
+@dataclass(frozen=True)
+class StaleReview:
+    """A "진행" row whose deadline passed, meaning nobody is running it now."""
 
-    def __init__(self, database: Database, now: Callable[[], float] | None = None) -> None:
+    kind: str
+    channel: str
+    target_ts: str
+    at: float
+    record: ReviewRecord
+
+
+class ReviewLedger(SqliteRepository):
+
+    #: How long a "진행" row blocks a retry. Must exceed the longest a review
+    #: can legitimately take -- the engine call plus the missing-split retry.
+    #: Callers that know their engine's timeout should pass their own.
+    DEFAULT_STALE_SEC: float = 1800.0
+
+    def __init__(
+        self,
+        database: Database,
+        now: Callable[[], float] | None = None,
+        *,
+        stale_after_sec: float | None = None,
+    ) -> None:
         super().__init__(database)
         self._now = now or time.time
+        self._stale_after_sec = (
+            self.DEFAULT_STALE_SEC if stale_after_sec is None else stale_after_sec
+        )
 
     def is_reviewed(self, kind: str, channel: str, target_ts: str) -> bool:
-        """이 대상에 대해 이미 시작했거나 끝난 점검이 있는가."""
-        return self.find(kind, channel, target_ts) is not None
+        row = self._fetch_one(
+            "SELECT at, result FROM reviews WHERE kind = ? AND channel = ? AND target_ts = ?",
+            (kind, channel, target_ts),
+        )
+        if row is None:
+            return False
+        if self._parse(row["result"]).status == IN_PROGRESS:
+            return self._now() - float(row["at"]) < self._stale_after_sec
+        return True
+
+    def stale_in_progress(self) -> list[StaleReview]:
+        deadline = self._now() - self._stale_after_sec
+        rows = self._fetch_all(
+            "SELECT kind, channel, target_ts, at, result FROM reviews WHERE at <= ? ORDER BY at",
+            (deadline,),
+        )
+        found = []
+        for row in rows:
+            record = self._parse(row["result"])
+            if record.status != IN_PROGRESS:
+                continue
+            found.append(
+                StaleReview(
+                    kind=str(row["kind"]),
+                    channel=str(row["channel"]),
+                    target_ts=str(row["target_ts"]),
+                    at=float(row["at"]),
+                    record=record,
+                )
+            )
+        return found
 
     def begin(self, kind: str, channel: str, target_ts: str, *, by: str) -> None:
-        """점검을 시작한 것으로 기록한다. 중간에 실패해도 재시도(drop) 전까지는
-        중복 방지 대상으로 남는다."""
-        self._store(kind, channel, target_ts, ReviewRecord(status="진행", by=by))
+        self._store(kind, channel, target_ts, ReviewRecord(status=IN_PROGRESS, by=by))
 
     def complete(
         self,
@@ -63,26 +112,20 @@ class ReviewLedger(SqliteRepository):
         link: str = "",
         report: str = "",
     ) -> None:
-        """점검을 완료한 것으로 기록한다."""
         self._store(
             kind,
             channel,
             target_ts,
-            ReviewRecord(status="완료", by=by, link=link, report=report),
+            ReviewRecord(status=DONE, by=by, link=link, report=report),
         )
 
     def drop(self, kind: str, channel: str, target_ts: str) -> None:
-        """기록을 지운다. 실패한 시도를 되돌려 재시도할 수 있게 한다.
-
-        기록이 없어도 예외를 내지 않는다.
-        """
         self._execute(
             "DELETE FROM reviews WHERE kind = ? AND channel = ? AND target_ts = ?",
             (kind, channel, target_ts),
         )
 
     def find(self, kind: str, channel: str, target_ts: str) -> ReviewRecord | None:
-        """이 대상의 현재 상태를 읽는다. 기록이 없으면 None."""
         row = self._fetch_one(
             "SELECT result FROM reviews WHERE kind = ? AND channel = ? AND target_ts = ?",
             (kind, channel, target_ts),

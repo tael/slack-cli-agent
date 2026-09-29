@@ -1,11 +1,6 @@
-"""Block Kit 조립 보조 — 마커 정리, 미리보기, 보조 줄 분리.
-
-원본 bot.py 의 clean_markers, preview, split_context 를
-그대로 옮겼다 (이식 분류 — 함수 본문은 수정하지 않는다).
-
-`SPLIT_MARKER` 는 답변이 스스로 표시한 분할 경계다. `render/splitter.py`,
-`render/verifier.py` 도 같은 값을 참조한다 — 이 모듈에서 임포트해 쓴다.
-"""
+# `SPLIT_MARKER` is a self-reported split boundary the model inserts into
+# its own answer; `render/splitter.py` and `render/verifier.py` import it
+# from here to stay in sync.
 
 from __future__ import annotations
 
@@ -14,16 +9,14 @@ import re
 SPLIT_MARKER = "<<<SPLIT>>>"
 
 
+#: A table's divider row. Using it as a preview would notify "--- · ---".
+_TABLE_DIVIDER_CELLS = re.compile(r"^\|?(\s*:?-+:?\s*\|)+\s*:?-*:?\s*\|?\s*$")
+
+
 class BlockBuilder:
-    """미리보기·보조 줄·마커 정리를 담당한다.
-
-    `bot_display_name` 은 원본의 전역 상수 `BOT_DISPLAY_NAME` 을 주입 가능하게
-    바꾼 것이다 — 회사 결합 제거 대상이라 봇마다 다른 이름을 쓸 수 있어야 한다.
-    """
-
-    # 보조 줄로 내릴 인용은 짧은 것만 본다.
-    # 본문이 스펙 원문 인용으로 끝나는 답도 있어서, 길이를 재지 않으면
-    # 근거로 인용한 원문이 작은 글씨로 내려가 읽는 쪽이 본문과 구분하지 못한다.
+    # Only short trailing quotes get demoted to a context line -- some
+    # answers legitimately end with a long quoted spec excerpt, and without
+    # a length check that would get shrunk along with real footnotes.
     CONTEXT_MAX_LINES = 3
     CONTEXT_MAX_CHARS = 120
 
@@ -31,12 +24,8 @@ class BlockBuilder:
         self._bot_display_name = bot_display_name
 
     def clean_markers(self, text: str) -> str:
-        """표나 코드블록 한가운데 찍힌 마커를 지운다.
-
-        거기서 끊으면 열 이름 행이 없는 조각이 생겨 표가 파이프 글자로 노출된다.
-        줄 단위로 덩어리를 나누기 전에 지워야 한다.
-        나눈 뒤에 지우면 이미 표가 두 동강 난 상태다.
-        """
+        # Must run before splitting into chunks -- a marker landing mid-table
+        # or mid-fence would otherwise split it into a headerless fragment.
         lines = text.split("\n")
         out, in_fence = [], False
         for i, line in enumerate(lines):
@@ -56,32 +45,42 @@ class BlockBuilder:
         return "\n".join(out)
 
     def preview(self, text: str) -> str:
-        """알림 미리보기와 검색 색인에 쓸 한 줄을 뽑는다.
-
-        blocks 를 넘기면 text 는 화면에 안 보이고 알림에만 쓰인다.
-        비워 두면 알림에 본문이 없다고 뜨므로 첫 문장을 잘라 넣는다.
-        알림은 서식을 렌더하지 않으므로 강조 기호를 걷어낸다.
-        """
-        for line in text.split("\n"):
-            line = line.strip()
+        # When blocks are sent, `text` isn't rendered but still drives the
+        # notification preview, so pull a plain first line for it -- strip
+        # markdown emphasis since notifications don't render it.
+        lines = [line.strip() for line in text.split("\n")]
+        for line in lines:
             if not line or line.startswith(("#", "|", ">", "```", "---")):
                 continue
-            line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)   # 링크는 라벨만 남긴다
-            line = re.sub(r"[*_`~]", "", line)                       # 강조 기호는 알림에서 글자로 보인다
-            line = line.lstrip("-+ ").strip()
-            if line:
-                return line[:150]
+            plain = self._plain(line)
+            if plain:
+                return plain[:150]
+        # An answer made only of headings or only of a table used to notify as
+        # "<봇> 답변", which says nothing about what arrived. Those lines are
+        # skipped above because they render badly, not because they are empty.
+        for line in lines:
+            if line.startswith("#"):
+                heading = self._plain(line.lstrip("# ").strip())
+                if heading:
+                    return heading[:150]
+        for line in lines:
+            if line.startswith("|") and not _TABLE_DIVIDER_CELLS.match(line):
+                cells = [self._plain(c.strip()) for c in line.strip("|").split("|")]
+                joined = " · ".join(c for c in cells if c)
+                if joined:
+                    return joined[:150]
         return self._bot_display_name + " 답변"
 
+    @staticmethod
+    def _plain(line: str) -> str:
+        line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
+        line = re.sub(r"[*_`~]", "", line)
+        return line.lstrip("-+ ").strip()
+
     def split_context(self, text: str) -> tuple[str, str]:
-        """본문 끝의 짧은 인용 줄을 보조 줄로 떼어낸다.
-
-        걸린 시간, 기준시각 같은 것은 답의 내용이 아니라 답에 붙는 표시다.
-        본문과 같은 크기로 나가면 마지막 문장처럼 읽힌다.
-        슬랙 context 블록으로 내리면 작은 회색 글씨가 되어 본문과 구분된다.
-
-        돌려주는 값은 (본문, 보조 줄) 두 짝이다. 떼어낼 것이 없으면 보조 줄은 빈 문자열이다.
-        """
+        # Trailing metadata (elapsed time, timestamp, etc.) reads like part
+        # of the answer at full size; demoting it to a Slack context block
+        # (small gray text) sets it apart from the actual content.
         lines = text.rstrip().split("\n")
         note: list[str] = []
         while lines and lines[-1].lstrip().startswith(">"):

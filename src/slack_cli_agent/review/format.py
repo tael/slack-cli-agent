@@ -1,29 +1,17 @@
-"""서식 점검 — 슬랙 렌더링만 본다. 내용이 맞았는지는 판단하지 않는다.
-
-원본 bot.py 의 `_run_format_review()` 를 옮겼다.
-
-`usage_rows()`(토큰·세션 사용량 행)는 옮기지 않았다. 그 값은 세션 맥락 조회
-(`observability/progress.py` 소관)에 의존하는데, 그 모듈은 이 작업과 동시에
-다른 담당이 만들고 있어 이 패키지가 건드릴 수 없는 자원이다. 있으면 좋은
-부가 정보이지 서식 점검 자체의 정확성에는 영향이 없어 없이 둔다.
-
-원본은 교정 명령을 `f"python3 {POST_RICH} --profile {PROFILE.name} " f"--channel {channel} --update {ts} ..."`
-로 조립했다. `POST_RICH` 경로와 프로필 이름은 조립 코드(운영 설정) 값이라 이
-패키지가 알 이유가 없어, 조립이 끝난 명령 접두어(`post_rich_command`, 예:
-"python3 /path/post_rich.py --profile example")를 생성자 인자로 받아
-`--channel --update` 만 여기서 덧붙인다.
-"""
+# `rewrite_command` is passed in pre-assembled (e.g. "/path/python -m
+# slack_cli_agent.cli rewrite --profile example") since the interpreter and
+# the profile are deployment config this package has no business knowing --
+# only "--channel --update" gets appended here.
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from slack_cli_agent.review.base import ReviewTarget, ReviewTask, as_table, model_effort_cell
+from slack_cli_agent.review.base import ReviewTarget, ReviewTask, run_info_rows
 
 
 class FormatReviewTask(ReviewTask):
-    """리액션 "pencil2" 로 시작하는 서식 점검."""
 
     log_name: ClassVar[str] = "format_review"
     emoji: ClassVar[str] = "pencil2"
@@ -34,14 +22,14 @@ class FormatReviewTask(ReviewTask):
         bot_display_name: str,
         persona_dir: str,
         prompts_dir: str,
-        post_rich_command: str,
+        rewrite_command: str,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._bot_display_name = bot_display_name
         self._persona_dir = persona_dir
         self._prompts_dir = prompts_dir
-        self._post_rich_command = post_rich_command
+        self._rewrite_command = rewrite_command
 
     def _rich_label(self, target: ReviewTarget) -> str:
         return "리치" if target.rich else "평문"
@@ -67,30 +55,25 @@ class FormatReviewTask(ReviewTask):
             "어느 절을 어겼는지는 그 파일을 실제로 열어 확인하고 파일 이름과 절 제목을 짚는다.\n\n"
             "위반을 찾았으면 지적으로 끝내지 않는다. 교정본을 파일로 쓴 뒤 아래 명령으로 "
             "원 메시지를 고친다. 새 메시지를 올리지 않는다.\n"
-            f"{self._post_rich_command} --channel {target.channel} --update {target.ts} <교정본 파일>\n"
+            f"{self._rewrite_command} --channel {target.channel} --update {target.ts} <교정본 파일>\n"
             "교정 범위는 서식뿐이다. 사실, 수치, 판단, 결론을 바꾸지 않는다. "
             "실행 결과의 ok 와 blocks 종류를 확인하고 리포트의 교정했습니다 절에 적는다."
         )
 
-    def build_header(self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str) -> str:
+    def header_title(self, target: ReviewTarget) -> str:
+        return f"서식 점검 : {target.channel_name}"
+
+    def header_rows(
+        self, target: ReviewTarget, record: Mapping[str, Any] | None, link: str
+    ) -> list[tuple[str, str]]:
         rows: list[tuple[str, str]] = [("대화", target.channel_name)]
         if link:
             rows.append(("대상 답변", link))
-        if record:
-            rows.append(("모델 / effort", model_effort_cell(record)))
-            elapsed = f"{record.get('elapsed') or 0:.1f}초"
-            if record.get("num_turns"):
-                elapsed += f", {record['num_turns']}턴"
-            rows.append(("소요", elapsed))
-            rows.append(("표기", self._rich_label(target)))
-        else:
-            rows.append(("실행 정보", "감사 기록에서 이 답변을 찾지 못해 뺐습니다"))
-
-        return (
-            f"## 서식 점검 : {target.channel_name}\n\n"
-            + as_table(rows)
-            + f"\n\n요청한 사람 : <@{target.by_user}>\n\n"
-        )
+        rows.extend(run_info_rows(record))
+        # Which notation the channel uses is what this review judges against,
+        # so it belongs in the header whether or not the run record was found.
+        rows.append(("표기", self._rich_label(target)))
+        return rows
 
     def not_ok_message(self, body: str) -> str:
         return f"서식 점검을 내지 못했습니다. {body}"

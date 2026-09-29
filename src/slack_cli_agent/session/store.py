@@ -1,4 +1,4 @@
-"""세션 저장소의 SQLite 구현. 계약은 ports.SessionStore 에 있다."""
+"""SQLite implementation of the session store. Contract lives in ports.SessionStore."""
 
 from __future__ import annotations
 

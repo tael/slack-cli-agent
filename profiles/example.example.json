@@ -14,11 +14,12 @@
     "options": {"sandbox": "read-only"}
   },
   "state_dir": "~/.example-bot",
-  "work_root": "~/Projects",
+  "work_root": "/Users/Shared/example-work",
   "launch_label": "local.example-bot",
   "owner_user_id": "U00000000",
   "troubleshoot_channel": "C00000000",
   "plugins": [],
+  "usage_check_command": [],
   "settings": {
     "request_timeout_sec": 900,
     "max_concurrent": 10

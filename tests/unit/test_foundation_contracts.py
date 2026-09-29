@@ -21,7 +21,7 @@ class Test신뢰등급정의는하나다:
 
     def test_엔진이쓰는것과권한계층이쓰는것이같은객체다(self) -> None:
         from slack_cli_agent.auth.principal import TrustLevel as 권한계층
-        from slack_cli_agent.engine.base import TrustLevel as 엔진
+        from slack_cli_agent.engine.base import TrustLevel as 엔진  # type: ignore[attr-defined]
 
         assert 엔진 is 권한계층
 
@@ -139,12 +139,17 @@ class Test채널설정키가정식필드다:
         assert 설정.chat == "quiet"
 
     def test_기본값은원본과같다(self) -> None:
+        """rich 와 progress 만 원본과 다르다. 원본 bot.py 는 한 채널만
+        하드코딩으로 리치로 다뤘고 진행 표시가 없었다. 지금은 markdown 블록이
+        표준이고 거부되면 평문으로 떨어지는 경로도 있어 옵트인으로 둘 이유가
+        없다 (sca-75v, sca-stj)."""
         설정 = ChannelConfig.from_dict("C1", {})
         assert 설정.session_scope == "thread"
         assert 설정.disclose_mechanism is False
         assert 설정.skills is False
         assert 설정.light_context is False
-        assert 설정.rich is False
+        assert 설정.rich is True
+        assert 설정.progress is True
         assert 설정.chat == "normal"
 
     def test_정식필드는extra에서빠진다(self) -> None:
@@ -164,5 +169,5 @@ class Test채널설정키가정식필드다:
         """
         assert "progress" in KNOWN_KEYS
         assert ChannelConfig.from_dict("C1", {"progress": True}).progress is True
-        assert ChannelConfig.from_dict("C1", {}).progress is False
+        assert ChannelConfig.from_dict("C1", {"progress": False}).progress is False
         assert ChannelConfig.from_dict("C1", {"progress": True}).extra == {}

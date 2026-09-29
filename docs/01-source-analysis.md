@@ -32,7 +32,7 @@
 `reinstall.sh`, `sync-runtime.sh`, `run-learn.sh`, `path.env`.
 
 **단일 파일 구조가 기술 부채의 핵심이다.** `bot.py` 하나에 슬랙 이벤트 수신,
-권한 판정, 프롬프트 조립, 엔진 실행, 출력 서식, 되짚기, 건강 감시, 관리 명령이
+권한 판정, 프롬프트 조립, 엔진 실행, 출력 서식, 캐치업, 건강 감시, 관리 명령이
 전부 들어 있다. 테스트가 `bot.py` 를 import 하지 못해 AST 로 함수를 떼어 내는
 방식을 쓰는 것이 그 증거다 — 모듈을 부르는 순간 환경변수와 파일 경로를
 요구하기 때문이다.
@@ -160,16 +160,23 @@ cmd += ["--", prompt]
 마지막 `--` 가 중요하다. 하이픈으로 시작하는 사용자 입력이 옵션으로 해석되는
 것을 막는다.
 
-**읽기 전용 권한 모델** — `--allowedTools` 화이트리스트가 settings 의 allow
-규칙보다 우선한다(실측 확인). Bash·Edit·Write·NotebookEdit 를 차단한다.
+**읽기 전용 권한 모델** — 원본은 `--allowedTools` 화이트리스트가 settings 의
+allow 규칙보다 우선해 Bash·Edit·Write·NotebookEdit 를 차단한다고 보았다.
+**이 전제는 2026-09-20 실측에서 반증됐다** - `--allowedTools` 는 자동승인을
+더하는 인자일 뿐 목록 밖을 막지 않는다. 근거와 이 저장소가 대신 쓰는 인자는
+[claude CLI 의 도구 제한 실측](/docs/claude-도구제한-실측.md) 에 있다.
 
 **과금** — OAuth 구독 토큰(`sk-ant-oat`)을 쓰면 `--max-budget-usd` 를 쓰면 안
 된다. 정상 요청을 끊는다. seat allowance 를 소모한다.
 
 ### Codex 의 다른 점
 
-- `developer_instructions` 는 스레드 최초 값이 끝까지 우선한다. 그래서
-  `turn_directives()` 로 턴마다 바뀌는 것(화자·침묵 규칙)만 본문 앞에 붙인다
+- `developer_instructions` 는 스레드 최초 값이 끝까지 우선한다. 원본은
+  `turn_directives()` 로 턴마다 바뀌는 것(화자·침묵 규칙)만 본문 앞에 붙였다.
+  **이식본은 그 훅을 두지 않는다**(sca-r1hc) - resume 턴의 시스템 지침 전체를
+  프롬프트 본문에 싣는 쪽으로 바꿨다(sca-ivs, `engine/codex.py` 의
+  `_resume_prompt`). 화자 규칙만 싣던 원본과 달리 그 턴의 지식·프롬프트 갱신이
+  함께 따라온다
 - `--add-dir` 에 해당하는 인자가 없다. `readable_paths_note()` 로 읽을 수 있는
   경로를 문장으로 알린다
 - 셸이 항상 붙어 있어 모델이 curl 로 무엇이든 된다고 판단한다.
@@ -241,7 +248,7 @@ SQLite `sessions` 테이블이 `thread_ts -> session_id` 를 잇는다.
 6. 소유자가 부른 채널은 자동 등록
 7. 같은 스레드가 처리 중이면 대기줄에 넣고 모래시계를 단다
 8. 눈 표식을 달고 진행 표시 스트림을 연다
-9. `mark_handled` + `register_inflight` — 답변 표식이 아직 없는 구간을 되짚기가
+9. `mark_handled` + `register_inflight` — 답변 표식이 아직 없는 구간을 캐치업이
    다시 집지 않게 막는다
 10. 세션 조회, 첨부 저장, 슬랙 링크 선행 조회, 지난 대화 복원
 11. `run_with_fallback` 으로 엔진 실행
@@ -256,7 +263,7 @@ SQLite `sessions` 테이블이 `thread_ts -> session_id` 를 잇는다.
 19. 답이 비었으면 올리지 않는다
 20. 발신, 표식 전환, 대기줄의 다음 건 실행
 
-### 되짚기 중복 방지 다층
+### 캐치업 중복 방지 다층
 
     _busy_threads        스레드 단위 처리 중
     _handled_msgs        요청 단위. HANDLED_KEEP_SEC = 6시간
@@ -358,7 +365,7 @@ NOTICE_ASK_WHAT / NOTICE_NOT_LISTED / NOTICE_MODE_CODE / NOTICE_MODE_API / NOTIC
 def is_notice(text): return (text or "").strip() in NOTICE_TEXTS
 ```
 
-**안내문이 답변으로 세어지면 되짚기가 그 요청을 처리된 것으로 짝지어 영영
+**안내문이 답변으로 세어지면 캐치업이 그 요청을 처리된 것으로 짝지어 영영
 묻힌다.** 그래서 상수로 두고 목록을 만든다. 회귀 테스트가 `post` 로 나가는
 리터럴을 훑어 목록에서 빠진 것을 검출한다.
 
@@ -390,7 +397,7 @@ def worth_answering(text, bot_asked=False)
 
 ---
 
-## 13. 되짚기 (catch-up)
+## 13. 캐치업 (catch-up)
 
 재기동·장애로 놓친 멘션을 복구한다.
 
@@ -443,7 +450,7 @@ def slack_ts(value):
 
 ### 재기동으로 잘린 요청
 
-되짚기가 대화 기록을 훑는 방식은 신선도 유예에 걸리면 그 회차에서 통째로
+캐치업이 대화 기록을 훑는 방식은 신선도 유예에 걸리면 그 회차에서 통째로
 사라진다. 그래서 요청 자체를 `RESTART_DROPPED` 파일에 저장한다.
 
 `save_inflight_dropped()` 는 종료 신호를 받는 즉시 저장한다. 끝날 때까지
@@ -465,7 +472,7 @@ HEALTH_INTERVAL_SEC = 30
 
 `SocketErrorWatch` 는 `logging.Handler` 를 상속해 슬랙 라이브러리 로그를 직접
 센다. 라이브러리 콜백에 의존하지 않으므로, 문구가 바뀌어도 건강 점검 자체는
-계속 돈다.
+계속 실행된다.
 
 판정의 주 근거는 **재연결 횟수**다. 정상 운영에서는 몇 시간을 돌아도 재연결이
 일어나지 않으므로 되풀이 자체가 이상이다. 오류 건수는 라이브러리 문구에 따라
@@ -654,7 +661,7 @@ unload 와 load 사이에서 끊겨도 load 를 재시도한다.
 - 세션 맥락의 원본은 슬랙이라는 원칙
 - 코드 후처리 가드 전부
 - 상태 안내문 목록화
-- 되짚기 다층 중복 방지, 판정 불가와 부재의 구분
+- 캐치업 다층 중복 방지, 판정 불가와 부재의 구분
 - 리액션 후처리 3종의 구조(중복 방지 + 실패 시 재시도 가능)
 - 기동 전 점검 4종
 - 실측 상수와 그 근거 주석

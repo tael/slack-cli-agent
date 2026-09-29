@@ -1,14 +1,11 @@
-"""세션 스코프·TTL 판정과 맥락 복원 여부 결정.
+"""Decides session scope/TTL and whether context needs rebuilding.
 
-맥락 복원 자체(슬랙 기록을 읽어 프롬프트를 다시 세우는 것)는 이 모듈의 범위가
-아니다. 여기는 "다시 읽어야 하는가" 와 "어느 시각 이후를 읽어야 하는가" 만
-판정한다. 실제로 슬랙을 읽는 것은 TranscriptBuilder(다른 모듈) 의 몫이다.
-
-대화의 원본은 세션 파일이 아니라 슬랙이다. 세션이 없거나 만료되거나 엔진이
-바뀌었으면 전체 대화를 다시 읽어야 하고(rebuild_full), 이어가는 세션이어도
-마지막으로 본 시각 이후의 대화는 세션이 못 본 것이라 더 읽어 붙여야 한다
-(after_ts). 세션이 본 것은 봇이 실제로 처리한 턴뿐이고, 사람끼리만 오간 말은
-세션 기억에 없기 때문이다.
+This module only decides *whether* and *from when* to reread; actually
+rereading Slack history is TranscriptBuilder's job. Slack itself is the
+source of truth, not the session file — a session only ever saw the turns
+the bot actually processed, never messages people exchanged among
+themselves, so even a resumed session needs anything since `after_ts`
+read back in.
 """
 
 from __future__ import annotations
@@ -21,15 +18,30 @@ from dataclasses import dataclass, replace
 from ..config.settings import RuntimeSettings
 from .ports import SessionKey, SessionRecord, SessionScope, SessionStore
 
-# 구독 한도 소진 사유. 새 대화로 바꿔도 같은 벽에 부딪히므로 재시도 대상에서
-# 뺀다. 엔진 계층(run_with_fallback 상당)이 돌려주는 실패 사유 문자열과 맞춘다.
+# A fresh session hits the same subscription limit, so this reason is
+# excluded from retry. Must match the failure string the engine layer returns.
 USAGE_LIMIT_REASON = "usage_limit"
+#: The engine refused before running because it can't hold the requested
+#: guarantee. Shared with EngineRunner, which writes it.
+CAPABILITY_UNMET_REASON = "capability_unmet"
+#: 엔진 로그인이 풀린 상태다. 새 세션도 같은 자격으로 붙으므로 다시 시도해도
+#: 똑같이 실패한다. EngineSwitcher 가 전환 계기 이름으로도 이 값을 쓴다.
+AUTH_FAILURE_REASON = "auth_failure"
+#: settings 파일이 없거나 비어 명령을 못 만든 상태다. 새 세션을 열어도 같은
+#: 파일이 그대로다. Must match EngineRunner.ENGINE_CONFIG_REASON (코덱스 6차
+#: 리뷰 결함4) -- kept a literal here rather than imported, same reason as
+#: USAGE_LIMIT_REASON above.
+ENGINE_CONFIG_REASON = "engine_config"
+
+#: Failures a new session can't get past. All four are properties of the
+#: engine, the account, or its settings, not of the conversation.
+NO_RETRY_REASONS = frozenset({
+    USAGE_LIMIT_REASON, CAPABILITY_UNMET_REASON, AUTH_FAILURE_REASON, ENGINE_CONFIG_REASON,
+})
 
 
 @dataclass(frozen=True)
 class SessionDecision:
-    """`resolve`/`reset` 이 돌려주는 판정 결과."""
-
     session_id: str
     resume: bool
     rebuild_full: bool
@@ -37,6 +49,9 @@ class SessionDecision:
 
 
 def _default_new_session_id() -> str:
+    """Only for callers that build a manager without an engine. Real wiring
+    passes the engine's own generator -- a format this side invents is a guess
+    about what that engine accepts (sca-k6s)."""
     return str(uuid.uuid4())
 
 
@@ -46,6 +61,7 @@ class SessionManager:
         store: SessionStore,
         settings: RuntimeSettings,
         now: Callable[[], float] = time.time,
+        # The engine's own generator. See _default_new_session_id.
         new_session_id: Callable[[], str] = _default_new_session_id,
     ) -> None:
         self._store = store
@@ -54,14 +70,12 @@ class SessionManager:
         self._new_session_id = new_session_id
 
     def resolve(self, key: SessionKey, engine: str) -> SessionDecision:
-        """이 대화 단위에 이어갈 세션이 있는지 판정한다.
+        """Decide whether this conversation has a session to resume.
 
-        - 기록이 없으면 새 세션을 만들어 저장하고 전체 재구성을 요구한다
-        - 기록이 있어도 스코프 TTL 을 넘겼으면 만료로 보고 새 세션으로 대체한다
-        - 기록의 엔진이 요청한 엔진과 다르면 이어가지 않는다. 다른 엔진이 발급한
-          세션 ID 를 그대로 넘기면 이어가기가 그 자리에서 끊긴다
-        - 그 외에는 이어간다. TTL 을 지금 시각으로 늦추고(활동이 있었으므로),
-          마지막으로 본 시각을 after_ts 로 돌려준다
+        No record, expired TTL, or an engine mismatch (passing another
+        engine's session ID through would break resumption) all start a new
+        session with a full rebuild. Otherwise resume: TTL is renewed and
+        last-seen becomes `after_ts`.
         """
         now = self._now()
         record = self._store.get(key)
@@ -76,19 +90,15 @@ class SessionManager:
         return self._start_new(key, engine, now)
 
     def reset(self, key: SessionKey, engine: str) -> SessionDecision:
-        """이어가기가 깨진 대화에 새 세션을 발급한다. 항상 새로 시작한다."""
+        """Force a fresh session for a conversation whose continuity broke."""
         return self._start_new(key, engine, self._now())
 
     def adopt_engine_session(
         self, key: SessionKey, expected_session_id: str, engine: str, actual_session_id: str
     ) -> bool:
-        """엔진이 스스로 발급한 세션 ID 를 이 대화의 매핑에 반영한다.
-
-        원본 `persist_runner_session()` 과 같다. 엔진에 따라 우리가 만든 ID
-        를 쓰지 않고 자기 ID 를 발급한다. 그것을 반영하지 않으면 다음 요청이
-        엔진이 모르는 ID 로 이어받기를 시도해 대화 맥락이 끊긴다.
-
-        바꿀 것이 없으면 저장소를 건드리지 않고 False 를 돌려준다.
+        """Record the session ID the engine assigned itself, when it doesn't
+        honor the one we generated. Without this, the next request tries to
+        resume with an ID the engine doesn't recognize and loses context.
         """
         if not actual_session_id or actual_session_id == expected_session_id:
             return False
@@ -97,15 +107,12 @@ class SessionManager:
         )
 
     def touch(self, key: SessionKey, seen_ts: str) -> None:
-        """이 대화 단위가 마지막으로 본 슬랙 시각을 남긴다."""
         self._store.touch(key, seen_ts)
 
     def should_retry_with_new_session(self, failure_reason: str) -> bool:
-        """세션 이어가기 실패 시 새 대화로 다시 시도할지 판정한다.
-
-        한도 소진은 새 세션으로 바꿔도 같은 벽에 부딪히므로 재시도하지 않는다.
-        """
-        return failure_reason != USAGE_LIMIT_REASON
+        """Some failures hit the same wall on a fresh session, so retrying
+        only doubles the cost. See NO_RETRY_REASONS."""
+        return failure_reason not in NO_RETRY_REASONS
 
     def _is_valid(
         self, record: SessionRecord, scope: str, now: float, engine: str

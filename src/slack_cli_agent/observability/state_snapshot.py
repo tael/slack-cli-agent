@@ -1,15 +1,6 @@
-"""프로세스 상태 스냅샷을 파일로 내려 적는 계층.
-
-원본 `bot.py` 의 `state_snapshot()`(대기줄·소켓 오류 이력·되짚기 대기 등
-프로세스 메모리에만 있는 값을 사전으로 만듦)과 `write_state_snapshot()`(그
-사전을 원자적으로 파일에 갈아 끼움)을 이관했다. 원본은 전역 변수를 직접
-읽었는데, 그대로 옮기면 이 모듈이 그 전역 상태에 매인다. 그래서 값을 제공하는
-쪽을 `SnapshotSource` 뒤로 감춰 주입받는 구조로 바꿨다.
-
-기록이 실패해도 요청 처리에 영향이 없어야 한다 — `StateSnapshotWriter.write()`
-는 어떤 예외도 밖으로 내지 않는다. 주기 실행이 필요하면 이 모듈이 아니라
-`core.periodic.PeriodicRunner` 에 `write` 를 작업으로 넘긴다.
-"""
+# `StateSnapshotWriter.write()` never raises -- a failed snapshot must not
+# affect request handling. Periodic execution is the caller's job, via
+# `core.periodic.PeriodicRunner`.
 
 from __future__ import annotations
 
@@ -23,31 +14,27 @@ from typing import Any, Protocol
 
 log = logging.getLogger(__name__)
 
-# 소켓 오류·재접속을 "최근"으로 볼 창. 원본의 3분 창을 그대로 옮겼다.
 RECENT_WINDOW_SEC = 180.0
 
 
 class SnapshotSource(Protocol):
-    """스냅샷에 담을 값을 제공한다.
-
-    이 프로토콜을 구현하는 쪽이 실제 대기줄·소켓 오류 이력 등을 어디서
-    가져오는지 안다. `StateSnapshotBuilder` 는 그 출처를 모른 채로 값만 받는다.
-    """
+    """Supplies the raw values a snapshot is built from."""
 
     def inflight_count(self) -> int: ...
 
-    def queued_threads(self) -> Mapping[str, int]:
-        """스레드 ts 별 대기 중인 항목 수."""
-        ...
+    def queued_threads(self) -> Mapping[str, int]: ...
 
-    def socket_error_timestamps(self) -> Sequence[float]: ...
+    def socket_error_timestamps(self) -> Sequence[float] | None:
+        """None means this process cannot see the socket at all, which is not
+        the same as having seen no errors (sca-qi5.3)."""
+        ...
 
     def socket_reconnect_timestamps(self) -> Sequence[float]: ...
 
     def catchup_pending_count(self) -> int: ...
 
     def watch_job_count(self) -> int | None:
-        """등록된 감시 작업 수. 조회에 실패했으면 `None`."""
+        """Number of registered watch jobs, or `None` if the lookup failed."""
         ...
 
     def is_shutting_down(self) -> bool: ...
@@ -56,7 +43,6 @@ class SnapshotSource(Protocol):
 
 
 class StateSnapshotBuilder:
-    """`SnapshotSource` 가 내놓는 값으로 스냅샷 사전 하나를 만든다."""
 
     def __init__(
         self,
@@ -71,9 +57,10 @@ class StateSnapshotBuilder:
 
     def build(self) -> dict[str, Any]:
         now = self._now()
-        errors = list(self._source.socket_error_timestamps())
+        raw_errors = self._source.socket_error_timestamps()
+        errors = None if raw_errors is None else list(raw_errors)
         reconnects = list(self._source.socket_reconnect_timestamps())
-        # 항목 수가 0인 대기줄은 뺀다 — 실제로 기다리는 것이 없는 스레드다.
+        # Drop threads with a zero count -- nothing is actually waiting there.
         queued = {ts: count for ts, count in self._source.queued_threads().items() if count}
         started_at = self._source.started_at()
         return {
@@ -86,8 +73,11 @@ class StateSnapshotBuilder:
             "queued_threads": len(queued),
             "queued_total": sum(queued.values()),
             "queued": queued,
-            "socket_errors_3min": sum(1 for x in errors if now - x <= RECENT_WINDOW_SEC),
-            "socket_errors_total": len(errors),
+            "socket_errors_3min": (
+                None if errors is None
+                else sum(1 for x in errors if now - x <= RECENT_WINDOW_SEC)
+            ),
+            "socket_errors_total": None if errors is None else len(errors),
             "socket_reconnects_3min": sum(1 for x in reconnects if now - x <= RECENT_WINDOW_SEC),
             "socket_reconnects_total": len(reconnects),
             "catchup_pending": self._source.catchup_pending_count(),
@@ -96,13 +86,7 @@ class StateSnapshotBuilder:
 
 
 class StateSnapshotWriter:
-    """스냅샷을 파일에 원자적으로 갈아 끼운다.
-
-    임시 파일에 먼저 쓴 뒤 `replace` 로 옮긴다 — 반쯤 쓰인 파일을 읽히지
-    않게 하는 것이 계약의 일부다. 값 수집·쓰기 어느 쪽이 실패해도 예외를
-    밖으로 내지 않는다. 이 기록은 관측용이라, 실패했다고 요청 처리를
-    멈추면 안 되기 때문이다.
-    """
+    """Writes the snapshot atomically (write to temp file, then replace) and never raises."""
 
     def __init__(self, path: Path, builder: StateSnapshotBuilder) -> None:
         self._path = path

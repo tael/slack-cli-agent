@@ -1,63 +1,155 @@
-"""채널 설정. 파일로 두어 사람이 편집하고 재기동 없이 반영되게 한다."""
+"""Channel settings, kept as a file so people can edit them and have the change apply without a restart."""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+
+from ..core.channel_kind import is_direct_message_channel
+from ..core.errors import ConfigError
+
+log = logging.getLogger(__name__)
+
+#: Rendering and progress defaults, named once because the dataclass field and
+#: from_dict() both need them -- they were two literals and drifted, so a
+#: channels.json entry without the key came back False while the dataclass
+#: default said True (sca-75v).
+DEFAULT_RICH = True
+DEFAULT_PROGRESS = True
+
+#: The shared slug every DM uses (bot.py:133).
+DM_SLUG = "dm"
+
+#: Called with the old and the new slug when a channel's slug moves. Only an
+#: explicit False means "still under the old slug, come back to it" -- a
+#: callback that returns nothing is taken as done, which is what every
+#: notification-shaped callback does.
+SlugChange = Callable[[str, str], bool | None]
+
+SLUG_RETRY_INTERVAL_SEC = 60.0
+"""How long to wait before retrying a move the callback reported as failed.
+
+An attempt cap would turn a long outage into a permanent miss, which is the
+defect sca-tl2q fixed, so the retry never stops -- only its rate is bounded.
+Without a bound every get/is_registered/all pays the migrator's lock timeout
+again (sca-c2e7). A move whose target slug is different from the one that
+failed is a new event and is attempted at once.
+"""
+
+SLUG_RETRY_MARKER_SUFFIX = ".slug-retry"
+"""Marker file holding the next retry deadline, kept beside the channel file.
+
+The deadline used to be instance state, so every process paid the migrator's
+lock timeout once per interval and the wait added up with the process count
+(sca-vtqq). It is a wall-clock epoch because monotonic clocks are not
+comparable between processes.
+"""
+
+
+def _now() -> float:
+    """Wall clock, named so the retry deadline can be moved in tests without
+    patching the time module for everything else."""
+    return time.time()
+
 
 KNOWN_KEYS = frozenset(
     {
         "name", "mode", "workdir", "model", "effort", "persona", "knowledge",
         "trusted_users", "answer_unaddressed", "session_scope",
         "disclose_mechanism", "skills", "light_context", "rich", "chat",
-        "progress",
+        "progress", "bot_mentions",
+        "user_tools", "tool_enforcement",
     }
 )
-"""코어가 읽는 채널 설정 키.
+"""Channel-setting keys the core reads. Org-specific keys (like org_admins)
+aren't here — plugins read those from `extra`."""
 
-원본 bot.py 에서 실제로 조회되는 키를 실측해 정했다. 조직 고유 키
-(org_admins 등)는 여기 넣지 않는다 — 플러그인이 extra 에서 읽는다.
-"""
+#: How hard an engine must enforce this channel's tool list. `audited` lets an
+#: engine that can't hold an exact allowlist run anyway with the downgrade
+#: recorded; `strict` refuses instead. Default is `audited` so the codex and
+#: gemini bots keep working, and a channel that must be protected opts in.
+TOOL_ENFORCEMENT_AUDITED = "audited"
+TOOL_ENFORCEMENT_STRICT = "strict"
+TOOL_ENFORCEMENT_LEVELS = (TOOL_ENFORCEMENT_AUDITED, TOOL_ENFORCEMENT_STRICT)
 
 CHAT_DEFAULT = "normal"
-"""채널의 대화량. 원본 CHAT_DEFAULT 와 같은 값이다. 프롬프트 조립에 쓰인다."""
+"""Default chat volume, used when assembling prompts."""
 
 
 @dataclass(frozen=True)
 class ChannelConfig:
     channel_id: str
     name: str = ""
-    """슬랙에서 조회한 채널 이름. 목록 표시에 쓴다.
-
-    조회에 실패하면 원본과 같이 채널 ID 를 그대로 쓴다. 읽을 때 채우므로 이
-    필드가 비어 있는 상태로 나오지 않는다.
-    """
+    """Channel name from Slack, for display. Falls back to the channel ID
+    on lookup failure, filled in at read time so it's never blank."""
     mode: str = "default"
     workdir: Path | None = None
     model: str = ""
     effort: str = ""
     persona: str = ""
-    knowledge: tuple[str, ...] = ()
+    #: Another channel's slug, so a pair that must know the same things
+    #: shares one knowledge file. Used by `channel_slug` below.
+    knowledge: str = ""
     trusted_users: frozenset[str] = frozenset()
+    user_tools: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    """Per-user extra tools. The org-specific value (an ops script, say) lives
+    in the channel file, not in the installed package (sca-ww4)."""
     answer_unaddressed: bool = False
     session_scope: str = "thread"
     disclose_mechanism: bool = False
     skills: bool = False
     light_context: bool = False
-    rich: bool = False
+    rich: bool = DEFAULT_RICH
+    """Markdown blocks are the default rendering. The original bot.py had this
+    on for one hardcoded channel; opting in per channel meant a bot with no
+    channel file answered in stripped-down mrkdwn (sca-75v). A channel that
+    needs plain text turns it off."""
     chat: str = CHAT_DEFAULT
-    progress: bool = False
-    """긴 작업의 중간 단계를 흘려 보낼지. 채널마다 켜고 끈다."""
+    tool_enforcement: str = TOOL_ENFORCEMENT_AUDITED
+    progress: bool = DEFAULT_PROGRESS
+    """Whether to show progress for long-running work. On by default for the
+    same reason as `rich`: opting in per channel meant the task card almost
+    never appeared and a long request looked like nothing was happening
+    (sca-stj). A channel that wants a quiet thread turns it off."""
+    bot_mentions: bool = False
+    """Whether this bot may call another bot by mention. Off by default: a
+    mention another bot posts wakes this one, so two bots naming each other
+    keep each other awake. A channel where bots hand work to each other turns
+    it on; BotMentionGuard still strips the mention of whoever asked, which is
+    the leg that closes the loop."""
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, channel_id: str, data: Mapping[str, Any]) -> ChannelConfig:
+        """Refuses a value it can't read. For the write path and preflight,
+        where a bad value must not be persisted or pass a boot check."""
+        config, rejected = cls.lenient_from_dict(channel_id, data)
+        if rejected:
+            raise ConfigError(" / ".join(rejected))
+        return config
+
+    @classmethod
+    def lenient_from_dict(
+        cls, channel_id: str, data: Mapping[str, Any]
+    ) -> tuple[ChannelConfig, tuple[str, ...]]:
+        """Never raises; each unreadable value falls back to the safest one.
+
+        For the read path, which parses every channel on every request. Failing
+        the whole file there means one channel's typo stops requests in channels
+        that have nothing to do with it (sca-xe0). The fallback is the strict
+        side, not the permissive default, so a typo can't quietly drop
+        enforcement.
+        """
         workdir = data.get("workdir")
+        enforcement, rejected = cls._tool_enforcement(channel_id, data)
         return cls(
             channel_id=channel_id,
             name=str(data.get("name") or channel_id),
@@ -66,32 +158,79 @@ class ChannelConfig:
             model=str(data.get("model", "")),
             effort=str(data.get("effort", "")),
             persona=str(data.get("persona", "")),
-            knowledge=tuple(data.get("knowledge") or ()),
+            knowledge=_first_alias(data.get("knowledge")),
             trusted_users=frozenset(data.get("trusted_users") or ()),
+            user_tools={
+                str(user): tuple(str(tool) for tool in (tools or ()))
+                for user, tools in (data.get("user_tools") or {}).items()
+            },
             answer_unaddressed=bool(data.get("answer_unaddressed", False)),
             session_scope=str(data.get("session_scope") or "thread"),
             disclose_mechanism=bool(data.get("disclose_mechanism", False)),
             skills=bool(data.get("skills", False)),
             light_context=bool(data.get("light_context", False)),
-            rich=bool(data.get("rich", False)),
+            rich=bool(data.get("rich", DEFAULT_RICH)),
             chat=str(data.get("chat") or CHAT_DEFAULT),
-            progress=bool(data.get("progress", False)),
+            tool_enforcement=enforcement,
+            progress=bool(data.get("progress", DEFAULT_PROGRESS)),
+            bot_mentions=bool(data.get("bot_mentions", False)),
             extra={k: v for k, v in data.items() if k not in KNOWN_KEYS},
-        )
+        ), rejected
+
+    @staticmethod
+    def _tool_enforcement(channel_id: str, data: Mapping[str, Any]) -> tuple[str, tuple[str, ...]]:
+        """An unknown value never reads as the permissive default. A typo in
+        `strict` would otherwise drop enforcement without a word (sca-98k)."""
+        if "tool_enforcement" not in data:
+            return TOOL_ENFORCEMENT_AUDITED, ()
+        level = data["tool_enforcement"]
+        if not isinstance(level, str) or level not in TOOL_ENFORCEMENT_LEVELS:
+            known = ", ".join(TOOL_ENFORCEMENT_LEVELS)
+            return TOOL_ENFORCEMENT_STRICT, (
+                f"채널 {channel_id} 의 tool_enforcement 값이 잘못됐다 : {level} (가능한 값: {known})",
+            )
+        return level, ()
+
+
+class HasRich(Protocol):
+    """Anything carrying the rendering flag. watchrunner declares its own
+    narrow protocol rather than importing the whole config type."""
+
+    @property
+    def rich(self) -> bool: ...
+
+
+def channel_is_rich(config: HasRich | None) -> bool:
+    """Rendering mode for a channel that may not be registered. A bot answers a
+    mention anywhere, so `config is None` means "not in channels.json", not
+    "plain text" -- reading it as the latter stripped every answer of a bot with
+    no channel file (sca-75v)."""
+    return ChannelConfig(channel_id="").rich if config is None else config.rich
 
 
 class ChannelRegistry:
-    """채널 설정 파일을 요청마다 다시 읽는다.
+    """Re-reads the channel-config file on every access, but only reparses
+    when mtime changes, so hand-edits apply without a restart."""
 
-    mtime 이 바뀌었을 때만 파싱하므로 매 요청 읽어도 부담이 없고, 사람이 파일을
-    고치면 재기동 없이 반영된다.
-    """
-
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self, path: Path, *, on_slug_change: SlugChange | None = None
+    ) -> None:
         self._path = path
         self._lock = threading.Lock()
         self._mtime: float = -1.0
         self._configs: dict[str, ChannelConfig] = {}
+        self._on_slug_change = on_slug_change
+        #: Slug per channel as of the last parse. Empty before the first one,
+        #: which makes every registered channel read as "was the channel ID" --
+        #: exactly the state a bot starts in when it was registered while the
+        #: process was down (sca-do8s).
+        self._slugs: dict[str, str] = {}
+        #: Moves the callback refused, per channel. Read to tell a retry from
+        #: a slug that moved again, which must not wait for the interval.
+        self._slug_retry_pending: dict[str, tuple[str, str]] = {}
+        #: Fallback deadline for when the marker file cannot be written.
+        self._slug_retry_at: float | None = None
+        self._slug_retry_marker = path.with_name(path.name + SLUG_RETRY_MARKER_SUFFIX)
 
     def get(self, channel_id: str) -> ChannelConfig | None:
         return self._current().get(channel_id)
@@ -106,11 +245,8 @@ class ChannelRegistry:
         return list(self._current())
 
     def update(self, channel_id: str, changes: Mapping[str, Any]) -> ChannelConfig:
-        """채널 설정의 일부 항목만 바꾼다. 없는 채널이면 새로 만든다.
-
-        알 수 없는 키는 그대로 둔다 — 플러그인이 쓰는 항목을 코어의 쓰기가
-        지우면 안 된다. 바뀐 설정을 돌려준다.
-        """
+        """Merges changes into one channel's config, creating it if missing.
+        Unknown keys are preserved since plugins may own them."""
         with self._lock:
             raw = self._read_raw()
             entry = dict(raw.get(channel_id) or {})
@@ -119,8 +255,25 @@ class ChannelRegistry:
             self._write_raw(raw)
             return self._configs[channel_id]
 
+    def register(self, channel_id: str, name: str = "") -> bool:
+        """Registers a channel the owner called the bot in (bot.py:2356).
+        False means it was already registered, so nothing was written and no
+        notice is due.
+
+        The mode is `default`, not the original's `private`: an unregistered
+        channel already answers under `default` here, and writing `private`
+        would change how channels that work today are answered.
+        """
+        with self._lock:
+            raw = self._read_raw()
+            if channel_id in raw:
+                return False
+            raw[channel_id] = {"name": name or channel_id, "mode": "default"}
+            self._write_raw(raw)
+            return True
+
     def remove(self, channel_id: str) -> bool:
-        """채널 등록을 해제한다. 없는 채널이면 거짓을 돌려준다."""
+        """Unregisters a channel. Returns False if it wasn't registered."""
         with self._lock:
             raw = self._read_raw()
             if channel_id not in raw:
@@ -130,22 +283,32 @@ class ChannelRegistry:
             return True
 
     def _read_raw(self) -> dict[str, Any]:
-        """파일 내용을 그대로 읽는다. 알 수 없는 키까지 보존해야 해서 필요하다."""
+        """Reads the file as-is; unknown keys must survive, so this can't
+        just parse straight into ChannelConfig.
+
+        A file that exists but can't be read raises. The callers replace the
+        whole file, so reading a broken one as empty would drop every other
+        channel's settings on the next command (sca-zvk). A missing file is
+        different — that is the first registration.
+        """
+        if not self._path.exists():
+            return {}
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        return dict(raw) if isinstance(raw, Mapping) else {}
+        except (OSError, ValueError) as exc:
+            raise ConfigError(f"채널 설정을 읽지 못해 쓰기를 멈춘다 : {self._path} : {exc}") from exc
+        if not isinstance(raw, Mapping):
+            raise ConfigError(f"채널 설정의 최상위가 사전이 아니다 : {self._path}")
+        return dict(raw)
 
     def _write_raw(self, raw: Mapping[str, Any]) -> None:
-        """임시 파일에 쓰고 교체한다.
+        """Writes to a temp file and replaces atomically, so a reader never
+        sees a truncated write mid-edit — only the old file or the new one,
+        never both.
 
-        원본은 대상 파일에 바로 쓴다. 그 동안 읽으면 잘린 JSON 이 읽히고,
-        읽는 쪽은 그것을 편집 중 파일로 보고 직전 설정을 유지한다. 교체 방식은
-        읽는 쪽이 옛 파일이나 새 파일 하나만 보게 한다.
-
-        쓴 뒤 캐시를 직접 갱신한다. mtime 해상도가 1초인 파일 시스템에서는
-        같은 초에 두 번 쓰면 mtime 이 안 바뀌어 캐시가 유지된다.
+        Updates the cache directly afterward: on filesystems with 1-second
+        mtime resolution, two writes in the same second wouldn't otherwise
+        be noticed.
         """
         self._path.parent.mkdir(parents=True, exist_ok=True)
         임시 = self._path.with_name(self._path.name + ".tmp")
@@ -162,6 +325,7 @@ class ChannelRegistry:
             self._mtime = self._path.stat().st_mtime
         except OSError:
             self._mtime = -1.0
+        self._announce_slugs()
 
     def _current(self) -> dict[str, ChannelConfig]:
         with self._lock:
@@ -173,19 +337,141 @@ class ChannelRegistry:
             if mtime != self._mtime:
                 self._configs = self._parse()
                 self._mtime = mtime
+                self._announce_slugs()
+            elif self._slug_retry_due():
+                # The config is unchanged, so only the failed move is retried;
+                # reparsing the file would read the same bytes again.
+                self._announce_slugs()
             return self._configs
+
+    def _slug_retry_due(self) -> bool:
+        if not self._slug_retry_pending:
+            return False
+        deadline = self._read_retry_deadline()
+        # An unreadable or missing marker reads as due: a failed move that
+        # never retries is the permanent miss sca-tl2q fixed.
+        return deadline is None or _now() >= deadline
+
+    def _read_retry_deadline(self) -> float | None:
+        try:
+            text = self._slug_retry_marker.read_text(encoding="utf-8")
+        except OSError:
+            return self._slug_retry_at
+        try:
+            return float(text.strip())
+        except ValueError:
+            # A torn write from another process; the in-process deadline still
+            # bounds the rate.
+            return self._slug_retry_at
+
+    def _write_retry_deadline(self, deadline: float | None) -> None:
+        self._slug_retry_at = deadline
+        if deadline is None:
+            with suppress(OSError):
+                self._slug_retry_marker.unlink()
+            return
+        try:
+            self._slug_retry_marker.parent.mkdir(parents=True, exist_ok=True)
+            self._slug_retry_marker.write_text(f"{deadline}", encoding="utf-8")
+        except OSError as exc:
+            log.warning(
+                "이사 재시도 표식을 쓰지 못해 이 프로세스 안에서만 간격을 둔다 : %s : %s",
+                self._slug_retry_marker, exc,
+            )
+
+    def _announce_slugs(self) -> None:
+        """Reports every channel whose slug moved since the last parse.
+
+        An unknown channel counts as having been unregistered, which is the
+        channel ID for a channel and `dm` for a DM -- naming a DM by its ID
+        here would report a move that never happened. Runs under the lock so
+        the move it triggers cannot race a second reparse.
+        """
+        previous, self._slugs = self._slugs, {
+            cid: channel_slug(cid, config) for cid, config in self._configs.items()
+        }
+        if self._on_slug_change is None:
+            return
+        moved = [
+            (cid, previous.get(cid) or channel_slug(cid, None), new)
+            for cid, new in self._slugs.items()
+        ]
+        moved.extend(
+            (cid, old, channel_slug(cid, None))
+            for cid, old in previous.items()
+            if cid not in self._slugs
+        )
+        due = self._slug_retry_due()
+        pending: dict[str, tuple[str, str]] = {}
+        failed = False
+        for cid, old, new in moved:
+            if old == new:
+                continue
+            if not due and self._slug_retry_pending.get(cid) == (old, new):
+                # The same move that already failed. Gated here rather than at
+                # the caller because a config command rewrites the channel
+                # file, and reading the mtime change as a new event made every
+                # command pay the migrator's lock timeout (sca-vtqq).
+                self._slugs[cid] = old
+                pending[cid] = (old, new)
+                continue
+            if self._on_slug_change(old, new) is False:
+                # Recording the new slug here would mean this channel never
+                # reads as moved again, turning one failed attempt into a
+                # permanent miss (sca-tl2q).
+                self._slugs[cid] = old
+                pending[cid] = (old, new)
+                failed = True
+        self._slug_retry_pending = pending
+        if failed:
+            self._write_retry_deadline(_now() + SLUG_RETRY_INTERVAL_SEC)
+        elif not pending:
+            self._write_retry_deadline(None)
 
     def _parse(self) -> dict[str, ChannelConfig]:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            # 편집 중 저장된 깨진 파일로 전체 처리가 멈추지 않게 한다.
-            # mtime 이 또 바뀌므로 고치면 다음 읽기에서 반영된다
+            # A file mid-save can briefly be invalid JSON; keep the last
+            # good config instead of failing. mtime changes again once the
+            # edit finishes, so the fix applies on the next read.
             return dict(self._configs)
         if not isinstance(raw, Mapping):
             return {}
-        return {
-            cid: ChannelConfig.from_dict(cid, data)
-            for cid, data in raw.items()
-            if isinstance(data, Mapping)
-        }
+        configs: dict[str, ChannelConfig] = {}
+        for cid, data in raw.items():
+            if not isinstance(data, Mapping):
+                continue
+            config, rejected = ChannelConfig.lenient_from_dict(cid, data)
+            for message in rejected:
+                log.warning("채널 설정 값을 읽지 못해 안전한 쪽으로 읽는다 : %s", message)
+            configs[cid] = config
+        return configs
+
+
+def _first_alias(value: object) -> str:
+    """The knowledge alias, which is one slug.
+
+    An earlier pass parsed this as a tuple, so a deployed file may hold a
+    list. Reading the first entry keeps such a file loading; the rest is
+    dropped because there is nowhere to put a second slug.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)) and value:
+        return str(value[0])
+    return ""
+
+
+def channel_slug(channel: str, config: ChannelConfig | None) -> str:
+    """The name for this channel's knowledge file and response archive.
+
+    Matches bot.py:131. Every DM shares one name so personal conversations do
+    not each grow their own knowledge file. `knowledge` comes before `name` so
+    a pair of channels can share what they know.
+    """
+    if is_direct_message_channel(channel):
+        return DM_SLUG
+    if config is None:
+        return channel
+    return config.knowledge or config.name or channel

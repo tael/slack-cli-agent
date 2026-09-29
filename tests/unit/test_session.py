@@ -10,6 +10,13 @@ from slack_cli_agent.session.ports import SessionKey, SessionRecord, SessionScop
 from slack_cli_agent.session.store import SqliteSessionStore
 
 
+def stored(store: SessionStore, session_key: SessionKey) -> SessionRecord:
+    """get 이 None 을 내면 그 자리에서 실패시킨다."""
+    record = store.get(session_key)
+    assert record is not None
+    return record
+
+
 def key(scope: str = SessionScope.THREAD, k: str = "T1") -> SessionKey:
     return SessionKey(scope=scope, key=k)
 
@@ -59,8 +66,8 @@ class TestSqliteSessionStoreGetPut:
             scope=SessionScope.CHANNEL, key="C1", session_id="sid-channel", engine="claude",
             created_at=100.0, last_seen_ts="", updated_at=100.0,
         ))
-        assert store.get(key(SessionScope.THREAD, "C1")).session_id == "sid-thread"
-        assert store.get(key(SessionScope.CHANNEL, "C1")).session_id == "sid-channel"
+        assert stored(store, key(SessionScope.THREAD, "C1")).session_id == "sid-thread"
+        assert stored(store, key(SessionScope.CHANNEL, "C1")).session_id == "sid-channel"
 
 
 class TestSqliteSessionStoreTouch:
@@ -102,7 +109,7 @@ def settings() -> RuntimeSettings:
 
 
 @pytest.fixture
-def manager(store: SqliteSessionStore, settings: RuntimeSettings) -> SessionManager:
+def manager(store: SqliteSessionStore, settings: RuntimeSettings) -> tuple[SessionManager, dict[str, float]]:
     clock = {"now": 1_000_000.0}
     ids = iter(["new-sid-1", "new-sid-2", "new-sid-3"])
     return SessionManager(
@@ -207,7 +214,7 @@ class TestSessionManagerTouch:
             created_at=clock["now"], last_seen_ts="", updated_at=clock["now"],
         ))
         mgr.touch(key(), "1234.5678")
-        assert store.get(key()).last_seen_ts == "1234.5678"
+        assert stored(store, key()).last_seen_ts == "1234.5678"
 
 
 class TestSessionManagerReset:
@@ -221,7 +228,7 @@ class TestSessionManagerReset:
         assert decision.resume is False
         assert decision.rebuild_full is True
         assert decision.session_id == "new-sid-1"
-        assert store.get(key()).session_id == "new-sid-1"
+        assert stored(store, key()).session_id == "new-sid-1"
 
 
 class TestSessionManagerRetryPolicy:
@@ -233,6 +240,18 @@ class TestSessionManagerRetryPolicy:
     def test_한도_소진은_재시도하지_않는다(self, manager) -> None:
         mgr, _clock = manager
         assert mgr.should_retry_with_new_session("usage_limit") is False
+
+    def test_보장_미충족도_재시도하지_않는다(self, manager) -> None:
+        """엔진의 보장은 세션을 새로 열어도 그대로다. 같은 자리에서 또 막힌다
+        (sca-5sc)."""
+        mgr, _clock = manager
+        assert mgr.should_retry_with_new_session("capability_unmet") is False
+
+    def test_엔진_설정_오류도_재시도하지_않는다(self, manager) -> None:
+        """설정 오류는 새 세션을 열어도 같은 파일이 여전히 없거나 비어 있다.
+        재시도가 같은 오류를 한 번 더 만들 뿐이다 (코덱스 6차 리뷰 결함4)."""
+        mgr, _clock = manager
+        assert mgr.should_retry_with_new_session("engine_config") is False
 
 
 class TestSqliteSessionStoreReassignSessionId:
@@ -281,7 +300,7 @@ class TestSqliteSessionStoreReassignSessionId:
             actual_session_id="real-sid", now=200.0,
         )
         assert ok is False
-        assert store.get(key()).session_id == "tmp-sid"
+        assert stored(store, key()).session_id == "tmp-sid"
 
     def test_없는_키면_거짓을_돌려준다(self, store: SqliteSessionStore) -> None:
         ok = store.reassign_session_id(

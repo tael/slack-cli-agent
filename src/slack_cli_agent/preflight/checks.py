@@ -1,12 +1,8 @@
-"""구체 점검 4종.
+"""Concrete preflight checks.
 
-01-source-analysis.md 20절, 03-TRD.md 8절이 정한 기본 점검이다.
-
-`McpServerCheck` 는 원본 `bot.py` 의 `mcp_ready()` 를 그대로 옮긴 것이다(이식
-대상, 03-TRD.md 0-1절). 함수 본문은 고치지 않고 클래스로 감쌌다. 원본은
-LaunchAgent 의 좁은 PATH(`/usr/bin:/bin:/usr/sbin:/sbin`) 때문에
-`#!/usr/bin/env node` 셰뱅이 조용히 실패해 도구만 사라지는 사고
-(2026-08-25, MCP 서버 8개)를 막으려고 셰뱅 인터프리터까지 확인한다.
+McpServerCheck also checks the shebang interpreter because a LaunchAgent's
+narrow PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) can make a `#!/usr/bin/env
+node` shebang silently fail, dropping the tool without any error.
 """
 
 from __future__ import annotations
@@ -15,23 +11,34 @@ import json
 import os
 import re
 import shutil
+import stat
+from collections.abc import Mapping
 from pathlib import Path
 from typing import ClassVar
 
 from ..auth.policy import EFFORT_LEVELS, OWNER_EFFORT_MIN
-from ..config.channel import ChannelRegistry
+from ..auth.principal import TrustLevel
+from ..config.channel import ChannelConfig, ChannelRegistry
+from ..config.profile import KNOWN_KEYS as PROFILE_KNOWN_KEYS
+from ..config.profile import Profile
+from ..config.settings import RuntimeSettings
+from ..core.errors import ConfigError
+from ..engine.capability import ToolRestriction
+from ..engine.claude_settings import load_merged_settings
+from ..engine.environment import registry
+from ..engine.mcp_health import broken_mcp_servers
+from ..engine.registry import default_registry
 from .check import CheckResult, PreflightCheck, PreflightContext
 
-_SHEBANG_ENV_RE = re.compile(r"#!\s*/usr/bin/env\s+(\S+)")
+#: Group and other bits. A login file readable past its owner is not isolated.
+_SHARED_BITS = stat.S_IRWXG | stat.S_IRWXO
 
 
 class PromptFileCheck(PreflightCheck):
-    """프롬프트 파일이 전부 있고 비어 있지 않은가.
+    """Checks that required prompt files exist and aren't empty.
 
-    원본은 `bot.py` 소스를 정규식으로 훑어 `prompt_text("NAME")` 호출을
-    찾아 이름 목록을 만든다(손으로 관리하지 않기 위해서). 이 패키지는
-    단일 소스 파일이 없으므로, 필요한 이름 목록을 호출부가 넘긴다 —
-    `PromptSection` 목록이 실제로 요구하는 이름이 그 목록이다.
+    Required names come from the caller — the names its `PromptSection`
+    list actually needs — since there's no single source file to scan for them.
     """
 
     name: ClassVar[str] = "prompt_files"
@@ -56,11 +63,11 @@ class PromptFileCheck(PreflightCheck):
 
 
 class WorkdirCheck(PreflightCheck):
-    """작업 디렉터리가 있고, 홈 밖이고, `CLAUDE.md` 가 없는가.
+    """Checks the work directory exists, is outside $HOME, and has no CLAUDE.md.
 
-    자리가 없으면 subprocess 가 cwd 를 잡지 못해 모든 요청이 실패하는데
-    봇은 정상 기동하고 로그도 안 남는다. 홈 안이면 전역 지침이 매 턴
-    실려 토큰이 든다.
+    A missing directory fails silently: subprocess can't set cwd, every
+    request fails, but the bot boots fine with nothing logged. A directory
+    under $HOME pulls global instructions into every turn's token budget.
     """
 
     name: ClassVar[str] = "workdir"
@@ -69,13 +76,15 @@ class WorkdirCheck(PreflightCheck):
         self._extra_dirs = tuple(extra_dirs or ())
 
     def run(self, ctx: PreflightContext) -> CheckResult:
-        home = str(Path.home())
+        # Compared as paths, not strings: a string prefix reads
+        # /Users/example-work as living inside /Users/example (sca-2wt).
+        home = Path.home().resolve()
         targets = [ctx.profile.work_root, *(ctx.profile.work_root / d for d in self._extra_dirs)]
         bad: list[str] = []
         for target in targets:
             if not target.is_dir():
                 bad.append(f"작업 자리가 없다 : {target}")
-            elif str(target).startswith(home):
+            elif target.resolve().is_relative_to(home):
                 bad.append(f"작업 자리가 홈 안에 있다 : {target}")
             elif (target / "CLAUDE.md").exists():
                 bad.append(f"작업 자리에 CLAUDE.md 가 있다 : {target / 'CLAUDE.md'}")
@@ -85,10 +94,10 @@ class WorkdirCheck(PreflightCheck):
 
 
 class EngineBinaryCheck(PreflightCheck):
-    """1차·2차 엔진 실행 파일을 지금 찾을 수 있는가.
+    """Checks that the primary/fallback engine binaries can be resolved now.
 
-    절대경로면 존재를, 이름만 있으면(PATH 로 찾는 것) `shutil.which` 로
-    확인한다.
+    An absolute path is checked for existence; a bare name is resolved via
+    `shutil.which`.
     """
 
     name: ClassVar[str] = "engine_binary"
@@ -109,26 +118,122 @@ class EngineBinaryCheck(PreflightCheck):
         return CheckResult(ok=True, detail="엔진 실행 파일 점검 통과")
 
 
+#: Slack user IDs start with U (person) or W (Enterprise Grid person).
+_USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{6,}$")
+
+
+class ChannelUserToolsCheck(PreflightCheck):
+    """Warns about a per-user tool table nobody would notice is broken.
+
+    A mistyped key grants nothing and logs nothing — the person just never
+    gets the tool. Tool names themselves aren't checked: what counts as a
+    valid one differs per engine (sca-34o).
+    """
+
+    name: ClassVar[str] = "channel_user_tools"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        bad: list[str] = []
+        for config in ChannelRegistry(ctx.profile.paths.channels).all().values():
+            for user, tools in sorted(config.user_tools.items()):
+                if not _USER_ID_RE.match(user):
+                    bad.append(f"{config.name} user_tools 키가 사용자 ID 형식이 아니다 : {user}")
+                elif not tools:
+                    bad.append(f"{config.name} user_tools 의 도구 목록이 비어 있다 : {user}")
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad), fatal=False)
+        return CheckResult(ok=True, detail="채널 사용자별 도구 표 점검 통과")
+
+
+class UsageCheckCommandCheck(PreflightCheck):
+    """Checks the operator's usage check command can actually be run.
+
+    A wrong path only shows up as an hourly warning in the log, which nobody
+    reads. `fatal=False` — the bot answers fine without this check (sca-3p7).
+    """
+
+    name: ClassVar[str] = "usage_check_command"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        command = ctx.profile.usage_check_command
+        if not command:
+            return CheckResult(ok=True, detail="사용량 확인 명령이 없다")
+        binary = Path(command[0]).expanduser()
+        if binary.is_absolute():
+            if not binary.exists():
+                return CheckResult(
+                    ok=False, detail=f"사용량 확인 실행 파일이 없다 : {binary}", fatal=False
+                )
+            if not os.access(binary, os.X_OK):
+                return CheckResult(
+                    ok=False, detail=f"사용량 확인 실행 권한이 없다 : {binary}", fatal=False
+                )
+        elif shutil.which(str(binary)) is None:
+            return CheckResult(
+                ok=False,
+                detail=f"사용량 확인 실행 파일을 PATH 에서 못 찾는다 : {binary}",
+                fatal=False,
+            )
+        return CheckResult(ok=True, detail="사용량 확인 명령 점검 통과")
+
+
+class ProfileUnknownKeysCheck(PreflightCheck):
+    """Warns about profile keys the code never reads.
+
+    `from_dict` takes the keys it knows and drops the rest, and
+    `RuntimeSettings.override` ignores unknown `settings` keys the same way.
+    A key that is one character off therefore boots fine with its feature
+    off, which looks exactly like not configuring it at all -- sca-39c was
+    that shape. `fatal=False`: a typo is not a reason to keep the bot down
+    (sca-4dr).
+    """
+
+    name: ClassVar[str] = "profile_unknown_keys"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        source = ctx.profile.source_file
+        if source is None:
+            return CheckResult(ok=True, detail="파일에서 읽은 프로필이 아니다")
+        try:
+            data = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # The profile in hand parsed once already, so this is a file that
+            # changed or went away since. Boot is not the place to judge it.
+            return CheckResult(ok=True, detail=f"프로필 원본을 다시 읽지 못했다 : {source}")
+        if not isinstance(data, dict):
+            return CheckResult(ok=True, detail="프로필 원본이 객체가 아니다")
+        unknown = [key for key in sorted(data) if key not in PROFILE_KNOWN_KEYS]
+        settings_block = data.get("settings")
+        if isinstance(settings_block, dict):
+            known_settings = set(RuntimeSettings.__dataclass_fields__)
+            unknown += [
+                f"settings.{key}" for key in sorted(settings_block) if key not in known_settings
+            ]
+        if unknown:
+            return CheckResult(
+                ok=False,
+                detail="프로필에서 코드가 안 읽는 키가 있다 : " + ", ".join(unknown),
+                fatal=False,
+            )
+        return CheckResult(ok=True, detail="프로필 키 점검 통과")
+
+
 class OwnerSettingsInertCheck(PreflightCheck):
-    """소유자 요청에는 적용되지 않는 채널 설정을 기동 때 한 번 알린다.
+    """Warns once at boot about channel settings that are silently ignored for the owner.
 
-    이식 대상. 원본 `bot.py` 의 `warn_inert_owner_settings()` 를 preflight
-    구조에 맞춰 옮겼다. 원본은 `log.info` 로만 알렸고, 여기서는 CheckResult 로
-    돌려주되 `fatal=False` 라 기동을 막지 않는다.
+    `EngineSpec.model_for_owner()` and `OWNER_EFFORT_MIN` always win over a
+    channel's `model`/`effort` for the owner, so a value in channels.json can
+    look active while never actually applying. `fatal=False` — this only
+    prevents misreading the config, it doesn't block boot.
 
-    model 은 `EngineSpec.model_for_owner()` 가, effort 는 `OWNER_EFFORT_MIN`
-    이 소유자 요청에 우선한다. 그래서 `channels.json` 에 적어 둔 값이
-    소유자에게는 그대로 죽는다. 설정 파일만 보면 그 값으로 도는 것처럼
-    읽혀 오독을 만든다.
-
-    Codex 엔진은 모델 이름 체계가 달라 이 점검이 헛돈다. 그쪽은 건너뛴다.
+    Engine-agnostic on purpose: AccessPolicy overrides the owner's model and
+    effort whatever the engine is, so an engine exception here would only hide
+    the same dead setting for that bot.
     """
 
     name: ClassVar[str] = "owner_settings_inert"
 
     def run(self, ctx: PreflightContext) -> CheckResult:
-        if ctx.profile.primary_engine.type == "codex":
-            return CheckResult(ok=True, detail="codex 엔진은 점검 대상이 아니다")
         model_owner = ctx.profile.primary_engine.model_for_owner()
         registry = ChannelRegistry(ctx.profile.paths.channels)
         dead: list[str] = []
@@ -144,47 +249,258 @@ class OwnerSettingsInertCheck(PreflightCheck):
         return CheckResult(ok=True, detail="소유자에게 적용되는 채널 설정 점검 통과")
 
 
-class McpServerCheck(PreflightCheck):
-    """MCP 서버들이 지금 기동 가능한 상태인지 본다.
 
-    이식 대상. 원본 `bot.py` 의 `mcp_ready()` 본문을 그대로 옮겼다 — 잠자고
-    깨어난 뒤에는 경로와 실행 파일이 그대로인지 확신할 수 없어, 도구가
-    조용히 빠진 채로 답하는 것을 막는다.
+class ChannelSettingsReadableCheck(PreflightCheck):
+    """Warns at boot about channel values the read path could not read.
+
+    The read path parses every channel on every request, so it falls back to
+    the safe side for a bad value rather than stopping unrelated channels
+    (sca-xe0). That leaves only a log line, which nobody opens. This is the
+    one place the operator is told the file says something the code ignores.
+
+    fatal=False -- the affected channel already runs on the strict fallback,
+    and taking the bot down for one typo is what this issue removed.
+    """
+
+    name: ClassVar[str] = "channel_settings_readable"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        path = ctx.profile.paths.channels
+        if not path.exists():
+            return CheckResult(ok=True, detail="채널 설정 파일이 없다")
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # Reading the file itself is another check's job.
+            return CheckResult(ok=True, detail=f"채널 설정 원본을 다시 읽지 못했다 : {path}")
+        if not isinstance(raw, dict):
+            return CheckResult(ok=True, detail="채널 설정의 최상위가 객체가 아니다")
+        rejected: list[str] = []
+        for channel_id, data in raw.items():
+            if not isinstance(data, Mapping):
+                continue
+            rejected.extend(ChannelConfig.lenient_from_dict(str(channel_id), data)[1])
+        if rejected:
+            return CheckResult(ok=False, detail="; ".join(rejected), fatal=False)
+        return CheckResult(ok=True, detail="채널 설정 값 점검 통과")
+
+
+class ToolAllowlistEnforcementCheck(PreflightCheck):
+    """Warns when the configured engine cannot enforce a tool allowlist.
+
+    The caller builds the same allowed_tools list for every engine, but only
+    claude passes it to the CLI as an allowlist. Codex takes a sandbox mode --
+    a different axis, not a weaker allowlist -- and agy enforces nothing. The
+    fact belongs at configuration time: recording it per request would repeat
+    the same sentence on every request that bot ever serves (sca-dyb.11).
+
+    A claude profile with an MCP server attached is reported too: the
+    allowlist drops to server granularity for every request on it (sca-qqtl),
+    and calling that "enforced" states more than the bot can hold.
+
+    fatal=False -- running without an allowlist is a choice an operator may
+    have made knowingly, and blocking boot would take the bot down for it.
+    An engine this package does not ship (a plugin's) is not judged: reading
+    "not registered here" as "enforces nothing" would be a false warning.
+    """
+
+    name: ClassVar[str] = "tool_allowlist_enforcement"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        engines = default_registry()
+        weak: list[str] = []
+        specs = [("1차", ctx.profile.primary_engine)]
+        if ctx.profile.fallback_engine:
+            specs.append(("2차", ctx.profile.fallback_engine))
+        for label, spec in specs:
+            engine_class = engines.engine_class(spec.type)
+            if engine_class is None:
+                continue
+            actual = engine_class.configured_capabilities(
+                spec, ctx.profile.mcp_servers
+            ).tool_restriction
+            if actual is ToolRestriction.EXACT_ALLOWLIST:
+                continue
+            if actual is ToolRestriction.SERVER_SCOPED_ALLOWLIST:
+                # Named apart from the weaker engines: the allowlist does hold
+                # for the built-in tools here, and what an operator would act on
+                # is the MCP server, not the engine choice.
+                weak.append(
+                    f"{label} {spec.type} : MCP 서버가 붙어 있어 도구 제한이 {actual} 로"
+                    " 내려간다 — 허용목록이 이름한 도구를 가진 서버는 통째로 열린다"
+                )
+                continue
+            weak.append(f"{label} {spec.type} : 도구 제한이 {actual} 라 허용목록이 그대로 적용되지 않는다")
+        if weak:
+            return CheckResult(ok=False, detail="; ".join(weak), fatal=False)
+        return CheckResult(ok=True, detail="도구 허용목록 강제 점검 통과")
+
+
+class McpCredentialCheck(PreflightCheck):
+    """Checks that every ${env:...}/${file:...} in an MCP server resolves now.
+
+    Resolution happens when the engine command is built, so an unresolved
+    reference would surface as one failed request at a time rather than as
+    a configuration problem (sca-dn4).
+    """
+
+    name: ClassVar[str] = "mcp_credentials"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        bad: list[str] = []
+        for server in ctx.profile.mcp_servers.values():
+            for resolve in (server.resolved_env, server.resolved_headers):
+                try:
+                    resolve()
+                except ConfigError as exc:
+                    bad.append(str(exc))
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="MCP 자격 표기 점검 통과")
+
+
+class ProfilePermissionCheck(PreflightCheck):
+    """Warns when a profile carrying MCP credentials is readable past its owner.
+
+    Tokens are rejected at load time, so a plain profile has nothing to
+    hide -- warning on those would put a permanent warning on every bot
+    whose profile lives in a repository. An MCP server's `env`/`headers`
+    is the case the load check cannot see into, and only that one is
+    judged here. `fatal=False`: a chmod fixes it, taking the bot down does not.
+    """
+
+    name: ClassVar[str] = "profile_permissions"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        path = ctx.profile.source_file
+        if path is None or not path.is_file():
+            return CheckResult(ok=True, detail="읽어 온 프로필 파일이 없다")
+        if not any(spec.env or spec.headers for spec in ctx.profile.mcp_servers.values()):
+            return CheckResult(ok=True, detail="프로필에 가릴 값이 없다")
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if mode & _SHARED_BITS:
+            return CheckResult(
+                ok=False,
+                detail=f"프로필을 소유자 밖에서도 읽을 수 있다 : {path} ({mode:o}) - chmod 600 으로 바꾼다",
+                fatal=False,
+            )
+        return CheckResult(ok=True, detail="프로필 파일 권한 점검 통과")
+
+
+class McpServerCheck(PreflightCheck):
+    """Checks that MCP servers can boot right now.
+
+    After sleep/wake, paths and binaries aren't guaranteed to still be
+    valid, so this catches a tool going silently missing before it can
+    answer with one quietly gone.
     """
 
     name: ClassVar[str] = "mcp_server"
 
     def run(self, ctx: PreflightContext) -> CheckResult:
-        mcp_config = ctx.profile.paths.mcp_config
-        if not mcp_config.exists():
-            return CheckResult(ok=True, detail=f"MCP 설정 없음 : {mcp_config}", fatal=False)
-        broken = self._mcp_ready(mcp_config)
+        if not ctx.profile.mcp_servers:
+            return CheckResult(ok=True, detail="선언된 MCP 서버 없음", fatal=False)
+        broken = broken_mcp_servers(ctx.profile.mcp_servers)
         if broken:
             return CheckResult(ok=False, detail="; ".join(broken))
         return CheckResult(ok=True, detail="MCP 기동 점검 통과")
 
-    @staticmethod
-    def _mcp_ready(mcp_config: Path) -> list[str]:
-        """원본 `mcp_ready()` 본문. 수정하지 않았다."""
-        broken = []
+
+class EngineSettingsCheck(PreflightCheck):
+    """Checks the bot's own claude settings load before a request needs them.
+
+    claude reads these through --settings, which build_command assembles per
+    request. A broken file therefore passes boot and fails every request
+    after it, and the requester only sees a failure reaction. The original
+    exits at startup when its settings file is missing (bot.py:7133).
+
+    Absent is a warning, not fatal: a freshly installed bot has no
+    operational files yet. Present but unreadable is fatal -- the operator
+    wrote a deny list and it is not reaching the engine.
+    """
+
+    name: ClassVar[str] = "engine_settings"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        if not self._uses_claude(ctx.profile):
+            return CheckResult(ok=True, detail="claude 를 안 쓰는 프로필")
+        paths = ctx.profile.paths
+        common = paths.engine_settings("claude")
         try:
-            servers = json.loads(mcp_config.read_text()).get("mcpServers", {})
-        except (OSError, json.JSONDecodeError) as e:
-            return [f"MCP 설정을 읽지 못했습니다 : {e}"]
-        for name, cfg in servers.items():
-            command = cfg.get("command")
-            if not command:
+            # Merged rather than per file: the deny baseline lives on the
+            # document a turn runs under, so reading the files one by one
+            # would leave it to be taken at that level's first request
+            # instead of here (sca-e34p).
+            for level in TrustLevel:
+                load_merged_settings(common, paths.engine_settings(f"claude.{level.name.lower()}"))
+        except ConfigError as e:
+            return CheckResult(ok=False, detail=str(e))
+        if not paths.engine_settings("claude").exists():
+            return CheckResult(
+                ok=False,
+                detail=f"봇 전용 settings 가 없습니다 : {paths.engine_settings('claude')}",
+                fatal=False,
+            )
+        return CheckResult(ok=True, detail="봇 전용 settings 점검 통과")
+
+    @staticmethod
+    def _uses_claude(profile: Profile) -> bool:
+        specs = [profile.primary_engine]
+        if profile.fallback_engine:
+            specs.append(profile.fallback_engine)
+        return any(spec.type == "claude" for spec in specs)
+
+
+class EngineHomeCredentialCheck(PreflightCheck):
+    """Checks that a per-bot engine home actually holds that engine's login.
+
+    Splitting CODEX_HOME/HOME per bot works, but a fresh directory has no
+    login in it and the engine then fails only when a request arrives —
+    the bot looks alive and answers nothing. Which files an engine needs
+    is declared on its environment policy (sca-kos.6).
+    """
+
+    name: ClassVar[str] = "engine_home_credentials"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        bad: list[str] = []
+        specs = [("1차", ctx.profile.primary_engine)]
+        if ctx.profile.fallback_engine:
+            specs.append(("2차", ctx.profile.fallback_engine))
+        for label, spec in specs:
+            if spec.home_dir is None:
                 continue
-            real = shutil.which(command) or command
-            if not os.path.exists(real):
-                broken.append(f"{name} : 실행 파일 없음")
+            policy = registry.policy_class(spec.type)
+            if policy is None:
+                # Engine registration is EngineBinaryCheck's concern; an
+                # unknown engine must not turn into a credential failure.
                 continue
             try:
-                with open(real, "rb") as f:
-                    first = f.readline(256).decode("utf-8", "replace").strip()
-            except OSError:
+                # Built, not just read: an engine that has no per-bot home
+                # concept rejects home_dir here, and reading CREDENTIAL_FILES
+                # alone would call that profile bootable (코덱스 리뷰).
+                policy(profile_name=ctx.profile.name, home_dir=spec.home_dir)
+            except ConfigError as exc:
+                bad.append(f"{label} 엔진 : {exc}")
                 continue
-            m = _SHEBANG_ENV_RE.match(first)
-            if m and not shutil.which(m.group(1)):
-                broken.append(f"{name} : {m.group(1)} 를 PATH 에서 못 찾음")
-        return broken
+            bad.extend(self._missing(label, spec.home_dir, policy.CREDENTIAL_FILES))
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="엔진 홈 자격 점검 통과")
+
+    @staticmethod
+    def _missing(label: str, home_dir: Path, credentials: tuple[tuple[str, str], ...]) -> list[str]:
+        bad: list[str] = []
+        for relative, source in credentials:
+            path = home_dir / relative
+            if not path.is_file():
+                bad.append(f"{label} 엔진 홈에 자격 파일이 없다 : {path} (~/{source} 를 복사한다)")
+                continue
+            mode = path.stat().st_mode
+            if mode & _SHARED_BITS:
+                bad.append(f"{label} 엔진 자격 파일의 권한을 600 으로 바꿔라 : {path}")
+            elif not mode & stat.S_IRUSR:
+                # Nobody-can-read is as broken as everybody-can-read: the
+                # engine fails at request time either way (코덱스 리뷰).
+                bad.append(f"{label} 엔진 자격 파일을 소유자가 읽을 수 없다 : {path}")
+        return bad

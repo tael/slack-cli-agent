@@ -1,53 +1,93 @@
-"""프로세스 하나가 띄우는 주기 실행기 묶음.
+"""Groups the periodic runners started by a single process, so start/stop stay
+paired — a runner added to `Application` but never wired into a group's start/stop
+just silently never runs.
 
-주기 실행기를 어디서 띄우고 끄는지가 CLI 명령 안에 절차로 흩어져 있으면,
-`Application` 에 새 실행기를 정의해도 CLI 에서 빠뜨리는 순간 그 동작은 어떤 실행
-경로에서도 일어나지 않는다. 실제로 연결 점검, 끝난 작업 정리, 첨부 정리가 전부
-그 형태였다.
-
-묶음으로 만들어 기동과 종료를 함께 처리하면, 새 실행기를 그 묶음에 넣는 것만으로
-양쪽이 동시에 갖춰진다. 어떤 실행기가 들어 있는지도 `runner_names` 로 밖에서
-대조할 수 있어, 정의됐는데 어느 묶음에도 안 들어간 실행기를 시험으로 검출한다.
+A started group can also watch itself: `PeriodicRunner` only catches Exception,
+so anything else ends that one thread while the process keeps running, and a
+stopped periodic task looks exactly like a quiet one (sca-2g0). Nothing is
+restarted — restarting without knowing why it died repeats the same silence.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from types import TracebackType
-from typing import Self
+from typing import Protocol, Self, runtime_checkable
 
-from slack_cli_agent.core.periodic import PeriodicRunner
+from .periodic import PeriodicRunner
 
 log = logging.getLogger(__name__)
 
 
-class ServiceGroup:
-    """함께 기동하고 함께 종료하는 주기 실행기 묶음."""
+@runtime_checkable
+class Runnable(Protocol):
+    """What ServiceGroup needs from a runner. Runnable satisfies it."""
 
-    def __init__(self, runners: Iterable[PeriodicRunner], *, name: str) -> None:
-        self._runners: tuple[PeriodicRunner, ...] = tuple(runners)
+    @property
+    def name(self) -> str: ...
+
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+    def join(self, timeout: float | None = None) -> None: ...
+
+    def is_running(self) -> bool: ...
+
+
+class ServiceGroup:
+    def __init__(
+        self,
+        runners: Iterable[Runnable],
+        *,
+        name: str,
+        watch_interval_sec: float = 0.0,
+        notify: Callable[[str], object] | None = None,
+    ) -> None:
+        self._runners: tuple[Runnable, ...] = tuple(runners)
         self._name = name
+        self._watch_interval_sec = watch_interval_sec
+        self._notify = notify
+        self._watch: PeriodicRunner | None = None
+        self._reported: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
         return self._name
 
     @property
-    def runners(self) -> Sequence[PeriodicRunner]:
+    def runners(self) -> Sequence[Runnable]:
         return self._runners
 
     @property
     def runner_names(self) -> tuple[str, ...]:
-        return tuple(runner.name for runner in self._runners)
+        names = [runner.name for runner in self._runners]
+        if self._watch is not None:
+            names.append(self._watch.name)
+        return tuple(names)
+
+    def dead_runners(self) -> tuple[str, ...]:
+        return tuple(runner.name for runner in self._runners if not runner.is_running())
+
+    def check_alive(self) -> None:
+        """Reports a runner whose thread ended. Reports the same state once."""
+        dead = self.dead_runners()
+        if dead == self._reported:
+            return
+        self._reported = dead
+        if not dead:
+            log.info("%s 묶음의 주기 실행기가 전부 다시 돈다", self._name)
+            return
+        message = f"{self._name} 묶음의 주기 실행기가 멈췄다 : {', '.join(dead)}"
+        log.error("%s", message)
+        if self._notify is not None:
+            self._notify(message)
 
     def start(self) -> None:
-        """전부 기동한다.
-
-        도중에 실패하면 이미 기동한 것을 먼저 멈춘 뒤 예외를 올린다. 앞의 것만
-        뜬 채로 남으면 그 스레드가 프로세스 종료까지 외부 API 를 계속 호출한다.
-        """
-        started: list[PeriodicRunner] = []
+        # If one fails partway, stop what already started before re-raising — otherwise
+        # those threads keep calling external APIs for the rest of the process's life.
+        started: list[Runnable] = []
         try:
             for runner in self._runners:
                 runner.start()
@@ -56,10 +96,17 @@ class ServiceGroup:
             for runner in started:
                 runner.stop()
             raise
+        if self._watch_interval_sec > 0 and self._watch is None:
+            self._watch = PeriodicRunner(
+                self.check_alive, self._watch_interval_sec, name=f"{self._name}_watch"
+            )
+        if self._watch is not None:
+            self._watch.start()
         log.info("서비스 묶음 기동: %s (%s)", self._name, ", ".join(self.runner_names) or "없음")
 
     def stop(self) -> None:
-        """전부 중단을 요청한다. 하나가 실패해도 나머지를 계속 처리한다."""
+        if self._watch is not None:
+            self._watch.stop()
         for runner in self._runners:
             try:
                 runner.stop()
@@ -69,6 +116,8 @@ class ServiceGroup:
     def join(self, timeout: float | None = None) -> None:
         for runner in self._runners:
             runner.join(timeout)
+        if self._watch is not None:
+            self._watch.join(timeout)
 
     def __enter__(self) -> Self:
         self.start()

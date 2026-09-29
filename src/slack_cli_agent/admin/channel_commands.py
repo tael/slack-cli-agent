@@ -1,84 +1,137 @@
-"""채널 설정을 바꾸는 관리 명령.
+"""Admin commands that change channel settings.
 
-원본 `handle_admin`(01-source-analysis.md 18절, bot.py:3836-3960) 중 채널
-단위 설정을 쓰는 것만 모은다. 쓰기는 전부 `ChannelRegistry.update`/`remove`
-를 거친다 — 직접 JSON 을 만지면 플러그인이 쓰는 알 수 없는 키가 지워진다.
+Writes always go through `ChannelRegistry.update`/`remove` rather than
+touching the JSON directly, since a raw write would drop unknown keys used
+by plugins.
 
-원본의 "코치 모드" 는 `mode="agent_coach"` 와 함께 `mention_only=True` 를
-켠다. 이 코어에는 `mention_only` 필드가 없고 그 반대 뜻으로 이미 있는
-`answer_unaddressed`(기본값 False, "이름을 불러야 답한다") 가 대응한다
-(`slack/listener.py` 참고). 그래서 여기서는 `answer_unaddressed=False` 를
-명시한다 — 채널에 이미 True 로 저장돼 있던 경우까지 되돌리기 위해서다.
-
-원본에는 조직 제품명을 그대로 딴 별칭이 하나 더 있다. 그것은 여기 넣지
-않는다. "코치 모드"/"코치모드" 만 받는다.
+Coach mode maps to `mode="agent_coach"` plus `answer_unaddressed=False`
+(this core has no separate `mention_only` field, just the inverse
+`answer_unaddressed`, "reply only when named"). It's set explicitly so a
+channel with `answer_unaddressed=True` already stored gets reverted too.
 """
 
 from __future__ import annotations
 
+from abc import abstractmethod
 from typing import ClassVar
 
 from ..observability.notices import NoticeCatalog, NoticeKey
 from .command import AdminCommand, AdminContext, AdminResult
 
 
-class _ChatLevelCommand(AdminCommand):
-    """말수를 바꾸는 명령의 공통 동작. 별칭과 값만 하위 클래스가 정한다."""
+class _ChannelSettingCommand(AdminCommand):
+    """Base for commands that write a setting onto the current channel.
 
-    _aliases: ClassVar[tuple[str, ...]] = ()
-    _level: ClassVar[str] = ""
-    _notice_key: ClassVar[NoticeKey]
+    The registration check is here rather than in each command because
+    `ChannelRegistry.update` creates a missing entry, so any one of them ran in
+    an unregistered channel registered it as a side effect: third-party
+    requests then passed there without the registration notice ever going out,
+    and in a DM the DM id was written into the channel file (sca-5z6h).
+    Registration stays where it was in the original -- the owner calling the
+    bot in the channel (bot.py:4996).
+    """
 
     def __init__(self, notices: NoticeCatalog) -> None:
         self._notices = notices
 
+    def execute(self, ctx: AdminContext) -> AdminResult:
+        if ctx.channels.get(ctx.channel) is None:
+            # applied=False records that nothing was written. The reply still
+            # goes out and the request still ends here.
+            return AdminResult(message=self._notices.render(NoticeKey.NOT_LISTED), applied=False)
+        return self._apply(ctx)
+
+    @abstractmethod
+    def _apply(self, ctx: AdminContext) -> AdminResult:
+        """Runs the command, the channel already known to be registered."""
+
+
+class _ChatLevelCommand(_ChannelSettingCommand):
+    _aliases: ClassVar[tuple[str, ...]] = ()
+    _level: ClassVar[str] = ""
+    _notice_key: ClassVar[NoticeKey]
+
     def matches(self, text: str) -> bool:
         return text.strip() in self._aliases
 
-    def execute(self, ctx: AdminContext) -> AdminResult:
+    def _apply(self, ctx: AdminContext) -> AdminResult:
         ctx.channels.update(ctx.channel, {"chat": self._level})
         return AdminResult(message=self._notices.render(self._notice_key))
 
 
 class ChatActiveCommand(_ChatLevelCommand):
-    """말수를 늘린다. 원본 별칭 네 가지를 그대로 받는다."""
-
     name: ClassVar[str] = "chat_active"
+    usage: ClassVar[str] = "말수 많게"
+    description: ClassVar[str] = "이 채널에서 더 자주 나선다"
     _aliases = ("말수 많게", "적극 모드", "말 많이", "수다 모드")
     _level = "active"
     _notice_key = NoticeKey.CHAT_ACTIVE
 
 
 class ChatNormalCommand(_ChatLevelCommand):
-    """말수를 기본으로 되돌린다."""
-
     name: ClassVar[str] = "chat_normal"
+    usage: ClassVar[str] = "말수 보통"
+    description: ClassVar[str] = "이 채널의 말수를 기본으로 되돌린다"
     _aliases = ("말수 보통", "기본 말수")
     _level = "normal"
     _notice_key = NoticeKey.CHAT_NORMAL
 
 
 class ChatQuietCommand(_ChatLevelCommand):
-    """말수를 줄인다."""
-
     name: ClassVar[str] = "chat_quiet"
+    usage: ClassVar[str] = "말수 적게"
+    description: ClassVar[str] = "이 채널에서 덜 나선다"
     _aliases = ("말수 적게", "조용 모드", "조용히")
     _level = "quiet"
     _notice_key = NoticeKey.CHAT_QUIET
 
 
-class CoachModeCommand(AdminCommand):
-    """코치 모드. 멘션 전용 + 짧은 맥락으로 전환한다."""
+class _UnaddressedCommand(_ChannelSettingCommand):
+    """Toggles `answer_unaddressed` for the channel the command came from.
 
-    name: ClassVar[str] = "coach_mode"
+    Until this existed the only way to change it was hand-editing
+    channels.json, so the setting was effectively invisible from Slack.
+    """
 
-    def __init__(self, notices: NoticeCatalog) -> None:
-        self._notices = notices
+    _aliases: ClassVar[tuple[str, ...]] = ()
+    _value: ClassVar[bool] = False
+    _notice_key: ClassVar[NoticeKey]
 
     def matches(self, text: str) -> bool:
-        return text.strip() in ("코치 모드", "코치모드")
+        return text.strip() in self._aliases
 
-    def execute(self, ctx: AdminContext) -> AdminResult:
+    def _apply(self, ctx: AdminContext) -> AdminResult:
+        ctx.channels.update(ctx.channel, {"answer_unaddressed": self._value})
+        return AdminResult(message=self._notices.render(self._notice_key))
+
+
+class UnaddressedOnCommand(_UnaddressedCommand):
+    name: ClassVar[str] = "unaddressed_on"
+    usage: ClassVar[str] = "끼어들기 허용"
+    description: ClassVar[str] = "이 채널에서 이름을 안 불러도 답한다"
+    _aliases = ("끼어들기 허용", "끼어들기허용", "호명 없이 응답", "멘션 없이 응답")
+    _value = True
+    _notice_key = NoticeKey.UNADDRESSED_ON
+
+
+class UnaddressedOffCommand(_UnaddressedCommand):
+    name: ClassVar[str] = "unaddressed_off"
+    usage: ClassVar[str] = "멘션 전용"
+    description: ClassVar[str] = "이 채널에서 이름을 불러야만 답한다"
+    _aliases = ("멘션 전용", "멘션전용", "호명 전용", "불러야 답해")
+    _value = False
+    _notice_key = NoticeKey.UNADDRESSED_OFF
+
+
+class CoachModeCommand(_ChannelSettingCommand):
+    name: ClassVar[str] = "coach_mode"
+    usage: ClassVar[str] = "코치 모드"
+    description: ClassVar[str] = "이 채널을 에이전트 코치 형식으로 바꾼다"
+
+    def matches(self, text: str) -> bool:
+        return text.strip() in ("코치 모드", "코치모드", "에이전트 코치")
+
+    def _apply(self, ctx: AdminContext) -> AdminResult:
         ctx.channels.update(
             ctx.channel,
             {"mode": "agent_coach", "answer_unaddressed": False, "light_context": True},
@@ -86,42 +139,36 @@ class CoachModeCommand(AdminCommand):
         return AdminResult(message=self._notices.render(NoticeKey.MODE_MENTION_ONLY))
 
 
-class ApiModeCommand(AdminCommand):
-    """지정된 응답 형식(연동 문의 대응)으로 전환한다."""
-
+class ApiModeCommand(_ChannelSettingCommand):
     name: ClassVar[str] = "api_mode"
-
-    def __init__(self, notices: NoticeCatalog) -> None:
-        self._notices = notices
+    usage: ClassVar[str] = "api 모드"
+    description: ClassVar[str] = "이 채널을 연동 API 문의 응답 형식으로 바꾼다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("api 모드", "api모드", "API 모드")
 
-    def execute(self, ctx: AdminContext) -> AdminResult:
+    def _apply(self, ctx: AdminContext) -> AdminResult:
         ctx.channels.update(ctx.channel, {"mode": "api_helpdesk"})
         return AdminResult(message=self._notices.render(NoticeKey.MODE_STRUCTURED))
 
 
-class DefaultModeCommand(AdminCommand):
-    """기본 응답 형식으로 되돌린다."""
-
+class DefaultModeCommand(_ChannelSettingCommand):
     name: ClassVar[str] = "default_mode"
-
-    def __init__(self, notices: NoticeCatalog) -> None:
-        self._notices = notices
+    usage: ClassVar[str] = "기본 모드"
+    description: ClassVar[str] = "이 채널을 일반 응답 형식으로 되돌린다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("기본 모드", "기본모드")
 
-    def execute(self, ctx: AdminContext) -> AdminResult:
+    def _apply(self, ctx: AdminContext) -> AdminResult:
         ctx.channels.update(ctx.channel, {"mode": "private"})
         return AdminResult(message=self._notices.render(NoticeKey.MODE_PLAIN))
 
 
 class ChannelUnregisterCommand(AdminCommand):
-    """채널을 응답 목록에서 뺀다. 등록 안 된 채널이면 그 사실을 답한다."""
-
     name: ClassVar[str] = "channel_unregister"
+    usage: ClassVar[str] = "채널 해제"
+    description: ClassVar[str] = "지금 이 채널을 응답 목록에서 뺀다"
 
     def __init__(self, notices: NoticeCatalog) -> None:
         self._notices = notices
@@ -132,6 +179,6 @@ class ChannelUnregisterCommand(AdminCommand):
     def execute(self, ctx: AdminContext) -> AdminResult:
         config = ctx.channels.get(ctx.channel)
         if config is None:
-            return AdminResult(message=self._notices.render(NoticeKey.NOT_LISTED))
+            return AdminResult(message=self._notices.render(NoticeKey.NOT_LISTED), applied=False)
         ctx.channels.remove(ctx.channel)
         return AdminResult(message=self._notices.render(NoticeKey.CHANNEL_UNREGISTERED, name=config.name))

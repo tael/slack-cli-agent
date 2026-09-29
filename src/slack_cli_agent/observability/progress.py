@@ -1,39 +1,42 @@
-"""처리 중 경과를 몇 줄로 요약해 슬랙에 흘리는 계층.
-
-원본 `bot.py` 의 `ProgressStream`(2026-09-03 도입)을 재구성했다. 원본은 답을
-다 만든 뒤 한 번에 올려서, 조회가 길어지면 몇 분 동안 아무 표시가 없어 멈춘
-것으로 보였다. 처음에는 경과 초를 덧붙이는 방식이었으나 `chat.appendStream`
-이 이어붙이기만 되어 오래 걸릴수록 숫자 줄이 쌓여 읽기 어려웠다. 그래서 지금
-무슨 도구를 쓰는지 보여주는 방식으로 바뀌었다 — 화면에 남는 줄이 실제 단계
-수만큼으로 끝나고, 대기가 길 때 무엇 때문에 긴지 드러난다.
-
-이 모듈은 판단만 한다. 실제 슬랙 스트리밍 호출(`chat.startStream`,
-`chat.appendStream`, `chat.stopStream` 등)과 그것을 주기로 부르는 스레드는
-슬랙 어댑터 쪽(아직 없음)의 몫이다 — 여기서는 시각과 로그 파일만 있으면
-결과가 결정되게 만들어, 슬랙 클라이언트 없이 시험한다.
-"""
+# Shows which tool is currently running rather than an elapsed-seconds
+# counter -- the display only appends, so a counter would pile up one line
+# per tick and get unreadable on long-running requests.
+#
+# What to say (ToolLabelMapper/ProgressTracker) and when to say it
+# (ProgressSession's polling thread) both live here, so one implementation
+# covers every engine and every channel. Only the two ends are pluggable:
+# an engine supplies the log file its own tool hook writes, and a
+# ProgressSink puts the lines somewhere a person can see. Neither end is
+# imported here, so this is testable without an engine or a Slack client.
 
 from __future__ import annotations
 
 import json
+import logging
+import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Generator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, Protocol
 
 from ..config.channel import ChannelConfig
 from ..config.settings import RuntimeSettings
 
-# 스트림을 열 때 첫 줄. 아직 아무 도구도 안 썼을 때의 상태를 알린다.
-START_TEXT = "확인하고 있어요."
-# 새 도구 호출이 없어도 유휴 시간을 넘기면 아직 도는 중이라고 남기는 한 줄.
-# 생성만 오래 하는 구간에는 도구 호출이 없어 표시가 멈춘 것처럼 보이기 때문이다.
-IDLE_TEXT = "아직 보고 있어요"
-# 어느 표에도 못 걸리고 mcp 서버 이름도 못 가른 도구의 기본 문구.
+log = logging.getLogger(__name__)
+
+START_TEXT = "작업 중"
+# Emitted when there's been no new tool call for a while, so a long
+# generation-only stretch doesn't look like it stalled.
+IDLE_TEXT = "아직 작업 중"
 DEFAULT_LABEL = "확인하는 중"
 
-# 도구 이름을 사람이 읽는 단계 이름으로 바꾼다. 앞의 것부터 맞춰 보고 처음
-# 걸리는 것을 쓴다. 원본 TOOL_LABELS 를 그대로 옮겼다 — 여기 담긴 이름은
-# mcp 도구의 일반 서버 이름(github, notion 등)이라 조직 고유값이 아니다.
+#: Audit kind for a tool name the table has no entry for. Matches
+#: IncidentKind.PROGRESS_UNKNOWN_TOOL; kept as a literal so this module
+#: does not import the audit layer.
+UNKNOWN_TOOL_KIND = "progress_unknown_tool"
+
+# Maps tool names to human-readable step labels; first prefix match wins.
 TOOL_LABELS: Sequence[tuple[str, str]] = (
     ("mcp__slack__", "슬랙 대화 찾는 중"),
     ("mcp__snowflake__", "스노우플레이크 조회 중"),
@@ -62,18 +65,59 @@ TOOL_LABELS: Sequence[tuple[str, str]] = (
     ("Agent", "따로 조사 돌리는 중"),
     ("Skill", "스킬 여는 중"),
     ("TodoWrite", "할 일 정리 중"),
+    # codex — item.type 이 도구 이름 자리다 (2026-09-19 실측).
+    ("command_execution", "명령 실행 중"),
+    ("file_change", "파일 고치는 중"),
+    ("web_search", "웹 찾는 중"),
+    ("mcp_tool_call", "조회 중"),
+    ("agent_message", "답 쓰는 중"),
+    ("agent_response", "답 쓰는 중"),
+    # agy — step_update.tool_name. 이름은 init 이벤트의 도구 목록에서 가져왔다.
+    # 앞이 긴 이름부터 온다: 첫 접두어가 이기므로 browser_subagent 가
+    # browser_ 보다 뒤에 있으면 브라우저 문구로 덮인다.
+    ("browser_subagent", "따로 조사 돌리는 중"),
+    ("invoke_subagent", "따로 조사 돌리는 중"),
+    ("run_command", "명령 실행 중"),
+    ("command_status", "명령 실행 중"),
+    ("view_file", "파일 읽는 중"),
+    ("notebook_edit", "파일 고치는 중"),
+    ("grep_search", "코드 찾는 중"),
+    ("find_by_name", "파일 찾는 중"),
+    ("list_dir", "파일 찾는 중"),
+    ("replace_file_content", "파일 고치는 중"),
+    ("multi_replace_file_content", "파일 고치는 중"),
+    ("sed_file", "파일 고치는 중"),
+    ("write_to_file", "파일 쓰는 중"),
+    ("search_web", "웹 찾는 중"),
+    ("read_url_content", "웹 문서 읽는 중"),
+    ("call_mcp_tool", "조회 중"),
+    ("browser_", "브라우저로 화면 보는 중"),
+    ("open_browser_url", "브라우저로 화면 보는 중"),
+    ("read_browser_page", "브라우저로 화면 보는 중"),
+    ("capture_browser_", "브라우저로 화면 보는 중"),
+    ("click_browser_pixel", "브라우저로 화면 보는 중"),
+    ("execute_browser_javascript", "브라우저로 화면 보는 중"),
+    ("list_browser_pages", "브라우저로 화면 보는 중"),
+    ("manage_task", "할 일 정리 중"),
+    ("generate_image", "그림 만드는 중"),
 )
 
 
 class ToolLabelMapper:
-    """도구 이름 하나를 진행 표시 문구로 바꾼다.
+    """Maps a tool name to a progress label, falling back to the mcp server name."""
 
-    표에 없는 mcp 도구는 서버 이름을 그대로 살려 "<서버> 조회 중" 으로 쓴다.
-    표를 못 따라간 신규 도구가 이름 그대로 노출되지 않게 하기 위함이다.
-    """
-
-    def __init__(self, labels: Sequence[tuple[str, str]] = TOOL_LABELS) -> None:
+    def __init__(
+        self,
+        labels: Sequence[tuple[str, str]] = TOOL_LABELS,
+        on_unknown: Callable[[str], None] | None = None,
+    ) -> None:
         self._labels = tuple(labels)
+        # Told about names the table has no entry for, so a CLI renaming its
+        # tools is visible instead of silently showing the default wording.
+        # Deduped here: progress runs many times per request, and recording
+        # every call would bury the ledger (sca-2wu).
+        self._on_unknown = on_unknown
+        self._reported: set[str] = set()
 
     def label_for(self, tool_name: str) -> str:
         if not tool_name:
@@ -84,17 +128,24 @@ class ToolLabelMapper:
         if tool_name.startswith("mcp__"):
             parts = tool_name.split("__")
             server = parts[1] if len(parts) > 2 else ""
+            # The server name carries the meaning, so there is nothing to add
+            # to the table -- not reported.
             return f"{server} 조회 중" if server else "조회 중"
+        self._report_unknown(tool_name)
         return DEFAULT_LABEL
+
+    def _report_unknown(self, tool_name: str) -> None:
+        if self._on_unknown is None or tool_name in self._reported:
+            return
+        self._reported.add(tool_name)
+        try:
+            self._on_unknown(tool_name)
+        except Exception:  # noqa: BLE001 - progress display must not fail a request
+            log.warning("표에 없는 도구 이름 기록 실패 : %s", tool_name)
 
 
 class ProgressLogReader:
-    """훅이 도구 이름을 적어 둔 로그 파일에서 새 줄만 읽어 단계 이름으로 바꾼다.
-
-    훅은 도구를 부를 때마다 `{"tool": "이름"}` 한 줄을 이 파일에 추가한다. 이
-    클래스는 그 파일의 어디까지 읽었는지를 스스로 들고 있다가, 다음 호출에서
-    새로 늘어난 부분만 본다.
-    """
+    """Reads newly appended `{"tool": "..."}` lines from the hook log and maps them to labels."""
 
     def __init__(self, mapper: ToolLabelMapper | None = None) -> None:
         self._mapper = mapper or ToolLabelMapper()
@@ -102,21 +153,16 @@ class ProgressLogReader:
         self._last_label = ""
 
     def reset(self) -> None:
-        """세션이 바뀌면 오프셋과 마지막 단계를 초기화한다.
-
-        세션을 이어 쓰면 지난 요청이 남긴 줄이 파일에 그대로 있다. 초기화 없이
-        읽으면 이번에 하지도 않은 조회가 진행 표시에 흐른다.
-        """
+        # A resumed session's log file still has lines from prior requests;
+        # without resetting, those stale entries would leak into this run's
+        # progress display.
         self._offset = 0
         self._last_label = ""
 
     def read_new_labels(self, log_path: Path) -> list[str]:
-        """마지막으로 읽은 자리 뒤의 완결된 줄만 단계 이름으로 바꿔 돌려준다.
-
-        쓰는 도중에 읽으면 마지막 줄이 잘려 있을 수 있어, 완결된 줄(끝에 개행이
-        있는 줄)까지만 소비한다. 연달아 같은 단계가 나오면 하나로 줄인다 —
-        같은 줄이 열 번 쌓이면 경과 초를 찍던 옛 방식과 다를 바가 없다.
-        """
+        # Only consume complete (newline-terminated) lines, since the writer
+        # may be mid-write on the last one. Collapse consecutive repeats so
+        # ten calls to the same tool don't spam ten identical lines.
         try:
             text = log_path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -125,7 +171,9 @@ class ProgressLogReader:
         cut = raw.rfind("\n")
         if cut < 0:
             return []
-        self._offset += len(raw[: cut + 1].encode("utf-8"))
+        # Characters, not bytes: the offset indexes the decoded text above,
+        # and a byte count would run past a line holding non-ASCII names.
+        self._offset += cut + 1
 
         out: list[str] = []
         for line in raw[:cut].splitlines():
@@ -145,13 +193,7 @@ class ProgressLogReader:
 
 
 class ProgressTracker:
-    """처리 중 경과로 무엇을 흘려보낼지 판단한다.
-
-    실제 슬랙 호출은 이 클래스의 책임이 아니다. 호출부가
-    `RuntimeSettings.progress_tick_sec` 주기로 `poll()` 을 부르고, 돌아온
-    문구를 그대로 발신한다. 이 계층이 두 판단을 맡는다 — 새 도구 호출이
-    있으면 그 단계 이름을, 없고 유휴 시간을 넘겼으면 한 줄만.
-    """
+    """Decides what to emit each tick: the caller polls at `progress_tick_sec` and sends whatever comes back."""
 
     def __init__(
         self,
@@ -165,18 +207,11 @@ class ProgressTracker:
         self._last_post_at: float | None = None
 
     def start(self) -> str:
-        """새 요청을 시작한다. 시작 문구를 돌려주고 로그 읽기 위치를 초기화한다."""
         self._last_post_at = self._now()
         self._reader.reset()
         return START_TEXT
 
     def poll(self, log_path: Path | None) -> list[str]:
-        """이번 틱에 흘려보낼 문구 목록.
-
-        `start()` 를 부르기 전에는 유휴 기준 시각이 없어 항상 빈 목록이다.
-        새 단계가 있으면 그것을 우선한다. 없고 유휴 시간(`progress_idle_sec`)을
-        넘겼으면 한 줄만 남긴다. 그 안이면 아무것도 돌려주지 않는다.
-        """
         if self._last_post_at is None:
             return []
         labels = self._reader.read_new_labels(log_path) if log_path is not None else []
@@ -190,10 +225,184 @@ class ProgressTracker:
 
 
 def channel_progress_enabled(config: ChannelConfig | None) -> bool:
-    """이 채널에서 진행 표시를 켤지 본다.
-
-    기본은 꺼짐이다. 원본도 먼저 켠 채널에서 동작을 확인한 뒤 넓혔다.
-    """
+    # None means the channel is not in channels.json, not that it wants a
+    # quiet thread -- a bot answers a mention anywhere (sca-stj).
     if config is None:
-        return False
+        return ChannelConfig(channel_id="").progress
     return bool(config.progress)
+
+
+class AuditPort(Protocol):
+    """AuditLog.record's shape. Optional -- progress runs without one."""
+
+    def __call__(self, kind: str, **fields: Any) -> None: ...
+
+
+def _unknown_tool_reporter(audit: AuditPort | None) -> Callable[[str], None] | None:
+    if audit is None:
+        return None
+
+    def report(tool_name: str) -> None:
+        audit(UNKNOWN_TOOL_KIND, tool=tool_name)
+
+    return report
+
+
+class ProgressSink(Protocol):
+    """Where the step lines go. One instance per request.
+
+    Implementations are cosmetic by contract: raising from any of these
+    would take down a request that was otherwise answered fine, so
+    ProgressSession swallows whatever they raise. They may still raise —
+    the swallowing is here, not duplicated in every implementation.
+    """
+
+    def open(self, text: str) -> None:
+        """Shows the first line. Called once, before any append()."""
+
+    def append(self, lines: Sequence[str]) -> None:
+        """Adds finished step lines. Called zero or more times."""
+
+    def close(self) -> None:
+        """Takes the display down. Called exactly once, including on failure."""
+
+
+class ProgressSession:
+    """Polls the log on a timer and pushes new step lines to a sink.
+
+    A thread rather than a callback on the engine call: the engine runs as
+    a subprocess and gives the bot process nothing until it exits, so the
+    only thing that can report intermediate progress is something watching
+    the hook's log file alongside it.
+    """
+
+    def __init__(
+        self,
+        tracker: ProgressTracker,
+        sink: ProgressSink,
+        log_path: Path,
+        tick_sec: float,
+    ) -> None:
+        self._tracker = tracker
+        self._sink = sink
+        self._log_path = log_path
+        self._tick_sec = tick_sec
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        # Truncate rather than delete: the hook appends, and a resumed
+        # session's file still holds the previous request's lines.
+        self._write_empty()
+        self._emit(lambda: self._sink.open(self._tracker.start()))
+        self._thread = threading.Thread(target=self._loop, name="progress", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            # Bounded so a sink call wedged on a network timeout can't hold
+            # the answer back indefinitely; the thread is a daemon, so a
+            # straggler dies with the process rather than blocking shutdown.
+            self._thread.join(timeout=self._tick_sec * 2)
+            self._thread = None
+        self._emit(self._sink.close)
+        try:
+            self._log_path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.debug("진행 로그 삭제 실패 : %s, %s", self._log_path, exc)
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self._tick_sec):
+            labels = self._poll()
+            if labels:
+                self._send(labels)
+
+    def _send(self, labels: Sequence[str]) -> None:
+        self._emit(lambda: self._sink.append(labels))
+
+    def _poll(self) -> list[str]:
+        try:
+            return self._tracker.poll(self._log_path)
+        except OSError as exc:
+            log.debug("진행 로그 읽기 실패 : %s, %s", self._log_path, exc)
+            return []
+
+    def _write_empty(self) -> None:
+        try:
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._log_path.write_text("", encoding="utf-8")
+        except OSError as exc:
+            log.debug("진행 로그 초기화 실패 : %s, %s", self._log_path, exc)
+
+    @staticmethod
+    def _emit(action: Callable[[], None]) -> None:
+        try:
+            action()
+        except Exception as exc:  # noqa: BLE001 - see ProgressSink: the display must not fail the request
+            log.debug("진행 표시 실패 : %s", exc)
+
+
+#: Builds the sink for one request, given its channel, thread and the user
+#: who asked. The user is what Slack's streaming API takes as the recipient.
+SinkFactory = Callable[[str, str, str], ProgressSink]
+
+
+class ProgressCoordinator:
+    """Entry point for callers: decides whether a request gets progress
+    display, where its log goes, and runs the session around the engine call.
+
+    The pipeline holds one of these and knows nothing about tool names,
+    tick intervals or Slack. Engines know only the log path they are handed.
+    """
+
+    def __init__(
+        self,
+        settings: RuntimeSettings,
+        sink_factory: SinkFactory,
+        log_dir: Path,
+        mapper: ToolLabelMapper | None = None,
+        audit: AuditPort | None = None,
+    ) -> None:
+        self._settings = settings
+        self._sink_factory = sink_factory
+        self._log_dir = log_dir
+        self._mapper = mapper or ToolLabelMapper(on_unknown=_unknown_tool_reporter(audit))
+
+    def log_path_for(self, config: ChannelConfig | None, channel: str, ts: str) -> Path | None:
+        """The log this request's engine should write to, or None when the
+        channel has progress off. None is what the engine reads as "no hook"."""
+        if not channel_progress_enabled(config):
+            return None
+        # ts carries a dot; channel and ts are Slack-issued IDs, so neither
+        # can contain a path separator.
+        return self._log_dir / f"{channel}-{ts}.log"
+
+    @contextmanager
+    def session(
+        self, channel: str, thread_ts: str, user: str, log_path: Path | None,
+    ) -> Generator[None]:
+        """Runs progress display for the duration of the block.
+
+        A None log_path means the caller decided this request has no
+        progress display, so this is a plain pass-through — callers don't
+        branch on it themselves.
+        """
+        if log_path is None:
+            yield
+            return
+        try:
+            sink = self._sink_factory(channel, thread_ts, user)
+        except Exception as exc:  # noqa: BLE001 - see ProgressSink
+            log.debug("진행 표시를 열지 못했다 : %s", exc)
+            yield
+            return
+        session = ProgressSession(
+            ProgressTracker(self._settings, self._mapper), sink, log_path,
+            self._settings.progress_tick_sec,
+        )
+        session.start()
+        try:
+            yield
+        finally:
+            session.stop()

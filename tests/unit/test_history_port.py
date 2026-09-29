@@ -117,6 +117,9 @@ def test_read_history_none_is_distinguishable_from_actual_empty() -> None:
         def read_history(self, channel: str, oldest: str, limit: int) -> list[dict[str, Any]]:
             return []
 
+        def wait_history_slot(self) -> None:
+            return None
+
     port = SlackHistoryPort(EmptyResultReader(), empty_client)
     result = port.read_history("C123", 1700000000.0, 10)
 

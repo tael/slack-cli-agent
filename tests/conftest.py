@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -36,12 +37,20 @@ sys.addaudithook(_guard)
 
 
 @pytest.fixture(autouse=True)
-def isolate_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """홈을 임시 경로로 바꾼다. 저장소와 파이썬 설치 경로만 예외로 둔다."""
+def isolate_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """홈을 임시 경로로 바꾼다. 저장소와 파이썬 설치 경로만 예외로 둔다.
+
+    settings 판독 기준선도 여기서 비운다. 그 기준선은 프로세스 전역이라, 실제
+    기동에서는 preflight 가 잡은 뒤 같은 프로세스에서 안 비워져야 하고(코덱스
+    6차 리뷰 결함1·2), 시험 사이의 격리는 이 fixture 처럼 구조로 만든다.
+    """
+    from slack_cli_agent.engine.lifecycle import reset_engine_state
+
     repo = str(Path(__file__).resolve().parents[1])
     _ALLOWED_PREFIXES[:] = [repo, str(tmp_path), sys.prefix, sys.base_prefix]
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    reset_engine_state()
     yield tmp_path
     _ALLOWED_PREFIXES.clear()
 

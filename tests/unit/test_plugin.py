@@ -18,7 +18,6 @@ def write_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_name: s
     sys.modules.pop(module_name, None)
 
 
-# ---------------------------------------------------------------------------
 # BotPlugin — 기본 구현
 
 
@@ -42,7 +41,6 @@ class TestBotPluginDefaults:
         assert isinstance(_MinimalPlugin(), BotPlugin)
 
 
-# ---------------------------------------------------------------------------
 # PluginLoader — 정상 경로
 
 
@@ -82,7 +80,6 @@ class TestPluginLoaderSuccess:
         assert result.ok is True
 
 
-# ---------------------------------------------------------------------------
 # PluginLoader — 실패: 없는 모듈
 
 
@@ -110,7 +107,6 @@ class TestPluginLoaderMissingModule:
             PluginLoader(strict=True).load(["no_such_module_at_all"])
 
 
-# ---------------------------------------------------------------------------
 # PluginLoader — 실패: 타입이 BotPlugin 이 아니다
 
 
@@ -131,7 +127,6 @@ class TestPluginLoaderWrongType:
             PluginLoader(strict=True).load(["fake_plugin_wrong_type_2"])
 
 
-# ---------------------------------------------------------------------------
 # PluginLoader — 이름 충돌
 
 
@@ -180,7 +175,6 @@ class TestPluginLoaderNameCollision:
             PluginLoader(strict=True).load(["fake_plugin_dup_c", "fake_plugin_dup_d"])
 
 
-# ---------------------------------------------------------------------------
 # PluginLoader — 생성자에서 예외를 던지는 플러그인
 
 

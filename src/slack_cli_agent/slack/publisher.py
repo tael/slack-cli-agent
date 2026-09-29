@@ -1,40 +1,55 @@
-"""MessagePublisher — 발신과 실패 처리.
+"""Posts replies and handles the failure paths: two rendering modes
+per channel (rich markdown blocks vs. plain mrkdwn), chunk
+verification with a safe fallback, falling back to plain text when
+Slack rejects rich blocks, and a partial-delivery notice on failed
+chunk sends.
 
-원본 bot.py 의 `post` 를 재구성했다. 채널별 표기 이원화
-(리치 markdown 블록 / 평문 mrkdwn), 분할 점검과 안전 낙하, 리치 표기 거절 시
-평문 재발신, 조각 전송 실패 시 부분전달 안내는 원본 로직을 그대로 따른다.
-
-`ELAPSED_MODEL_LINE` 은 원본에서 특정 채널 한정으로 답변 끝에 실행
-모델을 적던 자리다. 회사 결합을 걷어내고 `ChannelConfig.rich` 로 일반화했다
-— 리치 표기가 켜진 채널에서만 실행 모델을 표기한다. 정규식 자체는 가드
-계층이 아니라 `core.markers` 에서 가져온다 — 발신 계층이 가드 계층을
-import 할 이유가 없다.
+ELAPSED_MODEL_LINE generalizes what used to be a company-specific
+footer appending the model name for one hardcoded channel — now it's
+driven by ChannelConfig.rich, so any rich channel gets it. The regex
+itself comes from core.markers, not the guard layer, since the
+publisher has no reason to depend on guard.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.channel_kind import is_direct_message_channel
 from slack_cli_agent.core.errors import SlackError
 from slack_cli_agent.core.markers import ELAPSED_MODEL_LINE
+from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.render.blocks import BlockBuilder
 from slack_cli_agent.render.markdown import MarkdownConverter
-from slack_cli_agent.render.splitter import ContentSplitter
+from slack_cli_agent.render.splitter import ContentSplitter, block_cost, split_by_block_budget
 from slack_cli_agent.render.verifier import SplitVerifier
 
 log = logging.getLogger(__name__)
 
-# 상태를 색으로 가른다. 글을 읽기 전에 성공인지 실패인지 먼저 보이게 한다.
+# Color-codes status so success vs. failure is visible before reading the text.
 COLOR_FAIL = "#d64541"
 
 
-class MessagePublisher:
-    """채널 표기에 맞춰 발신하고, 실패를 원본과 같은 순서로 처리한다."""
+@dataclass(frozen=True)
+class RichPayload:
+    """One chunk rendered for a rich channel.
 
+    `body` and `note` are kept alongside the Slack arguments because the
+    plain-text fallback in post() re-sends the same chunk without blocks
+    and needs the two parts split_context() separated.
+    """
+
+    body: str
+    note: str
+    text: str
+    blocks: list[dict[str, Any]] = field(default_factory=list)
+
+
+class MessagePublisher:
     def __init__(
         self,
         client: Any,
@@ -56,22 +71,45 @@ class MessagePublisher:
         self._audit = audit or (lambda **_: None)
 
     def apply_elapsed_model_line(self, body: str, model: str, rich: bool) -> str:
-        """답변 끝에 실행 모델을 적는다. rich 채널에서만, model 이 있을 때만.
+        """Appends the model-name footer, only for rich channels with a model set.
 
-        모델이 앞 대화를 흉내 내 본문 끝에 같은 줄을 써 넣는 경우가 있다.
-        붙이기 전에 지운다 — 그대로 두면 두 줄이 되고 값도 서로 다르다.
+        Strips any existing footer first — a model sometimes echoes
+        prior context and writes this same line itself, and leaving
+        both would produce two lines with possibly different values.
         """
         if not rich or not model:
             return body
         cleaned = ELAPSED_MODEL_LINE.sub("", body.rstrip()).rstrip()
         return cleaned.rstrip() + f"\n> 실행 모델 : {model}"
 
-    def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None:
-        """채널에 맞는 표기로 게시한다.
+    def _rich_payload(self, part: str, *, split_note: bool) -> RichPayload:
+        """Renders one chunk into Slack arguments for a rich channel.
 
-        리치 자리에서는 마크다운 원문을 markdown 블록으로 그대로 넘긴다.
-        그 밖의 자리에서는 mrkdwn 으로 낮춰 쓴다. 채널은 스레드로 답하고
-        DM 은 본문에 쓴다.
+        post() and update() share this so a correction is rendered exactly
+        the way the original answer was — two copies of this would let the
+        two drift apart one edit at a time.
+        """
+        note = ""
+        if split_note:
+            part, note = self._blocks.split_context(part)
+        blocks: list[dict[str, Any]] = []
+        if part.strip():
+            blocks.append({"type": "markdown", "text": part})
+        if note:
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": note}],
+            })
+        return RichPayload(
+            body=part, note=note, text=self._blocks.preview(part or note), blocks=blocks
+        )
+
+    def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None:
+        """Posts using the channel's rendering mode.
+
+        Rich channels get the markdown source verbatim in a markdown
+        block; everything else gets it downgraded to mrkdwn. Channels
+        reply in a thread; DMs post directly.
         """
         if rich:
             separated = self._verifier.separate_tables(text)
@@ -79,36 +117,48 @@ class MessagePublisher:
             problems = self._verifier.verify_chunks(separated, chunks)
             if problems:
                 self._audit(
-                    kind="split_broken", channel=channel, thread_ts=thread_ts,
-                    problems=problems, total=len(text),
+                    kind=IncidentKind.SPLIT_BROKEN.value, channel=channel, thread_ts=thread_ts,
+                    problems=[p.reason for p in problems], total=len(text),
                     sizes=[len(c) for c in chunks],
+                    evidence=[
+                        {"reason": p.reason, "line_no": p.line_no, "excerpt": p.excerpt}
+                        for p in problems
+                    ],
                 )
                 chunks = self._verifier.safe_fallback(separated)
-            # md_chunks 가 표와 문단을 각각의 덩어리로 끊고 split_for_blocks 가
-            # 그것들을 다시 이어 붙이면서 사이 빈 줄이 사라진다. 점검이 끝난
-            # 뒤에 다시 띄운다.
+            # separate_tables split tables and paragraphs into distinct
+            # chunks, and split_for_blocks rejoined them, losing the
+            # blank line between them. Re-separate now that
+            # verification is done.
             chunks = [self._verifier.separate_tables(c) for c in chunks]
         else:
             chunks = self._splitter.chunk(self._markdown.to_mrkdwn(text))
 
-        parent_ts = None if is_direct_message_channel(channel) else thread_ts
+        # An empty body makes split_for_blocks() return nothing, and the send
+        # loop below then does nothing at all — indistinguishable from a
+        # successful post. The caller decides what to do; this only records it.
+        if not any(chunk.strip() for chunk in chunks):
+            log.warning("빈 본문이라 게시하지 않았다 : 채널 %s, 스레드 %s", channel, thread_ts or "없음")
+            return None
+
+        # Empty means "no thread yet", same as None. Leaving "" in would
+        # never take the res["ts"] branch below, so the caller gets "" back
+        # and later chunks post at top level instead of under the first.
+        parent_ts = None if is_direct_message_channel(channel) else (thread_ts or None)
         sent = 0
-        for idx, part in enumerate(chunks):
+        # A rejected chunk can be replaced in place by smaller pieces, so this
+        # walks a mutable list rather than the original chunks (sca-2k7).
+        pending = list(chunks)
+        idx = 0
+        while idx < len(pending):
+            part = pending[idx]
             kwargs: dict[str, Any] = {"channel": channel, "username": self._bot_display_name}
             note = ""
             if rich:
-                if idx == len(chunks) - 1:
-                    part, note = self._blocks.split_context(part)
-                kwargs["text"] = self._blocks.preview(part or note)
-                blocks: list[dict[str, Any]] = []
-                if part.strip():
-                    blocks.append({"type": "markdown", "text": part})
-                if note:
-                    blocks.append({
-                        "type": "context",
-                        "elements": [{"type": "mrkdwn", "text": note}],
-                    })
-                kwargs["blocks"] = blocks
+                payload = self._rich_payload(part, split_note=idx == len(pending) - 1)
+                part, note = payload.body, payload.note
+                kwargs["text"] = payload.text
+                kwargs["blocks"] = payload.blocks
             else:
                 kwargs["text"] = part
             if parent_ts:
@@ -117,9 +167,19 @@ class MessagePublisher:
             try:
                 res = self._client.chat_postMessage(**kwargs)
             except Exception as exc:
+                if rich and self._verifier.block_limit_exceeded(exc):
+                    pieces = self._resplit(part)
+                    if len(pieces) > 1:
+                        self._audit(
+                            kind=IncidentKind.BLOCKS_RESPLIT.value, channel=channel,
+                            thread_ts=thread_ts, pieces=len(pieces),
+                            cost=block_cost(part), sizes=[len(piece) for piece in pieces],
+                        )
+                        pending[idx : idx + 1] = pieces
+                        continue
                 if rich and self._verifier.blocks_rejected(exc):
                     self._audit(
-                        kind="blocks_rejected", channel=channel,
+                        kind=IncidentKind.BLOCKS_REJECTED.value, channel=channel,
                         thread_ts=thread_ts, error=str(exc), body=part[:2000],
                     )
                     plain = {k: v for k, v in kwargs.items() if k != "blocks"}
@@ -128,40 +188,111 @@ class MessagePublisher:
                     try:
                         res = self._client.chat_postMessage(**plain)
                         sent += 1
+                        idx += 1
                         if parent_ts is None:
                             parent_ts = res["ts"]
                         continue
-                    except Exception as retry_exc:  # noqa: BLE001 — 재시도 발송 실패를 최초 예외와 함께 다뤄 실패 보고로 이어간다
+                    except Exception as retry_exc:  # noqa: BLE001 - fold the retry failure into the original for failure reporting
                         exc = retry_exc
 
                 self._audit(
-                    kind="post_failed", channel=channel, thread_ts=thread_ts,
-                    sent=sent, total=len(chunks), error=str(exc),
+                    kind=IncidentKind.POST_FAILED.value, channel=channel, thread_ts=thread_ts,
+                    sent=sent, total=len(pending), error=str(exc),
                 )
                 if sent:
                     try:
                         self._client.chat_postMessage(
                             channel=channel, username=self._bot_display_name,
                             thread_ts=parent_ts,
-                            text=f"답변이 {sent}/{len(chunks)} 까지만 전달됐습니다.",
+                            text=f"답변이 {sent}/{len(pending)} 까지만 전달됐습니다.",
                             attachments=[{
                                 "color": COLOR_FAIL,
                                 "text": (
-                                    f"답변이 {sent}/{len(chunks)} 까지만 전달됐습니다. "
+                                    f"답변이 {sent}/{len(pending)} 까지만 전달됐습니다. "
                                     "나머지는 보내지 못했습니다."
                                 ),
                             }],
                         )
-                    except Exception as notify_exc:  # noqa: BLE001 — 부분 발송 실패 안내 자체가 실패해도 원래 오류 보고를 막지 않는다
+                    except Exception as notify_exc:  # noqa: BLE001 - a failed failure-notice shouldn't block the original error report
                         log.warning("부분 발송 실패 안내 전송 실패 : %s", notify_exc)
                 raise SlackError(str(exc)) from exc
             sent += 1
+            idx += 1
             if parent_ts is None:
                 parent_ts = res["ts"]
 
-        if rich and len(chunks) > 1:
+        if rich and len(pending) > 1:
             self._audit(
-                kind="split", channel=channel, thread_ts=thread_ts,
-                total=len(text), sizes=[len(c) for c in chunks],
+                kind=IncidentKind.SPLIT.value, channel=channel, thread_ts=thread_ts,
+                total=len(text), sizes=[len(c) for c in pending],
             )
         return parent_ts
+
+    @staticmethod
+    def _resplit(part: str) -> list[str]:
+        """Halves one chunk's block budget. Slack counted more blocks than the
+        local estimate did, so the next try aims well under what it just was."""
+        return split_by_block_budget(part, max(1, block_cost(part) // 2))
+
+    def update(self, channel: str, ts: str, text: str, rich: bool) -> list[str]:
+        """Rewrites one already-posted message, using the channel's mode.
+
+        Rewrites only — it never posts. chat.update touches a single ts, so a
+        correction that no longer fits in one message is refused rather than
+        sent as its first chunk with the rest dropped. Returns the block types
+        Slack was given, so the caller can report what the message became
+        ([] for a plain-text channel).
+        """
+        if rich:
+            body = self._verifier.separate_tables(text)
+            chunks = self._splitter.split_for_blocks(body)
+        else:
+            chunks = self._splitter.chunk(self._markdown.to_mrkdwn(text))
+        if not any(chunk.strip() for chunk in chunks):
+            raise SlackError("교정본이 비어 있어 갱신하지 않았다")
+        if len(chunks) > 1:
+            raise SlackError(
+                f"교정본이 한 메시지에 들어가지 않는다 : {len(chunks)} 조각, {len(text)}자. "
+                "메시지 하나만 고칠 수 있으므로 갱신하지 않았다"
+            )
+
+        kwargs: dict[str, Any] = {"channel": channel, "ts": ts}
+        body, note = chunks[0], ""
+        if rich:
+            payload = self._rich_payload(
+                self._verifier.separate_tables(chunks[0]), split_note=True
+            )
+            body, note = payload.body, payload.note
+            kwargs["text"] = payload.text
+            kwargs["blocks"] = payload.blocks
+        else:
+            kwargs["text"] = chunks[0]
+
+        try:
+            self._client.chat_update(**kwargs)
+        except Exception as exc:
+            # chat.update touches one ts, so a rejected block payload can't be
+            # split the way post() does it. Dropping the blocks is the only
+            # retry left, and it beats losing the correction (sca-a23).
+            if rich and self._verifier.blocks_rejected(exc):
+                self._audit(
+                    kind=IncidentKind.BLOCKS_REJECTED.value, channel=channel,
+                    thread_ts=ts, error=str(exc), body=body[:2000],
+                )
+                plain = {k: v for k, v in kwargs.items() if k != "blocks"}
+                whole = f"{body}\n\n> {note}" if note else body
+                plain["text"] = self._markdown.to_mrkdwn(whole)[:3900]
+                try:
+                    self._client.chat_update(**plain)
+                    return []
+                except Exception as retry_exc:  # noqa: BLE001 - fold the retry failure into the original for failure reporting
+                    exc = retry_exc
+            # Recorded under the same incident kind as a failed post: this
+            # writes to a channel the same way, and a correction that never
+            # landed has to be visible in the audit log (sca-psr).
+            self._audit(
+                kind=IncidentKind.POST_FAILED.value, channel=channel, thread_ts=ts,
+                sent=0, total=1, error=str(exc),
+            )
+            raise SlackError(str(exc)) from exc
+        return [str(block["type"]) for block in kwargs.get("blocks", [])]

@@ -1,30 +1,50 @@
-"""관리 명령 라우팅.
+"""Admin command routing.
 
-`matches` 로 맞는 명령을 고르고, 권한은 여기서 한 곳에서만 대조한다.
-명령 클래스마다 권한 검사를 반복해 적지 않는다 — 하나를 빠뜨리면 그
-명령만 조용히 뚫린다.
+Permission is checked in exactly one place here, after `matches` picks the
+command — repeating the check per command class risks one being forgotten
+and quietly wide open.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import replace
 
+from ..core.errors import ConfigError
 from .command import AdminCommand, AdminContext, AdminResult
+
+log = logging.getLogger(__name__)
 
 
 class AdminRouter:
-    """등록된 명령 중 본문에 맞는 것을 찾아 실행한다."""
-
     def __init__(self, commands: Sequence[AdminCommand]) -> None:
         self._commands = tuple(commands)
 
-    def dispatch(self, text: str, ctx: AdminContext) -> AdminResult | None:
-        """맞는 명령이 없으면 None. 일반 요청으로 넘어간다.
+    def help_text(self) -> str:
+        """Command listing built from the registered commands.
 
-        맞는 명령은 있으나 권한이 모자라면 실행하지 않고 거절 결과를
-        돌려준다 — None 을 주면 호출부가 일반 요청으로 다시 처리해
-        모델에게 흘러갈 수 있다.
+        A hardcoded listing went stale — 15 commands were wired and the
+        help named 3 (2026-09-15), so the rest were undiscoverable.
+        """
+        lines = [
+            f"- {c.usage} : {c.description}"
+            for c in self._commands
+            if c.usage and c.description
+        ]
+        return "\n".join(lines)
+
+    def matches(self, text: str) -> bool:
+        """Whether any command would take this text. Lets a caller decide
+        before building context or writing a claim row, without running the
+        command (sca-8m5p)."""
+        return any(c.matches(text) for c in self._commands)
+
+    def dispatch(self, text: str, ctx: AdminContext) -> AdminResult | None:
+        """Returns None when nothing matches, so the caller falls through to
+        a normal request. A match with insufficient permission returns a
+        result instead of None, so it isn't silently retried as a normal
+        request routed to the model.
         """
         for command in self._commands:
             if not command.matches(text):
@@ -32,9 +52,17 @@ class AdminRouter:
             if ctx.principal.trust < command.required_trust:
                 return AdminResult(
                     message="이 명령은 권한이 없어 실행할 수 없습니다.",
-                    handled=False,
+                    applied=False,
                 )
-            # 본문을 여기서 채운다. 맥락을 만드는 호출부마다 넣게 하면
-            # 한 곳만 빠뜨려도 그 경로의 명령이 인자를 못 읽는다.
-            return command.execute(replace(ctx, text=text))
+            # Filled in here rather than by every call site building context,
+            # so no call site can forget it and break the command's argument
+            # parsing.
+            try:
+                return command.execute(replace(ctx, text=text, help_text=self.help_text()))
+            except ConfigError as exc:
+                # The ingress swallows exceptions and only logs them, so a
+                # command that stops on a bad config file would look to the
+                # user exactly like one that worked (sca-zvk).
+                log.warning("관리 명령 중단 : %s : %s", command.name, exc)
+                return AdminResult(message=f"설정을 읽지 못해 실행하지 않았습니다. {exc}", applied=False)
         return None

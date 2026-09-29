@@ -1,60 +1,195 @@
-"""엔진 실행과 전환을 감싸는 계층.
+"""Wraps engine execution and fallback switching.
 
-``EngineRunner`` 는 subprocess 실행만 맡는다. 명령줄 조립(``build_command``)과
-출력 파싱(``parse``)은 Engine 이 순수 함수로 제공하므로, 여기서는 그 둘 사이의
-실행 한 걸음만 두고 테스트에서 subprocess 를 대역으로 주입할 수 있게 한다.
+EngineRunner only runs the subprocess. Command assembly
+(build_command) and output parsing (parse) are pure functions Engine
+provides, so this layer is just the execution step between them,
+letting tests inject a subprocess double.
 
-``FallbackEngine`` 은 ``EngineRunner`` 를 써서 1차·2차 엔진 실행과 전환 판정을
-감싼다. 호출부는 이 클래스 하나만 보면 된다 — 전환 여부를 몰라도 된다.
+FallbackEngine wraps EngineRunner to handle primary/secondary
+execution and the switch decision. Callers only see this one class —
+they don't need to know whether a switch happened.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import os
 import subprocess
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
+from ..auth.principal import TrustLevel
 from ..config.settings import RuntimeSettings
-from .base import Engine, EngineRequest, EngineResponse, UsageLimit
+from ..core.errors import ConfigError
+from ..observability.progress_hook import append_tool
+from ..session.manager import CAPABILITY_UNMET_REASON
+from .base import (
+    CallOrigin,
+    ElapsedSource,
+    Engine,
+    EngineRequest,
+    EngineResponse,
+    FailureDetail,
+    UsageLimit,
+)
+from .capability import (
+    BOUNDARY_AXIS,
+    ISOLATION_AXIS,
+    TOOL_AXIS,
+    EngineCapabilities,
+    ExecutionIsolation,
+    InstructionBoundary,
+    ToolRestriction,
+)
 from .environment import EngineEnvironmentPolicy
+from .stream import run_streaming
 from .switcher import EngineSwitcher
 
 SubprocessRunner = Callable[..., Any]
 
+#: Audit kind for the capability record. Matches IncidentKind.CAPABILITY;
+#: kept as a literal here so this module doesn't import observability.
+log = logging.getLogger(__name__)
+
+CAPABILITY_KIND = "capability"
+#: Matches IncidentKind.PAYLOAD, kept as a literal for the same reason.
+PAYLOAD_KIND = "payload"
+
+#: Failure reason for a turn whose command could not be assembled. Its own
+#: name so the audit does not count a settings fault as a CLI crash, and so
+#: the new-session retry does not run it again at the same disadvantage.
+ENGINE_CONFIG_REASON = "engine_config"
+
+#: For the notice the person who asked reads. Axis names and levels are
+#: internal identifiers; putting them in a Slack reply tells nobody anything.
+AXIS_NAMES = {
+    TOOL_AXIS: "도구 제한",
+    ISOLATION_AXIS: "실행 격리",
+    BOUNDARY_AXIS: "지침 경계",
+}
+
+LEVEL_NAMES: dict[ToolRestriction | ExecutionIsolation | InstructionBoundary, str] = {
+    ToolRestriction.NONE: "제한 없음",
+    ToolRestriction.COARSE_SANDBOX: "샌드박스 수준",
+    ToolRestriction.SERVER_SCOPED_ALLOWLIST: "허용 목록, MCP 는 서버 단위",
+    ToolRestriction.EXACT_ALLOWLIST: "허용된 도구 목록",
+    ToolRestriction.ALL_FORBIDDEN: "도구 전부 금지",
+    ExecutionIsolation.NONE: "격리 없음",
+    ExecutionIsolation.WORKSPACE_WRITE: "작업공간 쓰기",
+    ExecutionIsolation.READONLY_SANDBOX: "읽기 전용 샌드박스",
+    InstructionBoundary.UNAVAILABLE: "경계 없음",
+    InstructionBoundary.PROMPT_ONLY: "프롬프트 안 표식뿐",
+    InstructionBoundary.NATIVE: "엔진 자체 경계",
+}
+
+
+#: What this request's capability check came to.
+OUTCOME_COMPATIBLE = "compatible"
+OUTCOME_DOWNGRADED = "downgraded"
+OUTCOME_BLOCKED = "blocked"
+
+
+def _outcome(unmet: Sequence[str], downgraded: Sequence[str]) -> str:
+    if not unmet:
+        return OUTCOME_COMPATIBLE
+    return OUTCOME_DOWNGRADED if downgraded else OUTCOME_BLOCKED
+
+
+def _level(value: ToolRestriction | ExecutionIsolation | InstructionBoundary | None) -> str:
+    if value is None:
+        return "요구 없음"
+    return LEVEL_NAMES.get(value, str(value))
+
+
+class CapabilityAuditPort(Protocol):
+    """AuditLog.record's shape. Optional -- a runner without one still runs.
+
+    record() must raise when the record does not land. The runner grants an
+    audited downgrade only on a call that returned, so a port that swallows
+    its own failures turns that downgrade into an unrecorded one (sca-ckm).
+    """
+
+    def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None: ...
+
+
+def _as_audit(capabilities: EngineCapabilities) -> dict[str, str]:
+    return {
+        "tool_restriction": str(capabilities.tool_restriction),
+        "execution_isolation": str(capabilities.execution_isolation),
+        "instruction_boundary": str(capabilities.instruction_boundary),
+    }
+
 
 class EngineRunner:
-    """엔진이 만든 명령줄을 subprocess 로 실행하고 결과를 파싱한다.
+    """Runs an engine's command via subprocess and parses the result.
 
-    타임아웃 900초에는 근거가 있다 — 300초는 150건 중 2건을 잘랐고 중앙값은
-    34초였다(RuntimeSettings.request_timeout_sec 기본값).
+    The 900s timeout is measured: 300s cut off 2 of 150 requests, with
+    a 34s median (RuntimeSettings.request_timeout_sec default).
     """
 
     def __init__(self, settings: RuntimeSettings,
                subprocess_runner: SubprocessRunner | None = None,
                environment_policy: EngineEnvironmentPolicy | None = None,
-               source_env: Mapping[str, str] | None = None) -> None:
+               source_env: Mapping[str, str] | None = None,
+               audit: CapabilityAuditPort | None = None) -> None:
         self._settings = settings
         self._run = subprocess_runner or self._default_runner
-        # 환경 변수 격리 정책. 안 주면 환경을 안 넘겨 부모 프로세스의 것을
-        # 그대로 물려받는다 — 정책을 안 주는 호출부가 아직 있어 기존 동작을
-        # 유지한다. 빈 환경을 넘기면 엔진이 PATH 를 못 찾아 실행되지 않는다.
+        # Overrides the policy for every engine this runner runs. Normally left
+        # unset: each Engine supplies its own, so a fallback turn runs under the
+        # secondary's home rather than the primary's.
         self._environment_policy = environment_policy
         self._source_env = source_env
+        # Recording only, for now. The engine that actually runs isn't known
+        # until here, so the record names the real one on a fallback turn.
+        self._audit = audit
 
     def run(self, engine: Engine, request: EngineRequest,
            timeout_sec: float | None = None) -> EngineResponse:
-        cmd = engine.build_command(request)
+        try:
+            # Resolved before prepare() so an engine with no policy fails before
+            # writing its config file. engine.spec (for the model name below)
+            # and capabilities_for() can raise the same way, so they share this
+            # try -- none of the three ever reached the block below uncaught
+            # (코덱스 6차 리뷰 결함3).
+            policy = self._environment_policy or engine.environment_policy()
+            if request.session_id is None:
+                # Only here is the concrete engine known: FallbackEngine picks
+                # primary or secondary in its own run(), and the recovery probe
+                # sends a switched-state request back to the primary.
+                request = dataclasses.replace(request, session_id=engine.new_session_id())
+            if not request.model:
+                # Same reason as session_id: model naming is per-engine and the
+                # concrete engine is only known here (sca-dyb.10).
+                request = dataclasses.replace(request, model=engine.spec.model)
+            actual = engine.capabilities_for(request)
+        except ConfigError as e:
+            return self._config_error_response(engine, request, e)
+        recorded = self._record_capabilities(engine, request, actual)
+        blocked = self._blocked_response(engine, request, actual, recorded)
+        if blocked is not None:
+            return blocked
+        # After the block check: a refused request never reaches the process,
+        # and counting it would put bytes nobody sent into the measurement.
         timeout = timeout_sec if timeout_sec is not None else self._settings.request_timeout_sec
-        # 정책이 없으면 env 인자 자체를 안 넘긴다. 넘기면 실행기를 대역으로
-        # 주입하는 기존 호출부가 그 인자를 안 받아 실행 자체가 실패한다.
-        extra: dict[str, Any] = {}
-        if self._environment_policy is not None:
-            source = self._source_env if self._source_env is not None else os.environ
-            extra["env"] = self._environment_policy.build(source)
+        # Set before build_command: an engine that passes its own limit to the
+        # CLI has to name the one enforced here (sca-ocie).
+        request = dataclasses.replace(request, timeout_sec=timeout)
+        self._record_payload(engine, request)
+        try:
+            engine.prepare(request)
+            cmd = engine.build_command(request)
+        except ConfigError as e:
+            return self._config_error_response(engine, request, e)
+        source = self._source_env if self._source_env is not None else os.environ
+        extra: dict[str, Any] = {"env": policy.build(source)}
+        sink = self._progress_sink(engine, request)
+        if sink is not None:
+            extra["on_stdout_line"] = sink
+        started = time.monotonic()
         try:
             completed = self._run(
                 cmd, cwd=str(request.workdir), timeout=timeout, **extra,
@@ -67,15 +202,225 @@ class EngineRunner:
                 session_id=None, model_actual=None,
                 elapsed=timeout, turns=None, usage=None,
                 raw={}, failure_reason="timeout",
+                failure_detail=FailureDetail(timeout_sec=timeout_int),
+                elapsed_source=ElapsedSource.RUNNER,
+                engine=engine.name,
+                model_asked=request.model or "",
             )
-        return engine.parse(completed.stdout, completed.stderr, completed.returncode)
+        wall_elapsed = time.monotonic() - started
+        # Stamped here rather than in each Engine.parse() so every engine reports
+        # it the same way, including ones added later.
+        response = dataclasses.replace(
+            engine.parse(completed.stdout, completed.stderr, completed.returncode),
+            engine=engine.name,
+            # request.model is the resolved one: the branch above fills it from
+            # the engine spec when the caller left it empty.
+            model_asked=request.model or "",
+        )
+        # sca-cfa — some engines (Codex) never report their own elapsed time.
+        # Only fill in the runner's wall-clock measurement when the engine
+        # left it unknown; an engine-reported value is more precise (it can
+        # exclude time this process itself spent, e.g. queueing).
+        if response.elapsed_source == ElapsedSource.UNKNOWN:
+            response = dataclasses.replace(response, elapsed=wall_elapsed, elapsed_source=ElapsedSource.RUNNER)
+        return response
+
+    @staticmethod
+    def _config_error_response(
+        engine: Engine, request: EngineRequest, error: ConfigError
+    ) -> EngineResponse:
+        """A turn that could not be assembled, as a response rather than a raise.
+
+        Command assembly reads the settings files, and a missing deny list
+        raises there. Letting it out of run() skipped everything that acts on
+        a response -- the reply the asker gets, the failure reason the audit
+        records, and FallbackEngine's switch decision, which only reads
+        responses (sca-z1et).
+
+        Not a switch trigger. Switching is persistent and waits for a human
+        to approve it, and its two triggers -- usage limit, login expiry --
+        are states the primary cannot leave on its own. A settings fault is
+        the operator's to fix now, and moving the bot onto the secondary
+        would park it there while hiding the fault that sent it. The deny
+        list also exists to hold this turn down; answering its loss by
+        running the turn somewhere else is the opposite of what sca-1aji
+        chose.
+        """
+        return EngineResponse(
+            ok=False,
+            body=f"엔진 설정을 읽지 못해 실행하지 않았습니다. {error}",
+            session_id=request.session_id, model_actual=None,
+            elapsed=0.0, turns=None, usage=None,
+            raw={}, failure_reason=ENGINE_CONFIG_REASON,
+            # Without it the asker sees only the failure mark and cannot tell
+            # this from a crash, and a settings fault needs an operator.
+            user_facing=True,
+            elapsed_source=ElapsedSource.RUNNER,
+            engine=engine.name,
+            model_asked=request.model or "",
+        )
+
+    @staticmethod
+    def _progress_sink(engine: Engine, request: EngineRequest) -> Callable[[str], None] | None:
+        """Turns the engine's own stdout events into progress log lines.
+
+        None when there is nothing to write to (progress off for this channel)
+        or when the engine reports progress another way -- Claude's hook
+        process writes the same file, and streaming as well would record
+        every tool call twice (sca-8ks).
+        """
+        log_path = request.progress_log
+        if log_path is None or not engine.streams_progress:
+            return None
+
+        def sink(line: str) -> None:
+            append_tool(log_path, engine.progress_tool_name(line))
+
+        return sink
+
+    def _blocked_response(
+        self, engine: Engine, request: EngineRequest, actual: EngineCapabilities, recorded: bool
+    ) -> EngineResponse | None:
+        """Refuses before prepare() when a declared guarantee is weaker than required.
+
+        Every axis counts. Enforcing one of the three would tell the caller that
+        setting the other two means something when it does not (sca-igu).
+        """
+        required = request.requirements
+        unmet = required.unmet(actual)
+        if not unmet:
+            return None
+        # The relief valve is an *audited* downgrade. With nowhere to record it,
+        # granting it anyway would leave no trace that the guarantee was given
+        # up, which is the one thing the name promises (sca-gpe).
+        audit_missing = False
+        record_failed = False
+        if required.downgraded(unmet):
+            if recorded:
+                return None
+            if self._audit is None:
+                audit_missing = True
+                log.warning("감사 기록기가 주입되지 않아 완화를 받아주지 않는다 : 엔진 %s", engine.name)
+            else:
+                record_failed = True
+                log.warning("감사 기록에 실패해 완화를 받아주지 않는다 : 엔진 %s", engine.name)
+        body = (
+            "요청이 요구한 실행 보장을 이 엔진이 맞추지 못해 실행하지 않았습니다. "
+            + " ".join(
+                f"{AXIS_NAMES[axis]} 요구 {_level(getattr(required, axis))},"
+                f" {engine.name} 보장 {_level(getattr(actual, axis))}."
+                for axis in unmet
+            )
+        )
+        if audit_missing:
+            # Naming only the engine limit would read as an engine problem when
+            # the direct condition is that this runner was built without an
+            # audit recorder -- an assembly issue, not the engine's (sca-gpe).
+            body += " 완화가 허용된 요청이지만 감사 기록기가 구성되지 않아 완화를 적용하지 않았습니다."
+        if record_failed:
+            body += " 완화가 허용된 요청이지만 감사 기록을 남기지 못해 완화를 적용하지 않았습니다."
+        return EngineResponse(
+            ok=False,
+            body=body,
+            session_id=request.session_id, model_actual=None,
+            elapsed=0.0, turns=None, usage=None,
+            raw={}, failure_reason=CAPABILITY_UNMET_REASON,
+            # Written for the person who asked: without it they only see the
+            # failure mark and can't tell this from a crash (sca-5sc).
+            user_facing=True,
+            # One axis, not a joined string: the audit reads this against an
+            # allowlist and a joined value lands in it as unknown.
+            failure_detail=FailureDetail(code=unmet[0]),
+            elapsed_source=ElapsedSource.RUNNER,
+            engine=engine.name,
+            model_asked=request.model or "",
+        )
+
+    def _record_payload(self, engine: Engine, request: EngineRequest) -> None:
+        """What this call costs, apart from what it guarantees.
+
+        Failing here must not take the request down: this is measurement, and
+        a request that would have run fine should not die for a size record.
+        """
+        if self._audit is None:
+            return
+        try:
+            self._audit.record(
+                PAYLOAD_KIND,
+                engine=engine.name,
+                request_id=request.request_id,
+                resume=request.resume,
+                **engine.footprint_for(request).as_audit_dict(),
+                # Absent rather than zeroed when the caller composed nothing:
+                # "not budget-limited" and "never went through the composer"
+                # have to stay apart in the audit.
+                **dict(request.budget_report),
+            )
+        except Exception:
+            log.warning("전송량 기록에 실패했다", exc_info=True)
+
+    def _record_capabilities(
+        self, engine: Engine, request: EngineRequest, actual: EngineCapabilities
+    ) -> bool:
+        """True only when this request's record actually landed.
+
+        A failure here must not take down a request that met its guarantees --
+        the record is the basis for a downgrade, not for the run itself.
+        """
+        if self._audit is None:
+            return False
+        required = request.requirements
+        unmet = required.unmet(actual)
+        downgraded = required.downgraded(unmet)
+        record_fields: dict[str, Any] = {
+            "engine": engine.name,
+            # Always present, empty when the caller set none: "no key" and "the
+            # field was never written" have to stay apart in the audit.
+            "request_id": request.request_id,
+            "required": {
+                axis: str(value)
+                for axis in ("tool_restriction", "execution_isolation", "instruction_boundary")
+                if (value := getattr(required, axis)) is not None
+            },
+            "actual": _as_audit(actual),
+            "unmet": list(unmet),
+            "downgradable_axes": sorted(required.downgradable_axes),
+            "policy": required.policy,
+            # Permitted and authorized are different questions. Counting
+            # relieved requests needs the second one (sca-98k). Only axes the
+            # caller named are counted, so a tool-only policy can't read as
+            # having relieved isolation too.
+            "downgraded_axes": list(downgraded),
+            # Named for what this record can know. It is written before the run,
+            # so a later prepare() or process failure leaves it standing: it
+            # says the downgrade was authorized, not that the request finished
+            # under it (sca-ckm).
+            "downgrade_authorized": bool(downgraded),
+            # One value for the counting side. Deriving it from unmet and the
+            # downgrade list means every reader rewrites that rule (sca-98k).
+            # Same time frame as downgrade_authorized -- this is the capability
+            # decision, not how the request ended.
+            "outcome": _outcome(unmet, downgraded),
+        }
+        try:
+            self._audit.record(CAPABILITY_KIND, **record_fields)
+        except Exception:
+            # exc_info: a port bug and a disk failure both land here and the
+            # message alone does not separate them.
+            log.warning("보장 감사 기록에 실패했다", exc_info=True)
+            return False
+        return True
 
     @staticmethod
     def _default_runner(
-        cmd: list[str], cwd: str, timeout: float, env: Mapping[str, str] | None = None
+        cmd: list[str], cwd: str, timeout: float, env: Mapping[str, str] | None = None,
+        on_stdout_line: Callable[[str], None] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        # returncode 는 engine.parse() 가 직접 해석한다 — 여기서 예외로 바꾸면
-        # 실패 종료 코드를 실패 응답으로 담아내는 경로가 끊긴다.
+        if on_stdout_line is not None:
+            return run_streaming(cmd, cwd, timeout, env, on_stdout_line)
+        # engine.parse() interprets returncode directly — turning it
+        # into an exception here would break the path that carries a
+        # failed exit code as a failure response.
         return subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
             env=dict(env) if env is not None else None, check=False,
@@ -83,58 +428,70 @@ class EngineRunner:
 
 
 class EngineInvoker(ABC):
-    """엔진을 한 번 실행하는 부품. 호출부는 폴백 여부를 모른다.
+    """Runs one engine call. Callers don't know whether fallback is configured.
 
-    `EngineRunner.run(engine, request)` 를 호출부가 직접 부르면, 폴백이
-    설정돼 있어도 `FallbackEngine.run()` 이 안 불린다. 그 클래스의 전환 판정과
-    상태 기록이 통째로 건너뛰어져, 한도가 소진돼도 대체 엔진으로 안 넘어간다.
-    어느 쪽을 쓸지는 조립이 정하고, 호출부는 이 계약만 본다.
+    Calling EngineRunner.run(engine, request) directly, bypassing this,
+    skips FallbackEngine.run() even when fallback is configured — its
+    switch decision and state recording never run, so hitting a usage
+    limit never triggers a switch. Assembly decides which invoker to
+    use; callers only see this contract.
     """
 
     @abstractmethod
-    def invoke(self, request: EngineRequest) -> EngineResponse:
-        """요청 하나를 실행한다."""
+    def invoke(self, request: EngineRequest,
+               origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse: ...
+
+
+class EngineRunPort(Protocol):
+    """What DirectInvoker needs. EngineRunner satisfies it."""
+
+    def run(self, engine: Engine, request: EngineRequest) -> EngineResponse: ...
 
 
 class DirectInvoker(EngineInvoker):
-    """폴백이 없을 때. 실행기로 그 엔진을 그대로 돌린다."""
+    """No fallback configured — runs that one engine via the runner."""
 
-    def __init__(self, runner: EngineRunner, engine: Engine) -> None:
+    def __init__(self, runner: EngineRunPort, engine: Engine) -> None:
         self._runner = runner
         self._engine = engine
 
-    def invoke(self, request: EngineRequest) -> EngineResponse:
+    def invoke(self, request: EngineRequest,
+               origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse:
+        # No fallback means no recovery probe, so origin has nothing to gate.
         return self._runner.run(self._engine, request)
 
 
 class FallbackInvoker(EngineInvoker):
-    """폴백이 있을 때. 전환 판정을 포함한 `FallbackEngine.run()` 을 부른다."""
+    """Fallback configured — delegates to FallbackEngine.run(), which includes the switch decision."""
 
     def __init__(self, engine: FallbackEngine) -> None:
         self._engine = engine
 
-    def invoke(self, request: EngineRequest) -> EngineResponse:
-        return self._engine.run(request)
+    def invoke(self, request: EngineRequest,
+               origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse:
+        return self._engine.run(request, origin)
 
 
 class FallbackEngine(Engine):
-    """1차 엔진이 한도 소진을 내면 2차 엔진에 위임한다.
+    """Delegates to the secondary engine when the primary reports a usage limit.
 
-    호출부는 Engine 하나만 본다. 전환 여부를 몰라도 된다.
-
-    동작은 원본 bot.py 의 ``run_with_fallback()`` 그대로다 — 전환은 즉시 하고,
-    사람이 승인하기 전에는 한도 안내만 답한다. ``EngineSwitcher`` 가
-    ``engine_state.json`` 을 관리하고, 이 클래스가 실제 실행 분기를 맡는다.
+    Callers only see one Engine and don't need to know whether a
+    switch happened. Same behavior as the original bot.py's
+    run_with_fallback() — switching happens immediately, but the bot
+    only replies with a limit notice until a human approves it.
+    EngineSwitcher manages engine_state.json; this class handles the
+    actual execution branch.
     """
 
     name = "fallback"
 
-    # 대체 실행기가 실제로 쓸 수 있는 상태인지 확인하는 짧은 요청. 원본
-    # ENGINE_PROBE_PROMPT 와 같다.
+    # Short request confirming the fallback engine is actually usable.
+    # Same as the original ENGINE_PROBE_PROMPT.
     PROBE_PROMPT = "준비됐으면 OK 두 글자만 답해라."
-    # 짧은 요청 전용 타임아웃. 원본 ENGINE_PROBE_TIMEOUT 과 같다. 전체 요청
-    # 타임아웃(request_timeout_sec)을 그대로 쓰면 대체 실행기가 응답 없이
-    # 걸렸을 때 사람이 기다리는 턴이 그만큼 길어진다.
+    # Timeout for the probe only. Same as the original
+    # ENGINE_PROBE_TIMEOUT. Using the full request_timeout_sec here
+    # would make a human wait just as long when the fallback engine is
+    # unresponsive.
     PROBE_TIMEOUT_SEC = 120.0
 
     def __init__(self, primary: Engine, secondary: Engine, switcher: EngineSwitcher,
@@ -144,12 +501,14 @@ class FallbackEngine(Engine):
         self.secondary = secondary
         self.switcher = switcher
         self.runner = runner
-        # build_command/parse 를 이 클래스에 직접 부르는 호출부를 위한
-        # 위임 대상. run() 이 실제로 어느 엔진을 쓸지 정하고 갱신한다.
+        # Delegate target for callers that invoke build_command/parse
+        # directly on this class. run() decides which engine is
+        # actually active and updates this.
         self._active: Engine = primary
 
-    # -- Engine 계약. EngineRunner 를 거치지 않고 이 클래스가 직접 build_command
-    # /parse 로 쓰일 때를 위한 위임이다. 실제 호출부는 run() 을 쓴다.
+    # -- Engine contract. Delegates for callers that use build_command
+    # /parse directly on this class instead of going through
+    # EngineRunner. Real callers use run().
     def build_command(self, request: EngineRequest) -> list[str]:
         return self._active.build_command(request)
 
@@ -157,7 +516,7 @@ class FallbackEngine(Engine):
         return self._active.parse(stdout, stderr, returncode)
 
     def new_session_id(self) -> str:
-        return self.primary.new_session_id()
+        return self._active.new_session_id()
 
     def detect_usage_limit(self, response: EngineResponse) -> UsageLimit | None:
         return self._active.detect_usage_limit(response)
@@ -165,30 +524,44 @@ class FallbackEngine(Engine):
     def session_id_from(self, response: EngineResponse) -> str | None:
         return self._active.session_id_from(response)
 
-    def directives_for_turn(self, request: EngineRequest) -> str:
-        return self._active.directives_for_turn(request)
+    def environment_policy(self) -> EngineEnvironmentPolicy:
+        # This class has no profile block of its own; the policy belongs to
+        # whichever engine is actually running this turn.
+        return self._active.environment_policy()
 
     def readable_paths_note(self, paths: Sequence[Path]) -> str:
         return self._active.readable_paths_note(paths)
 
-    # -- 실제 진입점.
-    def run(self, request: EngineRequest) -> EngineResponse:
-        """전환 상태를 확인하고 1차 또는 2차로 실행한다."""
+    def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
+        # A fallback turn runs the secondary. Reporting this class's own
+        # default would make every capability record on that turn false.
+        return self._active.capabilities_for(request)
+
+    # -- The real entry point.
+    def run(self, request: EngineRequest,
+            origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse:
+        """Checks switch state and runs on primary or secondary accordingly."""
         state = self.switcher.load()
 
         if state:
-            if self.switcher.should_probe(time.time()):
+            if origin is CallOrigin.INTERACTIVE and self.switcher.should_probe(time.time()):
                 recovered = self._probe_primary_recovery(request)
                 if recovered is not None:
                     return recovered
 
             if not self.switcher.is_approved():
                 self._active = self.primary
+                approval = str(self.switcher.load().get("approval", "pending"))
                 return EngineResponse(
                     ok=False, body=self.switcher.limit_reply(), session_id=None,
                     model_actual=None, elapsed=0.0, turns=None, usage=None,
-                    raw={"engine_switch": self.switcher.load().get("approval", "pending")},
-                    failure_reason="usage_limit",
+                    user_facing=True,
+                    raw={"engine_switch": approval},
+                    # 무엇 때문에 전환했는지가 실패 기록에 남아야 한다. 인증
+                    # 실패까지 usage_limit 으로 세면 한도 통계가 거짓이 된다.
+                    failure_reason=self.switcher.reason(), engine=self.primary.name,
+                    failure_detail=FailureDetail(code=approval),
+                    model_asked=request.model or "",
                 )
 
             return self._run_secondary(request)
@@ -196,38 +569,89 @@ class FallbackEngine(Engine):
         return self._run_primary(request)
 
     def _run_primary(self, request: EngineRequest) -> EngineResponse:
+        """1차로 돌리고, 다음 요청도 똑같이 실패할 상태면 전환을 시작한다.
+
+        전환 계기는 둘이다. 사용량 한도와 로그인 만료다. 둘 다 그 요청 하나의
+        문제가 아니라 1차 엔진이 당분간 아무 요청도 처리하지 못하는 상태라서
+        2차로 넘긴다. 일반적인 실패(타임아웃, 형식 오류, 종료코드 1)는 계기가
+        아니다 - 그것까지 넣으면 한 번 끊긴 것으로 엔진이 바뀐다.
+        """
         self._active = self.primary
         response = self.runner.run(self.primary, request)
         limit = self.primary.detect_usage_limit(response)
         if limit is not None:
-            probe_ok, probe_detail = self._probe_secondary(request)
-            self.switcher.begin_switch(
-                limit.detail, engine_name=self.secondary.name,
-                probe_ok=probe_ok, probe_detail=probe_detail,
-            )
+            self._begin_switch(request, EngineSwitcher.USAGE_LIMIT, limit.detail)
+            return self._announce_switch(response)
+        auth_failure = self.primary.detect_auth_failure(response)
+        if auth_failure is not None:
+            self._begin_switch(request, EngineSwitcher.AUTH_FAILURE, auth_failure)
+            return self._announce_switch(response)
         return response
 
-    def _run_secondary(self, request: EngineRequest) -> EngineResponse:
-        """승인된 대체 엔진으로 이번 턴을 처리한다.
+    def _announce_switch(self, response: EngineResponse) -> EngineResponse:
+        """전환을 시작한 그 요청에도 사람에게 보일 답을 낸다.
 
-        엔진이 다르면 세션을 잇지 못한다. 새 세션으로 연다. 모델 이름 체계도
-        엔진마다 달라 대체 엔진 자신의 설정값을 쓴다.
+        1차의 실패 응답은 기본이 비공개다 - codex 의 종료코드 1 이 그렇다.
+        그대로 돌려주면 pipeline 이 아무것도 게시하지 않아, 전환을 만든 그
+        요청 하나만 답 없이 끝난다 (sca-3hh4). 두 번째 요청부터는 run() 의
+        승인 대기 분기가 같은 문구를 낸다.
+
+        실패 사유도 전환 계기로 바꿔 쓴다. nonzero_exit 으로 남기면 새 세션
+        재시도 대상이 되어 같은 자격으로 한 번 더 실패한다.
+        """
+        if response.user_facing and response.body.strip():
+            return response
+        return dataclasses.replace(
+            response, body=self.switcher.limit_reply(), user_facing=True,
+            failure_reason=self.switcher.reason(),
+        )
+
+    def _begin_switch(self, request: EngineRequest, reason: str, detail: str) -> None:
+        probe_ok, probe_detail = self._probe_secondary(request)
+        self.switcher.begin_switch(
+            detail, engine_name=self.secondary.name, reason=reason,
+            probe_ok=probe_ok, probe_detail=probe_detail,
+        )
+
+    def _run_secondary(self, request: EngineRequest) -> EngineResponse:
+        """Handles this turn on the approved fallback engine.
+
+        A different engine can't continue a session, so this opens a
+        new one. Model naming also differs per engine, so it uses the
+        secondary's own configured model -- the owner grade included, or
+        the owner's request would quietly drop to the secondary's general
+        model (sca-14h). A channel's explicitly named model can't carry
+        over at all; engine model names don't correspond.
         """
         self._active = self.secondary
+        owner = request.trust_level is TrustLevel.OWNER
+        model = self.secondary.spec.model_for_owner() if owner else None
         fallback_request = EngineRequest(
             prompt=request.prompt, system_prompt=request.system_prompt,
-            session_id=self.secondary.new_session_id(), resume=False,
-            model=self.secondary.spec.model, effort=request.effort,
+            session_id=None, resume=False,
+            model=model, effort=request.effort,
             workdir=request.workdir, readable_dirs=request.readable_dirs,
-            allowed_tools=request.allowed_tools, trust_level=request.trust_level,
+            tools=request.tools, trust_level=request.trust_level,
+            # The boundary the caller asked for does not stop applying because
+            # the primary ran out of quota. Dropping it turned a rate limit into
+            # a permission bypass (sca-93u).
+            requirements=request.requirements,
+            # Same request with the same person waiting on it. Dropping this
+            # would leave the already-open progress display stuck on its
+            # opening line for the whole fallback turn.
+            progress_log=request.progress_log,
+            # The same reason in the audit: this is the next attempt at one
+            # request, not a second request (sca-4ol).
+            request_id=request.request_id,
         )
         return self.runner.run(self.secondary, fallback_request)
 
     def _probe_primary_recovery(self, request: EngineRequest) -> EngineResponse | None:
-        """기본 실행기가 돌아왔는지 실제 요청으로 떠본다.
+        """Probes whether the primary has recovered, using a real request.
 
-        요청 경로에서만 한다. 사람이 기다리는 자리라 되돌아온 사실을 가장
-        먼저 알아야 하고, 되돌린 뒤 그 턴을 바로 처리할 수 있다.
+        Only happens on the request path — a human is waiting there,
+        so they should be the first to benefit once it's recovered,
+        and this turn can be handled immediately.
         """
         self._active = self.primary
         response = self.runner.run(self.primary, request)
@@ -238,17 +662,34 @@ class FallbackEngine(Engine):
         return None
 
     def _probe_secondary(self, request: EngineRequest) -> tuple[bool, str]:
-        """대체 실행기가 실제로 답하는지 짧은 요청으로 확인한다.
+        """Confirms the fallback engine actually answers, via a short request.
 
-        상태 파일만 바꾸고 전환했다고 알리면, 정작 그 실행기도 못 쓰는
-        경우에 사람이 잘못된 상태를 믿는다.
+        Flipping the state file and declaring a switch without this
+        risks a human trusting a switch to an engine that doesn't
+        actually work either.
         """
         probe_request = EngineRequest(
             prompt=self.PROBE_PROMPT, system_prompt="",
-            session_id=self.secondary.new_session_id(), resume=False,
-            model=self.secondary.spec.model, effort="low", workdir=request.workdir,
-            readable_dirs=(), allowed_tools=(), trust_level=request.trust_level,
+            session_id=None, resume=False,
+            model=None, effort="low", workdir=request.workdir,
+            readable_dirs=(), trust_level=request.trust_level,
+            request_id=request.request_id,
         )
         response = self.runner.run(self.secondary, probe_request, timeout_sec=self.PROBE_TIMEOUT_SEC)
         detail = response.body.strip() if response.body else ""
-        return bool(response.ok and detail), (detail[:200] or "응답이 비어 있다")
+        return bool(response.ok and detail), (
+            (detail[:200] or "응답이 비어 있다") + self._capability_note(request)
+        )
+
+    def _capability_note(self, request: EngineRequest) -> str:
+        """The probe asks whether the secondary answers at all. Approving on
+        that alone reads as 'this engine can take over', which is a different
+        question from whether it holds this request's guarantees (sca-42s)."""
+        required = request.requirements
+        unmet = required.unmet(self.secondary.capabilities_for(request))
+        if not unmet:
+            return ""
+        axes = ", ".join(AXIS_NAMES[axis] for axis in unmet)
+        if required.downgraded(unmet):
+            return f" 다만 {axes} 은 이 엔진이 보장하지 못해 완화 기록을 남기고 실행한다."
+        return f" 다만 {axes} 을 요구한 요청은 이 엔진에서 실행되지 않는다."

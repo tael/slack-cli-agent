@@ -1,4 +1,4 @@
-"""실행 상수. 기본값은 원본 운영에서 측정한 값이고 근거를 주석으로 남긴다."""
+"""Runtime constants. Defaults come from production measurements; the reasoning is kept in comments."""
 
 from __future__ import annotations
 
@@ -6,13 +6,20 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from ..prompt.composer import DEFAULT_SYSTEM_PROMPT_BUDGET_BYTES
+
 
 @dataclass(frozen=True)
 class RuntimeSettings:
-    # 300초는 150건 중 2건을 잘랐고 중앙값은 34초였다
+    # 300s would have cut 2 of 150 requests; the median was 34s.
     request_timeout_sec: float = 900
     slow_report_sec: float = 800
-    # 벽시계와 monotonic 의 차이. 43분 보고가 실제 42초였던 사례
+    #: Same trigger for reviews, kept separate because a review normally
+    #: spends minutes -- measured 150-169s on gemini (sca-2hf) -- so the two
+    #: thresholds have different meanings even where the number matches.
+    review_slow_report_sec: float = 800
+    # Catches wall-clock vs. monotonic clock drift — one case reported 43
+    # minutes for what was actually 42 seconds.
     sleep_gap_suspect_sec: float = 30
     max_concurrent: int = 10
 
@@ -25,38 +32,65 @@ class RuntimeSettings:
     catchup_window_sec: float = 7200
     catchup_max_window_sec: float = 86400
     catchup_thread_lookback_sec: float = 7 * 86400
-    # 슬랙 읽기 지연만 덮는 값. 3600 은 틀린 값이었다
+    # Only covers Slack read lag; 3600 was measured wrong.
     catchup_grace_sec: float = 120
 
-    # 너무 빨리 부르면 429 대신 ok 와 빈 목록이 온다
+    # Calling faster than this returns ok with an empty list instead of a 429.
     history_min_interval_sec: float = 2.0
     history_read_tries: int = 3
     history_read_pause_sec: float = 2.0
     history_max_msgs: int = 40
     history_max_chars: int = 12000
+    #: Cap on the assembled system prompt, in UTF-8 bytes. 0 or less turns the
+    #: cap off. Where the default comes from: docs/지침-예산.md.
+    system_prompt_budget_bytes: int = DEFAULT_SYSTEM_PROMPT_BUDGET_BYTES
     linked_thread_max: int = 3
 
-    # 정상 4시간 35분에 0회, 장애 22분에 128회
+    # 0 reconnects in 4h35m of normal operation; 128 in 22 minutes during an outage.
     socket_reconnect_limit: int = 4
-    # 이전 20건/180초는 실제 발생률 16.8건보다 높아 한 번도 발화하지 않았다
+    # The old 20-per-180s threshold never fired — the measured rate was 16.8.
     socket_error_limit: int = 8
     health_interval_sec: float = 30
-    # 봇 신원(`auth_test`) 조회가 실패했을 때 다시 부르기까지의 간격.
-    # 실패를 영구 캐시하면 일시 장애가 프로세스가 사는 내내 이어지는 오판이
-    # 되고, 판정마다 다시 부르면 장애 중에 요청 수만큼 API 호출이 늘어난다.
+    # How long to wait before re-checking bot identity after a failed
+    # auth_test. Caching a failure forever would make a transient outage
+    # look permanent for the process's whole lifetime; retrying on every
+    # check would multiply API calls during an outage.
     identity_retry_interval_sec: float = 60
-    # 큐가 비었을 때 다음 조회까지 쉬는 시간. 0 으로 두면 워커가 빈 큐를
-    # 쉬지 않고 조회해 한 코어를 계속 쓴다. 이 값만큼 응답이 늦어질 수
-    # 있어, 사람이 못 느끼는 범위에서 가장 크게 잡는다.
+    # How long the worker sleeps when the queue is empty. 0 would busy-poll
+    # and pin a core; this is the largest delay still imperceptible to a person.
     queue_idle_sleep_sec: float = 0.5
     shutdown_grace_sec: float = 330
 
     watch_check_interval_sec: float = 300
     watch_job_min_gap_sec: float = 300
     watch_job_max_age_sec: float = 24 * 3600
+    #: How many engine calls one watch may spend. Each check is a full engine
+    #: call, so without a cap a condition watch spends max_age / min_gap of
+    #: them -- 288 at the defaults. Reaching it hands the job to `expired`,
+    #: which sends the owner a give-up report instead of going quiet
+    #: (sca-2v2). 48 is four hours of checking at the default gap.
+    watch_job_max_checks: int = 48
+    #: Must stay above watch_job_max_age_sec: a job still in the queue needs
+    #: its result file. Orphans only appear when registration never happened.
+    watch_result_retain_sec: float = 48 * 3600
+    watch_result_cleanup_interval_sec: float = 3600
 
-    # 원본 bot.py:80 PEOPLE_REFRESH_SEC. 계정 핸들-이름 명부를 다시 만드는 주기
     roster_refresh_sec: float = 12 * 3600
+    #: 명부에 넣을 계정 핸들이 맞아야 하는 정규식. 기본값은 회사
+    #: 워크스페이스의 이름.성 형식이고, 빈 문자열이면 형식을 안 본다 (sca-evt).
+    roster_handle_pattern: str = r"\."
+
+    #: owner_only_channels 선언과 실제 멤버를 대조하는 주기. 사람이 채널에
+    #: 들어오는 일은 드물어 자주 볼 이유가 없고, 조회는 채널마다 한 번이다.
+    owner_only_audit_interval_sec: float = 6 * 3600
+
+    #: 사용량 확인 명령 주기. 원본과 같은 1시간이다.
+    usage_check_interval_sec: float = 3600
+    usage_check_timeout_sec: float = 60
+
+    #: 주기 실행기 스레드가 살아 있는지 보는 주기. 죽는 일은 드물지만 죽으면
+    #: 그 작업이 프로세스 수명 내내 멈춘다.
+    service_watch_interval_sec: float = 300
 
     late_rewrite_min_ratio: float = 0.6
     late_rewrite_min_chars: int = 200
@@ -64,48 +98,94 @@ class RuntimeSettings:
     progress_tick_sec: float = 3
     progress_idle_sec: float = 45
 
-    # 워커 갱신 주기와 정체 판정 기준. 판정은 주기의 3배
+    # Stall detection fires at 3x the heartbeat interval.
     heartbeat_interval_sec: float = 5
     heartbeat_stale_sec: float = 15
+    #: How often a running worker sweeps for jobs a crashed worker left behind.
+    #: Above heartbeat_stale_sec, so a worker that is merely slow to beat once
+    #: isn't treated as dead.
+    stale_reclaim_interval_sec: float = 60
+    #: Lock wait for the DB calls a Slack event makes on the socket handler
+    #: thread. Slack acks before the handler runs, so this does not affect that
+    #: event's ack -- it caps how long one of the ten pool slots is held, which
+    #: is what delays the events behind it (sca-9l1). With the store retries and
+    #: their backoff the whole path stays about one second.
+    ingress_lock_budget_sec: float = 0.25
     job_max_attempts: int = 3
-    # 끝난 작업을 보관하는 기간. 이 값을 넘긴 행은 지운다. 안 지우면
-    # jobs 표가 계속 커진다. 되짚기 최대 창(catchup_max_window_sec)보다
-    # 길어야 한다 — 짧으면 되짚기가 이미 답한 메시지를 미응답으로 보고
-    # 다시 등록해 같은 답이 두 번 나간다.
+    # How long finished jobs are kept before deletion. Must exceed
+    # catchup_max_window_sec — if shorter, catch-up would treat an
+    # already-answered message as unanswered and reply to it twice.
     job_retention_sec: float = 7 * 86400
-    # 끝난 작업을 정리하는 주기.
     job_purge_interval_sec: float = 3600
-    # 받아 놓은 첨부를 지우는 간격. 원본은 기동 시 한 번만 지웠다 — 며칠 도는
-    # 프로세스에서는 그 뒤에 받은 것이 계속 남는다.
+    #: 끝난 연결 세대를 남겨 두는 기간. 캐치업 유예보다 길어야 한다 -- 세대를
+    #: 지우면 그 구간의 공백을 회수할 근거가 사라진다 (sca-zb9).
+    epoch_retention_sec: float = 7 * 86400
+    epoch_purge_interval_sec: float = 3600
+    # Admin command claims. Retention must exceed the catch-up window for the
+    # same reason job rows do: a command whose reaction mark failed to post is
+    # found again, and the claim row is the only thing left stopping a second
+    # run (sca-8m5p).
+    admin_claim_retention_sec: float = 7 * 86400
+    # Failed claims are kept far longer: their mark is `x`, which catch-up
+    # does not read as done, so the message stays findable until it ages out
+    # of catchup_max_window_sec. This must outlast that by a wide margin.
+    admin_claim_failure_retention_sec: float = 30 * 86400
+    admin_claim_purge_interval_sec: float = 3600
+    # How long a claim may stay RUNNING before it is treated as a process that
+    # died mid-command. There is no heartbeat on a claim, so this is set well
+    # past any real command rather than close to it -- taking a claim from a
+    # process that is still working would post x on a command that then
+    # succeeds (codex review).
+    admin_claim_stale_sec: float = 3600
+    # A process running for days keeps receiving new attachments after
+    # boot, so cleanup can't be a one-time pass at startup.
     attachment_cleanup_interval_sec: float = 3600
-    # 마치지 못한 되짚기를 다시 보는 간격. 원본은 건강 점검 주기에 얹어 돌렸다.
     catchup_retry_interval_sec: float = 30
-    # 보내지 못한 보고를 다시 보내는 간격. 원본은 건강 점검 주기에 얹어 돌렸다.
+    # How often a worker looks for connection epochs ingress left behind.
+    connection_catchup_interval_sec: float = 30
+    # Lease held while sweeping a claimed span. A measured sweep took 48s, so
+    # a short lease would let a second worker grab a span still in progress.
+    catchup_lease_sec: float = 600
     pending_report_flush_interval_sec: float = 30
+    # 중단된 점검을 훑는 주기. 이미 죽은 점검이라 급하지 않고, 원장 조회 한 번이다.
+    stale_review_sweep_interval_sec: float = 600
+    # How often to check whether the learning batch should run. The check
+    # itself is just a file read; schedule.py decides the actual daily run.
+    learning_batch_interval_sec: float = 600
+    # KST hour learning starts; before this, that day's records aren't all in yet.
+    learning_run_hour: int = 22
+    # Empty delegates to the running engine's own configured model. A shared
+    # literal here was invalid on codex/gemini profiles (sca-dyb.10).
+    learning_model: str = ""
+    learning_effort: str = "medium"
+    learning_thread_reply_limit: int = 50
 
-    # 추측한 값으로 퍼센트를 만들지 않는다. 비워 둔다
+    # Left empty rather than guessed — a guessed value would produce a
+    # fabricated percentage.
     context_limit: Mapping[str, int] = field(default_factory=dict)
 
-    # 토큰 사용량 노출을 허용하는 채널 집합. 원본 bot.py:673 OWNER_ONLY_CHANNELS
-    # 와 같다. 트러블슈팅 채널이 이 집합에 없으면 사용량 행을 아예 안 낸다.
-    # 조직 고유 채널 ID 를 코드에 두지 않기 위해 기본값은 빈 집합이다.
+    # Channels allowed to show token usage. Defaults to empty so no
+    # org-specific channel ID lives in code.
     owner_only_channels: frozenset[str] = frozenset()
 
-    # 느린 요청 시간 분해에서 한 구간의 사고 시간 상한을 어림하는 값.
-    # 원본 bot.py:3193 ASSUMED_TOKENS_PER_SEC = 40 과 같다. 실제 처리량은
-    # 요청마다 달라 이 값으로 나눈 결과는 근사치일 뿐 정밀 계측이 아니다.
+    # Upper-bound estimate used to break down slow-request time. Actual
+    # throughput varies per request, so dividing by this yields an
+    # approximation, not a precise measurement.
     assumed_tokens_per_sec: float = 40
 
-    # 답변에서 줄 단위로 지울 문구의 머리말 목록. 원본 bot.py drop_vooster 의
-    # VOOSTER_HEAD(조직 텔레메트리 인사 줄)를 일반화했다. 그 문구 자체는
-    # 조직 고유값이라 코드에 두지 않는다 — 기본값은 빈 목록이다.
+    # Tools handed to the engine. Read-only by default; a bot that needs to
+    # write declares it in its profile rather than in code.
+    base_tools: tuple[str, ...] = ("Read", "Grep", "Glob")
+    owner_tools: tuple[str, ...] = ()
+
+    # Line prefixes stripped from replies. Defaults to empty since the
+    # actual prefix text is org-specific and doesn't belong in code.
     dropped_line_heads: tuple[str, ...] = ()
 
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
-        """프로필이 지정한 항목만 덮어쓴다. 모르는 키는 무시한다.
-
-        집합 항목은 형식을 맞춰 넣는다. JSON 에는 집합 형식이 없어 목록으로
-        오는데, 그대로 두면 선언한 타입과 실제 값이 달라진다.
+        """Overrides only the fields present in `values`; unknown keys are
+        ignored. Set-typed fields get converted, since JSON has no set
+        literal and would otherwise arrive as a list.
         """
         known = set(self.__dataclass_fields__)
         taken = {k: v for k, v in values.items() if k in known}

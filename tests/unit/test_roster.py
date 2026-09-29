@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -220,6 +221,32 @@ class TestRosterBuilderFailurePolicy:
         assert count == 0
         assert output.read_text(encoding="utf-8") == "기존 내용"
 
+    def test_조회는_됐는데_규칙에_다_걸리면_그렇게_적는다(self, tmp_path: Path, caplog: Any) -> None:
+        """sca-4pf — 신지·아스카가 매 기동에 이 경고를 낸다. 2026-09-17 실측으로
+        users.list 는 17명을 돌려주고 그중 핸들 형식에 맞는 사람이 0명이었다.
+        조회 실패와 같은 문구를 쓰면 스코프나 네트워크를 의심하게 된다."""
+        output = tmp_path / "roster.md"
+        client = _FakeSlackClient(pages=[_page([_member(handle="example", real_name="홍길동")])])
+        builder = RosterBuilder(client, output, now=lambda: 1_700_000_000.0)
+
+        with caplog.at_level(logging.WARNING):
+            assert builder.refresh() == 0
+
+        [기록] = [r.getMessage() for r in caplog.records]
+        assert "1명" in 기록
+        assert "0명" in 기록
+
+    def test_응답_자체가_비면_다른_문구를_쓴다(self, tmp_path: Path, caplog: Any) -> None:
+        output = tmp_path / "roster.md"
+        client = _FakeSlackClient(pages=[_page([])])
+        builder = RosterBuilder(client, output, now=lambda: 1_700_000_000.0)
+
+        with caplog.at_level(logging.WARNING):
+            assert builder.refresh() == 0
+
+        [기록] = [r.getMessage() for r in caplog.records]
+        assert "조회 결과가 비었다" in 기록
+
     def test_출력_디렉터리가_없으면_스스로_만든다(self, tmp_path: Path) -> None:
         output = tmp_path / "nested" / "roster.md"
         client = _FakeSlackClient(pages=[_page([_member(handle="bob.lee", real_name="이밥")])])
@@ -283,3 +310,26 @@ class TestRosterSection:
         assert str(roster_path) in rendered
         # 내용 전체를 프롬프트에 싣지 않는다. 표 헤더가 그대로 들어가면 안 된다.
         assert "계정 핸들 | 이름 | 상태" not in rendered
+
+
+class Test핸들패턴을설정으로받는다:
+    """점 규칙은 회사 워크스페이스의 핸들 형식이라 설치물에 박아 둘 것이 아니다.
+    기본값은 그대로 두고 프로필에서 바꿀 수 있게 한다 (sca-evt)."""
+
+    def test_기본은_점이_있어야_통과한다(self, tmp_path: Path) -> None:
+        client = _FakeSlackClient(pages=[_page([_member(handle="alice", real_name="김앨리스")])])
+        assert RosterBuilder(client, tmp_path / "roster.md").refresh() == 0
+
+    def test_패턴을_주면_그것으로_거른다(self, tmp_path: Path) -> None:
+        client = _FakeSlackClient(pages=[_page([_member(handle="alice", real_name="김앨리스")])])
+        builder = RosterBuilder(client, tmp_path / "roster.md", handle_pattern="")
+        assert builder.refresh() == 1
+        assert "alice" in (tmp_path / "roster.md").read_text(encoding="utf-8")
+
+    def test_잘못된_패턴이면_명부를_만들지_않는다(self, tmp_path: Path, caplog) -> None:
+        """조용히 기본값으로 돌아가면 설정한 대로 걸러졌다고 읽게 된다."""
+        client = _FakeSlackClient(pages=[_page([_member()])])
+        with caplog.at_level(logging.WARNING):
+            builder = RosterBuilder(client, tmp_path / "roster.md", handle_pattern="[")
+            assert builder.refresh() == 0
+        assert [r for r in caplog.records if "패턴" in r.getMessage()]

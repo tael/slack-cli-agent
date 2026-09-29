@@ -7,12 +7,16 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+from review_support import assert_header_is_one_table, recorded
+
 from slack_cli_agent.review.base import ReviewTarget
 from slack_cli_agent.review.trace import DebugTraceTask
 
 
 def make_task(**overrides) -> DebugTraceTask:
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "ledger": None,
         "message_lookup": None,
         "transcript": None,
@@ -22,6 +26,7 @@ def make_task(**overrides) -> DebugTraceTask:
         "publisher": None,
         "engine": None,
         "troubleshoot_channel": "TS",
+        "owner_only_channels": frozenset({"TS"}),
         "bot_display_name": "테스트봇",
         "code_dir": "/code",
         "persona_dir": "/persona",
@@ -60,9 +65,11 @@ class Test머리말:
         task = make_task()
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
         header = task.build_header(target, None, "https://slack/x")
-        assert "## 디버그 : 회의방" in header
-        assert "<@U1>" in header
+        assert header.startswith("# 디버그 : 회의방\n")
+        assert "| 요청한 사람 | <@U1> |" in header
         assert "https://slack/x" in header
+        # 세 점검의 머리말 형태를 표 한 벌로 맞췄다. 디버그만 불릿이었다.
+        assert_header_is_one_table(header)
 
     def test_링크가없으면그줄을뺀다(self) -> None:
         task = make_task()
@@ -115,7 +122,8 @@ class _FakeEngine:
     def __init__(self) -> None:
         self.calls: list = []
 
-    def run(self, prompt: str, session_id: str, resume: bool):
+    def run(self, prompt: str, session_id: str | None, resume: bool, progress_log=None,
+            request_id: str = ""):
         from slack_cli_agent.engine.base import EngineResponse
 
         self.calls.append(prompt)
@@ -177,5 +185,5 @@ class Test중복방지:
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True)
         task.run(target)
         assert len(engine.calls) == 1
-        rec = ledger.find("debug_trace", "C1", "1.1")
+        rec = recorded(ledger, "debug_trace", "C1", "1.1")
         assert rec.status == "완료"

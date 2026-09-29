@@ -1,10 +1,10 @@
-"""프롬프트 파일 로드.
-
-원본 prompt_text 와 같은 실패 정책을 쓴다 — 파일이 없거나 비면 예외를 낸다.
-가드 문구가 빠진 채로 답하는 것을 사고로 본다. 기본값으로 넘어가지 않는다.
-
-프롬프트 파일은 요청마다 다시 읽는다. 재기동 없이 반영되어야 하기 때문이다.
-"""
+# A missing or empty prompt file raises rather than falling back to a
+# default -- answering without its guard text is treated as a failure, not
+# a degraded mode. Files are reread on every request so edits take effect
+# without a restart.
+#
+# The state directory always wins over the package-bundled defaults: an
+# operator's edit must never be shadowed by a package upgrade.
 
 from __future__ import annotations
 
@@ -13,17 +13,25 @@ from pathlib import Path
 
 from ..core.errors import MissingPromptError
 
+PACKAGE_DEFAULTS_DIR = Path(__file__).resolve().parent.parent / "assets" / "prompts"
+
 
 class PromptLibrary:
-    """`<이름>.md` 파일을 읽고 자리표를 채운다."""
-
-    def __init__(self, prompts_dir: Path, placeholders: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        prompts_dir: Path,
+        placeholders: Mapping[str, str] | None = None,
+        defaults_dir: Path | None = None,
+    ) -> None:
         self._dir = prompts_dir
+        self._defaults_dir = defaults_dir if defaults_dir is not None else PACKAGE_DEFAULTS_DIR
         self._placeholders = dict(placeholders or {})
 
     def text(self, name: str, keep_slots: Collection[str] = ()) -> str:
-        """파일이 없거나 비면 MissingPromptError. 가드가 빠진 채 답하지 않는다."""
-        path = self._dir / f"{name.lower()}.md"
+        filename = f"{name.lower()}.md"
+        path = self._dir / filename
+        if not path.is_file():
+            path = self._defaults_dir / filename
         try:
             raw = path.read_text(encoding="utf-8")
         except OSError as exc:

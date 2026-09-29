@@ -1,78 +1,112 @@
-"""상태 표식(리액션) 관리.
+"""Manages status reaction emoji.
 
-원본 이 봇은 처리 상태를 리액션으로 알린다. 사람이 지금 어떤 상태인지
-반응 하나로 알 수 있어야 한다는 것이 원본의 설계다.
+    eyes              being handled now
+    hourglass         queued behind an earlier request on the same thread
+    white_check_mark  answered
+    x                 failed
+    zipper_mouth_face chose not to answer
+    mag               handed off to a watch queue (not done)
 
-    eyes              받아서 처리 중
-    hourglass         앞 요청이 끝나기를 기다리는 중
-    white_check_mark  답을 냈다
-    x                 처리에 실패했다
-    zipper_mouth_face 답하지 않기로 했다
-    mag               감시 큐로 넘어갔다 (완료 아님)
+eyes/hourglass/x survive a process crash, since none of them mean
+"done" — recovery still treats them as unfinished. A human manually
+adding white_check_mark counts the same way, as a manual override.
 
-eyes·hourglass·x 는 도중에 프로세스가 죽어도 그대로 남는다. 끝났다는 뜻이
-아니므로 되짚기 대상으로 남긴다. 사람이 직접 white_check_mark 를 달아도
-같게 본다 — 손으로 넘길 수단이 되기 때문이다.
-
-리액션 API 실패는 원본과 같이 조용히 넘긴다. 표식 하나 실패했다고 전체
-처리를 멈추지 않는다는 것이 원본의 판단이다.
+Reaction API failures don't propagate: one failed reaction shouldn't halt
+the rest of processing. They are logged at debug level — swallowing them
+without a trace left no way to tell a failed call from one that was never
+made (sca-aj3).
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 from slack_cli_agent.guard.watch import WATCH_MARK_EMOJI
 
+log = logging.getLogger(__name__)
+
 SILENT_MARK_EMOJI = "zipper_mouth_face"
 DONE_EMOJI = frozenset({"white_check_mark", SILENT_MARK_EMOJI})
 UNFINISHED_EMOJI = frozenset({"eyes", "hourglass", "x"})
+"""Same value as the original bot.py:618; the parity test pins it. Recovery
+does not read this — catchup.already_handled goes by DONE_EMOJI."""
 
-# 사람이 답변에 이 리액션을 남기면 그 답변을 되짚어 후처리한다.
+STALE_ON_SETTLE = UNFINISHED_EMOJI | {WATCH_MARK_EMOJI}
+"""What a final mark clears. The watch mark is unfinished too, so leaving it
+on puts mag and x on the same message. Kept separate from the original
+constant so its value stays visible and the extension is named (sca-3p6)."""
+
+# A human reacting with this emoji triggers a postmortem review of that reply.
 POSTMORTEM_EMOJI = "dango"
 DEBUG_TRACE_EMOJI = "brain"
 FORMAT_REVIEW_EMOJI = "pencil2"
 
 
 class ReactionMarker:
-    """요청 하나에 대한 처리 상태 표식을 관리한다."""
-
     def __init__(self, client: Any) -> None:
         self._client = client
 
     def add(self, channel: str, ts: str, name: str) -> None:
         try:
             self._client.reactions_add(channel=channel, timestamp=ts, name=name)
-        except Exception:  # noqa: BLE001, S110 — 표식은 부가 정보다. 모듈 docstring 대로 조용히 넘긴다
-            pass
+        except Exception as exc:  # noqa: BLE001 - reactions are cosmetic; don't propagate per the module docstring
+            log.debug("이모지 추가 실패 : %s %s:%s, %s", name, channel, ts, exc)
 
-    def remove(self, channel: str, ts: str, name: str) -> None:
+    def remove(self, channel: str, ts: str, name: str) -> bool:
+        """True when the emoji is known to be off the message.
+
+        Slack answers no_reaction when it was never there, which is the state
+        the caller wanted; anything else leaves it on and the caller has to be
+        able to tell (sca-3p6).
+        """
         try:
             self._client.reactions_remove(channel=channel, timestamp=ts, name=name)
-        except Exception:  # noqa: BLE001, S110 — 표식은 부가 정보다. 모듈 docstring 대로 조용히 넘긴다
-            pass
+        except Exception as exc:  # noqa: BLE001 - reactions are cosmetic; don't propagate per the module docstring
+            log.debug("이모지 제거 실패 : %s %s:%s, %s", name, channel, ts, exc)
+            return "no_reaction" in str(exc)
+        return True
 
     def mark_processing(self, channel: str, ts: str) -> None:
         self.add(channel, ts, "eyes")
 
+    def clear_processing(self, channel: str, ts: str) -> None:
+        self.remove(channel, ts, "eyes")
+
     def mark_waiting(self, channel: str, ts: str) -> None:
+        """Only for a request that can't start yet. eyes and hourglass are
+        mutually exclusive — adding this unconditionally put both on every
+        request, which left hourglass meaning nothing."""
         self.add(channel, ts, "hourglass")
 
+    def clear_waiting(self, channel: str, ts: str) -> None:
+        """The wait is over — the request is being handled now."""
+        self.remove(channel, ts, "hourglass")
+
     def _settle(self, channel: str, ts: str, mark: str) -> None:
-        """미완료 표식을 걷고 결론 표식을 단다.
+        """Clears unfinished marks and applies the final one.
 
-        미완료 표식이 둘인 이유는 접수와 처리가 프로세스로 갈려 있기
-        때문이다. 접수 쪽이 모래시계를, 처리 쪽이 눈을 단다. 눈만 지우면
-        끝난 요청에 모래시계가 남아 사람 눈에는 아직 대기 중으로 보인다.
-
-        달 표식 자신은 지우지 않는다. 실패 표식 x 가 미완료 표식이기도
-        해서, 지웠다 다시 달면 슬랙 호출만 한 번 늘어난다.
+        Clears hourglass as well as eyes: a request that finished while
+        still carrying the queued mark would look pending forever if the
+        worker never got to clear it. Doesn't clear the mark being
+        applied itself — x doubles as an unfinished mark, and clearing
+        then re-adding it would cost an extra Slack call for nothing.
         """
-        for stale in UNFINISHED_EMOJI:
-            if stale != mark:
-                self.remove(channel, ts, stale)
+        남은 = [
+            stale
+            for stale in sorted(STALE_ON_SETTLE)
+            if stale != mark and not self.remove(channel, ts, stale)
+        ]
         self.add(channel, ts, mark)
+        if 남은:
+            # The final mark goes on either way — a message with no mark at all
+            # reads as untouched. But a leftover watch mark says the request is
+            # still being followed up on, so it can't stay at debug level.
+            log.warning(
+                "미완료 표식이 남은 채 최종 표식을 달았다 : %s %s:%s, 남은 표식 %s",
+                mark, channel, ts, ", ".join(남은),
+            )
 
     def mark_done(self, channel: str, ts: str) -> None:
         self._settle(channel, ts, "white_check_mark")
@@ -81,29 +115,22 @@ class ReactionMarker:
         self._settle(channel, ts, "x")
 
     def mark_silent(self, channel: str, ts: str) -> None:
-        """답하지 않기로 한 것도 처리 결과다. 흔적을 남긴다."""
+        """Not answering is still a resolution — leave a trace of it."""
         self._settle(channel, ts, SILENT_MARK_EMOJI)
 
     def mark_watch(self, channel: str, ts: str) -> None:
-        """감시로 넘어간 건은 완료가 아니다. white_check_mark 를 달면 미완료
-        복구 대상에서 빠져 되짚기가 다시 보지 않는다."""
+        """Handed off to a watch queue isn't done — white_check_mark
+        would exclude it from recovery's unfinished scan."""
         self._settle(channel, ts, WATCH_MARK_EMOJI)
 
     def mark_resolved_like(self, channel: str, ts: str, mark: str) -> None:
-        """다른 건과 같은 결론이 났다고 보고 그 표식을 그대로 남긴다.
-
-        미완료 표식이 남아 있으면 지우고 새 표식을 단다.
-        """
+        """Applies the same resolution mark as another related
+        request, clearing any unfinished mark first."""
         self._settle(channel, ts, mark)
 
     def reactions_on(self, msg: Mapping[str, Any]) -> set[str]:
-        """그 메시지에 달린 이모지 이름들."""
         return {r.get("name") for r in (msg.get("reactions") or []) if r.get("name")}
 
     def already_handled(self, msg: Mapping[str, Any]) -> bool:
-        """이 메시지는 판단이 끝났는가.
-
-        white_check_mark 또는 zipper_mouth_face 가 있으면 끝난 것이다.
-        eyes·hourglass·x 는 끝난 것이 아니다.
-        """
+        """Whether this message has already been judged (white_check_mark or zipper_mouth_face)."""
         return bool(self.reactions_on(msg) & DONE_EMOJI)

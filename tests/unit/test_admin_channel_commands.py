@@ -15,6 +15,8 @@ from slack_cli_agent.admin.channel_commands import (
     ChatQuietCommand,
     CoachModeCommand,
     DefaultModeCommand,
+    UnaddressedOffCommand,
+    UnaddressedOnCommand,
 )
 from slack_cli_agent.admin.command import AdminContext
 from slack_cli_agent.auth.principal import Principal, TrustLevel
@@ -36,9 +38,18 @@ def make_profile(tmp_path: Path) -> Profile:
     )
 
 
-def make_context(tmp_path: Path, *, channel: str = "C1", channels_path: Path | None = None) -> AdminContext:
+def make_context(
+    tmp_path: Path,
+    *,
+    channel: str = "C1",
+    channels_path: Path | None = None,
+    registered: bool = True,
+) -> AdminContext:
     profile = make_profile(tmp_path)
-    registry = ChannelRegistry(channels_path or (tmp_path / "channels.json"))
+    path = channels_path or (tmp_path / "channels.json")
+    if channels_path is None and registered:
+        path.write_text(json.dumps({channel: {"name": channel}}, ensure_ascii=False), encoding="utf-8")
+    registry = ChannelRegistry(path)
     principal = Principal(user_id="U_OWNER", channel=channel, trust=TrustLevel.OWNER, is_direct_message=False)
     return AdminContext(principal=principal, channel=channel, thread_ts="1.0", channels=registry, profile=profile)
 
@@ -48,7 +59,6 @@ def read_channel(tmp_path: Path, channel: str = "C1") -> dict:
     return json.loads(path.read_text(encoding="utf-8"))[channel]
 
 
-# ---------------------------------------------------------------------------
 # 말수 3종
 
 
@@ -63,7 +73,7 @@ class TestChatActiveCommand:
         cmd = ChatActiveCommand(NoticeCatalog())
         result = cmd.execute(ctx)
         assert read_channel(tmp_path)["chat"] == "active"
-        assert result.handled is True
+        assert result.applied is True
         assert result.message
 
 
@@ -100,12 +110,49 @@ class TestChatCommandsAreMutuallyExclusive:
         assert cmd.matches("말수 적게") is False
 
 
-# ---------------------------------------------------------------------------
+# 호명 정책
+
+
+class TestUnaddressedOnCommand:
+    @pytest.mark.parametrize("text", ["끼어들기 허용", "끼어들기허용", "호명 없이 응답", "멘션 없이 응답"])
+    def test_별칭을_받는다(self, text: str) -> None:
+        assert UnaddressedOnCommand(NoticeCatalog()).matches(text) is True
+
+    def test_실행하면_answer_unaddressed가_켜진다(self, tmp_path: Path) -> None:
+        ctx = make_context(tmp_path)
+        result = UnaddressedOnCommand(NoticeCatalog()).execute(ctx)
+        assert read_channel(tmp_path)["answer_unaddressed"] is True
+        assert result.applied is True
+        assert result.message
+
+
+class TestUnaddressedOffCommand:
+    @pytest.mark.parametrize("text", ["멘션 전용", "멘션전용", "호명 전용", "불러야 답해"])
+    def test_별칭을_받는다(self, text: str) -> None:
+        assert UnaddressedOffCommand(NoticeCatalog()).matches(text) is True
+
+    def test_이미_켜진_채널도_꺼진다(self, tmp_path: Path) -> None:
+        """값을 지우지 않고 False 로 명시해야 한다. 키를 지우면 기본값 판정에 기댄다."""
+        channels_path = tmp_path / "channels.json"
+        channels_path.write_text(
+            json.dumps({"C1": {"answer_unaddressed": True}}), encoding="utf-8"
+        )
+        ctx = make_context(tmp_path, channels_path=channels_path)
+        UnaddressedOffCommand(NoticeCatalog()).execute(ctx)
+        assert json.loads(channels_path.read_text(encoding="utf-8"))["C1"]["answer_unaddressed"] is False
+
+
+class TestUnaddressedCommandsAreMutuallyExclusive:
+    def test_허용_명령은_전용_문구를_안_받는다(self) -> None:
+        assert UnaddressedOnCommand(NoticeCatalog()).matches("멘션 전용") is False
+        assert UnaddressedOffCommand(NoticeCatalog()).matches("끼어들기 허용") is False
+
+
 # 코치 모드
 
 
 class TestCoachModeCommand:
-    @pytest.mark.parametrize("text", ["코치 모드", "코치모드"])
+    @pytest.mark.parametrize("text", ["코치 모드", "코치모드", "에이전트 코치"])
     def test_별칭을_받는다(self, text: str) -> None:
         cmd = CoachModeCommand(NoticeCatalog())
         assert cmd.matches(text) is True
@@ -118,24 +165,10 @@ class TestCoachModeCommand:
         assert saved["mode"] == "agent_coach"
         assert saved["answer_unaddressed"] is False
         assert saved["light_context"] is True
-        assert result.handled is True
+        assert result.applied is True
 
 
-# ---------------------------------------------------------------------------
-# api 모드 / 기본 모드
-
-
-class TestApiModeCommand:
-    @pytest.mark.parametrize("text", ["api 모드", "api모드", "API 모드"])
-    def test_별칭을_받는다(self, text: str) -> None:
-        cmd = ApiModeCommand(NoticeCatalog())
-        assert cmd.matches(text) is True
-
-    def test_실행하면_mode가_api_helpdesk로_저장된다(self, tmp_path: Path) -> None:
-        ctx = make_context(tmp_path)
-        cmd = ApiModeCommand(NoticeCatalog())
-        cmd.execute(ctx)
-        assert read_channel(tmp_path)["mode"] == "api_helpdesk"
+# 기본 모드
 
 
 class TestDefaultModeCommand:
@@ -151,7 +184,6 @@ class TestDefaultModeCommand:
         assert read_channel(tmp_path)["mode"] == "private"
 
 
-# ---------------------------------------------------------------------------
 # 채널 해제
 
 
@@ -162,10 +194,18 @@ class TestChannelUnregisterCommand:
         assert cmd.matches(text) is True
 
     def test_등록_안_된_채널이면_그_사실을_답한다(self, tmp_path: Path) -> None:
-        ctx = make_context(tmp_path)
+        ctx = make_context(tmp_path, registered=False)
         cmd = ChannelUnregisterCommand(NoticeCatalog())
         result = cmd.execute(ctx)
         assert "목록에 없습니다" in result.message
+        assert result.applied is False
+
+    def test_뺐으면_적용으로_적는다(self, tmp_path: Path) -> None:
+        channels_path = tmp_path / "channels.json"
+        channels_path.write_text(json.dumps({"C1": {"name": "테스트채널"}}), encoding="utf-8")
+        ctx = make_context(tmp_path, channels_path=channels_path)
+        result = ChannelUnregisterCommand(NoticeCatalog()).execute(ctx)
+        assert result.applied is True
 
     def test_등록된_채널이면_목록에서_뺀다(self, tmp_path: Path) -> None:
         channels_path = tmp_path / "channels.json"
@@ -175,3 +215,53 @@ class TestChannelUnregisterCommand:
         result = cmd.execute(ctx)
         assert ctx.channels.is_registered("C1") is False
         assert "테스트채널" in result.message
+
+
+class TestApiModeCommand:
+    """원본 bot.py:3950 의 `api 모드`. 이식에서 명령만 빠지고 안내문 키가 남아
+    있었다 (sca-6k65)."""
+
+    @pytest.mark.parametrize("text", ["api 모드", "api모드", "API 모드"])
+    def test_별칭을_받는다(self, text: str) -> None:
+        assert ApiModeCommand(NoticeCatalog()).matches(text) is True
+
+    def test_채널_모드를_api_helpdesk_로_적는다(self, tmp_path: Path) -> None:
+        ctx = make_context(tmp_path)
+        result = ApiModeCommand(NoticeCatalog()).execute(ctx)
+        assert read_channel(tmp_path)["mode"] == "api_helpdesk"
+        assert result.message
+
+    def test_알려진_모드에_들어_있다(self) -> None:
+        from slack_cli_agent.core.application import KNOWN_MODES
+
+        assert "api_helpdesk" in KNOWN_MODES
+
+
+# 미등록 채널 보호
+
+
+SETTING_COMMANDS = [
+    ApiModeCommand, CoachModeCommand, DefaultModeCommand,
+    ChatActiveCommand, ChatNormalCommand, ChatQuietCommand,
+    UnaddressedOnCommand, UnaddressedOffCommand,
+]
+
+
+class Test미등록채널에서는_설정을_안_바꾼다:
+    """`ChannelRegistry.update` 는 없는 채널을 새로 만든다. 그래서 설정 명령
+    하나가 등록 안내 없이 채널을 등록 상태로 만들었고, 그 뒤로 제3자 요청이
+    통과했다 (sca-5z6h)."""
+
+    @pytest.mark.parametrize("cmd_class", SETTING_COMMANDS)
+    def test_채널_파일에_아무것도_안_쓴다(self, tmp_path: Path, cmd_class: type) -> None:
+        ctx = make_context(tmp_path, registered=False)
+        result = cmd_class(NoticeCatalog()).execute(ctx)
+        assert (tmp_path / "channels.json").exists() is False
+        assert ctx.channels.is_registered("C1") is False
+        assert "목록에 없습니다" in result.message
+        assert result.applied is False
+
+    def test_DM_식별자가_채널_파일에_안_남는다(self, tmp_path: Path) -> None:
+        ctx = make_context(tmp_path, channel="D1", registered=False)
+        ApiModeCommand(NoticeCatalog()).execute(ctx)
+        assert (tmp_path / "channels.json").exists() is False

@@ -1,60 +1,42 @@
-"""Application — Profile 하나에서 전체 객체 그래프를 만든다.
+"""Builds the full object graph for one Profile. Every component here takes
+its collaborators via constructor injection, assembled in one place.
 
-이 패키지의 부품은 전부 생성자 주입이다. 어떤 부품도 자기가 쓸 협력자를 직접
-만들지 않는다. 그 결정을 한 곳에 모은 것이 이 파일이다.
+ingress() and worker() run as separate processes sharing one DB, so a slow
+engine call can't block event intake.
 
-원본 `bot.py` 는 모듈을 import 하는 순간 전역에 슬랙 client·DB 연결·프롬프트
-경로가 만들어졌다. 그래서 무엇 하나를 시험하려면 그 전부가 딸려 왔다. 여기서는
-조립을 클래스 하나로 옮겨, 조립 자체를 시험할 수 있게 하고 프로세스마다
-필요한 부분만 만들게 한다.
-
-프로세스는 둘로 갈린다. 접수(`ingress()`)는 슬랙 이벤트를 받아 큐에 넣기만
-하고, 처리(`worker()`)는 큐를 소비해 엔진을 부른다. 둘은 같은 DB 를 쓰지만
-서로 다른 프로세스로 뜬다 — 접수가 엔진 호출에 막혀 이벤트를 놓치는 일이
-없어야 한다.
-
-부품 생성은 지연이고 결과는 캐시한다. 특히 게이트웨이가 부를 때마다 새로
-만들어지면 핸들러를 등록한 객체와 연결을 맺는 객체가 갈라져, 이벤트가 들어와도
-아무 핸들러도 불리지 않는다.
+Construction is lazy and cached — recreating a component on each call would
+split the object that registered handlers from the one holding the
+connection, so events would arrive but nothing would handle them.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import shlex
+import sys
 import time
-import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from ..admin.channel_commands import (
-    ApiModeCommand,
-    ChannelUnregisterCommand,
-    ChatActiveCommand,
-    ChatNormalCommand,
-    ChatQuietCommand,
-    CoachModeCommand,
-    DefaultModeCommand,
-)
+from ..admin.admission import AdminAdmission
 from ..admin.command import AdminContext
-from ..admin.commands import ChannelListCommand, EngineStatusCommand, HelpCommand
-from ..admin.engine_commands import EngineApproveCommand, EngineDenyCommand
-from ..admin.learning_commands import (
-    LearningApplyCommand,
-    LearningRevertCommand,
-    LearningShowCommand,
-)
+from ..admin.defaults import default_admin_commands
 from ..admin.router import AdminRouter
+from ..auth.execution_policy import ExecutionPolicy
 from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
-from ..config.channel import ChannelRegistry
-from ..config.profile import Profile
+from ..auth.tools import ToolPolicy
+from ..config.channel import ChannelConfig, ChannelRegistry, channel_is_rich
+from ..config.channel import channel_slug as slug_for
+from ..config.profile import EngineSpec, Profile
 from ..config.settings import RuntimeSettings
-from ..engine.base import Engine, EngineRequest, EngineResponse
-from ..engine.claude import ClaudeEngine
-from ..engine.codex import CodexEngine
-from ..engine.environment import create_environment_policy
-from ..engine.registry import EngineRegistry
+from ..config.slug_migration import SLUG_MIGRATION_LOCK, ChannelSlugMigrator
+from ..engine.base import CallOrigin, Engine, EngineRequest, EngineResponse
+from ..engine.mcp_health import broken_mcp_servers
+from ..engine.registry import EngineRegistry, default_registry
 from ..engine.runner import (
     DirectInvoker,
     EngineInvoker,
@@ -63,21 +45,32 @@ from ..engine.runner import (
     FallbackInvoker,
 )
 from ..engine.switcher import EngineSwitcher
+from ..engine.tool_selection import ToolSelection
 from ..engine.transcript import (
     SessionTranscriptReader,
     TranscriptReaderRegistry,
 )
 from ..guard.base import OutputGuard
 from ..guard.dropline import ConfiguredLineDropGuard
-from ..guard.mentions import AddresseeGuard, PlainMentionGuard
+from ..guard.mentions import AddresseeGuard, BotMentionGuard, PlainMentionGuard
 from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard
 from ..jobs.heartbeat import WorkerHeartbeat
 from ..jobs.queue import SqliteJobQueue
+from ..learning.analyzer import ProposalAnalyzer, ProposalBuilder
+from ..learning.apply import LearningApplier
+from ..learning.batch import LearningBatch
+from ..learning.progress import ProgressStore
+from ..learning.proposal import ProposalStore
+from ..learning.reactions import ReactionCollector
+from ..learning.render import ProposalRenderer
+from ..learning.schedule import DailyBatchSchedule
 from ..observability.app_snapshot import ApplicationSnapshotSource
 from ..observability.audit import AuditLog
 from ..observability.notices import NoticeCatalog
+from ..observability.progress import ProgressCoordinator
+from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import (
     ElapsedDiagnostician,
     SessionContextCalculator,
@@ -89,11 +82,13 @@ from ..observability.slow_report import (
 from ..observability.state_snapshot import StateSnapshotBuilder, StateSnapshotWriter
 from ..plugin.base import BotPlugin
 from ..plugin.loader import PluginLoader
-from ..prompt.composer import SystemPromptComposer
+from ..prompt.composer import PromptComposer, SystemPromptComposer
 from ..prompt.knowledge import KnowledgeLoader
 from ..prompt.library import PromptLibrary
+from ..prompt.linked_threads import LinkedThreadNote
 from ..prompt.sections import (
     AskerSection,
+    AttachmentSection,
     AuthoritySection,
     ChannelModeSection,
     CompositionContext,
@@ -111,11 +106,14 @@ from ..prompt.sections import (
     WatchSection,
 )
 from ..reliability.catchup import CatchupService
+from ..reliability.connection import ConnectionCatchupCoordinator
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
 from ..reliability.outage import OutageTracker
 from ..reliability.pending_report import PendingReportStore
+from ..reliability.startup import StartupCatchup
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
+from ..reliability.watchresult import WatchOutcome, WatchResultReader
 from ..reliability.watchrunner import WatchJobChecker, watch_check_prompt
 from ..render.blocks import BlockBuilder
 from ..render.markdown import MarkdownConverter
@@ -127,10 +125,14 @@ from ..review.format import FormatReviewTask
 from ..review.ledger import ReviewLedger
 from ..review.postmortem import PostmortemTask
 from ..review.records import AnswerRecordFinder
+from ..review.stale_reporter import StaleReviewReporter
 from ..review.trace import DebugTraceTask
 from ..session.manager import SessionManager
 from ..session.store import SqliteSessionStore
+from ..slack.assistant import DEFAULT_GREETING, AssistantPanel
 from ..slack.attachments import AttachmentStore, DownloadResult
+from ..slack.channel_names import ChannelNameResolver
+from ..slack.credentials import CredentialResolver, resolver_for
 from ..slack.download import HttpDownloader
 from ..slack.gate import ResponseGate
 from ..slack.gateway import SlackGateway
@@ -138,9 +140,17 @@ from ..slack.history import HistoryReader
 from ..slack.history_port import SlackHistoryPort
 from ..slack.identity import BotIdentity, SlackBotIdentity
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption
+from ..slack.linked_threads import LinkedThreadReader
 from ..slack.listener import EventListener
-from ..slack.names import DisplayNameResolver
+from ..slack.mentions import SelfMentionStripper
+from ..slack.names import BotUserResolver, DisplayNameResolver, UserGroupNameResolver, UserNamer
+from ..slack.owner_only_audit import OwnerOnlyChannelAudit
 from ..slack.participants import ThreadParticipants
+from ..slack.progress import (
+    FallbackProgressSink,
+    SlackProgressSink,
+    SlackTaskCardProgressSink,
+)
 from ..slack.publisher import MessagePublisher
 from ..slack.reactions import (
     DEBUG_TRACE_EMOJI,
@@ -149,6 +159,7 @@ from ..slack.reactions import (
     ReactionMarker,
 )
 from ..slack.review_ports import (
+    ReviewProgressDisplay,
     ReviewPublisher,
     SlackMessageLookup,
     SlackPermalinks,
@@ -156,26 +167,35 @@ from ..slack.review_ports import (
 )
 from ..slack.roster import RosterBuilder
 from ..slack.transcript import TranscriptBuilder
+from ..storage.admin_claims import AdminClaims
+from ..storage.connection_epochs import SqliteConnectionEpochs
 from ..storage.database import Database
+from .access import RequestAccess
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
+from .errors import AgentError
 from .ingress import IngressService
 from .lifecycle import InflightCounter
 from .periodic import PeriodicRunner
 from .pipeline import RequestPipeline
 from .services import ServiceGroup
+from .spawn import ThreadTaskSpawner
+from .sweeplog import SweepLog
 from .timezones import KST
+from .usage_check import UsageCheck, run_command
 from .worker import Worker
 
 log = logging.getLogger(__name__)
 
-# 채널 mode 하나에 프롬프트 파일 하나가 대응한다. 모드가 늘어도 이 표를 고치지
-# 않도록 이름 규약으로 만든다 — mode "agent_coach" 는 prompts/prompt_agent_coach.md 다.
+# One prompt file per channel mode, by naming convention — mode "agent_coach"
+# maps to prompts/prompt_agent_coach.md without needing a lookup table.
 DEFAULT_PROMPT = "PROMPT_DEFAULT"
 KNOWN_MODES: tuple[str, ...] = ("private", "agent_coach", "api_helpdesk")
 
-# 소켓 연결 상태를 로그로 알리는 라이브러리. 연결 감시를 여기에 붙인다.
+# Loggers whose socket-connection warnings the connection watch attaches to.
 SOCKET_LOGGERS: tuple[str, ...] = ("slack_sdk.socket_mode", "slack_bolt")
+# bot.py:6939 delays the first usage check so one sample is stored before any judgement.
+USAGE_CHECK_FIRST_DELAY_SEC = 60.0
 
 
 def mode_prompt_names(modes: Sequence[str] = KNOWN_MODES) -> dict[str, str]:
@@ -183,7 +203,7 @@ def mode_prompt_names(modes: Sequence[str] = KNOWN_MODES) -> dict[str, str]:
 
 
 class Application:
-    """봇 하나를 이루는 객체 전부를 만들고 서로 이어 준다."""
+    """Builds and wires every component that makes up one bot."""
 
     def __init__(
         self,
@@ -200,7 +220,7 @@ class Application:
     ) -> None:
         self._profile = profile
         self._client = client
-        # 신원 재조회 간격을 재는 시계. 시험이 시간을 제어할 수 있게 주입받는다.
+        # injected so tests can control identity-refresh timing
         self._clock = clock
         profile.paths.ensure()
 
@@ -214,67 +234,106 @@ class Application:
         self._database.migrate()
 
         self._registry = engine_registry or self._default_registry()
-        # 플러그인이 더한 엔진을 등록한다. 여기서 안 부르면 그 엔진은 어느
-        # 실행 경로에서도 안 쓰인다. 밖에서 레지스트리를 넣은 경우에도 등록한다 —
-        # 플러그인을 함께 준 쪽이 그 엔진을 쓰려는 것이다.
+        # Register plugin engines even when the registry was supplied
+        # externally — passing in plugins implies wanting their engines available.
         for plugin in self._plugins:
             for engine_class in plugin.engines():
                 self._registry.register(engine_class)
 
-        self._channels = ChannelRegistry(profile.paths.channels)
+        self._channels = ChannelRegistry(
+            profile.paths.channels,
+            on_slug_change=ChannelSlugMigrator(
+                file_dirs=(profile.paths.knowledge, profile.paths.learned),
+                tree_roots=(profile.paths.responses,),
+                lock_path=profile.paths.root / SLUG_MIGRATION_LOCK,
+            ).migrate,
+        )
         self._names = DisplayNameResolver(client)
+        self._user_namer: UserNamer | None = None
+        self._group_names = UserGroupNameResolver(client)
+        self._bot_users = BotUserResolver(client)
+        self._channel_name_resolver: ChannelNameResolver | None = None
+        self._usage_check_run = run_command
         self._notices = NoticeCatalog()
-        # 발송 전 재확인과 대기줄이 같은 소화 기록을 봐야 한다. 따로 만들면
-        # 재확인이 흡수한 말을 대기줄이 또 돌려 같은 답이 두 번 올라간다.
+        # Pre-send recheck and the send queue must see the same consumption
+        # record, or the recheck absorbs a message the queue then resends.
         self.consumption = ThreadConsumption()
-        # 진행 중 건수는 워커와 상태 기록이 같은 값을 봐야 한다. 따로 만들면
-        # 상태 파일이 늘 0 으로 남는다.
+        # Worker and the state snapshot must share this counter, or the
+        # state file always reports 0 in-flight.
         self.inflight = InflightCounter()
         self._started_at = time.time()
         self._shutting_down = False
 
-        # 지연 생성물
         self._engine: Engine | None = None
         self._gateway: SlackGateway | None = None
         self._ingress: IngressService | None = None
+        self._admin: AdminAdmission | None = None
+        self._admin_claims: AdminClaims | None = None
         self._pipeline: RequestPipeline | None = None
         self._access_policy: AccessPolicy | None = None
+        self._execution_policy: ExecutionPolicy | None = None
+        self._tool_policy: ToolPolicy | None = None
+        self._audit: AuditLog | None = None
+        self._owner_dm_channel = ""
         self._queue: SqliteJobQueue | None = None
         self._reactions: ReactionMarker | None = None
         self._publisher: MessagePublisher | None = None
         self._review_tasks: dict[str, ReviewTask] | None = None
-        # 이 봇의 신원. 자기 말 판정이 필요한 부품 전부가 이 하나를 본다.
         self._identity: SlackBotIdentity | None = None
         self._roster_builder: RosterBuilder | None = None
         self._roster_refresher: PeriodicRunner | None = None
         self._connection_watch: SocketErrorWatch | None = None
-        # 연결 점검기와 그 주기 실행기. 점검기는 끊김 시작 시각을 안에
-        # 들고 있어, 회차마다 새로 만들면 복구 판정이 나오지 않는다.
         self._health_runner: PeriodicRunner | None = None
+        # 각 정리 작업의 연속 0건 횟수와 누적 삭제 수를 이 프로세스가 사는
+        # 동안 들고 있는다. 매번 새로 만들면 그 수가 늘 1 로 보인다.
+        self._job_purge_log = SweepLog("끝난 작업")
+        self._epoch_purge_log = SweepLog("끝난 연결 세대")
+        self._admin_claim_purge_log = SweepLog("끝난 관리 명령 점유")
+        self._watch_result_log = SweepLog("감시 결과 파일")
+        self._attachment_log = SweepLog("첨부")
         self._attachments: AttachmentStore | None = None
+        self._response_archive: ResponseArchive | None = None
+        self._progress: ProgressCoordinator | None = None
+        self._learning_batch: LearningBatch | None = None
+        self._proposals: ProposalStore | None = None
+        self._learning_progress: ProgressStore | None = None
         self._catchup_service: CatchupService | None = None
         self._pending_report: PendingReportStore | None = None
+        self._review_ledger_instance: ReviewLedger | None = None
         self._outage_tracker: OutageTracker | None = None
-        self._transcript_reader: SessionTranscriptReader | None = None
+        self._connection_epochs: SqliteConnectionEpochs | None = None
+        self._transcript_reader_cache: dict[str, SessionTranscriptReader] = {}
         self._transcript_readers = transcript_readers or TranscriptReaderRegistry()
-        # 엔진 실행 부품. 엔진을 만들 때 함께 정한다 — 폴백이 설정돼
-        # 있는지는 그 시점에만 드러나고, 나중에 종류로 되짚으면 조립이
-        # 무엇을 만들었는지가 코드에서 사라진다.
         self._invoker: EngineInvoker | None = None
         self._watch_jobs: WatchJobQueue | None = None
+        self._watch_results: WatchResultReader | None = None
         self._closed = False
 
-    # -- 기본 부품 -------------------------------------------------
-
     @classmethod
-    def from_profile(cls, profile: Profile, client: Any | None = None, **kwargs: Any) -> Application:
-        """슬랙 client 를 여기서 만든다. 시험은 이 경로를 쓰지 않는다."""
-        if client is None:
-            from slack_sdk import WebClient  # 지연 import — 조립 시험이 SDK 를 끌어오지 않는다
+    def from_profile(
+        cls,
+        profile: Profile,
+        client: Any | None = None,
+        env: Mapping[str, str] | None = None,
+        resolver: CredentialResolver | None = None,
+        **kwargs: Any,
+    ) -> Application:
+        """Creates the Slack client here; tests bypass this constructor path.
 
-            client = WebClient(token=_bot_token())
-        kwargs.setdefault("token_provider", _bot_token)
+        The caller passes its own resolver when it already read a token: each
+        resolver caches the credentials file separately, so building a second
+        one lets the two tokens come from different versions of it.
+        """
+        resolver = resolver or resolver_for(profile, env=env)
+        if client is None:
+            from slack_sdk import WebClient  # lazy import so assembly tests don't need the SDK
+
+            client = WebClient(token=resolver.bot_token())
+        kwargs.setdefault("token_provider", resolver.bot_token)
         return cls(profile, client, **kwargs)
+
+    def bot_token(self) -> str:
+        return str(self._token_provider())
 
     def _load_plugins(self) -> tuple[BotPlugin, ...]:
         if not self._profile.plugins:
@@ -286,14 +345,10 @@ class Application:
 
     @staticmethod
     def _default_registry() -> EngineRegistry:
-        registry = EngineRegistry()
-        registry.register(ClaudeEngine)
-        registry.register(CodexEngine)
-        return registry
+        return default_registry()
 
     @property
     def engine_registry(self) -> EngineRegistry:
-        """등록된 엔진 목록. 플러그인이 더한 것도 들어 있다."""
         return self._registry
 
     @property
@@ -327,11 +382,9 @@ class Application:
     def channel_ids(self) -> list[str]:
         return list(self._channels.all())
 
-    # -- 엔진 ------------------------------------------------------
-
     @property
     def engine(self) -> Engine:
-        """1차 엔진. 폴백이 설정돼 있으면 FallbackEngine 으로 감싼다."""
+        """Wraps the primary engine in a FallbackEngine when a fallback is configured."""
         if self._engine is None:
             primary = self._registry.create(
                 self._profile.primary_engine.type, self._profile, self._settings
@@ -350,36 +403,33 @@ class Application:
                     runner,
                 )
                 self._engine = fallback
-                # 실행기를 그대로 넘기면 이 클래스의 전환 판정이 건너뛰어진다.
+                # Passing the runner directly would bypass this class's fallback-switch logic.
                 self._invoker = FallbackInvoker(fallback)
         return self._engine
 
     @property
     def engine_invoker(self) -> EngineInvoker:
-        """엔진 실행 한 걸음. 호출부는 폴백 여부를 모른다."""
+        """One step of engine execution; callers don't need to know whether a fallback is active."""
         if self._invoker is None:
-            # engine 프로퍼티가 부수효과로 self._invoker 를 채운다.
+            # accessing .engine has the side effect of populating self._invoker
             _ = self.engine
         assert self._invoker is not None
         return self._invoker
 
     @property
     def engine_runner(self) -> EngineRunner:
-        """엔진 실행기. 환경 격리 정책을 함께 넣는다.
-
-        정책 없이 만들면 엔진 하위 프로세스가 이 프로세스의 환경을 통째로
-        물려받는다 — 슬랙 토큰과 다른 엔진의 자격증명이 그대로 넘어간다.
-        정책은 1차 엔진 종류를 따른다.
+        """No policy is pinned here: the runner asks each Engine for its own, so a
+        fallback turn runs under the secondary's home rather than the primary's.
         """
-        spec = self._profile.primary_engine
-        return EngineRunner(
-            self._settings,
-            environment_policy=create_environment_policy(
-                spec.type, self._profile.name, spec.home_dir,
-            ),
-        )
+        return EngineRunner(self._settings, audit=self.audit())
 
-    # -- 권한·프롬프트 ---------------------------------------------
+    @property
+    def execution_policy(self) -> ExecutionPolicy:
+        """One answer to 'what must the engine guarantee' for every caller
+        that builds an EngineRequest outside the pipeline (sca-98k)."""
+        if self._execution_policy is None:
+            self._execution_policy = ExecutionPolicy()
+        return self._execution_policy
 
     @property
     def access_policy(self) -> AccessPolicy:
@@ -388,8 +438,37 @@ class Application:
             self._access_policy = AccessPolicy(self._profile, self._channels, extensions)
         return self._access_policy
 
+    @property
+    def readable_dirs(self) -> tuple[Path, ...]:
+        """Directories every engine call may read. One place so the watch
+        check and the normal path cannot drift apart (sca-0ab).
+
+        The watch results moved out of the work directory, so the check turn
+        now reads them from outside its cwd (sca-vokt).
+
+        attach_dir is deliberately not here: it holds every conversation's
+        saved files under one root, so listing it would let one request's
+        engine browse every other conversation's attachments. The pipeline
+        adds only the specific subdirectory a request's own files live in
+        (코덱스 8차 리뷰, sca-h2dr)."""
+        return (
+            self._profile.paths.persona,
+            self._profile.paths.prompts,
+            self._profile.paths.watch_out,
+        )
+
+    def tool_policy(self) -> ToolPolicy:
+        if self._tool_policy is None:
+            extensions = [e for p in self._plugins for e in p.access_extensions()]
+            self._tool_policy = ToolPolicy(
+                self._settings.base_tools,
+                self._settings.owner_tools,
+                extensions,
+                channel_tools=self.access_policy.channel_tools_for,
+            )
+        return self._tool_policy
+
     def _prompt_sections(self) -> list[PromptSection]:
-        """조각 순서가 시스템 프롬프트의 순서다. 원본 build_system_prompt 순서를 따른다."""
         sections: list[PromptSection] = [
             PersonaSection(),
             KnowledgeSection(),
@@ -399,6 +478,7 @@ class Application:
             SlackFormatSection(),
             ReviewFormatSection(),
             AskerSection(),
+            AttachmentSection(),
             PresentPeopleSection(),
             TrustedSection(),
             SensitiveGuardSection(),
@@ -409,38 +489,66 @@ class Application:
         sections.extend(s for p in self._plugins for s in p.prompt_sections())
         return sections
 
-    def _composer(self) -> SystemPromptComposer:
+    def _composer(self) -> PromptComposer:
         paths = self._profile.paths
         library = PromptLibrary(
             paths.prompts, placeholders={"OWNER_MENTION": f"<@{self._profile.owner_user_id}>"}
         )
-        knowledge = KnowledgeLoader(paths.persona / "PERSONA.md", paths.knowledge)
-        return SystemPromptComposer(library, knowledge, self._prompt_sections())
+        knowledge = KnowledgeLoader(
+            paths.persona / "PERSONA.md", paths.knowledge, learned_dir=paths.learned,
+        )
+        return SystemPromptComposer(
+            library, knowledge, self._prompt_sections(),
+            budget_bytes=self._settings.system_prompt_budget_bytes,
+        )
+
+    def _bot_mentions_allowed(self, channel: str) -> bool:
+        """Read per request, not captured at build time, so turning the key on
+        in channels.json applies without a restart like every other key."""
+        config = self._channels.get(channel)
+        return bool(config and config.bot_mentions)
 
     def _guards(self) -> GuardPipeline:
         guards: list[OutputGuard] = [
             PlainMentionGuard(),
+            # Before AddresseeGuard so a bot mention at the head is turned
+            # into a name here rather than cut with a note meant for people.
+            BotMentionGuard(
+                is_bot=self._bot_users.is_bot,
+                display_name=self._names.resolve,
+                allowed_in=self._bot_mentions_allowed,
+            ),
             AddresseeGuard(),
             WatchPromiseGuard(),
             RewriteLossGuard(self._settings),
-            # 설정에 적은 문구로 시작하는 줄을 지운다. 목록이 비어 있으면
-            # 아무것도 안 지우므로 기본 조립에 그대로 둔다.
+            # safe to always include — a no-op when the drop-line list is empty
             ConfiguredLineDropGuard(self._settings),
         ]
         guards.extend(g for p in self._plugins for g in p.output_guards())
         return GuardPipeline(guards)
 
-    # -- 슬랙 ------------------------------------------------------
-
     def gateway(self) -> SlackGateway:
         if self._gateway is None:
-            self._gateway = SlackGateway(self._client)
+            self._gateway = SlackGateway(
+                self._client,
+                profile_name=self._profile.name,
+                # Without this the worker never learns about a reconnect,
+                # since only this process holds the socket.
+                epoch_recorder=self.connection_epochs(),
+            )
         return self._gateway
 
     def reactions(self) -> ReactionMarker:
         if self._reactions is None:
             self._reactions = ReactionMarker(self._client)
         return self._reactions
+
+    def audit(self) -> AuditLog:
+        """One instance shared by the pipeline and the publisher. Separate
+        instances would split the same run across two jsonl handles."""
+        if self._audit is None:
+            self._audit = AuditLog(self._database, self._profile.paths.audit_log)
+        return self._audit
 
     def publisher(self) -> MessagePublisher:
         if self._publisher is None:
@@ -453,49 +561,112 @@ class Application:
                 verifier=SplitVerifier(self._settings),
                 blocks=blocks,
                 bot_display_name=self._profile.display_name,
+                audit=self.audit().record,
             )
         return self._publisher
+
+    def progress(self) -> ProgressCoordinator:
+        """Progress display, built for every bot. Which channels actually get
+        one is the `progress` flag in channels.json, read per request.
+
+        The task card is primary and the rewrite sink is the fallback, so a
+        workspace that rejects task_card still gets the plain step lines.
+        The user id the streaming sink needed as a recipient is unused now."""
+        if self._progress is None:
+            self._progress = ProgressCoordinator(
+                settings=self._settings,
+                sink_factory=lambda channel, thread_ts, _user: FallbackProgressSink(
+                    lambda: SlackTaskCardProgressSink(
+                        self._client, channel, thread_ts, self._profile.display_name,
+                    ),
+                    lambda: SlackProgressSink(
+                        self._client, channel, thread_ts, self._profile.display_name,
+                    ),
+                ),
+                log_dir=self._profile.paths.progress,
+                audit=self.audit().record,
+            )
+        return self._progress
+
+    def user_namer(self) -> UserNamer:
+        """What to call a user id. Every place that shows a name shares this
+        one object, so the same person cannot appear under two names in one
+        transcript (sca-inw8).
+
+        The bot user ID it compares against is read per call, not here --
+        resolving it during assembly would make wiring alone call Slack.
+        """
+        if self._user_namer is None:
+            self._user_namer = UserNamer(
+                self._names,
+                identity=self.identity,
+                bot_display_name=self._profile.display_name,
+                owner_user_id=self._profile.owner_user_id,
+            )
+        return self._user_namer
 
     def _transcript_builder(self) -> TranscriptBuilder:
         return TranscriptBuilder(
             client=self._client,
             settings=self._settings,
             notices=self._notices,
-            name_resolver=self._names,
+            name_resolver=self.user_namer(),
+            group_resolver=self._group_names,
             identity=self.identity,
             bot_display_name=self._profile.display_name,
             owner_user_id=self._profile.owner_user_id,
         )
 
     def _late_addendum(self) -> LateAddendumChecker:
-        """발송 직전 스레드 재확인. 기록 조회는 다른 부품과 같은 어댑터를 쓴다."""
+        # reuses the shared history adapter so history-fetch rate limiting stays centralized
         return LateAddendumChecker(
             self._history_port(),
             self._notices,
-            self._names,
+            self.user_namer(),
             self._settings,
             identity=self.identity,
             bot_display_name=self._profile.display_name,
             owner_user_id=self._profile.owner_user_id,
+            group_resolver=self._group_names,
         )
 
     def _participants(self) -> ThreadParticipants:
-        """스레드에 함께 있는 사람을 추리는 부품.
-
-        기록 조회는 `_history_port` 와 같은 어댑터를 쓴다 — 조회 간격 제한을
-        한 곳에서 지켜야 슬랙이 빈 응답을 돌려주는 것을 막는다.
+        """Shares the _history_port adapter so history-fetch rate limiting stays
+        centralized — otherwise Slack can start returning empty results.
         """
         return ThreadParticipants(
             self._history_port(),
-            self._names,
+            self.user_namer(),
             self.identity.user_id,
             limit=self._settings.history_max_msgs,
+            group_resolver=self._group_names.resolve,
         )
+
+    def _linked_threads(self) -> LinkedThreadNote:
+        """Reuses _transcript_builder so a linked thread is formatted exactly
+        like the current one — a second formatter here would drift.
+        """
+        return LinkedThreadNote(
+            LinkedThreadReader(
+                self._transcript_builder(),
+                self._channel_names(),
+                max_links=self._settings.linked_thread_max,
+            )
+        )
+
+    def _channel_display_name(self, channel: str) -> str:
+        config = self._channels.get(channel)
+        return getattr(config, "name", "") or ""
+
+    def _channel_names(self) -> ChannelNameResolver:
+        if self._channel_name_resolver is None:
+            self._channel_name_resolver = ChannelNameResolver(
+                self._client, self._channel_display_name
+            )
+        return self._channel_name_resolver
 
     def _history_port(self) -> SlackHistoryPort:
         return SlackHistoryPort(HistoryReader(self._client, self._settings), self._client)
-
-    # -- 큐·파이프라인·워커 ----------------------------------------
 
     def queue(self) -> SqliteJobQueue:
         if self._queue is None:
@@ -508,33 +679,171 @@ class Application:
                 access_policy=self.access_policy,
                 transcript_builder=self._transcript_builder(),
                 prompt_composer=self._composer(),
-                session_manager=SessionManager(SqliteSessionStore(self._database), self._settings),
+                session_manager=SessionManager(
+                    SqliteSessionStore(self._database),
+                    self._settings,
+                    # Session ID format is per engine. Minting it out here made
+                    # all three happen to agree on UUID (sca-k6s).
+                    new_session_id=self.engine.new_session_id,
+                ),
                 engine=self.engine,
                 invoker=self.engine_invoker,
                 guard_pipeline=self._guards(),
                 publisher=self.publisher(),
-                audit=AuditLog(self._database, self._profile.paths.audit_log),
+                audit=self.audit(),
                 channels=self._channels,
                 default_workdir=self._profile.work_root,
                 owner_user_id=self._profile.owner_user_id,
                 reactions=self.reactions(),
-                name_resolver=self._names,
+                name_resolver=self.user_namer(),
                 mention_table=self._names.name_table,
+                group_resolver=self._group_names,
                 slow_reporter=self._slow_reporter(),
-                # 부품을 여기서 만들지 않고 호출 시점에 만든다. 봇 사용자 ID
-                # 조회가 들어 있어, 조립만으로 슬랙을 부르게 된다.
+                # built lazily rather than as a field — eagerly building it here would
+                # look up the bot user ID, making assembly alone call out to Slack
                 participants=lambda channel, thread_ts: self._participants().of(channel, thread_ts),
+                linked_threads=lambda text, channel: self._linked_threads().of(text, channel),
                 late_addendum=self._late_addendum(),
                 consumption=self.consumption,
                 watch_queue=self.watch_jobs(),
+                watch_results=self.watch_results(),
+                response_archive=self.response_archive(),
+                tool_policy=self.tool_policy(),
+                readable_dirs=self.readable_dirs,
+                progress=self.progress(),
             )
         return self._pipeline
 
-    def job_purge_runner(self) -> PeriodicRunner:
-        """끝난 작업을 주기적으로 지운다. 안 띄우면 jobs 표가 계속 커진다.
+    def response_archive(self) -> ResponseArchive:
+        """Uses KST for both the date and clock — in UTC, anything posted after
+        9pm KST would land in the next day's file and get missed by that
+        day's learning batch.
+        """
+        if self._response_archive is None:
+            self._response_archive = ResponseArchive(
+                self._profile.paths.responses, clock=lambda: datetime.now(KST),
+            )
+        return self._response_archive
 
-        완료·실패 행은 중복 방어 기록이기도 하다. 되짚기 최대 창보다 오래
-        남겨야 이미 답한 메시지를 미응답으로 다시 집지 않는다.
+    def learning_batch(self) -> LearningBatch:
+        if self._learning_batch is None:
+            paths = self._profile.paths
+            archive = self.response_archive()
+            analyzer = ProposalAnalyzer(
+                self.engine_invoker,
+                model=self._settings.learning_model or None,
+                effort=self._settings.learning_effort,
+                workdir=self._profile.work_root,
+                bot_name=self._profile.display_name,
+            )
+            self._learning_batch = LearningBatch(
+                archives=archive,
+                reactions=ReactionCollector(
+                    threads=self._history_port(),
+                    thread_timestamps=archive.thread_timestamps,
+                    channel_id_of=self._channel_id_of,
+                    limit=self._settings.learning_thread_reply_limit,
+                ),
+                builder=ProposalBuilder(analyzer),
+                store=self._proposal_store(),
+                progress=self._learning_progress_store(),
+                applier=LearningApplier(paths.learned, self._profile.display_name),
+                renderer=ProposalRenderer(),
+                notify=self._notify_owner,
+                clock=lambda: datetime.now(KST),
+            )
+        return self._learning_batch
+
+    def _channel_id_of(self, channel_name: str) -> str | None:
+        for channel_id, config in self._channels.all().items():
+            if config.name == channel_name:
+                return channel_id
+        # owner DM has no entry in the channel registry (it isn't a public
+        # channel), so it's pulled from the profile instead
+        if channel_name == "dm":
+            return self._profile.owner_dm or None
+        return None
+
+    def _learning_day_done(self, day: str) -> bool:
+        """Treats a day as done via the store's marker rather than by checking
+        for a proposal file — a day where the proposal saved but applying it
+        failed would otherwise never rerun.
+        """
+        return self._proposal_store().is_done(day)
+
+    def _learning_progress_store(self) -> ProgressStore:
+        if self._learning_progress is None:
+            # Its own directory: ProposalStore.latest() scans the proposal
+            # directory, and a progress file there read as a proposal.
+            self._learning_progress = ProgressStore(self._profile.paths.proposals / "progress")
+        return self._learning_progress
+
+    def _proposal_store(self) -> ProposalStore:
+        if self._proposals is None:
+            self._proposals = ProposalStore(self._profile.paths.proposals)
+        return self._proposals
+
+    def _learning_run_hour(self) -> int:
+        """Learning start hour; falls back to the default when configured
+        out of [0, 23] — silently accepting an out-of-range value would mean
+        the schedule condition never fires.
+        """
+        hour = self._settings.learning_run_hour
+        if 0 <= hour <= 23:
+            return hour
+        fallback = RuntimeSettings().learning_run_hour
+        log.warning("learning_run_hour 값이 범위 밖이다(%s). %s 시로 되돌린다", hour, fallback)
+        return fallback
+
+    def learning_schedule(self) -> DailyBatchSchedule:
+        return DailyBatchSchedule(
+            clock=lambda: datetime.now(KST),
+            run_hour=self._learning_run_hour(),
+            is_done=self._learning_day_done,
+            unsettled_days=self._learning_progress_store().unsettled_days,
+            is_waiting=self._learning_progress_store().is_waiting,
+        )
+
+    def _learning_batch_tick(self) -> None:
+        day = self.learning_schedule().due_day()
+        if day is None:
+            return
+        report = self.learning_batch().run(day)
+        if not report.ran:
+            log.info("%s 학습 배치를 건너뛰었다 : %s", day, report.reason)
+            return
+        log.info("%s 학습 배치를 마쳤다. 반영 %s, 알림 %s", day, dict(report.applied), report.notified)
+
+    def learning_batch_runner(self) -> PeriodicRunner:
+        """Ticks frequently, but the batch itself only runs once a day —
+        each tick just cheaply checks a completion marker; DailyBatchSchedule
+        owns the date logic.
+        """
+        return PeriodicRunner(
+            self._learning_batch_tick,
+            self._settings.learning_batch_interval_sec,
+            name="learning_batch",
+        )
+
+    def stale_reclaim_runner(self, worker: Worker) -> PeriodicRunner:
+        """Requeues jobs whose worker stopped sending heartbeats.
+
+        The startup reclaim only covers the process that just restarted. With
+        more than one worker, a crashed worker's RUNNING jobs would sit there
+        until the next restart of that same worker, which may never come
+        (sca-vlx). Marker updates go through Worker.reclaim so a periodic
+        sweep leaves the same reaction state a startup sweep does.
+        """
+        return PeriodicRunner(
+            worker.reclaim,
+            self._settings.stale_reclaim_interval_sec,
+            name="stale_reclaim",
+        )
+
+    def job_purge_runner(self) -> PeriodicRunner:
+        """Completed/failed job rows also serve as a dedup record, so
+        retention must outlast the catch-up window — otherwise an
+        already-answered message could get reclaimed as unanswered.
         """
         return PeriodicRunner(
             self._purge_finished_jobs,
@@ -544,37 +853,123 @@ class Application:
 
     def _purge_finished_jobs(self) -> None:
         removed = self.queue().purge_finished(time.time() - self._settings.job_retention_sec)
-        if removed:
-            log.info("끝난 작업 정리 : %s건", removed)
+        self._job_purge_log.record(removed)
+
+    @property
+    def _claim_owner(self) -> str:
+        """Only for diagnosis -- the claim itself is decided by the row, not
+        this value. Has to differ per process to say which one died."""
+        return f"pid:{os.getpid()}"
+
+    def admin_claims(self) -> AdminClaims:
+        if self._admin_claims is None:
+            self._admin_claims = AdminClaims(self._database)
+        return self._admin_claims
+
+    def admin_claim_purge_runner(self) -> PeriodicRunner:
+        """Closed claims are a dedup record, so they outlive the catch-up
+        window the same way job rows do (sca-8m5p)."""
+        return PeriodicRunner(
+            self._purge_admin_claims,
+            self._settings.admin_claim_purge_interval_sec,
+            name="admin_claim_purge",
+        )
+
+    def _purge_admin_claims(self) -> None:
+        now = time.time()
+        removed = self.admin_claims().purge(
+            now - self._settings.admin_claim_retention_sec,
+            failures_before=now - self._settings.admin_claim_failure_retention_sec,
+        )
+        self._admin_claim_purge_log.record(removed)
+
+    def admin_claim_reclaim_runner(self) -> PeriodicRunner:
+        """A claim left RUNNING by a process that died blocks its message
+        forever: no mark was posted, so catch-up keeps finding it, and the
+        claim stops anyone from running it (sca-8m5p)."""
+        return PeriodicRunner(
+            self._reclaim_stale_admin_claims,
+            self._settings.admin_claim_purge_interval_sec,
+            name="admin_claim_reclaim",
+        )
+
+    def _reclaim_stale_admin_claims(self) -> None:
+        stale = self.admin_claims().reclaim_stale(
+            time.time() - self._settings.admin_claim_stale_sec
+        )
+        for claim in stale:
+            log.warning("관리 명령이 처리 도중 끊겼다 : %s:%s : %s", claim.channel, claim.ts, claim.owner)
+            self.reactions().mark_failed(claim.channel, claim.ts)
+
+    def epoch_purge_runner(self) -> PeriodicRunner:
+        """Closed connection epochs are only a record of a gap already caught
+        up, but purge_done had no caller at all, so the table only grew
+        (sca-zb9).
+        """
+        return PeriodicRunner(
+            self._purge_done_epochs,
+            self._settings.epoch_purge_interval_sec,
+            name="epoch_purge",
+        )
+
+    def _purge_done_epochs(self) -> None:
+        removed = self.connection_epochs().purge_done(
+            time.time() - self._settings.epoch_retention_sec
+        )
+        self._epoch_purge_log.record(removed)
 
     def watch_jobs(self) -> WatchJobQueue:
-        """감시 큐. 등록·확인·상태 기록이 같은 객체를 본다.
-
-        매번 새로 만들면 기능은 같지만(저장은 DB 에 있다) 어느 경로가 무엇을
-        보는지가 조립에서 안 드러난다. 하나로 두고 공유한다.
-        """
+        # cached and shared so registration, checking, and status reporting all
+        # see the same instance — recreating it would work (storage is in the
+        # DB) but would hide which paths touch it
         if self._watch_jobs is None:
             self._watch_jobs = WatchJobQueue(self._database)
         return self._watch_jobs
 
-    def watch_checker(self) -> WatchJobChecker:
-        """등록된 감시 건을 한 회차 확인하는 실행기.
+    def watch_results(self) -> WatchResultReader:
+        """One reader for the whole bot. The directory is not workdir-relative
+        any more, so there is a single place for the prompt note, the reader
+        and the cleanup to agree on (sca-vokt)."""
+        if self._watch_results is None:
+            self._watch_results = WatchResultReader(self._profile.paths.watch_out)
+            self._watch_results.ensure_dir()
+        return self._watch_results
 
-        소유자 통지는 개인 대화가 설정돼 있을 때만 넘긴다. 없으면 포기 건을
-        알릴 곳이 없으므로 통지 없이 완료 표시만 한다.
-        """
+    def watch_checker(self) -> WatchJobChecker:
+        # owner notification needs an owner to send to; the DM channel itself
+        # is resolved at send time (see owner_dm_channel)
         return WatchJobChecker(
             queue=self.watch_jobs(),
             run_check=self._watch_run_check,
+            results=self.watch_results(),
             publisher=self.publisher(),
             channels=self._channels,
             settings=self._settings,
             reactions=self.reactions(),
-            notify_owner=self._notify_owner if self._profile.owner_dm else None,
+            notify_owner=self._notify_owner if self._profile.owner_user_id else None,
+            # checks/last_run are current state only. Without this there is no
+            # record that a watch ever ran (sca-j3d).
+            audit=self.audit(),
         )
 
+    def watch_result_cleanup_runner(self) -> PeriodicRunner:
+        # A run_id is issued per request, so work started without a watch tag --
+        # or whose registration failed -- leaves result files nobody reads
+        # (sca-y6g). No completion path passes those, so this is the only trigger.
+        return PeriodicRunner(
+            self._watch_result_cleanup_tick,
+            self._settings.watch_result_cleanup_interval_sec,
+            name="watch_result_cleanup",
+        )
+
+    def _watch_result_cleanup_tick(self) -> None:
+        removed = self.watch_results().cleanup(
+            older_than_sec=self._settings.watch_result_retain_sec
+        )
+        self._watch_result_log.record(removed)
+
     def watch_runner(self) -> PeriodicRunner:
-        """감시 확인을 주기적으로 실행한다. 안 띄우면 등록만 되고 확인이 없다."""
+        # without this runner, watch jobs get registered but never checked
         return PeriodicRunner(
             self.watch_checker().check_once,
             self._settings.watch_check_interval_sec,
@@ -582,7 +977,6 @@ class Application:
         )
 
     def pending_report(self) -> PendingReportStore:
-        """보내지 못한 보고를 남겨 두는 자리. 한 번 만들어 계속 쓴다."""
         if self._pending_report is None:
             self._pending_report = PendingReportStore(
                 path=self._profile.state_dir / "pending_report.json",
@@ -591,42 +985,57 @@ class Application:
         return self._pending_report
 
     def pending_report_runner(self) -> PeriodicRunner:
-        """남겨둔 보고를 주기적으로 다시 보낸다.
-
-        기동 시 한 번만 보내면 그 뒤에 생긴 보고는 다음 재기동까지 파일에
-        남는다. 원본에서 실제로 되짚기 실패 보고가 139분 동안 전달되지 않았다.
-        """
+        # retries on a timer rather than only at startup — a report saved
+        # after startup would otherwise sit in the file until the next restart
         return PeriodicRunner(
             self.pending_report().flush,
             self._settings.pending_report_flush_interval_sec,
             name="pending_report",
         )
 
+    def owner_dm_channel(self) -> str:
+        """Resolves the owner's DM channel, opening it if the profile doesn't
+        name one. Posting to an empty channel id fails with channel_not_found,
+        and the pending-report retry then repeats that failure on every tick."""
+        if self._profile.owner_dm:
+            return self._profile.owner_dm
+        if self._owner_dm_channel:
+            return self._owner_dm_channel
+        if not self._profile.owner_user_id:
+            return ""
+        response = self._client.conversations_open(users=self._profile.owner_user_id)
+        channel = ((response or {}).get("channel") or {}).get("id") or ""
+        self._owner_dm_channel = str(channel)
+        return self._owner_dm_channel
+
     def _post_owner_dm(self, text: str) -> None:
-        self.publisher().post(self._profile.owner_dm, "", text, False)
+        channel = self.owner_dm_channel()
+        if not channel:
+            raise AgentError("소유자 DM 방을 찾지 못했다")
+        self.publisher().post(channel, "", text, False)
 
-    def _notify_owner(self, text: str) -> None:
-        """소유자 개인 대화로 알린다.
+    def _notify_owner(self, text: str) -> bool:
+        """Notifies the owner's DM; returns whether it actually landed.
 
-        발송이 실패하면 그 보고를 파일에 남긴다. 로그만 남기고 끝내면 운영자는
-        장애가 났다는 사실 자체를 못 받는다 — 특히 재기동 사유를 알리는 그
-        순간은 소켓이 불안정해 발송이 실패하기 쉬운 시점이다.
+        On failure, saves the report to disk instead of just logging —
+        this matters most exactly when reporting a restart, since the
+        socket tends to be unstable at that moment. Returns False on the
+        fallback so callers can't mistake a queued report for a delivered one.
         """
         try:
             self._post_owner_dm(text)
-        except Exception as exc:  # noqa: BLE001 — 발송 실패 원인이 슬랙 SDK 예외부터 네트워크 오류까지 다양하다. 어떤 실패든 보고를 남기는 것이 목적이다
+        except Exception as exc:  # noqa: BLE001 — failures range from Slack SDK errors to network errors; any of them should fall through to saving the report
             log.warning("소유자 알림 발송 실패, 보고를 남긴다 : %s", exc)
             self.pending_report().save(text)
+            return False
+        return True
 
-    def _watch_run_check(self, job: WatchJob) -> EngineResponse:
-        """감시 확인 한 건을 엔진으로 실행한다.
-
-        새 세션으로 돈다 — 확인은 등록보다 한참 뒤에 일어나 원래 대화 세션이
-        이미 만료됐을 수 있고, 없는 세션으로 이어받기를 시도하면 그 실행 자체가
-        실패한다. 원본도 확인마다 새 세션 ID 를 쓴다.
-
-        권한은 등록 시점 값을 그대로 이어받는다. 여기서 낮추면 소유자 권한으로
-        등록된 건이 확인 단계에서 조회에 실패한다.
+    def _watch_run_check(self, job: WatchJob, outcome: WatchOutcome) -> EngineResponse:
+        """Runs the check with a fresh session ID — the check happens well
+        after registration, so the original conversation session may have
+        expired, and resuming a dead session would just fail. Trust level is
+        carried over from registration; downgrading it here would break
+        lookups for jobs registered under owner trust.
         """
         principal = Principal(
             user_id=self._profile.owner_user_id if job.trust is TrustLevel.OWNER else "",
@@ -635,39 +1044,62 @@ class Application:
             is_direct_message=is_direct_message_channel(job.channel),
         )
         config = self._channels.get(job.channel)
-        prompt = watch_check_prompt(job.condition)
+        workdir = _watch_workdir(job, config, self._profile.work_root)
+        결과파일 = self.watch_results().path_for(job.run_id)
+        prompt = watch_check_prompt(job.condition, outcome, str(결과파일) if 결과파일 else "")
         system_prompt = self._composer().compose(CompositionContext(
             principal=principal,
             prompt=prompt,
             channel_mode=config.mode if config else "default",
-            channel_slug=config.name if config else job.channel,
-            is_rich=bool(config and config.rich),
+            channel_slug=slug_for(job.channel, config),
+            is_rich=channel_is_rich(config),
             chat_level=config.chat if config else "normal",
+            # This turn only looks: the registration guidance would tell it how
+            # to start new work, which watch_check_prompt forbids (sca-ejy).
+            watch_check=True,
+        ))
+        watch_tools = ToolSelection.from_names(self.tool_policy().tool_list_for(
+            principal, prompt=prompt, readonly=True, skills_enabled=False,
         ))
         return self.engine_invoker.invoke(EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
-            session_id=uuid.uuid4().hex,
+            # Left empty on purpose: the engine that ends up running this
+            # check mints one in its own format (sca-56y).
+            session_id=None,
             resume=False,
             model=self.access_policy.model_for(principal),
             effort=self.access_policy.effort_for(principal, prompt),
-            workdir=(config.workdir if (config and config.workdir) else self._profile.work_root),
+            workdir=workdir,
+            # readonly: the check only looks. Owner extras and Skill would let
+            # this turn start new work, which `watch_check_prompt` forbids.
+            # Left empty before, and an empty list is not a ban -- it is the
+            # absence of one, so nothing would be closed (sca-6ewc).
+            tools=watch_tools,
+            requirements=self.execution_policy.requirements_for(
+                config=config, tools=watch_tools,
+            ),
+            # This check turn belongs to one watch run. Without it the audit
+            # cannot say which watch a capability record came from (sca-4ol).
+            request_id=f"watch-{job.id}-{job.run_id}",
+            readable_dirs=self.readable_dirs,
             trust_level=job.trust,
-        ))
+        ), CallOrigin.BACKGROUND)
 
     def mark_shutting_down(self) -> None:
-        """종료 절차가 시작됐음을 상태 기록에 반영한다.
-
-        이 값이 없으면 상태 파일만 보는 쪽이 멈춘 프로세스와 종료 중인
-        프로세스를 구분하지 못한다.
-        """
+        # without this flag, anything reading the state file can't tell a
+        # stopped process from one that's shutting down
         self._shutting_down = True
 
     def _snapshot_source(self) -> ApplicationSnapshotSource:
         return ApplicationSnapshotSource(
             inflight=self.inflight,
             queue=self.queue(),
-            socket_watch=self.connection_watch(),
+            # The snapshot is written by the worker, which has no socket. Its
+            # own log watch would count zero forever and that reads as "no
+            # errors" (sca-qi5.3). Reconnects come from the ledger ingress writes.
+            socket_watch=None,
+            connection_epochs=self.connection_epochs(),
             watch_jobs=self.watch_jobs(),
             is_shutting_down=lambda: self._shutting_down,
             started_at=self._started_at,
@@ -680,10 +1112,8 @@ class Application:
         )
 
     def state_snapshot_runner(self) -> PeriodicRunner:
-        """상태 기록을 주기적으로 갈아 끼우는 실행기.
-
-        주기는 헬스 점검과 같다 — 그보다 자주 써도 읽는 쪽이 못 따라간다.
-        """
+        # shares the health-check interval; writing more often wouldn't help
+        # since nothing reads the snapshot that fast
         return PeriodicRunner(
             self.state_snapshot_writer().write,
             self._settings.health_interval_sec,
@@ -691,11 +1121,9 @@ class Application:
         )
 
     def _catchup(self) -> CatchupService:
-        """되짚기 서비스. 한 번 만들어 계속 쓴다.
-
-        마치지 못한 채널과 재시도 횟수를 이 객체가 들고 있다. 회차마다 새로
-        만들면 그 기록이 매번 비어 재시도 간격이 항상 첫 회차 값이 된다.
-        """
+        # cached — this object holds unfinished channels and retry counts;
+        # rebuilding it each round would empty that state and make the retry
+        # interval always look like the first round
         if self._catchup_service is None:
             self._catchup_service = CatchupService(
                 history=self._history_port(),
@@ -703,11 +1131,13 @@ class Application:
                 notices=self._notices,
                 settings=self._settings,
                 identity=self.identity,
+                attachments=self.attachments(),
             )
         return self._catchup_service
 
     def worker(self, worker_id: str = "worker") -> Worker:
-        """워커는 부를 때마다 새로 만든다. worker_id 가 프로세스마다 달라야 한다."""
+        # unlike the other components here, a new Worker is created on every
+        # call — worker_id must differ per process
         return Worker(
             queue=self.queue(),
             handler=self.pipeline(),
@@ -717,30 +1147,29 @@ class Application:
             settings=self._settings,
             worker_id=worker_id,
             inflight=self.inflight,
+            # reclaim picks the mark from this (sca-o1e).
+            watch_jobs=self.watch_jobs(),
+            admin=self._admin_admission(),
         )
 
-    # -- 접수 ------------------------------------------------------
-
     def _admin_router(self) -> AdminRouter:
-        commands = [
-            HelpCommand(),
-            ChannelListCommand(),
-            EngineStatusCommand(),
-            EngineApproveCommand(),
-            EngineDenyCommand(),
-            ChatActiveCommand(self._notices),
-            ChatNormalCommand(self._notices),
-            ChatQuietCommand(self._notices),
-            CoachModeCommand(self._notices),
-            ApiModeCommand(self._notices),
-            DefaultModeCommand(self._notices),
-            ChannelUnregisterCommand(self._notices),
-            LearningShowCommand(),
-            LearningApplyCommand(),
-            LearningRevertCommand(),
-        ]
+        commands = default_admin_commands(self._notices)
         commands.extend(c for p in self._plugins for c in p.admin_commands())
         return AdminRouter(commands)
+
+    def _admin_admission(self) -> AdminAdmission:
+        """Built once and shared: the socket path and catch-up have to reach
+        the same decision, and two instances would drift (sca-oyku)."""
+        if self._admin is None:
+            self._admin = AdminAdmission(
+                router=self._admin_router(),
+                context_builder=self._admin_context,
+                reply=self._reply,
+                markers=self.reactions(),
+                claims=self.admin_claims(),
+                owner=self._claim_owner,
+            )
+        return self._admin
 
     def _admin_context(self, ctx: RequestContext) -> AdminContext:
         return AdminContext(
@@ -753,7 +1182,7 @@ class Application:
         )
 
     def _reply(self, channel: str, thread_ts: str, message: str) -> None:
-        """관리 명령 응답. 채널 설정과 무관하게 평문으로 낸다."""
+        # admin command replies are always plain text, regardless of channel rich-mode config
         self.publisher().post(channel, thread_ts, message, rich=False)
 
     def ingress(self) -> IngressService:
@@ -765,41 +1194,86 @@ class Application:
                     gate=ResponseGate(),
                     identity=self.identity,
                 ),
+                # The one place the access check runs. Catch-up needs no second
+                # one: it only sweeps channels that are already registered
+                # (channel_ids()), which every user passes anyway (sca-a8pp).
+                access=RequestAccess(
+                    policy=self.access_policy,
+                    channels=self._channels,
+                    channel_name=self._channel_names(),
+                    notices=self._notices,
+                    reply=self._reply,
+                ),
+                strip_self_mention=SelfMentionStripper(self.identity).remove_self,
                 dedup=DeduplicationTracker(),
                 queue=self.queue(),
                 reactions=self.reactions(),
                 attachments=self.attachments(),
-                admin_router=self._admin_router(),
-                admin_context_builder=self._admin_context,
+                admin=self._admin_admission(),
                 reply=self._reply,
                 allowed_reactions=self.allowed_reactions(),
                 on_reaction=self.on_reaction,
-                # 실패로 끝난 건은 재등록으로 되살아난다. 상한을 함께 넘겨
-                # 계속 실패하는 요청이 재전달마다 되살아나지 않게 한다.
+                spawn=ThreadTaskSpawner(),
+                notices=self._notices,
+                is_shutting_down=lambda: self._shutting_down,
+                # The handler runs on one of slack-sdk's ten pool threads, so a
+                # long lock wait here delays every event behind it (sca-9l1).
+                lock_budget=lambda: self.database.latency_budget(
+                    self._settings.ingress_lock_budget_sec
+                ),
+                # failed jobs get resurrected via re-registration; capping attempts
+                # keeps a permanently-failing request from reviving on every redelivery
                 job_max_attempts=self._settings.job_max_attempts,
+                assistant=AssistantPanel(
+                    client=self._client,
+                    reply=self._reply,
+                    greeting=self._profile.agent_greeting or DEFAULT_GREETING,
+                    prompts=self._profile.agent_prompts,
+                ),
             )
         return self._ingress
 
     def _download(self, url: str, token: str) -> DownloadResult:
-        """AttachmentStore 가 부르는 서명에 맞춘다.
+        """Matches the signature AttachmentStore expects.
 
-        건네받은 ``token`` 을 쓰지 않는다. ``HttpDownloader`` 가 같은
-        ``token_provider`` 에서 매 호출마다 직접 얻으므로 값이 같고, 토큰을
-        인자로 옮기는 경로를 하나 줄이면 그만큼 로그·예외에 새어 나갈
-        자리가 준다.
+        Ignores the passed-in token — HttpDownloader fetches the same value
+        itself from token_provider, and not threading it through as an
+        argument is one less place it could leak into a log or exception.
         """
         return HttpDownloader(self._token_provider)(url)
-
-    # -- 점검 리액션 -----------------------------------------------
 
     def allowed_reactions(self) -> frozenset[str]:
         return frozenset(self.review_tasks())
 
+    def review_ledger(self) -> ReviewLedger:
+        if self._review_ledger_instance is None:
+            self._review_ledger_instance = ReviewLedger(
+                self._database,
+                # 점검은 엔진을 두 번까지 부른다(구분선 누락 재시도).
+                # 그보다 짧게 잡으면 도는 점검을 중복 실행한다.
+                stale_after_sec=self._settings.request_timeout_sec * 2,
+            )
+        return self._review_ledger_instance
+
+    def stale_review_reporter(self) -> StaleReviewReporter:
+        return StaleReviewReporter(
+            self.review_ledger(),
+            ReviewPublisher(self.publisher()),
+            self._profile.troubleshoot_channel,
+        )
+
+    def stale_review_runner(self) -> PeriodicRunner:
+        # 기동 시 1회로는 부족하다 — 점검이 중단되는 계기는 재기동만이 아니다.
+        return PeriodicRunner(
+            self.stale_review_reporter().sweep,
+            self._settings.stale_review_sweep_interval_sec,
+            name="stale_review",
+        )
+
     def review_tasks(self) -> dict[str, ReviewTask]:
-        """리액션 이모지 하나에 점검 하나가 대응한다."""
         if self._review_tasks is None:
             shared = {
-                "ledger": ReviewLedger(self._database),
+                "ledger": self.review_ledger(),
                 "message_lookup": SlackMessageLookup(self._client),
                 "transcript": ThreadTranscriptPort(self._transcript_builder()),
                 "answer_finder": AnswerRecordFinder(self._database),
@@ -808,6 +1282,20 @@ class Application:
                 "publisher": ReviewPublisher(self.publisher()),
                 "engine": self._review_engine(),
                 "troubleshoot_channel": self._profile.troubleshoot_channel,
+                "owner_only_channels": self._settings.owner_only_channels,
+                # 점검은 몇 분이 걸린다. 표시가 없으면 도는 것과 죽은 것이
+                # 사용자에게 같아 보인다(sca-tfd).
+                "progress": ReviewProgressDisplay(self.progress(), self._channels),
+                # 점검 한 건이 엔진을 몇 분씩 쓴다. 남기지 않으면 제한시간을
+                # 어떻게 잡을지 정할 근거가 없다(sca-fy5).
+                "audit": self.audit(),
+                # 숫자만 남기면 느려진 것을 아무도 모른다. 요청 쪽과 같은
+                # 보고자를 쓰되 기준값만 점검용으로 갈아 끼운다(sca-xck).
+                "slow_reporter": self._slow_reporter(
+                    self._settings.override(
+                        {"slow_report_sec": self._settings.review_slow_report_sec}
+                    )
+                ),
             }
             paths = self._profile.paths
             owner_name = self._names.resolve(self._profile.owner_user_id)
@@ -829,36 +1317,64 @@ class Application:
                     bot_display_name=self._profile.display_name,
                     persona_dir=str(paths.persona),
                     prompts_dir=str(paths.prompts),
-                    post_rich_command="리치",
+                    rewrite_command=self.rewrite_command(),
                     **shared,
                 ),
             }
         return self._review_tasks
 
-    def _review_engine(self) -> ReviewEngineCaller:
-        """점검은 소유자 권한으로 돈다. 시스템 프롬프트는 비운다 —
+    def rewrite_command(self) -> str:
+        """The command the format review runs to correct the message it flagged.
 
-        점검 지침 전부를 각 ReviewTask 의 `build_prompt` 가 본문에 담는다.
+        Assembled here because the interpreter and the profile are deployment
+        facts the review package has no way to know. `sys.executable` rather
+        than "python3" — the engine subprocess inherits a PATH that need not
+        have this venv on it, and a different interpreter wouldn't have the
+        package installed. `--profile-dir` is pinned to the directory this
+        profile was actually loaded from; the default search order depends on
+        an env var the subprocess may not carry.
         """
+        parts = [
+            shlex.quote(sys.executable), "-m", "slack_cli_agent.cli", "rewrite",
+            "--profile", shlex.quote(self._profile.name),
+        ]
+        source = self._profile.source_file
+        if source is not None:
+            parts += ["--profile-dir", shlex.quote(str(source.parent))]
+        return " ".join(parts)
+
+    def _review_engine(self) -> ReviewEngineCaller:
         paths = self._profile.paths
         return ReviewEngineCaller(
-            # 실행기를 그대로 넘기면 폴백이 설정돼 있어도 전환 판정이 건너뛰어진다.
+            # passing the runner directly here would also skip fallback-switch handling
             invoker=self.engine_invoker,
             profile=self._profile,
             workdir=self._profile.work_root,
+            # empty — each ReviewTask.build_prompt embeds its own instructions in the user turn
             system_prompt="",
             readable_dirs=(paths.persona, paths.prompts),
         )
 
     def on_reaction(self, emoji: str, channel: str, ts: str, by_user: str) -> None:
-        """점검 리액션 하나를 처리한다.
-
-        한 건의 실패가 이후 이벤트 처리를 막지 않는다. 다만 삼키되 기록은
-        남긴다 — 안 남기면 점검이 실패한 것과 아예 안 불린 것이 같은
-        모습이 된다.
+        """Catches and logs review-task failures instead of propagating —
+        otherwise one bad review event would block all future ones, and a
+        swallowed failure would look identical to one that was never triggered.
         """
         task = self.review_tasks().get(emoji)
         if task is None:
+            return
+        # The original bot.py had no permission check here (bot.py:6144), but a
+        # review runs on the owner's model at medium effort or higher, so anyone
+        # adding the emoji repeatedly spends that. Owner and the channel's
+        # trusted_users only (사용자 결정 2026-09-18, sca-cg9).
+        # `accepts_request` on top of that: trust alone let a DM entry in the
+        # channel file hand a non-owner a conversation a normal request would
+        # have been refused in (sca-gr5n).
+        principal = self.access_policy.principal_for(channel, by_user)
+        if principal.trust is TrustLevel.GENERAL or not self.access_policy.accepts_request(
+            principal
+        ):
+            log.info("점검 권한이 없다 : %s %s:%s %s", emoji, channel, ts, by_user)
             return
         config = self._channels.get(channel)
         try:
@@ -868,72 +1384,78 @@ class Application:
                     ts=ts,
                     by_user=by_user,
                     channel_name=getattr(config, "name", "") or channel,
-                    rich=bool(getattr(config, "rich", False)),
+                    rich=channel_is_rich(config),
                 )
             )
         except Exception:
             log.exception("점검 실패: %s %s:%s", emoji, channel, ts)
 
-    # -- 연결 감시 -------------------------------------------------
-
-    def transcript_reader(self) -> SessionTranscriptReader:
-        """이 봇의 엔진에 맞는 세션 기록 리더. 한 번 만들어 계속 쓴다.
-
-        기록 형식은 엔진마다 다르다. 조립이 Claude 리더를 직접 만들면 codex
-        프로필에서도 Claude 기록 경로를 뒤진다 — 원본은 그 경우 경로를 아예
-        만들지 않는다(bot.py:3083).
-
-        구간 분해와 사용량 행이 같은 리더를 본다. 따로 만들면 같은 파일을 두
-        번 읽는다.
+    def transcript_reader(self, engine: str = "") -> SessionTranscriptReader:
+        """Transcript format and home dir differ per engine, so the reader is
+        chosen by the engine that actually answered — a fallback response comes
+        from the secondary, and reading it with the primary's reader would look
+        for the wrong format in the wrong place. Cached per engine because both
+        the time-breakdown and usage-row calculations read the same file.
         """
-        if self._transcript_reader is None:
-            self._transcript_reader = self._transcript_readers.create(
-                self._profile.primary_engine.type, self._profile.work_root,
-            )
-        return self._transcript_reader
+        spec = self._engine_spec_for(engine)
+        name = spec.type if spec is not None else engine
+        reader = self._transcript_reader_cache.get(name)
+        if reader is None:
+            reader = self._transcript_readers.create(name, self._profile.work_root, spec=spec)
+            self._transcript_reader_cache[name] = reader
+        return reader
 
-    def _slow_reporter(self) -> SlowRequestReporter:
-        """느린 요청의 구간별 시간 분해를 보고 채널에 올리는 객체.
-
-        세션 기록 형식은 엔진마다 다르므로 파서를 주입한다. 보고 채널이 빈
-        프로필이 정상이다 — 그때는 보고기가 기준값 판정 전에 넘어간다.
+    def _engine_spec_for(self, engine: str) -> EngineSpec | None:
+        """None for a name in neither slot. The registry then hands back an empty
+        reader, so the report says nothing rather than reading the primary's
+        transcript and presenting another engine's numbers as this one's.
         """
-        reader = self.transcript_reader()
+        if not engine or engine == self._profile.primary_engine.type:
+            return self._profile.primary_engine
+        fallback = self._profile.fallback_engine
+        if fallback is not None and engine == fallback.type:
+            return fallback
+        return None
+
+    def _slow_reporter(self, settings: RuntimeSettings | None = None) -> SlowRequestReporter:
+        # an empty troubleshoot_channel is valid config — the reporter just
+        # skips past the threshold check in that case
         return SlowRequestReporter(
             publisher=self.publisher(),
-            calculator=TimeBreakdownCalculator(reader, self._settings.assumed_tokens_per_sec),
-            # 사용량 행 조립기를 여기서 만든다. 기본값으로 두면 세션 컨텍스트
-            # 계산기가 없어 "세션" 행이 아예 안 나온다.
+            # Resolved per report, not bound here — see transcript_reader().
+            readers=self.transcript_reader,
+            calculator=TimeBreakdownCalculator(self._settings.assumed_tokens_per_sec),
+            # built explicitly — the default has no session-context calculator,
+            # so the usage row's "session" line would never appear
             usage_row_builder=UsageRowBuilder(
                 self._settings.owner_only_channels,
-                SessionContextCalculator(reader, self._settings.context_limit),
+                SessionContextCalculator(self._settings.context_limit),
             ),
             diagnostician=ElapsedDiagnostician(self._settings.sleep_gap_suspect_sec),
             formatter=SlowReportFormatter(self._settings.assumed_tokens_per_sec),
-            settings=self._settings,
+            settings=settings or self._settings,
             troubleshoot_channel=self._profile.troubleshoot_channel,
         )
 
     def roster_builder(self) -> RosterBuilder:
-        """계정 핸들과 실명을 잇는 명부를 만드는 객체.
-
-        생성자에서 만들지 않는다 — 조립만으로 슬랙 클라이언트를 요구하면
-        기동 전 점검이 네트워크에 매인다. 캐시하는 이유는 갱신기와 직접
-        호출이 같은 출력 경로를 쓰게 하기 위해서다.
+        """Not built in __init__ — that would make assembly itself require a
+        Slack call, tying pre-startup checks to the network. Cached so the
+        periodic refresher and direct calls write through the same instance.
         """
         if self._roster_builder is None:
-            self._roster_builder = RosterBuilder(self._client, self._profile.roster_file)
+            self._roster_builder = RosterBuilder(
+                self._client,
+                self._profile.roster_file,
+                handle_pattern=self._settings.roster_handle_pattern,
+            )
         return self._roster_builder
 
     def roster_refresher(self) -> PeriodicRunner:
-        """명부를 주기적으로 다시 만드는 실행기. 시작은 호출하는 쪽이 한다.
-
-        여기서 시작하지 않는다. 접수 프로세스와 워커가 같은 애플리케이션을
-        조립하는데, 양쪽에서 갱신하면 같은 파일을 동시에 쓴다. 어느 프로세스가
-        맡을지는 조립이 아니라 그 프로세스의 결정이다.
-
-        캐시한다. 매번 새로 만들면 시작한 객체와 정지를 요청받는 객체가 달라져,
-        정지시켜도 먼저 시작된 스레드가 계속 돈다.
+        """Doesn't start itself. Ingress and worker processes assemble the
+        same Application, and if both refreshed the roster they'd write the
+        same file concurrently — which process owns it is that process's
+        call, not assembly's. Cached so the instance that gets started is
+        the one that gets stopped, or stop() would leave an earlier thread running.
         """
         if self._roster_refresher is None:
             self._roster_refresher = PeriodicRunner(
@@ -943,17 +1465,68 @@ class Application:
             )
         return self._roster_refresher
 
+    def owner_only_audit_runner(self) -> PeriodicRunner:
+        """소유자 전용 선언과 실제 멤버가 어긋나는지 본다. ingress 에만 둔다 -
+        워커는 여러 개가 돌 수 있어 같은 경고가 여러 번 나간다."""
+        audit = OwnerOnlyChannelAudit(
+            channels=sorted(self._settings.owner_only_channels),
+            owner_user_id=self._profile.owner_user_id,
+            list_members=self._channel_members,
+            # 슬랙 멤버 목록은 봇도 사용자 ID 로 준다. 사람인지는 users.info 의
+            # is_bot 으로만 갈린다.
+            is_bot=self._is_bot_user,
+            notify=self._notify_owner if self._profile.owner_user_id else None,
+        )
+        return PeriodicRunner(
+            audit.check,
+            self._settings.owner_only_audit_interval_sec,
+            name="owner_only_audit",
+        )
+
+    def usage_check_runner(self) -> PeriodicRunner:
+        """운영자가 건 사용량 확인 명령을 주기로 돌린다. ingress 에만 둔다 -
+        워커마다 돌면 같은 알림이 여러 번 나간다."""
+        check = UsageCheck(
+            self._profile.usage_check_command,
+            self._usage_check_run,
+            timeout_sec=self._settings.usage_check_timeout_sec,
+        )
+        return PeriodicRunner(
+            check.check_once,
+            self._settings.usage_check_interval_sec,
+            name="usage_check",
+            initial_delay_sec=USAGE_CHECK_FIRST_DELAY_SEC,
+        )
+
+    def _channel_members(self, channel: str) -> list[str]:
+        members: list[str] = []
+        cursor = ""
+        while True:
+            response = self.client.conversations_members(
+                channel=channel, limit=200, cursor=cursor or None
+            )
+            members.extend(response.get("members", []))
+            cursor = (response.get("response_metadata") or {}).get("next_cursor") or ""
+            if not cursor:
+                return members
+
+    def _is_bot_user(self, user_id: str) -> bool:
+        # 조회가 안 되면 봇으로 본다. 사람으로 보면 조회 실패가 곧 위반 경고가
+        # 되어, 고칠 것이 없는데 매 주기 알림이 나간다.
+        try:
+            user = self.client.users_info(user=user_id).get("user") or {}
+        except Exception as exc:  # noqa: BLE001 — 한 사람의 조회 실패가 점검을 끊으면 안 된다
+            log.warning("사용자 조회 실패, 봇으로 본다 : %s : %s", user_id, exc)
+            return True
+        return bool(user.get("is_bot") or user.get("id") == "USLACKBOT")
+
     def connection_watch(self) -> SocketErrorWatch:
-        """소켓 라이브러리 로거에 감시 핸들러를 붙이고 그것을 돌려준다.
+        """SocketErrorWatch is a logging.Handler; attaching it to loggers is
+        assembly's job, not the watch's own — without this, socket drops go
+        uncounted, and a dormant watch looks identical to no watch at all.
 
-        `SocketErrorWatch` 는 `logging.Handler` 다. 어느 로거에 붙이는지는
-        만드는 쪽이 아니라 조립의 몫이고, 안 붙이면 소켓이 끊겨도 아무것도
-        세지 않는다 — 감시가 있는데 미발동인 것과 감시가 아예 없는 것이
-        같은 모습이 된다.
-
-        기본 연결기는 `slack_sdk` 의 Socket Mode 구현을 쓰지만, `slack_bolt`
-        로거에도 함께 붙인다. `SlackGateway` 는 연결기를 주입받으므로 bolt
-        기반 커넥터를 넣는 조립에서도 같은 감시가 동작해야 한다.
+        Attaches to both slack_sdk and slack_bolt loggers since SlackGateway
+        takes an injected connector and could be wired to either.
         """
         if self._connection_watch is None:
             watch = SocketErrorWatch()
@@ -963,11 +1536,8 @@ class Application:
         return self._connection_watch
 
     def health_monitor(self, restart: Callable[[str], None]) -> HealthMonitor:
-        """연결 점검기. `check()` 한 번이 감시 루프의 한 회차다.
-
-        재기동은 프로세스를 실제로 죽이는 동작이라 여기서 하지 않는다 —
-        사유만 `restart` 콜백에 넘긴다.
-        """
+        # restart isn't performed here — killing the process is a real side
+        # effect, so only the reason is handed to the restart callback
         return HealthMonitor(
             watch=self.connection_watch(),
             reachable=self._slack_reachable,
@@ -976,14 +1546,10 @@ class Application:
         )
 
     def health_runner(self, restart: Callable[[str], None]) -> PeriodicRunner:
-        """연결 점검을 주기적으로 실행한다. 안 띄우면 판정 자체가 안 돈다.
-
-        소켓 오류를 세는 핸들러를 로거에 붙이는 것과, 그 값이 상한을 넘었는지
-        보는 것은 다른 일이다. 이 실행기가 없으면 오류가 아무리 쌓여도 재기동이
-        발화하지 않는다.
-
-        점검기를 한 번 만들어 계속 쓴다. 회차마다 새로 만들면 `_down_since` 가
-        매번 비어 있어 끊겼다 돌아온 것을 복구로 판정하지 못한다.
+        """Without this runner, socket errors could pile up forever without
+        ever triggering a restart. The monitor is cached, not rebuilt per
+        tick, because it tracks its down-since timestamp internally —
+        recreating it would make a recovered connection look like it never went down.
         """
         if self._health_runner is None:
             monitor = self.health_monitor(restart)
@@ -995,12 +1561,9 @@ class Application:
         return self._health_runner
 
     def attachments(self) -> AttachmentStore:
-        """첨부 저장소. 한 번 만들어 계속 쓴다.
-
-        접수와 정리 실행기가 다른 객체를 보면 저장하는 디렉터리와 지우는
-        디렉터리가 갈릴 수 있고, 익명으로 만들면 정리 실행기가 그것을 참조할
-        방법이 없다.
-        """
+        # cached so ingress and the cleanup runner share the same store —
+        # otherwise they could point at different directories, and an
+        # anonymous instance would give cleanup nothing to reference
         if self._attachments is None:
             self._attachments = AttachmentStore(
                 attach_dir=self._profile.attach_dir,
@@ -1010,40 +1573,87 @@ class Application:
         return self._attachments
 
     def attachment_cleanup_runner(self) -> PeriodicRunner:
-        """오래된 첨부를 주기적으로 지운다. 안 띄우면 받은 파일이 계속 남는다."""
+        # without this, downloaded attachments accumulate forever
         return PeriodicRunner(
-            self.attachments().cleanup,
+            self._cleanup_attachments,
             self._settings.attachment_cleanup_interval_sec,
             name="attachment_cleanup",
         )
 
-    def catchup_retry_runner(self, worker: Worker) -> PeriodicRunner:
-        """마치지 못한 되짚기를 주기적으로 다시 본다.
+    def _cleanup_attachments(self) -> None:
+        self._attachment_log.record(self.attachments().cleanup())
 
-        슬랙이 채널 기록을 빈 목록으로 주는 것은 대개 잠깐이다. 다시 보지
-        않으면 그 구간에 답을 기다리는 요청이 어느 경로에서도 안 잡힌다.
-        """
+    def catchup_retry_runner(self, worker: Worker) -> PeriodicRunner:
+        # Slack returning an empty channel history is usually transient —
+        # without a retry, requests from that window never get picked up by any path
         return PeriodicRunner(
             lambda: self._catchup_retry_tick(worker),
             self._settings.catchup_retry_interval_sec,
             name="catchup_retry",
         )
 
-    def outage_tracker(self) -> OutageTracker:
-        """슬랙 도달 여부의 상태 전이. 한 번 만들어 계속 쓴다.
+    def connection_epochs(self) -> SqliteConnectionEpochs:
+        """One ledger per process: the liveness-write interval is instance
+        state, so extra instances would multiply the writes."""
+        if self._connection_epochs is None:
+            # Wall clock on purpose: this ledger is read by another process,
+            # and self._clock is monotonic, whose origin differs per process.
+            self._connection_epochs = SqliteConnectionEpochs(self._database)
+        return self._connection_epochs
 
-        회차마다 새로 만들면 앞 회차의 결과가 없어 복구를 판정할 수 없다.
+    def connection_catchup_coordinator(self, worker: Worker) -> ConnectionCatchupCoordinator:
+        return ConnectionCatchupCoordinator(
+            store=self.connection_epochs(),
+            catch_up=lambda window: self._connection_catchup(worker, window),
+            settings=self._settings,
+            owner=worker.worker_id,
+        )
+
+    def connection_catchup_runner(self, worker: Worker) -> PeriodicRunner:
+        """Makes a socket reconnect trigger catch-up.
+
+        The OutageTracker behind catchup_retry_runner only sees Web API
+        reachability from this process, which stays fine while the ingress
+        socket is down (measured 2026-09-16).
         """
+        return PeriodicRunner(
+            self.connection_catchup_coordinator(worker).tick,
+            self._settings.connection_catchup_interval_sec,
+            name="connection_catchup",
+        )
+
+    def _connection_catchup(self, worker: Worker, window: float) -> None:
+        report = worker.catch_up(self.channel_ids(), window_sec=window)
+        log.info("소켓 재연결 캐치업: 다시 처리한 요청 %d건", len(report.missed))
+
+    def startup_catchup_runner(self, worker: Worker) -> PeriodicRunner:
+        """Sweeps once at start and once more after the freshness grace period.
+
+        The interval is that grace plus a margin, so the second pass sees the
+        mentions the first one skipped for being too recent.
+        """
+        catchup = StartupCatchup(lambda: self._startup_catchup_tick(worker))
+        return PeriodicRunner(
+            catchup.tick,
+            self._settings.catchup_grace_sec + 5,
+            name="startup_catchup",
+        )
+
+    def _startup_catchup_tick(self, worker: Worker) -> None:
+        report = worker.catch_up(self.channel_ids())
+        log.info("기동 캐치업: 다시 처리한 요청 %d건", len(report.missed))
+
+    def outage_tracker(self) -> OutageTracker:
+        # cached — recreating it each tick would lose the previous result
+        # needed to detect a recovery
         if self._outage_tracker is None:
             self._outage_tracker = OutageTracker(reachable=self._slack_reachable, now=self._clock)
         return self._outage_tracker
 
     def _recovery_window_sec(self, outage_sec: float) -> float:
-        """끊겼던 시간에 맞춰 되짚기 창을 정한다.
-
-        기본 창보다 넓혀야 끊긴 구간의 앞부분이 남지 않는다. 여유 600초는
-        끊김을 알아채기까지 걸린 시간을 덮는다. 최대값을 두는 이유는 한 회차가
-        채널 전체의 며칠치 기록을 읽는 것을 막기 위해서다.
+        """Widens the catch-up window to cover the outage, plus a 600s
+        margin for detection lag. Capped so one pass can't end up
+        re-reading days of channel history.
         """
         return min(
             max(self._settings.catchup_window_sec, outage_sec + 600),
@@ -1051,24 +1661,28 @@ class Application:
         )
 
     def _report_recovery(self, outage_sec: float, recovered: int) -> None:
-        """끊겼다 돌아온 사실과 회수 건수를 소유자에게 알린다.
-
-        알리지 않으면 운영자는 장애가 있었다는 것도, 그 구간이 회수됐는지도
-        모른다. 건수를 함께 적는 이유는 회수가 0건인 것과 회수 자체가 안 돈
-        것이 구분되어야 해서다.
-        """
-        self._notify_owner(
-            "*연결 복구*\n\n"
-            f"- 끊긴 시간 : {outage_sec / 60:.0f}분\n"
-            f"- 복구 시각 : {datetime.now(KST).strftime('%m-%d %H:%M:%S')} KST\n"
-            f"- 되짚어 처리한 요청 : {recovered}건"
-        )
+        # reports the recovered count explicitly — otherwise zero recovered
+        # messages would look the same as catch-up never having run
+        broken = broken_mcp_servers(self._profile.mcp_servers)
+        lines = [
+            "*연결 복구*",
+            "",
+            f"- 끊긴 시간 : {outage_sec / 60:.0f}분",
+            f"- 복구 시각 : {datetime.now(KST).strftime('%m-%d %H:%M:%S')} KST",
+            f"- 캐치업으로 처리한 요청 : {recovered}건",
+            f"- MCP 서버 : {'전부 정상' if not broken else f'{len(broken)}개 이상 기동 실패'}",
+        ]
+        if broken:
+            lines += ["", "*기동하지 못하는 MCP 서버*"]
+            lines += [f"- {name}" for name in broken]
+            lines += ["", "도구가 빠진 채로 답하게 됩니다. 확인이 필요합니다."]
+        self._notify_owner("\n".join(lines))
 
     def _catchup_retry_tick(self, worker: Worker) -> None:
         outage_sec = self.outage_tracker().check()
         if outage_sec is not None:
-            # 닿지 않던 동안 들어온 요청은 소켓 이벤트로 다시 오지 않는다.
-            # 돌아왔을 때 되짚지 않으면 그 시간의 요청은 영영 처리되지 않는다.
+            # events during the outage never re-arrive via the socket, so we
+            # must catch up now or lose them permanently
             log.info("슬랙 연결이 돌아왔다. 끊긴 시간 %.0f초", outage_sec)
             report = worker.catch_up(
                 self.channel_ids(), window_sec=self._recovery_window_sec(outage_sec)
@@ -1078,10 +1692,9 @@ class Application:
         for status in worker.retry_catchup():
             if not status.alert:
                 continue
-            # 오래 못 보면 사람이 알아야 한다. 조용히 다시 보기만 하면 몇
-            # 시간째 안 잡히는 것을 아무도 모른다.
+            # silently retrying forever would hide a channel stuck for hours from anyone
             self._notify_owner(
-                "*되짚기를 오래 마치지 못하고 있습니다*\n\n"
+                "*캐치업을 오래 마치지 못하고 있습니다*\n\n"
                 f"- 채널 : {status.channel}\n"
                 f"- {status.stuck_sec / 60:.0f}분째입니다\n\n"
                 "슬랙이 채널 기록을 계속 빈 목록으로 돌려줍니다.\n"
@@ -1089,46 +1702,54 @@ class Application:
             )
 
     def ingress_services(self, restart: Callable[[str], None]) -> ServiceGroup:
-        """접수 프로세스가 띄우는 주기 실행기 묶음.
-
-        연결 점검은 소켓 연결이 이 프로세스에만 있으므로 여기서 안 띄우면
-        어디서도 안 돈다. 명부 갱신도 접수가 맡는다 — 워커는 여럿 뜰 수 있어
-        거기서 돌리면 같은 파일을 여러 프로세스가 동시에 쓴다.
+        """Health check only runs here since the socket connection lives only
+        in this process. Roster refresh is also pinned to ingress — multiple
+        workers can run at once, and refreshing from there would mean
+        several processes writing the same file concurrently.
         """
         return ServiceGroup(
             [
                 self.health_runner(restart),
                 self.roster_refresher(),
+                self.owner_only_audit_runner(),
+                self.usage_check_runner(),
                 self.attachment_cleanup_runner(),
                 self.pending_report_runner(),
+                self.stale_review_runner(),
             ],
             name="ingress",
+            watch_interval_sec=self._settings.service_watch_interval_sec,
+            notify=self._notify_owner if self._profile.owner_user_id else None,
         )
 
     def worker_services(self, worker: Worker) -> ServiceGroup:
-        """워커 프로세스가 띄우는 주기 실행기 묶음.
-
-        되짚기 재시도는 그 워커의 큐에 넣으므로 워커를 함께 받는다.
-        """
+        # catchup retry enqueues onto this specific worker's queue, hence the worker argument
         return ServiceGroup(
             [
                 self.state_snapshot_runner(),
                 self.watch_runner(),
+                self.watch_result_cleanup_runner(),
                 self.job_purge_runner(),
+                self.epoch_purge_runner(),
+                self.admin_claim_purge_runner(),
+                self.admin_claim_reclaim_runner(),
+                self.startup_catchup_runner(worker),
+                self.connection_catchup_runner(worker),
                 self.catchup_retry_runner(worker),
                 self.pending_report_runner(),
+                self.learning_batch_runner(),
+                self.stale_reclaim_runner(worker),
             ],
             name="worker",
+            watch_interval_sec=self._settings.service_watch_interval_sec,
+            notify=self._notify_owner if self._profile.owner_user_id else None,
         )
 
     def self_restarter(self, exit_process: Callable[[int], None] | None = None) -> SelfRestarter:
-        """기본 재기동 동작. 소유자에게 사유를 알리고 스스로 나간다.
-
-        소유자 개인 대화가 설정돼 있을 때만 알린다. 없으면 알릴 곳이 없으므로
-        사유는 로그에만 남기고 종료만 한다.
-        """
+        # only notifies when an owner is configured — otherwise there's
+        # nowhere to send it, so the reason just goes to the log
         return SelfRestarter(
-            notify=self._notify_owner if self._profile.owner_dm else None,
+            notify=self._notify_owner if self._profile.owner_user_id else None,
             inflight_count=lambda: self.inflight.count,
             grace_sec=self._settings.shutdown_grace_sec,
             exit_process=exit_process,
@@ -1139,18 +1760,14 @@ class Application:
         try:
             self._client.auth_test()
             return True
-        except Exception:  # noqa: BLE001 — 슬랙 연결 확인 실패를 판정에 그대로 반영한다 — 어떤 예외든 연결 불가로 본다
+        except Exception:  # noqa: BLE001 — any exception here means unreachable, by design
             return False
-
-    # -- 보조 -----------------------------------------------------
 
     @property
     def identity(self) -> BotIdentity:
-        """이 봇의 신원. 자기 말 판정이 필요한 부품 전부가 이것을 받는다.
-
-        부품마다 따로 만들면 같은 API 를 그 수만큼 부르고, 그중 하나가
-        실패하면 그 부품만 다른 판정을 한다.
-        """
+        # shared by every component that needs is-self-message checks —
+        # building it per-component would multiply the API calls and let one
+        # failure produce an inconsistent verdict
         if self._identity is None:
             self._identity = SlackBotIdentity(
                 self._client,
@@ -1160,26 +1777,32 @@ class Application:
         return self._identity
 
     def _is_self_message(self, msg: Any) -> bool:
-        """이 봇이 올린 말인지 판정한다. 근거는 `identity` 하나뿐이다."""
         return self.identity.is_self(msg)
 
     def close(self) -> None:
-        """DB 연결을 닫는다. 두 번 불러도 문제가 없다."""
         if self._closed:
             return
         self._closed = True
         if self._roster_refresher is not None:
-            # 정지시키지 않으면 데몬 스레드가 프로세스 종료까지 슬랙을 계속 호출한다.
+            # without stopping it, the daemon thread keeps calling Slack until process exit
             self._roster_refresher.stop()
         if self._connection_watch is not None:
-            # 떼지 않으면 프로세스가 여럿 뜨고 지는 동안 로거에 핸들러가 쌓여,
-            # 같은 로그를 여러 감시가 중복으로 센다.
+            # without removing it, handlers pile up on the logger across
+            # process restarts and the same log line gets double-counted
             for name in SOCKET_LOGGERS:
                 logging.getLogger(name).removeHandler(self._connection_watch)
         self._database.close()
 
 
-def _bot_token() -> str:
-    import os
+def _watch_workdir(job: WatchJob, config: ChannelConfig | None, work_root: Path) -> Path:
+    """Where the check turn runs.
 
-    return os.environ.get("SLACK_BOT_TOKEN", "")
+    The registration-time directory wins: the work being watched left its
+    result there, and the channel config may have moved since. Rows written
+    before that was recorded have none, so those fall back (sca-6zt).
+    """
+    if job.workdir:
+        return Path(job.workdir)
+    if config and config.workdir:
+        return config.workdir.resolve()
+    return work_root.resolve()

@@ -1,12 +1,8 @@
-"""앱의 실제 부품을 `SnapshotSource` 계약에 잇는 어댑터.
+"""Adapter binding real app components to the `SnapshotSource` contract.
 
-`state_snapshot.StateSnapshotBuilder` 는 값의 출처를 모른다. 이 클래스가
-대기줄·소켓 오류 감시·감시 작업 저장소에서 값을 가져와 그 계약에 맞춘다.
-원본 `bot.py` 의 `state_snapshot()` 이 전역 변수를 직접 읽던 대목이다.
-
-조회가 실패해도 예외를 밖으로 내지 않는다 — 상태 기록 하나 때문에 요청
-처리가 멈추면 안 된다. 다만 실패를 0 으로 바꾸지는 않는다. 조회 실패와
-"등록된 것이 없음" 은 다른 사실이라 `None` 으로 구분한다.
+Lookups never raise: a snapshot read must not block request handling.
+But failures aren't collapsed to 0 -- a lookup failure and "nothing
+registered" are different facts, distinguished via `None`.
 """
 
 from __future__ import annotations
@@ -16,8 +12,8 @@ from typing import Protocol
 
 from slack_cli_agent.core.lifecycle import InflightCounter
 
-# 대기로 셀 작업 상태. 끝난 것을 세면 상태 파일만 보는 쪽이 밀린 일이
-# 있다고 읽는다.
+# Only count in-flight statuses -- including finished ones would make
+# state readers think work is backed up when it isn't.
 PENDING_STATUSES = ("queued", "running")
 
 
@@ -34,22 +30,32 @@ class _WatchJobs(Protocol):
     def open_count(self) -> int: ...
 
 
+class _ConnectionEpochs(Protocol):
+    def reconnect_timestamps(self) -> Sequence[float]: ...
+
+
 class ApplicationSnapshotSource:
-    """`state_snapshot.SnapshotSource` 를 실제 부품으로 만족시킨다."""
+    """Implements `state_snapshot.SnapshotSource` using real app components."""
 
     def __init__(
         self,
         *,
         inflight: InflightCounter,
         queue: _Queue,
-        socket_watch: _SocketWatch,
+        socket_watch: _SocketWatch | None,
         watch_jobs: _WatchJobs,
         is_shutting_down: Callable[[], bool],
         started_at: float,
+        connection_epochs: _ConnectionEpochs | None = None,
     ) -> None:
         self._inflight = inflight
         self._queue = queue
+        # None in a process that has no socket: the log watch there would count
+        # zero forever, which reads as "no errors" (sca-qi5.3).
         self._socket_watch = socket_watch
+        # Reconnects are recorded by ingress in a shared ledger, so a process
+        # without the socket can still count them.
+        self._connection_epochs = connection_epochs
         self._watch_jobs = watch_jobs
         self._is_shutting_down = is_shutting_down
         self._started_at = started_at
@@ -58,32 +64,36 @@ class ApplicationSnapshotSource:
         return self._inflight.count
 
     def queued_threads(self) -> Mapping[str, int]:
-        """대기 상태별 건수. 원본은 스레드별로 셌는데 이 구조에서는 대기줄이
-        데이터베이스에 있어 상태별 집계가 같은 물음에 답한다."""
         try:
             counts = self._queue.counts()
-        except Exception:  # noqa: BLE001 — 집계 실패를 스냅샷 조회 실패로 번지지 않게 한다 — 빈 집계로 대체한다
+        except Exception:  # noqa: BLE001 -- don't let a count failure fail the whole snapshot
             return {}
         return {status: n for status, n in counts.items() if status in PENDING_STATUSES}
 
-    def socket_error_timestamps(self) -> Sequence[float]:
+    def socket_error_timestamps(self) -> Sequence[float] | None:
+        if self._socket_watch is None:
+            return None
         return self._socket_watch.error_timestamps()
 
     def socket_reconnect_timestamps(self) -> Sequence[float]:
+        if self._connection_epochs is not None:
+            try:
+                return self._connection_epochs.reconnect_timestamps()
+            except Exception:  # noqa: BLE001 -- 한 값의 조회 실패로 스냅샷 전체를 잃지 않는다
+                return ()
+        if self._socket_watch is None:
+            return ()
         return self._socket_watch.reconnect_timestamps()
 
     def catchup_pending_count(self) -> int:
-        """되짚기 대기 건수.
-
-        이 구조에서 되짚기는 접수 시점에 그대로 처리돼 따로 기다리는 것이
-        없다. 원본에 있던 항목이라 계약에는 남기고 0 으로 둔다.
-        """
+        # Catch-up is processed synchronously on receipt in this architecture,
+        # so nothing is ever pending. Kept for contract compatibility.
         return 0
 
     def watch_job_count(self) -> int | None:
         try:
             return self._watch_jobs.open_count()
-        except Exception:  # noqa: BLE001 — 감시 작업 건수 조회 실패를 스냅샷 조회 실패로 번지지 않게 한다
+        except Exception:  # noqa: BLE001 -- don't let a count failure fail the whole snapshot
             return None
 
     def is_shutting_down(self) -> bool:

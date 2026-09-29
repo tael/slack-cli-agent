@@ -5,12 +5,18 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
-from slack_cli_agent.config.channel import ChannelRegistry
+from slack_cli_agent.config import settings as config_settings
+from slack_cli_agent.config.channel import (
+    TOOL_ENFORCEMENT_STRICT,
+    ChannelConfig,
+    ChannelRegistry,
+)
 from slack_cli_agent.config.paths import StatePaths
-from slack_cli_agent.config.profile import EngineSpec, Profile
+from slack_cli_agent.config.profile import EngineSpec, McpServerSpec, Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.errors import ConfigError
 
@@ -20,6 +26,13 @@ MINIMAL = {
     "owner_user_id": "U1",
     "troubleshoot_channel": "C1",
 }
+
+
+def channel(registry: ChannelRegistry, channel_id: str) -> ChannelConfig:
+    """get 이 None 을 내면 그 자리에서 실패시킨다."""
+    config = registry.get(channel_id)
+    assert config is not None
+    return config
 
 
 def write(path: Path, data: dict) -> None:
@@ -115,6 +128,99 @@ class TestProfile:
         assert any("실행 파일" in p for p in profile.validate())
 
 
+class TestMcpServerSpec:
+    def test_command_형은_command만_있으면_된다(self) -> None:
+        spec = McpServerSpec.from_dict("서버", {"command": "node", "args": ["a.js"]})
+        assert spec.command == "node"
+        assert spec.args == ("a.js",)
+        assert spec.is_remote is False
+
+    def test_url_형은_url만_있으면_된다(self) -> None:
+        spec = McpServerSpec.from_dict("서버", {"url": "https://example.com/mcp/"})
+        assert spec.url == "https://example.com/mcp/"
+        assert spec.is_remote is True
+
+    def test_command과_url이_둘_다_없으면_설정_오류다(self) -> None:
+        with pytest.raises(ConfigError, match="command"):
+            McpServerSpec.from_dict("서버", {})
+
+    def test_command과_url이_둘_다_있으면_설정_오류다(self) -> None:
+        with pytest.raises(ConfigError, match="동시에"):
+            McpServerSpec.from_dict(
+                "서버", {"command": "node", "url": "https://example.com/mcp/"}
+            )
+
+    def test_env와_headers_기본값은_빈_딕셔너리다(self) -> None:
+        spec = McpServerSpec.from_dict("서버", {"command": "node"})
+        assert spec.env == {}
+        assert spec.headers == {}
+
+    def test_env를_그대로_보존한다(self) -> None:
+        spec = McpServerSpec.from_dict(
+            "서버", {"command": "node", "env": {"KEY": "value"}}
+        )
+        assert spec.env == {"KEY": "value"}
+
+    def test_disabled_기본값은_거짓이다(self) -> None:
+        assert McpServerSpec.from_dict("서버", {"command": "node"}).disabled is False
+
+    def test_disabled_tools_기본값은_빈_튜플이다(self) -> None:
+        spec = McpServerSpec.from_dict("서버", {"command": "node"})
+        assert spec.disabled_tools == ()
+
+    def test_disabled_tools를_튜플로_받는다(self) -> None:
+        spec = McpServerSpec.from_dict(
+            "서버", {"command": "node", "disabled_tools": ["a", "b"]}
+        )
+        assert spec.disabled_tools == ("a", "b")
+
+    def test_cwd의_물결표를_확장한다(self, tmp_path: Path) -> None:
+        spec = McpServerSpec.from_dict(
+            "서버", {"command": "node", "cwd": "~/work"}
+        )
+        assert spec.cwd == tmp_path / "work"
+
+    def test_cwd가_없으면_None이다(self) -> None:
+        assert McpServerSpec.from_dict("서버", {"command": "node"}).cwd is None
+
+
+class TestProfileMcpServers:
+    def test_기본값은_빈_딕셔너리다(self) -> None:
+        assert Profile.from_dict(MINIMAL).mcp_servers == {}
+
+    def test_이름별로_McpServerSpec을_만든다(self) -> None:
+        profile = Profile.from_dict(
+            {**MINIMAL, "mcp_servers": {"a": {"command": "node"}}}
+        )
+        assert isinstance(profile.mcp_servers["a"], McpServerSpec)
+        assert profile.mcp_servers["a"].name == "a"
+
+    def test_잘못된_서버_설정은_설정_오류로_이어진다(self) -> None:
+        with pytest.raises(ConfigError, match="command"):
+            Profile.from_dict({**MINIMAL, "mcp_servers": {"a": {}}})
+
+    def test_설치물_기본_프로필에는_서버_이름이_없다(self) -> None:
+        """새 봇을 만들 때 특정 MCP 서버가 딸려오면 안 된다."""
+        assert Profile.from_dict(MINIMAL).mcp_servers == {}
+
+    def test_존재하지_않는_cwd는_검증에_걸린다(self, tmp_path: Path) -> None:
+        profile = Profile.from_dict(
+            {
+                **MINIMAL,
+                "mcp_servers": {
+                    "a": {"command": "node", "cwd": str(tmp_path / "없음")}
+                },
+            }
+        )
+        assert any("cwd" in p for p in profile.validate())
+
+    def test_정상_서버_설정은_검증을_통과한다(self, tmp_path: Path) -> None:
+        profile = Profile.from_dict(
+            {**MINIMAL, "mcp_servers": {"a": {"command": "node", "cwd": str(tmp_path)}}}
+        )
+        assert profile.validate() == []
+
+
 class TestStatePaths:
     def test_봇_이름으로_홈_아래_경로를_만든다(self, tmp_path: Path) -> None:
         paths = StatePaths.for_bot("example")
@@ -149,6 +255,45 @@ class TestRuntimeSettings:
         assert original.max_concurrent == 10
 
 
+class Test설정항목이살아있다:
+    """설정을 더하고 읽는 자리를 안 만들면 그 값은 조용히 무시된다. 운영자는
+    설정했다고 읽고 동작은 기본값으로 돈다. max_concurrent 가 실제로 그랬다
+    (sca-si6).
+    """
+
+    #: 아직 읽는 자리가 없는 항목. 비워 두는 것이 정상이고, 더할 때는 그 사유가
+    #: 되는 이슈 번호를 함께 적는다.
+    미결: ClassVar[set[str]] = set()
+
+    def 읽히지_않는_항목(self) -> set[str]:
+        import ast
+        import re
+
+        settings_file = Path(config_settings.__file__)
+        tree = ast.parse(settings_file.read_text(encoding="utf-8"))
+        fields = [
+            item.target.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef) and node.name == "RuntimeSettings"
+            for item in node.body
+            if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+        ]
+        src_root = settings_file.parent.parent
+        source = "\n".join(
+            f.read_text(encoding="utf-8")
+            for f in src_root.rglob("*.py")
+            if f != settings_file
+        )
+        return {name for name in fields if not re.search(r"\b" + name + r"\b", source)}
+
+    def test_항목을_찾기는_한다(self) -> None:
+        """대조의 근거가 실제로 잡히는지 먼저 본다. 빈 목록이면 이 시험이 공전한다."""
+        assert len(RuntimeSettings.__dataclass_fields__) > 30
+
+    def test_읽는_자리가_없는_항목은_미결_목록에만_있다(self) -> None:
+        assert self.읽히지_않는_항목() == self.미결
+
+
 class TestChannelRegistry:
     def test_파일이_없으면_빈_목록이다(self, tmp_path: Path) -> None:
         assert ChannelRegistry(tmp_path / "channels.json").channel_ids() == []
@@ -158,7 +303,7 @@ class TestChannelRegistry:
         write(path, {"C1": {"mode": "helpdesk"}})
         registry = ChannelRegistry(path)
         assert registry.is_registered("C1")
-        assert registry.get("C1").mode == "helpdesk"
+        assert channel(registry, "C1").mode == "helpdesk"
 
     def test_파일을_고치면_재기동_없이_반영된다(self, tmp_path: Path) -> None:
         path = tmp_path / "channels.json"
@@ -170,7 +315,7 @@ class TestChannelRegistry:
         os.utime(path, (100, 100))
 
         assert registry.is_registered("C2")
-        assert registry.get("C1").mode == "helpdesk"
+        assert channel(registry, "C1").mode == "helpdesk"
 
     def test_깨진_파일은_직전_설정을_유지한다(self, tmp_path: Path) -> None:
         path = tmp_path / "channels.json"
@@ -183,15 +328,46 @@ class TestChannelRegistry:
 
         assert registry.is_registered("C1")
 
+    def test_한_채널의_잘못된_값이_다른_채널을_막지_않는다(self, tmp_path: Path) -> None:
+        """조회 경로는 매 요청 파싱한다. 한 채널의 오편집으로 전체가 멈추면
+        무관한 채널의 요청까지 죽는다 (sca-xe0)."""
+        path = tmp_path / "channels.json"
+        write(path, {
+            "C1": {"mode": "default", "tool_enforcement": "strcit"},
+            "C2": {"mode": "helpdesk"},
+        })
+        registry = ChannelRegistry(path)
+        assert channel(registry, "C2").mode == "helpdesk"
+
+    def test_잘못된_값은_안전한_쪽으로_떨어진다(self, tmp_path: Path) -> None:
+        """읽어 낼 수 없는 값을 관대한 기본값으로 읽으면 오타 하나가 조용히
+        강제를 없앤다. 그 채널만 strict 로 둔다."""
+        path = tmp_path / "channels.json"
+        write(path, {"C1": {"tool_enforcement": "strcit"}})
+        assert channel(ChannelRegistry(path), "C1").tool_enforcement == TOOL_ENFORCEMENT_STRICT
+
+    def test_그_채널의_나머지_설정은_그대로_읽는다(self, tmp_path: Path) -> None:
+        path = tmp_path / "channels.json"
+        write(path, {"C1": {"mode": "helpdesk", "tool_enforcement": 3}})
+        읽은값 = channel(ChannelRegistry(path), "C1")
+        assert 읽은값.mode == "helpdesk"
+        assert 읽은값.tool_enforcement == TOOL_ENFORCEMENT_STRICT
+
+    def test_쓰기_경로는_잘못된_값을_그대로_거부한다(self, tmp_path: Path) -> None:
+        """조회는 그 채널만 낮추고 넘어가지만, 저장은 멈춘다. 잘못된 값이
+        파일에 굳으면 이후 모든 조회가 계속 안전값으로 떨어진다."""
+        with pytest.raises(ConfigError):
+            ChannelConfig.from_dict("C1", {"tool_enforcement": "strcit"})
+
     def test_모르는_키는_extra_에_보존한다(self, tmp_path: Path) -> None:
         path = tmp_path / "channels.json"
         write(path, {"C1": {"mode": "default", "플러그인설정": {"a": 1}}})
-        assert ChannelRegistry(path).get("C1").extra == {"플러그인설정": {"a": 1}}
+        assert channel(ChannelRegistry(path), "C1").extra == {"플러그인설정": {"a": 1}}
 
     def test_작업_디렉터리의_물결표를_확장한다(self, tmp_path: Path) -> None:
         path = tmp_path / "channels.json"
         write(path, {"C1": {"workdir": "~/Projects/x"}})
-        assert ChannelRegistry(path).get("C1").workdir == tmp_path / "Projects" / "x"
+        assert channel(ChannelRegistry(path), "C1").workdir == tmp_path / "Projects" / "x"
 
 
 class TestRuntimeSettings집합항목:
@@ -234,3 +410,35 @@ class TestStatePaths상태기록:
         from slack_cli_agent.config.paths import StatePaths
 
         assert StatePaths(tmp_path).state_snapshot == tmp_path / "state.json"
+
+
+class Test채널_기본값은_리치다:
+    """원본 bot.py 는 한 채널만 하드코딩으로 리치로 다뤘다. 지금은 markdown
+    블록이 표준이고 거부되면 평문으로 떨어지는 경로도 있어 옵트인으로 둘
+    이유가 없다. 설정 파일이 없는 봇의 답이 평문으로 깎였다 (sca-75v)."""
+
+    def test_아무것도_안_적으면_리치다(self) -> None:
+        from slack_cli_agent.config.channel import ChannelConfig
+
+        assert ChannelConfig(channel_id="C1").rich is True
+
+    def test_끄려면_명시해야_한다(self) -> None:
+        from slack_cli_agent.config.channel import ChannelConfig
+
+        assert ChannelConfig(channel_id="C1", rich=False).rich is False
+
+
+class Test등록_안_된_채널도_리치다:
+    """rei 는 channels.json 자체가 없는데도 멘션에는 답한다. 호출부가
+    `bool(config and config.rich)` 로 봐서 그 답이 전부 평문으로 내려갔다.
+    등록 여부와 렌더링 방식은 별개다 (sca-75v)."""
+
+    def test_설정이_없으면_기본값을_쓴다(self) -> None:
+        from slack_cli_agent.config.channel import channel_is_rich
+
+        assert channel_is_rich(None) is True
+
+    def test_설정에서_끄면_꺼진다(self) -> None:
+        from slack_cli_agent.config.channel import ChannelConfig, channel_is_rich
+
+        assert channel_is_rich(ChannelConfig(channel_id="C1", rich=False)) is False

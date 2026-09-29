@@ -8,12 +8,16 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+from review_support import assert_header_is_one_table
+
 from slack_cli_agent.review.base import ReviewTarget
 from slack_cli_agent.review.postmortem import PostmortemTask
 
 
 def make_task(**overrides) -> PostmortemTask:
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "ledger": None,
         "message_lookup": None,
         "transcript": None,
@@ -68,7 +72,7 @@ class Test머리말:
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
         record = {"model": "opus", "effort": "high", "elapsed": 12.3, "num_turns": 4}
         header = task.build_header(target, record, "https://slack/x")
-        assert "## 부검 : 회의방" in header
+        assert header.startswith("# 부검 : 회의방\n")
         assert "opus / high" in header
         assert "12.3초, 4턴" in header
         assert "https://slack/x" in header
@@ -79,6 +83,13 @@ class Test머리말:
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
         header = task.build_header(target, None, "")
         assert "감사 기록에서 이 답변을 찾지 못해 뺐습니다" in header
+
+    def test_지적자를표안에한형태로보인다(self) -> None:
+        task = make_task()
+        target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
+        header = task.build_header(target, {"model": "opus", "effort": "high"}, "https://slack/x")
+        assert "| 지적한 사람 | <@U1> |" in header
+        assert_header_is_one_table(header)
 
 
 class Test구분선없을때재시도프롬프트:

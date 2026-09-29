@@ -1,27 +1,23 @@
-"""기동 전 점검을 전부 돌리고 결과를 모은다.
-
-원본은 `restart.sh` 가 점검 스크립트 여러 개를 순서대로 실행하다 하나가
-실패하면 그 자리에서 멈춘다. 사람이 한 번에 여러 문제를 고칠 수 있도록,
-여기서는 첫 실패에서 멈추지 않고 점검을 전부 실행한 뒤 모아서 돌려준다.
-"""
+"""Runs every preflight check without stopping at the first failure, so a
+person can fix several problems in one pass."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .check import CheckResult, PreflightCheck, PreflightContext
 
+log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class PreflightReport:
-    """점검 전부를 실행한 결과."""
-
     results: tuple[CheckResult, ...]
 
     @property
     def bootable(self) -> bool:
-        """fatal 실패가 하나도 없으면 기동 가능하다."""
         return not any((not r.ok) and r.fatal for r in self.results)
 
     def failures(self) -> tuple[CheckResult, ...]:
@@ -32,11 +28,22 @@ class PreflightReport:
 
 
 class PreflightRunner:
-    """등록된 점검을 전부 실행한다."""
-
     def __init__(self, checks: Sequence[PreflightCheck]) -> None:
         self._checks = tuple(checks)
 
     def run_all(self, ctx: PreflightContext) -> PreflightReport:
-        results = tuple(check.run(ctx) for check in self._checks)
-        return PreflightReport(results=results)
+        return PreflightReport(results=tuple(self._run_one(c, ctx) for c in self._checks))
+
+    @staticmethod
+    def _run_one(check: PreflightCheck, ctx: PreflightContext) -> CheckResult:
+        """A check that raises used to take the whole run with it, losing the
+        other checks' results — the opposite of what this class is for. An
+        unexpected failure is itself a reason not to boot, so it becomes a
+        fatal result (sca-ylz)."""
+        try:
+            return check.run(ctx)
+        except Exception as exc:
+            # Type included: a bare str(exc) is empty for several builtins, and
+            # the operator then sees a blank reason (코덱스 리뷰).
+            log.exception("점검 %s 가 예상 밖 예외로 끝났다", check.name)
+            return CheckResult(ok=False, detail=f"점검이 예상 밖 예외로 끝났다 : {exc!r}")

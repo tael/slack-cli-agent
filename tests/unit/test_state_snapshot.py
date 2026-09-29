@@ -1,7 +1,7 @@
 """상태 스냅샷 기록 시험.
 
 원본 `bot.py` 의 `state_snapshot()`/`write_state_snapshot()` 을 이관한다.
-프로세스 메모리에만 있는 값(대기줄, 소켓 오류 이력, 되짚기 대기)을 파일로
+프로세스 메모리에만 있는 값(대기줄, 소켓 오류 이력, 캐치업 대기)을 파일로
 내려 적어 밖에서 볼 수 있게 하는 기능이다. 원본은 전역 변수를 직접 읽었으나
 여기서는 값을 제공하는 쪽을 `SnapshotSource` 뒤로 감춰 주입받는다.
 """
@@ -21,9 +21,10 @@ class FakeSource:
 
     def __init__(self) -> None:
         self.inflight = 0
-        self.queued = {}
-        self.socket_errors = []
-        self.socket_reconnects = []
+        self.queued: dict[str, int] = {}
+        # None 은 이 프로세스가 소켓을 못 본다는 뜻이다(sca-qi5.3)
+        self.socket_errors: list[float] | None = []
+        self.socket_reconnects: list[float] = []
         self.catchup_pending = 0
         self.watch_jobs: int | None = 0
         self.shutting_down = False
@@ -36,7 +37,7 @@ class FakeSource:
         return dict(self.queued)
 
     def socket_error_timestamps(self):
-        return list(self.socket_errors)
+        return None if self.socket_errors is None else list(self.socket_errors)
 
     def socket_reconnect_timestamps(self):
         return list(self.socket_reconnects)
@@ -157,3 +158,27 @@ class TestStateSnapshotWriter:
         path = tmp_path / "no-such-dir" / "state.json"
         writer = StateSnapshotWriter(path, StateSnapshotBuilder(source))
         writer.write()  # 예외 없이 끝나야 한다
+
+
+class Test측정_불가와_0을_구분한다:
+    """스냅샷을 쓰는 프로세스에 소켓이 없으면 오류 건수는 0 이 아니라 미계측이다.
+
+    소켓은 접수기 프로세스에만 있는데 스냅샷은 워커가 쓴다. 0 으로 적으면
+    "오류가 없었다" 와 "셀 수 없었다" 가 같은 값이 된다(sca-qi5.3).
+    """
+
+    def test_오류_이력이_None이면_건수도_None이다(self) -> None:
+        source = FakeSource()
+        source.socket_errors = None
+        snapshot = StateSnapshotBuilder(source, now=lambda: 1_100.0).build()
+        assert snapshot["socket_errors_3min"] is None
+        assert snapshot["socket_errors_total"] is None
+
+    def test_재연결_이력은_그대로_센다(self) -> None:
+        """재연결은 접수기가 원장에 적어 워커도 셀 수 있다."""
+        source = FakeSource()
+        source.socket_errors = None
+        source.socket_reconnects = [1_000.0, 1_050.0]
+        snapshot = StateSnapshotBuilder(source, now=lambda: 1_100.0).build()
+        assert snapshot["socket_reconnects_total"] == 2
+        assert snapshot["socket_reconnects_3min"] == 2

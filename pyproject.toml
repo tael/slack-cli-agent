@@ -20,21 +20,125 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The console ships its own page. Without this the installed package has no
+# UI file and `slack-cli-agent web` would serve nothing.
+[tool.setuptools.package-data]
+"slack_cli_agent.web" = ["assets/*.html"]
+# Default prompts so a freshly installed bot can boot before an operator has
+# written any org-specific prompt files under the state directory.
+"slack_cli_agent.assets" = ["prompts/*.md", "engine/*.json", "*.png"]
+# Marks the package as typed. Without it mypy treats every import of this
+# package from outside src/ as untyped, so the test suite could not be
+# type-checked at all (sca-rzk).
+"slack_cli_agent" = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-n 4"
 markers = [
     "integration: 실제 프로세스를 SIGKILL 로 죽이는 등 느린 통합 시험",
+    "real_cli: 실제 엔진 CLI 를 부른다. 로그인 상태와 요금에 의존하므로 기본 실행에서 제외한다",
 ]
+# real_cli 는 명시적으로 지정해야 돈다: pytest tests/real_cli -m real_cli
+addopts = "-n 4 -m 'not real_cli'"
 
 [tool.ruff]
-line-length = 100
+# 120 은 이 환경의 공통값이다. 이전 값 100 은 강제된 적이 없었다 - 넘는 줄이
+# 403개였다. 지키지 않는 상한은 아무것도 거르지 않으므로 실제로 지킬 수 있는
+# 값으로 내리고 강제한다.
+line-length = 120
 target-version = "py311"
+
+# select 를 안 적으면 ruff 판이 올라갈 때마다 강제되는 규칙이 바뀐다. 실제로
+# 0.16 에서 기본 집합이 크게 넓어져, 고치지 않았는데 통과하던 것이 실패할 수
+# 있는 상태였다(sca-vut). 켤 것을 여기에 적어 둔다.
+#
+# 뺀 것과 그 이유. 숫자는 2026-09-17 실측 위반 수다.
+#   N(3932) PLC2401(4200)  한글 식별자를 쓴다. 시험 이름과 대역 이름이 한국어다
+#   PLR2004(304)           시험의 기대값 리터럴이다. 상수로 빼면 오히려 안 읽힌다
+#   PLC0415(238)           함수 안 import 를 일부러 쓴다(순환 참조·시험 격리)
+#   ARG(607)               대역의 미사용 인자가 대부분이다. 서명은 실물을 따라야 한다
+#   TRY(158)               별건으로 본다. 예외 처리 방식 변경이라 동작이 바뀐다
+#   PT(48) PTH(20)         착수 가능. 규모가 있어 따로 뗀다
+[tool.ruff.lint]
+select = [
+    "A",     # 내장 이름 가리기
+    "B",     # 흔한 버그 형태
+    "BLE",   # 넓은 except
+    "C4",    # 불필요한 컴프리헨션
+    "DTZ",   # 시간대 없는 datetime
+    "E",     # pycodestyle 오류
+    "F",     # 미사용·미정의 이름
+    "FURB",  # 낡은 관용구
+    "G",     # 로깅 호출 형식
+    "I",     # import 정렬
+    "ISC",   # 문자열 암시적 이어붙임
+    "LOG",   # 로깅 오용
+    "PERF",  # 명백한 성능 손해
+    "PIE",   # 군더더기 문법
+    "RET",   # return 흐름
+    "RUF",   # ruff 고유
+    "SIM",   # 단순화
+    "UP",    # 옛 문법
+    "W",     # pycodestyle 경고
+]
+ignore = [
+    # 한글과 라틴 문자가 섞인 것을 오타 후보로 본다. 이 코드베이스는 한국어로
+    # 쓰므로 전부 오탐이다.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # 조건이 긴 자리에서 삼항으로 바꾸면 한 줄이 100자를 넘어가 오히려 안
+    # 읽힌다. 짧을 때 쓰는 것은 막지 않되 강제하지 않는다.
+    "SIM108",
+    # 바깥 반복 안의 조건부 append 를 컴프리헨션으로 바꾸라고 한다. 그 자리는
+    # 중첩이 깊어져 읽기 어려워진다. 실제 성능 차이도 이 규모에서는 없다.
+    "PERF401",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 분할기 시험의 기대값이 한 줄짜리 긴 리터럴이다. 입력과 기대 출력이 한눈에
+# 대조돼야 해서 줄을 나누면 오히려 못 읽는다.
+"tests/unit/test_render.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
+# tests/conftest.py and tests/real_cli/conftest.py share a module name, which
+# stops the check before it starts unless paths map to modules by directory.
+explicit_package_bases = true
+# src is listed so files under it map to `slack_cli_agent.*` rather than
+# `src.slack_cli_agent.*`, which would not match the override below and would
+# collide with the installed package. Test helpers are imported by bare name
+# (`from preflight_support import ...`), the way pytest puts the test
+# directory on sys.path.
+# tests is listed too: helpers shared across tests/unit and tests/shadow
+# live directly under tests/, which pytest puts on sys.path because
+# tests/conftest.py is there.
+mypy_path = "src:tests:tests/unit"
+
+# Annotation-requiring rules are off by default and turned back on for the
+# package below. They cannot be scoped the other way round: mypy only accepts
+# whole components as wildcards, so there is no pattern matching `test_*`, and
+# the helper modules above have no package prefix to match on either (sca-rzk).
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disallow_any_generics = false
+warn_return_any = false
+warn_unused_ignores = false
+
+# Tests stay loose on annotations. What they must still catch is a fake whose
+# signature drifted from the real one - that shows up as arg-type or
+# attr-defined, which are on everywhere.
+[[tool.mypy.overrides]]
+module = ["slack_cli_agent.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_any_generics = true
+warn_return_any = true
+warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
 module = [

@@ -23,7 +23,11 @@ from slack_cli_agent.review.base import (
 
 
 class 엔진호출:
-    def run(self, prompt: str, session_id: str, resume: bool) -> EngineResponse:
+    model = "모델"
+    effort = "medium"
+
+    def run(self, prompt: str, session_id: str, resume: bool, progress_log=None,
+            request_id: str = "") -> EngineResponse:
         raise NotImplementedError
 
 

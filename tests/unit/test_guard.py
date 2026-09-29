@@ -16,7 +16,6 @@ from slack_cli_agent.guard.pipeline import GuardPipeline, PipelineResult
 from slack_cli_agent.guard.rewrite import RewriteLossGuard
 from slack_cli_agent.guard.watch import PROMISE_WITHOUT_WATCH_RE, WATCH_RE, WatchPromiseGuard
 
-# ---------------------------------------------------------------------------
 # base.py — 계약 자체
 
 
@@ -53,7 +52,6 @@ class TestGuardContext:
         assert ctx.is_rewrite_retry is False
 
 
-# ---------------------------------------------------------------------------
 # mentions.py — PlainMentionGuard (원본 fix_plain_mentions 이식)
 
 
@@ -104,7 +102,6 @@ class TestPlainMentionGuard:
         assert result.body == body
 
 
-# ---------------------------------------------------------------------------
 # mentions.py — AddresseeGuard (원본 guard_wrong_addressee 이식 + 발신 문구 결합)
 
 
@@ -144,7 +141,6 @@ class TestAddresseeGuard:
         assert result.body == body
 
 
-# ---------------------------------------------------------------------------
 # rewrite.py — RewriteLossGuard (원본 late_rewrite_lost_content 이식 + 병합)
 
 
@@ -185,7 +181,6 @@ class TestRewriteLossGuard:
         assert result.body == after
 
 
-# ---------------------------------------------------------------------------
 # watch.py — WatchPromiseGuard (원본 WATCH_RE·PROMISE_WITHOUT_WATCH_RE 이식)
 
 
@@ -236,7 +231,6 @@ class TestWatchPromiseGuard:
         assert PROMISE_WITHOUT_WATCH_RE.search("배포 후 반영되면 말씀드릴게요.") is not None
 
 
-# ---------------------------------------------------------------------------
 # pipeline.py — GuardPipeline
 
 
@@ -282,7 +276,6 @@ class TestGuardPipeline:
         assert result.rerun.guard_name == "watch_promise"
 
 
-# ---------------------------------------------------------------------------
 # dropline.py — ConfiguredLineDropGuard (원본 drop_vooster 이식, 문구는 설정으로 받는다)
 
 
@@ -346,3 +339,221 @@ class TestConfiguredLineDropGuard:
         assert result.changed is True
         assert result.body == "본문."
         assert result.detail["dropped"] == ["문구2"]
+
+
+# mentions.py — BotMentionGuard (sca-c4m)
+
+
+class _가짜봇판정:
+    """user ID -> 봇인가. 조회 횟수를 센다."""
+
+    def __init__(self, bots: set[str], names: dict[str, str] | None = None) -> None:
+        self._bots = bots
+        self._names = names or {}
+        self.calls: list[str] = []
+
+    def is_bot(self, user_id: str) -> bool:
+        self.calls.append(user_id)
+        return user_id in self._bots
+
+    def display_name(self, user_id: str) -> str:
+        return self._names.get(user_id, "")
+
+
+class Test봇_멘션을_지운다:
+    """엔진 답에 다른 봇의 <@U...> 가 들어가면 그 봇이 깨어난다.
+
+    app_mention 은 bot_id 를 안 거르므로(sca-3ee) 수신에서 막을 수 없고,
+    막는 자리는 발신측이다. 답 A 가 봇 B 를 부르고 B 의 답이 A 를 부르면
+    둘이 서로를 계속 깨운다.
+    """
+
+    def _guard(self, bots: set[str], names: dict[str, str] | None = None):
+        from slack_cli_agent.guard.mentions import BotMentionGuard
+
+        판정 = _가짜봇판정(bots, names)
+        return BotMentionGuard(is_bot=판정.is_bot, display_name=판정.display_name), 판정
+
+    def test_봇_멘션은_표시_이름_평문으로_바뀐다(self) -> None:
+        guard, _ = self._guard({"U0REI"}, {"U0REI": "레이"})
+
+        result = guard.apply("<@U0REI> 에게 물어보세요", GuardContext())
+
+        assert result.body == "레이 에게 물어보세요"
+        assert result.changed is True
+        assert result.detail == {"targets": ["U0REI"]}
+
+    def test_사람_멘션은_그대로_둔다(self) -> None:
+        """사람을 부르는 것은 이 봇의 기능이다. PlainMentionGuard 가 일부러
+        @이름 을 멘션으로 바꾸는데 여기서 되돌리면 그 기능이 죽는다."""
+        guard, _ = self._guard({"U0REI"})
+
+        result = guard.apply("<@U0HUMAN> 확인 부탁드립니다", GuardContext())
+
+        assert result.body == "<@U0HUMAN> 확인 부탁드립니다"
+        assert result.changed is False
+
+    def test_표시_이름을_모르면_멘션만_지운다(self) -> None:
+        guard, _ = self._guard({"U0REI"})
+
+        result = guard.apply("먼저 <@U0REI> 를 부르세요", GuardContext())
+
+        assert "<@" not in result.body
+        assert result.changed is True
+
+    def test_이름이_붙은_멘션_형식도_바꾼다(self) -> None:
+        """슬랙은 <@U123|표시이름> 형태로도 보낸다. 이 형태를 놓치면
+        루프가 그대로 난다."""
+        guard, _ = self._guard({"U0REI"}, {"U0REI": "레이"})
+
+        result = guard.apply("<@U0REI|rei> 확인", GuardContext())
+
+        assert result.body == "레이 확인"
+
+    def test_코드_안의_멘션은_안_건드린다(self) -> None:
+        """예시로 적은 것은 실제로 부르지 않는다. PlainMentionGuard 가 같은
+        이유로 코드 구간을 비켜 간다."""
+        guard, _ = self._guard({"U0REI"}, {"U0REI": "레이"})
+
+        body = "이렇게 씁니다 : `<@U0REI>`"
+        result = guard.apply(body, GuardContext())
+
+        assert result.body == body
+        assert result.changed is False
+
+    def test_같은_봇을_여러_번_불러도_조회는_한_번이다(self) -> None:
+        guard, 판정 = self._guard({"U0REI"}, {"U0REI": "레이"})
+
+        guard.apply("<@U0REI> 와 <@U0REI>", GuardContext())
+
+        assert 판정.calls == ["U0REI"]
+
+    def test_봇이_없으면_본문이_그대로다(self) -> None:
+        guard, _ = self._guard(set())
+
+        result = guard.apply("그냥 답", GuardContext())
+
+        assert result.changed is False
+
+
+class Test봇_호출을_허용한_채널:
+    """bot_mentions 를 켠 채널은 다른 봇에게 일을 넘길 수 있어야 한다.
+
+    평문 이름은 링크도 알림도 안 되므로 넘기려면 진짜 멘션이 필요하다.
+    루프는 답이 물어본 봇을 되부를 때 닫히므로 그 갈래만 자른다.
+    """
+
+    def _guard(self, allowed: bool):
+        from slack_cli_agent.guard.mentions import BotMentionGuard
+
+        return BotMentionGuard(
+            is_bot=lambda uid: uid.startswith("UB"),
+            display_name=lambda uid: {"UBASKER": "아스카", "UBOTHER": "레이"}[uid],
+            allowed_in=lambda channel: allowed,
+        )
+
+    def test_다른_봇_멘션은_남는다(self) -> None:
+        guard = self._guard(allowed=True)
+
+        result = guard.apply(
+            "<@UBOTHER> 조사 부탁드립니다",
+            GuardContext(channel="C1", asker_id="U0HUMAN"),
+        )
+
+        assert result.body == "<@UBOTHER> 조사 부탁드립니다"
+        assert result.changed is False
+
+    def test_물어본_봇_멘션은_지운다(self) -> None:
+        """이 갈래를 남기면 그 봇이 다시 깨어나 서로를 계속 깨운다."""
+        guard = self._guard(allowed=True)
+
+        result = guard.apply(
+            "<@UBASKER> 확인했습니다",
+            GuardContext(channel="C1", asker_id="UBASKER"),
+        )
+
+        assert result.body == "아스카 확인했습니다"
+        assert result.detail == {"targets": ["UBASKER"]}
+
+    def test_끄면_모든_봇_멘션을_지운다(self) -> None:
+        guard = self._guard(allowed=False)
+
+        result = guard.apply(
+            "<@UBOTHER> 부탁드립니다",
+            GuardContext(channel="C1", asker_id="U0HUMAN"),
+        )
+
+        assert result.body == "레이 부탁드립니다"
+
+    def test_설정_조회가_실패하면_지운다(self) -> None:
+        """읽을 수 없는 설정은 허용이 아니라 기존 동작으로 떨어진다."""
+        from slack_cli_agent.guard.mentions import BotMentionGuard
+
+        def raises(channel: str) -> bool:
+            raise RuntimeError("설정 파일 없음")
+
+        guard = BotMentionGuard(
+            is_bot=lambda uid: True, display_name=lambda uid: "레이", allowed_in=raises
+        )
+
+        result = guard.apply("<@UBOTHER> 부탁", GuardContext(channel="C1"))
+
+        assert result.body == "레이 부탁"
+
+
+class Test코드_구간_보호가_안_샌다:
+    """가드가 코드 구간을 비켜 가는 절차의 결함 2건 (sca-9qv, 코덱스 리뷰).
+
+    예시로 적은 멘션을 진짜 멘션으로 바꾸면 엉뚱한 사람이나 봇을 부른다.
+    """
+
+    def _guard(self):
+        from slack_cli_agent.guard.mentions import BotMentionGuard
+
+        return BotMentionGuard(is_bot=lambda uid: True, display_name=lambda uid: "레이")
+
+    @pytest.mark.parametrize(
+        "본문",
+        [
+            "`<@U0REI>`",
+            "``<@U0REI>``",
+            "```<@U0REI>```",
+            "```\n<@U0REI>\n```",
+            "````<@U0REI>````",
+        ],
+    )
+    def test_백틱_개수와_무관하게_보호된다(self, 본문: str) -> None:
+        """마크다운은 백틱을 몇 개든 같은 수로 닫으면 코드 구간이다. 홑겹과
+        세겹만 보면 겹백틱 예시의 안쪽이 바뀐다."""
+        result = self._guard().apply(본문, GuardContext())
+
+        assert result.body == 본문
+        assert result.changed is False
+
+    def test_여는_백틱과_닫는_백틱_수가_다르면_코드_구간이_아니다(self) -> None:
+        """길이가 다른 백틱 run 은 코드 구간을 열지 않는다. 그런데도 구간으로
+        읽으면 그 안의 진짜 멘션이 가려져 가드를 통째로 건너뛴다(코덱스 리뷰)."""
+        result = self._guard().apply("````<@U0REI> ```", GuardContext())
+
+        assert "레이" in result.body
+        assert "<@U0REI>" not in result.body
+
+    def test_본문에_구분자로_쓰는_문자가_있어도_안_깨진다(self) -> None:
+        """코드 구간을 빼 둘 때 쓰는 표식이 본문에 이미 있으면 되돌리는
+        단계가 그것을 구간 번호로 읽는다. 구간이 없으면 예외가 나고 있으면
+        본문이 다른 조각으로 바뀐다."""
+        본문 = "표식 \x000\x00 과 `코드` 와 <@U0REI>"
+
+        result = self._guard().apply(본문, GuardContext())
+
+        assert "\x000\x00" in result.body
+        assert "`코드`" in result.body
+        assert "레이" in result.body
+
+    def test_평문_멘션_가드도_같은_보호를_받는다(self) -> None:
+        """두 가드가 같은 절차를 쓴다. 한쪽만 고치면 다른 쪽이 그대로 샌다."""
+        guard = PlainMentionGuard()
+
+        result = guard.apply("``@레이``", GuardContext(mention_names={"레이": "U0REI"}))
+
+        assert result.body == "``@레이``"

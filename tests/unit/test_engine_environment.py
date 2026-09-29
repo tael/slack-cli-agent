@@ -17,6 +17,7 @@ from slack_cli_agent.engine.environment import (
     CodexEnvironmentPolicy,
     EngineEnvironmentPolicy,
     EngineEnvironmentPolicyRegistry,
+    GeminiEnvironmentPolicy,
     create_environment_policy,
     registry,
 )
@@ -82,6 +83,25 @@ class TestCodexEnvironmentPolicy:
 
         assert "CODEX_HOME" not in env
 
+    def test_pins_home_to_bot_home_not_just_codex_home(self):
+        """CODEX_HOME 만 덮어쓰고 HOME 은 그대로 두면, 부모 프로세스의 HOME 이
+        다른 봇 또는 사용자 개인 홈을 가리킬 때 그 경로가 그대로 샌다
+        (sca-kos.5). HOME 도 봇 전용 경로로 덮어써야 한다."""
+        source = dict(_rich_source_env())
+        source["HOME"] = "/Users/other-bot-home"
+        policy = CodexEnvironmentPolicy(profile_name="examplebot", home_dir=Path("/bot/codex-home"))
+
+        env = policy.build(source)
+
+        assert env["HOME"] == "/bot/codex-home"
+        assert env["HOME"] != source["HOME"]
+
+    def test_falls_back_to_source_home_when_profile_has_no_home_dir(self):
+        policy = CodexEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        env = policy.build(_rich_source_env())
+
+        assert env["HOME"] == "/Users/someone"
+
     def test_does_not_mutate_source_env(self):
         source = _rich_source_env()
         snapshot = dict(source)
@@ -92,22 +112,134 @@ class TestCodexEnvironmentPolicy:
         assert source == snapshot
 
 
+class TestGeminiEnvironmentPolicy:
+    def test_allowlist_excludes_slack_and_other_engine_credentials(self):
+        policy = GeminiEnvironmentPolicy(profile_name="examplebot", home_dir=Path("/bot/gemini-home"))
+        env = policy.build(_rich_source_env())
+
+        assert "SLACK_BOT_TOKEN" not in env
+        assert "SLACK_APP_TOKEN" not in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_AUTH_TOKEN" not in env
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+        assert "CODEX_HOME" not in env
+
+    def test_pins_home_to_bot_specific_path_not_user_path(self):
+        """agy has no dedicated relocation var, so isolation overwrites HOME itself."""
+        policy = GeminiEnvironmentPolicy(profile_name="examplebot", home_dir=Path("/bot/gemini-home"))
+        env = policy.build(_rich_source_env())
+
+        assert env["HOME"] == "/bot/gemini-home"
+        assert env["HOME"] != _rich_source_env()["HOME"]
+
+    def test_pins_home_away_from_a_different_bots_home_in_source_env(self):
+        """부모 프로세스의 HOME 이 다른 봇의 홈을 가리켜도(예: 오기동·설정
+        실수) 이 봇의 home_dir 가 이겨야 한다."""
+        source = dict(_rich_source_env())
+        source["HOME"] = "/Users/other-bot-home"
+        policy = GeminiEnvironmentPolicy(profile_name="examplebot", home_dir=Path("/bot/gemini-home"))
+
+        env = policy.build(source)
+
+        assert env["HOME"] == "/bot/gemini-home"
+        assert env["HOME"] != source["HOME"]
+
+    def test_carries_bot_profile_name_for_downstream_scripts(self):
+        policy = GeminiEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        env = policy.build(_rich_source_env())
+
+        assert env["BOT_PROFILE"] == "examplebot"
+
+    def test_defaults_path_and_lang_when_source_missing_them(self):
+        policy = GeminiEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        env = policy.build({})
+
+        assert env["PATH"] == "/usr/bin:/bin"
+        assert env["LANG"] == "ko_KR.UTF-8"
+
+    def test_falls_back_to_source_home_when_profile_has_none(self):
+        policy = GeminiEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        env = policy.build(_rich_source_env())
+
+        assert env["HOME"] == "/Users/someone"
+
+    def test_does_not_mutate_source_env(self):
+        source = _rich_source_env()
+        snapshot = dict(source)
+        policy = GeminiEnvironmentPolicy(profile_name="examplebot", home_dir=Path("/bot/gemini-home"))
+
+        policy.build(source)
+
+        assert source == snapshot
+
+
 class TestClaudeEnvironmentPolicy:
-    def test_strips_anthropic_api_key_and_auth_token_only(self):
+    def test_strips_anthropic_api_key_and_auth_token(self):
         policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
         env = policy.build(_rich_source_env())
 
         assert "ANTHROPIC_API_KEY" not in env
         assert "ANTHROPIC_AUTH_TOKEN" not in env
 
-    def test_preserves_oauth_token_and_other_vars(self):
-        """원본은 차단 목록 방식이라 API 키 인증 경로만 제거하고 나머지는
-        그대로 넘긴다. 허용 목록인 Codex 와 계약이 다르다."""
+    def test_allowlist_excludes_slack_and_other_engine_credentials(self):
+        """차단 목록에서 허용 목록으로 바꿨다(sca-kos.5) — 부모 프로세스의
+        슬랙 토큰·다른 엔진 자격증명·세션 IPC 값이 새지 않아야 한다."""
+        policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        env = policy.build(_rich_source_env())
+
+        assert "SLACK_BOT_TOKEN" not in env
+        assert "SLACK_APP_TOKEN" not in env
+        assert "CODEX_HOME" not in env
+
+    def test_allowlist_excludes_other_claude_session_ipc_vars(self):
+        """실측(2026-09-15)에서 CLAUDE_CODE_MESSAGING_SOCKET/_TOKEN 이 이
+        세션의 os.environ 에 실제로 있었다 — 봇 프로세스로 새면 다른 세션의
+        IPC 채널에 연결될 위험이 있다."""
+        source = dict(_rich_source_env())
+        source["CLAUDE_CODE_MESSAGING_SOCKET"] = "/tmp/claude-messaging.sock"
+        source["CLAUDE_CODE_MESSAGING_TOKEN"] = "messaging-secret"
+        source["CLAUDE_CODE_SESSION_ID"] = "other-session-id"
+        policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+
+        env = policy.build(source)
+
+        assert "CLAUDE_CODE_MESSAGING_SOCKET" not in env
+        assert "CLAUDE_CODE_MESSAGING_TOKEN" not in env
+        assert "CLAUDE_CODE_SESSION_ID" not in env
+
+    def test_preserves_oauth_token_for_subscription_auth(self):
+        """허용 목록으로 바뀌어도, 원래 차단 목록의 목적이던 구독 OAuth 인증
+        경로는 계속 동작해야 한다."""
         policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
         env = policy.build(_rich_source_env())
 
         assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat-secret"
+
+    def test_carries_path_and_lang_from_source(self):
+        policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        env = policy.build(_rich_source_env())
+
         assert env["PATH"] == "/usr/local/bin:/usr/bin:/bin"
+        assert env["LANG"] == "en_US.UTF-8"
+
+    def test_defaults_path_and_lang_when_source_missing_them(self):
+        policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        env = policy.build({})
+
+        assert env["PATH"] == "/usr/bin:/bin"
+        assert env["LANG"] == "ko_KR.UTF-8"
+
+    def test_omits_oauth_token_when_source_missing_it(self):
+        policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        env = policy.build({})
+
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+    def test_carries_bot_profile_name_for_downstream_scripts(self):
+        policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        env = policy.build(_rich_source_env())
+
+        assert env["BOT_PROFILE"] == "examplebot"
 
     def test_does_not_mutate_source_env(self):
         source = _rich_source_env()
@@ -128,12 +260,16 @@ class TestCreateEnvironmentPolicy:
         policy = create_environment_policy("claude", profile_name="examplebot", home_dir=None)
         assert isinstance(policy, ClaudeEnvironmentPolicy)
 
+    def test_selects_gemini_policy_by_engine_name(self):
+        policy = create_environment_policy("gemini", profile_name="examplebot", home_dir=None)
+        assert isinstance(policy, GeminiEnvironmentPolicy)
+
     def test_unknown_engine_name_raises(self):
         with pytest.raises(ConfigError):
             create_environment_policy("unknown", profile_name="examplebot", home_dir=None)
 
     def test_unknown_engine_name_lists_known_engines_in_error(self):
-        with pytest.raises(ConfigError, match="codex.*claude|claude.*codex"):
+        with pytest.raises(ConfigError, match=r"codex.*claude|claude.*codex"):
             create_environment_policy("unknown", profile_name="examplebot", home_dir=None)
 
 
@@ -214,4 +350,21 @@ class TestDefaultRegistryExtension:
         있게, known_names() 에 "fake" 가 없는 것까지 함께 본다.
         """
         assert "fake" not in registry.known_names()
-        assert {"codex", "claude"}.issubset(set(registry.known_names()))
+        assert {"codex", "claude", "gemini"}.issubset(set(registry.known_names()))
+
+
+class TestClaudeAuthNeedsUser:
+    """allowlist 로 바꿀 때 USER 를 빠뜨려 claude 가 '로그인되지 않음' 으로
+    실패했다. 2026-09-15 에 실제 CLI 로 확인했다 — PATH/LANG/HOME 만으로는
+    인증이 안 되고 USER 를 더하면 된다. SHELL·LOGNAME·TMPDIR 은 무관했다.
+    """
+
+    def test_USER가_전달된다(self) -> None:
+        policy = ClaudeEnvironmentPolicy(profile_name="봇A")
+        env = policy.build({"PATH": "/bin", "USER": "someone"})
+        assert env["USER"] == "someone"
+
+    def test_USER가_없으면_키를_안_만든다(self) -> None:
+        policy = ClaudeEnvironmentPolicy(profile_name="봇A")
+        env = policy.build({"PATH": "/bin"})
+        assert "USER" not in env

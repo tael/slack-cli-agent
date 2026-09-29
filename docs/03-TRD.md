@@ -59,7 +59,7 @@ Socket Mode 구현 위에 데코레이터 등록과 미들웨어를 얹은 래�
     save_restart_dropped    큐가 대체한다. 제거
     save_inflight_dropped   큐가 대체한다. 제거
     replay_restart_dropped  큐의 QUEUED 작업 재개가 대신한다. 제거
-    catch_up (되짚기)       유지한다. 소켓 끊김 동안 도착한 메시지는 큐로 못 막는다
+    catch_up (캐치업)       유지한다. 소켓 끊김 동안 도착한 메시지는 큐로 못 막는다
     _busy_threads·_thread_queue   큐의 스레드 배타 락이 대신한다. 제거
 
 그 외 응답 동작은 전부 원본과 같아야 한다. **기능이 1대1 로 대응되어야 shadow
@@ -261,7 +261,7 @@ Socket Mode 구현 위에 데코레이터 등록과 미들웨어를 얹은 래�
         pipeline.py              GuardPipeline
 
       reliability/
-        catchup.py               CatchupService — 되짚기
+        catchup.py               CatchupService — 캐치업
         health.py                HealthMonitor — 연결 감시와 자가 재기동
         watchjobs.py             WatchJobQueue
         dedup.py                 DeduplicationTracker — 중복 처리 방어
@@ -367,7 +367,7 @@ class RequestContext:
     text: str
     files: tuple[Mapping, ...]
     unaddressed: bool          # 멘션 없이 들어온 것
-    late: bool                 # 되짚기로 다시 집은 것
+    late: bool                 # 캐치업으로 다시 집은 것
     requeued: bool             # 대기줄에서 다시 꺼낸 것
     queued_at: float | None
     first_reaction_at: float | None
@@ -425,10 +425,6 @@ class Engine(ABC):
     def detect_usage_limit(self, response: EngineResponse) -> UsageLimit | None:
         """한도 소진 판정."""
 
-    def directives_for_turn(self, request: EngineRequest) -> str:
-        """턴마다 바뀌는 지시. 시스템 프롬프트가 고정되는 엔진용. 기본은 빈 문자열."""
-        return ""
-
     def readable_paths_note(self, paths: Sequence[Path]) -> str:
         """읽기 허용 경로를 알리는 방식. 인자로 되는 엔진은 빈 문자열."""
         return ""
@@ -439,14 +435,19 @@ class Engine(ABC):
 class EngineRequest:
     prompt: str
     system_prompt: str
-    session_id: str
+    session_id: str | None    # None 이면 실제로 도는 엔진이 발급한다
     resume: bool
-    model: str
+    model: str | None         # None 이면 엔진 spec.model 을 쓴다
     effort: str
     workdir: Path
-    readable_dirs: tuple[Path, ...]
-    allowed_tools: tuple[str, ...]
-    trust_level: TrustLevel
+    readable_dirs: tuple[Path, ...] = ()
+    tools: ToolSelection = field(default_factory=ToolSelection)    # 허용 없음·허용목록·전면 금지 세 상태
+    trust_level: TrustLevel = TrustLevel.GENERAL
+    requirements: ExecutionRequirements = field(default_factory=ExecutionRequirements)
+    progress_log: Path | None = None    # 진행 표시용 도구 이름 적을 곳. None 이면 표시 없음
+    timeout_sec: float | None = None    # EngineRunner 가 채운다. None 이면 아직 안 돌았다
+    request_id: str = ""                # 한 요청의 모든 엔진 시도를 묶는 값. 감사만 읽는다
+    budget_report: Mapping[str, Any] = field(default_factory=dict)    # 프롬프트 예산 결과. 감사만 읽는다
 
 
 @dataclass(frozen=True)
@@ -466,11 +467,12 @@ class EngineResponse:
 
     Claude   --add-dir 로 경로를 넘긴다      readable_paths_note 는 빈 문자열
              세션 ID 를 우리가 발급한다      session_id_from 은 None
-             시스템 프롬프트가 턴마다 갱신   directives_for_turn 은 빈 문자열
+             시스템 프롬프트가 턴마다 갱신   --append-system-prompt 로 매 턴 다시 싣는다
 
     Codex    경로 인자가 없다               readable_paths_note 가 문장을 만든다
              CLI 가 thread_id 를 발급한다    session_id_from 이 그것을 돌려준다
-             최초 지시가 끝까지 우선한다     directives_for_turn 이 화자·침묵만 앞에 붙인다
+             최초 지시가 끝까지 우선한다     재개 턴은 그 턴 지침을 프롬프트 본문에 싣는다
+                                            (engine/codex.py 의 _resume_prompt, sca-ivs)
 
 ### 3.5 EngineRegistry
 
@@ -764,8 +766,10 @@ def main() -> int:
     | IngressDaemon                               |
     |   Socket Mode 로 이벤트 수신                |
     |   중복 검사 (DeduplicationTracker)          |
-    |   즉시 리액션 부여 (eyes / hourglass)       |
     |   JobQueue 에 QUEUED 로 기록                |
+    |   리액션 부여 (둘 중 하나만)                |
+    |     eyes      바로 처리로 넘어간다          |
+    |     hourglass 같은 스레드에 선행 건이 있다  |
     +----------------------+----------------------+
                            |  SQLite WAL
     +----------------------v----------------------+
@@ -826,6 +830,10 @@ class JobQueue:
 끝나야 다음이 뽑히므로 순서가 구조적으로 보장된다. 원본의 `_busy_threads` 와
 `_thread_queue` 가 하던 일이고, 프로세스가 죽어도 유지된다.
 
+**작업을 뽑을 때 모래시계를 떼고 눈을 단다.** 두 표식은 동시에 달리지 않는다.
+접수 때 무조건 모래시계를 달면 모든 요청에 눈과 모래시계가 같이 떠서 대기
+상태를 구분하지 못한다.
+
 ### 크래시 감지
 
 워커가 실행 중 5초마다 `heartbeat_ts` 를 갱신한다. 15초 이상 갱신이 멈춘
@@ -836,7 +844,7 @@ class JobQueue:
 
 ### 배경 작업
 
-되짚기·건강 감시·지켜보기 큐·사용량 확인·인명표 갱신은 Worker 프로세스가
+캐치업·건강 감시·지켜보기 큐·사용량 확인·인명표 갱신은 Worker 프로세스가
 소유한다. Ingress 는 수신만 한다.
 
 ```python
@@ -989,14 +997,39 @@ shadow 대조에도 쓴다.
     persona             페르소나 파일
     knowledge           지식 파일 목록
     trusted_users       이 채널에서 신뢰하는 사용자
-    answer_unaddressed  호명 없는 메시지에도 답하는가. 원본 mention_only 의 반대다
+    user_tools          사용자별 추가 허용 도구 표. 소유자에게는 안 따진다
+    answer_unaddressed  호명 없는 메시지에도 답하는가. 원본 mention_only 의 반대다.
+                        슬랙에서 「끼어들기 허용」 · 「멘션 전용」 으로 바꾼다
     name                슬랙에서 조회한 채널 이름. 없으면 채널 ID
     session_scope       대화를 잇는 단위. thread(기본) 또는 channel
     disclose_mechanism  구조 공개 허용
     skills              Skill 도구 개방
     light_context       맥락을 줄여 넘기는가
     rich                실행 모델 표기 등 상세 출력
-    chat                채널 대화량. 기본 normal
+    chat                채널 대화량. 기본 normal. 프롬프트 문구와 응답 판정 양쪽에 쓴다
+
+#### 호명 없는 스레드 답글의 판정
+
+`slack/policy.py` 의 `ResponsePolicy` 한 곳에서 정한다. 리스너는 사실만 모아
+넘긴다 — 채널 설정과 스레드 상태(봇이 이미 말했는가, 그 말이 되물음이었는가).
+
+    answer_unaddressed 꺼짐   안 받는다. 등록 안 된 채널도 같다
+    다른 참가자 호명          안 받는다. chat 값과 되물음 여부보다 앞선다
+    chat=quiet              봇이 되물은 답만 받는다
+    chat=normal             봇이 낀 스레드에서 ResponseGate 를 통과한 말만
+    chat=active             봇이 안 낀 스레드도 같은 기준으로 받는다
+
+`considers` 는 채널 설정만 본다. 스레드 조회가 슬랙 API 호출이라 그 앞에서
+거르려고 나눠 둔 것이다.
+
+**「나를 안 불렀다」 와 「아무도 안 불렀다」 는 다르다.** 한 스레드에 봇이 여럿
+있고, 선두 멘션이 다른 참가자를 가리키면 그 요청은 그 참가자 몫이다.
+`addresses_someone_else` 가 이것을 판정하고 `ResponsePolicy.answers` 와 복구
+경로(`reliability/catchup.py`)가 함께 쓴다. 한쪽만 적용하면 실시간으로 거른
+메시지를 복구가 다시 집어 든다.
+
+판정은 선두 위치만 본다. 문장 안의 멘션("아까 `<@U1>` 가 말한 것 확인해줘")은
+호명이 아니라 지칭이라, 그것까지 거르면 실제 요청이 사라진다.
 
 **여기 없는 키는 `extra` 에 보존되고 플러그인이 읽는다.** 원본의 `org_admins`
 가 그 예다 — 조직 전용 판정이라 코어 필드로 올리지 않는다.
@@ -1044,7 +1077,6 @@ class JsonStore(Generic[T]):
       engine_state.json              엔진 전환 상태
       state.db                       기계 상태 — 큐·세션·감사·부검·지켜보기
       audit.jsonl                    감사 기록 사본. 외부 도구가 읽는다
-      bot.pid
 
 `.gitignore` 에 넣을 것 —
 
@@ -1171,6 +1203,8 @@ class RuntimeSettings:
     # 벽시계와 monotonic 의 차이. 43분 보고가 실제 42초였던 사례
     sleep_gap_suspect_sec: float = 30
     max_concurrent: int = 10
+    # 명부에 넣을 계정 핸들의 형태. 빈 문자열이면 형식을 안 본다
+    roster_handle_pattern: str = r"\."
     slack_chunk: int = 3500
     markdown_block_limit: int = 12000
     session_ttl_hours: int = 24
@@ -1336,7 +1370,7 @@ PRD 9절의 단계에 대응한다. 각 단계 끝에 동작하는 봇이 있어
     엣지 케이스 테스트 전부 통과
     shadow 대조 불일치 0
     그 채널에서 며칠 운영해 리액션 상태가 원본과 같게 전이되는지 확인
-    되짚기가 같은 요청을 중복 처리하지 않는지 확인
+    캐치업이 같은 요청을 중복 처리하지 않는지 확인
 
 ### 되돌리기
 

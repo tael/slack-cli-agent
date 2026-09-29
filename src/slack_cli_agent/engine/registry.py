@@ -1,19 +1,22 @@
-"""엔진 등록소.
+"""Engine registry.
 
-엔진 모듈이 자기를 등록한다. 어댑터 본체(호출부)는 Engine 만 안다. 세 번째
-엔진을 추가하는 것은 모듈 하나를 만들고 이 등록소에 한 줄 등록하는 것으로
-끝난다.
+Each engine module registers itself; callers only know about Engine.
+Adding a third engine means writing one module and one register()
+call here.
 
-등록을 import 시점 부수 효과로 만들지 않는다. 조립하는 자리(Application)가
-명시적으로 register() 를 부른다.
+Registration isn't an import-time side effect. The assembly layer
+(Application) calls register() explicitly.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from ..core.errors import ConfigError
 from .base import Engine
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..config.profile import Profile
@@ -36,5 +39,50 @@ class EngineRegistry:
             raise ConfigError(f"엔진 {name} 이 등록돼 있지 않다. 등록된 엔진: {known}")
         return cls(profile, settings)
 
+    def engine_class(self, name: str) -> type[Engine] | None:
+        """For callers that need an engine's declarations without building one —
+        preflight reads `capabilities` before any profile is loaded into one."""
+        return self._classes.get(name)
+
     def available(self) -> list[str]:
         return sorted(self._classes)
+
+
+def default_registry() -> EngineRegistry:
+    """The engines this package ships. Plugins add their own on top of this.
+
+    Here rather than in the assembly layer so preflight can read the same set
+    without importing Application.
+    """
+    from .claude import ClaudeEngine
+    from .codex import CodexEngine
+    from .gemini import GeminiEngine
+
+    registry = EngineRegistry()
+    registry.register(ClaudeEngine)
+    registry.register(CodexEngine)
+    registry.register(GeminiEngine)
+    return registry
+
+
+def registry_for_profile(profile: Profile) -> EngineRegistry:
+    """default_registry() plus the engines this profile's plugins declare.
+
+    For readers outside the assembly layer that only hold a profile. Without it
+    a plugin engine looks unknown and its declarations are read as another
+    engine's defaults (sca-cs0).
+
+    A plugin that fails is skipped, like everywhere else plugins are loaded.
+    Callers here are read paths -- the web console polls one every few seconds
+    -- so one broken plugin must not take the whole reply down.
+    """
+    from ..plugin.loader import PluginLoader
+
+    registry = default_registry()
+    for plugin in PluginLoader().load(profile.plugins).plugins:
+        try:
+            for engine_class in plugin.engines():
+                registry.register(engine_class)
+        except Exception as exc:  # noqa: BLE001 - a broken plugin loses its engines, nothing else
+            log.warning("플러그인 %s 의 엔진을 등록하지 못했다 : %s", plugin.name, exc)
+    return registry

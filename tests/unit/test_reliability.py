@@ -1,4 +1,4 @@
-"""신뢰성 계층 — 되짚기, 연결 감시, 지켜보기 큐, 중복 처리 방어.
+"""신뢰성 계층 — 캐치업, 연결 감시, 지켜보기 큐, 중복 처리 방어.
 
 기대 출력은 원본 `bot.py` 의 `reactions_on`, `already_handled`, `unanswered`
 본문을 그대로 옮긴 하네스로 실제 실행해 얻었다(손으로 짐작하지 않았다). 하네스
@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -22,9 +23,7 @@ from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import SlackBotIdentity
 
-# ---------------------------------------------------------------------------
 # dedup.py — DeduplicationTracker
-# ---------------------------------------------------------------------------
 
 
 class TestDeduplicationTracker:
@@ -62,9 +61,7 @@ class TestDeduplicationTracker:
         assert tracker.already_seen_event("C", "1") is False
 
 
-# ---------------------------------------------------------------------------
 # catchup.py — 순수 판정 함수 (원본 실행 결과로 기대값을 얻었다)
-# ---------------------------------------------------------------------------
 
 
 class TestReactionsOn:
@@ -168,9 +165,7 @@ class TestUnanswered:
         assert [m["ts"] for m in result] == ["400.0"]
 
 
-# ---------------------------------------------------------------------------
 # catchup.py — CatchupService
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -196,6 +191,7 @@ def make_service(
     identity=None,
     settings: RuntimeSettings | None = None,
     now: float = 100_000.0,
+    attachments=None,
 ):
     from slack_cli_agent.reliability.catchup import CatchupService
 
@@ -207,6 +203,7 @@ def make_service(
         identity=identity or fake_identity(user_id=bot_user_id, bot_id="B123"),
         now=lambda: now,
         started_at=0.0,  # 이 프로세스가 아주 예전에 떴다고 가정 — 유예 창을 검사 대상에서 뺀다
+        attachments=attachments,
     )
 
 
@@ -240,7 +237,7 @@ class TestFindMissed:
     def test_파일을_붙여_부른_말도_찾는다(self) -> None:
         """슬랙은 파일을 붙이면 subtype 을 붙인다.
 
-        소켓 이벤트를 받는 쪽은 그것을 사람 말로 받는다. 되짚기가 거르면 그
+        소켓 이벤트를 받는 쪽은 그것을 사람 말로 받는다. 캐치업이 거르면 그
         요청은 재기동 중에 들어왔을 때만 유실되고, 평소에는 멀쩡해 보인다.
         """
         history = FakeHistoryReader(
@@ -255,6 +252,42 @@ class TestFindMissed:
         outcome = service.find_missed("C1", window=3600)
 
         assert [m.ts for m in outcome.value()] == ["99000.0"]
+
+    def test_붙은_파일을_그대로_싣는다(self) -> None:
+        """접수 경로는 event["files"] 를 RequestContext 에 담는다. 캐치업이 그것을
+        안 담으면 재기동 중에 들어온 요청만 첨부 없이 엔진에 간다."""
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {
+                        "ts": "99000.0",
+                        "user": "U1",
+                        "subtype": "file_share",
+                        "text": "<@U_BOT> 이거 봐줘",
+                        "files": [{"id": "F1", "name": "a.png", "url_private": "https://x/a.png"}],
+                    },
+                ]
+            }
+        )
+        service = make_service(history)
+
+        missed = service.find_missed("C1", window=3600).value()
+
+        assert [f.get("id") for f in missed[0].files] == ["F1"]
+
+    def test_본문_없는_부름은_안_찾는다(self) -> None:
+        """접수 경로는 빈 본문을 되묻고 큐에 안 넣는다(ingress). 캐치업이 같은
+        판정을 안 하면 그 부름이 캐치업으로만 엔진 한 턴을 쓴다."""
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "99000.0", "user": "U1", "text": "<@U_BOT>"},
+                ]
+            }
+        )
+        service = make_service(history)
+
+        assert service.find_missed("C1", window=3600).value() == []
 
     def test_채널_참여_알림은_안_찾는다(self) -> None:
         history = FakeHistoryReader(
@@ -294,12 +327,41 @@ class TestFindMissed:
 
         assert service.find_missed("C1", window=3600).value() == []
 
+    def test_봇이_낀_스레드여도_다른_참가자를_부른_말은_안_찾는다(self) -> None:
+        """실시간 경로가 거른 것을 복구가 다시 집어 들면 안 된다.
+
+        2026-09-19 18:44 에 아스카만 부른 요청을 이 봇이 받았다. 실시간
+        판정만 고치면 같은 메시지가 다음 캐치업에서 되살아난다.
+        """
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "98000.0", "user": "U1", "text": "<@U_BOT> 처음 질문", "reply_count": 2},
+                ]
+            },
+            threads={
+                "98000.0": [
+                    {
+                        "ts": "98000.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 처음 질문",
+                        "reactions": [{"name": "white_check_mark"}],
+                    },
+                    {"ts": "98500.0", "bot_id": "B123", "text": "답했습니다"},
+                    {"ts": "99000.0", "user": "U1", "text": "<@U_BOT2> 리뷰해주세요"},
+                ]
+            },
+        )
+        service = make_service(history)
+
+        assert service.find_missed("C1", window=3600).value() == []
+
     def test_신원을_모르면_판정_불가로_올린다(self) -> None:
         """부름 판정의 근거가 없으면 "부른 말이 없다" 와 구분되지 않는다.
 
         조회에 실패한 그 회차를 "놓친 요청 없음" 으로 끝내면 재시도 목록에서도
         빠져, 신원이 복구돼도 그 구간을 회수하지 못한다. 원본은 봇 사용자 ID 가
-        없으면 되짚기 자체를 건너뛴다.
+        없으면 캐치업 자체를 건너뛴다.
         """
 
         class 조회실패:
@@ -402,6 +464,45 @@ class TestFindMissed:
 
         assert [m.ts for m in outcome.value()] == ["99005.0"]
 
+    def test_직접_안_불러도_답한_스레드_계속은_unaddressed_다(self) -> None:
+        """listener.py:113 의 from_message 는 같은 조건(멘션 없이 봇이 낀
+        스레드에서 이어진 말)에 unaddressed=True 를 매긴다. find_missed 가
+        RequestContext 를 직접 만들 때 이 필드를 안 채우면 기본값 False 로
+        남아 SilenceRuleSection 이 그 요청에서 빠진다 (코덱스 8차 리뷰,
+        sca-f6ii)."""
+        history = FakeHistoryReader(
+            history={
+                "C1": [{
+                    "ts": "99000.0", "thread_ts": "99000.0", "reply_count": 2,
+                    "latest_reply": "99010.0", "user": "U1", "text": "<@U_BOT> 질문",
+                }]
+            },
+            threads={
+                "99000.0": [
+                    {"ts": "99000.0", "user": "U1", "text": "<@U_BOT> 질문"},
+                    {"ts": "99005.0", "user": "U_BOT", "bot_id": "B123", "text": "답변입니다"},
+                    {"ts": "99010.0", "user": "U1", "text": "다음 단계도 알려줘"},
+                ]
+            },
+        )
+        service = make_service(history)
+
+        outcome = service.find_missed("C1", window=3600)
+
+        ctx = outcome.value()[0]
+        assert ctx.ts == "99010.0"
+        assert ctx.unaddressed is True
+
+    def test_직접_부른_말은_unaddressed가_아니다(self) -> None:
+        history = FakeHistoryReader(
+            history={"C1": [{"ts": "99000.0", "user": "U1", "text": "<@U_BOT> 질문"}]}
+        )
+        service = make_service(history)
+
+        outcome = service.find_missed("C1", window=3600)
+
+        assert outcome.value()[0].unaddressed is False
+
 
 class TestSweep:
     def test_한_스레드에_여럿이면_최근_것만_대표로_남는다(self) -> None:
@@ -452,6 +553,59 @@ class TestSweep:
         assert report.unchecked_channels == ["C1"]
         assert report.missed == []
 
+    def test_대표로_안_뽑힌_후보는_첨부를_안_받는다(self) -> None:
+        """find_missed 가 후보마다 다운로드하면 대표 선정에서 버려지는
+        메시지의 첨부까지 받는다. worker.py 는 skipped 의 .files 를 안 읽으니
+        그 다운로드는 버려지는 작업이다 (코덱스 8차 리뷰, sca-b8gn)."""
+
+        class SpyAttachmentStore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def download(self, event: Mapping[str, Any]) -> tuple[tuple[dict[str, Any], ...], int]:
+                self.calls.append(str(event.get("ts")))
+                return tuple(event.get("files") or ()), 0
+
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {
+                        "ts": "99000.0",
+                        "thread_ts": "99000.0",
+                        "reply_count": 1,
+                        "latest_reply": "99010.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 1",
+                        "files": [{"id": "F1", "name": "a.png", "url_private": "https://x/a.png"}],
+                    },
+                ]
+            },
+            threads={
+                "99000.0": [
+                    {
+                        "ts": "99000.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 1",
+                        "files": [{"id": "F1", "name": "a.png", "url_private": "https://x/a.png"}],
+                    },
+                    {
+                        "ts": "99010.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 2",
+                        "files": [{"id": "F2", "name": "b.png", "url_private": "https://x/b.png"}],
+                    },
+                ]
+            },
+        )
+        attachments = SpyAttachmentStore()
+        service = make_service(history, attachments=attachments)
+
+        report = service.sweep(["C1"], window=3600)
+
+        assert [c.ts for c in report.missed] == ["99010.0"]
+        assert [c.ts for c in report.skipped] == ["99000.0"]
+        assert attachments.calls == ["99010.0"]
+
 
 class TestRetryPending:
     def test_아직_유예_안의_채널은_다시_보지_않는다(self) -> None:
@@ -486,9 +640,7 @@ class TestRetryPending:
         assert [m.ts for m in statuses[0].missed] == ["800.0"]
 
 
-# ---------------------------------------------------------------------------
 # health.py — SocketErrorWatch, HealthMonitor
-# ---------------------------------------------------------------------------
 
 
 class TestSocketErrorWatch:
@@ -683,9 +835,7 @@ class TestHealthMonitor:
         assert event.kind is HealthEventKind.RESTARTED
 
 
-# ---------------------------------------------------------------------------
 # watchjobs.py — WatchJobQueue
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -858,7 +1008,7 @@ class Test스스로재기동:
 class Test재시도도대표건만남긴다:
     """한 스레드에 놓친 것이 여럿이면 가장 최근 것 하나만 처리한다.
 
-    정상 되짚기는 그렇게 묶는데 재시도 경로만 전부 그대로 돌려줬다. 그러면
+    정상 캐치업은 그렇게 묶는데 재시도 경로만 전부 그대로 돌려줬다. 그러면
     기록 조회가 한 번 실패했다가 복구된 뒤 같은 스레드의 여러 요청에 각각
     답이 올라간다. 2026-08-31 이전에 10개가 밀리면 답이 10개 올라간 것과
     같은 형태다.
@@ -883,7 +1033,7 @@ class Test재시도도대표건만남긴다:
             },  # 기본 now 는 100_000.0 — 유예 120초 밖이다
         )
 
-    def test_정상_되짚기는_대표_하나만_남긴다(self) -> None:
+    def test_정상_캐치업은_대표_하나만_남긴다(self) -> None:
         service = make_service(self.한_스레드에_여럿인_기록())
         report = service.sweep(["C1"], window=3600)
         assert [m.ts for m in report.missed] == ["99002.0"]
@@ -916,3 +1066,122 @@ class Test재시도도대표건만남긴다:
         statuses = service.retry_pending()
 
         assert statuses[0].missed[0].late
+
+    def test_재시도도_대표에게만_첨부를_받는다(self) -> None:
+        """sweep() 은 _pick_representatives 에서 대표에게만 첨부를 받는다
+        (sca-b8gn). retry_pending() 도 같은 메서드를 거치는지 직접 검증한다
+        (10차 코덱스 리뷰 지적, sca-qmai)."""
+
+        class SpyAttachmentStore:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def download(self, event: Mapping[str, Any]) -> tuple[tuple[dict[str, Any], ...], int]:
+                self.calls.append(str(event.get("ts")))
+                return tuple(event.get("files") or ()), 0
+
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {
+                        "ts": "99000.0",
+                        "thread_ts": "99000.0",
+                        "reply_count": 1,
+                        "latest_reply": "99001.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 첫 물음",
+                    },
+                ]
+            },
+            threads={
+                "99000.0": [
+                    {
+                        "ts": "99000.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 첫 물음",
+                        "files": [{"id": "F1", "name": "a.png", "url_private": "https://x/a.png"}],
+                    },
+                    {
+                        "ts": "99001.0",
+                        "user": "U1",
+                        "text": "<@U_BOT> 두 번째",
+                        "files": [{"id": "F2", "name": "b.png", "url_private": "https://x/b.png"}],
+                    },
+                ]
+            },
+        )
+        attachments = SpyAttachmentStore()
+        service = make_service(FakeHistoryReader(history={"C1": None}), attachments=attachments)
+        service.sweep(["C1"], window=3600)
+        service._history = history  # type: ignore[attr-defined]
+        service._now = lambda: 100_030.0 + 1  # type: ignore[attr-defined]
+
+        statuses = service.retry_pending()
+
+        assert [m.ts for m in statuses[0].missed] == ["99001.0"]
+        assert attachments.calls == ["99001.0"]
+
+
+class Test캐치업_본문도_실시간과_같게_만든다:
+    """캐치업은 ingress 를 안 거쳐 본문을 그대로 큐에 넣었다. 실시간으로 받은
+    같은 말과 본문이 달라진다 (코덱스 리뷰 지적, sca-za2a)."""
+
+    def _본문(self, text: str) -> str:
+        history = FakeHistoryReader(history={"C1": [{"ts": "99000.0", "user": "U1", "text": text}]})
+        outcome = make_service(history).find_missed("C1", window=3600)
+        return outcome.value()[0].text
+
+    def test_봇_자신의_멘션을_지운다(self) -> None:
+        assert self._본문("<@U_BOT> 질문") == "질문"
+
+    def test_남을_부른_멘션은_남긴다(self) -> None:
+        assert self._본문("<@U_BOT> <@U9> 에게 물어봐") == "<@U9> 에게 물어봐"
+
+
+class Test캐치업도_첨부를_내려받는다:
+    """캐치업은 슬랙 원본 files 딕셔너리를 그대로 담을 뿐 다운로드를 안 해
+    local_path 가 없다. 정상 경로(ingress)로 받은 같은 메시지와 달리 엔진이
+    파일을 못 연다 (코덱스 7차 리뷰, sca-h2dr).
+
+    다운로드는 find_missed 가 아니라 대표 선정(_pick_representatives) 시점에
+    일어난다 - 버려지는 후보의 첨부까지 받지 않기 위해서다 (sca-b8gn). 그래서
+    이 시험은 find_missed 대신 sweep 을 통해 확인한다.
+    """
+
+    def test_저장된_첨부의_local_path_를_담는다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.slack.attachments import AttachmentStore, DownloadResult
+
+        attachments = AttachmentStore(
+            attach_dir=tmp_path / "attach",
+            token_provider=lambda: "xoxb-token",
+            downloader=lambda url, token: DownloadResult("image/png", b"pngdata"),
+        )
+        history = FakeHistoryReader(
+            history={
+                "C1": [{
+                    "ts": "99000.0", "user": "U1", "text": "<@U_BOT> 질문",
+                    "files": [{"name": "photo.png", "url_private_download": "https://slack/x", "size": 10}],
+                }]
+            }
+        )
+        service = make_service(history, attachments=attachments)
+
+        report = service.sweep(["C1"], window=3600)
+
+        ctx = report.missed[0]
+        assert len(ctx.files) == 1
+        assert ctx.files[0]["name"] == "photo.png"
+        assert Path(ctx.files[0]["local_path"]).read_bytes() == b"pngdata"
+        assert ctx.missed_files == 0
+
+    def test_첨부_저장소가_없으면_원본_그대로다(self) -> None:
+        """기존 시험이 attachments 인자 없이 make_service 를 부르므로,
+        주입이 없을 때의 하위호환도 지킨다."""
+        history = FakeHistoryReader(
+            history={"C1": [{"ts": "99000.0", "user": "U1", "text": "<@U_BOT> 질문"}]}
+        )
+        service = make_service(history)
+
+        outcome = service.find_missed("C1", window=3600)
+
+        assert outcome.value()[0].files == ()

@@ -12,12 +12,16 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+from review_support import assert_header_is_one_table
+
 from slack_cli_agent.review.base import ReviewTarget
 from slack_cli_agent.review.format import FormatReviewTask
 
 
 def make_task(**overrides) -> FormatReviewTask:
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "ledger": None,
         "message_lookup": None,
         "transcript": None,
@@ -30,7 +34,7 @@ def make_task(**overrides) -> FormatReviewTask:
         "bot_display_name": "테스트봇",
         "persona_dir": "/persona",
         "prompts_dir": "/prompts",
-        "post_rich_command": "python3 /tools/post_rich.py --profile example",
+        "rewrite_command": "/venv/bin/python -m slack_cli_agent.cli rewrite --profile example",
     }
     kwargs.update(overrides)
     return FormatReviewTask(**kwargs)
@@ -53,7 +57,7 @@ class Test프롬프트:
         assert "내용이 맞았는지 틀렸는지는 보지 않는다" in prompt
         assert "/prompts" in prompt
         assert "/persona" in prompt
-        assert "python3 /tools/post_rich.py --profile example --channel C1 --update 1.1" in prompt
+        assert "/venv/bin/python -m slack_cli_agent.cli rewrite --profile example --channel C1 --update 1.1" in prompt
 
     def test_평문채널표기를담는다(self) -> None:
         task = make_task()
@@ -68,7 +72,7 @@ class Test머리말:
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
         record = {"model": "opus", "effort": "high", "elapsed": 3.0}
         header = task.build_header(target, record, "")
-        assert "## 서식 점검 : 회의방" in header
+        assert header.startswith("# 서식 점검 : 회의방\n")
         assert "리치" in header
         assert "opus / high" in header
 
@@ -77,3 +81,12 @@ class Test머리말:
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
         header = task.build_header(target, None, "")
         assert "감사 기록에서 이 답변을 찾지 못해 뺐습니다" in header
+        # 표기는 이 점검의 판정 기준이므로 실행 기록 유무와 무관하게 넣는다.
+        assert "리치" in header
+
+    def test_요청자를표안에한형태로보인다(self) -> None:
+        task = make_task()
+        target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
+        header = task.build_header(target, {"model": "opus", "effort": "high"}, "https://slack/x")
+        assert "| 요청한 사람 | <@U1> |" in header
+        assert_header_is_one_table(header)

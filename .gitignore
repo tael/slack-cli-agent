@@ -1,6 +1,10 @@
 # 봇별 실제 설정과 상태. 조직 고유값이 들어간다
 profiles/*.json
 !profiles/*.example.json
+# 슬랙 앱 매니페스트 정본. 봇 표시명과 설명이 들어가 프로필과 성질이 같다.
+# 정책 원천인 _template.json 만 올린다
+slack-apps/*.json
+!slack-apps/_template.json
 prompts/*.md
 !prompts/*.md.example
 persona/
@@ -23,3 +27,8 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads-credential-key
+.beads/proxieddb/

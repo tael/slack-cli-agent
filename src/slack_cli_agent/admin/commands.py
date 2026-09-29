@@ -1,12 +1,4 @@
-"""기본 관리 명령 3종.
-
-원본 `handle_admin`(01-source-analysis.md 18절)이 다루는 명령 중 회사
-결합이 없는 것만 코어로 옮긴다. "말수 많게/적게", "api 모드", "코치 모드",
-"학습 제안/반영/되돌리기" 는 채널 설정 쓰기(JsonStore)와 지식 축적 배치에
-의존하는데 그 둘 다 이 작업 범위 밖이라(웨이브 0 의 `config/`, 그리고
-`learn.py` 대응 모듈이 아직 없다) 여기서는 만들지 않는다. 채널 쓰기가
-생기면 그때 옮긴다.
-"""
+"""Core admin commands."""
 
 from __future__ import annotations
 
@@ -15,35 +7,44 @@ from typing import Any, ClassVar
 
 from .command import AdminCommand, AdminContext, AdminResult
 
-_HELP_TEXT = (
-    "관리 명령 목록 :\n"
-    "- 채널 목록 : 지금 응답하는 채널을 보여준다\n"
-    "- 엔진 상태 : 지금 어느 실행기로 도는지 보여준다\n"
-    "- 도움말 : 이 안내를 보여준다"
-)
-
 
 class HelpCommand(AdminCommand):
-    """도움말. 원본 ADMIN_HELP 를 간추린 것이다."""
-
     name: ClassVar[str] = "help"
+    usage: ClassVar[str] = "도움말"
+    description: ClassVar[str] = "이 안내를 보여준다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("도움말", "help", "명령어")
 
     def execute(self, ctx: AdminContext) -> AdminResult:
-        return AdminResult(message=f"*{ctx.profile.display_name} 관리 명령*\n\n{_HELP_TEXT}")
+        return AdminResult(
+            message=(
+                f"*{ctx.profile.display_name} 관리 명령*\n"
+                "소유자만 쓸 수 있습니다.\n\n"
+                f"{ctx.help_text}\n\n"
+                "새 채널은 초대 후 소유자가 부르면 자동 등록됩니다."
+            )
+        )
+
+
+# Channel mode as the user sees it. The stored value is a code-internal
+# name and shouldn't reach the user.
+_MODE_LABELS = {"": "기본", "agent_coach": "코치", "api_helpdesk": "연동 API", "private": "비공개"}
+
+# Session scope as the user sees it, same reason as _MODE_LABELS.
+_SCOPE_LABELS = {"channel": "채널", "thread": "스레드"}
 
 
 class ChannelListCommand(AdminCommand):
-    """지금 응답 중인 채널 목록. 원본의 "채널 목록" 명령과 대응한다.
+    """Lists channels currently being responded to.
 
-    원본은 채널마다 사람이 읽을 이름(`fetch_channel_name` 으로 구한 것)을
-    함께 보여주는데, 그 조회는 슬랙 API 몫이라 이 패키지의 `ChannelConfig`
-    에는 없다. 여기서는 channel_id 로 대신한다.
+    Uses channel_id in place of a human-readable name, since that lookup is
+    a Slack API call this package's `ChannelConfig` doesn't make.
     """
 
     name: ClassVar[str] = "channel_list"
+    usage: ClassVar[str] = "채널 목록"
+    description: ClassVar[str] = "지금 응답하는 채널을 보여준다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("채널 목록", "채널목록", "채널 리스트")
@@ -54,23 +55,29 @@ class ChannelListCommand(AdminCommand):
             return AdminResult(message="*응답 중인 채널*\n\n등록된 채널이 없습니다.")
         lines = ["*응답 중인 채널*"]
         for channel_id, cfg in configs.items():
-            mode = "API 안내" if cfg.mode == "api_helpdesk" else "기본"
             chat = {"active": "많음", "quiet": "적음"}.get(cfg.chat, "보통")
-            # 이름이 없을 때만 채널 ID 로 대신한다. 채널 ID 만 나오면 어느
-            # 채널인지 사람이 알아볼 수 없다.
             lines.append(f"- {cfg.name or channel_id}")
+            mode = _MODE_LABELS.get(cfg.mode, cfg.mode or "기본")
             lines.append(f"  - 응답 형식 : {mode}, 말수 : {chat}")
+            # Without these two lines there's no way to see from Slack which
+            # channels answer without being named, or which keep one session
+            # across the whole channel.
+            called = "없어도 답함" if cfg.answer_unaddressed else "불러야 답함"
+            scope = _SCOPE_LABELS.get(cfg.session_scope, cfg.session_scope)
+            lines.append(f"  - 호명 : {called}, 세션 : {scope}")
         return AdminResult(message="\n".join(lines))
 
 
 class EngineStatusCommand(AdminCommand):
-    """지금 어느 실행기로 도는지, 전환 승인 여부.
+    """Shows which engine is active and the fallback approval state.
 
-    원본의 "엔진 상태" 명령과 대응한다. `engine_state.json` 은 사람이 직접
-    열어 보고 되돌리는 경우가 있어 파일로 남는다(03-TRD.md 6절).
+    `engine_state.json` is a real file since people sometimes open and
+    revert it by hand.
     """
 
     name: ClassVar[str] = "engine_status"
+    usage: ClassVar[str] = "엔진 상태"
+    description: ClassVar[str] = "지금 어느 실행기로 도는지, 전환 승인 여부를 보여준다"
 
     def matches(self, text: str) -> bool:
         return text.strip() in ("엔진 상태", "엔진상태", "엔진")

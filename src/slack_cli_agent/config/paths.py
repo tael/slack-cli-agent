@@ -1,9 +1,62 @@
-"""상태 디렉터리 하위 경로. 경로 조립을 한 곳에 모은다."""
+"""Paths under the state directory, assembled in one place."""
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+PROFILE_DIR_ENV = "SLACK_CLI_AGENT_PROFILE_DIR"
+_APP_DIR_NAME = "slack-cli-agent"
+
+
+def _env_dirs(env: Mapping[str, str]) -> tuple[Path, ...]:
+    raw = env.get(PROFILE_DIR_ENV, "")
+    return tuple(Path(part).expanduser() for part in raw.split(os.pathsep) if part)
+
+
+def user_profile_dir(env: Mapping[str, str] | None = None, home: Path | None = None) -> Path:
+    """Where an installed bot keeps its profiles.
+
+    XDG says a relative XDG_CONFIG_HOME must be ignored, so it falls back to
+    ~/.config in that case. The `profiles/` leaf matches the layout the repo
+    already uses for profile files.
+    """
+    env = os.environ if env is None else env
+    home = home or Path.home()
+    configured = Path(env.get("XDG_CONFIG_HOME", "")).expanduser()
+    base = configured if configured.is_absolute() else home / ".config"
+    return base / _APP_DIR_NAME / "profiles"
+
+
+def default_profile_dirs(
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    cwd: Path | None = None,
+) -> tuple[Path, ...]:
+    """Search order used by every command that takes --profile-dir.
+
+    The environment wins so one machine can run several bots, the user config
+    directory is what an installed bot uses, and the current directory stays
+    last so running from a checkout keeps working (sca-jl4.3).
+    """
+    env = os.environ if env is None else env
+    ordered = (*_env_dirs(env), user_profile_dir(env, home), cwd or Path.cwd())
+    seen: list[Path] = []
+    for path in ordered:
+        if path not in seen:
+            seen.append(path)
+    return tuple(seen)
+
+
+def default_profile_write_dir(
+    env: Mapping[str, str] | None = None, home: Path | None = None
+) -> Path:
+    """Where `init` puts a new profile: the first place the search will look."""
+    env = os.environ if env is None else env
+    configured = _env_dirs(env)
+    return configured[0] if configured else user_profile_dir(env, home)
 
 
 @dataclass(frozen=True)
@@ -15,8 +68,9 @@ class StatePaths:
         return cls((home or Path.home()) / f".{name}")
 
     @property
-    def profile(self) -> Path:
-        return self.root / "profile.json"
+    def credentials(self) -> Path:
+        """Slack tokens. Operator-owned, never part of the installed package."""
+        return self.root / "credentials.json"
 
     @property
     def channels(self) -> Path:
@@ -31,14 +85,57 @@ class StatePaths:
         return self.root / "persona"
 
     @property
+    def watch_out(self) -> Path:
+        """Background watch results. Under the bot rather than the work
+        directory: a channel pointed at a real repository used to get a
+        .watch-out/ inside it (sca-vokt)."""
+        return self.root / "watch-out"
+
+    @property
+    def responses(self) -> Path:
+        """Bot replies, logged per channel into per-day files."""
+        return self.root / "responses"
+
+    @property
     def proposals(self) -> Path:
-        """학습 제안 파일이 날짜별로 쌓이는 곳. 원본 PROPOSAL_DIR."""
+        """Learning proposal files, one set per day."""
         return self.root / "proposals"
 
     @property
     def knowledge(self) -> Path:
-        """채널별 지식 파일. 학습 반영이 이 아래에 줄을 더한다. 원본 KNOWLEDGE_DIR."""
+        """Per-channel knowledge files a human writes and edits."""
         return self.persona / "knowledge"
+
+    @property
+    def learned(self) -> Path:
+        """Where the learning batch appends. Separate from `knowledge` because a
+        human editing a file and a batch appending to it clobber each other, and
+        because a machine-written line carries less weight than a written one
+        (sca-jl4.5). File names match `knowledge`: `_*.md` common, `<channel>.md`
+        per channel.
+        """
+        return self.persona / "learned"
+
+    @property
+    def skills(self) -> Path:
+        """Bot-owned skill files, kept out of any engine's shared home directory.
+
+        Layout expected inside varies by engine (see engine/claude.py,
+        engine/codex.py, engine/gemini.py for what each one can actually see).
+        """
+        return self.root / "skills"
+
+    @property
+    def skill_files(self) -> Path:
+        """Where a skill's own files live, and the only place the bot can write them.
+
+        Claude Code refuses Write/Bash on any path holding a `.claude`
+        component while in dontAsk mode, even when its parent came in through
+        --add-dir (실측 2026-09-19). Its skill discovery path is exactly such a
+        path, so the two are split: this directory holds the files, and the
+        engine points the discovery path here (engine/claude.py prepare()).
+        """
+        return self.skills / "installed"
 
     @property
     def engine_dir(self) -> Path:
@@ -50,30 +147,32 @@ class StatePaths:
 
     @property
     def database(self) -> Path:
-        """기계 상태 전부. 큐·세션·감사·부검 기록·지켜보기 큐."""
+        """All machine state: queue, sessions, audit trail, postmortems, watch queue."""
         return self.root / "state.db"
 
     @property
     def audit_log(self) -> Path:
-        """감사 기록 사본. 외부 도구가 읽는 형식이라 DB 와 함께 남긴다."""
+        """Audit log copy, kept alongside the DB since external tools read this format."""
         return self.root / "audit.jsonl"
 
     @property
     def state_snapshot(self) -> Path:
-        """프로세스 상태 기록. 주기적으로 통째로 갈아 끼운다. 원본 STATE_FILE."""
+        """Process state snapshot, rewritten wholesale on a timer."""
         return self.root / "state.json"
-
-    @property
-    def pid_file(self) -> Path:
-        return self.root / "bot.pid"
-
-    @property
-    def mcp_config(self) -> Path:
-        return self.engine_dir / "mcp.json"
 
     def engine_settings(self, engine_type: str) -> Path:
         return self.engine_dir / f"settings-{engine_type}.json"
 
+    @property
+    def progress(self) -> Path:
+        """One log per in-flight request, written by the engine's own tool hook.
+
+        Kept out of engine_dir: that directory is an engine's home, and a
+        file appearing inside it is read by the CLI as configuration.
+        """
+        return self.root / "progress"
+
     def ensure(self) -> None:
-        for path in (self.root, self.prompts, self.persona, self.engine_dir):
+        for path in (self.root, self.prompts, self.persona, self.engine_dir,
+                     self.progress, self.skill_files):
             path.mkdir(parents=True, exist_ok=True)

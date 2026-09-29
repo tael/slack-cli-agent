@@ -16,11 +16,11 @@ def ctx(**over) -> RequestContext:
 
 class TestOutcome:
     def test_부재는_기본값으로_대체된다(self) -> None:
-        assert Outcome.absent().value_or([]) == []
+        assert Outcome[list[str]].absent().value_or([]) == []
 
     def test_판정_불가는_기본값으로_대체되지_않는다(self) -> None:
         with pytest.raises(ValueError, match="판정 불가"):
-            Outcome.unknown("조회 3회 실패").value_or([])
+            Outcome[list[str]].unknown("조회 3회 실패").value_or([])
 
     def test_판정_불가는_사유를_보존한다(self) -> None:
         outcome: Outcome[list[str]] = Outcome.unknown("조회 3회 실패")
@@ -43,7 +43,7 @@ class TestRequestContext:
     def test_중복_판정_키는_채널과_메시지_ts_다(self) -> None:
         assert ctx(channel="C1", ts="1.1").key == ("C1", "1.1")
 
-    def test_되짚기_표시는_원본을_바꾸지_않는다(self) -> None:
+    def test_캐치업_표시는_원본을_바꾸지_않는다(self) -> None:
         original = ctx()
         marked = original.marked_late()
         assert marked.late is True

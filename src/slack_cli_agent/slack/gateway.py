@@ -1,9 +1,7 @@
-"""SlackGateway — Socket Mode 연결과 이벤트 분배.
+"""SlackGateway — Socket Mode connection and event dispatch.
 
-원본은 `slack_bolt.App` 의 `@app.event(...)` 데코레이터로 핸들러를 등록하고,
-`SocketModeHandler` 가 연결을 맺는다. 여기서는 핸들러 등록·분배와 연결을
-나눈다. 연결을 맺는 부분은 `connector` 로 주입받아, 단위 시험이 실제
-네트워크를 부르지 않게 한다.
+Connection setup is injected via `connector` so unit tests never open
+a real socket.
 """
 
 from __future__ import annotations
@@ -13,37 +11,101 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from ..core.errors import ConfigError
+from ..core.periodic import PeriodicRunner
+from ..reliability.connection import ConnectionEpochRecorder, ConnectionKind
 
 log = logging.getLogger(__name__)
 
-# 연결을 맺는 함수. 게이트웨이 자신과 앱 토큰을 받는다.
 Connector = Callable[["SlackGateway", str], Any]
+
+# How often the background watch checks whether the socket is actually up.
+# Not the process's own heartbeat — apps.connections.open plus the
+# websocket handshake can take a couple of seconds, so this only needs to
+# be short enough that the first "connected" log doesn't lag noticeably.
+_CONNECTION_POLL_SEC = 2.0
+
+
+class ConnectionEdgeDetector:
+    """Turns repeated `is_connected()` polls into "just became connected"
+    events, and tells the first connection apart from a reconnect.
+
+    Without this, a poll loop that logs on every `True` would log once per
+    poll interval for the entire time the socket stays up — the opposite of
+    the quiet-means-fine signal this is meant to produce.
+    """
+
+    def __init__(self) -> None:
+        self._connected = False
+        self._ever_connected = False
+
+    def on_poll(self, connected: bool) -> str | None:
+        if connected and not self._connected:
+            kind = "reconnect" if self._ever_connected else "initial"
+            self._connected = True
+            self._ever_connected = True
+            return kind
+        if not connected:
+            self._connected = False
+        return None
 
 
 class SlackGateway:
-    """이벤트 타입별 핸들러를 등록하고 들어온 이벤트를 분배한다."""
-
-    def __init__(self, client: Any, connector: Connector | None = None) -> None:
+    def __init__(
+        self,
+        client: Any,
+        connector: Connector | None = None,
+        profile_name: str = "",
+        epoch_recorder: ConnectionEpochRecorder | None = None,
+    ) -> None:
         self._client = client
         self._connector = connector or _socket_mode_connect
+        self._profile_name = profile_name
         self._handlers: dict[str, list[Callable[[Mapping[str, Any]], None]]] = {}
+        self._epoch_recorder = epoch_recorder
+        self._edges = ConnectionEdgeDetector()
+
+    def observe_connection(self, connected: bool) -> None:
+        """Feeds one socket-state observation to the log and the epoch ledger.
+
+        The worker that runs catch-up is a separate process, so the ledger is
+        the only path this observation can take.
+        """
+        kind = self._edges.on_poll(connected)
+        if kind is not None:
+            self.log_connected(reconnect=(kind == "reconnect"))
+            self._record_connection(kind)
+        elif connected:
+            self._note_alive()
+
+    def _record_connection(self, kind: str) -> None:
+        if self._epoch_recorder is None:
+            return
+        try:
+            self._epoch_recorder.record_connection(
+                ConnectionKind.RECONNECT if kind == "reconnect" else ConnectionKind.INITIAL
+            )
+        except Exception:
+            # Dropping the socket over a failed write would lose every later
+            # event; a late catch-up is the cheaper failure.
+            log.exception("소켓 연결 세대 기록 실패")
+
+    def _note_alive(self) -> None:
+        if self._epoch_recorder is None:
+            return
+        try:
+            self._epoch_recorder.note_alive()
+        except Exception:
+            log.exception("소켓 생존 기록 실패")
 
     @property
     def client(self) -> Any:
         return self._client
 
     def on(self, event_type: str, handler: Callable[[Mapping[str, Any]], None]) -> None:
-        """이 이벤트 타입이 들어올 때 부를 핸들러를 등록한다.
-
-        같은 타입에 여러 핸들러를 등록할 수 있다. 등록한 순서대로 부른다.
-        """
+        """Registers a handler for an event type. Multiple handlers run in registration order."""
         self._handlers.setdefault(event_type, []).append(handler)
 
     def dispatch(self, event_type: str, event: Mapping[str, Any]) -> None:
-        """등록된 핸들러 전부에게 이벤트를 넘긴다.
-
-        등록된 핸들러가 없는 이벤트 타입은 조용히 넘어간다.
-        """
         for handler in self._handlers.get(event_type, ()):
             handler(event)
 
@@ -51,11 +113,11 @@ class SlackGateway:
         return len(self._handlers.get(event_type, ()))
 
     def handle_events_api(self, payload: Mapping[str, Any]) -> None:
-        """Socket Mode 로 온 events_api payload 하나를 분배한다.
+        """Dispatches one events_api payload.
 
-        핸들러에서 난 예외를 밖으로 내지 않는다. 여기서 예외가 올라가면
-        소켓 연결이 끊기고, 그 뒤에 온 요청이 전부 사라진다. 다만 삼키되
-        기록은 남긴다.
+        Handler exceptions are caught, not re-raised — letting one
+        escape would drop the socket connection and lose every event
+        after it.
         """
         event = payload.get("event") or {}
         event_type = event.get("type") or ""
@@ -66,12 +128,34 @@ class SlackGateway:
         except Exception:
             log.exception("이벤트 처리 실패: %s", event_type)
 
-    def start(self, app_token: str) -> None:
-        """Socket Mode 연결을 맺는다. 연결이 끊길 때까지 돌아온다.
+    def log_connected(self, *, reconnect: bool = False) -> None:
+        """Logs one line for an actual Socket Mode connection, not just the
+        process having started. `auth_test` failing doesn't block the log —
+        it just leaves the workspace/bot fields as "확인 안 됨" instead of
+        losing the connection event entirely.
+        """
+        team = "확인 안 됨"
+        bot_user = "확인 안 됨"
+        try:
+            info = self._client.auth_test()
+            team = str(info.get("team") or team)
+            bot_user = str(info.get("user") or info.get("user_id") or bot_user)
+        except Exception:  # noqa: BLE001 — identifying the workspace is best-effort; the connection event itself must still be logged
+            pass
+        log.info(
+            "슬랙 소켓 %s : 워크스페이스=%s 봇=%s 프로필=%s",
+            "재연결" if reconnect else "연결",
+            team,
+            bot_user,
+            self._profile_name or "확인 안 됨",
+        )
 
-        토큰이 비어 있으면 연결하지 않는다. 빈 토큰으로 연결을 시도하면
-        슬랙이 인증 오류를 내는데, 그 시점에는 설정이 빠진 것인지 토큰이
-        만료된 것인지 구분되지 않는다.
+    def start(self, app_token: str) -> None:
+        """Opens the Socket Mode connection. Blocks until it drops.
+
+        Refuses an empty app token outright, rather than letting
+        Slack's auth error obscure whether the config is missing or
+        the token expired.
         """
         if not app_token:
             raise ConfigError("Socket Mode 앱 토큰이 없다")
@@ -79,10 +163,10 @@ class SlackGateway:
 
 
 def _socket_mode_connect(gateway: SlackGateway, app_token: str) -> None:
-    """기본 연결기. `slack_sdk` 의 Socket Mode 구현을 쓴다.
+    """Default connector, backed by slack_sdk's Socket Mode client.
 
-    import 를 함수 안에 둔다 — 이 모듈을 읽는 것만으로 SDK 가 딸려 오면
-    연결과 무관한 하위 명령까지 그 의존에 매인다.
+    Import is local to this function so reading this module doesn't
+    pull in the SDK for subcommands unrelated to connecting.
     """
     from slack_sdk.socket_mode import SocketModeClient
     from slack_sdk.socket_mode.response import SocketModeResponse
@@ -90,8 +174,9 @@ def _socket_mode_connect(gateway: SlackGateway, app_token: str) -> None:
     socket = SocketModeClient(app_token=app_token, web_client=gateway.client)
 
     def on_request(client: Any, request: Any) -> None:
-        # 먼저 응답한다. 슬랙은 3초 안에 답을 못 받으면 같은 요청을 다시 보낸다 —
-        # 처리를 마친 뒤에 답하면 오래 걸리는 요청이 중복 접수된다.
+        # Ack first. Slack retries any request it doesn't hear back
+        # from within 3 seconds, so acking after processing would
+        # duplicate slow requests.
         client.send_socket_mode_response(SocketModeResponse(envelope_id=request.envelope_id))
         if request.type == "events_api":
             gateway.handle_events_api(request.payload or {})
@@ -99,8 +184,17 @@ def _socket_mode_connect(gateway: SlackGateway, app_token: str) -> None:
     socket.socket_mode_request_listeners.append(on_request)
     socket.connect()
 
-    # 연결을 유지한다. `connect()` 는 곧바로 돌아오므로 여기서 막지 않으면
-    # 프로세스가 그대로 끝나 이벤트를 하나도 받지 못한다.
+    # connect() returns as soon as it kicks off the handshake, not once the
+    # socket is actually up — is_connected() is the real observation point.
+    # Polling (rather than a one-shot check) also catches any later
+    # reconnect after a drop, which would otherwise go unlogged.
+    def poll_connection() -> None:
+        gateway.observe_connection(bool(socket.is_connected()))
+
+    PeriodicRunner(poll_connection, _CONNECTION_POLL_SEC, name="socket_mode_watch").start()
+
+    # Block here — connect() returns immediately, so without this the
+    # process would exit before receiving any events.
     from threading import Event
 
     Event().wait()
