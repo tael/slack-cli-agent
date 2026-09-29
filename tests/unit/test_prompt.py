@@ -288,13 +288,13 @@ class TestPresentPeopleSection:
         section = PresentPeopleSection()
         ctx = CompositionContext(
             principal=STRANGER,
-            people=(("홍길동", "<@U1>"), ("김영희", "<@U2>")),
+            people=(("홍길동", "<@U1>"), ("임꺽정", "<@U2>")),
         )
         assert section.applies_to(ctx) is True
         text = section.render(ctx)
         assert "이 대화에 함께 있는 사람이다" in text
         assert "- 홍길동 <@U1>" in text
-        assert "- 김영희 <@U2>" in text
+        assert "- 임꺽정 <@U2>" in text
         assert "여기 있는 사람을 없는 사람처럼 말하지 않는다." in text
 
     def test_말을_건_사람에게는_표시가_붙는다(self) -> None:
@@ -304,11 +304,11 @@ class TestPresentPeopleSection:
         ctx = CompositionContext(
             principal=STRANGER,
             asker_id="U1",
-            people=(("홍길동", "<@U1>"), ("김영희", "<@U2>")),
+            people=(("홍길동", "<@U1>"), ("임꺽정", "<@U2>")),
         )
         text = section.render(ctx)
         assert "- 홍길동 <@U1>  (지금 말을 건 사람)" in text
-        assert "- 김영희 <@U2>  (지금 말을 건 사람)" not in text
+        assert "- 임꺽정 <@U2>  (지금 말을 건 사람)" not in text
 
 
 class TestAttachmentSection:
