@@ -2072,7 +2072,7 @@ class Test실패_사유의_진단값:
         assert str(FailureDetail(code="xoxb-1234567890-abcdef")) == "code=unknown:22"
 
     def test_경로도_길이만_남긴다(self) -> None:
-        assert str(FailureDetail(code="/Users/taelkim/비밀/파일.md")) == "code=unknown:23"
+        assert str(FailureDetail(code="/Users/example/비밀/파일.md")) == "code=unknown:23"
 
     def test_아는_낱말은_그대로_남긴다(self) -> None:
         assert str(FailureDetail(code="SUCCESS")) == "code=SUCCESS"

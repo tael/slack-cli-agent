@@ -27,5 +27,5 @@ printf '%s  종료코드=%s\n%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$CODE" "$OUT"
 
 $OUT
 
-반영하려면: tools/slack-app.py update tael <app_id> slack-apps/<이름>.json" >> "$LOG" 2>&1
+반영하려면: tools/slack-app.py update example <app_id> slack-apps/<이름>.json" >> "$LOG" 2>&1
 exit 0

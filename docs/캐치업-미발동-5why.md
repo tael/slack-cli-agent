@@ -6,7 +6,7 @@ jobs 테이블, 측정 스크립트 `~/Jobs/tasks/catchup-ingress-gap-test.py`.
 ## 1. 문제 정의
 
 - 00:16:25 접수기(local.shinji.ingress) unload. 워커는 계속 실행.
-- 00:16:27 `#테스트`(C0EXAMPLE01) 에 tael 계정으로 부름 1건 게시(ts 1789485387.422519).
+- 00:16:27 `#테스트`(C0EXAMPLE01) 에 example 계정으로 부름 1건 게시(ts 1789485387.422519).
 - 00:20:29 접수기 load.
 - 00:22:28 jobs 에 등재(id 21). 게시로부터 361초, 접수기 재기동으로부터 119초.
   payload `late=False` — 캐치업이 넣은 것이 아니다(캐치업은 `marked_late()` 로

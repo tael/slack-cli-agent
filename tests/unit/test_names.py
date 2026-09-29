@@ -319,7 +319,7 @@ class TestUserNamer:
 
     def test_소유자_표시명이_있으면_그것을_쓴다(self) -> None:
         namer = UserNamer(
-            lambda uid: "Taeil Kim",
+            lambda uid: "Gildong Hong",
             identity=_가짜신원("UBOT"),
             bot_display_name="신지",
             owner_user_id="UOWNER",

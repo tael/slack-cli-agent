@@ -465,7 +465,7 @@ class Test경로에_공백이_있어도_같은_자리에_남는다:
     def test_안내문대로_띄우면_결과가_제자리에_남는다(self, tmp_path: Path) -> None:
         import subprocess
 
-        자리 = tmp_path / "tael kim" / "watch-out"
+        자리 = tmp_path / "example user" / "watch-out"
         자리.mkdir(parents=True)
         (자리 / "r1.sh").write_text("echo 확인\n", encoding="utf-8")
         subprocess.run(self._실행줄("r1", 자리), shell=True, cwd=tmp_path, check=True)
@@ -474,7 +474,7 @@ class Test경로에_공백이_있어도_같은_자리에_남는다:
     def test_명령_생성기도_공백을_견딘다(self, tmp_path: Path) -> None:
         import subprocess
 
-        자리 = tmp_path / "tael kim" / "watch-out"
+        자리 = tmp_path / "example user" / "watch-out"
         명령 = background_command("echo 확인", "r1", str(자리))
         subprocess.run(명령, shell=True, cwd=tmp_path, check=True)
         assert self._기다린다(WatchResultReader(자리)) is WatchOutcome.SUCCEEDED

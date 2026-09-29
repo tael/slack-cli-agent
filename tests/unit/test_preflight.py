@@ -137,7 +137,7 @@ class TestWorkdirCheck:
     def test_이름이_겹치는_형제_자리는_홈_안이_아니다(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """문자열 접두로 비교하면 /Users/taelkim-work 가 /Users/taelkim 안으로
+        """문자열 접두로 비교하면 /Users/example-work 가 /Users/example 안으로
         읽힌다. 이 점검은 기동 게이트가 쓰므로 오판이 곧 기동 거부가 된다."""
         home = tmp_path / "home"
         home.mkdir()
