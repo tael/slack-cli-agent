@@ -58,21 +58,21 @@ class TestGuardContext:
 class TestPlainMentionGuard:
     @pytest.fixture
     def names(self) -> dict[str, str]:
-        return {"김서준": "U0EXAMPLE01", "김서준 개발팀": "U0EXAMPLE02"}
+        return {"홍길동": "U0EXAMPLE01", "홍길동 개발팀": "U0EXAMPLE02"}
 
     def test_replaces_longest_name_first(self, names: dict[str, str]) -> None:
         """이름이 긴 것부터 바꾼다. 짧은 이름을 먼저 바꾸면 뒤 토막이 남는다."""
         guard = PlainMentionGuard()
         ctx = GuardContext(mention_names=names)
-        result = guard.apply("@김서준 개발팀 님 확인 부탁드립니다", ctx)
+        result = guard.apply("@홍길동 개발팀 님 확인 부탁드립니다", ctx)
         assert result.changed is True
         assert result.body == "<@U0EXAMPLE02> 확인 부탁드립니다"
-        assert result.detail["names"] == ["김서준 개발팀"]
+        assert result.detail["names"] == ["홍길동 개발팀"]
 
     def test_code_span_is_untouched(self, names: dict[str, str]) -> None:
         guard = PlainMentionGuard()
         ctx = GuardContext(mention_names=names)
-        body = "코드에 `@김서준` 있음"
+        body = "코드에 `@홍길동` 있음"
         result = guard.apply(body, ctx)
         assert result.changed is False
         assert result.body == body
@@ -80,7 +80,7 @@ class TestPlainMentionGuard:
     def test_fenced_code_block_is_untouched(self, names: dict[str, str]) -> None:
         guard = PlainMentionGuard()
         ctx = GuardContext(mention_names=names)
-        body = "```\n@김서준 예시\n```"
+        body = "```\n@홍길동 예시\n```"
         result = guard.apply(body, ctx)
         assert result.changed is False
         assert result.body == body
@@ -96,7 +96,7 @@ class TestPlainMentionGuard:
     def test_empty_table_is_untouched(self) -> None:
         guard = PlainMentionGuard()
         ctx = GuardContext()
-        body = "@김서준 님"
+        body = "@홍길동 님"
         result = guard.apply(body, ctx)
         assert result.changed is False
         assert result.body == body
