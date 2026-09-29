@@ -209,8 +209,11 @@ class Test템플릿렌더링:
         assert ManifestContract().violations(m) == []
 
     def test_저장소_템플릿으로_만든_것이_기존_봇과_같은_정책이다(self) -> None:
+        정본들 = _정본_경로들()
+        if not 정본들:
+            pytest.skip("정본은 .gitignore 대상이라 clone 한 저장소에는 없다")
+        기존 = AppManifest.from_path(정본들[0])
         m = AppManifest.from_template(SLACK_APPS / "_template.json", name="newbot", display="새봇")
-        기존 = AppManifest.from_path(_정본_경로들()[0])
         assert m.policy_fingerprint() == 기존.policy_fingerprint()
 
 
