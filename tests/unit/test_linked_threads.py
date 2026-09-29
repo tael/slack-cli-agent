@@ -9,17 +9,17 @@ from slack_cli_agent.slack.linked_threads import LinkedThread, LinkedThreadReade
 from slack_cli_agent.slack.permalinks import SlackLink, parse_slack_links
 from slack_cli_agent.slack.transcript import TranscriptRead
 
-MSG = "https://vroong.slack.com/archives/C0C1LNABECV/p1788253544408049"
+MSG = "https://example.slack.com/archives/C0EXAMPLE01/p1788253544408049"
 REPLY = (
-    "https://vroong.slack.com/archives/C0C1LNABECV/p1788253599111222"
-    "?thread_ts=1788253544.408049&cid=C0C1LNABECV"
+    "https://example.slack.com/archives/C0EXAMPLE01/p1788253599111222"
+    "?thread_ts=1788253544.408049&cid=C0EXAMPLE01"
 )
 
 
 class Test링크파싱:
     def test_permalink_을_채널과_시각으로_나눈다(self):
         assert parse_slack_links(f"이것 봐 {MSG} 어때") == (
-            SlackLink(channel="C0C1LNABECV", ts="1788253544.408049", thread_ts="1788253544.408049"),
+            SlackLink(channel="C0EXAMPLE01", ts="1788253544.408049", thread_ts="1788253544.408049"),
         )
 
     def test_답글_링크는_thread_ts_쿼리를_부모로_쓴다(self):
@@ -35,7 +35,7 @@ class Test링크파싱:
         assert parse_slack_links(None) == ()
 
     def test_DM_과_비공개_채널_링크도_읽는다(self):
-        text = "https://vroong.slack.com/archives/D07ABC123/p1788253544408049"
+        text = "https://example.slack.com/archives/D07ABC123/p1788253544408049"
         assert parse_slack_links(text)[0].channel == "D07ABC123"
 
 
@@ -58,7 +58,7 @@ def 리더(bodies: dict[str, str], *, max_links: int = 3) -> tuple[LinkedThreadR
     transcript = 기록대역(bodies)
     reader = LinkedThreadReader(
         transcript=transcript,
-        channel_name=lambda channel: {"C0C1LNABECV": "테스트"}.get(channel, ""),
+        channel_name=lambda channel: {"C0EXAMPLE01": "테스트"}.get(channel, ""),
         max_links=max_links,
     )
     return reader, transcript
@@ -66,9 +66,9 @@ def 리더(bodies: dict[str, str], *, max_links: int = 3) -> tuple[LinkedThreadR
 
 class Test링크된스레드읽기:
     def test_읽은_스레드를_채널명과_함께_낸다(self):
-        reader, _ = 리더({"C0C1LNABECV": "[10:00 김태일]\n안녕"})
+        reader, _ = 리더({"C0EXAMPLE01": "[10:00 홍길동]\n안녕"})
         assert reader.of(MSG, self_channel="C099") == (
-            LinkedThread(name="테스트", body="[10:00 김태일]\n안녕", read_ok=True),
+            LinkedThread(name="테스트", body="[10:00 홍길동]\n안녕", read_ok=True),
         )
 
     def test_못_읽으면_읽기_실패로_남는다(self):
@@ -78,25 +78,25 @@ class Test링크된스레드읽기:
         )
 
     def test_조회는_됐고_옮길_메시지가_없으면_실패가_아니다(self):
-        reader, _ = 리더({"C0C1LNABECV": ""})
+        reader, _ = 리더({"C0EXAMPLE01": ""})
         assert reader.of(MSG, self_channel="C099") == (
             LinkedThread(name="테스트", body="", read_ok=True),
         )
 
     def test_이름을_모르면_채널_ID_를_쓴다(self):
         reader, _ = 리더({"D07ABC123": "본문"})
-        text = "https://vroong.slack.com/archives/D07ABC123/p1788253544408049"
+        text = "https://example.slack.com/archives/D07ABC123/p1788253544408049"
         assert reader.of(text, self_channel="C099")[0].name == "D07ABC123"
 
     def test_지금_대화_자신을_가리키는_링크는_건너뛴다(self):
-        reader, transcript = 리더({"C0C1LNABECV": "본문"})
-        assert reader.of(MSG, self_channel="C0C1LNABECV") == ()
+        reader, transcript = 리더({"C0EXAMPLE01": "본문"})
+        assert reader.of(MSG, self_channel="C0EXAMPLE01") == ()
         assert transcript.calls == []
 
     def test_상한_개수까지만_읽는다(self):
         bodies = {f"C{i:010d}": "본문" for i in range(5)}
         text = " ".join(
-            f"https://vroong.slack.com/archives/C{i:010d}/p178825354440804{i}" for i in range(5)
+            f"https://example.slack.com/archives/C{i:010d}/p178825354440804{i}" for i in range(5)
         )
         reader, transcript = 리더(bodies, max_links=2)
         assert len(reader.of(text, self_channel="C099")) == 2
@@ -107,12 +107,12 @@ class Test링크된스레드읽기:
         상한 안으로 당겨 들어오지 않는다."""
         bodies = {"C0000000001": "본문", "C0000000002": "본문"}
         text = (
-            "https://vroong.slack.com/archives/C0C1LNABECV/p1788253544408049 "
-            "https://vroong.slack.com/archives/C0000000001/p1788253544408041 "
-            "https://vroong.slack.com/archives/C0000000002/p1788253544408042"
+            "https://example.slack.com/archives/C0EXAMPLE01/p1788253544408049 "
+            "https://example.slack.com/archives/C0000000001/p1788253544408041 "
+            "https://example.slack.com/archives/C0000000002/p1788253544408042"
         )
         reader, transcript = 리더(bodies, max_links=2)
-        assert reader.of(text, self_channel="C0C1LNABECV") == (
+        assert reader.of(text, self_channel="C0EXAMPLE01") == (
             LinkedThread(name="C0000000001", body="본문", read_ok=True),
         )
         assert transcript.calls == [("C0000000001", "1788253544.408041")]
@@ -142,9 +142,9 @@ class Test링크된스레드안내:
         assert 안내({}).of("링크 없는 본문", self_channel="C099") == ""
 
     def test_읽은_본문을_그대로_싣는다(self):
-        note = 안내({"C0C1LNABECV": "[10:00 김태일]\n안녕"}).of(MSG, self_channel="C099")
+        note = 안내({"C0EXAMPLE01": "[10:00 홍길동]\n안녕"}).of(MSG, self_channel="C099")
         assert "링크된 스레드 : 테스트" in note
-        assert "[10:00 김태일]\n안녕" in note
+        assert "[10:00 홍길동]\n안녕" in note
         assert "읽지 못했다" not in note
 
     def test_못_읽은_링크는_서술하지_말라고_적는다(self):
@@ -155,7 +155,7 @@ class Test링크된스레드안내:
     def test_조회된_빈_스레드를_읽지_못했다고_적지_않는다(self):
         """조회는 성공했는데 옮길 메시지가 없는 경우다. 여기에 '읽지 못했다' 를
         적으면 모델에게 사실이 아닌 것을 알린다(sca-678)."""
-        note = 안내({"C0C1LNABECV": ""}).of(MSG, self_channel="C099")
+        note = 안내({"C0EXAMPLE01": ""}).of(MSG, self_channel="C099")
         assert "읽지 못했다" not in note
         assert "옮길 메시지가 없다" in note
 

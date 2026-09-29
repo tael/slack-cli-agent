@@ -461,23 +461,23 @@ class Test느린요청보고의기록리더:
 class Test링크된스레드채널명:
     """미등록 채널의 이름을 슬랙에서 가져오는가.
 
-    조립이 빠지면 안내에 'C0C1LNABECV' 같은 채널 ID 가 그대로 나간다.
+    조립이 빠지면 안내에 'C0EXAMPLE01' 같은 채널 ID 가 그대로 나간다.
     부품 시험은 이것을 안 본다 - 조립 쪽에서 넘기는 함수가 설정만 보고 있어도
     ChannelNameResolver 자체 시험은 전부 통과한다.
     """
 
-    LINK = "https://vroong.slack.com/archives/C0C1LNABECV/p1788253544408049"
+    LINK = "https://example.slack.com/archives/C0EXAMPLE01/p1788253544408049"
 
     def test_미등록_채널이면_슬랙에_조회한_이름을_쓴다(
         self, profile: Profile, client: FakeSlackClient
     ) -> None:
-        client.channel_names["C0C1LNABECV"] = "운영-공지"
+        client.channel_names["C0EXAMPLE01"] = "운영-공지"
         app = Application(profile, client)
 
         note = app._linked_threads().of(self.LINK)
 
         assert "운영-공지" in note
-        assert "C0C1LNABECV" not in note
+        assert "C0EXAMPLE01" not in note
 
     def test_조회에_실패하면_채널_ID_를_쓴다(
         self, profile: Profile, client: FakeSlackClient
@@ -485,10 +485,10 @@ class Test링크된스레드채널명:
         client.channel_info_error = "조회 실패"
         app = Application(profile, client)
 
-        assert "C0C1LNABECV" in app._linked_threads().of(self.LINK)
+        assert "C0EXAMPLE01" in app._linked_threads().of(self.LINK)
 
     def test_조회_결과를_캐시한다(self, profile: Profile, client: FakeSlackClient) -> None:
-        client.channel_names["C0C1LNABECV"] = "운영-공지"
+        client.channel_names["C0EXAMPLE01"] = "운영-공지"
         app = Application(profile, client)
 
         app._linked_threads().of(self.LINK)

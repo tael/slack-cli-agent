@@ -4,7 +4,7 @@
 나중에 그 채널을 channels.json 에 등록하면 슬러그가 이름으로 바뀌어,
 `persona/knowledge/<ID>.md` · `persona/learned/<ID>.md` · `responses/<ID>/` 에
 쌓인 것이 조용히 안 읽히게 된다(sca-do8s). 실제로 rei 의
-`persona/learned/C0C1LNABECV.md` 와 shinji 의 `learned/C0B72NX6WN9.md` 가
+`persona/learned/C0EXAMPLE01.md` 와 shinji 의 `learned/C0B72NX6WN9.md` 가
 그 상태로 남아 있었다.
 """
 
@@ -176,8 +176,8 @@ class Test등록부가_이사를_부른다:
         """봇이 꺼진 사이에 등록됐으면 변화를 못 본다. 처음 읽을 때 등록된
         채널마다 채널 ID 자리를 확인한다 - rei 가 이 상태였다."""
         _, learned, _ = 상태
-        (learned / "C0C1LNABECV.md").write_text("배운 것", encoding="utf-8")
-        self._기록(설정파일, {"C0C1LNABECV": {"name": "테스트"}})
+        (learned / "C0EXAMPLE01.md").write_text("배운 것", encoding="utf-8")
+        self._기록(설정파일, {"C0EXAMPLE01": {"name": "테스트"}})
 
         ChannelRegistry(설정파일, on_slug_change=이사.migrate).all()
 

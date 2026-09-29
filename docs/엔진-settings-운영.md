@@ -76,3 +76,36 @@ general 덧씌움은 `Bash`, `Edit`, `Write`, `NotebookEdit` 넷을 막는다.
 
 조직마다 더 막을 것이 있다. 회사 문서 경로, 사내 자격 파일 자리 같은 것은 깐 뒤
 운영물 쪽 파일에 더한다. 그 값은 조직 고유값이라 본보기에 넣지 않는다.
+
+## `Read(~/.claude/**)` 가 자동 memory 쓰기를 막는다 (2026-09-27)
+
+공통 차단 `Read(~/.claude/**)`는 자동 memory 기능의 저장 위치
+`~/.claude/projects/<프로젝트>/memory/`도 함께 막는다. Claude Code는 읽기
+거부 경로에는 쓰기도 거부하므로, 봇이 memory에 새 파일을 쓰려는 요청이
+"Read deny rule"로 실패한다. 신지에서 09-22 이후 memory 쓰기가 전부 막혀
+있었고, 09-27에 슬랙 스레드(신지 본인이 원인·해결책을 직접 진단)를 근거로
+고쳤다.
+
+**해결책 — memory 실체를 상태 디렉터리로 옮기고 원래 자리는 심볼릭 링크로
+둔다.** `~/.claude/**` 차단 범위는 그대로 두면서, 봇이 실제로 쓰는 경로에는
+`.claude`가 들어가지 않게 한다.
+
+```bash
+mkdir -p ~/.<봇이름>/memory
+cp -a ~/.claude/projects/<프로젝트 슬러그>/memory/. ~/.<봇이름>/memory/   # 기존 내용이 있으면
+rm -rf ~/.claude/projects/<프로젝트 슬러그>/memory
+ln -s ~/.<봇이름>/memory ~/.claude/projects/<프로젝트 슬러그>/memory
+```
+
+`~/.<봇이름>/memory`는 본보기의 deny 목록(`engine/`, `credentials.json`,
+`state.db`, `audit.jsonl`)에 없으므로 이 경로로는 정상적으로 쓰기가
+된다. `~/.claude/projects/.../memory` 쪽은 Claude Code 자신이 프로젝트
+컨텍스트를 읽어들일 때만 쓰이므로 심볼릭 링크로도 문제없다.
+
+**적용 상태(2026-09-27)** — 신지(데이터 13개 파일, 마이그레이션 완료),
+레이(빈 디렉터리, 심볼릭 링크로 교체), 아스카(아직 프로젝트 디렉터리 자체가
+없어 미리 심볼릭 링크를 걸어 둠 — 첫 memory 쓰기부터 안전).
+
+**새 봇을 만들 때** `tools/new-bot.sh`가 이 심볼릭 링크까지 자동으로 만들지
+않는다. 지금은 손으로 위 명령을 실행해야 한다 — 본보기(`install-settings.py`)
+쪽에 이 단계를 넣는 것은 별도 과제로 남겨 둔다.

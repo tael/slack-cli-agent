@@ -77,7 +77,7 @@ class WorkdirCheck(PreflightCheck):
 
     def run(self, ctx: PreflightContext) -> CheckResult:
         # Compared as paths, not strings: a string prefix reads
-        # /Users/taelkim-work as living inside /Users/taelkim (sca-2wt).
+        # /Users/example-work as living inside /Users/example (sca-2wt).
         home = Path.home().resolve()
         targets = [ctx.profile.work_root, *(ctx.profile.work_root / d for d in self._extra_dirs)]
         bad: list[str] = []

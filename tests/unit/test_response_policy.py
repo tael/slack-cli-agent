@@ -12,7 +12,7 @@ from slack_cli_agent.slack.policy import (
     addresses_someone_else,
 )
 
-아스카 = "<@U0C2KTH81R6>"
+아스카 = "<@U0EXAMPLE03>"
 
 
 @pytest.fixture
@@ -76,8 +76,8 @@ class TestAddressedToOther:
             f"{아스카} 리뷰해주세요",
             f"{아스카}\n리뷰해주세요",
             f"  {아스카}, 이거 해줘",
-            "<@U0C2KTH81R6|아스카> 이거 해줘",
-            f"{아스카} <@U0C1Q0EN62F> 둘이 정리해주세요",
+            "<@U0EXAMPLE03|아스카> 이거 해줘",
+            f"{아스카} <@U0EXAMPLE04> 둘이 정리해주세요",
         ],
     )
     def test_선두_멘션은_다른_사람_몫이다(self, text: str) -> None:

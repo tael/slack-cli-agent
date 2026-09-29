@@ -23,16 +23,16 @@ def 이름표(표: dict[str, str]):
 
 class Test사용자_멘션:
     def test_이름으로_바꾼다(self) -> None:
-        보기 = MentionRenderer(이름표({"U1": "김태일"}))
-        assert 보기.render("<@U1> 확인해줘") == "김태일 확인해줘"
+        보기 = MentionRenderer(이름표({"U1": "홍길동"}))
+        assert 보기.render("<@U1> 확인해줘") == "홍길동 확인해줘"
 
     def test_표시이름이_붙어_있어도_해석한_이름을_쓴다(self) -> None:
-        보기 = MentionRenderer(이름표({"U1": "김태일"}))
-        assert 보기.render("<@U1|taeil> 확인") == "김태일 확인"
+        보기 = MentionRenderer(이름표({"U1": "홍길동"}))
+        assert 보기.render("<@U1|gildong> 확인") == "홍길동 확인"
 
     def test_못_풀면_붙어_있는_표시이름을_쓴다(self) -> None:
         보기 = MentionRenderer(이름표({}))
-        assert 보기.render("<@U9|taeil> 확인") == "taeil 확인"
+        assert 보기.render("<@U9|gildong> 확인") == "gildong 확인"
 
     def test_아무것도_못_풀면_원본을_남긴다(self) -> None:
         """지우면 누가 불렸는지가 사라진다."""
@@ -40,8 +40,8 @@ class Test사용자_멘션:
         assert 보기.render("<@U9> 확인") == "<@U9> 확인"
 
     def test_여러_사람을_한_줄에서_바꾼다(self) -> None:
-        보기 = MentionRenderer(이름표({"U1": "김태일", "U2": "박종선"}))
-        assert 보기.render("<@U1> 이 <@U2> 에게") == "김태일 이 박종선 에게"
+        보기 = MentionRenderer(이름표({"U1": "홍길동", "U2": "임꺽정"}))
+        assert 보기.render("<@U1> 이 <@U2> 에게") == "홍길동 이 임꺽정 에게"
 
 
 class Test그룹_멘션:
@@ -61,7 +61,7 @@ class Test그룹_멘션:
 class Test특수_멘션은_건드리지_않는다:
     @pytest.mark.parametrize("원본", ["<!here> 봐주세요", "<!channel> 공지", "<#C1|일반> 에서"])
     def test_그대로_둔다(self, 원본: str) -> None:
-        보기 = MentionRenderer(이름표({"U1": "김태일"}))
+        보기 = MentionRenderer(이름표({"U1": "홍길동"}))
         assert 보기.render(원본) == 원본
 
 
@@ -131,7 +131,7 @@ class Test대화록은_본문을_그대로_두고_머리에_방향을_적는다:
         client = self.대역클라이언트([{"ts": "1700000000.000001", "user": "U1", "text": text}])
         builder = TranscriptBuilder(
             client, RuntimeSettings(), NoticeCatalog(),
-            name_resolver=이름표({"U1": "김철수", "U2": "박종선"}),
+            name_resolver=이름표({"U1": "김철수", "U2": "임꺽정"}),
             identity=fake_identity(), bot_display_name="테스트봇",
             **kwargs,
         )
@@ -143,7 +143,7 @@ class Test대화록은_본문을_그대로_두고_머리에_방향을_적는다:
 
     def test_부른_사람을_줄_머리에_적는다(self) -> None:
         body = self.대화록("<@U2> 어제 그거 봤어?")
-        assert "김철수 <@U1> -> 박종선]" in body
+        assert "김철수 <@U1> -> 임꺽정]" in body
 
     def test_아무도_안_불렀으면_화자만_적는다(self) -> None:
         body = self.대화록("혼잣말")
@@ -168,17 +168,17 @@ class Test경계_입력:
         assert 보기.render("<@U9|> 확인") == "<@U9|> 확인"
 
     def test_연속된_멘션을_각각_바꾼다(self) -> None:
-        보기 = MentionRenderer(이름표({"U1": "김태일", "U2": "박종선"}))
-        assert 보기.render("<@U1><@U2>") == "김태일박종선"
+        보기 = MentionRenderer(이름표({"U1": "홍길동", "U2": "임꺽정"}))
+        assert 보기.render("<@U1><@U2>") == "홍길동임꺽정"
 
     def test_조사가_바로_붙어도_바꾼다(self) -> None:
-        보기 = MentionRenderer(이름표({"U1": "김태일"}))
-        assert 보기.render("<@U1>님이 말했다") == "김태일님이 말했다"
+        보기 = MentionRenderer(이름표({"U1": "홍길동"}))
+        assert 보기.render("<@U1>님이 말했다") == "홍길동님이 말했다"
 
     def test_W_로_시작하는_계정도_바꾼다(self) -> None:
         """Enterprise Grid 의 사용자 ID 는 W 로 시작한다."""
-        보기 = MentionRenderer(이름표({"W1": "김태일"}))
-        assert 보기.render("<@W1> 확인") == "김태일 확인"
+        보기 = MentionRenderer(이름표({"W1": "홍길동"}))
+        assert 보기.render("<@W1> 확인") == "홍길동 확인"
 
     def test_해석한_이름에_멘션_표기가_들어_있어도_다시_바꾸지_않는다(self) -> None:
         """한 번에 훑기 때문이다. 두 번 훑으면 이 자리가 또 치환된다."""
@@ -276,11 +276,11 @@ class Test추가_메시지도_대화록과_같은_형식이다:
                 return []
 
         checker = LateAddendumChecker(
-            대역기록(), NoticeCatalog(), 이름표({"U1": "김철수", "U2": "박종선"}),
+            대역기록(), NoticeCatalog(), 이름표({"U1": "김철수", "U2": "임꺽정"}),
             RuntimeSettings(), identity=fake_identity(), bot_display_name="테스트봇",
         )
         body, _ = checker.check("C1", "1700000000.000001", "1700000001.000001")
-        assert "박종선 <@U2> -> 김철수]" in body
+        assert "임꺽정 <@U2> -> 김철수]" in body
         assert "<@U1> 이것도 봐줘" in body
 
 
@@ -340,12 +340,12 @@ class Test2차_리뷰_지적:
                 return []
 
         checker = LateAddendumChecker(
-            대역기록(), NoticeCatalog(), 이름표({"U2": "박종선"}),
+            대역기록(), NoticeCatalog(), 이름표({"U2": "임꺽정"}),
             RuntimeSettings(), identity=fake_identity(), bot_display_name="테스트봇",
             group_resolver=lambda gid: "데이터팀",
         )
         body, _ = checker.check("C1", "1700000000.000001", "1700000001.000001")
-        assert "박종선 <@U2> -> @데이터팀 그룹]" in body
+        assert "임꺽정 <@U2> -> @데이터팀 그룹]" in body
         assert "<!subteam^S1> 봐줘" in body
 
 
@@ -398,16 +398,16 @@ class Test불린_사람_수집:
     def 수집기(self, **kwargs: Any):
         from slack_cli_agent.slack.mentions import CalledNames
 
-        return CalledNames(이름표({"U1": "김철수", "U2": "박종선"}), **kwargs)
+        return CalledNames(이름표({"U1": "김철수", "U2": "임꺽정"}), **kwargs)
 
     def test_사용자_멘션에서_이름을_모은다(self) -> None:
-        assert self.수집기().called_in("<@U2> 어제 그거 봤어?") == ("박종선",)
+        assert self.수집기().called_in("<@U2> 어제 그거 봤어?") == ("임꺽정",)
 
     def test_같은_사람을_두_번_안_센다(self) -> None:
-        assert self.수집기().called_in("<@U2> <@U2> 봐줘") == ("박종선",)
+        assert self.수집기().called_in("<@U2> <@U2> 봐줘") == ("임꺽정",)
 
     def test_나온_차례대로_모은다(self) -> None:
-        assert self.수집기().called_in("<@U2> 와 <@U1>") == ("박종선", "김철수")
+        assert self.수집기().called_in("<@U2> 와 <@U1>") == ("임꺽정", "김철수")
 
     def test_못_푼_사용자는_안_넣는다(self) -> None:
         """이름을 모르면 방향을 말할 수 없다. 원본도 빈 이름은 버린다."""

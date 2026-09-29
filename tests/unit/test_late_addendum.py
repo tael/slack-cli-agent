@@ -210,10 +210,10 @@ class TestLateAddendumCheckerNewMessages:
             {"ts": "110.0", "user": "UOWNER", "text": "주인이 남긴 말"},
         ])
         checker = make_checker(
-            history, owner_user_id="UOWNER", owner_display_name="김태일"
+            history, owner_user_id="UOWNER", owner_display_name="홍길동"
         )
         addendum, _ = checker.check("C1", "T1", "100.0", scope="thread")
-        assert "김태일" in addendum
+        assert "홍길동" in addendum
 
     def test_channel_scope_uses_read_history_port(self):
         history = FakeHistory(channel_msgs=[

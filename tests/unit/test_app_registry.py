@@ -25,11 +25,11 @@ from slack_cli_agent.slack.app_registry import (
 class Test레지스트리:
     def test_등록한_항목을_이름으로_되찾는다(self, tmp_path: Path) -> None:
         registry = AppRegistry(tmp_path / "registry.json")
-        registry.register(AppEntry("shinji", "vroong", "A01", tmp_path / "shinji.json"))
+        registry.register(AppEntry("shinji", "example", "A01", tmp_path / "shinji.json"))
         항목 = registry.get("shinji")
         assert 항목 is not None
         assert 항목.app_id == "A01"
-        assert 항목.workspace == "vroong"
+        assert 항목.workspace == "example"
 
     def test_없는_파일이면_빈_목록이다(self, tmp_path: Path) -> None:
         """레지스트리가 없는 것은 오류가 아니다. 아직 봇을 안 만든 설치본이다."""
@@ -39,8 +39,8 @@ class Test레지스트리:
         """앱을 다시 만들면 app ID 가 바뀐다. 중복 항목이 남으면 감사가 없는
         앱을 조회해 매번 실패한다."""
         registry = AppRegistry(tmp_path / "registry.json")
-        registry.register(AppEntry("shinji", "vroong", "A01", tmp_path / "s.json"))
-        registry.register(AppEntry("shinji", "vroong", "A02", tmp_path / "s.json"))
+        registry.register(AppEntry("shinji", "example", "A01", tmp_path / "s.json"))
+        registry.register(AppEntry("shinji", "example", "A02", tmp_path / "s.json"))
         항목 = registry.get("shinji")
         assert 항목 is not None
         assert 항목.app_id == "A02"
@@ -52,7 +52,7 @@ class Test레지스트리:
         # entries() 의 정렬이 아니라 저장 쪽 정렬을 재게 된다.
         path = tmp_path / "registry.json"
         path.write_text(json.dumps({
-            name: {"workspace": "vroong", "app_id": "A1", "manifest": f"{name}.json"}
+            name: {"workspace": "example", "app_id": "A1", "manifest": f"{name}.json"}
             for name in ("shinji", "rei", "asuka")
         }, ensure_ascii=False), encoding="utf-8")
         assert [항목.name for 항목 in AppRegistry(path).entries()] == ["asuka", "rei", "shinji"]
@@ -60,7 +60,7 @@ class Test레지스트리:
     def test_app_id_가_담기므로_소유자만_읽게_한다(self, tmp_path: Path) -> None:
         """조직 고유값이다. 토큰과 같은 디렉터리에 같은 권한으로 둔다."""
         path = tmp_path / "registry.json"
-        AppRegistry(path).register(AppEntry("shinji", "vroong", "A01", tmp_path / "s.json"))
+        AppRegistry(path).register(AppEntry("shinji", "example", "A01", tmp_path / "s.json"))
         assert path.stat().st_mode & 0o777 == 0o600
 
     def test_망가진_파일은_빈_목록으로_읽는다(self, tmp_path: Path) -> None:
@@ -71,7 +71,7 @@ class Test레지스트리:
 
     def test_저장_형식이_사람이_읽을_수_있는_json이다(self, tmp_path: Path) -> None:
         path = tmp_path / "registry.json"
-        AppRegistry(path).register(AppEntry("신지", "vroong", "A01", tmp_path / "s.json"))
+        AppRegistry(path).register(AppEntry("신지", "example", "A01", tmp_path / "s.json"))
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["신지"]["app_id"] == "A01"
         assert "신지" in path.read_text(encoding="utf-8")
@@ -79,7 +79,7 @@ class Test레지스트리:
 
 class Test감사:
     def _항목(self, name: str) -> AppEntry:
-        return AppEntry(name, "vroong", f"A-{name}", Path(f"/tmp/{name}.json"))
+        return AppEntry(name, "example", f"A-{name}", Path(f"/tmp/{name}.json"))
 
     def test_차이가_없으면_보고할_것이_없다(self) -> None:
         결과 = audit([self._항목("shinji")], compare=lambda entry: [])

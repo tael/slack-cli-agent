@@ -1,7 +1,7 @@
 """Rewrites Slack mention markup in a message body into readable names.
 
 The speaker label is resolved elsewhere; the body was left as-is, so the
-model saw `<@U0ACANBHY3U>` and could not tell who called whom. bot.py:2722
+model saw `<@U0EXAMPLE05>` and could not tell who called whom. bot.py:2722
 records what that costs -- on 2026-08-26 a reply inverted who said what to
 whom (sca-hkmb).
 

@@ -313,13 +313,13 @@ class TestUserNamer:
 
     def test_다른_사람은_resolver_결과를_그대로_쓴다(self) -> None:
         namer = UserNamer(
-            lambda uid: "김태일", identity=_가짜신원("UBOT"), bot_display_name="신지"
+            lambda uid: "홍길동", identity=_가짜신원("UBOT"), bot_display_name="신지"
         )
-        assert namer.name_of("U1") == "김태일"
+        assert namer.name_of("U1") == "홍길동"
 
     def test_소유자_표시명이_있으면_그것을_쓴다(self) -> None:
         namer = UserNamer(
-            lambda uid: "Taeil Kim",
+            lambda uid: "Gildong Hong",
             identity=_가짜신원("UBOT"),
             bot_display_name="신지",
             owner_user_id="UOWNER",
@@ -341,9 +341,9 @@ class TestUserNamer:
                 raise RuntimeError("auth_test 실패")
 
         namer = UserNamer(
-            lambda uid: "김태일", identity=터지는신원(), bot_display_name="신지"
+            lambda uid: "홍길동", identity=터지는신원(), bot_display_name="신지"
         )
-        assert namer.name_of("U1") == "김태일"
+        assert namer.name_of("U1") == "홍길동"
 
     def test_resolver_자리에_그대로_넣을_수_있다(self) -> None:
         """MentionRenderer·CalledNames 가 Callable[[str], str] 을 받는다."""

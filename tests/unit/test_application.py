@@ -2146,7 +2146,7 @@ class Test봇멘션가드연결:
     def test_사람_멘션은_남는다(self, tmp_path: Path) -> None:
         client = FakeSlackClient()
         client.users_info = lambda **kw: {  # type: ignore[method-assign]
-            "user": {"id": kw.get("user"), "is_bot": False, "profile": {"real_name": "김태일"}}
+            "user": {"id": kw.get("user"), "is_bot": False, "profile": {"real_name": "홍길동"}}
         }
         app = Application.from_profile(write_profile(tmp_path), client=client)
 

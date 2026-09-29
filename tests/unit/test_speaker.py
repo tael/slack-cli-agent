@@ -52,8 +52,8 @@ class TestSpeakerNamer:
         assert namer.speaker_of(msg) == "웹훅이름 (다른 봇)"
 
     def test_소유자_사용자_id는_소유자_표시_이름으로_적힌다(self) -> None:
-        namer = make_namer(owner_user_id="UOWNER", owner_display_name="김태일")
-        assert namer.speaker_of({"user": "UOWNER"}) == "김태일"
+        namer = make_namer(owner_user_id="UOWNER", owner_display_name="홍길동")
+        assert namer.speaker_of({"user": "UOWNER"}) == "홍길동"
 
     def test_소유자_표시_이름이_없으면_일반_판정을_따른다(self) -> None:
         namer = make_namer(
