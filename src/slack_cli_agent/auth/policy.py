@@ -49,10 +49,10 @@ class AccessPolicy:
         self._extensions = tuple(extensions)
 
     def principal_for(self, channel: str, user: str) -> Principal:
-        """Owner is OWNER regardless of channel. Everyone else is TRUSTED
-        only if the channel's trusted_users lists them."""
+        """Owner and controller_user_ids are OWNER regardless of channel.
+        Everyone else is TRUSTED only if the channel's trusted_users lists them."""
         is_dm = is_direct_message_channel(channel)
-        if user and user == self._profile.owner_user_id:
+        if user and (user == self._profile.owner_user_id or user in self._profile.controller_user_ids):
             trust = TrustLevel.OWNER
         elif user and self._is_channel_trusted(channel, user):
             trust = TrustLevel.TRUSTED

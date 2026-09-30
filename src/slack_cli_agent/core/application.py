@@ -576,8 +576,11 @@ class Application:
             self._progress = ProgressCoordinator(
                 settings=self._settings,
                 sink_factory=lambda channel, thread_ts, _user: FallbackProgressSink(
+                    # 끝난 카드가 "작업 완료" 로 답 위에 남아 답이 두 개처럼 읽혔다
+                    # (2026-09-30 DE에이전트 시험). 끝나면 지워 스레드에 답만 남긴다.
                     lambda: SlackTaskCardProgressSink(
                         self._client, channel, thread_ts, self._profile.display_name,
+                        keep_on_close=False,
                     ),
                     lambda: SlackProgressSink(
                         self._client, channel, thread_ts, self._profile.display_name,

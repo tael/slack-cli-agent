@@ -683,7 +683,7 @@ class TestCodexEngineBuildCommand:
         assert cmd[1] == "exec"
         assert "resume" not in cmd
         assert any(tok.startswith("developer_instructions=") for tok in cmd)
-        assert "--sandbox" in cmd
+        assert any(tok.startswith("sandbox_mode=") for tok in cmd)
         assert "-C" in cmd
         # 제약 문구가 앞에 붙으므로 끝으로 본다 (sca-f9k0).
         assert cmd[-1].endswith("안녕")
@@ -696,7 +696,9 @@ class TestCodexEngineBuildCommand:
         cmd = engine.build_command(
             request(resume=False, model="gpt-5.6-sol", tools=ToolSelection.allow(["Read", "Grep"]))
         )
-        assert cmd[cmd.index("--sandbox") + 1] == "read-only"
+        assert 'sandbox_mode="read-only"' in cmd
+        # read-only never gets automatic approval -- it doesn't need MCP writes.
+        assert "--approve-for-me" not in cmd
 
     def test_읽기_전용_허용목록은_재개_턴에서도_내려간다(self, tmp_path: Path) -> None:
         engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
@@ -711,7 +713,7 @@ class TestCodexEngineBuildCommand:
         cmd = engine.build_command(
             request(resume=False, model="gpt-5.6-sol", tools=ToolSelection.allow(["Read", "Write"]))
         )
-        assert cmd[cmd.index("--sandbox") + 1] == "danger-full-access"
+        assert 'sandbox_mode="danger-full-access"' in cmd
 
     def test_MCP_도구가_섞이면_내리지_않는다(self, tmp_path: Path) -> None:
         """READ_ONLY_TOOLS 는 내장 도구만 담는다. MCP 도구가 밖으로 쓰는지를
@@ -721,7 +723,7 @@ class TestCodexEngineBuildCommand:
             resume=False, model="gpt-5.6-sol",
             tools=ToolSelection.allow(["Read", "mcp__github__search_code"]),
         ))
-        assert cmd[cmd.index("--sandbox") + 1] == "danger-full-access"
+        assert 'sandbox_mode="danger-full-access"' in cmd
 
     def test_요청_때문에_내려간_턴에도_바깥_쓰기_안내가_붙는다(self, tmp_path: Path) -> None:
         """프로필이 아니라 요청이 내린 경우에도 같은 안내가 나가야 한다."""
@@ -737,7 +739,7 @@ class TestCodexEngineBuildCommand:
         engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
         요청 = request(resume=False, model="gpt-5.6-sol", tools=ToolSelection.allow(["Read"]))
         assert engine.capabilities_for(요청).execution_isolation is ExecutionIsolation.READONLY_SANDBOX
-        assert engine.build_command(요청)[engine.build_command(요청).index("--sandbox") + 1] == "read-only"
+        assert 'sandbox_mode="read-only"' in engine.build_command(요청)
 
     def test_재개_스레드는_resume과_sandbox_mode를_쓴다(self, tmp_path: Path) -> None:
         profile = codex_profile(tmp_path)
@@ -801,8 +803,7 @@ class TestCodexEngineBuildCommand:
         cmd = engine.build_command(request(
             resume=False, model="gpt-5.6-sol", tools=ToolSelection.unrestricted(),
         ))
-        idx = cmd.index("--sandbox")
-        assert cmd[idx + 1] == "danger-full-access"
+        assert 'sandbox_mode="danger-full-access"' in cmd
 
     def test_옵션의_sandbox값을_쓴다(self, tmp_path: Path) -> None:
         profile = codex_profile(tmp_path, options={"sandbox": "workspace-write"})
@@ -810,8 +811,10 @@ class TestCodexEngineBuildCommand:
         cmd = engine.build_command(request(
             resume=False, model="gpt-5.6-sol", tools=ToolSelection.unrestricted(),
         ))
-        idx = cmd.index("--sandbox")
-        assert cmd[idx + 1] == "workspace-write"
+        assert 'sandbox_mode="workspace-write"' in cmd
+        # workspace-write is the one mode that needs MCP tools to actually
+        # run under codex's headless approval_policy=never (2026-09-30).
+        assert "--approve-for-me" in cmd
 
     def test_effort가_비어도_추론_강도를_명시한다(self, tmp_path: Path) -> None:
         """생략하면 CLI 기본값으로 돌면서 감사 기록의 effort 와 어긋난다(sca-3kzk)."""
