@@ -47,6 +47,25 @@ class EventListener:
         # Whether to speak up without being named is a channel-level
         # decision, kept out of this class so it can vary per channel.
         self._policy = ResponsePolicy(gate)
+        self._bot_users: dict[str, str] = {}
+
+    def _bot_user_id(self, bot_id: str) -> str:
+        """The bot user behind a bot_id-only message.
+
+        A bot that posts with chat:write.customize arrives with bot_id and no
+        user field, so a controller listed in controller_user_ids was treated
+        as a stranger. bots.info maps the bot_id back to its user. A failed
+        lookup stays empty, which keeps the old, stricter behavior.
+        """
+        if not bot_id:
+            return ""
+        if bot_id not in self._bot_users:
+            try:
+                info = self._client.bots_info(bot=bot_id)
+                self._bot_users[bot_id] = str((info.get("bot") or {}).get("user_id") or "")
+            except Exception:  # noqa: BLE001 - a lookup failure (including rate limiting) means no user
+                return ""
+        return self._bot_users[bot_id]
 
     def _context_from_event(
         self, event: Mapping[str, Any], *, unaddressed: bool, is_dm: bool
@@ -54,7 +73,7 @@ class EventListener:
         ts = event.get("ts") or ""
         return RequestContext(
             channel=event.get("channel") or "",
-            user=event.get("user") or "",
+            user=event.get("user") or self._bot_user_id(event.get("bot_id") or ""),
             ts=ts,
             thread_ts=event.get("thread_ts") or ts,
             text=event.get("text") or "",

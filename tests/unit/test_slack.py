@@ -822,6 +822,35 @@ class TestEventListener:
         assert ctx.unaddressed is False
         assert ctx.thread_ts == "1.0"
 
+    def test_user_없이_bot_id만_온_멘션은_bots_info로_사용자를_찾는다(
+        self, gate: ResponseGate
+    ) -> None:
+        """chat:write.customize 로 올린 봇 메시지는 user 필드가 없다. 그대로 두면
+        controller_user_ids 에 적힌 봇도 낯선 사람으로 판정된다."""
+
+        class BotsInfoClient(FakeWebClient):
+            def bots_info(self, **kwargs: Any) -> dict:
+                self.calls.append(("bots_info", kwargs))
+                return {"bot": {"user_id": "U_CTRL"}}
+
+        client = BotsInfoClient()
+        listener = EventListener(client, ChannelRegistry(Path("/nonexistent.json")), gate,
+                                 identity=fake_identity())
+        event = {"channel": "C1", "bot_id": "B_CTRL", "ts": "1.0", "text": "<@U_BOT> 봐줘"}
+        assert listener.from_app_mention(event).user == "U_CTRL"
+        assert listener.from_app_mention(event).user == "U_CTRL"
+        assert [name for name, _ in client.calls] == ["bots_info"]
+
+    def test_bots_info가_실패하면_사용자는_비어_있다(self, gate: ResponseGate) -> None:
+        class FailingClient(FakeWebClient):
+            def bots_info(self, **kwargs: Any) -> dict:
+                raise RuntimeError("ratelimited")
+
+        listener = EventListener(FailingClient(), ChannelRegistry(Path("/nonexistent.json")), gate,
+                                 identity=fake_identity())
+        event = {"channel": "C1", "bot_id": "B_CTRL", "ts": "1.0", "text": "<@U_BOT> 봐줘"}
+        assert listener.from_app_mention(event).user == ""
+
     def test_DM_메시지는_바로_컨텍스트가_된다(self, gate: ResponseGate) -> None:
         registry = ChannelRegistry(Path("/nonexistent.json"))
         listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
