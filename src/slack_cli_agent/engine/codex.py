@@ -226,7 +226,22 @@ class CodexEngine(Engine):
     def build_command(self, request: EngineRequest) -> list[str]:
         binary = str(self.spec.binary)
         sandbox = self._sandbox_for(request)
+        # codex exec hardcodes approval_policy=never in non-interactive JSON
+        # mode -- no -c override changes it, confirmed against codex-cli
+        # 0.153.4 -- and under that policy every MCP-backed tool call fails
+        # outright with "MCP tool call requires approval, but approval
+        # policy is never" even though the server started fine and the
+        # model picked the right tool (2026-09-30, DE에이전트 시험). --approve-for-me
+        # routes approval through automatic review instead, which is the
+        # only path found that lets MCP tools actually run headless. It
+        # always runs under workspace-write, so it only substitutes when
+        # that's the sandbox this turn already wanted; a read-only turn
+        # keeps the stricter path and simply cannot call MCP tools, same as
+        # before this fix.
+        auto_approve = sandbox == "workspace-write"
         cmd: list[str] = [binary, "exec"]
+        if auto_approve:
+            cmd.append("--approve-for-me")
         if request.resume:
             cmd.append("resume")
         cmd += ["--json", "--skip-git-repo-check"]
@@ -248,7 +263,12 @@ class CodexEngine(Engine):
             cmd += ["-c", f"sandbox_mode={self._toml_string(sandbox)}",
                    request.require_session_id(), "--", self._resume_prompt(request)]
         else:
-            cmd += ["--sandbox", sandbox, "-C", str(request.workdir), "--",
+            # -c sandbox_mode=, not the --sandbox flag: the flag form errors
+            # with "cannot be used with '--approve-for-me'" while the config
+            # override doesn't, and both restrict the turn the same way
+            # (confirmed 2026-09-30).
+            cmd += ["-c", f"sandbox_mode={self._toml_string(sandbox)}",
+                    "-C", str(request.workdir), "--",
                     self._turn_constraint_prefix(request) + request.prompt]
         return cmd
 
