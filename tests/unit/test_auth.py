@@ -64,6 +64,20 @@ class TestPrincipalFor:
         principal = policy.principal_for("C1", STRANGER)
         assert principal.trust is TrustLevel.GENERAL
 
+    def test_controller_user_ids에_있으면_채널과_무관하게_OWNER다(self, tmp_path: Path) -> None:
+        """다른 봇이 이 봇을 소유자 대신 부리는 경로다. 소유자와 같은 축이라
+        채널 설정의 trusted_users 와 무관하다."""
+        profile = Profile.from_dict({**MINIMAL_PROFILE, "controller_user_ids": ["U_CTRL"]})
+        policy = AccessPolicy(profile, make_channels(tmp_path / "c.json", {}))
+        assert policy.principal_for("C1", "U_CTRL").trust is TrustLevel.OWNER
+        assert policy.principal_for("C1", STRANGER).trust is TrustLevel.GENERAL
+
+    def test_controller_user_ids가_없으면_소유자만_OWNER다(self, tmp_path: Path) -> None:
+        profile = make_profile()
+        assert profile.controller_user_ids == frozenset()
+        policy = AccessPolicy(profile, make_channels(tmp_path / "c.json", {}))
+        assert policy.principal_for("C1", "U_CTRL").trust is TrustLevel.GENERAL
+
 
 class TestFullAuthorityAndMechanism:
     def test_소유자_DM은_최고권한이라_구조를_밝힌다(self, tmp_path: Path) -> None:
