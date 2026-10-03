@@ -31,6 +31,7 @@ from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelConfig, ChannelRegistry, channel_is_rich
 from ..config.channel import channel_slug as slug_for
+from ..config.operator_mcp import owner_mcp_tool_patterns
 from ..config.profile import EngineSpec, Profile
 from ..config.settings import RuntimeSettings
 from ..config.slug_migration import SLUG_MIGRATION_LOCK, ChannelSlugMigrator
@@ -462,7 +463,7 @@ class Application:
             extensions = [e for p in self._plugins for e in p.access_extensions()]
             self._tool_policy = ToolPolicy(
                 self._settings.base_tools,
-                self._settings.owner_tools,
+                self._settings.owner_tools + owner_mcp_tool_patterns(self._profile.mcp_servers),
                 extensions,
                 channel_tools=self.access_policy.channel_tools_for,
             )

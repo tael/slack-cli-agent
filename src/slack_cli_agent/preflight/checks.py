@@ -375,7 +375,9 @@ class ProfilePermissionCheck(PreflightCheck):
         path = ctx.profile.source_file
         if path is None or not path.is_file():
             return CheckResult(ok=True, detail="읽어 온 프로필 파일이 없다")
-        if not any(spec.env or spec.headers for spec in ctx.profile.mcp_servers.values()):
+        # Inherited servers live in the operator's config, not in this file.
+        declared = [spec for spec in ctx.profile.mcp_servers.values() if not spec.owner_only]
+        if not any(spec.env or spec.headers for spec in declared):
             return CheckResult(ok=True, detail="프로필에 가릴 값이 없다")
         mode = stat.S_IMODE(path.stat().st_mode)
         if mode & _SHARED_BITS:

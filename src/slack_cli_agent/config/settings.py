@@ -177,6 +177,9 @@ class RuntimeSettings:
     # write declares it in its profile rather than in code.
     base_tools: tuple[str, ...] = ("Read", "Grep", "Glob")
     owner_tools: tuple[str, ...] = ()
+    # Owner turns also get the MCP servers of the operator's own Claude Code
+    # (~/.claude.json), read at boot. See config/operator_mcp.py (sca-kf6j).
+    inherit_operator_mcp: bool = False
 
     # Line prefixes stripped from replies. Defaults to empty since the
     # actual prefix text is org-specific and doesn't belong in code.

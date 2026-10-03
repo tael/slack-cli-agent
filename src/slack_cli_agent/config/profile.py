@@ -110,6 +110,9 @@ class McpServerSpec:
     headers: Mapping[str, str] = field(default_factory=dict)
     disabled: bool = False
     disabled_tools: tuple[str, ...] = ()
+    #: Attached on owner turns only. Set for servers taken from the operator's
+    #: own Claude Code config, never read from a profile (sca-kf6j).
+    owner_only: bool = False
 
     @classmethod
     def from_dict(cls, name: str, data: Mapping[str, Any]) -> McpServerSpec:

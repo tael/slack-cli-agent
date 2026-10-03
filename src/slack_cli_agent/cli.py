@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Protocol, TextIO, runtime_checkable
 
 from .config.channel import ChannelRegistry
+from .config.operator_mcp import inherit_operator_mcp
 from .config.paths import StatePaths, default_profile_dirs, default_profile_write_dir
 from .config.profile import Profile, validate_profile_name
 from .core.errors import AgentError, ConfigError
@@ -83,7 +84,7 @@ class ProfileAwareCommand(CliCommand):
 
     def execute(self, args: argparse.Namespace, stdout: TextIO) -> int:
         search_dirs = _search_dirs(args.profile_dir)
-        profile = Profile.load(args.profile, search_dirs)
+        profile = inherit_operator_mcp(Profile.load(args.profile, search_dirs))
         return self.execute_with_profile(profile, args, stdout)
 
     @abstractmethod

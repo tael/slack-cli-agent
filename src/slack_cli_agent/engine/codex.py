@@ -43,6 +43,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ..auth.principal import TrustLevel
 from ..auth.tools import READ_ONLY_TOOLS
 from ..config.profile import EngineSpec, McpServerSpec
 from .base import (
@@ -83,9 +84,11 @@ CODEX_USAGE_KEY_MAP: Mapping[str, str] = {
 }
 
 
-def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec]) -> list[str]:
+def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec], *, owner: bool) -> list[str]:
     args: list[str] = []
     for name, server in mcp_servers.items():
+        if server.owner_only and not owner:
+            continue
         prefix = f"mcp_servers.{name}"
         if server.disabled:
             args += ["-c", f"{prefix}.enabled=false"]
@@ -237,7 +240,9 @@ class CodexEngine(Engine):
         # Always sent, never omitted: leaving it out lets the CLI pick its own
         # default while the audit records the requested value (sca-3kzk).
         cmd += ["-c", f"model_reasoning_effort={self._toml_string(self.resolve_effort(request))}"]
-        cmd += _codex_mcp_config_args(self.profile.mcp_servers)
+        cmd += _codex_mcp_config_args(
+            self.profile.mcp_servers, owner=request.trust_level is TrustLevel.OWNER
+        )
         if not request.resume:
             instructions = request.system_prompt + self._session_path_note(request)
             if instructions:

@@ -40,6 +40,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ..auth.principal import TrustLevel
 from ..config.profile import EngineSpec, McpServerSpec
 from ..observability.progress_hook import HOOK_SCRIPT
 from .base import (
@@ -155,10 +156,10 @@ def progress_hook_settings(log_path: Path) -> dict[str, Any]:
     }
 
 
-def _claude_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, Any]:
+def _claude_mcp_servers(mcp_servers: Mapping[str, McpServerSpec], *, owner: bool) -> dict[str, Any]:
     servers: dict[str, Any] = {}
     for name, server in mcp_servers.items():
-        if server.disabled:
+        if server.disabled or (server.owner_only and not owner):
             continue
         entry: dict[str, Any]
         if server.is_remote:
@@ -255,7 +256,7 @@ class ClaudeEngine(Engine):
         # "no tools" needs its own state rather than an empty list (sca-0a7),
         # so the axis comes from the request -- but only once the command
         # built for it actually carries the closing argument.
-        mcp_servers = _claude_mcp_servers(self.profile.mcp_servers)
+        mcp_servers = _claude_mcp_servers(self.profile.mcp_servers, owner=request.trust_level is TrustLevel.OWNER)
         args = self._tool_args(request, mcp_servers)
         closed = "--tools" in args or "*" in args
         restriction = request.tools.restriction if closed else ToolRestriction.NONE
@@ -317,7 +318,7 @@ class ClaudeEngine(Engine):
             "--model", request.require_model(),
             "--effort", self.resolve_effort(request),
         ]
-        mcp_servers = _claude_mcp_servers(self.profile.mcp_servers)
+        mcp_servers = _claude_mcp_servers(self.profile.mcp_servers, owner=request.trust_level is TrustLevel.OWNER)
         cmd += self._tool_args(request, mcp_servers)
         for path in request.readable_dirs:
             cmd += ["--add-dir", str(path)]

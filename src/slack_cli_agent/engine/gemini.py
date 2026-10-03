@@ -89,6 +89,10 @@ _USAGE_KEY_MAP: Mapping[str, str] = {
 def _agy_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, Any]:
     servers: dict[str, Any] = {}
     for name, server in mcp_servers.items():
+        # The file is shared by every turn in the work directory, so a server
+        # meant for owner turns only has no safe place in it (sca-kf6j).
+        if server.owner_only:
+            continue
         entry: dict[str, Any]
         if server.is_remote:
             entry = {"serverUrl": server.url}
