@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -103,8 +103,12 @@ class FakeReclaimQueue:
     """reclaim_stale 호출만 기록하는 대역. test_jobs.py 의 FakeQueue 와 같은 역할."""
 
     result: ReclaimResult
+    excluded: list[tuple[int, ...]] = field(default_factory=list)
 
-    def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult:
+    def reclaim_stale(
+        self, deadline: float, max_attempts: int, exclude_ids: Collection[int] = ()
+    ) -> ReclaimResult:
+        self.excluded.append(tuple(exclude_ids))
         return self.result
 
 
@@ -351,6 +355,49 @@ class TestReclaim:
         assert ("add", "C1", "1.1", "hourglass") in client.calls
         assert ("add", "C1", "2.1", "x") in client.calls
 
+    def test_처리_중인_작업은_회수_대상에서_빠진다(self, database) -> None:
+        """잠들었다 깬 직후에는 도는 작업의 박동도 낡아 있다. 그것을 되돌리면
+        아직 답을 쓰는 중인 요청에 두 번째 엔진이 붙는다(sca-rei-spin).
+
+        heartbeat_stale_sec 을 음수로 둬 판정 시점을 미래로 밀어, 박동과
+        무관하게 RUNNING 작업이 모두 정체로 보이는 상태를 만든다."""
+
+        class 처리중회수:
+            def __init__(self) -> None:
+                self.worker: Any = None
+                self.결과: ReclaimResult | None = None
+
+            def handle(self, ctx: RequestContext) -> HandleOutcome:
+                self.결과 = self.worker.reclaim()
+                return HandleOutcome(ok=True)
+
+        handler = 처리중회수()
+        worker, queue, _client = make_worker(
+            database=database,
+            handler=handler,
+            settings=RuntimeSettings(heartbeat_interval_sec=0.01, heartbeat_stale_sec=-1000),
+        )
+        handler.worker = worker
+        queue.enqueue(ctx("1.1"))
+
+        worker.run_once()
+
+        assert handler.결과 is not None
+        assert handler.결과.total == 0
+        # 되돌려졌다면 점유가 바뀌어 이 시도의 완료 기록이 떨어져 나간다.
+        assert queue.counts() == {"COMPLETED": 1}
+
+    def test_다른_프로세스가_두고_간_작업은_그대로_회수한다(self, database) -> None:
+        worker, queue, _client = make_worker(
+            database=database,
+            settings=RuntimeSettings(heartbeat_interval_sec=0.01, heartbeat_stale_sec=-1000),
+        )
+        queue.enqueue(ctx("1.1"))
+        queue.claim_next("죽은워커")
+
+        result = worker.reclaim()
+
+        assert [c.ts for c in result.requeued] == ["1.1"]
 
     def test_감시_중인_메시지는_대기_표식으로_안_바꾼다(self, database) -> None:
         """감시가 걸린 채로 대기 표식을 붙이면 그 메시지는 감시 중이면서 대기

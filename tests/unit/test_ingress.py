@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -101,7 +101,9 @@ class FakeJobQueue:
     def requeue(self, job_id: int, *, lease: str) -> bool:
         raise NotImplementedError
 
-    def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult:
+    def reclaim_stale(
+        self, deadline: float, max_attempts: int, exclude_ids: Collection[int] = ()
+    ) -> ReclaimResult:
         raise NotImplementedError
 
     def blocked_on_thread(self, thread_ts: str, message_ts: str) -> bool:

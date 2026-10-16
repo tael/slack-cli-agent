@@ -4,6 +4,7 @@ particular implementation. Verified by tests/unit/test_jobs.py.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
@@ -48,7 +49,12 @@ class StaleJobReclaimer(Protocol):
     surface it never touches.
     """
 
-    def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult: ...
+    def reclaim_stale(
+        self,
+        deadline: float,
+        max_attempts: int,
+        exclude_ids: Collection[int] = (),
+    ) -> ReclaimResult: ...
 
 
 @runtime_checkable
@@ -81,11 +87,19 @@ class JobQueue(Protocol):
     def requeue(self, job_id: int, *, lease: str) -> bool:
         """Cancel a running job back to queued, e.g. on shutdown."""
 
-    def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult:
+    def reclaim_stale(
+        self,
+        deadline: float,
+        max_attempts: int,
+        exclude_ids: Collection[int] = (),
+    ) -> ReclaimResult:
         """Handle running jobs whose heartbeat is older than `deadline`.
 
         Requeues if under max_attempts, otherwise marks failed. The lookup and
         the state transition must happen in one transaction.
+
+        `exclude_ids` are jobs the caller is handling right now, which must be
+        left alone however old their heartbeat looks.
         """
 
     def blocked_on_thread(self, thread_ts: str, message_ts: str) -> bool:

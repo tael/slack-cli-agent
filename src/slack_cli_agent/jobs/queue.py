@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from uuid import uuid4
 
 from ..core.context import RequestContext
@@ -141,18 +141,25 @@ class SqliteJobQueue(SqliteRepository):
             return False
         return True
 
-    def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult:
+    def reclaim_stale(
+        self,
+        deadline: float,
+        max_attempts: int,
+        exclude_ids: Collection[int] = (),
+    ) -> ReclaimResult:
         requeued: list[RequestContext] = []
         failed: list[RequestContext] = []
+        skip = tuple(exclude_ids)
+        condition = "status = ? AND (heartbeat_ts IS NULL OR heartbeat_ts < ?)"
+        params: list[object] = [JobStatus.RUNNING.value, deadline]
+        if skip:
+            condition += f" AND id NOT IN ({','.join('?' * len(skip))})"
+            params.extend(skip)
 
         with self._transaction() as conn:
             rows = conn.execute(
-                """
-                SELECT id, payload, attempts FROM jobs
-                 WHERE status = ?
-                   AND (heartbeat_ts IS NULL OR heartbeat_ts < ?)
-                """,
-                (JobStatus.RUNNING.value, deadline),
+                f"SELECT id, payload, attempts FROM jobs WHERE {condition}",
+                params,
             ).fetchall()
 
             for row in rows:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Collection
 from dataclasses import dataclass, field
 
 import pytest
@@ -203,6 +204,34 @@ class TestReclaim:
         queue.heartbeat(job.id, job.lease)
         assert queue.reclaim_stale(deadline=time.time() - 1, max_attempts=3).total == 0
 
+    def test_부르는_쪽이_붙든_작업은_박동이_낡아도_안_건드린다(
+        self, queue: SqliteJobQueue
+    ) -> None:
+        """잠들었다 깬 직후의 박동은 실제로 낡아 있다. 그 작업을 되돌리면
+        아직 답을 쓰는 중인 요청에 두 번째 엔진이 붙는다(sca-rei-spin)."""
+        queue.enqueue(ctx("1.1"))
+        job = claim(queue, "w1")
+
+        result = queue.reclaim_stale(
+            deadline=time.time() + 1, max_attempts=3, exclude_ids=[job.id]
+        )
+
+        assert result.total == 0
+        # 아직 RUNNING 이라 같은 스레드의 다음 claim 도 열리지 않는다.
+        assert queue.claim_next("w2") is None
+
+    def test_붙들지_않은_작업은_그대로_되돌린다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.1"))
+        queue.enqueue(ctx("2.1"))
+        붙든작업 = claim(queue, "w1")
+        남은작업 = claim(queue, "w1")
+
+        result = queue.reclaim_stale(
+            deadline=time.time() + 1, max_attempts=3, exclude_ids=[붙든작업.id]
+        )
+
+        assert [c.ts for c in result.requeued] == [남은작업.context.ts]
+
 
 class Test소유권검증:
     """회수된 작업은 다음 claim 이 새 시도를 연다. 그 사이 옛 워커가 돌아와
@@ -300,12 +329,16 @@ class FakeQueue:
     """호출 인자만 기록하는 대역. Protocol 경계 덕에 DB 없이 검증한다."""
 
     calls: list[tuple[float, int]] = field(default_factory=list)
+    excluded: list[tuple[int, ...]] = field(default_factory=list)
     result: ReclaimResult = field(
         default_factory=lambda: ReclaimResult(requeued=[], failed=[])
     )
 
-    def reclaim_stale(self, deadline: float, max_attempts: int) -> ReclaimResult:
+    def reclaim_stale(
+        self, deadline: float, max_attempts: int, exclude_ids: Collection[int] = ()
+    ) -> ReclaimResult:
         self.calls.append((deadline, max_attempts))
+        self.excluded.append(tuple(exclude_ids))
         return self.result
 
 
@@ -325,6 +358,13 @@ class TestWorkerHeartbeat:
         result = WorkerHeartbeat(fake, RuntimeSettings()).reclaim_stale()
 
         assert result.requeued == [target]
+
+    def test_붙든_작업_목록을_큐에_그대로_넘긴다(self) -> None:
+        fake = FakeQueue()
+
+        WorkerHeartbeat(fake, RuntimeSettings()).reclaim_stale([7, 9])
+
+        assert fake.excluded == [(7, 9)]
 
 
 class Test실패건재등록:

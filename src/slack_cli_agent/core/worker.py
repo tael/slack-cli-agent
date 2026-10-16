@@ -223,7 +223,12 @@ class Worker:
         return self._markers.mark_done, self._markers.mark_done
 
     def reclaim(self) -> ReclaimResult:
-        result = self._heartbeat.reclaim_stale()
+        # The jobs this process is handling are excluded: their heartbeat looks
+        # stale after a system suspend, and requeueing them starts a second
+        # engine run on a request that is still being answered (sca-rei-spin).
+        with self._lock:
+            live = tuple(self._running)
+        result = self._heartbeat.reclaim_stale(live)
         for context in result.requeued:
             # Back to queued, so the mark goes back to queued too -- unless a
             # watch is already running on that message.

@@ -13,15 +13,45 @@ stdout -- the same reason subprocess.run() uses communicate().
 
 from __future__ import annotations
 
+import logging
+import os
+import signal
 import subprocess
 import threading
 from collections.abc import Callable, Mapping
 from typing import IO
 
+log = logging.getLogger(__name__)
+
 #: How long to wait for the reader threads after the process exits. They
 #: end when their pipes close, which the exit already did; this only keeps
 #: a stuck thread from holding the request.
 _DRAIN_TIMEOUT_SEC = 5.0
+
+
+def _kill_group(process: subprocess.Popen[str]) -> None:
+    """SIGKILL the whole session the engine was started in.
+
+    2026-10-16: an agy turn ran 27,558s against a 900s limit and
+    Popen.wait(timeout=) never came back, so the engine was never killed.
+    Each stale-job reclaim then started another one against the same
+    request while the earlier ones stayed alive, and all of them kept
+    writing the same progress log -- the thread showed an endless run of
+    "답 쓰는 중 / 명령 실행 중" (sca-rei-spin).
+
+    A deadline timer owned by this module does not depend on wait()
+    waking up, and killing the group rather than the child reaches the
+    tool subprocesses the engine spawned.
+    """
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        # Already gone, or not ours to signal. Fall back to the child alone
+        # so a group that cannot be reached still loses its leader.
+        try:
+            process.kill()
+        except ProcessLookupError:
+            return
 
 
 def _drain(stream: IO[str], chunks: list[str], on_line: Callable[[str], None] | None) -> None:
@@ -51,6 +81,9 @@ def run_streaming(
         stderr=subprocess.PIPE,
         text=True,
         env=dict(env) if env is not None else None,
+        # Puts the engine and everything it spawns in their own group, so the
+        # deadline below can reach the tool subprocesses too.
+        start_new_session=True,
     )
     out_chunks: list[str] = []
     err_chunks: list[str] = []
@@ -60,12 +93,30 @@ def run_streaming(
     ]
     for reader in readers:
         reader.start()
+    expired = threading.Event()
+
+    def _on_deadline() -> None:
+        expired.set()
+        log.warning("제한 %.0f초를 넘겨 엔진 프로세스 그룹을 강제 종료한다 : pid=%d", timeout, process.pid)
+        _kill_group(process)
+
+    # The enforcer, not a backstop: wait(timeout=) has been seen not to
+    # return at all, and this timer is what actually ends the turn.
+    deadline = threading.Timer(timeout, _on_deadline)
+    deadline.daemon = True
+    deadline.start()
     try:
-        returncode = process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-        raise
+        returncode = process.wait()
+    finally:
+        deadline.cancel()
+    if expired.is_set():
+        # Reported the same way subprocess.run() would, so the runner's
+        # existing timeout branch produces the reply and the audit reason.
+        for reader in readers:
+            reader.join(_DRAIN_TIMEOUT_SEC)
+        raise subprocess.TimeoutExpired(
+            cmd, timeout, output="".join(out_chunks), stderr="".join(err_chunks)
+        )
     for reader in readers:
         reader.join(_DRAIN_TIMEOUT_SEC)
     return subprocess.CompletedProcess(cmd, returncode, "".join(out_chunks), "".join(err_chunks))
