@@ -1,9 +1,13 @@
-"""Runs an engine subprocess while handing each stdout line to a callback.
+"""Runs an engine subprocess, optionally handing each stdout line to a callback.
 
-Used when the engine writes its own structured progress events to stdout
-(Engine.streams_progress) instead of through a hook process. The full
-stdout is still collected and returned, so Engine.parse() sees exactly
-what subprocess.run() would have given it.
+Every engine run goes through here, with or without the callback. The
+callback is for engines that write their own progress events to stdout
+(Engine.streams_progress); the deadline below is why the runs without one
+come here too. subprocess.run() enforces its limit through
+Popen.wait(timeout=), which is exactly the call that did not come back on
+10-16, and it leaves the engine's own tool subprocesses untouched. The
+full stdout is still collected and returned, so Engine.parse() sees
+exactly what subprocess.run() would have given it.
 
 Both pipes are drained by reader threads. Doing stdout in this thread and
 stderr nowhere would deadlock as soon as an engine fills the stderr pipe
@@ -71,9 +75,13 @@ def run_streaming(
     cwd: str,
     timeout: float,
     env: Mapping[str, str] | None,
-    on_stdout_line: Callable[[str], None],
+    on_stdout_line: Callable[[str], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """subprocess.run() with a per-line callback on stdout. Raises TimeoutExpired like it does."""
+    """subprocess.run() with an optional per-line callback on stdout.
+
+    Raises TimeoutExpired like subprocess.run() does, but on a timer of its
+    own rather than on wait(timeout=).
+    """
     process = subprocess.Popen(
         cmd,
         cwd=cwd,

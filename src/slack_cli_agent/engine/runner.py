@@ -416,15 +416,18 @@ class EngineRunner:
         cmd: list[str], cwd: str, timeout: float, env: Mapping[str, str] | None = None,
         on_stdout_line: Callable[[str], None] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        if on_stdout_line is not None:
-            return run_streaming(cmd, cwd, timeout, env, on_stdout_line)
-        # engine.parse() interprets returncode directly — turning it
-        # into an exception here would break the path that carries a
-        # failed exit code as a failure response.
-        return subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-            env=dict(env) if env is not None else None, check=False,
-        )
+        # Both with and without the callback. subprocess.run() was the other
+        # branch here, and its limit is the Popen.wait(timeout=) that did not
+        # return on the 27,558s agy turn (sca-rei-spin) -- a channel with
+        # progress turned off supplies no callback, so that branch was the one
+        # run with no enforced limit at all. run_streaming also kills the
+        # process group, which reaches the tool subprocesses.
+        #
+        # engine.parse() interprets returncode directly — turning it into an
+        # exception here would break the path that carries a failed exit code
+        # as a failure response. run_streaming raises on the deadline only,
+        # same as subprocess.run(check=False).
+        return run_streaming(cmd, cwd, timeout, env, on_stdout_line)
 
 
 class EngineInvoker(ABC):

@@ -46,6 +46,33 @@ class Test정상종료:
         assert "둘째줄" in 결과.stdout
 
 
+class Test콜백없는실행:
+    """진행 표시가 꺼진 채널은 줄 콜백을 안 넘긴다. 그 경로가 subprocess.run
+    이던 동안은 제한을 강제하는 것이 wait(timeout=) 하나였다 (sca-rei-spin)."""
+
+    def test_콜백이_없어도_출력을_모은다(self, tmp_path) -> None:
+        본문 = "import sys; print('본문'); print('오류', file=sys.stderr)"
+        결과 = run_streaming(
+            [sys.executable, "-c", 본문], cwd=str(tmp_path), timeout=30, env=None,
+        )
+
+        assert 결과.returncode == 0
+        assert "본문" in 결과.stdout
+        assert "오류" in 결과.stderr
+
+    def test_콜백이_없어도_제한을_넘기면_죽인다(self, tmp_path) -> None:
+        시작 = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_streaming(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                cwd=str(tmp_path),
+                timeout=0.3,
+                env=None,
+            )
+
+        assert time.monotonic() - 시작 < 10
+
+
 class Test제한초과:
     def test_제한을_넘기면_프로세스를_죽이고_TimeoutExpired_를_낸다(self, tmp_path) -> None:
         시작 = time.monotonic()
