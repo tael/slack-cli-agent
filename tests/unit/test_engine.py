@@ -1913,6 +1913,60 @@ class Test엔진호출부품:
         assert invoker.invoke(요청) is 응답
         assert 부른것 == [(engine, 요청)]
 
+    def _인증실패_실행(self, tmp_path: Path, stderr: str, notify: Any, clock: Any = None) -> Any:
+        from slack_cli_agent.engine.runner import DirectInvoker
+
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        실패 = engine.parse(stdout="", stderr=stderr, returncode=1)
+
+        class 실행기대역:
+            def run(self, engine: Engine, request: EngineRequest,
+                    timeout_sec: float | None = None) -> EngineResponse:
+                return 실패
+
+        kwargs: dict[str, Any] = {"notify": notify}
+        if clock is not None:
+            kwargs["clock"] = clock
+        return DirectInvoker(실행기대역(), engine, **kwargs)  # type: ignore[arg-type]
+
+    def test_직접실행도_로그인_풀림을_사람에게_보인다(self, tmp_path: Path) -> None:
+        """폴백이 없으면 codex 종료코드 1 이 비공개로 남아 스레드가 침묵했다 (2026-10-20)."""
+        알림: list[str] = []
+        invoker = self._인증실패_실행(
+            tmp_path,
+            "ERROR: Your access token could not be refreshed because your refresh token "
+            "was already used. Please log out and sign in again.",
+            알림.append,
+        )
+        응답 = invoker.invoke(request())
+        assert 응답.ok is False
+        assert 응답.user_facing is True
+        assert 응답.failure_reason == "auth_failure"
+        assert "로그인" in 응답.body
+        assert len(알림) == 1
+
+    def test_로그인_풀림_알림은_간격_안에서_한_번만_나간다(self, tmp_path: Path) -> None:
+        알림: list[str] = []
+        시각 = [1000.0]
+        invoker = self._인증실패_실행(
+            tmp_path, "Please log out and sign in again", 알림.append, clock=lambda: 시각[0]
+        )
+        invoker.invoke(request())
+        시각[0] += 60
+        invoker.invoke(request())
+        assert len(알림) == 1
+        시각[0] += 3600
+        invoker.invoke(request())
+        assert len(알림) == 2
+
+    def test_다른_실패는_직접실행이_건드리지_않는다(self, tmp_path: Path) -> None:
+        알림: list[str] = []
+        invoker = self._인증실패_실행(tmp_path, "some other crash", 알림.append)
+        응답 = invoker.invoke(request())
+        assert 응답.failure_reason == "nonzero_exit"
+        assert 응답.user_facing is False
+        assert 알림 == []
+
     def test_폴백실행은_엔진자신의_run_을_부른다(self) -> None:
         """실행기를 거치면 전환 판정이 건너뛰어진다."""
         from slack_cli_agent.engine.runner import FallbackInvoker

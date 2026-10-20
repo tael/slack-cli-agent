@@ -26,7 +26,7 @@ from ..auth.principal import TrustLevel
 from ..config.settings import RuntimeSettings
 from ..core.errors import ConfigError
 from ..observability.progress_hook import append_tool
-from ..session.manager import CAPABILITY_UNMET_REASON
+from ..session.manager import AUTH_FAILURE_REASON, CAPABILITY_UNMET_REASON
 from .base import (
     CallOrigin,
     ElapsedSource,
@@ -448,17 +448,61 @@ class EngineRunPort(Protocol):
     def run(self, engine: Engine, request: EngineRequest) -> EngineResponse: ...
 
 
-class DirectInvoker(EngineInvoker):
-    """No fallback configured — runs that one engine via the runner."""
+#: 단일 엔진에서 로그인이 풀렸을 때 스레드에 남기는 한 줄.
+DIRECT_AUTH_FAILURE_REPLY = "엔진 로그인이 풀려 이 요청을 처리하지 못했습니다. 관리자에게 알렸습니다."
 
-    def __init__(self, runner: EngineRunPort, engine: Engine) -> None:
+#: 로그인이 풀린 동안 들어오는 요청마다 DM 이 나가지 않게 막는 간격.
+DIRECT_AUTH_NOTIFY_INTERVAL_SEC = 3600.0
+
+
+class DirectInvoker(EngineInvoker):
+    """No fallback configured — runs that one engine via the runner.
+
+    로그인이 풀린 실패는 여기서 사람에게 보이게 바꾼다. 폴백이 없으면
+    FallbackEngine 의 인증 실패 감지가 돌지 않아, codex 의 종료코드 1 이
+    비공개 실패로 남고 스레드에는 아무 답도 없었다. 2026-10-20 데이전트가
+    갱신 토큰 무효로 17:46 요청에 침묵한 사례다.
+    """
+
+    def __init__(self, runner: EngineRunPort, engine: Engine,
+                 notify: Callable[[str], object] | None = None,
+                 clock: Callable[[], float] = time.time) -> None:
         self._runner = runner
         self._engine = engine
+        self._notify = notify
+        self._clock = clock
+        self._last_auth_notice = float("-inf")
 
     def invoke(self, request: EngineRequest,
                origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse:
         # No fallback means no recovery probe, so origin has nothing to gate.
-        return self._runner.run(self._engine, request)
+        response = self._runner.run(self._engine, request)
+        # 성공은 판정할 것이 없다. 실행기 대역이 응답 아닌 값을 돌려주는 시험도
+        # 그대로 통과시킨다.
+        if not isinstance(response, EngineResponse) or response.ok:
+            return response
+        note = self._engine.detect_auth_failure(response)
+        if note is None:
+            return response
+        self._notify_auth_failure(note)
+        # auth_failure 는 NO_RETRY_REASONS 에 있어 새 세션 재시도로 같은
+        # 자격을 한 번 더 태우지 않는다.
+        return dataclasses.replace(
+            response, body=DIRECT_AUTH_FAILURE_REPLY, user_facing=True,
+            failure_reason=AUTH_FAILURE_REASON,
+        )
+
+    def _notify_auth_failure(self, note: str) -> None:
+        if self._notify is None:
+            return
+        now = self._clock()
+        if now - self._last_auth_notice < DIRECT_AUTH_NOTIFY_INTERVAL_SEC:
+            return
+        self._last_auth_notice = now
+        try:
+            self._notify(f"*{self._engine.name} 로그인이 풀렸습니다*\n\n- {note}")
+        except Exception:  # 알림 실패가 요청 처리를 끝내면 안 된다
+            log.exception("로그인 풀림 알림에 실패했다")
 
 
 class FallbackInvoker(EngineInvoker):
