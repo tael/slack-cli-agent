@@ -179,20 +179,64 @@ class TestHistoryReader:
         쉰횟수 = sum(1 for 초 in clock.sleeps if 초 == pytest.approx(settings.history_read_pause_sec))
         assert 쉰횟수 >= 1
 
-    def test_기록조회_상한만큼_다_비면_판정불가_예외를_낸다(
+    def test_다_비었는데_구간_안_메시지가_있으면_판정불가_예외를_낸다(
         self, settings: RuntimeSettings
     ) -> None:
         """원본은 None 을 돌려준다. 이 포팅은 core.errors.HistoryUnavailable 로
         판정 불가를 명시적으로 알린다 — core.errors 는 이미 이 목적으로 있는
-        타입이다."""
+        타입이다.
+
+        구간을 건 조회는 다 비었는데 구간 없는 확인 조회가 구간 안 메시지를
+        돌려주면, 소수 7자리 oldest 로 빈 목록이 온 경우와 형태가 같다.
+        """
+        client = FakeWebClient()
+        for _ in range(settings.history_read_tries):
+            client.queue_history({"ok": True, "messages": []})
+        # 구간 없는 확인 조회 — oldest 100 보다 뒤인 메시지가 실재한다
+        client.queue_history({"ok": True, "messages": [{"ts": "150.000000"}]})
+        clock = FakeClock()
+        reader = HistoryReader(client, settings, clock=clock.time, sleep=clock.sleep)
+        with pytest.raises(HistoryUnavailable):
+            reader.read_history("C1", "100.000000", 40)
+        assert len(client.calls) == settings.history_read_tries + 1
+
+    def test_다_비고_확인조회도_비면_빈_목록을_돌려준다(
+        self, settings: RuntimeSettings
+    ) -> None:
+        """메시지가 하나도 없는 채널을 판정 불가로 두면 캐치업이 그 채널을
+        무한 재시도에 두고 30분마다 거짓 경보를 낸다."""
+        client = FakeWebClient()
+        for _ in range(settings.history_read_tries):
+            client.queue_history({"ok": True, "messages": []})
+        client.queue_history({"ok": True, "messages": []})
+        clock = FakeClock()
+        reader = HistoryReader(client, settings, clock=clock.time, sleep=clock.sleep)
+        assert reader.read_history("C1", "100.000000", 40) == []
+
+    def test_확인조회_최신_메시지가_구간보다_오래되면_빈_목록을_돌려준다(
+        self, settings: RuntimeSettings
+    ) -> None:
+        client = FakeWebClient()
+        for _ in range(settings.history_read_tries):
+            client.queue_history({"ok": True, "messages": []})
+        client.queue_history({"ok": True, "messages": [{"ts": "50.000000"}]})
+        clock = FakeClock()
+        reader = HistoryReader(client, settings, clock=clock.time, sleep=clock.sleep)
+        assert reader.read_history("C1", "100.000000", 40) == []
+        # 확인 조회에는 oldest 를 걸지 않는다 — 걸면 같은 빈 목록이 또 온다
+        assert "oldest" not in client.calls[-1][1]
+
+    def test_확인조회가_실패하면_판정불가로_남긴다(
+        self, settings: RuntimeSettings
+    ) -> None:
         client = FakeWebClient()
         for _ in range(settings.history_read_tries):
             client.queue_history({"ok": True, "messages": []})
         clock = FakeClock()
         reader = HistoryReader(client, settings, clock=clock.time, sleep=clock.sleep)
+        # 확인 조회용 응답을 큐에 안 넣어 두면 대역이 IndexError 를 낸다
         with pytest.raises(HistoryUnavailable):
-            reader.read_history("C1", "0.000000", 40)
-        assert len(client.calls) == settings.history_read_tries
+            reader.read_history("C1", "100.000000", 40)
 
 
 # ReactionMarker

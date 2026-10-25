@@ -92,14 +92,29 @@ def test_read_history_returns_list_on_success() -> None:
 def test_read_history_returns_none_when_unavailable_not_exception() -> None:
     client = FakeWebClient()
     settings = RuntimeSettings()
-    # tries 만큼 계속 빈 응답을 채워, 실물이 HistoryUnavailable 을 내게 만든다.
+    # tries 만큼 빈 응답을 채우고, 확인 조회에는 구간 안 메시지를 돌려줘
+    # 실물이 HistoryUnavailable 을 내게 만든다.
     for _ in range(settings.history_read_tries):
         client.queue_history({"ok": True, "messages": []})
+    client.queue_history({"ok": True, "messages": [{"ts": "1700000500.000000"}]})
     port = _make_port(client)
 
     result = port.read_history("C123", 1700000000.0, 10)
 
     assert result is None
+
+
+def test_read_history_returns_empty_list_for_a_quiet_channel() -> None:
+    """조용한 채널은 None(판정 불가)이 아니라 빈 목록이어야 한다 —
+    None 이면 캐치업이 그 채널을 무한 재시도에 둔다."""
+    client = FakeWebClient()
+    settings = RuntimeSettings()
+    for _ in range(settings.history_read_tries):
+        client.queue_history({"ok": True, "messages": []})
+    client.queue_history({"ok": True, "messages": [{"ts": "1600000000.000000"}]})
+    port = _make_port(client)
+
+    assert port.read_history("C123", 1700000000.0, 10) == []
 
 
 def test_read_history_none_is_distinguishable_from_actual_empty() -> None:
