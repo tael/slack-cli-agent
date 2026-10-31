@@ -393,7 +393,10 @@ class Application:
             runner = self.engine_runner
             if fallback_spec is None:
                 self._engine = primary
-                self._invoker = DirectInvoker(runner, primary)
+                self._invoker = DirectInvoker(
+                    runner, primary,
+                    notify=self._notify_owner if self._profile.owner_user_id else None,
+                )
             else:
                 secondary = self._registry.create(fallback_spec.type, self._profile, self._settings)
                 fallback = FallbackEngine(
