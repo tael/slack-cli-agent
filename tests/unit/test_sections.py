@@ -8,7 +8,30 @@
 
 from __future__ import annotations
 
-from slack_cli_agent.prompt.sections import SILENT_MARK, SILENT_MARK_LEGACY, is_silent
+from pathlib import Path
+
+from slack_cli_agent.auth.principal import Principal, TrustLevel
+from slack_cli_agent.prompt.library import PromptLibrary
+from slack_cli_agent.prompt.sections import (
+    SILENT_MARK,
+    SILENT_MARK_LEGACY,
+    AskSection,
+    CompositionContext,
+    is_silent,
+)
+
+_PRINCIPAL = Principal(user_id="U1", channel="C1", trust=TrustLevel.GENERAL, is_direct_message=False)
+
+
+def _ctx(**overrides: object) -> CompositionContext:
+    base: dict[str, object] = {
+        "principal": _PRINCIPAL,
+        # The package-bundled defaults are enough — ASK_NOTE ships there and
+        # this test doesn't need a profile-specific override.
+        "library": PromptLibrary(Path("/does/not/exist")),
+    }
+    base.update(overrides)
+    return CompositionContext(**base)  # type: ignore[arg-type]
 
 
 class Test표식_표기:
@@ -86,3 +109,33 @@ class Test빈_본문:
 
     def test_공백만_있어도_침묵이_아니다(self) -> None:
         assert is_silent("   \n  ") is False
+
+
+class TestAskSection:
+    """[[ASK]] 표식 세팅 규약을 전하는 섹션. bot.py:1499-1507 상당.
+
+    아직 어느 프로필의 섹션 목록에도 등록돼 있지 않다 — 등록은
+    core/application.py 의 `_prompt_sections()` 를 손대야 하는데, 이번
+    변경 범위 밖이다.
+    """
+
+    def test_항상_적용된다(self) -> None:
+        section = AskSection()
+        assert section.applies_to(_ctx()) is True
+
+    def test_postmortem_에서는_빠진다(self) -> None:
+        section = AskSection()
+        assert section.applies_to(_ctx(postmortem=True)) is False
+
+    def test_debug_trace_에서는_빠진다(self) -> None:
+        section = AskSection()
+        assert section.applies_to(_ctx(debug_trace=True)) is False
+
+    def test_format_review_에서는_빠진다(self) -> None:
+        section = AskSection()
+        assert section.applies_to(_ctx(format_review=True)) is False
+
+    def test_ASK_표식_설명을_담은_안내문을_낸다(self) -> None:
+        section = AskSection()
+        text = section.render(_ctx())
+        assert "[[ASK]]" in text

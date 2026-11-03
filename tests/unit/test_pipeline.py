@@ -241,6 +241,19 @@ class FakeReactions:
         self.events.append(("watch", channel, ts))
 
 
+class FakeAwaiting:
+    """대역. 실제 계약은 `session.awaiting.AwaitingPort`."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, bool]] = []
+
+    def set_awaiting(self, channel: str, thread_ts: str, waiting: bool) -> None:
+        self.calls.append((channel, thread_ts, waiting))
+
+    def is_awaiting(self, channel: str, thread_ts: str) -> bool:
+        return any(c == (channel, thread_ts, True) for c in self.calls)
+
+
 class _AlwaysChanges(OutputGuard):
     name = "always_changes"
 
@@ -333,6 +346,7 @@ def build_pipeline(
     readable_dirs: tuple[Path, ...] = (),
     now: Any = None,
     new_run_id: Any = None,
+    awaiting: Any = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -377,6 +391,8 @@ def build_pipeline(
         extra_kwargs["now"] = now
     if new_run_id is not None:
         extra_kwargs["new_run_id"] = new_run_id
+    if awaiting is not None:
+        extra_kwargs["awaiting"] = awaiting
     extra_kwargs.setdefault(
         "watch_results",
         WatchResultReader((tmp_path or Path("/tmp")) / ".watch-out"),
@@ -435,6 +451,42 @@ def fail_response(
 
 
 # 시험
+
+
+class TestAsk표식:
+    """[[ASK]] 표식 처리 — 게시 전 제거 + 답 대기 상태 기록. bot.py:8273-8312 상당."""
+
+    def test_ASK표식을_떼고_답_대기를_기록한다(self, tmp_path: Path) -> None:
+        awaiting = FakeAwaiting()
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="확인했습니다.\n[[ASK]]")],
+            tmp_path=tmp_path, awaiting=awaiting,
+        )
+        pipeline.handle(make_ctx())
+        # 표식은 사람에게 보이지 않는다 — 게시 본문에서 사라진다.
+        assert "[[ASK]]" not in deps["publisher"].posted[0]["text"]
+        assert deps["publisher"].posted[0]["text"] == "확인했습니다."
+        # 그 스레드는 답 대기로 남아, 뒤이은 짧은 승인을 받을 수 있다.
+        assert awaiting.calls[-1] == ("C1", "1700000001.000100", True)
+
+    def test_평서형_승인요청도_대기로_기록한다(self, tmp_path: Path) -> None:
+        """표식이 없어도 되물음 어휘(asked_back)가 있으면 대기로 본다."""
+        awaiting = FakeAwaiting()
+        pipeline, _ = build_pipeline(
+            responses=[ok_response(body="진행할지 말씀 주시면 그때 실행하겠습니다.")],
+            tmp_path=tmp_path, awaiting=awaiting,
+        )
+        pipeline.handle(make_ctx())
+        assert awaiting.calls[-1] == ("C1", "1700000001.000100", True)
+
+    def test_표식도_되물음도_없으면_대기를_해제한다(self, tmp_path: Path) -> None:
+        awaiting = FakeAwaiting()
+        pipeline, _ = build_pipeline(
+            responses=[ok_response(body="그냥 평범한 답변입니다.")],
+            tmp_path=tmp_path, awaiting=awaiting,
+        )
+        pipeline.handle(make_ctx())
+        assert awaiting.calls[-1] == ("C1", "1700000001.000100", False)
 
 
 class Test엔진성공:

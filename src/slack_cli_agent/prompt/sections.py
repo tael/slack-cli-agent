@@ -387,6 +387,33 @@ class WatchSection(PromptSection):
         return text
 
 
+class AskSection(PromptSection):
+    """Tells the engine how to set the `[[ASK]]` marker.
+
+    Ports bot.py:1507's ASK_TAG convention (2026-09-19): a short approval
+    ("좋아", "네", "ㅇㅇ") only reads as an answer to a pending decision, not
+    a stray reaction, when the bot's own last turn actually asked for one —
+    and a question-mark check alone misses the plain-statement phrasing this
+    workspace actually uses ("진행할지 말씀 주시면..."). The marker is this
+    section's only job; stripping it and turning it into a persisted
+    awaiting-reply state is core/pipeline.py's.
+
+    Skipped during postmortem/debug/format-review for the same reason as
+    WatchSection — those turns only look back, nothing there is a new
+    decision to wait on.
+
+    Not yet wired into any profile's section list — see
+    `core/application.py`'s `_prompt_sections()`, which composition root
+    this change doesn't touch.
+    """
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return not ctx.aside
+
+    def render(self, ctx: CompositionContext) -> str:
+        return ctx._library_or_raise().text("ASK_NOTE")
+
+
 class AttachmentSection(PromptSection):
     """Tells the engine what got attached to this turn: bot.py:4699-4712's
     attachment_note ported. Attachments are downloaded and their local path

@@ -239,6 +239,27 @@ deadline must not eat into the time budget for giving up (bot.py:11028-11030).
 """
 
 
+V11_AWAITING_REPLY_SQL = """
+CREATE TABLE awaiting_replies (
+  channel    TEXT NOT NULL,
+  thread_ts  TEXT NOT NULL,
+  marked_at  REAL NOT NULL,
+  PRIMARY KEY (channel, thread_ts)
+);
+"""
+"""Per-thread "waiting on a human decision" flag, surviving a restart.
+
+Ports bot.py:1515-1518's AWAITING_FILE/set_awaiting/is_awaiting. A short
+approval ("좋아") only reads as answering a pending decision, not a stray
+reaction, when the bot's own last turn in that thread actually asked for
+one — and the decision can come hours later, so this has to survive a
+restart the same way a session record does. Overwritten on every turn
+rather than explicitly cleared: a turn that isn't awaiting a reply removes
+the row, so there is nothing to garbage-collect beyond what age (checked by
+the reader, not stored) already excludes.
+"""
+
+
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
@@ -250,6 +271,7 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (8, "작업 점유마다 고유한 표를 둔다", _statements(V8_JOB_LEASE_SQL)),
     (9, "관리 명령 점유 원장 추가", _statements(V9_ADMIN_CLAIMS_SQL)),
     (10, "감시 작업에 기한 추가", _statements(V10_WATCH_JOB_DUE_AT_SQL)),
+    (11, "답 대기 중인 스레드 표시 추가", _statements(V11_AWAITING_REPLY_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

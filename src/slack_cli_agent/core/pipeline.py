@@ -44,12 +44,15 @@ from ..prompt.composer import PromptComposer
 from ..prompt.sections import CompositionContext, is_silent
 from ..reliability.watchjobs import WatchJobPort
 from ..reliability.watchresult import WatchResultReader
+from ..session.awaiting import AwaitingPort
 from ..session.manager import SessionDecision, SessionManager
 from ..session.ports import SessionKey, SessionScope
+from ..slack.gate import ResponseGate
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
 from ..slack.mentions import MentionRenderer
 from ..slack.transcript import CurrentMessage
 from .context import RequestContext
+from .markers import take_ask_tag
 from .pipeline_ports import (
     AccessPolicyPort,
     AuditPort,
@@ -144,6 +147,10 @@ class RequestPipeline:
         # retry, so sharing one source would tie the two lifetimes together.
         new_request_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
         watch_results: WatchResultReader,
+        # None skips persisting the awaiting-reply state entirely -- the
+        # [[ASK]] tag still gets stripped either way, since leaving it in
+        # the posted body would expose an internal protocol marker.
+        awaiting: AwaitingPort | None = None,
     ) -> None:
         self._access = access_policy
         self._transcript = transcript_builder
@@ -180,6 +187,8 @@ class RequestPipeline:
         self._progress = progress
         self._now = now
         self._monotonic = monotonic
+        self._awaiting = awaiting
+        self._gate = ResponseGate()
 
     def handle(self, ctx: RequestContext) -> HandleOutcome:
         try:
@@ -410,6 +419,7 @@ class RequestPipeline:
         body, watch_desc, watch_due_raw = self._apply_guards(
             body, ctx, principal, request, decision, previous_body
         )
+        body = self._apply_ask_tag(body, ctx)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich) or ""
         self._archive_response(ctx, body, response, elapsed)
@@ -634,6 +644,23 @@ class RequestPipeline:
                 IncidentKind.REWRITE_LOSS.value, channel=ctx.channel, thread_ts=ctx.thread_ts,
                 before_chars=loss.get("before_chars"), after_chars=loss.get("after_chars"),
             )
+
+    def _apply_ask_tag(self, body: str, ctx: RequestContext) -> str:
+        """Strips `[[ASK]]` and records the awaiting-reply state it (or a
+        plain-vocabulary question) implies.
+
+        Runs after guards so the tag is read from the final body, not a
+        draft a guard might still rewrite. Writes the state unconditionally
+        when a store is wired — a turn that isn't waiting on a reply has to
+        clear the thread's previous mark, or an old "awaiting" stays stuck
+        on from a prior turn that was never resolved (bot.py's
+        `set_awaiting` overwrites every turn for the same reason).
+        """
+        clean, had_tag = take_ask_tag(body)
+        if self._awaiting is not None:
+            waiting = had_tag or self._gate.asked_back(clean)
+            self._awaiting.set_awaiting(ctx.channel, ctx.thread_ts, waiting)
+        return clean
 
     def _watch_desc_for_launched(self, workdir: Path, run_id: str) -> str:
         """What to watch when the engine launched background work but emitted
