@@ -113,6 +113,35 @@ class TestFullAuthorityAndMechanism:
         assert policy.may_see_usage(mechanism_open_principal) is False
         assert policy.may_see_usage(owner_dm_principal) is True
 
+    def test_채널이_full_authority면_소유자는_DM처럼_최고권한이다(self, tmp_path: Path) -> None:
+        """소유자가 자기 콘솔처럼 쓰는 채널이다. DM 과 같은 축이라 구조공개·
+        사용현황·자기설정까지 열린다. 특정 채널 ID 하드코딩이 아니라 플래그다."""
+        channels = make_channels(tmp_path / "c.json", {"C1": {"full_authority": True}})
+        policy = AccessPolicy(make_profile(), channels)
+        principal = policy.principal_for("C1", OWNER)
+        assert policy.is_full_authority(principal) is True
+        assert policy.may_disclose_mechanism(principal) is True
+        assert policy.may_see_usage(principal) is True
+
+    def test_full_authority_채널이라도_소유자가_아니면_최고권한이_아니다(self, tmp_path: Path) -> None:
+        """플래그는 소유자(컨트롤러 포함) 에게만 작동한다. 남에게는 아무 효과 없다."""
+        channels = make_channels(tmp_path / "c.json", {"C1": {"full_authority": True}})
+        policy = AccessPolicy(make_profile(), channels)
+        principal = policy.principal_for("C1", STRANGER)
+        assert policy.is_full_authority(principal) is False
+        assert policy.may_see_usage(principal) is False
+
+    def test_컨트롤러도_full_authority_채널에서_최고권한이다(self, tmp_path: Path) -> None:
+        """R0: 마메치(컨트롤러) 를 김태일(소유자) 과 같은 등급으로 — 내부정보
+        공개·사용현황·자기설정까지. controller_user_ids 는 OWNER 라 같은 축이다."""
+        profile = Profile.from_dict({**MINIMAL_PROFILE, "controller_user_ids": ["U_CTRL"]})
+        channels = make_channels(tmp_path / "c.json", {"C1": {"full_authority": True}})
+        policy = AccessPolicy(profile, channels)
+        principal = policy.principal_for("C1", "U_CTRL")
+        assert policy.is_full_authority(principal) is True
+        assert policy.may_disclose_mechanism(principal) is True
+        assert policy.may_see_usage(principal) is True
+
 
 class TestModelFor:
     def test_소유자는_채널과_무관하게_소유자용_모델이다(self, tmp_path: Path) -> None:

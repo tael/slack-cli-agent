@@ -64,7 +64,8 @@ KNOWN_KEYS = frozenset(
     {
         "name", "mode", "workdir", "model", "effort", "persona", "knowledge",
         "trusted_users", "answer_unaddressed", "session_scope",
-        "disclose_mechanism", "skills", "light_context", "rich", "chat",
+        "disclose_mechanism", "full_authority", "skills", "light_context",
+        "rich", "chat",
         "progress", "bot_mentions",
         "user_tools", "tool_enforcement",
     }
@@ -105,6 +106,12 @@ class ChannelConfig:
     answer_unaddressed: bool = False
     session_scope: str = "thread"
     disclose_mechanism: bool = False
+    full_authority: bool = False
+    """Grants the owner full authority in this channel as if it were their own
+    DM -- mechanism disclosure, usage figures, self-configuration. Off by
+    default, so a normal channel still confines full authority to the DM. A
+    channel the owner treats as their own console turns it on. `disclose_mechanism`
+    is the narrower flag (explanations only); this is the DM-equivalent."""
     skills: bool = False
     light_context: bool = False
     rich: bool = DEFAULT_RICH
@@ -167,6 +174,7 @@ class ChannelConfig:
             answer_unaddressed=bool(data.get("answer_unaddressed", False)),
             session_scope=str(data.get("session_scope") or "thread"),
             disclose_mechanism=bool(data.get("disclose_mechanism", False)),
+            full_authority=bool(data.get("full_authority", False)),
             skills=bool(data.get("skills", False)),
             light_context=bool(data.get("light_context", False)),
             rich=bool(data.get("rich", DEFAULT_RICH)),

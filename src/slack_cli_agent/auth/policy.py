@@ -114,8 +114,15 @@ class AccessPolicy:
         return level
 
     def is_full_authority(self, principal: Principal) -> bool:
-        """True only in the owner's own DM."""
-        return principal.trust is TrustLevel.OWNER and principal.is_direct_message
+        """True in the owner's own DM, or in a channel that opted into
+        `full_authority` -- a channel the owner runs as their own console. Only
+        the owner (which includes controller_user_ids) ever gets it; the flag
+        does nothing for anyone else."""
+        if principal.trust is not TrustLevel.OWNER:
+            return False
+        if principal.is_direct_message:
+            return True
+        return self._channel_flag(principal.channel, "full_authority")
 
     def channel_tools_for(self, principal: Principal) -> tuple[str, ...]:
         """Extra tools this channel grants this user. The owner is left out —

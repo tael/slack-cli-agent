@@ -76,9 +76,14 @@ class CompositionContext:
     def is_owner(self) -> bool:
         return self.principal.trust is TrustLevel.OWNER
 
+    # Set by the composer's caller from AccessPolicy.is_full_authority, so the
+    # DM-equivalent `full_authority` channel flag reaches the prompt. Default
+    # False keeps callers that don't set it confined to the DM check below.
+    authority_granted: bool = False
+
     @property
     def full_authority(self) -> bool:
-        return self.is_owner and self.principal.is_direct_message
+        return self.is_owner and (self.principal.is_direct_message or self.authority_granted)
 
     @property
     def may_disclose_mechanism(self) -> bool:

@@ -490,6 +490,7 @@ class RequestPipeline:
             asker_id="" if is_owner else ctx.user,
             unaddressed=ctx.unaddressed,
             chat_level=chat_level,
+            authority_granted=self._access.is_full_authority(principal),
             people=self._present_people(ctx),
             files=ctx.files,
             missed_files=ctx.missed_files,
