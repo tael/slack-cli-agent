@@ -35,7 +35,7 @@ KNOWN_KEYS = frozenset(
         "state_dir", "work_root", "data_dir", "attach_dir", "launch_label",
         "owner_user_id", "controller_user_ids", "troubleshoot_channel", "owner_dm", "credentials_file",
         "plugins", "usage_check_command", "agent_greeting", "agent_prompts",
-        "settings", "mcp_servers",
+        "settings", "mcp_servers", "domain_file",
     }
 )
 """Top-level keys `from_dict` reads. Anything else is dropped, so a mistyped
