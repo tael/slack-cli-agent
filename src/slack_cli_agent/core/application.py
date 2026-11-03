@@ -191,8 +191,18 @@ log = logging.getLogger(__name__)
 
 # One prompt file per channel mode, by naming convention — mode "agent_coach"
 # maps to prompts/prompt_agent_coach.md without needing a lookup table.
+# "chat" is the casual-banter mode: a channel where business/internal-system
+# requests are declined but everything else (small talk, search, writing
+# help) answers normally — mapped the same way, to prompts/prompt_chat.md.
 DEFAULT_PROMPT = "PROMPT_DEFAULT"
-KNOWN_MODES: tuple[str, ...] = ("private", "agent_coach", "api_helpdesk")
+KNOWN_MODES: tuple[str, ...] = ("private", "agent_coach", "api_helpdesk", "chat")
+
+# Common knowledge files (prompt/knowledge.py's `_*.md` convention) named
+# after one of these load on every request, regardless of whether the
+# request's words match that file's own `when:` trigger. Empty by default —
+# this is the common skeleton only; which skills (if any) get standing
+# clearance is organisation configuration, not repo content.
+ALWAYS_SKILLS: tuple[str, ...] = ()
 
 # Loggers whose socket-connection warnings the connection watch attaches to.
 SOCKET_LOGGERS: tuple[str, ...] = ("slack_sdk.socket_mode", "slack_bolt")
@@ -503,6 +513,7 @@ class Application:
         knowledge = KnowledgeLoader(
             paths.persona / "PERSONA.md", paths.knowledge,
             domain_file=self._profile.domain_file, learned_dir=paths.learned,
+            always_skills=ALWAYS_SKILLS,
         )
         return SystemPromptComposer(
             library, knowledge, self._prompt_sections(),
