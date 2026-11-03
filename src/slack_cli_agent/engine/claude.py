@@ -43,6 +43,8 @@ from typing import Any, ClassVar
 from ..auth.policy import OPERATOR_TOOLS
 from ..auth.principal import TrustLevel
 from ..config.profile import EngineSpec, McpServerSpec
+from ..guard import finish_hook
+from ..guard.pretool import install_guard, scan_guard, turn_budget
 from ..observability.progress_hook import HOOK_SCRIPT
 from .base import (
     ElapsedSource,
@@ -155,6 +157,55 @@ def progress_hook_settings(log_path: Path) -> dict[str, Any]:
             ]
         }
     }
+
+
+def _hook_command(script: Path) -> str:
+    """``<sys.executable> <script>`` as one shell-quoted command string, the
+    same shape progress_hook_settings() builds for its own hook."""
+    return " ".join(shlex.quote(part) for part in (sys.executable, str(script)))
+
+
+#: Engine-default PreToolUse Bash guards, in the order they should run:
+#: turn budget first (cheapest, no filesystem walk), then the two guards
+#: that read session state off disk. Unlike progress_hook_settings() this
+#: fragment does not vary per request -- it is the same for every turn, so
+#: it is built once at import time rather than inside _settings_value().
+_GUARD_HOOK_SETTINGS: dict[str, Any] = {
+    "hooks": {
+        "PreToolUse": [
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {"type": "command", "command": _hook_command(turn_budget.HOOK_SCRIPT)},
+                    {"type": "command", "command": _hook_command(install_guard.HOOK_SCRIPT)},
+                    {"type": "command", "command": _hook_command(scan_guard.HOOK_SCRIPT)},
+                ],
+            },
+        ],
+        "Stop": [
+            {
+                "matcher": "*",
+                "hooks": [{"type": "command", "command": _hook_command(finish_hook.HOOK_SCRIPT)}],
+            },
+        ],
+    }
+}
+
+
+def guard_hook_settings() -> dict[str, Any]:
+    """The settings fragment registering the Bash PreToolUse guards
+    (turn_budget, install_guard, scan_guard -- guard/pretool/) and the
+    finish-review Stop hook (guard/finish_hook.py) as engine built-ins.
+
+    Unlike progress_hook_settings(), nothing here is per-request: every
+    turn on this engine gets the same three Bash guards and the same Stop
+    hook with zero profile configuration, which is the point of landing
+    them as engine defaults rather than mametchi's own per-bot hook setup
+    (ownership.md: B4). Returns the same (new) dict each call so a caller
+    merging it in can't accidentally mutate the shared fragment.
+    """
+    fragment: dict[str, Any] = json.loads(json.dumps(_GUARD_HOOK_SETTINGS))
+    return fragment
 
 
 def _claude_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, Any]:
@@ -375,9 +426,11 @@ class ClaudeEngine(Engine):
             paths.engine_settings(self.name),
             paths.engine_settings(f"{self.name}.{level}"),
         )
-        if request.progress_log is None:
-            return merged
-        return merge_settings(merged, progress_hook_settings(request.progress_log))
+        if request.progress_log is not None:
+            merged = merge_settings(merged, progress_hook_settings(request.progress_log))
+        # Always on, regardless of progress_log: these are engine built-ins,
+        # not a per-request feature toggle (sca-kos.B4).
+        return merge_settings(merged, guard_hook_settings())
 
     @staticmethod
     def _operator_full_signal(request: EngineRequest) -> bool:
