@@ -1470,3 +1470,37 @@ class Test감시표식_제거_실패는_운영_로그에_남는다:
     def test_no_reaction이면_제거된_것으로_본다(self) -> None:
         client = self.일부실패클라이언트(WATCH_MARK_EMOJI, 사유="no_reaction")
         assert ReactionMarker(client).remove("C1", "1.0", WATCH_MARK_EMOJI) is True
+
+
+class Test제거_한번_실패하면_재시도한다:
+    """요청이 몰리면 reactions_remove 가 일시적으로 실패한다. 한 번 더 부르면
+    대개 성공하는데, 재시도가 없으면 눈 같은 미완료 표식이 완료 표식 옆에
+    영영 남아 사람 눈에 아직 처리 중으로 보인다 (sca-3p6 연장)."""
+
+    class 첫호출만실패클라이언트:
+        """지정한 이름의 첫 reactions_remove 만 실패하고 재시도부터 성공한다."""
+
+        def __init__(self, 실패이름: str) -> None:
+            self.실패이름 = 실패이름
+            self.call_count: dict[str, int] = {}
+            self.removed: list[str] = []
+            self.added: list[str] = []
+
+        def reactions_remove(self, *, channel: str, timestamp: str, name: str) -> None:
+            self.call_count[name] = self.call_count.get(name, 0) + 1
+            if name == self.실패이름 and self.call_count[name] == 1:
+                raise RuntimeError("ratelimited")
+            self.removed.append(name)
+
+        def reactions_add(self, *, channel: str, timestamp: str, name: str) -> None:
+            self.added.append(name)
+
+    def test_일시_실패는_재시도로_지워지고_경고가_없다(self, caplog) -> None:
+        client = self.첫호출만실패클라이언트("eyes")
+        with caplog.at_level(logging.WARNING, logger="slack_cli_agent.slack.reactions"):
+            ReactionMarker(client).mark_done("C1", "1.0")
+
+        assert "eyes" in client.removed  # 재시도로 결국 지워졌다
+        assert client.call_count["eyes"] == 2  # 한 번만 더 시도한다
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+        assert client.added == ["white_check_mark"]
