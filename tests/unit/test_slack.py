@@ -904,6 +904,54 @@ class TestEventListener:
         assert ctx is not None
         assert ctx.unaddressed is True
 
+    def test_표식만으로_물은_뒤_온_짧은_승인도_영속_플래그로_받는다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        """봇이 [[ASK]] 표식으로만 물으면 게시된 본문엔 질문 어휘가 없다.
+        라이브 asked_back 은 놓치지만, 파이프라인이 적어둔 is_awaiting 플래그로
+        뒤이은 "좋아" 를 승인으로 받아야 한다 (bot.py AWAITING_FILE 상당)."""
+
+        class FakeAwaiting:
+            def set_awaiting(self, channel: str, thread_ts: str, waiting: bool) -> None:
+                pass
+
+            def is_awaiting(self, channel: str, thread_ts: str) -> bool:
+                return (channel, thread_ts) == ("C1", "1.0")
+
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_unaddressed": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        client = FakeWebClient()
+        # 질문 어휘가 전혀 없는 평서문 — 표식만으로 결정을 기다렸던 턴.
+        client.set_replies_response({
+            "messages": [{"user": "U_BOT", "text": "확인했습니다."}]
+        })
+        listener = EventListener(
+            client, registry, gate, identity=fake_identity(), awaiting=FakeAwaiting()
+        )
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
+                 "text": "좋아"}
+        ctx = listener.from_message(event)
+        assert ctx is not None
+        assert ctx.unaddressed is True
+
+    def test_영속_플래그가_없으면_질문어휘_없는_짧은_답은_거른다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        """awaiting 포트를 주입하지 않으면 라이브 asked_back 만으로 판정한다 —
+        기존 호출자·테스트가 그대로 동작하는지 확인한다."""
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_unaddressed": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        client = FakeWebClient()
+        client.set_replies_response({
+            "messages": [{"user": "U_BOT", "text": "확인했습니다."}]
+        })
+        listener = EventListener(client, registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
+                 "text": "좋아"}
+        assert listener.from_message(event) is None
+
     def test_봇이_안_낀_스레드는_거른다(self, gate: ResponseGate, tmp_path: Path) -> None:
         channels_file = tmp_path / "channels.json"
         channels_file.write_text(

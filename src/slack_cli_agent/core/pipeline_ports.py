@@ -23,6 +23,8 @@ class AccessPolicyPort(Protocol):
 
     def effort_for(self, principal: Principal, prompt: str) -> str: ...
 
+    def is_full_authority(self, principal: Principal) -> bool: ...
+
 
 class TranscriptPort(Protocol):
     def thread_transcript(

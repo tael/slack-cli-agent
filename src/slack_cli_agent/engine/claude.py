@@ -40,6 +40,8 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ..auth.policy import OPERATOR_TOOLS
+from ..auth.principal import TrustLevel
 from ..config.profile import EngineSpec, McpServerSpec
 from ..observability.progress_hook import HOOK_SCRIPT
 from .base import (
@@ -342,6 +344,15 @@ class ClaudeEngine(Engine):
         cmd += ["--", request.prompt]
         return cmd
 
+    #: The overlay a non-owner request gets instead of `general`'s once a
+    #: write-capable tool is already in its allowlist. Named after the channel
+    #: flag that is the only way that can happen (auth/policy.py's
+    #: OPERATOR_TOOLS gate on ChannelConfig.operator_full) -- if the name axis
+    #: let Bash/Edit/Write/NotebookEdit through, the settings axis must not
+    #: turn around and deny it, or naming a tool and actually getting it
+    #: disagree again (the 2026-10-02~10-14 mametchi bug, gaps_D 3절).
+    OPERATOR_FULL_SETTINGS_LEVEL: ClassVar[str] = "operator_full"
+
     def _settings_value(self, request: EngineRequest) -> dict[str, Any]:
         """Everything --settings has to carry this turn, as one document.
 
@@ -355,6 +366,8 @@ class ClaudeEngine(Engine):
         """
         paths = self.profile.paths
         level = request.trust_level.name.lower()
+        if level == TrustLevel.GENERAL.name.lower() and self._operator_full_signal(request):
+            level = self.OPERATOR_FULL_SETTINGS_LEVEL
         # The deny check reads the merged document, so the files go in
         # together and the progress hook is layered on after: that fragment
         # is per request and carries no permissions (sca-e34p).
@@ -365,6 +378,21 @@ class ClaudeEngine(Engine):
         if request.progress_log is None:
             return merged
         return merge_settings(merged, progress_hook_settings(request.progress_log))
+
+    @staticmethod
+    def _operator_full_signal(request: EngineRequest) -> bool:
+        """True when this GENERAL request's tool list already carries a bare
+        write-capable tool name.
+
+        For a non-owner, that only happens when AccessPolicy.channel_tools_for
+        granted it -- which it only does for a channel with `operator_full` on
+        (auth/policy.py's OPERATOR_TOOLS filter). So this is a reliable proxy
+        for "operator_full channel, named operator" without engine/claude.py
+        having to see the channel config itself: EngineRequest carries no
+        channel or principal, only the tool list and trust level the pipeline
+        already resolved.
+        """
+        return not OPERATOR_TOOLS.isdisjoint(request.tools.names)
 
     #: 2026-09-19 실측 (claude 2.1.270 네이티브 바이너리) - 로그인이 풀리면
     #: 'Please run /login' 을, 인증 자체가 실패하면 'Failed to authenticate' 를

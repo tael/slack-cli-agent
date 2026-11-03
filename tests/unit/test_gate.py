@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from slack_cli_agent.slack.gate import ResponseGate
+from slack_cli_agent.slack.gate import AWAITING_DECISION, ResponseGate
 
 
 @pytest.fixture
@@ -77,6 +77,45 @@ class TestAskedBack:
         ],
     )
     def test_matches_original_output(
+        self, gate: ResponseGate, text: str, expected: bool
+    ) -> None:
+        assert gate.asked_back(text) is expected
+
+
+class TestAwaitingDecision:
+    """평서형 승인 대기 — bot.py:8251-8264, 2026-09-19 추가분.
+
+    "진행할지 말씀 주시면 그때 실행하겠습니다." 뒤에 온 "좋아" 가 물음표가
+    없다는 이유로 맞장구로 버려졌던 사고(C01EWFYL077:1789783495.105289)의
+    재발방지. ASKED_BACK(종결어미)만으로는 안 걸리는 평서형 승인 요청이다.
+    """
+
+    def test_정규식_원문이_원본과_같다(self) -> None:
+        assert AWAITING_DECISION.pattern == (
+            r"(?:말씀\s*(?:주시면|주세요|주시는\s*대로|부탁)"
+            r"|알려\s*주(?:시면|세요)"
+            r"|지시\s*(?:주시면|주세요|해\s*주세요)"
+            r"|결정(?:해)?\s*주(?:시면|세요)"
+            r"|(?:진행|반영|적용|실행|추가|삭제|정리)할지"
+            r"|(?:확인|검토|판단|결정)\s*부탁)"
+            r"[^\n]{0,40}$"
+        )
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            # 2026-09-19 사고 재현 문구 — 물음표 없이 승인을 구한다.
+            ("진행할지 말씀 주시면 그때 실행하겠습니다.", True),
+            ("반영할지 말씀 주세요.", True),
+            ("배포 여부는 지시해 주세요.", True),
+            ("삭제할지 결정해 주시면 진행하겠습니다.", True),
+            # 종결어미로도 안 걸리고 평서형 패턴도 없으면 되물음이 아니다.
+            ("네 알겠습니다.", False),
+            # 이미 종결어미(ASKED_BACK)로 걸리던 문장은 그대로 걸린다.
+            ("지금 반영할까요?", True),
+        ],
+    )
+    def test_asked_back이_평서형_승인요청도_잡는다(
         self, gate: ResponseGate, text: str, expected: bool
     ) -> None:
         assert gate.asked_back(text) is expected

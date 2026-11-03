@@ -17,7 +17,7 @@ from typing import Any, Protocol, runtime_checkable
 from ..config.channel import channel_is_rich
 from ..config.settings import RuntimeSettings
 from ..engine.base import EngineResponse
-from ..guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG
+from ..guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG, WATCH_SUPERSEDED_TAG
 from ..observability.audit import (
     WATCH_ABANDONED_KIND,
     WATCH_CHECKED_KIND,
@@ -58,6 +58,24 @@ class WatchAuditPort(Protocol):
     def record(self, kind: str, *, channel: str = "", thread_ts: str = "", **fields: Any) -> None: ...
 
 
+class ThreadActivityPort(Protocol):
+    """What `_finish`'s pre-post duplicate check needs.
+
+    A watch's check and the thread it watches run independently — the main
+    answer can land in the gap between the check turn starting and its
+    report being posted. 2026-09-30 23:17 a main answer already covered what
+    a watch registered at 23:10 was about to report, and both landed in the
+    channel eight minutes apart.
+    """
+
+    def replied_since(self, channel: str, thread_ts: str, since: float) -> bool:
+        """Whether this bot posted in that thread after `since`."""
+
+    def transcript_since(self, channel: str, thread_ts: str, since: float) -> str:
+        """Thread transcript from `since` onward, for the supersede verdict
+        to read."""
+
+
 def watch_check_prompt(description: str, outcome: WatchOutcome = WatchOutcome.UNKNOWN,
                        result_path: str = "") -> str:
     """The prompt for one check turn.
@@ -83,6 +101,25 @@ def watch_check_prompt(description: str, outcome: WatchOutcome = WatchOutcome.UN
         "아직 끝나지 않았으면 다른 말 없이 답변 끝에 " + WATCH_STILL_TAG + " 만 붙여라.\n"
         "성공이든 실패든 끝났으면, 그 결과를 알리는 완료 보고 문구를 평소 답변 형식으로 쓰고 "
         "맨 끝에 " + WATCH_DONE_TAG + " 를 붙여라."
+    )
+
+
+def watch_supersede_prompt(description: str, transcript: str, draft: str) -> str:
+    """Prompt for the pre-post duplicate check in `_finish`.
+
+    Matches bot.py:10891-10901's `_watch_supersede_prompt`. Asked only when
+    the thread activity port says the bot already replied in this thread
+    since the check started — otherwise there is nothing to compare against
+    and the report goes out as usual.
+    """
+    return (
+        "감시 완료 보고를 스레드에 올리려 한다. 그런데 이 보고를 만드는 사이 마메치가 "
+        "같은 스레드에 답을 올렸다. 그 답이 이미 같은 결과를 보고했는지만 판정해라.\n\n"
+        f"지켜본 작업 : {description}\n\n"
+        "===== 감시 등록 뒤 스레드 =====\n" + transcript + "\n===== 여기까지 =====\n\n"
+        "===== 올리려는 완료 보고 =====\n" + draft + "\n===== 여기까지 =====\n\n"
+        "이미 보고했으면 " + WATCH_SUPERSEDED_TAG + " 만, 아직 보고하지 않았으면 "
+        + WATCH_DONE_TAG + " 만 써라. 다른 말은 쓰지 않는다."
     )
 
 
@@ -112,6 +149,11 @@ class WatchJobChecker:
         # checks and last_run hold current state only, so without this there is
         # no record that a watch ever ran (sca-j3d).
         audit: WatchAuditPort | None = None,
+        # None skips the pre-post duplicate check entirely — the report posts
+        # as it always did. Both this and run_supersede_check are needed
+        # together; one without the other can't produce a verdict.
+        thread_activity: ThreadActivityPort | None = None,
+        run_supersede_check: Callable[[WatchJob, str, str], EngineResponse] | None = None,
         now: Callable[[], float] = time.time,
     ) -> None:
         self._queue = queue
@@ -123,6 +165,8 @@ class WatchJobChecker:
         self._reactions = reactions
         self._notify_owner = notify_owner
         self._audit = audit
+        self._thread_activity = thread_activity
+        self._run_supersede_check = run_supersede_check
         self._now = now
 
     def check_once(self) -> None:
@@ -214,7 +258,7 @@ class WatchJobChecker:
             # The exit status decided this, not the reply. A failed engine call
             # still leaves the job open so the report gets another attempt.
             if response.ok:
-                self._finish(job, response.body, outcome)
+                self._finish(job, response.body, outcome, checked_at=now)
             else:
                 log.warning(
                     "감시 완료 보고 생성 실패 : 작업 %d, 확인 %d회, 사유 %s",
@@ -232,7 +276,7 @@ class WatchJobChecker:
                     "감시 확인 응답의 태그가 모순된다. 완료로 처리한다 : 작업 %d, 확인 %d회",
                     job.id, job.checks,
                 )
-            self._finish(job, response.body)
+            self._finish(job, response.body, checked_at=now)
             return
 
         # The body and the condition can carry Slack conversations or file
@@ -279,12 +323,20 @@ class WatchJobChecker:
         return self._results.read(job.run_id)
 
     def _finish(
-        self, job: WatchJob, raw_body: str, outcome: WatchOutcome = WatchOutcome.UNKNOWN
+        self, job: WatchJob, raw_body: str, outcome: WatchOutcome = WatchOutcome.UNKNOWN,
+        checked_at: float | None = None,
     ) -> None:
         # A reply that is nothing but the done tag leaves an empty body, and an
         # empty body posts nothing at all. The job is marked done either way, so
         # without this the watch just disappears from the thread.
         body = _strip_tags(raw_body) or _bare_done_report(outcome)
+
+        if checked_at is not None and self._superseded(job, body, checked_at):
+            self._queue.mark_done(job.id)
+            self._settle_mark(job, failed=False)
+            self._record(WATCH_FINISHED_KIND, job, outcome=outcome.name, superseded=True)
+            return
+
         if not self._post_report(job.id, job.channel, job.thread_ts, body):
             # Marking done still happens -- rerunning the check would spend
             # another engine call on work already finished. The report is kept
@@ -294,6 +346,34 @@ class WatchJobChecker:
         self._queue.mark_done(job.id)
         self._settle_mark(job, failed=False)
         self._record(WATCH_FINISHED_KIND, job, outcome=outcome.name)
+
+    def _superseded(self, job: WatchJob, draft: str, checked_at: float) -> bool:
+        """Whether the main answer already said this, between the check
+        starting and the report about to post. Matches bot.py:10974-11001's
+        pre-post recheck in `job_watch` — the gap between a check starting
+        and its report landing is exactly where 2026-09-30's duplicate
+        happened: a main answer at 23:17:37 beat a check that had started
+        for the same result.
+
+        Missing either collaborator, or either call failing, means "go
+        ahead and post" -- losing a report to a rare duplicate-check failure
+        is worse than the rare duplicate it's meant to catch.
+        """
+        if self._thread_activity is None or self._run_supersede_check is None:
+            return False
+        try:
+            if not self._thread_activity.replied_since(job.channel, job.thread_ts, checked_at):
+                return False
+            transcript = self._thread_activity.transcript_since(
+                job.channel, job.thread_ts, job.created_at,
+            )
+            verdict = self._run_supersede_check(job, transcript, draft)
+        except Exception as exc:  # noqa: BLE001 — see docstring: a failed recheck must not drop the report
+            log.warning("감시 완료 보고 전 중복 판정 실패 : 작업 %d, %s", job.id, exc)
+            return False
+        if not verdict.ok:
+            return False
+        return WATCH_SUPERSEDED_TAG in (verdict.body or "")
 
     def _record(self, kind: str, job: WatchJob, **fields: Any) -> None:
         """Best effort by contract: a watch that already ran must not be lost

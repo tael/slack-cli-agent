@@ -14,18 +14,43 @@ if TYPE_CHECKING:
     from .knowledge import KnowledgeLoader
     from .library import PromptLibrary
 
-SILENT_MARK = "[침묵]"
+#: Unified to double brackets 2026-10-19 (bot.py:1353-1356) — the other
+#: markers (RECIPIENT, WATCH, NOWATCH, ASK) are all double-bracket, and a
+#: single-bracket outlier here made the model mix styles.
+SILENT_MARK = "[[침묵]]"
+#: Pre-2026-10-19 spelling. Still accepted so an older session or a model
+#: that hasn't adapted yet doesn't slip through unflagged.
+SILENT_MARK_LEGACY = "[침묵]"
 
 
 def is_silent(body: str) -> bool:
     """Whether the model chose not to answer.
 
-    A prefix match, not equality: the mark is sometimes followed by the
-    model's own reason for staying quiet, and comparing for equality sent
-    that reason to the channel (sca-2ak). The original bot.py used
-    startswith from the start.
+    Two checks, matching bot.py:3400-3425:
+
+    1. A prefix match on the whole body — the mark is sometimes followed by
+       the model's own reason for staying quiet, and comparing for equality
+       sent that reason to the channel (sca-2ak).
+    2. Line by line: if any line *on its own* is nothing but the mark,
+       that's silence too, even mid-body. 2026-10-02: a channel saw "이
+       호출은 메타몽을 부르는 말이에요.\\n\\n[침묵]" posted in full because
+       the mark wasn't at the very start. Lines inside a ``` code fence are
+       skipped — a reply that explains the mark by showing it as an example
+       must not be swallowed (same incident class, private channel case).
     """
-    return body.strip().startswith(SILENT_MARK)
+    text = (body or "").strip()
+    marks = (SILENT_MARK, SILENT_MARK_LEGACY)
+    if text.startswith(marks):
+        return True
+    in_fence = False
+    for line in text.splitlines():
+        bare = line.strip()
+        if bare.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence and bare in marks:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -76,9 +101,14 @@ class CompositionContext:
     def is_owner(self) -> bool:
         return self.principal.trust is TrustLevel.OWNER
 
+    # Set by the composer's caller from AccessPolicy.is_full_authority, so the
+    # DM-equivalent `full_authority` channel flag reaches the prompt. Default
+    # False keeps callers that don't set it confined to the DM check below.
+    authority_granted: bool = False
+
     @property
     def full_authority(self) -> bool:
-        return self.is_owner and self.principal.is_direct_message
+        return self.is_owner and (self.principal.is_direct_message or self.authority_granted)
 
     @property
     def may_disclose_mechanism(self) -> bool:
@@ -355,6 +385,33 @@ class WatchSection(PromptSection):
                 self.RUN_ID_SLOT, ctx.watch_run_id,
             ).replace(self.OUT_DIR_SLOT, ctx.watch_out_dir)
         return text
+
+
+class AskSection(PromptSection):
+    """Tells the engine how to set the `[[ASK]]` marker.
+
+    Ports bot.py:1507's ASK_TAG convention (2026-09-19): a short approval
+    ("좋아", "네", "ㅇㅇ") only reads as an answer to a pending decision, not
+    a stray reaction, when the bot's own last turn actually asked for one —
+    and a question-mark check alone misses the plain-statement phrasing this
+    workspace actually uses ("진행할지 말씀 주시면..."). The marker is this
+    section's only job; stripping it and turning it into a persisted
+    awaiting-reply state is core/pipeline.py's.
+
+    Skipped during postmortem/debug/format-review for the same reason as
+    WatchSection — those turns only look back, nothing there is a new
+    decision to wait on.
+
+    Not yet wired into any profile's section list — see
+    `core/application.py`'s `_prompt_sections()`, which composition root
+    this change doesn't touch.
+    """
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return not ctx.aside
+
+    def render(self, ctx: CompositionContext) -> str:
+        return ctx._library_or_raise().text("ASK_NOTE")
 
 
 class AttachmentSection(PromptSection):

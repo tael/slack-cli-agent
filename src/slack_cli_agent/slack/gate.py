@@ -19,6 +19,23 @@ from slack_cli_agent.core.markers import ELAPSED_LINE
 # question-ending suffix.
 ASKED_BACK = re.compile(r"(?:[?？]|까요|을까|ㄹ까|나요|린가요|드릴까)[\s.!]*$")
 
+# A plain-statement way of leaving a decision to the human, without a
+# question mark (bot.py:8251-8264, 2026-09-19). "진행할지 말씀 주시면 그때
+# 실행하겠습니다." isn't a question by ASKED_BACK's pattern, so a "좋아"
+# answering it got discarded as a reaction — this workspace's default way of
+# asking for approval is the plain-statement form, not a question mark.
+# Second-line defense: the model's own `[[ASK]]` tag (core/markers.py) is
+# the first.
+AWAITING_DECISION = re.compile(
+    r"(?:말씀\s*(?:주시면|주세요|주시는\s*대로|부탁)"
+    r"|알려\s*주(?:시면|세요)"
+    r"|지시\s*(?:주시면|주세요|해\s*주세요)"
+    r"|결정(?:해)?\s*주(?:시면|세요)"
+    r"|(?:진행|반영|적용|실행|추가|삭제|정리)할지"
+    r"|(?:확인|검토|판단|결정)\s*부탁)"
+    r"[^\n]{0,40}$"
+)
+
 # Reaction words that don't expect a reply. A message made up only of
 # these is just an acknowledgment.
 #
@@ -88,6 +105,10 @@ class ResponseGate:
         Strips the timing footer first — on 2026-09-02 a trailing "네"
         after "지금 반영할까요." was misread as a reaction because the
         footer sat between them.
+
+        Checks both a question-ending suffix (ASKED_BACK) and the
+        plain-statement approval request (AWAITING_DECISION) — either one
+        means the last turn was waiting on a decision.
         """
         t = ELAPSED_LINE.sub("", (text or "").strip()).strip()
-        return bool(ASKED_BACK.search(t))
+        return bool(ASKED_BACK.search(t) or AWAITING_DECISION.search(t))

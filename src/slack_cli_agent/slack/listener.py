@@ -20,6 +20,7 @@ from typing import Any
 
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.core.context import RequestContext
+from slack_cli_agent.session.awaiting import AwaitingPort
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import BotIdentity
 from slack_cli_agent.slack.message_kind import MessageKind
@@ -33,10 +34,18 @@ class EventListener:
         channel_registry: ChannelRegistry,
         gate: ResponseGate,
         identity: BotIdentity,
+        # The persisted "waiting on a decision" flag. The live asked_back
+        # check below only sees the posted body, which has the `[[ASK]]` tag
+        # stripped — a turn that signalled only through the tag (neutral
+        # phrasing, no question suffix) would be missed without this, and the
+        # flag also survives a restart. None falls back to the live check
+        # alone, which keeps existing callers and tests working.
+        awaiting: AwaitingPort | None = None,
     ) -> None:
         self._client = client
         self._channels = channel_registry
         self._gate = gate
+        self._awaiting = awaiting
         # Self-message detection and mention matching must use the
         # same identity source — holding it separately would let
         # wiring pass the value to only one and still pass unit tests.
@@ -101,6 +110,11 @@ class EventListener:
         joined = any(self._identity.is_self(m) for m in msgs)
         last_self = next((m for m in reversed(msgs) if self._identity.is_self(m)), None)
         asked = self._gate.asked_back(last_self.get("text") if last_self else "")
+        # The live check reads the posted body, which no longer carries the
+        # `[[ASK]]` tag; fall back to the persisted flag for a turn that
+        # asked only through the tag, or whose question predates a restart.
+        if not asked and self._awaiting is not None:
+            asked = self._awaiting.is_awaiting(channel, thread_ts)
         return joined, asked
 
     def from_message(self, event: Mapping[str, Any]) -> RequestContext | None:

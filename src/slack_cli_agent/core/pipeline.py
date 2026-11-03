@@ -35,7 +35,7 @@ from ..guard.base import GuardContext
 from ..guard.mentions import AddresseeGuard
 from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
-from ..guard.watch import WatchPromiseGuard
+from ..guard.watch import WatchPromiseGuard, watch_due_at
 from ..observability.audit import IncidentKind
 from ..observability.progress import ProgressCoordinator
 from ..observability.response_archive import ResponseArchive
@@ -44,12 +44,15 @@ from ..prompt.composer import PromptComposer
 from ..prompt.sections import CompositionContext, is_silent
 from ..reliability.watchjobs import WatchJobPort
 from ..reliability.watchresult import WatchResultReader
+from ..session.awaiting import AwaitingPort
 from ..session.manager import SessionDecision, SessionManager
 from ..session.ports import SessionKey, SessionScope
+from ..slack.gate import ResponseGate
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
 from ..slack.mentions import MentionRenderer
 from ..slack.transcript import CurrentMessage
 from .context import RequestContext
+from .markers import take_ask_tag, take_nowatch_tag
 from .pipeline_ports import (
     AccessPolicyPort,
     AuditPort,
@@ -61,6 +64,24 @@ from .pipeline_ports import (
 from .ports import HandleOutcome
 
 log = logging.getLogger(__name__)
+
+
+def _domain_applies(workdir: Path | None, home: Path) -> bool:
+    """Whether to append the profile's domain knowledge this turn.
+
+    The original loaded its company domain file only when the work directory
+    was a real repository outside home, not for the bot's own home -- domain
+    facts belong to work in a codebase, not to a chat in the bot's dir. No
+    configured workdir reads as home, so nothing is appended.
+    """
+    if workdir is None:
+        return False
+    try:
+        workdir.resolve().relative_to(home.resolve())
+    except ValueError:
+        return True
+    return False
+
 
 LAUNCHED_WATCH_DESC = "코드가 발급한 이름으로 띄운 백그라운드 작업"
 """Watch description for work launched without a tag.
@@ -126,6 +147,10 @@ class RequestPipeline:
         # retry, so sharing one source would tie the two lifetimes together.
         new_request_id: Callable[[], str] = lambda: uuid.uuid4().hex[:12],
         watch_results: WatchResultReader,
+        # None skips persisting the awaiting-reply state entirely -- the
+        # [[ASK]] tag still gets stripped either way, since leaving it in
+        # the posted body would expose an internal protocol marker.
+        awaiting: AwaitingPort | None = None,
     ) -> None:
         self._access = access_policy
         self._transcript = transcript_builder
@@ -162,6 +187,8 @@ class RequestPipeline:
         self._progress = progress
         self._now = now
         self._monotonic = monotonic
+        self._awaiting = awaiting
+        self._gate = ResponseGate()
 
     def handle(self, ctx: RequestContext) -> HandleOutcome:
         try:
@@ -389,7 +416,15 @@ class RequestPipeline:
             return HandleOutcome(ok=True, silent=True)
 
         body, previous_body = self._absorb_late_addendum(ctx, scope, decision, request, response)
-        body, watch_desc = self._apply_guards(body, ctx, principal, request, decision, previous_body)
+        body, watch_desc, watch_due_raw = self._apply_guards(
+            body, ctx, principal, request, decision, previous_body
+        )
+        body = self._apply_ask_tag(body, ctx)
+        # The model ends a reply that needs no watch with `[[NOWATCH]]`; it is a
+        # signal, not content. Strip it here, after guards and the ask tag, so
+        # it never reaches the channel in any render path (sca: rich_render fed
+        # the bare tag into a table message's fallback text).
+        body = take_nowatch_tag(body)[0]
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich) or ""
         self._archive_response(ctx, body, response, elapsed)
@@ -398,7 +433,9 @@ class RequestPipeline:
                      turns=response.turns, model_actual=response.model_actual,
                      truncated=_truncated(response), context_reset=context_reset)
         watch_desc = watch_desc or self._watch_desc_for_launched(workdir, run_id)
-        watching = bool(watch_desc) and self._register_watch(ctx, principal, watch_desc, workdir, run_id)
+        watching = bool(watch_desc) and self._register_watch(
+            ctx, principal, watch_desc, workdir, run_id, watch_due_at(watch_due_raw),
+        )
         # The final mark belongs to the worker: it owns queue completion and the
         # buried-message groups, and marking here too duplicated the Slack call
         # and let the worker's done mark overwrite the watch mark (sca-5sb,
@@ -480,6 +517,7 @@ class RequestPipeline:
     ) -> tuple[str, dict[str, Any]]:
         is_owner = principal.trust is TrustLevel.OWNER
         asker_name = "" if is_owner else (self._name_resolver(ctx.user) or ctx.user)
+        config = self._channels.get(ctx.channel)
         composition_ctx = CompositionContext(
             principal=principal,
             prompt=ctx.text,
@@ -490,6 +528,8 @@ class RequestPipeline:
             asker_id="" if is_owner else ctx.user,
             unaddressed=ctx.unaddressed,
             chat_level=chat_level,
+            authority_granted=self._access.is_full_authority(principal),
+            include_domain=_domain_applies(config.workdir if config else None, Path.home()),
             people=self._present_people(ctx),
             files=ctx.files,
             missed_files=ctx.missed_files,
@@ -561,7 +601,7 @@ class RequestPipeline:
         request: EngineRequest,
         decision: SessionDecision,
         previous_body: str | None = None,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, str]:
         # A rewrite rerun is chained at most once — the second guard run
         # (is_rewrite_retry=True) has its own `rerun` ignored, which is what caps
         # this at one retry instead of looping.
@@ -578,7 +618,7 @@ class RequestPipeline:
         result = self._guards.run(body, guard_ctx)
         if result.rerun is None:
             self._record_guard_incidents(ctx, result.details)
-            return result.body, _watch_desc_of(result)
+            return result.body, _watch_desc_of(result), _watch_due_of(result)
 
         rerun_request = replace(
             request, prompt=result.rerun.rewrite_prompt, resume=True, session_id=decision.session_id,
@@ -589,12 +629,12 @@ class RequestPipeline:
         # would then merge it onto the previous body (sca-2ak).
         if not rerun_response.ok or is_silent(rerun_response.body):
             self._record_guard_incidents(ctx, result.details)
-            return result.body, _watch_desc_of(result)
+            return result.body, _watch_desc_of(result), _watch_due_of(result)
 
         retry_ctx = replace(guard_ctx, previous_body=result.body, is_rewrite_retry=True)
         final_result = self._guards.run(rerun_response.body, retry_ctx)
         self._record_guard_incidents(ctx, final_result.details)
-        return final_result.body, _watch_desc_of(final_result)
+        return final_result.body, _watch_desc_of(final_result), _watch_due_of(final_result)
 
     def _record_guard_incidents(self, ctx: RequestContext, details: Mapping[str, Mapping[str, Any]]) -> None:
         wrong = details.get(AddresseeGuard.name)
@@ -610,6 +650,23 @@ class RequestPipeline:
                 before_chars=loss.get("before_chars"), after_chars=loss.get("after_chars"),
             )
 
+    def _apply_ask_tag(self, body: str, ctx: RequestContext) -> str:
+        """Strips `[[ASK]]` and records the awaiting-reply state it (or a
+        plain-vocabulary question) implies.
+
+        Runs after guards so the tag is read from the final body, not a
+        draft a guard might still rewrite. Writes the state unconditionally
+        when a store is wired — a turn that isn't waiting on a reply has to
+        clear the thread's previous mark, or an old "awaiting" stays stuck
+        on from a prior turn that was never resolved (bot.py's
+        `set_awaiting` overwrites every turn for the same reason).
+        """
+        clean, had_tag = take_ask_tag(body)
+        if self._awaiting is not None:
+            waiting = had_tag or self._gate.asked_back(clean)
+            self._awaiting.set_awaiting(ctx.channel, ctx.thread_ts, waiting)
+        return clean
+
     def _watch_desc_for_launched(self, workdir: Path, run_id: str) -> str:
         """What to watch when the engine launched background work but emitted
         no tag. Registration used to depend on that tag, so work that ran
@@ -621,7 +678,7 @@ class RequestPipeline:
 
     def _register_watch(
         self, ctx: RequestContext, principal: Principal, description: str,
-        workdir: Path, run_id: str,
+        workdir: Path, run_id: str, due_at: float | None = None,
     ) -> bool:
         if self._watch_queue is None:
             return False
@@ -634,6 +691,7 @@ class RequestPipeline:
                 # under the directory the request actually ran in (sca-6zt).
                 workdir=str(workdir),
                 run_id=run_id,
+                due_at=due_at,
             )
         except Exception as exc:  # noqa: BLE001 — the answer is already sent; a retry on this failure would double-post it
             log.warning("감시 등록 실패 : %s", exc)
@@ -751,3 +809,10 @@ def _truncated(response: EngineResponse) -> bool:
 def _watch_desc_of(result: Any) -> str:
     detail = result.details.get(WatchPromiseGuard.name) or {}
     return str(detail.get("watch_desc") or "")
+
+
+def _watch_due_of(result: Any) -> str:
+    """Raw `YYYY-MM-DD` string from the `[[WATCH@...]]` tag, if any. Empty
+    means no deadline — the same as a plain `[[WATCH: ...]]` tag."""
+    detail = result.details.get(WatchPromiseGuard.name) or {}
+    return str(detail.get("watch_due") or "")

@@ -35,7 +35,7 @@ KNOWN_KEYS = frozenset(
         "state_dir", "work_root", "data_dir", "attach_dir", "launch_label",
         "owner_user_id", "controller_user_ids", "troubleshoot_channel", "owner_dm", "credentials_file",
         "plugins", "usage_check_command", "agent_greeting", "agent_prompts",
-        "settings", "mcp_servers",
+        "settings", "mcp_servers", "domain_file",
     }
 )
 """Top-level keys `from_dict` reads. Anything else is dropped, so a mistyped
@@ -190,6 +190,11 @@ class Profile:
     mcp_servers: Mapping[str, McpServerSpec] = field(default_factory=dict)
     # Path only. Defaults to StatePaths.credentials when unset.
     credentials_file: Path | None = None
+    # Company domain knowledge appended to the persona when the work directory
+    # is a real repo outside home (see pipeline._domain_applies). The path is an
+    # org-specific value, so it lives in the profile, not the package. None
+    # leaves the persona with no domain file, which is every bot that has none.
+    domain_file: Path | None = None
     # The file this was read from. None when built straight from a dict, which
     # is every test and the init command -- checks about the file itself have
     # nothing to look at then.
@@ -307,6 +312,10 @@ class Profile:
             owner_dm=str(data.get("owner_dm", "")),
             controller_user_ids=frozenset(str(u) for u in (data.get("controller_user_ids") or ()) if u),
             credentials_file=credentials_file or None,
+            domain_file=(
+                Path(str(data["domain_file"])).expanduser()
+                if data.get("domain_file") else None
+            ),
             plugins=tuple(data.get("plugins") or ()),
             usage_check_command=tuple(str(part) for part in (data.get("usage_check_command") or ())),
             agent_greeting=str(data.get("agent_greeting") or ""),

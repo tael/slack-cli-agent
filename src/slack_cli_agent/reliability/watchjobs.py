@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from ..auth.principal import TrustLevel
+from ..guard.watch import same_watch_target
 from ..storage.database import Database
 from ..storage.repository import SqliteRepository
 
@@ -24,7 +25,7 @@ log = logging.getLogger(__name__)
 
 _SELECT_COLUMNS = (
     "id, channel, thread_ts, condition, created_at, last_run, "
-    "msg_ts, checks, trust_level, extra, workdir, run_id"
+    "msg_ts, checks, trust_level, extra, workdir, run_id, due_at"
 )
 
 
@@ -48,6 +49,10 @@ class WatchJob:
     before this was recorded, which leaves the caller on its own default."""
     run_id: str = ""
     """Identifies this job's result file. Empty means the caller pinned none."""
+    due_at: float | None = None
+    """Epoch deadline from a `[[WATCH@YYYY-MM-DD: ...]]` tag. None means no
+    deadline — checked on the usual cadence, like every row written before
+    this existed."""
 
 
 @dataclass(frozen=True)
@@ -78,14 +83,16 @@ class WatchJobPort(Protocol):
         extra: Mapping[str, Any] | None = None,
         workdir: str = "",
         run_id: str = "",
+        due_at: float | None = None,
     ) -> int:
         """Registers a watch job and returns its row id."""
 
     def due(self, now: float, min_gap: float, max_checks: int | None = None) -> list[WatchJob]:
         """Jobs due for a check. Excludes jobs checked within `min_gap` (each
-        check re-invokes the engine, so this throttles frequency) and jobs at
+        check re-invokes the engine, so this throttles frequency), jobs at
         `max_checks` (those must be picked up by `expired` with the same
-        limit, or they'd be stuck forever)."""
+        limit, or they'd be stuck forever), and jobs with a `due_at` deadline
+        that hasn't arrived yet."""
 
     def mark_checked(self, job_id: int, at: float) -> None:
         """Updates `last_run` and increments the check count."""
@@ -131,15 +138,17 @@ class WatchJobQueue(SqliteRepository):
         extra: Mapping[str, Any] | None = None,
         workdir: str = "",
         run_id: str = "",
+        due_at: float | None = None,
     ) -> int:
+        self._supersede_same_target(channel, thread_ts, condition, due_at)
         cursor = self._execute(
             "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at, "
-            "last_run, done, msg_ts, checks, trust_level, extra, workdir, run_id) "
-            "VALUES (?, ?, ?, ?, NULL, 0, ?, 0, ?, ?, ?, ?) "
+            "last_run, done, msg_ts, checks, trust_level, extra, workdir, run_id, due_at) "
+            "VALUES (?, ?, ?, ?, NULL, 0, ?, 0, ?, ?, ?, ?, ?) "
             "ON CONFLICT DO NOTHING",
             (
                 channel, thread_ts, condition, self._now(),
-                msg_ts, int(trust), _dump_extra(extra), workdir, run_id,
+                msg_ts, int(trust), _dump_extra(extra), workdir, run_id, due_at,
             ),
         )
         if cursor.rowcount:
@@ -157,6 +166,39 @@ class WatchJobQueue(SqliteRepository):
         log.info("이 메시지에는 활성 감시가 이미 있다. 그것을 그대로 쓴다 : %s %s", channel, msg_ts)
         return int(existing["id"])
 
+    def _supersede_same_target(
+        self, channel: str, thread_ts: str, condition: str, due_at: float | None,
+    ) -> None:
+        """Closes an existing active watch in this thread that names the same
+        target, before a new one is inserted. Matches bot.py:10834-10845's
+        replace-on-update behavior in `register_watch_job`: the conversation
+        is updating one promise, not accumulating a new one on top of it. A
+        deadlined watch only replaces another deadlined one, and an
+        undeadlined watch only replaces another undeadlined one -- mixing the
+        two would silently drop a commitment the other kind made.
+
+        A no-op for descriptions with no long identifying token (plain
+        Korean sentences, mostly) -- `same_watch_target` always returns False
+        for those, so ordinary watches never collide here.
+        """
+        candidates = self._fetch_all(
+            "SELECT id, condition, due_at FROM watch_jobs "
+            "WHERE done = 0 AND channel = ? AND thread_ts = ?",
+            (channel, thread_ts),
+        )
+        has_due = due_at is not None
+        stale = [
+            row["id"] for row in candidates
+            if bool(row["due_at"]) == has_due and same_watch_target(row["condition"], condition)
+        ]
+        if not stale:
+            return
+        placeholders = ", ".join("?" for _ in stale)
+        self._execute(
+            f"UPDATE watch_jobs SET done = 1 WHERE id IN ({placeholders})", tuple(stale),
+        )
+        log.info("감시 교체 : 같은 스레드 기존 %d건 제거", len(stale))
+
     def active_watch(self, channel: str, msg_ts: str) -> bool:
         if not msg_ts:
             return False
@@ -169,9 +211,13 @@ class WatchJobQueue(SqliteRepository):
     def due(self, now: float, min_gap: float, max_checks: int | None = None) -> list[WatchJob]:
         sql = (
             f"SELECT {_SELECT_COLUMNS} FROM watch_jobs WHERE done = 0 "
-            "AND (? - COALESCE(last_run, created_at)) >= ?"
+            "AND (? - COALESCE(last_run, created_at)) >= ? "
+            # A deadline not yet reached means don't look at all — not "look
+            # less often". A week-long promise would otherwise still wake the
+            # engine every min_gap seconds for nothing (bot.py:10936-10939).
+            "AND (due_at IS NULL OR due_at <= ?)"
         )
-        params: tuple[Any, ...] = (now, min_gap)
+        params: tuple[Any, ...] = (now, min_gap, now)
         if max_checks is not None:
             sql += " AND checks < ?"
             params += (max_checks,)
@@ -219,7 +265,13 @@ class WatchJobQueue(SqliteRepository):
         ]
 
     def expired(self, now: float, max_age: float, max_checks: int | None = None) -> list[WatchJob]:
-        sql = f"SELECT {_SELECT_COLUMNS} FROM watch_jobs WHERE done = 0 AND ((? - created_at) >= ?"
+        # The age clock starts at the deadline, not at registration, when one
+        # is set — the waiting period before a deadline must not eat into the
+        # time budget for giving up (bot.py:11028-11030).
+        sql = (
+            f"SELECT {_SELECT_COLUMNS} FROM watch_jobs WHERE done = 0 "
+            "AND ((? - COALESCE(due_at, created_at)) >= ?"
+        )
         params: tuple[Any, ...] = (now, max_age)
         if max_checks is not None:
             sql += " OR checks >= ?"
@@ -260,4 +312,5 @@ def _to_job(row: Any) -> WatchJob:
         extra=_load_extra(row["extra"]),
         workdir=row["workdir"] or "",
         run_id=row["run_id"] or "",
+        due_at=float(row["due_at"]) if row["due_at"] is not None else None,
     )

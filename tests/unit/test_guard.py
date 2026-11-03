@@ -14,7 +14,14 @@ from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard, R
 from slack_cli_agent.guard.mentions import AddresseeGuard, PlainMentionGuard
 from slack_cli_agent.guard.pipeline import GuardPipeline, PipelineResult
 from slack_cli_agent.guard.rewrite import RewriteLossGuard
-from slack_cli_agent.guard.watch import PROMISE_WITHOUT_WATCH_RE, WATCH_RE, WatchPromiseGuard
+from slack_cli_agent.guard.watch import (
+    PROMISE_WITHOUT_WATCH_RE,
+    WATCH_RE,
+    WATCH_SUPERSEDED_TAG,
+    WatchPromiseGuard,
+    same_watch_target,
+    watch_due_at,
+)
 
 # base.py — 계약 자체
 
@@ -229,6 +236,87 @@ class TestWatchPromiseGuard:
         assert WATCH_RE.search("그냥 답변입니다") is None
         assert PROMISE_WITHOUT_WATCH_RE.search("확인했습니다. 추가 조치는 없습니다.") is None
         assert PROMISE_WITHOUT_WATCH_RE.search("배포 후 반영되면 말씀드릴게요.") is not None
+
+    def test_기한_태그가_있으면_due와_desc를_함께_뽑는다(self) -> None:
+        """bot.py:1530-1535 — [[WATCH@YYYY-MM-DD: ...]] 의 날짜 그룹."""
+        guard = WatchPromiseGuard()
+        body = "확인했습니다.\n\n[[WATCH@2026-09-26: 배포 파이프라인 완료 여부]]"
+        result = guard.apply(body, GuardContext())
+        assert result.changed is True
+        assert result.body == "확인했습니다."
+        assert result.detail["watch_desc"] == "배포 파이프라인 완료 여부"
+        assert result.detail["watch_due"] == "2026-09-26"
+
+    def test_기한_없는_태그는_watch_due가_빈값이다(self) -> None:
+        guard = WatchPromiseGuard()
+        result = guard.apply("[[WATCH: 작업 상태]]", GuardContext())
+        assert result.detail["watch_due"] == ""
+
+
+class TestWatchRE기한그룹:
+    """WATCH_RE 가 bot.py:1533-1535 와 같은 모양으로 기한 그룹을 받는지 본다."""
+
+    def test_기한_있는_태그가_그룹으로_잡힌다(self) -> None:
+        m = WATCH_RE.search("[[WATCH@2026-09-26: 대상]]")
+        assert m is not None
+        assert m.group("due") == "2026-09-26"
+        assert m.group("desc") == "대상"
+
+    def test_기한_없는_태그는_due가_None이다(self) -> None:
+        m = WATCH_RE.search("[[WATCH: 대상]]")
+        assert m is not None
+        assert m.group("due") is None
+        assert m.group("desc") == "대상"
+
+    def test_자릿수가_다른_날짜는_기한으로_안_잡는다(self) -> None:
+        """전체 태그 자체가 매치하지 않는다 — @ 뒤가 날짜 자리를 못 채우면
+        평문 WATCH 로도 떨어지지 않는다(원본과 동일한 엄격함)."""
+        assert WATCH_RE.search("[[WATCH@내일: 대상]]") is None
+
+
+class TestWatchDueAt:
+    """watch_due_at — bot.py:10769-10783 과 같아야 한다."""
+
+    def test_날짜를_그날_9시_KST로_바꾼다(self) -> None:
+        from datetime import datetime
+
+        from slack_cli_agent.core.timezones import KST
+
+        assert watch_due_at("2026-09-26") == datetime(2026, 9, 26, 9, 0, tzinfo=KST).timestamp()
+
+    def test_빈값은_None이다(self) -> None:
+        assert watch_due_at("") is None
+        assert watch_due_at(None) is None
+
+    def test_형식이_맞아도_달력에_없는_날짜는_None이다(self) -> None:
+        assert watch_due_at("2026-13-40") is None
+
+
+class TestSameWatchTarget:
+    """same_watch_target — bot.py:10786-10804 의 _same_watch_target 과 같아야 한다."""
+
+    def test_긴_식별자가_겹치면_같은_대상이다(self) -> None:
+        assert same_watch_target(
+            "airflow dag_id=ingest_orders_daily run_id=scheduled__2026-09-26",
+            "airflow dag_id=ingest_orders_daily run_id=scheduled__2026-09-26 재확인",
+        ) is True
+
+    def test_식별자가_겹치지_않으면_다른_대상이다(self) -> None:
+        assert same_watch_target(
+            "dag_id=ingest_orders_daily run_id=scheduled__2026-09-26",
+            "dag_id=billing_export_weekly run_id=scheduled__2026-10-01",
+        ) is False
+
+    def test_짧은_일반_낱말만_있으면_비교_대상이_없다(self) -> None:
+        """식별 토큰이 없는 짧은 한국어 설명은 겹침 판단을 안 한다."""
+        assert same_watch_target("배포 확인", "배포 확인") is False
+        assert same_watch_target("", "") is False
+
+
+class TestWatchSupersededTag:
+    def test_표식_문자열이_같다(self) -> None:
+        # 원본 bot.py:1525 WATCH_SUPERSEDED_TAG
+        assert WATCH_SUPERSEDED_TAG == "[[WATCH_SUPERSEDED]]"
 
 
 # pipeline.py — GuardPipeline

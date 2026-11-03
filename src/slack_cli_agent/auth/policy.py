@@ -25,6 +25,16 @@ EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 OWNER_EFFORT_MIN = "medium"
 DEFAULT_EFFORT = "medium"
 
+#: Bare tool names a channel's `operator_full` flag gates. A scoped grant like
+#: `Bash(ops_ctl.sh:*)` is a different string and is never touched here -- only
+#: the unrestricted name needs the flag, the same way mametchi's bot.py only
+#: handed back bare `Bash` to an operator_full channel's operator (bot.py:
+#: 2297-2299) while a scoped allowlist entry was never the thing that bug was
+#: about. engine/claude.py reads this same set to decide whether the
+#: settings-layer deny must step aside for a name this method already let
+#: through -- one flag, one set of names, both axes.
+OPERATOR_TOOLS: frozenset[str] = frozenset({"Bash", "Edit", "Write", "NotebookEdit"})
+
 
 class AccessExtension(ABC):  # noqa: B024 — 확장점이다. 기본이 no-op 이라 강제할 메서드가 없다
     """Extension point for company-specific permission logic. No-op by
@@ -114,18 +124,40 @@ class AccessPolicy:
         return level
 
     def is_full_authority(self, principal: Principal) -> bool:
-        """True only in the owner's own DM."""
-        return principal.trust is TrustLevel.OWNER and principal.is_direct_message
+        """True in the owner's own DM, or in a channel that opted into
+        `full_authority` -- a channel the owner runs as their own console. Only
+        the owner (which includes controller_user_ids) ever gets it; the flag
+        does nothing for anyone else."""
+        if principal.trust is not TrustLevel.OWNER:
+            return False
+        if principal.is_direct_message:
+            return True
+        return self._channel_flag(principal.channel, "full_authority")
 
     def channel_tools_for(self, principal: Principal) -> tuple[str, ...]:
         """Extra tools this channel grants this user. The owner is left out —
-        owner tools already cover it, same as the original (bot.py:110)."""
+        owner tools already cover it, same as the original (bot.py:110).
+
+        A bare entry in OPERATOR_TOOLS (Bash, Edit, Write, NotebookEdit) only
+        reaches a non-owner when the channel's `operator_full` is on. Without
+        it the name is dropped here, before ToolPolicy ever sees it -- so an
+        admin naming "Bash" for someone in an ordinary channel does nothing,
+        rather than opening the tool-name axis while the settings-layer deny
+        (engine/claude.py) still blocks it. That mismatch between the two axes
+        is the 2026-10-02~10-14 mametchi bug this flag is named after; tying
+        both to the same flag keeps them from drifting apart again. A scoped
+        grant like `Bash(ops_ctl.sh:*)` is a different string from `Bash` and
+        is never dropped here.
+        """
         if principal.trust is TrustLevel.OWNER:
             return ()
         config = self._channels.get(principal.channel)
         if not config:
             return ()
-        return tuple(config.user_tools.get(principal.user_id, ()))
+        names = tuple(config.user_tools.get(principal.user_id, ()))
+        if config.operator_full:
+            return names
+        return tuple(name for name in names if name not in OPERATOR_TOOLS)
 
     def _is_channel_trusted(self, channel: str, user: str) -> bool:
         config = self._channels.get(channel)

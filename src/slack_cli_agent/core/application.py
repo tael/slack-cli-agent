@@ -88,6 +88,7 @@ from ..prompt.library import PromptLibrary
 from ..prompt.linked_threads import LinkedThreadNote
 from ..prompt.sections import (
     AskerSection,
+    AskSection,
     AttachmentSection,
     AuthoritySection,
     ChannelModeSection,
@@ -127,6 +128,7 @@ from ..review.postmortem import PostmortemTask
 from ..review.records import AnswerRecordFinder
 from ..review.stale_reporter import StaleReviewReporter
 from ..review.trace import DebugTraceTask
+from ..session.awaiting import SqliteAwaitingStore
 from ..session.manager import SessionManager
 from ..session.store import SqliteSessionStore
 from ..slack.assistant import DEFAULT_GREETING, AssistantPanel
@@ -487,6 +489,7 @@ class Application:
             SensitiveGuardSection(),
             AuthoritySection(),
             WatchSection(),
+            AskSection(),
             SilenceRuleSection(),
         ]
         sections.extend(s for p in self._plugins for s in p.prompt_sections())
@@ -498,7 +501,8 @@ class Application:
             paths.prompts, placeholders={"OWNER_MENTION": f"<@{self._profile.owner_user_id}>"}
         )
         knowledge = KnowledgeLoader(
-            paths.persona / "PERSONA.md", paths.knowledge, learned_dir=paths.learned,
+            paths.persona / "PERSONA.md", paths.knowledge,
+            domain_file=self._profile.domain_file, learned_dir=paths.learned,
         )
         return SystemPromptComposer(
             library, knowledge, self._prompt_sections(),
@@ -717,6 +721,10 @@ class Application:
                 tool_policy=self.tool_policy(),
                 readable_dirs=self.readable_dirs,
                 progress=self.progress(),
+                # Persists the per-thread "waiting on a decision" flag so a
+                # short approval ("좋아") arriving hours later still reads as an
+                # answer and not a stray reaction — see session/awaiting.py.
+                awaiting=SqliteAwaitingStore(self._database),
             )
         return self._pipeline
 
@@ -1199,6 +1207,11 @@ class Application:
                     channel_registry=self._channels,
                     gate=ResponseGate(),
                     identity=self.identity,
+                    # Lets an unaddressed short approval ("좋아") land as an
+                    # answer when the bot's prior turn marked the thread
+                    # awaiting — including across a restart, or when the turn
+                    # signalled only through the (now-stripped) [[ASK]] tag.
+                    awaiting=SqliteAwaitingStore(self._database),
                 ),
                 # The one place the access check runs. Catch-up needs no second
                 # one: it only sweeps channels that are already registered

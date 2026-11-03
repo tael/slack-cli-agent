@@ -61,6 +61,9 @@ class FakeAccessPolicy:
     def effort_for(self, principal: Principal, prompt: str) -> str:
         return "medium"
 
+    def is_full_authority(self, principal: Principal) -> bool:
+        return principal.trust is TrustLevel.OWNER and principal.is_direct_message
+
 
 class FakeTranscriptBuilder:
     def __init__(self) -> None:
@@ -238,6 +241,19 @@ class FakeReactions:
         self.events.append(("watch", channel, ts))
 
 
+class FakeAwaiting:
+    """대역. 실제 계약은 `session.awaiting.AwaitingPort`."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, bool]] = []
+
+    def set_awaiting(self, channel: str, thread_ts: str, waiting: bool) -> None:
+        self.calls.append((channel, thread_ts, waiting))
+
+    def is_awaiting(self, channel: str, thread_ts: str) -> bool:
+        return any(c == (channel, thread_ts, True) for c in self.calls)
+
+
 class _AlwaysChanges(OutputGuard):
     name = "always_changes"
 
@@ -330,6 +346,7 @@ def build_pipeline(
     readable_dirs: tuple[Path, ...] = (),
     now: Any = None,
     new_run_id: Any = None,
+    awaiting: Any = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -374,6 +391,8 @@ def build_pipeline(
         extra_kwargs["now"] = now
     if new_run_id is not None:
         extra_kwargs["new_run_id"] = new_run_id
+    if awaiting is not None:
+        extra_kwargs["awaiting"] = awaiting
     extra_kwargs.setdefault(
         "watch_results",
         WatchResultReader((tmp_path or Path("/tmp")) / ".watch-out"),
@@ -432,6 +451,42 @@ def fail_response(
 
 
 # 시험
+
+
+class TestAsk표식:
+    """[[ASK]] 표식 처리 — 게시 전 제거 + 답 대기 상태 기록. bot.py:8273-8312 상당."""
+
+    def test_ASK표식을_떼고_답_대기를_기록한다(self, tmp_path: Path) -> None:
+        awaiting = FakeAwaiting()
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="확인했습니다.\n[[ASK]]")],
+            tmp_path=tmp_path, awaiting=awaiting,
+        )
+        pipeline.handle(make_ctx())
+        # 표식은 사람에게 보이지 않는다 — 게시 본문에서 사라진다.
+        assert "[[ASK]]" not in deps["publisher"].posted[0]["text"]
+        assert deps["publisher"].posted[0]["text"] == "확인했습니다."
+        # 그 스레드는 답 대기로 남아, 뒤이은 짧은 승인을 받을 수 있다.
+        assert awaiting.calls[-1] == ("C1", "1700000001.000100", True)
+
+    def test_평서형_승인요청도_대기로_기록한다(self, tmp_path: Path) -> None:
+        """표식이 없어도 되물음 어휘(asked_back)가 있으면 대기로 본다."""
+        awaiting = FakeAwaiting()
+        pipeline, _ = build_pipeline(
+            responses=[ok_response(body="진행할지 말씀 주시면 그때 실행하겠습니다.")],
+            tmp_path=tmp_path, awaiting=awaiting,
+        )
+        pipeline.handle(make_ctx())
+        assert awaiting.calls[-1] == ("C1", "1700000001.000100", True)
+
+    def test_표식도_되물음도_없으면_대기를_해제한다(self, tmp_path: Path) -> None:
+        awaiting = FakeAwaiting()
+        pipeline, _ = build_pipeline(
+            responses=[ok_response(body="그냥 평범한 답변입니다.")],
+            tmp_path=tmp_path, awaiting=awaiting,
+        )
+        pipeline.handle(make_ctx())
+        assert awaiting.calls[-1] == ("C1", "1700000001.000100", False)
 
 
 class Test엔진성공:
@@ -1508,13 +1563,14 @@ class Fake감시큐:
         extra: Any = None,
         workdir: str = "",
         run_id: str = "",
+        due_at: float | None = None,
     ) -> int:
         if self._fail:
             raise RuntimeError("등록 실패")
         self.enqueued.append({
             "channel": channel, "thread_ts": thread_ts, "condition": condition,
             "msg_ts": msg_ts, "trust": trust, "extra": extra,
-            "workdir": workdir, "run_id": run_id,
+            "workdir": workdir, "run_id": run_id, "due_at": due_at,
         })
         return len(self.enqueued)
 
@@ -1711,6 +1767,53 @@ class Test감시등록:
         pipeline.handle(make_ctx())
 
         assert "[[WATCH:" not in deps["publisher"].posted[-1]["text"]
+
+
+class Test감시기한:
+    """`[[WATCH@YYYY-MM-DD: ...]]` 의 날짜가 등록 시점에 due_at 으로 넘어간다.
+
+    bot.py:10769-10783 의 watch_due_at 과 같은 뜻 — 그날 09시 KST.
+    """
+
+    def test_기한이_있으면_due_at으로_변환돼_등록된다(self, tmp_path: Path) -> None:
+        from datetime import datetime
+
+        from slack_cli_agent.core.timezones import KST
+
+        큐 = Fake감시큐()
+        pipeline, _deps = build_pipeline(
+            responses=[ok_response(body="네\n\n[[WATCH@2026-09-26: 배포 완료 여부]]")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        기대 = datetime(2026, 9, 26, 9, 0, tzinfo=KST).timestamp()
+        assert 큐.enqueued[0]["due_at"] == 기대
+        assert 큐.enqueued[0]["condition"] == "배포 완료 여부"
+
+    def test_기한이_없으면_due_at이_None이다(self, tmp_path: Path) -> None:
+        큐 = Fake감시큐()
+        pipeline, _deps = build_pipeline(
+            responses=[ok_response(body="네\n\n[[WATCH: 배포 완료 여부]]")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert 큐.enqueued[0]["due_at"] is None
+
+    def test_달력에_없는_날짜는_기한_없이_등록한다(self, tmp_path: Path) -> None:
+        """자릿수는 맞지만 존재하지 않는 날짜(13월)는 WATCH_RE 는 통과하지만
+        watch_due_at 변환에서 실패한다. 등록 자체는 그대로 진행된다
+        (bot.py:10781-10783 과 동일하게 기한만 버린다)."""
+        큐 = Fake감시큐()
+        pipeline, _deps = build_pipeline(
+            responses=[ok_response(body="네\n\n[[WATCH@2026-13-40: 배포 완료 여부]]")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert 큐.enqueued[0]["due_at"] is None
+        assert 큐.enqueued[0]["condition"] == "배포 완료 여부"
 
 
 class Test엔진호출경로:

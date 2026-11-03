@@ -16,7 +16,7 @@ import pytest
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import NO_DETAIL, EngineResponse, FailureDetail
-from slack_cli_agent.guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG
+from slack_cli_agent.guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG, WATCH_SUPERSEDED_TAG
 from slack_cli_agent.observability.audit import (
     WATCH_ABANDONED_KIND,
     WATCH_CHECKED_KIND,
@@ -24,7 +24,7 @@ from slack_cli_agent.observability.audit import (
 )
 from slack_cli_agent.reliability.watchjobs import WatchJob, WatchJobQueue
 from slack_cli_agent.reliability.watchresult import WatchOutcome
-from slack_cli_agent.reliability.watchrunner import WatchJobChecker
+from slack_cli_agent.reliability.watchrunner import WatchJobChecker, watch_supersede_prompt
 from slack_cli_agent.storage.database import Database
 
 
@@ -109,7 +109,7 @@ def 기록하고_응답(
 
 
 def 체커(*, 큐, run_check, 발행=None, 채널목록=None, 설정값=None, 리액션=None, notify_owner=None,
-        판정기=None, 감사=None):
+        판정기=None, 감사=None, 스레드활동=None, run_supersede_check=None):
     return WatchJobChecker(
         queue=큐,
         run_check=run_check,
@@ -120,8 +120,27 @@ def 체커(*, 큐, run_check, 발행=None, 채널목록=None, 설정값=None, �
         reactions=리액션,
         notify_owner=notify_owner,
         audit=감사,
+        thread_activity=스레드활동,
+        run_supersede_check=run_supersede_check,
         now=lambda: 큐.시각["값"],
     )
+
+
+@dataclass
+class 가짜스레드활동:
+    """`ThreadActivityPort` 의 최소 대역. 본답변이 다시 말을 올렸는지와
+    등록 뒤 스레드 내용을 고정값으로 돌려준다."""
+
+    다시_말함: bool = True
+    대화록: str = "본답변이 이미 결과를 말했습니다."
+    받은인자: list[tuple[str, str, float]] = field(default_factory=list)
+
+    def replied_since(self, channel: str, thread_ts: str, since: float) -> bool:
+        self.받은인자.append((channel, thread_ts, since))
+        return self.다시_말함
+
+    def transcript_since(self, channel: str, thread_ts: str, since: float) -> str:
+        return self.대화록
 
 
 class Test완료처리:
@@ -1338,3 +1357,197 @@ class Test감시_기록의_모델_칸:
         응답값 = 응답(ok=True, body=f"아직입니다 {WATCH_STILL_TAG}")
         기록 = self._기록(큐, replace(응답값, model_asked="claude-opus-5"))
         assert "model_actual" not in 기록
+
+
+class TestWatchSupersedePrompt:
+    def test_설명_대화록_초안을_모두_담는다(self) -> None:
+        prompt = watch_supersede_prompt("배포 확인", "대화 내용", "완료 보고 초안")
+        assert "배포 확인" in prompt
+        assert "대화 내용" in prompt
+        assert "완료 보고 초안" in prompt
+        assert WATCH_SUPERSEDED_TAG in prompt
+        assert WATCH_DONE_TAG in prompt
+
+
+class Test발송직전_중복_판정:
+    """`_finish` 가 완료 보고를 올리기 직전, 확인이 도는 사이 본답변이 이미
+    같은 결과를 말했는지 재확인한다 (bot.py:10974-11001, 2026-09-30 재발방지).
+    """
+
+    def test_본답변이_이미_말했으면_보고를_올리지_않는다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        발행 = 가짜발행()
+        스레드활동 = 가짜스레드활동(다시_말함=True)
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행,
+            스레드활동=스레드활동,
+            run_supersede_check=lambda job, transcript, draft: 응답(
+                ok=True, body=WATCH_SUPERSEDED_TAG,
+            ),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == []
+        assert 큐.due(now=99999.0, min_gap=0.0) == []
+        assert 큐.expired(now=99999.0, max_age=0.0) == []
+
+    def test_본답변이_말한적_없으면_평소대로_올린다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        스레드활동 = 가짜스레드활동(다시_말함=False)
+        불린판정 = {"값": False}
+
+        def run_supersede_check(job, transcript, draft):
+            불린판정["값"] = True
+            return 응답(ok=True, body=WATCH_SUPERSEDED_TAG)
+
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행, 스레드활동=스레드활동, run_supersede_check=run_supersede_check,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
+        # 재확인 자체를 안 돈다 — 본답변이 없었으니 비교할 대상이 없다.
+        assert 불린판정["값"] is False
+
+    def test_재확인에서_완료라고_하면_평소대로_올린다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행, 스레드활동=가짜스레드활동(다시_말함=True),
+            run_supersede_check=lambda job, transcript, draft: 응답(ok=True, body=WATCH_DONE_TAG),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
+
+    def test_재확인_호출이_실패해도_보고는_나간다(self, 큐) -> None:
+        """재확인을 잃는 쪽이 드문 중복보다 낫다."""
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+
+        def 터지는_재확인(job, transcript, draft):
+            raise RuntimeError("재확인 엔진 오류")
+
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행, 스레드활동=가짜스레드활동(다시_말함=True),
+            run_supersede_check=터지는_재확인,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
+
+    def test_재확인_엔진_응답이_실패여도_보고는_나간다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행, 스레드활동=가짜스레드활동(다시_말함=True),
+            run_supersede_check=lambda job, transcript, draft: 응답(ok=False, body=""),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
+
+    def test_콜라보레이터가_없으면_재확인_없이_평소대로_돈다(self, 큐) -> None:
+        """thread_activity 나 run_supersede_check 중 하나라도 없으면 전체를
+        건너뛴다 — 조립하지 않은 환경에서는 기존 동작 그대로다."""
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
+
+    def test_교체된_건도_완료로_표시되고_표식도_정리된다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        리액션 = 가짜리액션()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            리액션=리액션, 스레드활동=가짜스레드활동(다시_말함=True),
+            run_supersede_check=lambda job, transcript, draft: 응답(
+                ok=True, body=WATCH_SUPERSEDED_TAG,
+            ),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 리액션.완료내역 == [("C1", "222.2")]
+        assert 큐.due(now=99999.0, min_gap=0.0) == []
+
+    def test_교체는_감사에_superseded로_남는다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        감사 = 가짜감사()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            감사=감사, 스레드활동=가짜스레드활동(다시_말함=True),
+            run_supersede_check=lambda job, transcript, draft: 응답(
+                ok=True, body=WATCH_SUPERSEDED_TAG,
+            ),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        기록 = dict(감사.기록)
+        assert 기록[WATCH_FINISHED_KIND]["superseded"] is True
+
+    def test_등록_뒤_대화록을_재확인_프롬프트에_넘긴다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        스레드활동 = 가짜스레드활동(다시_말함=True, 대화록="등록 뒤 오간 말")
+        받은_대화록 = []
+
+        def run_supersede_check(job, transcript, draft):
+            받은_대화록.append(transcript)
+            return 응답(ok=True, body=WATCH_DONE_TAG)
+
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            스레드활동=스레드활동, run_supersede_check=run_supersede_check,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 받은_대화록 == ["등록 뒤 오간 말"]
+
+    def test_결과파일로_끝난_경로에도_재확인이_걸린다(self, 큐) -> None:
+        """outcome 이 터미널이라 태그 없이 끝나는 경로도 같은 재확인을 거친다."""
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
+        발행 = 가짜발행()
+        고정판정기값 = 고정판정기(WatchOutcome.SUCCEEDED)
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body="배포됐습니다"),
+            발행=발행, 판정기=고정판정기값,
+            스레드활동=가짜스레드활동(다시_말함=True),
+            run_supersede_check=lambda job, transcript, draft: 응답(
+                ok=True, body=WATCH_SUPERSEDED_TAG,
+            ),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == []

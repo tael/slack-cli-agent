@@ -64,7 +64,8 @@ KNOWN_KEYS = frozenset(
     {
         "name", "mode", "workdir", "model", "effort", "persona", "knowledge",
         "trusted_users", "answer_unaddressed", "session_scope",
-        "disclose_mechanism", "skills", "light_context", "rich", "chat",
+        "disclose_mechanism", "full_authority", "operator_full", "skills",
+        "light_context", "rich", "chat",
         "progress", "bot_mentions",
         "user_tools", "tool_enforcement",
     }
@@ -105,6 +106,25 @@ class ChannelConfig:
     answer_unaddressed: bool = False
     session_scope: str = "thread"
     disclose_mechanism: bool = False
+    full_authority: bool = False
+    """Grants the owner full authority in this channel as if it were their own
+    DM -- mechanism disclosure, usage figures, self-configuration. Off by
+    default, so a normal channel still confines full authority to the DM. A
+    channel the owner treats as their own console turns it on. `disclose_mechanism`
+    is the narrower flag (explanations only); this is the DM-equivalent."""
+    operator_full: bool = False
+    """Lets a non-owner this channel names in `user_tools` actually use a
+    write-capable tool it granted by its bare name (`Bash`, `Edit`, `Write`,
+    `NotebookEdit`). Off by default, so naming one of those tools for someone
+    in an ordinary channel still does nothing -- AccessPolicy.channel_tools_for
+    drops it before it reaches the engine's tool list. Both axes key off this
+    one flag: it also tells engine/claude.py's settings overlay not to deny
+    the tool once the name axis let it through, so naming a tool and actually
+    getting it never disagree again (that disagreement is the mametchi bug
+    this is named after, bot.py's `operator_full`, closed 2026-10-14 there
+    after being open 2026-10-02~10-14). Scoped grants like
+    `Bash(ops_ctl.sh:*)` are unaffected either way -- only the bare tool name
+    needs this flag."""
     skills: bool = False
     light_context: bool = False
     rich: bool = DEFAULT_RICH
@@ -167,6 +187,8 @@ class ChannelConfig:
             answer_unaddressed=bool(data.get("answer_unaddressed", False)),
             session_scope=str(data.get("session_scope") or "thread"),
             disclose_mechanism=bool(data.get("disclose_mechanism", False)),
+            full_authority=bool(data.get("full_authority", False)),
+            operator_full=bool(data.get("operator_full", False)),
             skills=bool(data.get("skills", False)),
             light_context=bool(data.get("light_context", False)),
             rich=bool(data.get("rich", DEFAULT_RICH)),

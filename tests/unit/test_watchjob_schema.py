@@ -207,3 +207,147 @@ class Test활성감시멱등:
 
         q.mark_done(job_id)
         assert q.active_watch("C1", "222.2") is False
+
+
+class Test감시기한컬럼:
+    """due_at — bot.py:10769-10783, 10823-10866 상당. 기한 전에는 확인하지
+    않고, 기한 뒤 나이 계산도 기한부터 센다."""
+
+    def test_due_at컬럼이있다(self, database) -> None:
+        assert "due_at" in 컬럼목록(database.connect())
+
+    def test_기존행은due_at이_비어있다(self, tmp_path) -> None:
+        경로 = tmp_path / "v9.db"
+        연결 = sqlite3.connect(경로)
+        for 단계 in MIGRATIONS[:9]:
+            for 문장 in 단계[2]:
+                연결.execute(문장)
+        연결.execute(
+            "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at)"
+            " VALUES ('C1', '111.1', '배포 확인', 100.0)"
+        )
+        연결.execute("PRAGMA user_version = 9")
+        연결.commit()
+        연결.close()
+
+        from slack_cli_agent.storage.database import Database
+
+        db = Database(경로)
+        db.migrate()
+        행 = db.connect().execute("SELECT due_at FROM watch_jobs").fetchone()
+        assert tuple(행) == (None,)
+
+    def test_기한이_등록된다(self, database) -> None:
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        job_id = q.enqueue("C1", "111.1", "배포 확인", due_at=5000.0)
+        작업 = q.due(now=5000.0, min_gap=0.0)
+        assert [j.id for j in 작업] == [job_id]
+        assert 작업[0].due_at == 5000.0
+
+    def test_기한_전에는_확인_대상에서_빠진다(self, database) -> None:
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        q.enqueue("C1", "111.1", "배포 확인", due_at=5000.0)
+        assert q.due(now=4999.0, min_gap=0.0) == []
+
+    def test_기한이_지나면_확인_대상이다(self, database) -> None:
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        q.enqueue("C1", "111.1", "배포 확인", due_at=5000.0)
+        assert len(q.due(now=5000.0, min_gap=0.0)) == 1
+
+    def test_기한이_없으면_평소대로_확인_대상이다(self, database) -> None:
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        q.enqueue("C1", "111.1", "배포 확인")
+        assert len(q.due(now=1000.0, min_gap=0.0)) == 1
+
+    def test_포기_나이는_기한부터_센다(self, database) -> None:
+        """bot.py:11028-11030 — 기한이 있으면 생성 시각이 아니라 기한이 지난
+        시간으로 수명을 잰다. 기한 전까지 기다린 시간이 포기 유예를 깎으면
+        안 된다."""
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        q.enqueue("C1", "111.1", "배포 확인", due_at=5000.0)
+        # 등록 후 바로 4000초가 지났지만 기한(5000.0)부터는 아직 100초밖에
+        # 안 지났다 — max_age=500 이어도 포기 대상이 아니다.
+        assert q.expired(now=5100.0, max_age=500.0) == []
+        # 기한부터 600초가 지나면 포기 대상이다.
+        assert len(q.expired(now=5600.0, max_age=500.0)) == 1
+
+    def test_기한_없는_건은_생성시각부터_나이를_센다(self, database) -> None:
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        q.enqueue("C1", "111.1", "배포 확인")
+        assert q.expired(now=1499.0, max_age=500.0) == []
+        assert len(q.expired(now=1500.0, max_age=500.0)) == 1
+
+
+class Test같은대상_감시_교체:
+    """bot.py:10834-10845 — 같은 스레드에서 같은 대상을 보는 활성 감시는
+    새 등록이 들어오면 교체된다."""
+
+    def test_같은_스레드_같은_대상이면_기존_건이_닫히고_새_건으로_바뀐다(self, database) -> None:
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        첫번째 = q.enqueue(
+            "C1", "111.1", "dag_id=ingest_orders_daily run_id=scheduled__2026-09-26",
+        )
+        두번째 = q.enqueue(
+            "C1", "111.1",
+            "dag_id=ingest_orders_daily run_id=scheduled__2026-09-26 재시도 확인",
+        )
+
+        assert 두번째 != 첫번째
+        작업 = q.due(now=2000.0, min_gap=0.0)
+        assert [j.id for j in 작업] == [두번째]
+
+    def test_대상이_다르면_둘_다_남는다(self, database) -> None:
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        q.enqueue("C1", "111.1", "dag_id=ingest_orders_daily run_id=scheduled__2026-09-26")
+        q.enqueue("C1", "111.1", "dag_id=billing_export_weekly run_id=scheduled__2026-10-01")
+
+        assert len(q.due(now=2000.0, min_gap=0.0)) == 2
+
+    def test_다른_스레드는_교체하지_않는다(self, database) -> None:
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        q.enqueue("C1", "111.1", "dag_id=ingest_orders_daily run_id=scheduled__2026-09-26")
+        q.enqueue("C1", "222.2", "dag_id=ingest_orders_daily run_id=scheduled__2026-09-26")
+
+        assert len(q.due(now=2000.0, min_gap=0.0)) == 2
+
+    def test_기한_있는_건과_없는_건은_서로_교체하지_않는다(self, database) -> None:
+        """기한이 붙은 약속은 별개다. 평문 감시가 기한부 감시를 지우면 안 된다."""
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        q.enqueue(
+            "C1", "111.1", "dag_id=ingest_orders_daily run_id=scheduled__2026-09-26",
+            due_at=5000.0,
+        )
+        q.enqueue("C1", "111.1", "dag_id=ingest_orders_daily run_id=scheduled__2026-09-26")
+
+        assert len(q.due(now=5000.0, min_gap=0.0)) == 2
+
+    def test_이미_완료된_건은_교체_대상이_아니다(self, database) -> None:
+        from slack_cli_agent.reliability.watchjobs import WatchJobQueue
+
+        q = WatchJobQueue(database, now=lambda: 1000.0)
+        첫번째 = q.enqueue("C1", "111.1", "dag_id=ingest_orders_daily run_id=scheduled__2026-09-26")
+        q.mark_done(첫번째)
+        두번째 = q.enqueue("C1", "111.1", "dag_id=ingest_orders_daily run_id=scheduled__2026-09-26")
+
+        작업 = q.due(now=2000.0, min_gap=0.0)
+        assert [j.id for j in 작업] == [두번째]
