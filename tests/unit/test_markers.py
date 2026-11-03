@@ -10,7 +10,14 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from slack_cli_agent.core.markers import ASK_TAG, ELAPSED_LINE, ELAPSED_MODEL_LINE, take_ask_tag
+from slack_cli_agent.core.markers import (
+    ASK_TAG,
+    ELAPSED_LINE,
+    ELAPSED_MODEL_LINE,
+    NOWATCH_TAG,
+    take_ask_tag,
+    take_nowatch_tag,
+)
 
 SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "slack_cli_agent"
 
@@ -103,5 +110,41 @@ class TestAskTag:
 
     def test_빈_문자열은_그대로다(self) -> None:
         text, had = take_ask_tag("")
+        assert had is False
+        assert text == ""
+
+
+class TestNowatchTag:
+    """[[NOWATCH]] 표식 — bot.py:1538-1544 와 같아야 한다. 모델이 규약대로
+    붙이는 '감시 필요 없음' 신호이고, 사용자 화면에 나가면 안 된다."""
+
+    def test_tag_문자열이_같다(self) -> None:
+        assert NOWATCH_TAG == "[[NOWATCH]]"
+
+    def test_끝에_붙은_표식을_뗀다(self) -> None:
+        text, had = take_nowatch_tag("정리해 드렸습니다.\n[[NOWATCH]]")
+        assert had is True
+        assert text == "정리해 드렸습니다."
+
+    def test_빈_줄을_사이에_두고_붙어도_뗀다(self) -> None:
+        """리치 렌더(표)에서 본문 뒤 빈 줄 다음에 표식만 남아 fallback
+        text 로 새어 나간 사고를 막는다."""
+        text, had = take_nowatch_tag("| 품목 | 값 |\n| --- | --- |\n\n[[NOWATCH]]")
+        assert had is True
+        assert text == "| 품목 | 값 |\n| --- | --- |"
+
+    def test_표식이_없으면_그대로다(self) -> None:
+        text, had = take_nowatch_tag("그냥 답변입니다")
+        assert had is False
+        assert text == "그냥 답변입니다"
+
+    def test_문장_중간의_언급은_표식으로_안_본다(self) -> None:
+        """줄 전체가 표식만이어야 한다 — 규약을 설명하는 문장은 지우지 않는다."""
+        text, had = take_nowatch_tag("[[NOWATCH]] 는 감시가 필요 없다는 뜻입니다.")
+        assert had is False
+        assert text == "[[NOWATCH]] 는 감시가 필요 없다는 뜻입니다."
+
+    def test_빈_문자열은_그대로다(self) -> None:
+        text, had = take_nowatch_tag("")
         assert had is False
         assert text == ""

@@ -52,7 +52,7 @@ from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_a
 from ..slack.mentions import MentionRenderer
 from ..slack.transcript import CurrentMessage
 from .context import RequestContext
-from .markers import take_ask_tag
+from .markers import take_ask_tag, take_nowatch_tag
 from .pipeline_ports import (
     AccessPolicyPort,
     AuditPort,
@@ -420,6 +420,11 @@ class RequestPipeline:
             body, ctx, principal, request, decision, previous_body
         )
         body = self._apply_ask_tag(body, ctx)
+        # The model ends a reply that needs no watch with `[[NOWATCH]]`; it is a
+        # signal, not content. Strip it here, after guards and the ask tag, so
+        # it never reaches the channel in any render path (sca: rich_render fed
+        # the bare tag into a table message's fallback text).
+        body = take_nowatch_tag(body)[0]
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich) or ""
         self._archive_response(ctx, body, response, elapsed)
