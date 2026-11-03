@@ -161,6 +161,14 @@ class Test채널설정키가정식필드다:
         설정 = ChannelConfig.from_dict("C1", {"org_admins": ["U1"]})
         assert 설정.extra == {"org_admins": ["U1"]}
 
+    def test_operator_full키도필드로읽힌다(self) -> None:
+        """gaps_D 3절 — mametchi 의 channels.json `operator_full` 상당. 기본은
+        꺼짐이라 보통 채널은 이름으로 Bash 를 줘도 settings 단계에서 막힌다."""
+        assert "operator_full" in KNOWN_KEYS
+        assert ChannelConfig.from_dict("C1", {"operator_full": True}).operator_full is True
+        assert ChannelConfig.from_dict("C1", {}).operator_full is False
+        assert ChannelConfig.from_dict("C1", {"operator_full": True}).extra == {}
+
     def test_진행표시키도필드로읽힌다(self) -> None:
         """진행 표시 on/off 도 채널 설정이라 extra 가 아니라 정식 필드다.
 

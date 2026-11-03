@@ -356,3 +356,42 @@ class Test채널별사용자도구:
         tools = ToolPolicy(("Read",), ("Bash",), channel_tools=policy.channel_tools_for)
 
         assert tools.tools_for(principal) == "Read,Bash"
+
+
+class Test오너전권_채널플래그와_도구이름:
+    """gaps_D 3절 — operator_full 이 꺼진 채널에서 user_tools 에 맨 이름으로
+    Bash/Edit/Write/NotebookEdit 를 적어도 비오너에게는 나가지 않는다. 그
+    이름이 engine/claude.py 의 settings 축까지 뚫는 유일한 통로라서, 여기서
+    막아야 "이름은 허용, settings 는 차단" 불일치(2026-10-02~10-14 마메치
+    버그)가 재발하지 않는다. 범위를 좁힌 이름(`Bash(airflow_ctl.sh:*)`)은
+    원래부터 걸리지 않는다 — Test채널별사용자도구 가 이미 그 경로를 본다."""
+
+    def _채널(self, tmp_path: Path, **채널설정: object) -> AccessPolicy:
+        channels = {"C1": {"user_tools": {STRANGER: ["Bash", "Edit", "Read"]}, **채널설정}}
+        return AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", channels))
+
+    def test_operator_full이_꺼져있으면_맨_이름_도구가_빠진다(self, tmp_path: Path) -> None:
+        policy = self._채널(tmp_path)
+        principal = policy.principal_for("C1", STRANGER)
+        assert policy.channel_tools_for(principal) == ("Read",)
+
+    def test_operator_full이_켜지면_맨_이름_도구도_나간다(self, tmp_path: Path) -> None:
+        policy = self._채널(tmp_path, operator_full=True)
+        principal = policy.principal_for("C1", STRANGER)
+        assert policy.channel_tools_for(principal) == ("Bash", "Edit", "Read")
+
+    def test_범위를_좁힌_Bash는_operator_full과_무관하게_나간다(self, tmp_path: Path) -> None:
+        """`Bash(x:*)` 는 OPERATOR_TOOLS 의 원소가 아니다 — 이미 안전한 모양."""
+        channels = {"C1": {"user_tools": {STRANGER: ["Bash(airflow_ctl.sh:*)"]}}}
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", channels))
+        principal = policy.principal_for("C1", STRANGER)
+        assert policy.channel_tools_for(principal) == ("Bash(airflow_ctl.sh:*)",)
+
+    def test_트러스티드여도_operator_full이_꺼져있으면_빠진다(self, tmp_path: Path) -> None:
+        """TRUSTED 는 더 신뢰된 사람이지만, 쓰기 도구를 실제로 여는 결정은
+        channel 수준의 operator_full 하나뿐이다 — trust 등급과는 별개 축."""
+        channels = {"C1": {"trusted_users": [TRUSTED_USER], "user_tools": {TRUSTED_USER: ["Bash"]}}}
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", channels))
+        principal = policy.principal_for("C1", TRUSTED_USER)
+        assert principal.trust is TrustLevel.TRUSTED
+        assert policy.channel_tools_for(principal) == ()
