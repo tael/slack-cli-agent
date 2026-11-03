@@ -362,10 +362,18 @@ class TestClaudeEngineBuildCommand:
         cmd = ClaudeEngine(claude_profile(tmp_path), SETTINGS).build_command(request())
         assert cmd[cmd.index("--setting-sources") + 1] == ""
 
-    def test_기본_파일도_진행_로그도_없으면_settings를_안_붙인다(self, tmp_path: Path) -> None:
+    def test_기본_파일도_진행_로그도_없어도_가드_훅은_실린다(self, tmp_path: Path) -> None:
+        """B4 — Bash 가드 3종과 Stop 종료검수 훅은 엔진 기본값이라 설정 파일이나
+        진행 로그가 없어도 매 턴 --settings 로 실린다(sca-kos.B4). 권한 deny 는
+        여기 없다 — 가드는 훅이지 권한이 아니다."""
         profile = claude_profile(tmp_path)
         engine = ClaudeEngine(profile, SETTINGS)
-        assert "--settings" not in engine.build_command(request())
+        cmd = engine.build_command(request())
+        실린것 = json.loads(cmd[cmd.index("--settings") + 1])
+        pretool = 실린것["hooks"]["PreToolUse"]
+        assert any(g["matcher"] == "Bash" and len(g["hooks"]) == 3 for g in pretool)
+        assert 실린것["hooks"]["Stop"]
+        assert not (실린것.get("permissions") or {}).get("deny")
 
     @staticmethod
     def 기본_settings를_쓴다(profile, 내용: dict) -> None:
@@ -402,7 +410,9 @@ class TestClaudeEngineBuildCommand:
         engine = ClaudeEngine(profile, SETTINGS)
         cmd = engine.build_command(request(progress_log=tmp_path / "p.log"))
         실린것 = json.loads(cmd[cmd.index("--settings") + 1])
-        assert len(실린것["hooks"]["PreToolUse"]) == 2
+        # 운영자 훅 + 진행 훅 + B4 Bash 가드 그룹 = 3
+        assert len(실린것["hooks"]["PreToolUse"]) == 3
+        assert any(g["matcher"] == "Bash" for g in 실린것["hooks"]["PreToolUse"])
 
     @staticmethod
     def 덧씌움을_쓴다(profile, 수준: str, 내용: dict) -> None:
