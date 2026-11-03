@@ -439,6 +439,126 @@ class TestClaudeEngineBuildCommand:
         )
         assert json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"] == ["공통"]
 
+    def test_컨트롤러도_소유자_덧씌움을_받는다(self, tmp_path: Path) -> None:
+        """R0 — controller_user_ids 는 OWNER 와 완전 동급이다. principal_for 가
+        이미 trust=OWNER 로 판정하므로(auth/policy.py), _settings_value 가
+        읽는 request.trust_level 도 그 값 그대로 "owner" 수준을 고른다 — 여기
+        말고 다른 분기가 없는지 확인하는 회귀 시험이다."""
+        profile = claude_profile(tmp_path)
+        self.기본_settings를_쓴다(profile, {"permissions": {"deny": ["공통"]}})
+        self.덧씌움을_쓴다(profile, "owner", {"permissions": {"deny": ["소유자전용"]}})
+        engine = ClaudeEngine(profile, SETTINGS)
+
+        # 컨트롤러(마메치) 는 principal_for 단계에서 이미 TrustLevel.OWNER 로
+        # 판정되어 넘어온다 — engine 계층은 owner 와 controller 를 구분할 수
+        # 없고, 구분해서도 안 된다(R0).
+        cmd = engine.build_command(request(trust_level=TrustLevel.OWNER))
+        assert json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"] == [
+            "공통", "소유자전용",
+        ]
+
+
+class Test오너전권_설정_덧씌움:
+    """gaps_D 3절 — operator_full 채널 비오너에게 Bash/Edit 를 실제로 허용하려면
+    auth/tools.py 의 이름 축만으로는 안 되고 engine/claude.py 의 --settings
+    deny 축도 함께 풀려야 한다. 2026-10-02~10-14 마메치가 겪은 "이름은 허용,
+    settings 는 그대로 차단" 버그가 sca 에서 재발하지 않는지 여기서 본다."""
+
+    @staticmethod
+    def _엔진(tmp_path: Path, 일반_덧씌움: dict, 운영자전권_덧씌움: dict | None = None) -> Any:
+        profile = claude_profile(tmp_path)
+        TestClaudeEngineBuildCommand.기본_settings를_쓴다(profile, {})
+        TestClaudeEngineBuildCommand.덧씌움을_쓴다(profile, "general", 일반_덧씌움)
+        if 운영자전권_덧씌움 is not None:
+            TestClaudeEngineBuildCommand.덧씌움을_쓴다(profile, "operator_full", 운영자전권_덧씌움)
+        return ClaudeEngine(profile, SETTINGS)
+
+    def test_보통_GENERAL_요청은_general_덧씌움의_차단을_그대로_받는다(
+        self, tmp_path: Path
+    ) -> None:
+        engine = self._엔진(
+            tmp_path, {"permissions": {"deny": ["Bash", "Edit", "Write", "NotebookEdit"]}}
+        )
+        cmd = engine.build_command(
+            request(trust_level=TrustLevel.GENERAL, tools=ToolSelection.allow(["Read"]))
+        )
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        assert "Bash" in deny
+
+    def test_이름으로_Bash가_허용된_GENERAL_요청은_operator_full_덧씌움을_받아_안_막힌다(
+        self, tmp_path: Path
+    ) -> None:
+        """단위시험 — operator_full 채널 비오너가 받는 최종 settings 에
+        Bash/Edit deny 가 없다. 허용 목록에 Bash/Edit 가 이미 있는 것은
+        auth/policy.py 의 channel_tools_for 가 그 채널의 operator_full 을
+        보고 이미 내줬다는 뜻이다(engine 계층은 채널을 직접 보지 않는다)."""
+        engine = self._엔진(
+            tmp_path,
+            {"permissions": {"deny": ["Bash", "Edit", "Write", "NotebookEdit"]}},
+            운영자전권_덧씌움={"permissions": {"deny": []}},
+        )
+        cmd = engine.build_command(
+            request(
+                trust_level=TrustLevel.GENERAL,
+                tools=ToolSelection.allow(["Read", "Bash", "Edit"]),
+            )
+        )
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        assert "Bash" not in deny
+        assert "Edit" not in deny
+
+    def test_공통_파일의_자격증명_차단은_operator_full_에서도_남는다(
+        self, tmp_path: Path
+    ) -> None:
+        profile = claude_profile(tmp_path)
+        TestClaudeEngineBuildCommand.기본_settings를_쓴다(
+            profile, {"permissions": {"deny": ["공통자격증명"]}}
+        )
+        TestClaudeEngineBuildCommand.덧씌움을_쓴다(
+            profile, "general", {"permissions": {"deny": ["Bash", "Edit"]}}
+        )
+        engine = ClaudeEngine(profile, SETTINGS)
+        cmd = engine.build_command(
+            request(trust_level=TrustLevel.GENERAL, tools=ToolSelection.allow(["Read", "Bash"]))
+        )
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        assert deny == ["공통자격증명"]
+
+    def test_OWNER_요청은_도구_이름과_무관하게_general_로_안_바뀐다(
+        self, tmp_path: Path
+    ) -> None:
+        """신호(Bash 가 허용 목록에 있음)는 GENERAL 요청에서만 본다. 소유자는
+        이미 owner 수준이라 이 분기를 탈 일이 없다."""
+        engine = self._엔진(
+            tmp_path, {"permissions": {"deny": ["Bash", "Edit", "Write", "NotebookEdit"]}}
+        )
+        cmd = engine.build_command(
+            request(trust_level=TrustLevel.OWNER, tools=ToolSelection.allow(["Read", "Bash"]))
+        )
+        assert "--settings" not in cmd or json.loads(
+            cmd[cmd.index("--settings") + 1]
+        ).get("permissions", {}).get("deny", []) == []
+
+    def test_TRUSTED_요청은_신호와_무관하게_trusted_덧씌움을_그대로_받는다(
+        self, tmp_path: Path
+    ) -> None:
+        """TRUSTED 는 애초에 차단 덧씌움이 없어 신호를 볼 필요가 없다 — general
+        로도 operator_full 로도 바뀌지 않고 자기 수준(trusted) 그대로 간다."""
+        profile = claude_profile(tmp_path)
+        TestClaudeEngineBuildCommand.기본_settings를_쓴다(profile, {})
+        TestClaudeEngineBuildCommand.덧씌움을_쓴다(
+            profile, "trusted", {"permissions": {"deny": ["신뢰전용"]}}
+        )
+        TestClaudeEngineBuildCommand.덧씌움을_쓴다(
+            profile, "general", {"permissions": {"deny": ["Bash", "Edit"]}}
+        )
+        engine = ClaudeEngine(profile, SETTINGS)
+        cmd = engine.build_command(
+            request(trust_level=TrustLevel.TRUSTED, tools=ToolSelection.allow(["Read", "Bash"]))
+        )
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        assert deny == ["신뢰전용"]
+
     def test_기본_파일이_깨졌으면_ConfigError_다(self, tmp_path: Path) -> None:
         from slack_cli_agent.core.errors import ConfigError
 
