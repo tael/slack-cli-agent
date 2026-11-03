@@ -225,6 +225,20 @@ retention has to outlast the catch-up window for that reason.
 """
 
 
+V10_WATCH_JOB_DUE_AT_SQL = """
+ALTER TABLE watch_jobs ADD COLUMN due_at REAL;
+"""
+"""Deadline for a `[[WATCH@YYYY-MM-DD: ...]]` promise, as an epoch timestamp.
+
+NULL means no deadline — checked on the usual min-gap cadence, same as every
+row written before this column existed. When set, `due()` leaves the job
+alone until that time arrives, so a week-long promise doesn't get polled
+every five minutes for nothing, and `expired()` measures the job's age from
+the deadline rather than from registration — the waiting period before the
+deadline must not eat into the time budget for giving up (bot.py:11028-11030).
+"""
+
+
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
@@ -235,6 +249,7 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (7, "감시 완료 보고의 미발송분 보관", _statements(V7_WATCH_JOB_PENDING_REPORT_SQL)),
     (8, "작업 점유마다 고유한 표를 둔다", _statements(V8_JOB_LEASE_SQL)),
     (9, "관리 명령 점유 원장 추가", _statements(V9_ADMIN_CLAIMS_SQL)),
+    (10, "감시 작업에 기한 추가", _statements(V10_WATCH_JOB_DUE_AT_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

@@ -309,8 +309,13 @@ class Test감시_태그와_정규식:
         assert WATCH_MARK_EMOJI == "mag"
 
     def test_watch_태그_정규식_패턴_원문이_같다(self) -> None:
-        # 원본 bot.py:983
-        assert WATCH_RE.pattern == r"\n{0,2}\[\[WATCH:\s*(.+?)\s*\]\]\s*\Z"
+        # 원본 bot.py:1533-1535. 대조 문서 작성 시점(2026-09-16~24)의 패턴은
+        # 기한 그룹이 없었지만, 그 기능은 2026-09-19 에 이미 들어갔다 — 대조
+        # 문서가 낡았을 뿐, 지금 원본에는 @YYYY-MM-DD 기한 그룹이 있다
+        # (gaps_A.md 참고). 코드 직접 대조로 갱신한다.
+        assert WATCH_RE.pattern == (
+            r"\n{0,2}\[\[WATCH(?:@(?P<due>\d{4}-\d{2}-\d{2}))?:\s*(?P<desc>.+?)\s*\]\]\s*\Z"
+        )
 
     def test_빈_약속_검출_정규식_원문이_같다(self) -> None:
         # 원본 bot.py:992-995

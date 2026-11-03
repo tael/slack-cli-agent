@@ -35,7 +35,7 @@ from ..guard.base import GuardContext
 from ..guard.mentions import AddresseeGuard
 from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
-from ..guard.watch import WatchPromiseGuard
+from ..guard.watch import WatchPromiseGuard, watch_due_at
 from ..observability.audit import IncidentKind
 from ..observability.progress import ProgressCoordinator
 from ..observability.response_archive import ResponseArchive
@@ -407,7 +407,9 @@ class RequestPipeline:
             return HandleOutcome(ok=True, silent=True)
 
         body, previous_body = self._absorb_late_addendum(ctx, scope, decision, request, response)
-        body, watch_desc = self._apply_guards(body, ctx, principal, request, decision, previous_body)
+        body, watch_desc, watch_due_raw = self._apply_guards(
+            body, ctx, principal, request, decision, previous_body
+        )
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich) or ""
         self._archive_response(ctx, body, response, elapsed)
@@ -416,7 +418,9 @@ class RequestPipeline:
                      turns=response.turns, model_actual=response.model_actual,
                      truncated=_truncated(response), context_reset=context_reset)
         watch_desc = watch_desc or self._watch_desc_for_launched(workdir, run_id)
-        watching = bool(watch_desc) and self._register_watch(ctx, principal, watch_desc, workdir, run_id)
+        watching = bool(watch_desc) and self._register_watch(
+            ctx, principal, watch_desc, workdir, run_id, watch_due_at(watch_due_raw),
+        )
         # The final mark belongs to the worker: it owns queue completion and the
         # buried-message groups, and marking here too duplicated the Slack call
         # and let the worker's done mark overwrite the watch mark (sca-5sb,
@@ -582,7 +586,7 @@ class RequestPipeline:
         request: EngineRequest,
         decision: SessionDecision,
         previous_body: str | None = None,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, str]:
         # A rewrite rerun is chained at most once — the second guard run
         # (is_rewrite_retry=True) has its own `rerun` ignored, which is what caps
         # this at one retry instead of looping.
@@ -599,7 +603,7 @@ class RequestPipeline:
         result = self._guards.run(body, guard_ctx)
         if result.rerun is None:
             self._record_guard_incidents(ctx, result.details)
-            return result.body, _watch_desc_of(result)
+            return result.body, _watch_desc_of(result), _watch_due_of(result)
 
         rerun_request = replace(
             request, prompt=result.rerun.rewrite_prompt, resume=True, session_id=decision.session_id,
@@ -610,12 +614,12 @@ class RequestPipeline:
         # would then merge it onto the previous body (sca-2ak).
         if not rerun_response.ok or is_silent(rerun_response.body):
             self._record_guard_incidents(ctx, result.details)
-            return result.body, _watch_desc_of(result)
+            return result.body, _watch_desc_of(result), _watch_due_of(result)
 
         retry_ctx = replace(guard_ctx, previous_body=result.body, is_rewrite_retry=True)
         final_result = self._guards.run(rerun_response.body, retry_ctx)
         self._record_guard_incidents(ctx, final_result.details)
-        return final_result.body, _watch_desc_of(final_result)
+        return final_result.body, _watch_desc_of(final_result), _watch_due_of(final_result)
 
     def _record_guard_incidents(self, ctx: RequestContext, details: Mapping[str, Mapping[str, Any]]) -> None:
         wrong = details.get(AddresseeGuard.name)
@@ -642,7 +646,7 @@ class RequestPipeline:
 
     def _register_watch(
         self, ctx: RequestContext, principal: Principal, description: str,
-        workdir: Path, run_id: str,
+        workdir: Path, run_id: str, due_at: float | None = None,
     ) -> bool:
         if self._watch_queue is None:
             return False
@@ -655,6 +659,7 @@ class RequestPipeline:
                 # under the directory the request actually ran in (sca-6zt).
                 workdir=str(workdir),
                 run_id=run_id,
+                due_at=due_at,
             )
         except Exception as exc:  # noqa: BLE001 — the answer is already sent; a retry on this failure would double-post it
             log.warning("감시 등록 실패 : %s", exc)
@@ -772,3 +777,10 @@ def _truncated(response: EngineResponse) -> bool:
 def _watch_desc_of(result: Any) -> str:
     detail = result.details.get(WatchPromiseGuard.name) or {}
     return str(detail.get("watch_desc") or "")
+
+
+def _watch_due_of(result: Any) -> str:
+    """Raw `YYYY-MM-DD` string from the `[[WATCH@...]]` tag, if any. Empty
+    means no deadline — the same as a plain `[[WATCH: ...]]` tag."""
+    detail = result.details.get(WatchPromiseGuard.name) or {}
+    return str(detail.get("watch_due") or "")

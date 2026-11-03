@@ -7,25 +7,83 @@ re-exported here to keep existing `guard.watch.ELAPSED_LINE` imports working.
 
 from __future__ import annotations
 
+import logging
 import re
+from datetime import datetime
 from typing import ClassVar
 
 # Must stay the same object as core.markers' — re-exported so a duplicate
 # regex doesn't drift out of sync if only one copy gets edited.
 from slack_cli_agent.core.markers import ELAPSED_LINE, ELAPSED_MODEL_LINE
+from slack_cli_agent.core.timezones import KST
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard, RerunRequest
 
 # Declared to make the re-export explicit; otherwise linters flag it as unused.
 __all__ = ["ELAPSED_LINE", "ELAPSED_MODEL_LINE"]
 
+log = logging.getLogger(__name__)
+
 # Internal markers the model returns with its check result; never shown to the user.
 WATCH_DONE_TAG = "[[WATCH_DONE]]"
 WATCH_STILL_TAG = "[[WATCH_STILL]]"
+# The model's own verdict that a completion report it's about to write has
+# already been said in the thread by the time the check ran (bot.py:1525,
+# 2026-09-30). Never shown to the user either.
+WATCH_SUPERSEDED_TAG = "[[WATCH_SUPERSEDED]]"
 # Reaction left on a watched message. Kept distinct from in-progress/done
 # marks so a completed watch isn't picked up again as unfinished.
 WATCH_MARK_EMOJI = "mag"
-# Only the final line counts, to avoid picking up a watch mention elsewhere in the body.
-WATCH_RE = re.compile(r"\n{0,2}\[\[WATCH:\s*(.+?)\s*\]\]\s*\Z", re.DOTALL)
+# Only the final line counts, to avoid picking up a watch mention elsewhere in
+# the body. The optional `@YYYY-MM-DD` group is a deadline (bot.py:1530-1535,
+# 2026-09-19): the model names a date and the watch isn't checked before it
+# arrives. Without it a week-long promise gets polled every five minutes for
+# nothing.
+WATCH_RE = re.compile(
+    r"\n{0,2}\[\[WATCH(?:@(?P<due>\d{4}-\d{2}-\d{2}))?:\s*(?P<desc>.+?)\s*\]\]\s*\Z",
+    re.DOTALL,
+)
+
+
+def watch_due_at(due: str | None) -> float | None:
+    """Turns a `[[WATCH@2026-09-26: ...]]` date into that day's 09:00 KST,
+    as an epoch timestamp. Matches bot.py:10769-10783's `watch_due_at`.
+
+    Only the date matters, not the hour — this deadline is never a
+    minute-precision commitment, just "sometime around the start of that
+    business day". A malformed date falls back to no deadline rather than
+    dropping the registration altogether; losing the promise entirely is
+    worse than checking it without a deadline.
+    """
+    if not due:
+        return None
+    try:
+        return datetime.strptime(due, "%Y-%m-%d").replace(hour=9, tzinfo=KST).timestamp()
+    except ValueError:
+        log.warning("감시 기한 형식이 틀렸다. 기한 없이 등록한다 : %s", due)
+        return None
+
+
+# Long, distinguishing identifier tokens only (dag_id, run_id, ticket keys).
+# Ordinary words show up in any watch description and can't tell targets apart.
+_WATCH_TARGET_TOKEN_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.:+-]{9,}")
+
+
+def _watch_target_keys(desc: str) -> set[str]:
+    return {t.lower() for t in _WATCH_TARGET_TOKEN_RE.findall(desc or "")}
+
+
+def same_watch_target(a: str, b: str) -> bool:
+    """Whether two watch descriptions point at the same thing.
+
+    Matches bot.py:10795-10804's `_same_watch_target`. Same target means the
+    wording got updated but most identifying tokens survived; different
+    targets share almost none. Descriptions with no qualifying token (plain
+    Korean sentences, mostly) never match — there's nothing to compare.
+    """
+    ka, kb = _watch_target_keys(a), _watch_target_keys(b)
+    if not ka or not kb:
+        return False
+    return len(ka & kb) / len(ka | kb) >= 0.5
 
 # The model has repeatedly said "I'll keep an eye on it" / "I'll report back"
 # without the [[WATCH: ...]] tag, even with prompt guidance in place. Without
@@ -71,9 +129,12 @@ class WatchPromiseGuard(OutputGuard):
     def apply(self, body: str, ctx: GuardContext) -> GuardResult:
         m = WATCH_RE.search(body or "")
         if m:
-            desc = m.group(1).strip()
+            desc = m.group("desc").strip()
+            due = m.group("due") or ""
             stripped = WATCH_RE.sub("", body).rstrip()
-            return GuardResult(body=stripped, changed=True, detail={"watch_desc": desc})
+            return GuardResult(
+                body=stripped, changed=True, detail={"watch_desc": desc, "watch_due": due},
+            )
 
         if not PROMISE_WITHOUT_WATCH_RE.search(body or ""):
             return GuardResult(body=body, changed=False)

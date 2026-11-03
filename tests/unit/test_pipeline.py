@@ -1511,13 +1511,14 @@ class Fake감시큐:
         extra: Any = None,
         workdir: str = "",
         run_id: str = "",
+        due_at: float | None = None,
     ) -> int:
         if self._fail:
             raise RuntimeError("등록 실패")
         self.enqueued.append({
             "channel": channel, "thread_ts": thread_ts, "condition": condition,
             "msg_ts": msg_ts, "trust": trust, "extra": extra,
-            "workdir": workdir, "run_id": run_id,
+            "workdir": workdir, "run_id": run_id, "due_at": due_at,
         })
         return len(self.enqueued)
 
@@ -1714,6 +1715,53 @@ class Test감시등록:
         pipeline.handle(make_ctx())
 
         assert "[[WATCH:" not in deps["publisher"].posted[-1]["text"]
+
+
+class Test감시기한:
+    """`[[WATCH@YYYY-MM-DD: ...]]` 의 날짜가 등록 시점에 due_at 으로 넘어간다.
+
+    bot.py:10769-10783 의 watch_due_at 과 같은 뜻 — 그날 09시 KST.
+    """
+
+    def test_기한이_있으면_due_at으로_변환돼_등록된다(self, tmp_path: Path) -> None:
+        from datetime import datetime
+
+        from slack_cli_agent.core.timezones import KST
+
+        큐 = Fake감시큐()
+        pipeline, _deps = build_pipeline(
+            responses=[ok_response(body="네\n\n[[WATCH@2026-09-26: 배포 완료 여부]]")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        기대 = datetime(2026, 9, 26, 9, 0, tzinfo=KST).timestamp()
+        assert 큐.enqueued[0]["due_at"] == 기대
+        assert 큐.enqueued[0]["condition"] == "배포 완료 여부"
+
+    def test_기한이_없으면_due_at이_None이다(self, tmp_path: Path) -> None:
+        큐 = Fake감시큐()
+        pipeline, _deps = build_pipeline(
+            responses=[ok_response(body="네\n\n[[WATCH: 배포 완료 여부]]")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert 큐.enqueued[0]["due_at"] is None
+
+    def test_달력에_없는_날짜는_기한_없이_등록한다(self, tmp_path: Path) -> None:
+        """자릿수는 맞지만 존재하지 않는 날짜(13월)는 WATCH_RE 는 통과하지만
+        watch_due_at 변환에서 실패한다. 등록 자체는 그대로 진행된다
+        (bot.py:10781-10783 과 동일하게 기한만 버린다)."""
+        큐 = Fake감시큐()
+        pipeline, _deps = build_pipeline(
+            responses=[ok_response(body="네\n\n[[WATCH@2026-13-40: 배포 완료 여부]]")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert 큐.enqueued[0]["due_at"] is None
+        assert 큐.enqueued[0]["condition"] == "배포 완료 여부"
 
 
 class Test엔진호출경로:
