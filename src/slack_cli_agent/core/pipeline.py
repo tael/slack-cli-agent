@@ -52,7 +52,12 @@ from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_a
 from ..slack.mentions import MentionRenderer
 from ..slack.transcript import CurrentMessage
 from .context import RequestContext
-from .markers import take_ask_tag, take_nowatch_tag
+from .markers import (
+    resolve_recipient,
+    strip_unknown_tags,
+    take_ask_tag,
+    take_nowatch_tag,
+)
 from .pipeline_ports import (
     AccessPolicyPort,
     AuditPort,
@@ -425,6 +430,7 @@ class RequestPipeline:
         # it never reaches the channel in any render path (sca: rich_render fed
         # the bare tag into a table message's fallback text).
         body = take_nowatch_tag(body)[0]
+        body = self._strip_publish_markers(body, ctx)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich) or ""
         self._archive_response(ctx, body, response, elapsed)
@@ -666,6 +672,32 @@ class RequestPipeline:
             waiting = had_tag or self._gate.asked_back(clean)
             self._awaiting.set_awaiting(ctx.channel, ctx.thread_ts, waiting)
         return clean
+
+    def _strip_publish_markers(self, body: str, ctx: RequestContext) -> str:
+        """Last body pass before publish: strips the trailing
+        `[[RECIPIENT:...]]` tag and any undeclared `[[...]]` marker line so
+        neither reaches the channel (bot.py:1564-1592 strip_control_tags,
+        5425-5471 take_recipient_tag). B1's gaps J18/D3.
+
+        Runs after the ASK/NOWATCH tags are taken so those known markers are
+        already gone — what's left that still matches the unknown shape is
+        genuinely unrecognized and is logged, not silently eaten. Recipient
+        resolution defaults to require_recipient=False: with no owner/asker
+        wired a missing tag degrades to "publish anyway", never to silence.
+        Mention enforcement from the resolved recipient stays the caller's
+        job for a later bundle (resolve_recipient's docstring); here it only
+        strips so the raw tag never leaks.
+        """
+        body = resolve_recipient(body).text
+        body, dropped = strip_unknown_tags(body)
+        if dropped:
+            self._audit.record(
+                IncidentKind.UNKNOWN_TAG.value,
+                channel=ctx.channel,
+                thread_ts=ctx.thread_ts,
+                tags=dropped,
+            )
+        return body
 
     def _watch_desc_for_launched(self, workdir: Path, run_id: str) -> str:
         """What to watch when the engine launched background work but emitted
