@@ -12,7 +12,8 @@ same whether a person ran the command or a service refused to start.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from pathlib import Path
 from typing import TextIO
 
 from ..config.profile import Profile
@@ -20,15 +21,24 @@ from .check import CheckResult, PreflightCheck, PreflightContext
 from .checks import (
     ChannelSettingsReadableCheck,
     ChannelUserToolsCheck,
+    CodexConfigLoadCheck,
+    DuplicateMcpSystemCheck,
     EngineBinaryCheck,
     EngineHomeCredentialCheck,
     EngineSettingsCheck,
+    FullDiskAccessCheck,
     McpCredentialCheck,
+    McpScriptOwnershipCheck,
     McpServerCheck,
     OwnerSettingsInertCheck,
+    PluginAstCheck,
     ProfilePermissionCheck,
     ProfileUnknownKeysCheck,
     PromptFileCheck,
+    PromptToolConsistencyCheck,
+    ScriptCapabilityGradeCheck,
+    SkillSymlinkCheck,
+    SlackApiRegistrationCheck,
     ToolAllowlistEnforcementCheck,
     UsageCheckCommandCheck,
     WorkdirCheck,
@@ -49,6 +59,18 @@ class PreflightSuite:
         extra_workdirs: Sequence[str] | None = None,
         *,
         checks: Sequence[PreflightCheck] | None = None,
+        # 아래 네 항목은 조직 지식(어떤 낱말이 어떤 도구를 약속하는지, 어떤
+        # 서버 이름이 같은 시스템을 가리키는지, 등급 체계와 그 대상 자리)
+        # 없이는 아무것도 보지 않는 점검들의 주입점이다. B6 는 공통 골격만
+        # 신는다 — 값을 채우는 것은 그 값을 아는 쪽(조직 설정, 플러그인)의
+        # 몫이다.
+        prompt_tool_promises: Mapping[str, Sequence[str]] | None = None,
+        prompt_tool_base_tools: Sequence[str] = (),
+        duplicate_mcp_groups: Mapping[str, Sequence[str]] | None = None,
+        capability_scripts_dir: Path | None = None,
+        capability_registry_file: Path | None = None,
+        slack_api_source_files: Sequence[Path] = (),
+        slack_api_registry_file: Path | None = None,
     ) -> None:
         # Injection point for tests that aren't about the gate: they swap the
         # check list and keep the real verdict and formatting. Without it a
@@ -80,6 +102,27 @@ class PreflightSuite:
             ChannelUserToolsCheck(),
             # 표기가 안 풀리면 MCP 서버는 빈 자격으로 인증 실패만 낸다. 기동에서 막는다.
             McpCredentialCheck(),
+            # 아래부터 B6 — 마메치 check.py 와 짝 맞춘 9종.
+            PluginAstCheck(),
+            SkillSymlinkCheck(),
+            CodexConfigLoadCheck(),
+            McpScriptOwnershipCheck(),
+            # fatal=False: 전체 디스크 접근은 권한 창 하나를 줄이는 사전 조치일
+            # 뿐이다. 없다고 기동을 막을 이유가 아니다.
+            FullDiskAccessCheck(),
+            # 아래 네 점검은 조직 지식이 없으면 아무것도 보지 않는다(생성자 기본값).
+            PromptToolConsistencyCheck(
+                promises=prompt_tool_promises, base_tools=prompt_tool_base_tools
+            ),
+            DuplicateMcpSystemCheck(groups=duplicate_mcp_groups),
+            ScriptCapabilityGradeCheck(
+                scripts_dir=capability_scripts_dir,
+                capabilities_file=capability_registry_file,
+            ),
+            SlackApiRegistrationCheck(
+                source_files=slack_api_source_files,
+                registry_file=slack_api_registry_file,
+            ),
         )
 
     @property

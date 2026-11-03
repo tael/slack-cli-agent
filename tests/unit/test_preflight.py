@@ -716,6 +716,16 @@ class TestPreflightSuite:
             "profile_unknown_keys",
             "channel_user_tools",
             "mcp_credentials",
+            # B6 — 마메치 check.py 와 짝 맞춘 9종 (tests/unit/test_preflight_parity.py).
+            "plugin_ast_names",
+            "skill_symlinks",
+            "codex_config_load",
+            "mcp_script_ownership",
+            "full_disk_access",
+            "prompt_tool_consistency",
+            "duplicate_mcp_systems",
+            "script_capability_grade",
+            "slack_api_registration",
         ]
 
     def test_추가_인자가_실제_점검에_반영된다(self, tmp_path: Path) -> None:
@@ -805,6 +815,15 @@ class TestPreflightSuite:
             "[통과] profile_unknown_keys : 좋음\n"
             "[통과] channel_user_tools : 좋음\n"
             "[통과] mcp_credentials : 좋음\n"
+            "[통과] plugin_ast_names : 좋음\n"
+            "[통과] skill_symlinks : 좋음\n"
+            "[통과] codex_config_load : 좋음\n"
+            "[통과] mcp_script_ownership : 좋음\n"
+            "[통과] full_disk_access : 좋음\n"
+            "[통과] prompt_tool_consistency : 좋음\n"
+            "[통과] duplicate_mcp_systems : 좋음\n"
+            "[통과] script_capability_grade : 좋음\n"
+            "[통과] slack_api_registration : 좋음\n"
             "기동 불가\n"
         )
 
