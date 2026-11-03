@@ -498,7 +498,8 @@ class Application:
             paths.prompts, placeholders={"OWNER_MENTION": f"<@{self._profile.owner_user_id}>"}
         )
         knowledge = KnowledgeLoader(
-            paths.persona / "PERSONA.md", paths.knowledge, learned_dir=paths.learned,
+            paths.persona / "PERSONA.md", paths.knowledge,
+            domain_file=self._profile.domain_file, learned_dir=paths.learned,
         )
         return SystemPromptComposer(
             library, knowledge, self._prompt_sections(),

@@ -62,6 +62,24 @@ from .ports import HandleOutcome
 
 log = logging.getLogger(__name__)
 
+
+def _domain_applies(workdir: Path | None, home: Path) -> bool:
+    """Whether to append the profile's domain knowledge this turn.
+
+    The original loaded its company domain file only when the work directory
+    was a real repository outside home, not for the bot's own home -- domain
+    facts belong to work in a codebase, not to a chat in the bot's dir. No
+    configured workdir reads as home, so nothing is appended.
+    """
+    if workdir is None:
+        return False
+    try:
+        workdir.resolve().relative_to(home.resolve())
+    except ValueError:
+        return True
+    return False
+
+
 LAUNCHED_WATCH_DESC = "코드가 발급한 이름으로 띄운 백그라운드 작업"
 """Watch description for work launched without a tag.
 
@@ -480,6 +498,7 @@ class RequestPipeline:
     ) -> tuple[str, dict[str, Any]]:
         is_owner = principal.trust is TrustLevel.OWNER
         asker_name = "" if is_owner else (self._name_resolver(ctx.user) or ctx.user)
+        config = self._channels.get(ctx.channel)
         composition_ctx = CompositionContext(
             principal=principal,
             prompt=ctx.text,
@@ -491,6 +510,7 @@ class RequestPipeline:
             unaddressed=ctx.unaddressed,
             chat_level=chat_level,
             authority_granted=self._access.is_full_authority(principal),
+            include_domain=_domain_applies(config.workdir if config else None, Path.home()),
             people=self._present_people(ctx),
             files=ctx.files,
             missed_files=ctx.missed_files,

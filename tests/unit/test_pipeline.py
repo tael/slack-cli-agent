@@ -61,6 +61,9 @@ class FakeAccessPolicy:
     def effort_for(self, principal: Principal, prompt: str) -> str:
         return "medium"
 
+    def is_full_authority(self, principal: Principal) -> bool:
+        return principal.trust is TrustLevel.OWNER and principal.is_direct_message
+
 
 class FakeTranscriptBuilder:
     def __init__(self) -> None:
