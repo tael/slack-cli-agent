@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +61,7 @@ class KnowledgeLoader:
         knowledge_dir: Path,
         domain_file: Path | None = None,
         learned_dir: Path | None = None,
+        always_skills: Collection[str] = (),
     ) -> None:
         self._persona_file = persona_file
         self._knowledge_dir = knowledge_dir
@@ -68,6 +69,12 @@ class KnowledgeLoader:
         # None means this bot has no separate learned directory, which is the
         # shape every caller had before the two sources were split.
         self._learned_dir = learned_dir
+        # Common knowledge files named after one of these (stem with its
+        # leading "_" stripped, e.g. "_metabase.md" -> "metabase") load even
+        # when their own `when:` marker doesn't match this request's words.
+        # A trigger match is one way in; standing clearance named here is
+        # another, and the two don't cancel each other out.
+        self._always_skills = frozenset(always_skills)
 
     def persona_text(self, include_domain: bool = False) -> str:
         parts: list[str] = []
@@ -133,7 +140,8 @@ class KnowledgeLoader:
             for common in sorted(directory.glob("_*.md")):
                 text = common.read_text(encoding="utf-8")
                 triggers = self._triggers(text)
-                if triggers is not None and not any(t in low for t in triggers):
+                always = common.stem.lstrip("_") in self._always_skills
+                if triggers is not None and not always and not any(t in low for t in triggers):
                     skipped.append(common)
                     continue
                 parts.append(KnowledgeDocument(path=common, text=text))
