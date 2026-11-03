@@ -1,0 +1,724 @@
+"""Stop-hook judgments that catch a turn ending without doing the work.
+
+Ports the *common* judgments from mametchi's finish_work_hook.py (read-only
+reference at ~/.mametchi/finish_work_hook.py) as an engine built-in, so a bot
+built from this repo gets end-of-turn review with zero profile config:
+
+- gave_up: said a lookup failed and never tried it again
+- not_opened: said it skipped opening something it could have opened
+- absence_unopened: told "it's ready now" and answered "nothing's there"
+  without opening a single thing this turn
+- offer: ended by offering to do the next step instead of doing it
+- handoff: handed a request to someone else without a real permission wall
+- denied_unretried: a tool denial that was never retried another way
+- advisor_skipped: gave a decision in an advisor channel without calling
+  the advisor this turn
+- verify: flags fact sentences the turn's own tool results don't support
+
+Domain-specific judgments (mametchi's lastmile enum codes, Snowflake vs.
+lastmile freshness, AWS profile fan-out, 5-why causal-chain grading, ...)
+are deliberately left out. They don't generalize past one organization's
+systems, so they belong in a profile plugin that calls
+``registry.register(name, check, guidance)`` on `default_registry` (or
+builds its own `JudgmentRegistry`), the same extension shape
+engine/environment.py's `EngineEnvironmentPolicyRegistry` already uses.
+
+Every judgment is a plain function over `Turn`/`ToolCall` value objects,
+not a transcript parser — building a `Turn` from a real Claude Code
+transcript (JSONL rows read from the Stop hook's `transcript_path`) is a
+separate, thin step (`turn_from_transcript_rows`) so the judgments
+themselves are trivial to unit test without a transcript file on disk.
+
+Wiring note for whoever wires this into engine/claude.py's hook settings
+(ownership.md: B4, after this module lands): the Stop hook process should
+1. read the hook JSON from stdin (`session_id`, `transcript_path`,
+   `last_assistant_message`),
+2. build a `Turn` via `turn_from_transcript_rows`,
+3. compute `seconds_left` via `time_left(os.environ)` and `block_count`
+   from wherever the per-turn block counter is persisted (mametchi keyed
+   it by session_id + first row's uuid, under its own state dir — this
+   module takes no position on where that file lives, since this repo
+   has no state-dir convention of its own yet),
+4. call `decide(turn, block_count=..., seconds_left=...)`, and
+5. print `decision.to_hook_json()` (nothing when it's `{}`) to stdout.
+TURN_DEADLINE/TURN_DEADLINE_MONO and POST_CHANNEL need to reach that
+process; engine/environment.py's `ClaudeEnvironmentPolicy` now allowlists
+them.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+
+from slack_cli_agent.core.markers import ASK_TAG
+
+#: Absolute path to this file. A real wiring (see module docstring) invokes
+#: this module as a standalone script the same way
+#: observability/progress_hook.py's HOOK_SCRIPT is invoked for PreToolUse.
+HOOK_SCRIPT = Path(__file__).resolve()
+
+#: Claude Code re-injects a blocked Stop hook's own `reason` text as a
+#: synthetic user turn prefixed with this string. Without skipping it,
+#: every block would look like a fresh human message and reset turn
+#: boundaries / block counting on every single block.
+STOP_HOOK_FEEDBACK_PREFIX = "Stop hook feedback"
+
+#: A line that is nothing but a `[[TAG]]` marker — never part of the prose
+#: a judgment reads.
+_TAG_LINE = re.compile(r"^\s*\[\[[^\]]*\]\]\s*$")
+#: Quoted spans are usually a reply *naming* a forbidden phrase ("the banned
+#: line was X"), not using it — judgments strip these out first.
+_QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|\'[^\'\n]*\'')
+
+
+# --------------------------------------------------------------------------
+# Value objects
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """One tool_use this turn, paired with its tool_result text if the
+    transcript had one (empty string if the call is still pending)."""
+
+    name: str
+    input: Mapping[str, object] = field(default_factory=dict)
+    result: str = ""
+
+
+@dataclass(frozen=True)
+class Turn:
+    """The observable facts about one turn a judgment needs.
+
+    Fields a given judgment doesn't need are left at their default, the
+    same shape guard/base.py's GuardContext uses.
+    """
+
+    answer: str
+    #: The text the person asked this turn. Only `absence_unopened` reads
+    #: it (it needs to know whether *they* said something was ready).
+    user_prompt: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    #: False for a transcript-less turn (e.g. a DM notice sent with
+    #: --no-session-persistence). Judging a turn with no evidence to read
+    #: would block every reply, including ones that actually did the work.
+    has_transcript: bool = True
+    #: Whether the channel this turn posts to requires an advisor call
+    #: before a decision ships. Channel configuration isn't this module's
+    #: concern — the caller resolves it and passes the answer in.
+    is_advisor_channel: bool = False
+
+
+@dataclass(frozen=True)
+class Finding:
+    name: str
+    detail: str
+    guidance: str
+
+
+# --------------------------------------------------------------------------
+# Transcript -> Turn
+# --------------------------------------------------------------------------
+
+
+def _message_text(entry: Mapping[str, object]) -> str:
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, Mapping) and block.get("type") == "text"
+        )
+    return ""
+
+
+def rows_since_last_human_input(rows: Sequence[Mapping[str, object]]) -> list[Mapping[str, object]]:
+    """Rows from (and including) the last real human text input onward.
+
+    A Stop hook's own previous block feedback is also recorded as a `user`
+    row (see `STOP_HOOK_FEEDBACK_PREFIX`) and is skipped so it doesn't look
+    like a new turn boundary.
+    """
+    start = 0
+    for i, entry in enumerate(rows):
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        is_text_user_row = entry.get("type") == "user" and (
+            isinstance(content, str)
+            or (
+                isinstance(content, list)
+                and any(isinstance(block, Mapping) and block.get("type") == "text" for block in content)
+            )
+        )
+        if not is_text_user_row:
+            continue
+        if _message_text(entry).lstrip().startswith(STOP_HOOK_FEEDBACK_PREFIX):
+            continue
+        start = i
+    return list(rows[start:])
+
+
+def _last_assistant_text(rows: Sequence[Mapping[str, object]]) -> str:
+    for entry in reversed(rows):
+        message = entry.get("message")
+        if not isinstance(message, Mapping) or message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in reversed(content):
+            if isinstance(block, Mapping) and block.get("type") == "text" and (block.get("text") or "").strip():
+                return str(block["text"])
+    return ""
+
+
+def _tool_calls_in(rows: Sequence[Mapping[str, object]]) -> tuple[ToolCall, ...]:
+    calls: list[ToolCall] = []
+    index_by_id: dict[object, int] = {}
+    for entry in rows:
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, Mapping):
+                continue
+            if block.get("type") == "tool_use":
+                calls.append(ToolCall(name=str(block.get("name") or ""), input=block.get("input") or {}))
+                index_by_id[block.get("id")] = len(calls) - 1
+            elif block.get("type") == "tool_result":
+                idx = index_by_id.get(block.get("tool_use_id"))
+                if idx is None:
+                    continue
+                body = block.get("content")
+                if isinstance(body, list):
+                    body = " ".join(part.get("text", "") for part in body if isinstance(part, Mapping))
+                calls[idx] = replace(calls[idx], result=str(body or ""))
+    return tuple(calls)
+
+
+def turn_from_transcript_rows(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    last_assistant_message: str | None = None,
+    user_prompt: str = "",
+    is_advisor_channel: bool = False,
+) -> Turn:
+    """Builds a `Turn` from raw Claude Code transcript JSONL rows.
+
+    `last_assistant_message` takes priority when the hook payload already
+    carries one (Claude Code's Stop event provides it); otherwise this
+    falls back to scanning the transcript itself, same as mametchi's hook
+    does when that field is absent.
+    """
+    this_turn = rows_since_last_human_input(rows)
+    answer = last_assistant_message if last_assistant_message is not None else _last_assistant_text(this_turn)
+    return Turn(
+        answer=answer or "",
+        user_prompt=user_prompt,
+        tool_calls=_tool_calls_in(this_turn),
+        has_transcript=bool(rows),
+        is_advisor_channel=is_advisor_channel,
+    )
+
+
+def _input_blob(input_mapping: Mapping[str, object]) -> str:
+    try:
+        return json.dumps(input_mapping, ensure_ascii=False)
+    except TypeError:
+        return str(input_mapping)
+
+
+# --------------------------------------------------------------------------
+# offer — ended by offering the next step instead of doing it
+# --------------------------------------------------------------------------
+
+_OFFER_RE = re.compile(
+    r"(원하시면|필요하시면|필요하면|말씀 주시면|말씀해 주시면)[^\n]*?"
+    r"(볼게요|드릴게요|할게요|하겠습니다|드리겠습니다|보겠습니다|이어서|확인해|조사해|파볼|말씀해\s*주세요|말씀\s*주세요)"
+    r"|(더|이어서|추가로|바로)[^\n]{0,20}?(확인|조사|살펴|파|찾아|조회)\S*\s*(볼까요|드릴까요|할까요)"
+    r"|(돌려|집계해|확인해|조회해|찾아|살펴|분석해|대조해|재\s?볼|모으면|모아\s?보면)"
+    r"[^\n]{0,6}?(볼\s?수\s?있어요|볼\s?수\s?있습니다|잴\s?수도\s?있어요|잴\s?수\s?있어요)"
+)
+
+
+def offer(turn: Turn) -> str | None:
+    """The offending line, if the answer's last two lines hand the next,
+    reversible step to a human instead of taking it. `[[ASK]]` means this
+    is a deliberate approval wait, not an offer, so it's exempt."""
+    answer = turn.answer
+    if not answer or ASK_TAG in answer:
+        return None
+    lines = [line for line in answer.splitlines() if line.strip() and not _TAG_LINE.match(line)]
+    for line in lines[-2:]:
+        if _OFFER_RE.search(_QUOTED.sub("", line)):
+            return line.strip()
+    return None
+
+
+# --------------------------------------------------------------------------
+# handoff — handed off to a person without a real permission wall
+# --------------------------------------------------------------------------
+
+_HANDOFF_WALL_RE = re.compile(r"권한\s?밖|이\s?턴[^.\n]{0,12}(?:할\s?수\s?없|안\s?돼|불가)")
+_HANDOFF_ASK_RE = re.compile(
+    r"(?:요청해\s?주세요|요청해\s?주시|문의해\s?주세요|확인해\s?주세요|확인을\s?요청해\s?주|"
+    r"부탁드려요|부탁드립니다|직접\s?돌려\s?주|다시\s?불러\s?주)"
+)
+#: Claude Code's own tool-permission denial strings, plus the Korean
+#: equivalents a bot might render them as. Not AWS- or any-vendor-specific.
+_DENIED_RE = re.compile(r"has been denied|Permission to use|권한이 거부|permission denied", re.IGNORECASE)
+_HANDOFF_WINDOW = 120
+
+
+def handoff(turn: Turn) -> str | None:
+    """The sentence, if the answer hands a request to a person by claiming
+    it's out of bounds, when nothing this turn actually hit a permission
+    wall. A real denial in any tool result means the block was genuine, so
+    that case passes."""
+    answer = turn.answer
+    if not answer:
+        return None
+    if any(_DENIED_RE.search(call.result) for call in turn.tool_calls):
+        return None
+    lines = [line for line in answer.splitlines() if line.strip() and not _TAG_LINE.match(line)]
+    text = _QUOTED.sub("", " ".join(line.strip() for line in lines))
+    for match in _HANDOFF_WALL_RE.finditer(text):
+        window = text[max(0, match.start() - _HANDOFF_WINDOW) : match.end() + _HANDOFF_WINDOW]
+        if _HANDOFF_ASK_RE.search(window):
+            return window.strip()[:140]
+    return None
+
+
+# --------------------------------------------------------------------------
+# gave_up — said a lookup failed and never tried it again
+# --------------------------------------------------------------------------
+
+_GAVE_UP_RE = re.compile(r"(조회|확인|열람)(하지 못|할 수 없었)[^\n]{0,20}")
+
+
+def gave_up(turn: Turn) -> str | None:
+    """The offending phrase, if the answer admits a lookup failed and the
+    same tool wasn't called again this turn to try a different way in."""
+    answer = turn.answer
+    if not answer:
+        return None
+    match = _GAVE_UP_RE.search(_QUOTED.sub("", answer))
+    if not match:
+        return None
+    counts: dict[str, int] = {}
+    for call in turn.tool_calls:
+        counts[call.name] = counts.get(call.name, 0) + 1
+    if any(n >= 2 for n in counts.values()):
+        return None
+    return match.group(0)
+
+
+# --------------------------------------------------------------------------
+# not_opened — admitted skipping an open it could have done
+# --------------------------------------------------------------------------
+
+_NOT_OPENED_RE = re.compile(r"(열어\s?보지|읽어\s?보지|열람하지|열지|읽지)\s*(않|못)[^\n]{0,30}")
+_NOT_OPENED_TARGET_RE = re.compile(r"(판단|대조|확인|본문|내용|완료조건|있는지|없는지|안내)")
+#: "the server didn't read the config" has a system as subject, not the
+#: model skipping a step — exempt so a legitimate system-failure
+#: description isn't misread as a confession.
+_NOT_OPENED_SYSTEM_RE = re.compile(r"(코드|스크립트|서비스|DAG|앱|서버|훅|봇)(가|는|이|은)[^.\n]{0,20}(읽|열)")
+
+
+def not_opened(turn: Turn) -> str | None:
+    """The offending phrase, if the answer says it skipped opening
+    something (a thread, a doc, an attachment) that bears on judgment,
+    content, or a completion check."""
+    answer = turn.answer
+    if not answer:
+        return None
+    for sentence in re.split(r"[.\n]", _QUOTED.sub("", answer)):
+        match = _NOT_OPENED_RE.search(sentence)
+        if not match or not _NOT_OPENED_TARGET_RE.search(sentence) or _NOT_OPENED_SYSTEM_RE.search(sentence):
+            continue
+        return match.group(0)
+    return None
+
+
+# --------------------------------------------------------------------------
+# absence_unopened — told "it's ready", answered "nothing's there", opened nothing
+# --------------------------------------------------------------------------
+
+_READY_RE = re.compile(
+    r"(수집\s?되었|수집\s?됐|수집했|수집한|올라왔|올려\s?뒀|올렸으니|업로드\s?됐|업로드\s?되었|받아\s?뒀|받았으니|"
+    r"생겼으니|준비\s?됐|준비\s?되었|이제[^\n]{0,20}(있으니|생겼|됐으니|되었으니|있어))"
+)
+_ABSENCE_RE = re.compile(
+    r"(수집되지 않|수집이 안|기록이 없|로그가 없|로그는 없|흔적이 (없|남지 않)|측정할 수 없|잴 수 없|"
+    r"존재하지 않|남아 있지 않|남지 않|찾을 수 없|이벤트가 없|이벤트는 없|0건이라)"
+)
+_OPEN_ARTIFACT_RE = re.compile(
+    r"(aws\s+s3|sqlite3|gsutil|s3\s+cp|s3\s+ls|s3\s+sync|curl\s[^\n]*-o\s|\.sqlite|\.csv|\.parquet|\.log\b|\.jsonl\b)"
+)
+#: Generic file/artifact-opening tools. A profile with its own reader tool
+#: (e.g. an MCP file-read server) widens this via its own registered rule
+#: rather than editing this tuple.
+_ARTIFACT_OPENING_TOOLS = ("Read", "NotebookRead")
+
+
+def absence_unopened(turn: Turn) -> str | None:
+    """The offending sentence, if the person said some artifact just
+    became available this turn and the answer concludes it's absent
+    without the turn opening a single file or running an artifact-reading
+    command to check."""
+    answer, ask = turn.answer, turn.user_prompt
+    if not answer or not ask or ask.lstrip().startswith(STOP_HOOK_FEEDBACK_PREFIX) or not _READY_RE.search(ask):
+        return None
+    for sentence in re.split(r"[.\n]", _QUOTED.sub("", answer)):
+        match = _ABSENCE_RE.search(sentence)
+        if not match:
+            continue
+        for call in turn.tool_calls:
+            if call.name in _ARTIFACT_OPENING_TOOLS or _OPEN_ARTIFACT_RE.search(_input_blob(call.input)):
+                return None
+        return sentence.strip()[:120]
+    return None
+
+
+# --------------------------------------------------------------------------
+# advisor_skipped — gave a decision in an advisor channel, skipped the advisor
+# --------------------------------------------------------------------------
+
+_DECISION_MARK_RE = re.compile(
+    r"^\s*#{1,4}\s*(제안|추천|옵션|방안|비교|선택지)|^\s*\|\s*(번호|옵션|방안)\s*\|", re.MULTILINE
+)
+_ASK_LINE_RE = re.compile(r"^[ \t]*\[\[ASK\]\][ \t]*$", re.MULTILINE)
+
+
+def advisor_skipped(turn: Turn, *, advisor_model_hint: str = "fable") -> bool:
+    """True when this channel requires an advisor call before a decision
+    ships, the answer reads as asking for / stating a decision, and no
+    `Agent`/`Task` call this turn used the advisor model."""
+    if not turn.answer or not turn.is_advisor_channel:
+        return False
+    if not _ASK_LINE_RE.search(turn.answer) and not _DECISION_MARK_RE.search(turn.answer):
+        return False
+    return not any(
+        call.name in ("Agent", "Task") and advisor_model_hint in str(call.input.get("model") or "")
+        for call in turn.tool_calls
+    )
+
+
+# --------------------------------------------------------------------------
+# denied_unretried — a tool denial that was never retried another way
+# --------------------------------------------------------------------------
+
+_UNCONFIRMED_RE = re.compile(r"(확인하지 못|확인되지 않|확인 못|조회하지 못|막혀 있|조회가 막|권한이 없)")
+#: 6+ char dotted/dashed/underscored identifiers — bucket names, resource
+#: ARNs, dag ids, anything specific enough that seeing it again means the
+#: same target was actually retried, not just the same tool used elsewhere.
+_IDENT_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[_.\-][A-Za-z0-9]+)+")
+
+
+def _call_targets(call: ToolCall) -> set[str]:
+    return {token for token in _IDENT_RE.findall(_input_blob(call.input)) if len(token) >= 6}
+
+
+def denied_unretried(turn: Turn) -> str | None:
+    """One target identifier, if the answer carries an unconfirmed-style
+    statement and a tool call naming that target was denied this turn
+    with no later call retrying the same target a different way."""
+    if not turn.answer or not _UNCONFIRMED_RE.search(_QUOTED.sub("", turn.answer)):
+        return None
+    calls = turn.tool_calls
+    for i, call in enumerate(calls):
+        if not _DENIED_RE.search(call.result):
+            continue
+        targets = _call_targets(call)
+        if not targets:
+            continue
+        retried = any(_call_targets(other) & targets for other in calls[i + 1 :])
+        if not retried:
+            return next(iter(sorted(targets)))
+    return None
+
+
+# --------------------------------------------------------------------------
+# verify — fact sentences this turn's own tool results don't support
+# --------------------------------------------------------------------------
+
+_CLAIM_MARK_RE = re.compile(
+    r"원인|원천|때문|읽어|읽는|참조|수집|계산|적재|계보|합계|비율|건수|\d{2,}|[A-Za-z][A-Za-z0-9]*(?:[_.][A-Za-z0-9]+)+"
+)
+#: The trailing group must end on a digit, not a comma — "48291," in a
+#: sentence like "건수는 48291, 원인은..." must not swallow the comma into
+#: the match, or it stops matching the same number's bare form elsewhere.
+_NUM_RE = re.compile(r"(?<![\w.])\d(?:[\d,]*\d)?(?:\.\d+)?")
+#: Below this length, needs_verification() doesn't bother — a short answer
+#: has no room for an unsupported claim worth flagging, and running the
+#: check on every one-line reply would be pure overhead.
+_VERIFY_MIN_LEN = 200
+
+
+def needs_verification(answer: str) -> bool:
+    body = "\n".join(line for line in (answer or "").splitlines() if not _TAG_LINE.match(line))
+    return len(body.strip()) >= _VERIFY_MIN_LEN and bool(_CLAIM_MARK_RE.search(body))
+
+
+#: `answer, this-turn tool-result text -> unsupported sentences`. Pluggable so
+#: a profile can swap in an LLM-backed grounding check (what mametchi's
+#: unsupported_claims() does via a nested `claude -p` call); the default
+#: below is a subprocess-free heuristic, good enough to catch a bare
+#: invented figure without spawning another model call from inside a unit
+#: test.
+ClaimVerifier = Callable[[str, str], Sequence[str]]
+
+
+def heuristic_claim_verifier(answer: str, evidence: str) -> list[str]:
+    """Flags sentences carrying a 2+ digit number that doesn't appear
+    anywhere in this turn's tool-result text."""
+    numbers_seen = set(_NUM_RE.findall(evidence))
+    findings: list[str] = []
+    for raw_sentence in re.split(r"[.\n]", _QUOTED.sub("", answer or "")):
+        sentence = raw_sentence.strip()
+        if not sentence or not _CLAIM_MARK_RE.search(sentence):
+            continue
+        numbers = [n for n in _NUM_RE.findall(sentence) if len(n.replace(",", "")) >= 2]
+        if numbers and not any(n in numbers_seen for n in numbers):
+            findings.append(sentence[:160])
+    return findings[:3]
+
+
+def _tool_result_text(turn: Turn) -> str:
+    return "\n".join(call.result for call in turn.tool_calls if call.result)
+
+
+def unsupported_claims(turn: Turn, *, verifier: ClaimVerifier = heuristic_claim_verifier) -> list[str]:
+    """Sentences in the answer that read as fact claims but aren't backed
+    by this turn's own tool results. Empty when the answer is too short to
+    bother checking (`needs_verification`)."""
+    if not needs_verification(turn.answer):
+        return []
+    return list(verifier(turn.answer, _tool_result_text(turn)))
+
+
+def _advisor_skipped_check(turn: Turn) -> str | None:
+    return "결정 요청인데 조언자 호출이 없다" if advisor_skipped(turn) else None
+
+
+def _unsupported_claims_check(turn: Turn) -> str | None:
+    claims = unsupported_claims(turn)
+    return " | ".join(claims) if claims else None
+
+
+# --------------------------------------------------------------------------
+# Guidance text — what gets fed back to the model in a block
+# --------------------------------------------------------------------------
+
+
+def _offer_guidance(hit: str) -> str:
+    return (
+        f'답이 "{hit}" 로 끝난다. 조회, 분석, 로그 확인처럼 되돌릴 수 있는 다음 단계를 사람에게 넘기지 않는다. '
+        "그 단계를 지금 실행한다. 결과를 반영해 답을 처음부터 다시 쓰고 제안 문장은 뺀다. 삭제, 발송, 운영 반영처럼 "
+        "승인이 필요한 일이면 그 사실만 남기고 [[ASK]] 를 붙인다."
+    )
+
+
+def _handoff_guidance(hit: str) -> str:
+    return (
+        f'답에 "{hit}" 처럼 권한 밖이라며 요청자에게 다른 사람을 부르라고 넘겼다. '
+        "이번 턴에 열려 있는 다른 조회 경로를 먼저 실행해 대체 경로로 어디까지 확인했는지 수치로 남긴다. "
+        "그래도 남는 일만 담당자를 부르는 한 문장으로 쓴다."
+    )
+
+
+def _gave_up_guidance(hit: str) -> str:
+    return (
+        f'"{hit}" 로 조회 실패를 답에 썼는데 같은 대상을 다시 조회하지 않았다. '
+        "필드나 도구를 바꿔 같은 턴에 다시 조회하고, 확인된 값으로 답을 다시 쓴다."
+    )
+
+
+def _not_opened_guidance(hit: str) -> str:
+    return (
+        f'"{hit}" 로 열람을 생략했다고 답에 썼다. 열 수 있는 문서, 스레드, 첨부는 같은 턴에 열어 본문으로 판정한다. '
+        "열람을 생략했다는 문장은 답에 남기지 않는다."
+    )
+
+
+def _absence_unopened_guidance(hit: str) -> str:
+    return (
+        f'"{hit}" 로 부재 결론을 냈는데, 사람이 새로 준비됐다고 한 산출물을 이번 턴에 하나도 열지 않았다. '
+        "그 위치를 목록 조회해 전부 연 뒤 답을 다시 쓴다."
+    )
+
+
+def _denied_unretried_guidance(hit: str) -> str:
+    return (
+        f'"{hit}" 조회가 거부된 뒤 다른 방식으로 다시 부르지 않았다. 같은 대상을 다른 경로로 같은 턴에 다시 조회한다.'
+    )
+
+
+def _advisor_skipped_guidance(_hit: str) -> str:
+    return (
+        "결정을 구하는 답인데 이번 턴에 조언자를 부르지 않았다. 조언자를 부른 뒤 그 결과를 반영해 답을 다시 쓴다."
+    )
+
+
+def _verify_guidance(hit: str) -> str:
+    return f"다음 문장은 이번 턴 조회 결과에 근거가 없다 : {hit}. 같은 턴에 직접 조회해 확정하고 답을 다시 쓴다."
+
+
+# --------------------------------------------------------------------------
+# Registry — the extension point profile plugins hook domain rules into
+# --------------------------------------------------------------------------
+
+#: `Turn -> detail string or None`. `None` means this rule found nothing.
+JudgmentCheck = Callable[[Turn], str | None]
+#: `detail string -> guidance text shown to the model`.
+JudgmentGuidance = Callable[[str], str]
+
+
+@dataclass(frozen=True)
+class _JudgmentRule:
+    name: str
+    check: JudgmentCheck
+    guidance: JudgmentGuidance
+
+
+class JudgmentRegistry:
+    """Open set of Stop-hook judgments, keyed by name.
+
+    Same registration shape as `engine.environment.EngineEnvironmentPolicyRegistry`:
+    a profile plugin adds a domain rule (mametchi's lastmile enum lookup,
+    Snowflake-vs-lastmile freshness, ...) with `registry.register(...)`
+    rather than this module growing an organization's regexes.
+    """
+
+    def __init__(self) -> None:
+        self._rules: dict[str, _JudgmentRule] = {}
+
+    def register(self, name: str, check: JudgmentCheck, guidance: JudgmentGuidance) -> None:
+        """Registers (or overwrites) a judgment under `name`."""
+        self._rules[name] = _JudgmentRule(name=name, check=check, guidance=guidance)
+
+    def unregister(self, name: str) -> None:
+        """No-op if `name` isn't registered. Tests that mutate a shared
+        registry must call this in a `finally` block so one test's
+        registration can't leak into the next."""
+        self._rules.pop(name, None)
+
+    def names(self) -> list[str]:
+        return sorted(self._rules)
+
+    def evaluate(self, turn: Turn) -> list[Finding]:
+        findings = []
+        for rule in self._rules.values():
+            hit = rule.check(turn)
+            if hit:
+                findings.append(Finding(name=rule.name, detail=hit, guidance=rule.guidance(hit)))
+        return findings
+
+
+def _build_common_registry() -> JudgmentRegistry:
+    common = JudgmentRegistry()
+    common.register("gave_up", gave_up, _gave_up_guidance)
+    common.register("not_opened", not_opened, _not_opened_guidance)
+    common.register("absence_unopened", absence_unopened, _absence_unopened_guidance)
+    common.register("offer", offer, _offer_guidance)
+    common.register("handoff", handoff, _handoff_guidance)
+    common.register("denied_unretried", denied_unretried, _denied_unretried_guidance)
+    common.register("advisor_skipped", _advisor_skipped_check, _advisor_skipped_guidance)
+    common.register("verify", _unsupported_claims_check, _verify_guidance)
+    return common
+
+
+#: This module's default registry — the seven common judgments, built in.
+#: A profile plugin extends it via `default_registry.register(name, check,
+#: guidance)` instead of editing this module, the same pattern
+#: engine/environment.py's module-level `registry` singleton uses.
+default_registry = _build_common_registry()
+
+
+# --------------------------------------------------------------------------
+# Decision
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StopDecision:
+    action: str  # "block" | "allow" | "release"
+    findings: tuple[Finding, ...] = ()
+
+    def to_hook_json(self) -> dict[str, str]:
+        """Claude Code's Stop hook protocol: `{"decision": "block", "reason":
+        ...}` blocks the stop; anything else is silence — printing `{}` (or
+        nothing) lets the turn end."""
+        if self.action != "block":
+            return {}
+        reason = " / ".join(f.guidance for f in self.findings)
+        reason += ". 답 끝의 표식과 WATCH 판정 줄은 그대로 둔다."
+        return {"decision": "block", "reason": reason}
+
+
+def time_left(
+    env: Mapping[str, str],
+    *,
+    now_monotonic: float | None = None,
+    now_wall: float | None = None,
+) -> float | None:
+    """Seconds left in the turn, from whichever deadline env var the
+    engine passed down. Reads the caller-supplied `env` mapping, not
+    `os.environ` directly — same reason engine/environment.py's policies
+    read `source_env` instead: keeps this a pure, clock-independent
+    function a test can call directly."""
+    try:
+        mono_deadline = float(env.get("TURN_DEADLINE_MONO") or 0)
+        wall_deadline = float(env.get("TURN_DEADLINE") or 0)
+    except ValueError:
+        return None
+    if mono_deadline:
+        return mono_deadline - (time.monotonic() if now_monotonic is None else now_monotonic)
+    if wall_deadline:
+        return wall_deadline - (time.time() if now_wall is None else now_wall)
+    return None
+
+
+def decide(
+    turn: Turn,
+    *,
+    registry: JudgmentRegistry | None = None,
+    block_count: int = 0,
+    max_blocks: int = 2,
+    seconds_left: float | None = None,
+    release_sec: int = 240,
+) -> StopDecision:
+    """The Stop-hook decision for one turn.
+
+    `block_count` is how many times this same turn has already been
+    blocked, and `seconds_left` how much turn budget remains (see
+    `time_left`) — both plain arguments rather than this function reading
+    a counter file or `os.environ` itself, so it stays a pure function a
+    test can call directly. Persisting `block_count` across hook
+    invocations (each Stop event is a fresh process) is the wiring
+    layer's job; see this module's docstring.
+
+    A transcript-less turn (`has_transcript=False`) always allows: there's
+    no evidence to judge, and judging anyway would block every such turn,
+    including ones that did the work.
+    """
+    if not turn.has_transcript:
+        return StopDecision(action="allow")
+    active_registry = default_registry if registry is None else registry
+    findings = tuple(active_registry.evaluate(turn))
+    if not findings:
+        return StopDecision(action="allow")
+    if seconds_left is not None and seconds_left < release_sec:
+        return StopDecision(action="release", findings=findings)
+    if block_count >= max_blocks:
+        return StopDecision(action="release", findings=findings)
+    return StopDecision(action="block", findings=findings)

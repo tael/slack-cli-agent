@@ -146,6 +146,14 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # even with HOME set (checked against the real CLI 2026-09-15).
         # SHELL, LOGNAME and TMPDIR made no difference.
         "USER",
+        # guard/finish_review.py's built-in Stop hook reads these to decide
+        # block vs. release (time_left()) and to resolve whether the
+        # current channel requires an advisor call. Both are read-only
+        # facts the hook needs, not credentials, so they're safe to let
+        # through the same allowlist as everything else here.
+        "TURN_DEADLINE",
+        "TURN_DEADLINE_MONO",
+        "POST_CHANNEL",
     })
 
     #: Empty on purpose: claude keeps its subscription credentials in the
