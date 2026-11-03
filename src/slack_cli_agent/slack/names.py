@@ -117,6 +117,20 @@ class BotUserResolver:
             return None
         return bool(user.get("is_bot") or user.get("id") == "USLACKBOT")
 
+    def known(self, user_id: str) -> bool:
+        """Cache-only verdict: never calls Slack, not even on a cache miss (C25).
+
+        bot.py:4094-4105 `known_bot_user`. Some callers (prompt composition,
+        for one) don't hold a `client` at all, or can't afford to block one
+        on a network round trip. A miss here just means "not confirmed a bot
+        yet" -- it costs that caller one conservative paragraph of guidance,
+        not a hung request, and `is_bot` still fills the cache for later
+        callers that do have a client.
+        """
+        if not user_id:
+            return False
+        return self._cache.get(user_id, False)
+
 
 class UserGroupNameResolver:
     """Slack user group ID to its handle.

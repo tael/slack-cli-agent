@@ -71,7 +71,9 @@ MUTTER_ONLY = re.compile(r"^[\(（].*[\)）]$", re.DOTALL)
 
 
 class ResponseGate:
-    def worth_answering(self, text: str, bot_asked: bool = False) -> bool:
+    def worth_answering(
+        self, text: str, bot_asked: bool = False, has_files: bool = False
+    ) -> bool:
         """Decide whether to jump into a thread the bot wasn't addressed in.
 
         Filters by vocabulary, not length — Korean commands are short
@@ -80,7 +82,15 @@ class ResponseGate:
         2026-08-25. Anything that isn't purely reaction words gets
         forwarded to the model, including the judgment that this
         isn't a place to speak up.
+
+        `has_files` overrides every filter below, including the empty-text
+        and mutter-only checks (bot.py:8402-8417, 2026-10-22: "메시지가
+        없다고 입막음하면 안 된다" — a screenshot or file that answered a
+        question was silently dropped because the body alone looked empty
+        or reaction-only) (E7).
         """
+        if has_files:
+            return True
         t = (text or "").strip()
         if not t:
             return False
