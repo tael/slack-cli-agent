@@ -93,11 +93,15 @@ class ReactionMarker:
         applied itself — x doubles as an unfinished mark, and clearing
         then re-adding it would cost an extra Slack call for nothing.
         """
-        남은 = [
-            stale
-            for stale in sorted(STALE_ON_SETTLE)
-            if stale != mark and not self.remove(channel, ts, stale)
-        ]
+        남은 = []
+        for stale in sorted(STALE_ON_SETTLE):
+            if stale == mark:
+                continue
+            # 지워졌는지 확인 못 하면 한 번만 더 시도한다. 흔한 원인은 요청이
+            # 몰릴 때의 일시적 슬랙 실패라, 바로 다시 부르면 대개 성공한다.
+            # 영영 남은 미완료 표식은 사람 눈에 아직 처리 중으로 읽힌다 (sca-3p6).
+            if not self.remove(channel, ts, stale) and not self.remove(channel, ts, stale):
+                남은.append(stale)
         self.add(channel, ts, mark)
         if 남은:
             # The final mark goes on either way — a message with no mark at all
