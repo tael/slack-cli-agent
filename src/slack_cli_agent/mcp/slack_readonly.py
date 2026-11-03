@@ -25,7 +25,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ..slack.attachments import attachment_body_texts, file_metadata, unfurled_messages
 from ..slack.credentials import CredentialResolver
@@ -104,7 +104,7 @@ class LookupResult:
 def _find(resp: Mapping[str, Any], ts: str) -> Mapping[str, Any] | None:
     for m in resp.get("messages") or ():
         if m.get("ts") == ts:
-            return m
+            return cast("Mapping[str, Any]", m)
     return None
 
 
@@ -242,7 +242,7 @@ def _default_caller(timeout: int = TIMEOUT) -> Caller:
             API + method, data=urllib.parse.urlencode(params).encode(), headers=headers
         )
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.load(r)
+            return cast("Mapping[str, Any]", json.load(r))
 
     return _call
 
@@ -283,7 +283,8 @@ def main() -> None:
             _reply(msg_id, {"tools": TOOLS})
         elif method == "tools/call":
             p = msg.get("params") or {}
-            handler = HANDLERS.get(p.get("name"))
+            tool_name = p.get("name")
+            handler = HANDLERS.get(tool_name) if isinstance(tool_name, str) else None
             if not handler:
                 _reply(msg_id, error={"code": -32601, "message": "알 수 없는 도구"})
                 continue
