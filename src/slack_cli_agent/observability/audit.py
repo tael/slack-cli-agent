@@ -56,6 +56,10 @@ class IncidentKind(StrEnum):
     WRONG_ADDRESSEE = "wrong_addressee"
     REWRITE_LOSS = "rewrite_loss"
     SILENT = "silent"
+    #: An undeclared `[[...]]` marker line dropped before publish
+    #: (strip_unknown_tags, bot.py:1561's UNKNOWN_TAG_LINE_RE). Logged
+    #: rather than silently eaten so an invented marker surfaces.
+    UNKNOWN_TAG = "unknown_tag"
 
     def __str__(self) -> str:
         return self.value
