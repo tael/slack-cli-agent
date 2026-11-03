@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import re
 import secrets
-from collections.abc import Callable
-from typing import ClassVar
+import threading
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from typing import Any, ClassVar
 
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard
 
@@ -205,3 +207,159 @@ class BotMentionGuard(OutputGuard):
         return GuardResult(
             body=INNER_RUN_OF_SPACES.sub(" ", out), changed=True, detail={"targets": targets}
         )
+
+
+#: Subtypes a message keeps counting as a human turn despite carrying one,
+#: for the purposes of figuring out who a thread's last address was aimed
+#: at. Mirrors `slack.message_kind.HUMAN_SUBTYPES` plus `thread_broadcast`
+#: (bot.py:4165, 2026-11-01) — a reply also sent to the channel is still the
+#: same person talking, not a new kind of event.
+HUMAN_SUBTYPES = frozenset({"file_share", "thread_broadcast"})
+
+
+def calls_other_bot(is_bot: Callable[[str], bool], self_id: str, text: str) -> bool:
+    """Whether a message names only other bots, not this one (C16).
+
+    bot.py:4129-4146 `calls_other_bot`. More than one bot can sit in the
+    same thread and answer the same prompt; a message that names one of
+    them by mention is that bot's to answer, not every bot that happens to
+    read it. A message naming nobody, or naming this bot among others,
+    isn't filtered here.
+    """
+    called = ANY_MENTION.findall(text or "")
+    if self_id and self_id in called:
+        return False
+    return any(is_bot(uid) for uid in called)
+
+
+def talking_to_peer(
+    messages: Iterable[Mapping[str, Any]],
+    *,
+    is_bot: Callable[[str], bool],
+    self_id: str,
+    upto_ts: str | None = None,
+) -> bool:
+    """Whether the thread's last human turn (before `upto_ts`) named a
+    different bot, not this one (C17).
+
+    bot.py:4148-4175 `talking_to_peer`. A person doesn't re-name a bot on
+    every follow-up once a conversation with it has started -- they name it
+    once and then just talk. An unaddressed reply right after that belongs
+    to whichever bot was last named, not to whichever bot happens to be
+    scanning the thread. Scans backward from the newest message so the
+    *last* address wins over an older one further back; bot-authored
+    messages (this bot's own included) are skipped while searching, same as
+    the original -- only a human turn settles who was being addressed.
+    """
+    for m in reversed(list(messages)):
+        ts = m.get("ts")
+        if upto_ts and ts and float(ts) >= float(upto_ts):
+            continue
+        subtype = m.get("subtype")
+        if m.get("bot_id") or (subtype and subtype not in HUMAN_SUBTYPES):
+            continue
+        called = ANY_MENTION.findall(m.get("text") or "")
+        if self_id and self_id in called:
+            return False
+        if any(is_bot(uid) for uid in called):
+            return True
+    return False
+
+
+class PeerExchangeLimiter:
+    """Caps a bot-to-bot back-and-forth in one thread, reset the moment a
+    human speaks (C19 cap, with the C18 reset it has to ship alongside).
+
+    bot.py:4195-4200 (`peer_turn_allowed`/`reset_peer_turns`,
+    `PEER_TURN_LIMIT = 6`). The cap alone is a trap: once a thread's count
+    ever reaches the limit, every later message in it -- including one from
+    a human who just walked back in -- would go unanswered forever with
+    nothing to bring the count back down. That is why the reset has to ship
+    with the cap, not after it (ownership.md's "B5 에 C18 포함" note).
+    """
+
+    def __init__(self, limit: int = 6) -> None:
+        self._limit = limit
+        self._counts: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def allowed(self, thread_ts: str) -> bool:
+        """One more bot turn arrived in this thread; say whether it may run.
+
+        Counts this call before comparing (bot.py increments first), so the
+        call that pushes the count past the limit is itself the one denied.
+        """
+        with self._lock:
+            count = self._counts.get(thread_ts, 0) + 1
+            self._counts[thread_ts] = count
+            return count <= self._limit
+
+    def reset(self, thread_ts: str) -> None:
+        """A human spoke in this thread; its bot-exchange count starts over."""
+        with self._lock:
+            self._counts.pop(thread_ts, None)
+            if len(self._counts) > 200:
+                # Matches bot.py's safety valve: don't let counts for
+                # long-dead threads accumulate forever.
+                self._counts.clear()
+
+
+@dataclass(frozen=True)
+class Recipient:
+    """Who a reply is actually going to, resolved from the trailing
+    `[[RECIPIENT:...]]` marker (D3)."""
+
+    kind: str  # "owner" | "asker" | "bot"
+    bot_id: str = ""
+
+
+#: bot.py:5373-5375's RECIPIENT_TAG (trailing-marker form). Carried here
+#: rather than imported from `core/markers.py` because bundle B1 -- the
+#: owner of that module -- has not landed a RECIPIENT parser there yet
+#: (checked 2026-11-03 on both `main` and `feat/parity-b1`). RecipientResolver
+#: below is deliberately self-contained so that once B1 adds one, swapping
+#: this regex for an import is a one-line change; the public shape (strip
+#: the tag, hand back a `Recipient`) is what the rest of this bundle wires
+#: against and won't need to move.
+RECIPIENT_TAG = re.compile(
+    r"\s*\[\[RECIPIENT:(OWNER|ASKER|BOT:([A-Z0-9]+))\]\][ \t]*"
+    r"(?P<trailing>(?:\n[ \t]*\[\[[^\]\n]*\]\][ \t]*)*)\s*\Z"
+)
+
+
+class RecipientResolver:
+    """Parses the trailing `[[RECIPIENT:...]]` marker and forces a leading
+    mention when the recipient turns out to be a bot (D3).
+
+    bot.py:5425-5471 `take_recipient_tag`. An `ASKER` tag folds into `BOT`
+    when the asker turns out to be a bot -- the model always writes ASKER
+    for "whoever just spoke to me", and a bot asker still needs the leading
+    mention to actually get notified (Slack mentions, unlike plain names,
+    are what wakes a bot up). A `BOT:` tag naming an ID that isn't actually
+    a bot is treated as unresolved (`None`) rather than posted with a stray
+    mention -- the caller's job is to block posting on `None`, not this
+    class's.
+    """
+
+    def __init__(self, is_bot: Callable[[str], bool]) -> None:
+        self._is_bot = is_bot
+
+    def resolve(self, body: str, asker_id: str = "") -> tuple[str, Recipient | None]:
+        m = RECIPIENT_TAG.search(body or "")
+        if not m:
+            return body, None
+        kind, bot_id = m.group(1), m.group(2)
+        # Whatever followed the tag (another trailer, like [[NOWATCH]]) is
+        # kept; only the RECIPIENT tag itself and the whitespace around it
+        # are removed.
+        clean = (body or "")[: m.start()].rstrip() + (m.group("trailing") or "").rstrip()
+        if kind == "ASKER" and asker_id and self._is_bot(asker_id):
+            kind, bot_id = "BOT", asker_id
+        if kind in ("OWNER", "ASKER"):
+            return clean, Recipient(kind.lower())
+        if not bot_id or not self._is_bot(bot_id):
+            return clean, None
+        head = ADDRESSED_AT_HEAD.match(clean)
+        if head:
+            clean = clean[head.end() :].lstrip()
+        return f"<@{bot_id}> {clean}".rstrip(), Recipient("bot", bot_id)

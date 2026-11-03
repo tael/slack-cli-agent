@@ -68,7 +68,12 @@ class ResponsePolicy:
         return bool(config and config.answer_unaddressed)
 
     def answers(
-        self, config: ChannelConfig | None, text: str, thread: ThreadState
+        self,
+        config: ChannelConfig | None,
+        text: str,
+        thread: ThreadState,
+        *,
+        has_files: bool = False,
     ) -> bool:
         """Whether to answer this particular message.
 
@@ -76,9 +81,16 @@ class ResponsePolicy:
         behaviour every channel had before this setting was read here, so
         a channel that never set `chat` sees no change.
 
-            quiet   only a reply to the bot's own question
+            quiet   only a reply to the bot's own question (or has_files, E7)
             normal  a thread the bot is already in, if the message wants an answer
             active  any thread in the channel, same message filter
+
+        `has_files` (E7, bot.py:8402-8417) is forwarded to the gate so an
+        attachment can override the vocabulary filter, but it doesn't
+        bypass `addresses_someone_else` or the `joined` requirement below —
+        an attachment posted to a message naming someone else, or dropped
+        into a thread this bot never joined, is still not this bot's to
+        answer.
         """
         if not self.considers(config):
             return False
@@ -89,7 +101,7 @@ class ResponsePolicy:
             return False
         level = config.chat if config else CHAT_DEFAULT
         if level == "quiet":
-            return thread.bot_asked
+            return thread.bot_asked or has_files
         if level != "active" and not thread.joined:
             return False
-        return self._gate.worth_answering(text, thread.bot_asked)
+        return self._gate.worth_answering(text, thread.bot_asked, has_files=has_files)
