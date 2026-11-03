@@ -27,8 +27,12 @@ if TYPE_CHECKING:
 
 BOT_TOKEN_ENV = "SLACK_BOT_TOKEN"
 APP_TOKEN_ENV = "SLACK_APP_TOKEN"
+# 오너 개인 세션 토큰. 봇 토큰으로 못 보는 채널(미초대 공개 채널)을 읽을 때만
+# 쓰는 폴백이라 다른 둘과 성질이 다르지만, 같은 파일·같은 우선순위 규칙을
+# 쓰는 것이 그 파일이 둘로 갈라지는 것보다 낫다(gaps.md C40).
+USER_TOKEN_ENV = "SLACK_USER_TOKEN"
 
-_ALLOWED_KEYS = frozenset({"bot_token", "app_token"})
+_ALLOWED_KEYS = frozenset({"bot_token", "app_token", "user_token"})
 # Anything readable by group or other. An 0400 file is stricter than 0600 and
 # is accepted; requiring exactly 0600 would reject it.
 _SHARED_BITS = stat.S_IRWXG | stat.S_IRWXO
@@ -40,6 +44,7 @@ _MAX_FILE_BYTES = 64 * 1024
 class SlackCredentials:
     bot_token: str = ""
     app_token: str = ""
+    user_token: str = ""
 
 
 class CredentialResolver:
@@ -70,6 +75,11 @@ class CredentialResolver:
 
     def app_token(self, given: str | None = None) -> str:
         return self._resolve(given, APP_TOKEN_ENV, "app_token")
+
+    def user_token(self, given: str | None = None) -> str:
+        """오너 개인 세션 토큰. 설정돼 있지 않으면 빈 문자열이다 — 그 자체가
+        폴백을 끄는 스위치다(gaps.md C40, 기본값 아니오)."""
+        return self._resolve(given, USER_TOKEN_ENV, "user_token")
 
     def _resolve(self, given: str | None, env_name: str, field: str) -> str:
         if given:
@@ -146,6 +156,7 @@ class CredentialResolver:
         return SlackCredentials(
             bot_token=str(data.get("bot_token", "")),
             app_token=str(data.get("app_token", "")),
+            user_token=str(data.get("user_token", "")),
         )
 
 

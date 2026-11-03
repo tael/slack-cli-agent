@@ -9,11 +9,12 @@ tells the model something different about each (sca-678).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
-from .permalinks import parse_slack_links
+from .attachments import unfurl_matches
+from .permalinks import SlackLink, parse_slack_links
 from .transcript import TranscriptRead
 
 log = logging.getLogger(__name__)
@@ -43,7 +44,16 @@ class LinkedThreadReader:
         self._channel_name = channel_name
         self._max_links = max_links
 
-    def of(self, text: str, self_channel: str = "") -> tuple[LinkedThread, ...]:
+    def of(
+        self,
+        text: str,
+        self_channel: str = "",
+        attachments: Sequence[Mapping[str, Any]] = (),
+    ) -> tuple[LinkedThread, ...]:
+        """`attachments` is the triggering event's own unfurl attachments (not
+        the linked thread's), used only when the live read fails — e.g. a
+        public channel the bot was never invited to shares a message whose
+        link Slack already unfurled for us (gaps.md C39/C40)."""
         blocks: list[LinkedThread] = []
         # The cap applies to the links found, not to the ones kept — same as the
         # original, so a self-link doesn't pull a further link into the window.
@@ -52,12 +62,23 @@ class LinkedThreadReader:
             if self_channel and link.channel == self_channel:
                 continue
             read = self._read_of(link.channel, link.thread_ts)
-            blocks.append(
-                LinkedThread(
-                    name=self._name_of(link.channel), body=read.body, read_ok=read.read_ok
-                )
-            )
+            body, read_ok = read.body, read.read_ok
+            if not read_ok:
+                fallback = self._attachment_fallback(link, attachments)
+                if fallback:
+                    body, read_ok = fallback, True
+            blocks.append(LinkedThread(name=self._name_of(link.channel), body=body, read_ok=read_ok))
         return tuple(blocks)
+
+    @staticmethod
+    def _attachment_fallback(link: SlackLink, attachments: Sequence[Mapping[str, Any]]) -> str:
+        for a in attachments or ():
+            if not unfurl_matches(a, link.channel, link.thread_ts):
+                continue
+            body = a.get("text") or a.get("fallback") or ""
+            if body:
+                return body
+        return ""
 
     def _name_of(self, channel: str) -> str:
         try:
