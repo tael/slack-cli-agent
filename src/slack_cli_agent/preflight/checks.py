@@ -678,10 +678,11 @@ class CodexConfigLoadCheck(PreflightCheck):
                     continue
                 exe = str(spec.binary)
             else:
-                exe = shutil.which(str(spec.binary))
-                if exe is None:
+                found = shutil.which(str(spec.binary))
+                if found is None:
                     bad.append(f"codex 실행 파일을 PATH 에서 못 찾는다 : {spec.binary}")
                     continue
+                exe = found
             try:
                 done = subprocess.run(
                     [exe, "mcp", "list"],
