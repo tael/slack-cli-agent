@@ -38,6 +38,26 @@ class Test소견:
     def test_소유자와_봇만_있으면_소견이_없다(self) -> None:
         assert self._감사({"C1": [OWNER, "B봇1", "B봇2"]}).findings() == []
 
+    def test_controller_도_내부인이라_유출로_안_센다(self) -> None:
+        """R0: controller 는 소유자와 같은 최고 권한을 받으므로 소유자 전용
+        채널의 정당한 멤버다. 외부인으로 오탐하면 안 된다."""
+        감사 = OwnerOnlyChannelAudit(
+            channels=("C1",), owner_user_id=OWNER,
+            controller_user_ids=("U-마메치",),
+            list_members=lambda channel: [OWNER, "B봇1", "U-마메치"],
+            is_bot=_봇여부,
+        )
+        assert 감사.findings() == []
+
+    def test_controller_외의_사람은_여전히_유출로_센다(self) -> None:
+        감사 = OwnerOnlyChannelAudit(
+            channels=("C1",), owner_user_id=OWNER,
+            controller_user_ids=("U-마메치",),
+            list_members=lambda channel: [OWNER, "U-마메치", "U-남"],
+            is_bot=_봇여부,
+        )
+        assert 감사.findings() == [OwnerOnlyFinding(channel="C1", outsiders=("U-남",), error="")]
+
     def test_다른_사람이_있으면_그_사람을_낸다(self) -> None:
         소견 = self._감사({"C1": [OWNER, "B봇1", "U-남"]}).findings()
         assert 소견 == [OwnerOnlyFinding(channel="C1", outsiders=("U-남",), error="")]

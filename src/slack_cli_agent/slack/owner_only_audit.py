@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
@@ -41,9 +41,14 @@ class OwnerOnlyChannelAudit:
         list_members: Callable[[str], Sequence[str]],
         is_bot: Callable[[str], bool],
         notify: Callable[[str], object] | None = None,
+        controller_user_ids: Iterable[str] = (),
     ) -> None:
         self._channels = tuple(channels)
         self._owner_user_id = owner_user_id
+        # 소유자와 같은 최고 권한을 받는 controller 도 내부인이다. 이들은 소유자
+        # 전용 채널의 정당한 멤버이므로 유출로 세지 않는다 — AccessPolicy 가
+        # controller 를 owner 와 같은 TrustLevel.OWNER 로 묶는 것과 결을 맞춘다.
+        self._insiders = frozenset((owner_user_id, *controller_user_ids))
         self._list_members = list_members
         self._is_bot = is_bot
         self._notify = notify
@@ -59,7 +64,7 @@ class OwnerOnlyChannelAudit:
                 continue
             outsiders = tuple(sorted(
                 member for member in members
-                if member != self._owner_user_id and not self._is_bot(member)
+                if member not in self._insiders and not self._is_bot(member)
             ))
             if outsiders:
                 found.append(OwnerOnlyFinding(channel=channel, outsiders=outsiders))
