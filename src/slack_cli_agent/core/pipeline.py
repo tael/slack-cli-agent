@@ -51,6 +51,7 @@ from ..slack.gate import ResponseGate
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
 from ..slack.mentions import MentionRenderer
 from ..slack.transcript import CurrentMessage
+from .channel_kind import is_direct_message_channel
 from .context import RequestContext
 from .markers import (
     resolve_recipient,
@@ -311,7 +312,15 @@ class RequestPipeline:
         channel_mode = config.mode if config else "default"
         channel_slug = slug_for(ctx.channel, config)
         chat_level = config.chat if config else "normal"
-        scope = config.session_scope if config else SessionScope.THREAD.value
+        # A DM has no threads: every message is a top-level message with its
+        # own ts, so thread scope would mint a fresh session per message and
+        # the conversation would never carry (mametchi: DM is always channel
+        # scope, bot.py:3064). The config default (THREAD) only makes sense in
+        # a real channel; a DM with no config would otherwise invert to thread.
+        if is_direct_message_channel(ctx.channel):
+            scope = SessionScope.CHANNEL.value
+        else:
+            scope = config.session_scope if config else SessionScope.THREAD.value
 
         key = self._session_key(ctx, scope)
         decision = self._sessions.resolve(key, engine=self._engine.name)
@@ -529,6 +538,8 @@ class RequestPipeline:
             prompt=ctx.text,
             channel_mode=channel_mode,
             channel_slug=channel_slug,
+            channel=ctx.channel,
+            thread_ts=ctx.thread_ts,
             is_rich=rich,
             asker_name=asker_name,
             asker_id="" if is_owner else ctx.user,

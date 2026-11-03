@@ -178,6 +178,12 @@ class RuntimeSettings:
     base_tools: tuple[str, ...] = ("Read", "Grep", "Glob")
     owner_tools: tuple[str, ...] = ()
 
+    # Skills granted on every ordinary turn as `Skill(<name>)` entries, even in
+    # a channel with skills disabled -- a read-only query skill a bot should
+    # always be able to reach. The mechanism is common; which skills (if any)
+    # get standing clearance is organisation configuration, so empty by default.
+    always_skills: tuple[str, ...] = ()
+
     # Line prefixes stripped from replies. Defaults to empty since the
     # actual prefix text is org-specific and doesn't belong in code.
     dropped_line_heads: tuple[str, ...] = ()
