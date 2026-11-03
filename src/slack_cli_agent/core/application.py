@@ -103,6 +103,7 @@ from ..prompt.sections import (
     SensitiveGuardSection,
     SilenceRuleSection,
     SlackFormatSection,
+    ThreadCoordsSection,
     TrustedSection,
     WatchSection,
 )
@@ -480,6 +481,7 @@ class Application:
                 self._settings.owner_tools,
                 extensions,
                 channel_tools=self.access_policy.channel_tools_for,
+                always_skills=self._settings.always_skills or ALWAYS_SKILLS,
             )
         return self._tool_policy
 
@@ -494,6 +496,7 @@ class Application:
             ReviewFormatSection(),
             AskerSection(),
             AttachmentSection(),
+            ThreadCoordsSection(),
             PresentPeopleSection(),
             TrustedSection(),
             SensitiveGuardSection(),
@@ -513,7 +516,7 @@ class Application:
         knowledge = KnowledgeLoader(
             paths.persona / "PERSONA.md", paths.knowledge,
             domain_file=self._profile.domain_file, learned_dir=paths.learned,
-            always_skills=ALWAYS_SKILLS,
+            always_skills=self._settings.always_skills or ALWAYS_SKILLS,
         )
         return SystemPromptComposer(
             library, knowledge, self._prompt_sections(),

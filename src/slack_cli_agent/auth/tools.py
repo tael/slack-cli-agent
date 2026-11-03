@@ -37,11 +37,13 @@ class ToolPolicy:
         owner_tools: Sequence[str] = (),
         extensions: Sequence[AccessExtension] = (),
         channel_tools: Callable[[Principal], Sequence[str]] | None = None,
+        always_skills: Sequence[str] = (),
     ) -> None:
         self._base_tools = tuple(base_tools)
         self._owner_tools = tuple(owner_tools)
         self._extensions = tuple(extensions)
         self._channel_tools = channel_tools
+        self._always_skills = tuple(always_skills)
 
     def tool_list_for(
         self,
@@ -69,6 +71,15 @@ class ToolPolicy:
                 ]
         if not aside and skills_enabled:
             tools.append(SKILL_TOOL)
+        # Standing-clearance skills reach the turn even when the channel has
+        # skills off (I83; mametchi's ALWAYS_SKILLS -> Skill(<name>) grants,
+        # bot.py:793). Skipped only when the broad Skill tool is already on,
+        # which subsumes every named grant.
+        if SKILL_TOOL not in tools:
+            for skill in self._always_skills:
+                grant = f"{SKILL_TOOL}({skill})"
+                if grant not in tools:
+                    tools.append(grant)
         return tuple(tools)
 
     def _readonly_tools(self) -> tuple[str, ...]:

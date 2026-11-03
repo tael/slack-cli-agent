@@ -65,6 +65,13 @@ class CompositionContext:
     prompt: str = ""
     channel_mode: str = ""
     channel_slug: str = ""
+    #: Slack coordinates of the live conversation, handed verbatim to a tool
+    #: that uploads a file or image so the model doesn't have to guess them
+    #: (ThreadCoordsSection; mametchi thread_coords, bot.py:1819). Empty for
+    #: turns with no live conversation (e.g. the watch check) and then the
+    #: section renders nothing.
+    channel: str = ""
+    thread_ts: str = ""
     is_rich: bool = False
     mechanism_open: bool = False
     include_domain: bool = False
@@ -476,6 +483,26 @@ class AttachmentSection(PromptSection):
                 "그 파일 내용은 모르는 채로 답한다는 것을 밝힌다."
             )
         return "\n".join(lines)
+
+
+class ThreadCoordsSection(PromptSection):
+    """Writes the live conversation's Slack coordinates into the prompt so a
+    tool that uploads a file or image can be handed channel + thread_ts
+    verbatim. mametchi's thread_coords (bot.py:1819): without these in the
+    prompt the model couldn't call the uploading tool and fell back to a tool
+    that only made the file -- 2026-09-22 a Mermaid diagram rendered twice and
+    was never posted. The coord line itself must not be echoed into the reply.
+    """
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return bool(ctx.channel)
+
+    def render(self, ctx: CompositionContext) -> str:
+        return (
+            f"\n\n[이 대화의 좌표 : channel={ctx.channel} thread_ts={ctx.thread_ts}]\n"
+            "그림이나 파일을 올리는 도구에 이 값을 그대로 준다. "
+            "이 줄 자체는 답변에 옮겨 적지 않는다."
+        )
 
 
 class PresentPeopleSection(PromptSection):
