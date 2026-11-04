@@ -311,7 +311,16 @@ class ChannelRegistry:
         """
         with self._lock:
             raw = self._read_raw()
-            if channel_id in raw:
+            existing = raw.get(channel_id)
+            if existing is not None:
+                # 이전 조회 실패로 이름 자리에 채널 ID(또는 빈 값)가 남아 있으면
+                # 실제 이름이 들어온 지금 보정한다 (bot.py:3645 register_channel).
+                # 새 등록은 아니므로 False 를 돌려 재안내를 막는다.
+                if name and name != channel_id and existing.get("name") in ("", channel_id):
+                    entry = dict(existing)
+                    entry["name"] = name
+                    raw[channel_id] = entry
+                    self._write_raw(raw)
                 return False
             raw[channel_id] = {"name": name or channel_id, "mode": "default"}
             self._write_raw(raw)
