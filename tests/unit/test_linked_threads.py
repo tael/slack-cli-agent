@@ -131,6 +131,31 @@ class Test링크된스레드읽기:
             LinkedThread(name="테스트", body="", read_ok=False),
         )
 
+    def test_실시간_조회_실패는_언퍼얼_첨부로_본문을_되살린다(self):
+        """봇이 초대되지 않은 채널 링크는 read_thread 가 실패한다. 그걸 붙인
+        사람의 메시지에 슬랙이 이미 펼친 본문(unfurl)이 있으면 그걸 쓴다(C39)."""
+        reader, _ = 리더({})  # 실시간 조회는 모두 실패
+        att = [{
+            "is_msg_unfurl": True,
+            "from_url": MSG,
+            "text": "미리보기로 복원한 본문",
+        }]
+        assert reader.of(MSG, self_channel="C099", attachments=att) == (
+            LinkedThread(name="테스트", body="미리보기로 복원한 본문", read_ok=True),
+        )
+
+    def test_다른_링크의_첨부는_폴백으로_쓰지_않는다(self):
+        reader, _ = 리더({})
+        att = [{"is_msg_unfurl": True, "from_url": "https://x/archives/C9/p9", "text": "엉뚱"}]
+        assert reader.of(MSG, self_channel="C099", attachments=att) == (
+            LinkedThread(name="테스트", body="", read_ok=False),
+        )
+
+    def test_실시간_조회가_되면_첨부를_쓰지_않는다(self):
+        reader, _ = 리더({"C0EXAMPLE01": "실시간 본문"})
+        att = [{"is_msg_unfurl": True, "from_url": MSG, "text": "미리보기 본문"}]
+        assert reader.of(MSG, self_channel="C099", attachments=att)[0].body == "실시간 본문"
+
 
 def 안내(bodies: dict[str, str], *, max_links: int = 3) -> LinkedThreadNote:
     reader, _ = 리더(bodies, max_links=max_links)
@@ -158,6 +183,13 @@ class Test링크된스레드안내:
         note = 안내({"C0EXAMPLE01": ""}).of(MSG, self_channel="C099")
         assert "읽지 못했다" not in note
         assert "옮길 메시지가 없다" in note
+
+    def test_실시간_실패해도_언퍼얼_첨부_본문을_안내에_싣는다(self):
+        """C39: 못 읽은 링크라도 붙인 사람의 미리보기 본문을 그대로 근거로 쓴다."""
+        att = [{"is_msg_unfurl": True, "from_url": MSG, "text": "미리보기 본문"}]
+        note = 안내({}).of(MSG, self_channel="C099", attachments=att)
+        assert "미리보기 본문" in note
+        assert "읽지 못했다" not in note
 
 
 class Test엔진무관_전달:

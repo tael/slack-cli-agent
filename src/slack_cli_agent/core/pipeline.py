@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -130,7 +130,7 @@ class RequestPipeline:
         slow_reporter: SlowRequestReporter | None = None,
         # Optional to avoid an extra Slack lookup where it's not needed.
         participants: Callable[[str, str], tuple[tuple[str, str], ...]] | None = None,
-        linked_threads: Callable[[str, str], str] | None = None,
+        linked_threads: Callable[[str, str, Sequence[Mapping[str, Any]]], str] | None = None,
         # Optional to avoid an extra Slack lookup where it's not needed.
         late_addendum: LateAddendumChecker | None = None,
         # Shared with the caller so both the late-addendum check and the queue see
@@ -531,7 +531,10 @@ class RequestPipeline:
         if self._linked_threads is None:
             return ""
         try:
-            return self._linked_threads(ctx.text, ctx.channel)
+            # The event's own unfurl attachments ride along so a link into a
+            # channel the bot can't read is still recovered from the preview
+            # the sharer's message already carries (C39).
+            return self._linked_threads(ctx.text, ctx.channel, ctx.unfurl_attachments)
         except Exception as exc:  # noqa: BLE001 — a lookup failure must not block the reply, just omit this from the prompt
             log.warning("링크된 스레드를 읽지 못했다 : %s", exc)
             return ""

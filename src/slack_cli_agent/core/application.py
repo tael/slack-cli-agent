@@ -745,7 +745,9 @@ class Application:
                 # built lazily rather than as a field — eagerly building it here would
                 # look up the bot user ID, making assembly alone call out to Slack
                 participants=lambda channel, thread_ts: self._participants().of(channel, thread_ts),
-                linked_threads=lambda text, channel: self._linked_threads().of(text, channel),
+                linked_threads=lambda text, channel, attachments: self._linked_threads().of(
+                    text, channel, attachments
+                ),
                 late_addendum=self._late_addendum(),
                 consumption=self.consumption,
                 watch_queue=self.watch_jobs(),

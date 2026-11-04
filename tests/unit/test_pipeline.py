@@ -1452,18 +1452,32 @@ class Test링크된스레드:
     def test_링크된_스레드를_요청_프롬프트에_붙인다(self) -> None:
         pipeline, parts = build_pipeline(
             responses=[ok_response()],
-            linked_threads=lambda text, self_channel: "----- 링크된 스레드 : 테스트 -----",
+            linked_threads=lambda text, self_channel, attachments: "----- 링크된 스레드 : 테스트 -----",
         )
         pipeline.handle(make_ctx())
         assert "----- 링크된 스레드 : 테스트 -----" in parts["runner"].calls[0].prompt
 
     def test_조회가_예외를_내도_요청을_막지_않는다(self) -> None:
-        def 터진다(text: str, self_channel: str) -> str:
+        def 터진다(text: str, self_channel: str, attachments: Any) -> str:
             raise RuntimeError("조회 실패")
 
         pipeline, parts = build_pipeline(responses=[ok_response()], linked_threads=터진다)
         pipeline.handle(make_ctx())
         assert parts["runner"].calls[0].prompt
+
+    def test_컨텍스트의_언퍼얼_첨부를_링크조회_콜백에_넘긴다(self) -> None:
+        """C39: 봇 미초대 채널 링크의 실시간 조회가 실패해도, 이벤트가 들고 온
+        미리보기 첨부로 본문을 복원할 수 있도록 콜백에 그대로 전달한다."""
+        받은: dict[str, Any] = {}
+
+        def 기록(text: str, self_channel: str, attachments: Any) -> str:
+            받은["attachments"] = attachments
+            return ""
+
+        pipeline, _ = build_pipeline(responses=[ok_response()], linked_threads=기록)
+        att = ({"from_url": "https://x", "text": "본문"},)
+        pipeline.handle(make_ctx(unfurl_attachments=att))
+        assert 받은["attachments"] == att
 
     def test_추출기를_안_주면_아무것도_안_붙는다(self) -> None:
         pipeline, parts = build_pipeline(responses=[ok_response()])
