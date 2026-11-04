@@ -41,6 +41,11 @@ class RuntimeSettings:
     history_read_pause_sec: float = 2.0
     history_max_msgs: int = 40
     history_max_chars: int = 12000
+    #: How many conversations_replies pages read_thread follows via next_cursor
+    #: before stopping. A thread longer than one page (history_max_msgs) returns
+    #: its replies oldest-first, so without this the most recent replies are
+    #: dropped (F17, mametchi bot.py 되짚기 페이지네이션). Caps a runaway thread.
+    history_max_pages: int = 10
     #: Cap on the assembled system prompt, in UTF-8 bytes. 0 or less turns the
     #: cap off. Where the default comes from: docs/지침-예산.md.
     system_prompt_budget_bytes: int = DEFAULT_SYSTEM_PROMPT_BUDGET_BYTES
