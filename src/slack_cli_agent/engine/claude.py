@@ -44,7 +44,7 @@ from ..auth.policy import OPERATOR_TOOLS
 from ..auth.principal import TrustLevel
 from ..config.profile import EngineSpec, McpServerSpec
 from ..guard import finish_hook
-from ..guard.pretool import install_guard, scan_guard, turn_budget
+from ..guard.pretool import install_guard, restart_guard, scan_guard, turn_budget
 from ..observability.progress_hook import HOOK_SCRIPT
 from .base import (
     ElapsedSource,
@@ -166,8 +166,10 @@ def _hook_command(script: Path) -> str:
 
 
 #: Engine-default PreToolUse Bash guards, in the order they should run:
-#: turn budget first (cheapest, no filesystem walk), then the two guards
-#: that read session state off disk. Unlike progress_hook_settings() this
+#: turn budget first (cheapest, no filesystem walk), then the self-restart
+#: deny (a cheap regex, but it should block a deadlocking restart before
+#: any disk work), then the two guards that read session state off disk.
+#: Unlike progress_hook_settings() this
 #: fragment does not vary per request -- it is the same for every turn, so
 #: it is built once at import time rather than inside _settings_value().
 _GUARD_HOOK_SETTINGS: dict[str, Any] = {
@@ -177,6 +179,7 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
                 "matcher": "Bash",
                 "hooks": [
                     {"type": "command", "command": _hook_command(turn_budget.HOOK_SCRIPT)},
+                    {"type": "command", "command": _hook_command(restart_guard.HOOK_SCRIPT)},
                     {"type": "command", "command": _hook_command(install_guard.HOOK_SCRIPT)},
                     {"type": "command", "command": _hook_command(scan_guard.HOOK_SCRIPT)},
                 ],
@@ -194,11 +197,11 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
 
 def guard_hook_settings() -> dict[str, Any]:
     """The settings fragment registering the Bash PreToolUse guards
-    (turn_budget, install_guard, scan_guard -- guard/pretool/) and the
-    finish-review Stop hook (guard/finish_hook.py) as engine built-ins.
+    (turn_budget, restart_guard, install_guard, scan_guard -- guard/pretool/)
+    and the finish-review Stop hook (guard/finish_hook.py) as engine built-ins.
 
     Unlike progress_hook_settings(), nothing here is per-request: every
-    turn on this engine gets the same three Bash guards and the same Stop
+    turn on this engine gets the same four Bash guards and the same Stop
     hook with zero profile configuration, which is the point of landing
     them as engine defaults rather than mametchi's own per-bot hook setup
     (ownership.md: B4). Returns the same (new) dict each call so a caller
