@@ -32,7 +32,7 @@ from ..engine.base import (
 from ..engine.runner import EngineInvoker
 from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
-from ..guard.mentions import AddresseeGuard
+from ..guard.mentions import AddresseeGuard, RecipientResolver
 from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, watch_due_at
@@ -54,7 +54,6 @@ from ..slack.transcript import CurrentMessage
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
 from .markers import (
-    resolve_recipient,
     strip_unknown_tags,
     take_ask_tag,
     take_nowatch_tag,
@@ -88,6 +87,13 @@ def _domain_applies(workdir: Path | None, home: Path) -> bool:
         return True
     return False
 
+
+#: Posted in place of the body when recipient enforcement is on and a reply
+#: arrived with no `[[RECIPIENT:...]]` tag (J11, bot.py:1261
+#: NOTICE_NO_RECIPIENT). The body is withheld so the owner never becomes an
+#: accidental relay to the wrong person or bot; only the fact of the block is
+#: shown.
+NOTICE_NO_RECIPIENT = "답변을 만들었지만 받을 사람을 확정하지 못해 게시하지 않았습니다. 다시 요청해 주세요."
 
 LAUNCHED_WATCH_DESC = "코드가 발급한 이름으로 띄운 백그라운드 작업"
 """Watch description for work launched without a tag.
@@ -128,6 +134,11 @@ class RequestPipeline:
         # unwired. Looked up only for non-owner askers, since the owner is a
         # person by definition.
         asker_is_bot: Callable[[str], bool] = lambda user_id: False,
+        # J11: when True, a reply with no `[[RECIPIENT:...]]` tag has its body
+        # withheld and only NOTICE_NO_RECIPIENT posted. Off by default so a bot
+        # set up without owner/asker wiring degrades to "publish anyway" rather
+        # than to silence -- enforcement is opt-in per deployment.
+        require_recipient: bool = False,
         group_resolver: Callable[[str], str] | None = None,
         mention_table: Callable[[], Mapping[str, str]] = dict,
         slow_reporter: SlowRequestReporter | None = None,
@@ -185,6 +196,12 @@ class RequestPipeline:
         self._reactions = reactions
         self._name_resolver = name_resolver
         self._asker_is_bot = asker_is_bot
+        self._require_recipient = require_recipient
+        # Reuses asker_is_bot as the is-bot oracle: resolving a RECIPIENT tag
+        # needs the same "is this user a bot" lookup for the ASKER→BOT fold and
+        # for validating a BOT:id. Forces the leading mention for bot recipients
+        # and drops a wrong leading bot-mention from owner/asker replies (D3).
+        self._recipient_resolver = RecipientResolver(asker_is_bot)
         # The prompt body only. Slack's addressee check and this bot's own
         # mention removal read the raw text, so rendering earlier would break
         # them (sca-za2a).
@@ -456,6 +473,26 @@ class RequestPipeline:
         # it never reaches the channel in any render path (sca: rich_render fed
         # the bare tag into a table message's fallback text).
         body, had_nowatch = take_nowatch_tag(body)
+        # Resolve the trailing `[[RECIPIENT:...]]` tag before the generic
+        # marker strip: a bot recipient gets its leading mention forced here,
+        # and with enforcement on a missing tag withholds the body entirely so
+        # the owner never relays an answer to the wrong party (D3/J11). Runs
+        # after ASK/NOWATCH are taken so the tag the resolver sees is trailing.
+        body, blocked_recipient = self._resolve_recipient(body, ctx)
+        if blocked_recipient:
+            notice_ts = self._publisher.post(
+                ctx.channel, ctx.thread_ts, NOTICE_NO_RECIPIENT, False,
+            ) or ""
+            self._audit.record(
+                IncidentKind.MISSING_RECIPIENT.value, channel=ctx.channel,
+                thread_ts=ctx.thread_ts, snippet=body[:300],
+            )
+            self._record(
+                ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
+                turns=response.turns, model_actual=response.model_actual,
+                truncated=_truncated(response), context_reset=context_reset,
+            )
+            return HandleOutcome(ok=True, posted_ts=notice_ts)
         body = self._strip_publish_markers(body, ctx)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich, flat=flat) or ""
@@ -731,22 +768,36 @@ class RequestPipeline:
             self._awaiting.set_awaiting(ctx.channel, ctx.thread_ts, waiting)
         return clean
 
-    def _strip_publish_markers(self, body: str, ctx: RequestContext) -> str:
-        """Last body pass before publish: strips the trailing
-        `[[RECIPIENT:...]]` tag and any undeclared `[[...]]` marker line so
-        neither reaches the channel (bot.py:1564-1592 strip_control_tags,
-        5425-5471 take_recipient_tag). B1's gaps J18/D3.
+    def _resolve_recipient(self, body: str, ctx: RequestContext) -> tuple[str, bool]:
+        """Resolves the trailing `[[RECIPIENT:...]]` tag into a concrete
+        recipient and forces the leading mention a bot recipient needs to be
+        notified (D3, bot.py:5425-5471 take_recipient_tag).
 
-        Runs after the ASK/NOWATCH tags are taken so those known markers are
-        already gone — what's left that still matches the unknown shape is
-        genuinely unrecognized and is logged, not silently eaten. Recipient
-        resolution defaults to require_recipient=False: with no owner/asker
-        wired a missing tag degrades to "publish anyway", never to silence.
-        Mention enforcement from the resolved recipient stays the caller's
-        job for a later bundle (resolve_recipient's docstring); here it only
-        strips so the raw tag never leaks.
+        Returns `(body, blocked)`. When the tag names a bot (or an ASKER that
+        turns out to be a bot), the body comes back with a `<@id>` prefix and
+        any wrong leading bot-mention stripped. When there is no resolvable
+        recipient and enforcement is on, `blocked=True` tells `handle` to
+        withhold the body and post the notice instead (J11). With enforcement
+        off the tag is still stripped and the body published as-is, so an
+        unconfigured bot never falls silent over a missing tag.
         """
-        body = resolve_recipient(body).text
+        clean, recipient = self._recipient_resolver.resolve(body, ctx.user)
+        if recipient is None and self._require_recipient:
+            # Hand back the original body so the audit snippet shows what was
+            # withheld; it is not published on this path.
+            return body, True
+        return clean, False
+
+    def _strip_publish_markers(self, body: str, ctx: RequestContext) -> str:
+        """Last body pass before publish: strips any undeclared `[[...]]`
+        marker line so it never reaches the channel (bot.py:1564-1592
+        strip_control_tags). B1's gaps J18.
+
+        Runs after the ASK/NOWATCH tags are taken and the RECIPIENT tag is
+        resolved (`_resolve_recipient`), so those known markers are already
+        gone — what's left that still matches the unknown shape is genuinely
+        unrecognized and is logged, not silently eaten.
+        """
         body, dropped = strip_unknown_tags(body)
         if dropped:
             self._audit.record(

@@ -340,6 +340,7 @@ def build_pipeline(
     tmp_path: Path | None = None,
     name_resolver: Any = None,
     asker_is_bot: Any = None,
+    require_recipient: bool = False,
     mention_table: Any = None,
     slow_reporter: Any = None,
     participants: Any = None,
@@ -377,6 +378,8 @@ def build_pipeline(
         extra_kwargs["name_resolver"] = name_resolver
     if asker_is_bot is not None:
         extra_kwargs["asker_is_bot"] = asker_is_bot
+    if require_recipient:
+        extra_kwargs["require_recipient"] = require_recipient
     if mention_table is not None:
         extra_kwargs["mention_table"] = mention_table
     if slow_reporter is not None:
