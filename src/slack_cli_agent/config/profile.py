@@ -69,6 +69,10 @@ class EngineSpec:
     binary: Path
     model: str
     model_owner: str = ""
+    #: 같은 엔진 안에서 모델 하나가 일시 장애일 때 순서대로 시도할 대체 모델들.
+    #: 비어 있으면(기본) 모델 폴백을 쓰지 않고 model 하나로만 돈다. 계정 한도는
+    #: 모델을 바꿔도 같으므로 이 목록은 모델 단위 장애에만 쓰인다 (B9/B17).
+    model_fallbacks: tuple[str, ...] = ()
     options: Mapping[str, Any] = field(default_factory=dict)
     # Engine-specific home path (e.g. CODEX_HOME). Keeps sessions/auth
     # separated per bot, so it can't collide with the user's own home.
@@ -85,6 +89,7 @@ class EngineSpec:
             binary=Path(str(data["binary"])).expanduser(),
             model=str(data["model"]),
             model_owner=str(data.get("model_owner", "")),
+            model_fallbacks=tuple(str(m) for m in (data.get("model_fallbacks") or [])),
             options=dict(data.get("options") or {}),
             home_dir=Path(str(home_dir)).expanduser() if home_dir else None,
         )
