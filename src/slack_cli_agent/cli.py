@@ -28,6 +28,7 @@ from .core.errors import AgentError, ConfigError
 from .core.lifecycle import GracefulShutdown, SignalRegister
 from .core.secrets import contains_secret, redact
 from .preflight.suite import PreflightSuite
+from .reliability.pidfile import PidFile
 from .slack.credentials import (
     APP_TOKEN_ENV,
     BOT_TOKEN_ENV,
@@ -440,18 +441,21 @@ class IngressCommand(PreflightGatedServiceCommand):
         resolver = self.resolver(profile)
         token = resolver.app_token(args.app_token)
         app = self._factory(profile, resolver)
-        try:
-            gateway = app.gateway()
-            app.ingress().register(gateway)
-            # Must be enabled before start: the socket connection only exists in
-            # this process, so a drop would otherwise go unnoticed.
-            app.connection_watch()
-            # Periodic runners start as a bundle, so adding a new one can't be
-            # forgotten at a call site that starts them one by one.
-            with app.ingress_services(app.self_restarter()):
-                gateway.start(token)
-        finally:
-            app.close()
+        # Records this process's PID so an operator (and the watchdog) can tell
+        # a live socket process from a dead state directory, and from the worker.
+        with PidFile(profile.paths.pid_file("ingress")):
+            try:
+                gateway = app.gateway()
+                app.ingress().register(gateway)
+                # Must be enabled before start: the socket connection only exists in
+                # this process, so a drop would otherwise go unnoticed.
+                app.connection_watch()
+                # Periodic runners start as a bundle, so adding a new one can't be
+                # forgotten at a call site that starts them one by one.
+                with app.ingress_services(app.self_restarter()):
+                    gateway.start(token)
+            finally:
+                app.close()
         return 0
 
 
@@ -498,11 +502,13 @@ class WorkerCommand(PreflightGatedServiceCommand):
             on_shutdown_start=lambda inflight: app.mark_shutting_down(),
         )
         shutdown.register()
+        # One file per worker id, so two workers (or a worker and the ingress)
+        # don't overwrite each other's record.
         try:
             # Periodic runners (state updates, watch checks, finished-job
             # cleanup) start as a bundle, since adding one by hand here has
             # been forgotten before.
-            with app.worker_services(worker):
+            with PidFile(profile.paths.pid_file(args.worker_id)), app.worker_services(worker):
                 worker.reclaim()
                 # Catch-up defaults to on: a mention that arrives during a
                 # restart doesn't replay as a socket event, so skipping this
