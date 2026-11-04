@@ -35,7 +35,7 @@ KNOWN_KEYS = frozenset(
         "state_dir", "work_root", "data_dir", "attach_dir", "launch_label",
         "owner_user_id", "controller_user_ids", "troubleshoot_channel", "owner_dm", "credentials_file",
         "plugins", "usage_check_command", "agent_greeting", "agent_prompts",
-        "settings", "mcp_servers", "domain_file", "peer",
+        "settings", "mcp_servers", "domain_file", "light_workdir", "peer",
     }
 )
 """Top-level keys `from_dict` reads. Anything else is dropped, so a mistyped
@@ -237,6 +237,13 @@ class Profile:
     # org-specific value, so it lives in the profile, not the package. None
     # leaves the persona with no domain file, which is every bot that has none.
     domain_file: Path | None = None
+    # Lighter work directory for non-owner turns in a light_context channel
+    # (A11, mametchi workdir_for bot.py:282). Running there drops the heavy home
+    # CLAUDE.md and the company domain file, so chat-only channels don't pay for
+    # domain context the owner alone needs. An org-specific path, so it lives in
+    # the profile; None leaves light_context inert and every turn uses the full
+    # work directory.
+    light_workdir: Path | None = None
     # A sibling bot this one can revive on the owner's word. None means there is
     # no peer, and the revival guidance is left out of the prompt entirely
     # (PeerRecoverySection). Org-specific locations, so it lives in the profile.
@@ -361,6 +368,10 @@ class Profile:
             domain_file=(
                 Path(str(data["domain_file"])).expanduser()
                 if data.get("domain_file") else None
+            ),
+            light_workdir=(
+                Path(str(data["light_workdir"])).expanduser()
+                if data.get("light_workdir") else None
             ),
             plugins=tuple(data.get("plugins") or ()),
             usage_check_command=tuple(str(part) for part in (data.get("usage_check_command") or ())),

@@ -353,6 +353,8 @@ def build_pipeline(
     now: Any = None,
     new_run_id: Any = None,
     awaiting: Any = None,
+    default_workdir: Path | None = None,
+    light_workdir: Path | None = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -401,6 +403,8 @@ def build_pipeline(
         extra_kwargs["new_run_id"] = new_run_id
     if awaiting is not None:
         extra_kwargs["awaiting"] = awaiting
+    if light_workdir is not None:
+        extra_kwargs["light_workdir"] = light_workdir
     extra_kwargs.setdefault(
         "watch_results",
         WatchResultReader((tmp_path or Path("/tmp")) / ".watch-out"),
@@ -417,7 +421,7 @@ def build_pipeline(
         publisher=pub,
         audit=audit_log,
         channels=ch,
-        default_workdir=(tmp_path or Path("/tmp")),
+        default_workdir=(default_workdir or tmp_path or Path("/tmp")),
         owner_user_id="UOWNER",
         reactions=reacts,
         **extra_kwargs,
@@ -1483,6 +1487,85 @@ class Test링크된스레드:
         pipeline, parts = build_pipeline(responses=[ok_response()])
         pipeline.handle(make_ctx())
         assert "링크된 스레드" not in parts["runner"].calls[0].prompt
+
+
+class Test가벼운맥락채널:
+    """light_context 채널은 비소유자 턴을 가벼운 작업 자리에서, 도메인 지식 없이
+    돌린다. 소유자는 늘 전체 자리를 쓴다(A11, 마메치 workdir_for bot.py:282).
+
+    light_workdir 는 조직값이라 미설정이면 기능이 꺼진 채 전체 자리로 남는다.
+    """
+
+    def _channels(self, tmp_path: Path, **over: Any) -> dict[str, ChannelConfig]:
+        base: dict[str, Any] = {"channel_id": "C1", "name": "c1", "light_context": True}
+        base.update(over)
+        return {"C1": ChannelConfig(**base)}
+
+    def test_비소유자는_가벼운_자리에서_돈다(self, tmp_path: Path) -> None:
+        light = tmp_path / "light"
+        default = tmp_path / "work"
+        pipeline, parts = build_pipeline(
+            responses=[ok_response()],
+            channels=self._channels(tmp_path),
+            default_workdir=default,
+            light_workdir=light,
+        )
+        pipeline.handle(make_ctx(user="U1"))
+        assert parts["runner"].calls[0].workdir == light.resolve()
+
+    def test_소유자는_light_context_채널에서도_전체_자리를_쓴다(self, tmp_path: Path) -> None:
+        light = tmp_path / "light"
+        default = tmp_path / "work"
+        pipeline, parts = build_pipeline(
+            responses=[ok_response()],
+            channels=self._channels(tmp_path),
+            default_workdir=default,
+            light_workdir=light,
+        )
+        pipeline.handle(make_ctx(user="UOWNER"))
+        assert parts["runner"].calls[0].workdir == default.resolve()
+
+    def test_light_workdir_미설정이면_비소유자도_전체_자리다(self, tmp_path: Path) -> None:
+        default = tmp_path / "work"
+        pipeline, parts = build_pipeline(
+            responses=[ok_response()],
+            channels=self._channels(tmp_path),
+            default_workdir=default,
+        )
+        pipeline.handle(make_ctx(user="U1"))
+        assert parts["runner"].calls[0].workdir == default.resolve()
+
+    def test_light_context_아닌_채널은_비소유자도_전체_자리다(self, tmp_path: Path) -> None:
+        light = tmp_path / "light"
+        default = tmp_path / "work"
+        pipeline, parts = build_pipeline(
+            responses=[ok_response()],
+            channels=self._channels(tmp_path, light_context=False),
+            default_workdir=default,
+            light_workdir=light,
+        )
+        pipeline.handle(make_ctx(user="U1"))
+        assert parts["runner"].calls[0].workdir == default.resolve()
+
+    def test_가벼운_턴은_도메인_지식을_붙이지_않는다(self, tmp_path: Path) -> None:
+        """light turn 은 회사 도메인 지식을 떼어낸다. 소유자는 같은 채널(저장소
+        자리)에서 도메인을 받는다 — 둘을 한 테스트로 대비한다."""
+        light = tmp_path / "light"
+        comp = FakeComposer()
+        pipeline, _ = build_pipeline(
+            responses=[ok_response(), ok_response()],
+            # 홈 밖 저장소 자리라 소유자에겐 도메인이 붙는 조건이다. (테스트 홈은
+            # tmp_path 로 격리되므로 그 밖의 절대경로를 쓴다. 파일을 열지는 않는다.)
+            channels=self._channels(tmp_path, workdir=Path("/srv/repo")),
+            default_workdir=tmp_path / "work",
+            light_workdir=light,
+            composer=comp,
+        )
+        pipeline.handle(make_ctx(user="UOWNER"))
+        pipeline.handle(make_ctx(user="U1", ts="1700000002.000200",
+                                 thread_ts="1700000002.000200"))
+        assert comp.contexts[0].include_domain is True   # 소유자
+        assert comp.contexts[1].include_domain is False  # 비소유자 light turn
 
 
 class Test엔진발급세션ID:

@@ -48,6 +48,23 @@ class Test프로필_domain_file:
         assert profile.domain_file.is_absolute()
 
 
+class Test프로필_light_workdir:
+    """light_context 채널의 비소유자 턴이 쓸 가벼운 작업 자리(A11). 조직값이라
+    도메인·peer 와 같이 프로필에 두고, 없으면 None 으로 기능이 꺼진다."""
+
+    def test_light_workdir를_읽어_경로로_둔다(self, tmp_path: Path) -> None:
+        profile = Profile.from_dict({**MINIMAL_PROFILE, "light_workdir": str(tmp_path / "light")})
+        assert profile.light_workdir == tmp_path / "light"
+
+    def test_light_workdir가_없으면_None이다(self) -> None:
+        assert Profile.from_dict(MINIMAL_PROFILE).light_workdir is None
+
+    def test_물결경로를_펼친다(self) -> None:
+        profile = Profile.from_dict({**MINIMAL_PROFILE, "light_workdir": "~/light"})
+        assert profile.light_workdir is not None
+        assert profile.light_workdir.is_absolute()
+
+
 class Test도메인지식_적재:
     def _loader(self, tmp_path: Path, *, with_domain: bool) -> KnowledgeLoader:
         persona = tmp_path / "PERSONA.md"
