@@ -59,6 +59,11 @@ class IncidentKind(StrEnum):
     LATE_ADDENDUM = "late_addendum"
     WRONG_ADDRESSEE = "wrong_addressee"
     REWRITE_LOSS = "rewrite_loss"
+    #: A rich chat.update came back stored as rich_text only, while the body
+    #: carried a heading/table/divider that Slack renders as its own block
+    #: (J7, mametchi post_rich.py verify + separate_blocks). A 200 from
+    #: chat.update doesn't prove the markdown took; this records that it didn't.
+    REWRITE_UNCONVERTED = "rewrite_unconverted"
     SILENT = "silent"
     #: An undeclared `[[...]]` marker line dropped before publish
     #: (strip_unknown_tags, bot.py:1561's UNKNOWN_TAG_LINE_RE). Logged

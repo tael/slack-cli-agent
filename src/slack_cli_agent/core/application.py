@@ -591,6 +591,7 @@ class Application:
                 blocks=blocks,
                 bot_display_name=self._profile.display_name,
                 audit=self.audit().record,
+                backup_dir=self._profile.paths.format_originals,
             )
         return self._publisher
 

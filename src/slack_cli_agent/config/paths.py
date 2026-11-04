@@ -92,6 +92,13 @@ class StatePaths:
         return self.root / "watch-out"
 
     @property
+    def format_originals(self) -> Path:
+        """Pre-edit message bodies, saved before a format-fix rewrite overwrites
+        them (J7). Lets a wrong rewrite be compared against what the message
+        said, which chat.update otherwise erases (mametchi post_rich.py)."""
+        return self.root / "format_originals"
+
+    @property
     def responses(self) -> Path:
         """Bot replies, logged per channel into per-day files."""
         return self.root / "responses"

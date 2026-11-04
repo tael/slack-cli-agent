@@ -14,8 +14,10 @@ publisher has no reason to depend on guard.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.config.settings import RuntimeSettings
@@ -38,6 +40,29 @@ log = logging.getLogger(__name__)
 
 # Color-codes status so success vs. failure is visible before reading the text.
 COLOR_FAIL = "#d64541"
+
+
+def _has_block_markup(text: str) -> bool:
+    """True when the body holds a heading, table, or divider -- markup Slack
+    stores as its own block (header/table/divider) rather than folding into
+    rich_text. Code fences are skipped: a divider or pipe shown as an example
+    there is content, not markup. Mirrors mametchi post_rich.separate_blocks,
+    which decides whether a rich_text-only rewrite means conversion failed."""
+    fenced = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if stripped.startswith("#"):
+            return True
+        if stripped in ("---", "***", "___"):
+            return True
+        if stripped.startswith("|") and stripped.endswith("|"):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -66,6 +91,8 @@ class MessagePublisher:
         blocks: BlockBuilder,
         bot_display_name: str,
         audit: Callable[..., None] | None = None,
+        backup_dir: Path | None = None,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -75,6 +102,11 @@ class MessagePublisher:
         self._blocks = blocks
         self._bot_display_name = bot_display_name
         self._audit = audit or (lambda **_: None)
+        # Where a pre-edit body is saved before chat.update overwrites it.
+        # None (tests, callers that don't configure it) skips backup+verify
+        # and keeps the plain chat.update path.
+        self._backup_dir = backup_dir
+        self._clock = clock
 
     def apply_elapsed_model_line(self, body: str, model: str, rich: bool) -> str:
         """Appends the model-name footer, only for rich channels with a model set.
@@ -328,6 +360,12 @@ class MessagePublisher:
         else:
             kwargs["text"] = chunks[0]
 
+        # Save the pre-edit body before chat.update overwrites it. A format-fix
+        # rewrite used to erase the only copy of what the message said, so a
+        # wrong fix left nothing to compare against (J7). A fetch failure aborts
+        # the edit rather than overwriting blind.
+        self._backup_original(channel, ts)
+
         try:
             self._client.chat_update(**kwargs)
         except Exception as exc:
@@ -355,4 +393,63 @@ class MessagePublisher:
                 sent=0, total=1, error=str(exc),
             )
             raise SlackError(str(exc)) from exc
+        # A 200 from chat.update doesn't prove Slack rendered the markdown.
+        # Re-read and check (J7).
+        self._verify_rewrite(channel, ts, text, rich)
         return [str(block["type"]) for block in kwargs.get("blocks", [])]
+
+    def _fetch_message(self, channel: str, ts: str) -> dict[str, Any] | None:
+        """Reads one posted message back by ts, for backup and the post-update
+        check. Tries replies first -- a thread reply isn't in channel history --
+        then falls back to history. Any read failure is treated as not-found."""
+        try:
+            res = self._client.conversations_replies(channel=channel, ts=ts, limit=1)
+            msgs = [m for m in (res.get("messages") or []) if m.get("ts") == ts]
+            if not msgs:
+                res = self._client.conversations_history(
+                    channel=channel, latest=ts, oldest=ts, inclusive=True, limit=1
+                )
+                msgs = res.get("messages") or []
+        except Exception:  # noqa: BLE001 -- any read failure means we can't read it back
+            return None
+        return msgs[0] if msgs else None
+
+    def _backup_original(self, channel: str, ts: str) -> Path | None:
+        """Saves the current body to the backup dir before chat.update runs.
+
+        The markdown block's text is the original the human wrote; without any
+        markdown block the message text is used. A fetch miss aborts the edit
+        (SlackError) so a rewrite never overwrites a body it couldn't save
+        (mametchi post_rich.backup_original)."""
+        if self._backup_dir is None:
+            return None
+        msg = self._fetch_message(channel, ts)
+        if msg is None:
+            raise SlackError("수정 전 원문을 조회하지 못해 고치지 않았다")
+        markdown = [
+            b.get("text") for b in (msg.get("blocks") or [])
+            if b.get("type") == "markdown"
+        ]
+        original = "\n\n".join(t for t in markdown if t) or msg.get("text") or ""
+        self._backup_dir.mkdir(parents=True, exist_ok=True)
+        path = self._backup_dir / f"{channel}_{ts}_{int(self._clock())}.md"
+        path.write_text(original)
+        return path
+
+    def _verify_rewrite(self, channel: str, ts: str, text: str, rich: bool) -> None:
+        """Re-reads the edited message and flags a conversion that didn't take:
+        only rich_text came back while the body carried a heading/table/divider
+        Slack renders as its own block (mametchi post_rich.verify). Logged and
+        audited, not raised -- the edit already landed."""
+        if self._backup_dir is None or not rich:
+            return
+        msg = self._fetch_message(channel, ts)
+        if msg is None:
+            return
+        kinds = {b.get("type") for b in (msg.get("blocks") or [])}
+        if kinds <= {"rich_text"} and _has_block_markup(text):
+            log.warning("리치 수정이 rich_text 로만 저장됐다 : %s %s", channel, ts)
+            self._audit(
+                kind=IncidentKind.REWRITE_UNCONVERTED.value,
+                channel=channel, thread_ts=ts, body=text[:2000],
+            )
