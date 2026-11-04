@@ -42,6 +42,7 @@ from typing import Any
 
 from slack_cli_agent.guard.finish_review import (
     decide,
+    resolve_advisor_channel,
     rows_since_last_human_input,
     time_left,
     turn_from_transcript_rows,
@@ -126,6 +127,7 @@ def main(argv: list[str]) -> int:
         turn = turn_from_transcript_rows(
             rows,
             last_assistant_message=payload.get("last_assistant_message"),
+            is_advisor_channel=resolve_advisor_channel(os.environ),
         )
 
         state_dir = _state_dir(payload)

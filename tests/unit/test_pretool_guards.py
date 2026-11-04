@@ -33,7 +33,10 @@ SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
 
 #: 훅이 스스로 읽을 일이 없는데 테스트 바깥 환경에 남아 있으면 판정을 오염시킬
 #: 수 있는 변수들. 서브프로세스마다 지우고 테스트가 명시한 값만 준다.
-_DEADLINE_VARS = ("TURN_DEADLINE", "TURN_DEADLINE_MONO", "TURN_WRAPUP_SEC", "TURN_BUDGET_LOG", "POST_CHANNEL")
+_DEADLINE_VARS = (
+    "TURN_DEADLINE", "TURN_DEADLINE_MONO", "TURN_WRAPUP_SEC", "TURN_BUDGET_LOG",
+    "POST_CHANNEL", "ADVISOR_CHANNELS",
+)
 
 
 def run_hook(
@@ -247,6 +250,47 @@ class TestFinishHook:
         assert proc3.returncode == 0
         assert proc3.stdout.strip() == ""
         assert third is None
+
+    def _advisor_payload(self, tmp_path: Path) -> dict[str, Any]:
+        transcript_path = tmp_path / "advisor.jsonl"
+        transcript_path.write_text(
+            json.dumps({
+                "type": "user",
+                "uuid": "adv-turn",
+                "message": {"role": "user", "content": "A안 B안 중 뭐로 갈까"},
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return {
+            "session_id": "fh-adv",
+            "transcript_path": str(transcript_path),
+            "last_assistant_message": "### 방안\n1. A안\n2. B안\n[[ASK]]",
+        }
+
+    def test_자문채널_결정형답에_조언자_미호출이면_막는다(self, tmp_path: Path) -> None:
+        """G16 배선: POST_CHANNEL 이 ADVISOR_CHANNELS 에 들면 종료검수가
+        advisor_skipped 로 차단한다."""
+        env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+            "POST_CHANNEL": "C_ADVISOR",
+            "ADVISOR_CHANNELS": "C_ADVISOR,C_OTHER",
+        }
+        result, proc = run_hook(finish_hook.HOOK_SCRIPT, self._advisor_payload(tmp_path), env)
+        assert proc.returncode == 0
+        assert result is not None and result["decision"] == "block"
+
+    def test_비자문채널이면_같은_결정형답도_통과한다(self, tmp_path: Path) -> None:
+        env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+            "POST_CHANNEL": "C_PLAIN",
+            "ADVISOR_CHANNELS": "C_ADVISOR,C_OTHER",
+        }
+        result, proc = run_hook(finish_hook.HOOK_SCRIPT, self._advisor_payload(tmp_path), env)
+        assert proc.returncode == 0
+        assert proc.stdout.strip() == ""
+        assert result is None
 
 
 class TestClaudeEngineWiring:

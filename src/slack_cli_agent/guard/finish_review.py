@@ -721,6 +721,25 @@ def time_left(
     return None
 
 
+def resolve_advisor_channel(env: Mapping[str, str]) -> bool:
+    """Whether the channel this turn posts to is one that requires an
+    advisor call before a decision ships, from env the engine stamped (G16).
+
+    The deployment puts the current channel in `POST_CHANNEL` and the set of
+    advisor channels in `ADVISOR_CHANNELS` (comma- or whitespace-separated
+    channel IDs). *Which* channels those are is organization config, so this
+    module only reads the resolved names — the same split of concerns
+    `time_left` keeps with the deadline the engine stamped. False when
+    either var is empty, so a deployment that configures neither simply
+    never trips the `advisor_skipped` judgment. Reads the caller-supplied
+    `env` mapping, not `os.environ`, so a test can call it directly."""
+    current = (env.get("POST_CHANNEL") or "").strip()
+    if not current:
+        return False
+    configured = {c for c in re.split(r"[,\s]+", env.get("ADVISOR_CHANNELS") or "") if c}
+    return current in configured
+
+
 def decide(
     turn: Turn,
     *,
