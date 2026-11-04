@@ -80,6 +80,11 @@ class IncidentKind(StrEnum):
     #: (neither — it left the call ambiguous). Lets the NOWATCH 판정률 be
     #: aggregated (J9, mametchi bot.py NOWATCH 감사). Baseline traffic.
     WATCH_VERDICT = "watch_verdict"
+    #: The question message was gone from its thread at publish time, so the
+    #: reply was withheld rather than dropped onto whatever thread now holds
+    #: those coordinates (C34, bot.py:8170 origin_deleted). `snippet` holds
+    #: the withheld body's head for troubleshooting.
+    ORIGIN_DELETED = "origin_deleted"
 
     def __str__(self) -> str:
         return self.value

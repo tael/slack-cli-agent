@@ -50,6 +50,7 @@ from ..session.ports import SessionKey, SessionScope
 from ..slack.gate import ResponseGate
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
 from ..slack.mentions import MentionRenderer
+from ..slack.origin_alive import OriginAliveChecker
 from ..slack.transcript import CurrentMessage
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
@@ -147,6 +148,10 @@ class RequestPipeline:
         linked_threads: Callable[[str, str, Sequence[Mapping[str, Any]]], str] | None = None,
         # Optional to avoid an extra Slack lookup where it's not needed.
         late_addendum: LateAddendumChecker | None = None,
+        # Confirms the question message is still in its thread right before the
+        # reply is posted (C34). Optional: without it the reply publishes as
+        # before, so a profile with no wiring degrades to "publish anyway".
+        origin_alive: OriginAliveChecker | None = None,
         # Shared with the caller so both the late-addendum check and the queue see
         # the same consumed-messages record.
         consumption: ThreadConsumption | None = None,
@@ -211,6 +216,7 @@ class RequestPipeline:
         self._participants = participants
         self._linked_threads = linked_threads
         self._late_addendum = late_addendum
+        self._origin_alive = origin_alive
         self._consumption = consumption
         self._watch_queue = watch_queue
         self._tool_policy = tool_policy
@@ -499,6 +505,24 @@ class RequestPipeline:
             return HandleOutcome(ok=True, posted_ts=notice_ts)
         body = self._strip_publish_markers(body, ctx)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
+        # Right before the post, confirm the question is still in its thread.
+        # If the asker deleted it mid-turn, the intake coordinates now point at
+        # whatever thread took its place, and posting there strands the answer
+        # among strangers' messages (C34, bot.py:8170). Only a definite
+        # deletion (``alive`` is False) withholds; an unknown (None) publishes,
+        # so a lookup hiccup never discards a good answer. The check sits here,
+        # last, so no later rewrite step can re-widen the gap it closes.
+        if self._origin_alive is not None and self._origin_alive.alive(ctx.channel, ctx.ts) is False:
+            self._audit.record(
+                IncidentKind.ORIGIN_DELETED.value, channel=ctx.channel,
+                thread_ts=ctx.thread_ts, snippet=body[:300],
+            )
+            self._record(
+                ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
+                turns=response.turns, model_actual=response.model_actual,
+                truncated=_truncated(response), context_reset=context_reset,
+            )
+            return HandleOutcome(ok=True)
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich, flat=flat) or ""
         self._archive_response(ctx, body, response, elapsed)
 
