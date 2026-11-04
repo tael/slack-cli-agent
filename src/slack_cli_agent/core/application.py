@@ -736,6 +736,9 @@ class Application:
                 owner_user_id=self._profile.owner_user_id,
                 reactions=self.reactions(),
                 name_resolver=self.user_namer(),
+                # AskerSection's bot-only branch (B1/B2). Shares the resolver the
+                # output BotMentionGuard uses, so one lookup serves both.
+                asker_is_bot=self._bot_users.is_bot,
                 mention_table=self._names.name_table,
                 group_resolver=self._group_names,
                 slow_reporter=self._slow_reporter(),

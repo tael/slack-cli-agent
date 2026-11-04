@@ -339,6 +339,7 @@ def build_pipeline(
     sessions: SessionManager | None = None,
     tmp_path: Path | None = None,
     name_resolver: Any = None,
+    asker_is_bot: Any = None,
     mention_table: Any = None,
     slow_reporter: Any = None,
     participants: Any = None,
@@ -372,6 +373,8 @@ def build_pipeline(
     extra_kwargs: dict[str, Any] = {}
     if name_resolver is not None:
         extra_kwargs["name_resolver"] = name_resolver
+    if asker_is_bot is not None:
+        extra_kwargs["asker_is_bot"] = asker_is_bot
     if mention_table is not None:
         extra_kwargs["mention_table"] = mention_table
     if slow_reporter is not None:
@@ -1037,6 +1040,59 @@ class Test화자표시이름:
 
         composed_ctx = deps["composer"].contexts[0]
         assert composed_ctx.asker_id == "U1"
+
+
+class Test화자가봇인지_배선:
+    """B1/B2 — asker_is_bot 콜백이 봇 분기로 흐르는지. AskerSection 렌더
+    자체는 test_bot_interaction 에서 본다; 여기선 파이프라인 배선만."""
+
+    def test_봇_화자면_asker_is_bot이_참으로_들어간다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[ok_response()],
+            asker_is_bot=lambda user_id: user_id == "UBOT",
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(user="UBOT"))
+
+        composed_ctx = deps["composer"].contexts[0]
+        assert composed_ctx.asker_is_bot is True
+
+    def test_사람_화자면_거짓이다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[ok_response()],
+            asker_is_bot=lambda user_id: False,
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(user="U1"))
+
+        composed_ctx = deps["composer"].contexts[0]
+        assert composed_ctx.asker_is_bot is False
+
+    def test_소유자는_조회없이_항상_거짓이다(self, tmp_path: Path) -> None:
+        """소유자는 정의상 사람이다 — 콜백이 참을 줘도 봇 분기로 새면 안 된다."""
+        calls: list[str] = []
+
+        def _always_bot(user_id: str) -> bool:
+            calls.append(user_id)
+            return True
+
+        pipeline, deps = build_pipeline(
+            responses=[ok_response()],
+            asker_is_bot=_always_bot,
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(user="UOWNER"))
+
+        composed_ctx = deps["composer"].contexts[0]
+        assert composed_ctx.asker_is_bot is False
+        assert calls == []  # 소유자는 봇 조회 자체를 하지 않는다
+
+    def test_콜백을_안_주면_기본값_거짓이다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1"))
+
+        composed_ctx = deps["composer"].contexts[0]
+        assert composed_ctx.asker_is_bot is False
 
 
 class Test멘션표:
