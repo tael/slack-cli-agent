@@ -188,3 +188,35 @@ class Test채널설정키가정식필드다:
         assert ChannelConfig.from_dict("C1", {"code_first": True}).code_first is True
         assert ChannelConfig.from_dict("C1", {}).code_first is False
         assert ChannelConfig.from_dict("C1", {"code_first": True}).extra == {}
+
+    def test_조직역할키는extra로플러그인에넘어간다(self) -> None:
+        """I82 — mametchi channels.json 의 조직·역할 키(operators/advisor/
+        broadcast/extra_tools/airflow_admins/shadow_source)는 코어 필드가
+        아니라 `extra` 로 보존돼 플러그인이 읽는다. 역할 판정은 공통이지만 그
+        사용자 ID·도구 목록·대상 채널 값은 조직마다 달라 코어가 해석하지 않는다
+        (sca-ww4 user_tools 와 같은 경계). 값이 손실·변형 없이 그대로 남는지 잠근다."""
+        org = {
+            "operators": ["U1", "U2"],
+            "advisor": "opus",
+            "broadcast": "C999",
+            "extra_tools": ["WebSearch"],
+            "airflow_admins": ["U3"],
+            "shadow_source": "C888",
+        }
+        설정 = ChannelConfig.from_dict("C1", dict(org))
+        for 키 in org:
+            assert 키 not in KNOWN_KEYS
+        assert 설정.extra == org
+
+    def test_mention_only는기본동작이라별도키가없다(self) -> None:
+        """I82 — mametchi `mention_only` 는 '멘션에만 응답'이라는 뜻인데, 코어의
+        기본 동작이 바로 그것이다(answer_unaddressed·answer_top_level 둘 다 꺼짐).
+        따라서 대체 키가 아니라 기본값으로 흡수되며, 값이 와도 extra 에만 남고
+        기본 동작을 바꾸지 않는다."""
+        기본 = ChannelConfig.from_dict("C1", {})
+        assert 기본.answer_unaddressed is False
+        assert 기본.answer_top_level is False
+        명시 = ChannelConfig.from_dict("C1", {"mention_only": True})
+        assert 명시.answer_unaddressed is False
+        assert 명시.answer_top_level is False
+        assert 명시.extra == {"mention_only": True}
