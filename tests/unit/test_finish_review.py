@@ -195,6 +195,99 @@ class TestResolveAdvisorChannel:
         assert finish_review.resolve_advisor_channel({}) is False
 
 
+class TestCodeFirstDocOnly:
+    """G13: 코드 우선 채널에서 문서만 근거로 답을 끝내지 못하게 막는다.
+
+    mametchi code_first_hook.py 의 판정(doc / code / github_link / code_lead)을
+    조직 중립 기본값으로 이식한 것을 검증한다.
+    """
+
+    _doc_only = "트래커에서 cm_v1 도 재무리포트로 분류하고 있어요. https://notion.so/abc 참고."
+
+    def test_blocks_doc_only_answer_in_code_first_channel(self):
+        turn = _turn(self._doc_only, is_code_first_channel=True)
+
+        assert finish_review.code_first_doc_only(turn) is not None
+        assert finish_review.decide(turn).action == "block"
+
+    def test_allows_outside_code_first_channel(self):
+        turn = _turn(self._doc_only, is_code_first_channel=False)
+
+        assert finish_review.code_first_doc_only(turn) is None
+
+    def test_allows_when_no_doc_basis(self):
+        turn = _turn("배차 로직은 이렇게 동작합니다.", is_code_first_channel=True)
+
+        assert finish_review.code_first_doc_only(turn) is None
+
+    def test_allows_code_led_answer_with_code_lookup_and_repo_link(self):
+        turn = _turn(
+            "assign.py:42 의 _pick() 이 최근접 기사를 고릅니다. "
+            "https://github.com/org/repo/blob/main/assign.py#L42\n\n"
+            "대조로 https://notion.so/abc 와 같습니다.",
+            is_code_first_channel=True,
+            tool_calls=(
+                ToolCall(
+                    name="Read",
+                    input={"file_path": "/Users/x/Projects/repo/assign.py"},
+                    result="def _pick(): ...",
+                ),
+            ),
+        )
+
+        assert finish_review.code_first_doc_only(turn) is None
+
+    def test_blocks_when_repo_link_present_but_doc_leads(self):
+        turn = _turn(
+            "트래커 기준으로는 cm_v1 이 재무리포트입니다. "
+            "https://notion.so/abc 코드도 같습니다 "
+            "https://github.com/org/repo/blob/main/x.py",
+            is_code_first_channel=True,
+            tool_calls=(
+                ToolCall(name="Bash", input={"command": "git log -1"}, result="ok"),
+            ),
+        )
+
+        # 코드 조회·저장소 링크는 있으나 노션 링크가 먼저라 문서 중심 답이다.
+        assert finish_review.code_first_doc_only(turn) is not None
+
+    def test_blocks_when_code_looked_up_but_no_repo_link(self):
+        turn = _turn(
+            "코드를 봤는데 notion 트래커와 같습니다 https://notion.so/abc",
+            is_code_first_channel=True,
+            tool_calls=(
+                ToolCall(name="Bash", input={"command": "git show HEAD"}, result="ok"),
+            ),
+        )
+
+        assert finish_review.code_first_doc_only(turn) is not None
+
+
+class TestResolveCodeFirstChannel:
+    """G13 배선: POST_CHANNEL 이 CODE_FIRST_CHANNELS 에 들면 코드 우선 채널로 본다."""
+
+    def test_true_when_current_channel_is_in_the_configured_set(self):
+        env = {"POST_CHANNEL": "C002", "CODE_FIRST_CHANNELS": "C001,C002,C003"}
+
+        assert finish_review.resolve_code_first_channel(env) is True
+
+    def test_false_when_current_channel_is_not_configured(self):
+        env = {"POST_CHANNEL": "C009", "CODE_FIRST_CHANNELS": "C001,C002"}
+
+        assert finish_review.resolve_code_first_channel(env) is False
+
+    def test_false_when_no_current_channel(self):
+        assert finish_review.resolve_code_first_channel({"CODE_FIRST_CHANNELS": "C001"}) is False
+
+    def test_accepts_whitespace_separated_ids(self):
+        env = {"POST_CHANNEL": "C002", "CODE_FIRST_CHANNELS": "C001 C002\tC003"}
+
+        assert finish_review.resolve_code_first_channel(env) is True
+
+    def test_empty_env_is_false(self):
+        assert finish_review.resolve_code_first_channel({}) is False
+
+
 class TestDeniedUnretried:
     def test_blocks_when_a_denied_target_was_never_retried(self):
         turn = _turn(
@@ -346,7 +439,7 @@ class TestExtensionPoint:
         assert len(findings) == 1
         assert findings[0].name == "lastmile_code_unchecked"
 
-    def test_default_registry_has_exactly_the_seven_common_judgments(self):
+    def test_default_registry_has_exactly_the_common_judgments(self):
         assert set(finish_review.default_registry.names()) == {
             "gave_up",
             "not_opened",
@@ -356,6 +449,7 @@ class TestExtensionPoint:
             "handoff",
             "denied_unretried",
             "advisor_skipped",
+            "code_first",
             "verify",
         }
 

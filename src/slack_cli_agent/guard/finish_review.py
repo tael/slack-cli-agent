@@ -112,6 +112,10 @@ class Turn:
     #: before a decision ships. Channel configuration isn't this module's
     #: concern — the caller resolves it and passes the answer in.
     is_advisor_channel: bool = False
+    #: Whether this channel requires a code lookup before a doc-based answer
+    #: ships (G13). Resolved by the caller from channel config, same split as
+    #: `is_advisor_channel` — this module only reads the already-resolved fact.
+    is_code_first_channel: bool = False
 
 
 @dataclass(frozen=True)
@@ -211,6 +215,7 @@ def turn_from_transcript_rows(
     last_assistant_message: str | None = None,
     user_prompt: str = "",
     is_advisor_channel: bool = False,
+    is_code_first_channel: bool = False,
 ) -> Turn:
     """Builds a `Turn` from raw Claude Code transcript JSONL rows.
 
@@ -227,6 +232,7 @@ def turn_from_transcript_rows(
         tool_calls=_tool_calls_in(this_turn),
         has_transcript=bool(rows),
         is_advisor_channel=is_advisor_channel,
+        is_code_first_channel=is_code_first_channel,
     )
 
 
@@ -437,6 +443,83 @@ def advisor_skipped(turn: Turn, *, advisor_model_hint: str = "fable") -> bool:
 
 
 # --------------------------------------------------------------------------
+# code_first — answered from docs alone where the channel wants code first
+# --------------------------------------------------------------------------
+
+#: Default signals for "the answer leans on a document". A doc-source MCP
+#: tool (notion.*) or a doc link in the answer. These are organization-neutral
+#: defaults — a profile plugin that uses a different doc store can register a
+#: replacement rule rather than this module naming its tool, the same way
+#: advisor_skipped's model hint is a parameter, not a hardcoded org model.
+_DOC_TOOL_RE = re.compile(r"notion", re.IGNORECASE)
+_DOC_LINK_RE = re.compile(r"notion\.(?:so|com)/", re.IGNORECASE)
+#: Default signal for "the answer cites the code host". GitHub is the common
+#: default; an org on a different host registers its own rule.
+_CODE_HOST_LINK_RE = re.compile(r"github\.com/", re.IGNORECASE)
+#: Default signals for "a code lookup happened this turn": a git/gh command
+#: (bare or via a read wrapper like gh_read.sh), or a path under a code
+#: checkout. The bare `git`/`gh`/`/Projects/` forms match any org; a wrapper
+#: name an org adds is caught by the `_read.sh` tail.
+_CODE_BASH_RE = re.compile(r"(?:^|[\s;&|(])(?:gh|git)\s|/Projects/|_read\.sh\b")
+_CODE_PATH_RE = re.compile(r"/Projects/")
+#: Doc words that, when they open the first paragraph, mark a doc-centered
+#: answer even if a code-host link appears first by position
+#: (mametchi code_first_hook.py DOC_WORDS, the 2026-10-23 reproduction).
+_DOC_WORD_RE = re.compile(r"트래커|노션|notion|PRD|문서", re.IGNORECASE)
+
+
+def _doc_basis(turn: Turn) -> bool:
+    if any(_DOC_TOOL_RE.search(call.name) for call in turn.tool_calls):
+        return True
+    return bool(_DOC_LINK_RE.search(turn.answer))
+
+
+def _code_looked_up(turn: Turn) -> bool:
+    for call in turn.tool_calls:
+        if call.name == "Bash" and _CODE_BASH_RE.search(str(call.input.get("command") or "")):
+            return True
+        if call.name in ("Read", "Grep", "Glob") and _CODE_PATH_RE.search(_input_blob(call.input)):
+            return True
+    return False
+
+
+def code_first_doc_only(turn: Turn) -> str | None:
+    """What's missing, if a code-first channel's answer leans on documents
+    without the code lookup / code-host link / code-led ordering the channel
+    requires — else None.
+
+    Ports mametchi's code_first_hook.py judgment (doc / code / github_link /
+    code_lead) as an organization-neutral Stop-hook rule: a doc-based answer
+    (a doc tool or doc link) must also show this turn looked at the code and
+    cite the code host, with the code leading over the doc rather than the
+    doc framing the answer. Only fires in a channel the caller resolved as
+    code-first; a bot with none configured never trips it.
+    """
+    if not turn.answer or not turn.is_code_first_channel:
+        return None
+    if not _doc_basis(turn):
+        return None
+    answer = turn.answer
+    host_link = _CODE_HOST_LINK_RE.search(answer)
+    doc_link = _DOC_LINK_RE.search(answer)
+    # Code leads only if the code-host link comes before the doc link (or there
+    # is no doc link), and the first paragraph doesn't open on a doc word.
+    code_lead = host_link is not None and (doc_link is None or host_link.start() < doc_link.start())
+    if _DOC_WORD_RE.search(answer.strip().split("\n\n", 1)[0]):
+        code_lead = False
+    if _code_looked_up(turn) and host_link and code_lead:
+        return None
+    missing: list[str] = []
+    if not _code_looked_up(turn):
+        missing.append("코드 조회 없음")
+    if not host_link:
+        missing.append("소스 저장소 링크 없음")
+    elif not code_lead:
+        missing.append("문서 중심 서술")
+    return " / ".join(missing)
+
+
+# --------------------------------------------------------------------------
 # denied_unretried — a tool denial that was never retried another way
 # --------------------------------------------------------------------------
 
@@ -601,6 +684,15 @@ def _advisor_skipped_guidance(_hit: str) -> str:
     )
 
 
+def _code_first_guidance(hit: str) -> str:
+    return (
+        "이 채널은 코드 우선 채널이다. 문서(노션 등)를 근거로 답하기 전에 현재 적용된 코드를 직접 조회해 "
+        f"확인한다. 부족한 점 : {hit}. 답은 코드가 1차 근거이고 문서는 대조용이다. 확인한 코드 파일과 "
+        "줄을 소스 저장소 링크로 달고, 첫 문단은 코드로 확인한 사실로 연다. 문서와 코드가 다르면 그 차이를 "
+        "함께 적는다."
+    )
+
+
 def _verify_guidance(hit: str) -> str:
     return f"다음 문장은 이번 턴 조회 결과에 근거가 없다 : {hit}. 같은 턴에 직접 조회해 확정하고 답을 다시 쓴다."
 
@@ -666,6 +758,7 @@ def _build_common_registry() -> JudgmentRegistry:
     common.register("handoff", handoff, _handoff_guidance)
     common.register("denied_unretried", denied_unretried, _denied_unretried_guidance)
     common.register("advisor_skipped", _advisor_skipped_check, _advisor_skipped_guidance)
+    common.register("code_first", code_first_doc_only, _code_first_guidance)
     common.register("verify", _unsupported_claims_check, _verify_guidance)
     return common
 
@@ -737,6 +830,24 @@ def resolve_advisor_channel(env: Mapping[str, str]) -> bool:
     if not current:
         return False
     configured = {c for c in re.split(r"[,\s]+", env.get("ADVISOR_CHANNELS") or "") if c}
+    return current in configured
+
+
+def resolve_code_first_channel(env: Mapping[str, str]) -> bool:
+    """Whether the channel this turn posts to requires a code lookup before a
+    doc-based answer ships, from env the engine stamped (G13).
+
+    The deployment puts the current channel in `POST_CHANNEL` and the set of
+    code-first channels in `CODE_FIRST_CHANNELS` (comma- or whitespace-separated
+    channel IDs). *Which* channels those are is organization config, so this
+    module only reads the resolved names — the same split `resolve_advisor_channel`
+    keeps. False when either var is empty, so a deployment that configures
+    neither never trips the `code_first` judgment. Reads the caller-supplied
+    `env` mapping, not `os.environ`, so a test can call it directly."""
+    current = (env.get("POST_CHANNEL") or "").strip()
+    if not current:
+        return False
+    configured = {c for c in re.split(r"[,\s]+", env.get("CODE_FIRST_CHANNELS") or "") if c}
     return current in configured
 
 

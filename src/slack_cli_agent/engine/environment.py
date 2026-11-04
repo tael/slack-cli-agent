@@ -150,13 +150,15 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # block vs. release (time_left()) and to resolve whether the
         # current channel requires an advisor call (resolve_advisor_channel:
         # POST_CHANNEL is the current channel, ADVISOR_CHANNELS the set that
-        # requires one). All read-only facts the hook needs, not
-        # credentials, so they're safe to let through the same allowlist as
-        # everything else here.
+        # requires one) or a code lookup before a doc-based answer
+        # (resolve_code_first_channel: CODE_FIRST_CHANNELS, G13). All read-only
+        # facts the hook needs, not credentials, so they're safe to let through
+        # the same allowlist as everything else here.
         "TURN_DEADLINE",
         "TURN_DEADLINE_MONO",
         "POST_CHANNEL",
         "ADVISOR_CHANNELS",
+        "CODE_FIRST_CHANNELS",
     })
 
     #: Empty on purpose: claude keeps its subscription credentials in the

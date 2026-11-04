@@ -179,3 +179,12 @@ class Test채널설정키가정식필드다:
         assert ChannelConfig.from_dict("C1", {"progress": True}).progress is True
         assert ChannelConfig.from_dict("C1", {"progress": False}).progress is False
         assert ChannelConfig.from_dict("C1", {"progress": True}).extra == {}
+
+    def test_code_first키도필드로읽힌다(self) -> None:
+        """G13 — mametchi channels.json `code_first` 상당. 기본은 꺼짐이고,
+        켜진 채널만 종료검수의 code_first 판정 대상이 된다. extra 가 아니라
+        정식 필드라 preflight 가 오타를 잡고 값이 항상 꺼진 판정이 나지 않는다."""
+        assert "code_first" in KNOWN_KEYS
+        assert ChannelConfig.from_dict("C1", {"code_first": True}).code_first is True
+        assert ChannelConfig.from_dict("C1", {}).code_first is False
+        assert ChannelConfig.from_dict("C1", {"code_first": True}).extra == {}

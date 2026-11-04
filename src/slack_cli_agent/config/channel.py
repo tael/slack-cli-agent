@@ -67,7 +67,7 @@ KNOWN_KEYS = frozenset(
         "session_scope",
         "disclose_mechanism", "full_authority", "operator_full", "skills",
         "light_context", "rich", "chat",
-        "progress", "bot_mentions",
+        "progress", "bot_mentions", "code_first",
         "user_tools", "tool_enforcement",
     }
 )
@@ -158,6 +158,13 @@ class ChannelConfig:
     keep each other awake. A channel where bots hand work to each other turns
     it on; BotMentionGuard still strips the mention of whoever asked, which is
     the leg that closes the loop."""
+    code_first: bool = False
+    """Whether an answer leaning on documents must first look at the code and
+    cite the code host (G13). Off by default: only a channel whose questions
+    are about current behaviour (where a tracker can lag the code) wants it.
+    The deployment turns the set of code-first channels into the
+    CODE_FIRST_CHANNELS env the Stop hook reads (finish_review.code_first_doc_only);
+    mametchi code_first_hook.py, bot.py."""
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -211,6 +218,7 @@ class ChannelConfig:
             tool_enforcement=enforcement,
             progress=bool(data.get("progress", DEFAULT_PROGRESS)),
             bot_mentions=bool(data.get("bot_mentions", False)),
+            code_first=bool(data.get("code_first", False)),
             extra={k: v for k, v in data.items() if k not in KNOWN_KEYS},
         ), rejected
 
