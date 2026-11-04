@@ -72,6 +72,18 @@ class JobQueue(Protocol):
         - None if nothing is queued
         """
 
+    def claim_next_representative(
+        self, worker_id: str
+    ) -> tuple[Job | None, list[RequestContext]]:
+        """Like `claim_next`, but collapses a thread's queued backlog.
+
+        Claims the newest queued job on the next eligible thread as the
+        representative and returns the older same-thread queued requests,
+        already resolved in the queue, so the caller can mark them like the
+        representative rather than answering each one. Same thread-selection
+        and serialization as `claim_next`; only within-thread backlog differs.
+        """
+
     def heartbeat(self, job_id: int, lease: str) -> None:
         """Mark the job as still alive. Stale heartbeats get reclaimed."""
 

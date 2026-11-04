@@ -92,6 +92,11 @@ class FakeJobQueue:
     def claim_next(self, worker_id: str) -> Job | None:
         raise NotImplementedError
 
+    def claim_next_representative(
+        self, worker_id: str
+    ) -> tuple[Job | None, list[RequestContext]]:
+        raise NotImplementedError
+
     def heartbeat(self, job_id: int, lease: str) -> None:
         raise NotImplementedError
 

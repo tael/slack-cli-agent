@@ -88,6 +88,71 @@ class TestClaim:
     def test_대기_작업이_없으면_None_이다(self, queue: SqliteJobQueue) -> None:
         assert queue.claim_next("w1") is None
 
+
+class TestClaimRepresentative:
+    """같은 스레드에 밀린 요청을 최신 1건(대표)만 돌리고 나머지는 매장한다 (A30).
+
+    catchup._pick_representatives 와 같은 규칙을 상시 큐에도 적용한다.
+    """
+
+    def test_같은_스레드_여럿이면_최신_하나만_돌고_나머지는_매장된다(
+        self, queue: SqliteJobQueue
+    ) -> None:
+        for i in range(3):
+            queue.enqueue(ctx(f"1.{i}", "T1"))
+            time.sleep(0.001)
+
+        job, buried = queue.claim_next_representative("w1")
+
+        assert job is not None and job.context.ts == "1.2"
+        assert [b.ts for b in buried] == ["1.0", "1.1"]
+        # 대표는 RUNNING, 나머지는 큐에서 사라져(완료) 다시 안 나온다
+        assert queue.counts() == {"RUNNING": 1, "COMPLETED": 2}
+        assert queue.claim_next("w2") is None
+
+    def test_하나뿐이면_매장할_것이_없다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.0", "T1"))
+
+        job, buried = queue.claim_next_representative("w1")
+
+        assert job is not None and job.context.ts == "1.0"
+        assert buried == []
+
+    def test_대기_작업이_없으면_None_과_빈_목록이다(self, queue: SqliteJobQueue) -> None:
+        assert queue.claim_next_representative("w1") == (None, [])
+
+    def test_다른_스레드는_매장하지_않는다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.0", "T1"))
+        time.sleep(0.001)
+        queue.enqueue(ctx("2.0", "T2"))
+
+        job, buried = queue.claim_next_representative("w1")
+
+        # 가장 오래 기다린 스레드(T1)를 먼저 집고, T2 는 건드리지 않는다
+        assert job is not None and job.context.thread_ts == "T1"
+        assert buried == []
+        other, _ = queue.claim_next_representative("w2")
+        assert other is not None and other.context.thread_ts == "T2"
+
+    def test_실행중_스레드는_집지_않는다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.0", "T1"))
+        queue.enqueue(ctx("1.1", "T1"))
+        running, _ = queue.claim_next_representative("w1")
+        assert running is not None
+
+        # 대표가 매장하며 큐를 비웠으므로 같은 스레드에 더 돌 것이 없다
+        assert queue.claim_next_representative("w2") == (None, [])
+
+    def test_매장된_건은_맥락이_그대로_복원된다(self, queue: SqliteJobQueue) -> None:
+        old = ctx("1.0", "T1")
+        queue.enqueue(old)
+        time.sleep(0.001)
+        queue.enqueue(ctx("1.1", "T1"))
+
+        _job, buried = queue.claim_next_representative("w1")
+
+        assert buried == [old]
+
     def test_잡으면_시도_횟수가_증가한다(self, queue: SqliteJobQueue) -> None:
         queue.enqueue(ctx("1.1"))
         assert claim(queue, "w1").attempts == 1
