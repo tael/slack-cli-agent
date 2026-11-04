@@ -96,6 +96,11 @@ class Worker:
         # Leaving it on would put both marks on every request at once.
         self._markers.clear_waiting(context.channel, context.ts)
         self._markers.mark_processing(context.channel, context.ts)
+        # The eyes mark is the first reaction a request gets; stamp it so the
+        # handler can record the 접수→첫반응 latency (B38). Keep an already-set
+        # stamp from an earlier run so requeue/recovery doesn't push it later.
+        if context.first_reaction_at is None:
+            context = context.with_first_reaction(self._now())
 
         stop_event = threading.Event()
         beat = threading.Thread(

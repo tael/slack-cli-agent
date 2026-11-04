@@ -48,6 +48,11 @@ class RequestContext:
     def marked_requeued(self, queued_at: float) -> RequestContext:
         return replace(self, requeued=True, queued_at=queued_at)
 
+    def with_first_reaction(self, at: float) -> RequestContext:
+        """첫 상태 리액션(eyes)이 달린 시각을 찍는다. 접수(ts)부터 첫 반응까지의
+        실측 시간(_first_reaction_sec)이 audit 로그에 남는다 (B38, 마메치 parity)."""
+        return replace(self, first_reaction_at=at)
+
     def to_json(self) -> str:
         return dump_json(asdict(self))
 
