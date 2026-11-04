@@ -101,6 +101,10 @@ BASELINE_KINDS: tuple[IncidentKind, ...] = (
     IncidentKind.REVIEW,
     IncidentKind.WATCH_CHECKED,
     IncidentKind.WATCH_FINISHED,
+    # One row per published reply carrying its watch disposition, not a fault
+    # — counting it among incidents would swamp the real ones. metrics.py
+    # reads these out separately for the NOWATCH 판정률 (J9).
+    IncidentKind.WATCH_VERDICT,
 )
 #: Read by metrics.py as well -- a kind that is baseline here must not be
 #: tallied as an incident there.
