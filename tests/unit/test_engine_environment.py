@@ -20,6 +20,7 @@ from slack_cli_agent.engine.environment import (
     GeminiEnvironmentPolicy,
     create_environment_policy,
     registry,
+    turn_budget_env,
 )
 
 
@@ -368,3 +369,35 @@ class TestClaudeAuthNeedsUser:
         policy = ClaudeEnvironmentPolicy(profile_name="봇A")
         env = policy.build({"PATH": "/bin"})
         assert "USER" not in env
+
+
+class TestTurnBudgetEnv:
+    """턴 마감 시각을 자식 엔진 프로세스에 넘기는 환경 변수 생성 (A28).
+
+    Stop 훅(finish_review.time_left)과 Bash PreToolUse 가드(pretool.turn_budget)가
+    TURN_DEADLINE_MONO 를 먼저, 없으면 TURN_DEADLINE 을 절대 에폭으로 읽는다.
+    """
+
+    def test_마감시각은_현재에_제한을_더한_절대값이다(self) -> None:
+        env = turn_budget_env(900.0, now_wall=1000.0, now_monotonic=50.0)
+        assert env["TURN_DEADLINE"] == str(1000.0 + 900.0)
+        assert env["TURN_DEADLINE_MONO"] == str(50.0 + 900.0)
+
+    def test_두_이름만_만든다(self) -> None:
+        env = turn_budget_env(60.0, now_wall=0.0, now_monotonic=0.0)
+        assert set(env) == {"TURN_DEADLINE", "TURN_DEADLINE_MONO"}
+
+    def test_값은_time_left_가_읽을_수_있는_문자열이다(self) -> None:
+        # 훅들이 float(env[...]) 로 되읽으므로 왕복이 가능해야 한다.
+        env = turn_budget_env(123.5, now_wall=10.0, now_monotonic=5.0)
+        assert float(env["TURN_DEADLINE"]) == 133.5
+        assert float(env["TURN_DEADLINE_MONO"]) == 128.5
+
+    def test_claude_allowlist_가_그대로_자식에_넘긴다(self) -> None:
+        """생성한 마감시각이 ClaudeEnvironmentPolicy 허용목록을 통과하는지 —
+        둘이 짝이 맞아야 자식이 실제로 마감을 본다."""
+        budget = turn_budget_env(900.0, now_wall=1000.0, now_monotonic=50.0)
+        policy = ClaudeEnvironmentPolicy(profile_name="봇A")
+        env = policy.build({"PATH": "/bin", **budget})
+        assert env["TURN_DEADLINE"] == budget["TURN_DEADLINE"]
+        assert env["TURN_DEADLINE_MONO"] == budget["TURN_DEADLINE_MONO"]

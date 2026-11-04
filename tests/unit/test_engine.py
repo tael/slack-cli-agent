@@ -1465,6 +1465,31 @@ class TestEngineRunner:
         # timeout_sec 은 실행기가 채운다 - 그 값이 실제로 적용되는 제한이다 (sca-ocie).
         assert engine.built == [request(timeout_sec=SETTINGS.request_timeout_sec)]
 
+    def test_자식_환경에_턴_마감시각을_싣는다(self, tmp_path: Path) -> None:
+        """A28 — Stop 훅·Bash 가드가 남은 턴 시간을 읽도록 실행기가 자식
+        프로세스 환경에 TURN_DEADLINE[_MONO] 를 절대 에폭으로 넣는다."""
+        import time as _time
+
+        profile = claude_profile(tmp_path)
+        engine = RecordingEngine(profile, SETTINGS)
+        잡힌환경: list[Any] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            잡힌환경.append(env)
+            return FakeCompleted(stdout="답변", returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        before = _time.monotonic()
+        runner.run(engine, request(), timeout_sec=900.0)
+        after = _time.monotonic()
+
+        env = 잡힌환경[0]
+        assert "TURN_DEADLINE" in env
+        assert "TURN_DEADLINE_MONO" in env
+        # 마감시각은 (지금 + 제한) 이므로, 남은 시간이 제한과 거의 같아야 한다.
+        remaining = float(env["TURN_DEADLINE_MONO"]) - before
+        assert 900.0 <= remaining <= 900.0 + (after - before) + 1.0
+
     def test_CLI_에_알리는_제한시간이_실제_제한과_같다(self, tmp_path: Path) -> None:
         """agy 는 --print-timeout 으로 자기 제한을 받는다. 실행기가 더 짧은
         값으로 죽이면 CLI 는 자기 제한 전이라 정리를 안 한 채 끊긴다.

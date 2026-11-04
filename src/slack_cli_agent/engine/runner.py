@@ -47,7 +47,7 @@ from .capability import (
     InstructionBoundary,
     ToolRestriction,
 )
-from .environment import EngineEnvironmentPolicy
+from .environment import EngineEnvironmentPolicy, turn_budget_env
 from .stream import run_streaming
 from .switcher import EngineSwitcher
 
@@ -256,7 +256,15 @@ class EngineRunner:
         # CLI has to name the one enforced here (sca-ocie).
         request = dataclasses.replace(request, timeout_sec=timeout)
         self._record_payload(engine, request)
-        source = self._source_env if self._source_env is not None else os.environ
+        base_source = self._source_env if self._source_env is not None else os.environ
+        # Stamp the turn deadline so the child engine's Stop hook and Bash
+        # PreToolUse guard can see how much turn budget is left (A28). Computed
+        # once per turn from the enforced timeout; the env policy's allowlist
+        # carries TURN_DEADLINE[_MONO] through to the child.
+        source = {
+            **base_source,
+            **turn_budget_env(timeout, now_wall=time.time(), now_monotonic=time.monotonic()),
+        }
 
         # B9/B17 — 모델 하나의 일시 장애면 같은 엔진 안에서 폴백 모델로 순차
         # 재시도한다. 폴백 목록이 없으면(기본) candidates 가 요청 모델 하나뿐이라
