@@ -741,6 +741,10 @@ class Application:
                 # AskerSection's bot-only branch (B1/B2). Shares the resolver the
                 # output BotMentionGuard uses, so one lookup serves both.
                 asker_is_bot=self._bot_users.is_bot,
+                # J11: opt-in recipient enforcement. Off unless a profile's
+                # settings turn it on, so a bot without RECIPIENT-tag persona
+                # wiring degrades to "publish anyway" rather than to silence.
+                require_recipient=self._settings.require_recipient,
                 mention_table=self._names.name_table,
                 group_resolver=self._group_names,
                 slow_reporter=self._slow_reporter(),

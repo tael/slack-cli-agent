@@ -404,6 +404,20 @@ class TestRuntimeSettings지울문구목록:
         assert isinstance(settings.dropped_line_heads, tuple)
 
 
+class TestRuntimeSettings수신자강제:
+    """require_recipient — 파이프라인의 미표식 차단(J11)을 켜는 설정.
+
+    기본은 꺼짐이라 수신자 표식을 쓰지 않는 봇은 "그냥 게시"로 떨어진다.
+    """
+
+    def test_기본값은_꺼짐이다(self) -> None:
+        assert RuntimeSettings().require_recipient is False
+
+    def test_설정으로_켤_수_있다(self) -> None:
+        settings = RuntimeSettings().override({"require_recipient": True})
+        assert settings.require_recipient is True
+
+
 class TestStatePaths상태기록:
     def test_상태_기록_파일_경로가_있다(self, tmp_path: Path) -> None:
         """주기적으로 갈아 끼우는 프로세스 상태 파일. 원본 STATE_FILE."""
