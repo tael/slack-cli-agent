@@ -52,6 +52,10 @@ class IncidentKind(StrEnum):
     SPLIT_BROKEN = "split_broken"
     BLOCKS_REJECTED = "blocks_rejected"
     POST_FAILED = "post_failed"
+    #: A ```csv block was extracted for upload but files_upload_v2 failed
+    #: (J14, bot.py:6316 snippet_failed). The raw csv is re-posted inline so
+    #: the data isn't lost; this records that the file attachment didn't land.
+    CSV_UPLOAD_FAILED = "csv_upload_failed"
     LATE_ADDENDUM = "late_addendum"
     WRONG_ADDRESSEE = "wrong_addressee"
     REWRITE_LOSS = "rewrite_loss"

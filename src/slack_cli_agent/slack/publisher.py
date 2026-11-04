@@ -25,7 +25,13 @@ from slack_cli_agent.core.markers import ELAPSED_MODEL_LINE
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.render.blocks import BlockBuilder
 from slack_cli_agent.render.markdown import MarkdownConverter
-from slack_cli_agent.render.splitter import ContentSplitter, block_cost, split_by_block_budget
+from slack_cli_agent.render.splitter import (
+    ContentSplitter,
+    CsvFilePayload,
+    block_cost,
+    extract_csv_blocks,
+    split_by_block_budget,
+)
 from slack_cli_agent.render.verifier import SplitVerifier
 
 log = logging.getLogger(__name__)
@@ -113,7 +119,14 @@ class MessagePublisher:
         block; everything else gets it downgraded to mrkdwn. Channels
         reply in a thread; DMs post directly, and so does a `flat` channel
         (flat_reply, A17) that reads as a feed rather than a conversation.
+
+        A ```csv fenced block is always pulled out and uploaded as a file
+        instead of being posted inline (J14, bot.py:6279-6322): a csv left in
+        the message can't be downloaded and opened in a spreadsheet. The body
+        keeps a one-line note where the block was; the file is attached to the
+        same thread once the text has posted.
         """
+        text, csv_payloads = extract_csv_blocks(text)
         if rich:
             separated = self._verifier.separate_tables(text)
             chunks = self._splitter.split_for_blocks(separated)
@@ -233,7 +246,47 @@ class MessagePublisher:
                 kind=IncidentKind.SPLIT.value, channel=channel, thread_ts=thread_ts,
                 total=len(text), sizes=[len(c) for c in pending],
             )
+        self._upload_csv(channel, parent_ts, csv_payloads)
         return parent_ts
+
+    def _upload_csv(
+        self, channel: str, parent_ts: str | None, payloads: list[CsvFilePayload]
+    ) -> None:
+        """Uploads each extracted ```csv block as a file under the posted
+        message (bot.py:6302-6323 upload_snippets).
+
+        A failed upload is not swallowed: the body already says "uploaded as a
+        file", so a missing file would read as content that silently vanished.
+        It's recorded, and the raw csv is posted back inline as a fenced block
+        so the data survives even when the upload API is down.
+        """
+        for payload in payloads:
+            kwargs: dict[str, Any] = {
+                "channel": channel,
+                "filename": payload.filename,
+                "title": payload.filename,
+                "content": payload.content,
+            }
+            if parent_ts:
+                kwargs["thread_ts"] = parent_ts
+            try:
+                self._client.files_upload_v2(**kwargs)
+            except Exception as exc:  # noqa: BLE001 - a failed upload must fall back to inline, not lose the data
+                log.warning("CSV 파일을 올리지 못했다 : %s : %s", payload.filename, exc)
+                self._audit(
+                    kind=IncidentKind.CSV_UPLOAD_FAILED.value, channel=channel,
+                    thread_ts=parent_ts or "", filename=payload.filename, error=str(exc),
+                )
+                recovered = payload.content.decode("utf-8-sig", errors="replace")
+                fallback = f"{payload.filename} (파일 업로드 실패, 본문으로 대신 올립니다):\n```\n{recovered}```"
+                try:
+                    self._client.chat_postMessage(
+                        channel=channel, username=self._bot_display_name,
+                        text=fallback[:3900],
+                        **({"thread_ts": parent_ts} if parent_ts else {}),
+                    )
+                except Exception as repost_exc:  # noqa: BLE001 - nothing left to do but record it
+                    log.warning("CSV 본문 대체 게시도 실패 : %s", repost_exc)
 
     @staticmethod
     def _resplit(part: str) -> list[str]:
