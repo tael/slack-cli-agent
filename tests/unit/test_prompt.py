@@ -559,6 +559,63 @@ class Test학습지식을_함께_싣는다:
         assert "배포 지식" in loader.knowledge_text("", prompt="배포 얘기")
 
 
+class Test봇전용_로컬규정을_맨뒤에_싣는다:
+    """knowledge/ 는 자매 봇 사본으로 매일 덮어써진다. 한 봇에만 둘 채널 규정은
+    미러 대상 밖인 local/ 에 두고 맨 뒤에 실어, 공통 지식·채널 지식·학습 지식을
+    모두 덮게 한다(마메치 load_persona 대응)."""
+
+    @pytest.fixture(autouse=True)
+    def _디렉터리(self, tmp_path: Path) -> None:
+        for name in ("knowledge", "learned", "local"):
+            (tmp_path / name).mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _로더(tmp_path: Path) -> KnowledgeLoader:
+        return KnowledgeLoader(
+            tmp_path / "없음.md",
+            tmp_path / "knowledge",
+            learned_dir=tmp_path / "learned",
+            local_dir=tmp_path / "local",
+        )
+
+    def test_로컬_채널규정을_싣는다(self, tmp_path: Path) -> None:
+        write(tmp_path / "local" / "잡담.md", "이 봇만의 규정")
+        assert "이 봇만의 규정" in self._로더(tmp_path).knowledge_text("잡담")
+
+    def test_봇전용_규정임을_밝힌다(self, tmp_path: Path) -> None:
+        write(tmp_path / "local" / "잡담.md", "이 봇만의 규정")
+        text = self._로더(tmp_path).knowledge_text("잡담")
+        assert "이 봇만의 채널 규정" in text.split("이 봇만의 규정")[0]
+
+    def test_로컬_규정이_맨뒤에_온다(self, tmp_path: Path) -> None:
+        write(tmp_path / "knowledge" / "잡담.md", "사람이 쓴 것")
+        write(tmp_path / "learned" / "잡담.md", "학습이 쌓은 것")
+        write(tmp_path / "local" / "잡담.md", "이 봇만의 규정")
+        text = self._로더(tmp_path).knowledge_text("잡담")
+        assert text.index("사람이 쓴 것") < text.index("이 봇만의 규정")
+        assert text.index("학습이 쌓은 것") < text.index("이 봇만의 규정")
+
+    def test_로컬은_채널파일만_싣고_공통은_무시한다(self, tmp_path: Path) -> None:
+        """local/ 은 채널별 규정만 둔다. 공통 지식은 미러되는 knowledge/ 에 둔다."""
+        write(tmp_path / "local" / "_공통.md", "로컬 공통")
+        assert "로컬 공통" not in self._로더(tmp_path).knowledge_text("잡담")
+
+    def test_로컬_디렉터리를_안_주면_예전대로_동작한다(self, tmp_path: Path) -> None:
+        write(tmp_path / "knowledge" / "잡담.md", "사람이 쓴 것")
+        loader = KnowledgeLoader(tmp_path / "없음.md", tmp_path / "knowledge")
+        assert "사람이 쓴 것" in loader.knowledge_text("잡담")
+
+    def test_로컬_파일이_없으면_건너뛴다(self, tmp_path: Path) -> None:
+        write(tmp_path / "knowledge" / "잡담.md", "사람이 쓴 것")
+        text = self._로더(tmp_path).knowledge_text("잡담")
+        assert "사람이 쓴 것" in text
+        assert "이 봇만의 채널 규정" not in text
+
+    def test_채널슬러그가_없으면_로컬을_안_싣는다(self, tmp_path: Path) -> None:
+        write(tmp_path / "local" / "잡담.md", "이 봇만의 규정")
+        assert "이 봇만의 규정" not in self._로더(tmp_path).knowledge_text("")
+
+
 class Test이사_중_읽기:
     """이사가 도는 동안 채널 지식 파일은 `exists()` 와 읽기 사이에 사라질 수
     있다. 그때 요청이 죽으면 안 된다(sca-8aow)."""
