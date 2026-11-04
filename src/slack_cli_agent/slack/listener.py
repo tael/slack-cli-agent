@@ -20,7 +20,11 @@ from typing import Any
 
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.core.context import RequestContext
-from slack_cli_agent.guard.mentions import calls_other_bot, talking_to_peer
+from slack_cli_agent.guard.mentions import (
+    PeerExchangeLimiter,
+    calls_other_bot,
+    talking_to_peer,
+)
 from slack_cli_agent.session.awaiting import AwaitingPort
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import BotIdentity
@@ -48,11 +52,17 @@ class EventListener:
         # self-mention check below is the only new filtering a caller that
         # doesn't pass this gets.
         is_bot: Callable[[str], bool] | None = None,
+        # Caps a bot-to-bot back-and-forth in one thread (C19), reset the
+        # moment a human speaks (C18). None keeps the old behavior: nothing
+        # caps the exchange here, and the only brake on a loop is the
+        # outgoing BotMentionGuard stripping the asker's mention (sca-c4m).
+        peer_limiter: PeerExchangeLimiter | None = None,
     ) -> None:
         self._client = client
         self._channels = channel_registry
         self._gate = gate
         self._awaiting = awaiting
+        self._peer_limiter = peer_limiter
         # Self-message detection and mention matching must use the
         # same identity source — holding it separately would let
         # wiring pass the value to only one and still pass unit tests.
@@ -113,9 +123,28 @@ class EventListener:
         # answering another bot's cross-talk that never named this bot is
         # exactly the kind of loop C19's cap exists to stop from running
         # away in the first place.
-        if event.get("bot_id") and not self._identity.is_mentioned(event.get("text") or ""):
-            return None
+        if event.get("bot_id"):
+            if not self._identity.is_mentioned(event.get("text") or ""):
+                return None
+            # A peer named this bot: count the turn and stop once the thread's
+            # bot-to-bot exchange has gone past its cap (C19). Counting here,
+            # at the only entry a bot-authored mention takes, mirrors bot.py
+            # incrementing right before it answers a bot.
+            if self._peer_limiter is not None and not self._peer_limiter.allowed(
+                self._thread_key(event)
+            ):
+                return None
+        elif self._peer_limiter is not None:
+            # A human named this bot: the thread's bot-exchange count starts
+            # over (C18), so a later peer turn is answered again.
+            self._peer_limiter.reset(self._thread_key(event))
         return self._context_from_event(event, unaddressed=False, is_dm=False)
+
+    @staticmethod
+    def _thread_key(event: Mapping[str, Any]) -> str:
+        """The thread a peer exchange is counted against — its root when the
+        message is a reply, else the message's own ts (the root it opens)."""
+        return str(event.get("thread_ts") or event.get("ts") or "")
 
     def _thread_state(self, channel: str, thread_ts: str) -> tuple[bool, bool, bool, bool]:
         """(joined, bot_asked, talking_to_peer, root_self) — bot.py:8336-8367's
@@ -156,6 +185,12 @@ class EventListener:
 
         if event.get("channel_type") == "im":
             return self._context_from_event(event, unaddressed=False, is_dm=True)
+
+        # A human spoke in a channel thread: reset the bot-exchange cap (C18)
+        # whether or not this turn is one the bot answers. Done before the
+        # early returns below so a filtered human turn still clears the count.
+        if self._peer_limiter is not None:
+            self._peer_limiter.reset(self._thread_key(event))
 
         channel = event.get("channel") or ""
         thread_ts = event.get("thread_ts")

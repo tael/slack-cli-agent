@@ -453,3 +453,80 @@ class TestRecipientResolver:
         )
         assert recipient == Recipient("owner")
         assert body == "확인했습니다.\n[[NOWATCH]]"
+
+
+# C18 + C19 배선 — EventListener 가 봇 왕복을 실제로 막는지 -----------------
+
+
+class TestC19_배선_봇왕복_한도:
+    """PeerExchangeLimiter 가 리스너 경로에 실제로 걸려 봇-봇 무한왕복을
+    끊는지 고정한다. 유닛 primitive 시험(TestPeerExchangeLimiter)과 달리
+    from_app_mention/from_message 배선 자체를 검증한다 (C19 cap, C18 reset).
+    """
+
+    def _listener(self, limiter: PeerExchangeLimiter) -> EventListener:
+        return EventListener(
+            _ThreadClient(),
+            ChannelRegistry(Path("/nonexistent.json")),
+            ResponseGate(),
+            identity=fake_identity(),
+            peer_limiter=limiter,
+        )
+
+    def test_봇_멘션이_한도를_넘으면_침묵한다(self) -> None:
+        limiter = PeerExchangeLimiter(limit=1)
+        listener = self._listener(limiter)
+        event = {
+            "channel": "C1", "bot_id": "B_OTHER", "ts": "1.0", "thread_ts": "1.0",
+            "text": "<@U_BOT> 다시 봐줘",
+        }
+        assert listener.from_app_mention(event) is not None  # 1회차 허용
+        assert listener.from_app_mention(event) is None  # 한도 초과 → 침묵
+
+    def test_사람이_말하면_봇왕복_한도가_리셋된다(self) -> None:
+        """C18 — 리셋이 배선 안 되면 한도 도달 뒤 영구 침묵한다."""
+        limiter = PeerExchangeLimiter(limit=1)
+        listener = self._listener(limiter)
+        bot_event = {
+            "channel": "C1", "bot_id": "B_OTHER", "ts": "1.0", "thread_ts": "1.0",
+            "text": "<@U_BOT> 다시",
+        }
+        assert listener.from_app_mention(bot_event) is not None
+        assert listener.from_app_mention(bot_event) is None  # 한도 도달
+
+        # 사람이 스레드에 한 마디 → 리셋되어야 한다.
+        human = {
+            "channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
+            "text": "<@U_BOT> 이어서",
+        }
+        assert listener.from_app_mention(human) is not None
+        assert listener.from_app_mention(bot_event) is not None  # 다시 왕복 허용
+
+    def test_from_message_사람말도_한도를_리셋한다(self, tmp_path: Path) -> None:
+        registry = _registry(tmp_path, {"C1": {"answer_unaddressed": True}})
+        client = _ThreadClient([{"ts": "1.0", "bot_id": "B_BOT", "text": "지금 반영할까요?"}])
+        limiter = PeerExchangeLimiter(limit=1)
+        listener = EventListener(
+            client, registry, ResponseGate(), identity=fake_identity(),
+            peer_limiter=limiter,
+        )
+        assert limiter.allowed("1.0") is True
+        assert limiter.allowed("1.0") is False  # 한도 도달
+
+        human = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0", "text": "네"}
+        listener.from_message(human)  # 사람이 말했으니 리셋되어야 한다
+
+        assert limiter.allowed("1.0") is True
+
+    def test_limiter_없으면_제한이_없다(self) -> None:
+        """기존 계약 — peer_limiter 미전달 시 봇 멘션을 몇 번이든 받는다."""
+        listener = EventListener(
+            _ThreadClient(), ChannelRegistry(Path("/nonexistent.json")),
+            ResponseGate(), identity=fake_identity(),
+        )
+        event = {
+            "channel": "C1", "bot_id": "B_OTHER", "ts": "1.0", "thread_ts": "1.0",
+            "text": "<@U_BOT> 다시",
+        }
+        for _ in range(10):
+            assert listener.from_app_mention(event) is not None

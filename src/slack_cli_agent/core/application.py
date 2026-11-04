@@ -52,7 +52,12 @@ from ..engine.transcript import (
 )
 from ..guard.base import OutputGuard
 from ..guard.dropline import ConfiguredLineDropGuard
-from ..guard.mentions import AddresseeGuard, BotMentionGuard, PlainMentionGuard
+from ..guard.mentions import (
+    AddresseeGuard,
+    BotMentionGuard,
+    PeerExchangeLimiter,
+    PlainMentionGuard,
+)
 from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard
@@ -1226,6 +1231,14 @@ class Application:
                     # awaiting — including across a restart, or when the turn
                     # signalled only through the (now-stripped) [[ASK]] tag.
                     awaiting=SqliteAwaitingStore(self._database),
+                    # Activates the bot-aware gates (C16/C17/C26): a message
+                    # naming only other bots, or an unaddressed reply that
+                    # follows a human's address to a peer, is left to that bot.
+                    is_bot=self._bot_users.is_bot,
+                    # Caps bot-to-bot roundtrips in a thread (C19), reset when
+                    # a human speaks (C18), so two bots can't wake each other
+                    # forever if the outgoing mention-strip ever misses.
+                    peer_limiter=PeerExchangeLimiter(),
                 ),
                 # The one place the access check runs. Catch-up needs no second
                 # one: it only sweeps channels that are already registered
