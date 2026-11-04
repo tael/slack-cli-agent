@@ -63,6 +63,7 @@ class FakeWebClient:
         self._raise_on_reaction_add: set[str] = set()
         self._replies_response: dict = {"messages": []}
         self.auth_test_response: dict = {"team": "", "user": ""}
+        self._upload_responses: list[Any] = []
 
     def auth_test(self) -> dict:
         return self.auth_test_response
@@ -97,6 +98,16 @@ class FakeWebClient:
     def chat_update(self, **kwargs):
         self.calls.append(("chat_update", kwargs))
         result = self._update_responses.pop(0) if self._update_responses else {"ok": True}
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def queue_upload(self, response: Any) -> None:
+        self._upload_responses.append(response)
+
+    def files_upload_v2(self, **kwargs):
+        self.calls.append(("files_upload_v2", kwargs))
+        result = self._upload_responses.pop(0) if self._upload_responses else {"ok": True}
         if isinstance(result, Exception):
             raise result
         return result
@@ -371,6 +382,53 @@ class TestMessagePublisher:
         pub.post("C1", "100.0", "본문", rich=False, flat=False)
         _, kwargs = client.calls[0]
         assert kwargs["thread_ts"] == "100.0"
+
+    def test_csv_코드블록은_본문대신_BOM_파일로_올린다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        # J14: ```csv 블록은 길이와 무관하게 파일로 올린다.
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        body = "집계입니다:\n```csv\n이름,수량\n김,3\n```"
+        pub.post("C1", "100.0", body, rich=False)
+        posted = client.calls[0][1]["text"]
+        assert "```" not in posted  # 코드블록이 본문에 안 남는다
+        assert "파일" in posted  # 대체 안내문이 남는다
+        uploads = [k for k in client.calls if k[0] == "files_upload_v2"]
+        assert len(uploads) == 1
+        up = uploads[0][1]
+        assert up["filename"].endswith(".csv")
+        assert up["thread_ts"] == "100.0"
+        # 엑셀이 한글을 깨뜨리지 않게 BOM 으로 시작한다.
+        assert up["content"].startswith(b"\xef\xbb\xbf")
+        assert "이름,수량" in up["content"].decode("utf-8-sig")
+
+    def test_csv가_아닌_코드블록은_본문에_그대로_둔다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        pub.post("C1", "100.0", "코드:\n```python\nprint(1)\n```", rich=False)
+        assert not [k for k in client.calls if k[0] == "files_upload_v2"]
+
+    def test_csv_업로드가_실패하면_본문으로_되돌려_올린다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        client.queue_upload(RuntimeError("upload down"))
+        client.queue_post({"ts": "222.000000"})  # 대체 본문 게시
+        audit: list = []
+        pub = make_publisher(
+            client, settings, markdown, splitter, verifier, block_builder, audit=audit
+        )
+        pub.post("C1", "100.0", "집계:\n```csv\n이름,수량\n김,3\n```", rich=False)
+        assert any(a.get("kind") == "csv_upload_failed" for a in audit)
+        # 업로드 실패 뒤 원본 csv 가 본문으로 다시 올라간다.
+        reposts = [k for k in client.calls if k[0] == "chat_postMessage"]
+        assert any("이름,수량" in (c[1].get("text") or "") for c in reposts)
 
     def test_리치_채널은_markdown_블록으로_넘긴다(
         self, settings, markdown, splitter, verifier, block_builder
