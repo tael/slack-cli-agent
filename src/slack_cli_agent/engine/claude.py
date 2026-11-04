@@ -212,7 +212,10 @@ def guard_hook_settings() -> dict[str, Any]:
 
 
 def _claude_mcp_servers(
-    mcp_servers: Mapping[str, McpServerSpec], *, can_act: bool = False
+    mcp_servers: Mapping[str, McpServerSpec],
+    *,
+    can_act: bool = False,
+    turn_context: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     servers: dict[str, Any] = {}
     for name, server in mcp_servers.items():
@@ -228,9 +231,10 @@ def _claude_mcp_servers(
             if server.args:
                 entry["args"] = list(server.args)
             # turn_env rides on the static env: a read-only turn drops the gate
-            # var entirely, which is how the server reads "no write this turn".
+            # var entirely, which is how the server reads "no write this turn",
+            # and the channel var drops when no channel token is in context.
             env = server.resolved_env()
-            env.update(server.turn_env_for(can_act=can_act))
+            env.update(server.turn_env_for(can_act=can_act, turn_context=turn_context))
             if env:
                 entry["env"] = env
             if server.cwd:
@@ -380,7 +384,9 @@ class ClaudeEngine(Engine):
             "--effort", self.resolve_effort(request),
         ]
         mcp_servers = _claude_mcp_servers(
-            self.profile.mcp_servers, can_act=request.tools.can_act
+            self.profile.mcp_servers,
+            can_act=request.tools.can_act,
+            turn_context=request.turn_context,
         )
         cmd += self._tool_args(request, mcp_servers)
         for path in request.readable_dirs:

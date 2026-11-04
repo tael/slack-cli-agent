@@ -116,6 +116,12 @@ class EngineRequest:
     #: does, so the engine layer stays out of how prompts are assembled
     #: (sca-ygd). Empty means the caller composed nothing to report.
     budget_report: Mapping[str, Any] = field(default_factory=dict)
+    #: Opaque per-turn context an MCP server's turn_env may draw an env var from
+    #: (McpServerSpec.turn_env `channel` key). Opaque the same way request_id is:
+    #: this layer never reads the values, only forwards them to the server
+    #: process, so Slack identifiers (the channel token) stay out of the engine
+    #: layer's logic (sca-4ol). Empty means the caller supplied no context.
+    turn_context: Mapping[str, str] = field(default_factory=dict)
 
     def require_session_id(self) -> str:
         """For build_command, which only ever runs after EngineRunner filled it in.
