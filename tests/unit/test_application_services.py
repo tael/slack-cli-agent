@@ -395,6 +395,50 @@ class Test복구보고:
         보낸것 = [kwargs for 이름, kwargs in self.복구시킨다(app) if 이름 == "chat_postMessage"]
         assert any("2건" in str(kwargs) for kwargs in 보낸것), 보낸것
 
+    def test_캐치업이_실패해도_복구를_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        """check() 가 복구를 이미 소비해 다시 못 잡으므로, 캐치업이 터져도
+        연결이 돌아온 사실은 반드시 소유자에게 가야 한다. 조용히 삼키면
+        장애가 있었다는 신호 자체가 사라진다."""
+        닿는다 = [True]
+        워커 = app.worker()
+        워커.retry_catchup = list  # type: ignore[method-assign]
+
+        def 캐치업이_터진다(channels: list[str], window_sec: float | None = None) -> Any:
+            raise RuntimeError("슬랙 기록 조회 실패")
+
+        워커.catch_up = 캐치업이_터진다  # type: ignore[method-assign]
+        app._slack_reachable = lambda: 닿는다[0]  # type: ignore[method-assign]
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        닿는다[0] = True
+        러너._task()  # 예외를 삼키지 않고 복구 보고를 내보낸다
+        보낸것 = [kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"]
+        assert any("연결 복구" in str(kwargs) for kwargs in 보낸것), 보낸것
+        assert any("캐치업 실패" in str(kwargs) for kwargs in 보낸것), 보낸것
+
+    def test_복구는_한_번만_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        """복구 뒤 계속 닿는 회차마다 다시 알리면 개인 대화가 복구 보고로
+        도배된다. OutageTracker.check() 가 복구를 한 회차만 돌려주는 덕분에
+        배선도 한 번만 보고해야 한다."""
+        닿는다 = [True]
+        워커, _ = Test복구직후캐치업.워커를_바꾼다(app, 닿는다)
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        닿는다[0] = True
+        러너._task()  # 복구 회차 — 여기서 한 번 보고
+        러너._task()  # 계속 닿는 회차 — 다시 보고하면 안 된다
+        러너._task()
+        복구보고 = [
+            kwargs
+            for 이름, kwargs in client.calls
+            if 이름 == "chat_postMessage" and "연결 복구" in str(kwargs)
+        ]
+        assert len(복구보고) == 1, 복구보고
+
     def test_MCP_서버_상태를_함께_알린다(self, app: Application, client: FakeSlackClient) -> None:
         """원본 bot.py:6857 이 보고에 담는 줄이다. 노트북이 잠들었다 깨어난 뒤
         MCP 가 조용히 빠진 상태를 알아챌 계기가 여기 말고 없다."""

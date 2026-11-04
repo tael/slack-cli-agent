@@ -1784,7 +1784,9 @@ class Application:
             self._settings.catchup_max_window_sec,
         )
 
-    def _report_recovery(self, outage_sec: float, recovered: int) -> None:
+    def _report_recovery(
+        self, outage_sec: float, recovered: int, *, catchup_failed: bool = False
+    ) -> None:
         # reports the recovered count explicitly — otherwise zero recovered
         # messages would look the same as catch-up never having run
         broken = broken_mcp_servers(self._profile.mcp_servers)
@@ -1793,9 +1795,16 @@ class Application:
             "",
             f"- 끊긴 시간 : {outage_sec / 60:.0f}분",
             f"- 복구 시각 : {datetime.now(KST).strftime('%m-%d %H:%M:%S')} KST",
-            f"- 캐치업으로 처리한 요청 : {recovered}건",
-            f"- MCP 서버 : {'전부 정상' if not broken else f'{len(broken)}개 이상 기동 실패'}",
         ]
+        if catchup_failed:
+            # 0건과 "캐치업 자체가 실패" 는 다른 상황이다. 전자로 보이면
+            # 운영자가 그 구간이 회수됐다고 오해한다.
+            lines.append("- 캐치업 실패 : 끊긴 구간의 요청을 회수하지 못했습니다")
+        else:
+            lines.append(f"- 캐치업으로 처리한 요청 : {recovered}건")
+        lines.append(
+            f"- MCP 서버 : {'전부 정상' if not broken else f'{len(broken)}개 이상 기동 실패'}"
+        )
         if broken:
             lines += ["", "*기동하지 못하는 MCP 서버*"]
             lines += [f"- {name}" for name in broken]
@@ -1808,10 +1817,19 @@ class Application:
             # events during the outage never re-arrive via the socket, so we
             # must catch up now or lose them permanently
             log.info("슬랙 연결이 돌아왔다. 끊긴 시간 %.0f초", outage_sec)
-            report = worker.catch_up(
-                self.channel_ids(), window_sec=self._recovery_window_sec(outage_sec)
-            )
-            self._report_recovery(outage_sec, len(report.missed))
+            # check() already flipped the tracker back to healthy, so this
+            # recovery can never be re-detected. The owner notification must
+            # go out even if catch-up throws — otherwise a catch_up exception
+            # swallows the only signal that the outage happened at all.
+            try:
+                report = worker.catch_up(
+                    self.channel_ids(), window_sec=self._recovery_window_sec(outage_sec)
+                )
+            except Exception:
+                log.exception("복구 캐치업 실패")
+                self._report_recovery(outage_sec, 0, catchup_failed=True)
+            else:
+                self._report_recovery(outage_sec, len(report.missed))
 
         for status in worker.retry_catchup():
             if not status.alert:

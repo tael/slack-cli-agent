@@ -1411,6 +1411,32 @@ class Test연결감시연결:
         assert 사유 and "소켓 오류" in 사유[0]
         application.close()
 
+    def test_접수_감시는_복구를_소유자에게_보고하지_않는다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """복구 보고는 워커 catchup_retry 한 경로뿐이어야 한다. 접수 감시도
+        같은 전이를 보지만(각자 프로세스의 OutageTracker), 여기서도 보고하면
+        복구 보고가 두 번 나가 서로 어긋난다. 접수 감시는 소켓 기록만 비우고
+        RECOVERED 는 삼킨다 — health_runner 가 반환값을 버리기 때문."""
+        닿는다 = [True]
+        application = Application(write_profile(tmp_path), client)
+        application._slack_reachable = lambda: 닿는다[0]  # type: ignore[method-assign]
+        사유: list[str] = []
+        runner = application.health_runner(사유.append)
+        runner._task()
+        닿는다[0] = False
+        runner._task()
+        닿는다[0] = True
+        runner._task()  # 복구 회차 — 접수 감시는 보고하지 않는다
+        복구보고 = [
+            kwargs
+            for 이름, kwargs in client.calls
+            if 이름 == "chat_postMessage" and "연결 복구" in str(kwargs)
+        ]
+        assert 복구보고 == [], 복구보고
+        assert 사유 == [], 사유  # 복구는 재기동도 아니다
+        application.close()
+
     def test_재기동은_처리중인_요청이_끝나기를_기다린다(self, tmp_path: Path, client: FakeSlackClient) -> None:
         """진행 중인 건을 버리고 나가면 그 요청은 답 없이 사라진다."""
         profile = write_profile(tmp_path, settings={"shutdown_grace_sec": 1})
