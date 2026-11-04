@@ -72,7 +72,24 @@ KNOWN_KEYS = frozenset(
     }
 )
 """Channel-setting keys the core reads. Org-specific keys (like org_admins)
-aren't here — plugins read those from `extra`."""
+aren't here — plugins read those from `extra`.
+
+I82 — disposition of mametchi channels.json keys that are *not* core fields:
+
+* ``operators`` / ``advisor`` / ``airflow_admins`` — role and routing keys.
+  The role *judgement* is common, but the user-ID lists and advisor model
+  belong to the org, so they stay in ``extra`` for a plugin to read (same
+  boundary as ``user_tools``, sca-ww4).
+* ``broadcast`` / ``shadow_source`` — target-channel wiring specific to an
+  org's channel topology; ``extra`` only.
+* ``extra_tools`` — channel-wide blanket tool list (A25). Captured in
+  ``extra`` today; promoting it to a core field is tracked separately.
+* ``mention_only`` — *not* a replacement key: answering only mentions is the
+  core default (``answer_unaddressed`` and ``answer_top_level`` both off), so
+  this is absorbed by the default rather than needing its own field.
+* ``added_at`` / ``join`` — bookkeeping metadata the join flow writes, never
+  behaviour; harmless in ``extra``.
+"""
 
 #: How hard an engine must enforce this channel's tool list. `audited` lets an
 #: engine that can't hold an exact allowlist run anyway with the downgrade
