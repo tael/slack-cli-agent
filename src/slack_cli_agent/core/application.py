@@ -1825,6 +1825,14 @@ class Application:
     def _catchup_retry_tick(self, worker: Worker) -> None:
         outage_sec = self.outage_tracker().check()
         if outage_sec is not None:
+            # A report left unsent during a restart is most often the restart
+            # announcement itself, which failed because the socket was unstable
+            # -- exactly the instability this recovery resolves. Flush it now,
+            # in the same tick, instead of leaving it for the independent
+            # pending_report runner (up to its interval later). Matches
+            # bot.py:11147-11148, where the health loop flushes before catch-up
+            # (the fix for a 2026-08-26 report that sat unsent for 139 minutes).
+            self.pending_report().flush()
             # events during the outage never re-arrive via the socket, so we
             # must catch up now or lose them permanently
             log.info("슬랙 연결이 돌아왔다. 끊긴 시간 %.0f초", outage_sec)

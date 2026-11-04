@@ -469,6 +469,56 @@ class Test복구보고:
         assert [이름 for 이름, _ in client.calls if 이름 == "chat_postMessage"] == []
 
 
+class Test복구시남긴보고를즉시내보낸다:
+    """끊긴 사이에 보내지 못하고 남겨둔 보고를 복구 회차에 바로 내보내는가.
+
+    남겨둔 보고는 대개 재기동 알림이다. 재기동 순간 소켓이 불안정해 발송이
+    실패해 파일에 남는데, 바로 그 불안정이 풀리는 순간이 복구다. 복구를
+    감지한 회차에서 즉시 flush 하지 않으면, 그 보고는 독립 주기(기본 30초)의
+    pending_report 실행기가 돌 때까지 파일에 남는다. 원본 bot.py:11147-11148
+    은 닿는 회차마다 flush_pending_report 를 retry_catchup 앞에 부른다
+    (2026-08-26 08:09 의 되짚기 실패 보고가 139분 묵은 사고를 고친 것이다)."""
+
+    def test_복구_회차에_남겨둔_보고를_보낸다(
+        self, app: Application, client: FakeSlackClient
+    ) -> None:
+        app.pending_report().save("남겨둔_재기동_보고_XYZ")
+        닿는다 = [True]
+        워커, _ = Test복구직후캐치업.워커를_바꾼다(app, 닿는다)
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        닿는다[0] = True
+        러너._task()  # 복구 회차 — 남겨둔 보고를 여기서 바로 내보낸다
+        보낸것 = [
+            kwargs
+            for 이름, kwargs in client.calls
+            if 이름 == "chat_postMessage" and "남겨둔_재기동_보고_XYZ" in str(kwargs)
+        ]
+        assert 보낸것, client.calls
+        assert not (app._profile.state_dir / "pending_report.json").exists()
+
+    def test_복구가_아니면_굳이_flush_하지_않는다(
+        self, app: Application, client: FakeSlackClient
+    ) -> None:
+        """끊김이 없던 평상 회차는 pending_report 전담 실행기의 몫이다.
+        catchup_retry 가 매 회차 flush 를 흉내 내면 책임이 겹친다."""
+        app.pending_report().save("평상_회차_보고_ABC")
+        워커 = app.worker()
+        워커.retry_catchup = list  # type: ignore[method-assign]
+        app._slack_reachable = lambda: True  # type: ignore[method-assign]
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        러너._task()
+        보낸것 = [
+            kwargs
+            for 이름, kwargs in client.calls
+            if 이름 == "chat_postMessage" and "평상_회차_보고_ABC" in str(kwargs)
+        ]
+        assert 보낸것 == [], 보낸것
+
+
 class Test느린요청보고의기록리더:
     """엔진에 맞는 기록 리더를 쓰는가.
 
