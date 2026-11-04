@@ -105,6 +105,7 @@ class EventListener:
             thread_ts=event.get("thread_ts") or ts,
             text=event.get("text") or "",
             files=tuple(event.get("files") or ()),
+            unfurl_attachments=tuple(event.get("attachments") or ()),
             unaddressed=unaddressed,
             is_direct_message=is_dm,
         )

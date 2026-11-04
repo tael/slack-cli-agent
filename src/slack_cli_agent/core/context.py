@@ -18,6 +18,10 @@ class RequestContext:
     thread_ts: str
     text: str
     files: tuple[Mapping[str, Any], ...] = ()
+    #: Slack 이 이 메시지의 링크를 펼친 미리보기(unfurl) 첨부. 봇이 못 읽는
+    #: 채널 링크를 이 본문으로 복원하는 LinkedThreadReader 의 폴백이 쓴다(C39).
+    #: files 와 달리 내려받지 않고 이벤트의 값을 그대로 큐까지 싣는다.
+    unfurl_attachments: tuple[Mapping[str, Any], ...] = ()
     missed_files: int = 0
     unaddressed: bool = False
     late: bool = False
@@ -60,4 +64,5 @@ class RequestContext:
     def from_json(cls, payload: str) -> RequestContext:
         data = json.loads(payload)
         data["files"] = tuple(data.get("files") or ())
+        data["unfurl_attachments"] = tuple(data.get("unfurl_attachments") or ())
         return cls(**data)

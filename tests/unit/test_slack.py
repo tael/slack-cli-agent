@@ -903,6 +903,26 @@ class TestEventListener:
         assert ctx.unaddressed is False
         assert ctx.thread_ts == "1.0"
 
+    def test_언퍼얼_첨부를_컨텍스트에_싣는다(self, gate: ResponseGate) -> None:
+        """사람이 링크를 붙이면 슬랙이 그 메시지를 펼쳐 event['attachments'] 에
+        싣는다. 봇이 못 읽는 채널 링크라도 이 본문으로 복원하려면(C39) 컨텍스트가
+        이를 들고 파이프라인까지 가야 한다."""
+        registry = ChannelRegistry(Path("/nonexistent.json"))
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
+        att = [{"from_url": "https://x.slack.com/archives/C9/p1", "text": "저쪽 본문"}]
+        event = {"channel": "C1", "user": "U1", "ts": "1.0", "text": "<@U_BOT> 봐",
+                 "attachments": att}
+        assert listener.from_app_mention(event).unfurl_attachments == tuple(att)
+        msg = {"channel": "C1", "user": "U1", "ts": "2.0", "text": "<@U_BOT> 봐",
+               "attachments": att, "channel_type": "im"}
+        assert listener.from_message(msg).unfurl_attachments == tuple(att)
+
+    def test_첨부가_없으면_빈_튜플이다(self, gate: ResponseGate) -> None:
+        registry = ChannelRegistry(Path("/nonexistent.json"))
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "1.0", "text": "<@U_BOT> 안녕"}
+        assert listener.from_app_mention(event).unfurl_attachments == ()
+
     def test_user_없이_bot_id만_온_멘션은_bots_info로_사용자를_찾는다(
         self, gate: ResponseGate
     ) -> None:

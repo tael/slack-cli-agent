@@ -40,6 +40,14 @@ class TestRequestContext:
         original = ctx(files=({"id": "F1"},), unaddressed=True, queued_at=12.5)
         assert RequestContext.from_json(original.to_json()) == original
 
+    def test_언퍼얼_첨부도_JSON_왕복에서_튜플로_살아남는다(self) -> None:
+        """링크 미리보기 첨부(C39 폴백용)는 ingress 가 큐에 적재할 때 함께 직렬화돼
+        worker 의 파이프라인까지 가야 한다. files 와 같은 방식으로 튜플 복원한다."""
+        original = ctx(unfurl_attachments=({"from_url": "https://x", "text": "본문"},))
+        restored = RequestContext.from_json(original.to_json())
+        assert restored == original
+        assert isinstance(restored.unfurl_attachments, tuple)
+
     def test_중복_판정_키는_채널과_메시지_ts_다(self) -> None:
         assert ctx(channel="C1", ts="1.1").key == ("C1", "1.1")
 

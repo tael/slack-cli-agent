@@ -9,6 +9,8 @@ original bot appends it to the tagged prompt for the same reason.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from ..slack.linked_threads import LinkedThread, LinkedThreadReader
 
@@ -36,8 +38,16 @@ class LinkedThreadNote:
     def __init__(self, reader: LinkedThreadReader) -> None:
         self._reader = reader
 
-    def of(self, text: str, self_channel: str = "") -> str:
-        blocks = [self._block(linked) for linked in self._reader.of(text, self_channel)]
+    def of(
+        self,
+        text: str,
+        self_channel: str = "",
+        attachments: Sequence[Mapping[str, Any]] = (),
+    ) -> str:
+        blocks = [
+            self._block(linked)
+            for linked in self._reader.of(text, self_channel, attachments)
+        ]
         if not blocks:
             return ""
         note = _INTRO + "\n\n" + "\n\n".join(blocks)
