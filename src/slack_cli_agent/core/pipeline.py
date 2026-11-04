@@ -117,6 +117,9 @@ class RequestPipeline:
         audit: AuditPort,
         channels: ChannelLookupPort,
         default_workdir: Path,
+        # Lighter work directory for non-owner turns in a light_context channel
+        # (A11). None leaves the feature off and every turn uses default_workdir.
+        light_workdir: Path | None = None,
         owner_user_id: str = "",
         reactions: ReactionPort | None = None,
         name_resolver: Callable[[str], str] = lambda user_id: user_id,
@@ -174,6 +177,7 @@ class RequestPipeline:
         self._audit = audit
         self._channels = channels
         self._default_workdir = default_workdir
+        self._light_workdir = light_workdir
         self._new_run_id = new_run_id
         self._new_request_id = new_request_id
         self._watch_results = watch_results
@@ -311,9 +315,13 @@ class RequestPipeline:
         effort = self._access.effort_for(principal, ctx.text)
 
         config = self._channels.get(ctx.channel)
+        light_turn = self._light_workdir_for(config, principal)
         # Resolved so the recorded path means the same thing in the check
         # process, which has its own current directory (sca-6zt).
-        workdir = (config.workdir if (config and config.workdir) else self._default_workdir).resolve()
+        if light_turn is not None:
+            workdir = light_turn.resolve()
+        else:
+            workdir = (config.workdir if (config and config.workdir) else self._default_workdir).resolve()
         rich = channel_is_rich(config)
         # A flat_reply channel posts straight to the channel, not a thread off
         # the triggering message (A17, mametchi bot.py:6458).
@@ -526,6 +534,19 @@ class RequestPipeline:
             CurrentMessage(ts=ctx.ts, user=ctx.user, raw_text=ctx.text, body=body),
         )
 
+    def _light_workdir_for(
+        self, config: ChannelConfig | None, principal: Principal
+    ) -> Path | None:
+        """The lighter work directory this turn should use, or None for the full
+        one. A light_context channel routes non-owner turns to it; the owner
+        always gets the full directory (A11, mametchi workdir_for bot.py:282).
+        None when the channel isn't light_context, the asker is the owner, or no
+        light_workdir is configured — so the feature stays inert until an org
+        sets the path."""
+        if config and config.light_context and principal.trust is not TrustLevel.OWNER:
+            return self._light_workdir
+        return None
+
     def _linked_thread_note(self, ctx: RequestContext) -> str:
         # A lookup failure just omits this from the prompt; it must not block the reply.
         if self._linked_threads is None:
@@ -567,7 +588,12 @@ class RequestPipeline:
             unaddressed=ctx.unaddressed,
             chat_level=chat_level,
             authority_granted=self._access.is_full_authority(principal),
-            include_domain=_domain_applies(config.workdir if config else None, Path.home()),
+            # A light turn carries no company domain knowledge, just as the
+            # original's light workdir omitted the domain file (A11).
+            include_domain=(
+                self._light_workdir_for(config, principal) is None
+                and _domain_applies(config.workdir if config else None, Path.home())
+            ),
             people=self._present_people(ctx),
             files=ctx.files,
             missed_files=ctx.missed_files,

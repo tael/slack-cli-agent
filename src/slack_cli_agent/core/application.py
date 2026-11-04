@@ -733,6 +733,7 @@ class Application:
                 audit=self.audit(),
                 channels=self._channels,
                 default_workdir=self._profile.work_root,
+                light_workdir=self._profile.light_workdir,
                 owner_user_id=self._profile.owner_user_id,
                 reactions=self.reactions(),
                 name_resolver=self.user_namer(),
