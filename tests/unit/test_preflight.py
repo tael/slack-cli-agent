@@ -716,7 +716,10 @@ class TestPreflightSuite:
             "profile_unknown_keys",
             "channel_user_tools",
             "mcp_credentials",
-            # B6 — 마메치 check.py 와 짝 맞춘 9종 (tests/unit/test_preflight_parity.py).
+            # B6 — 마메치 check.py 와 짝 맞춘 점검 (tests/unit/test_preflight_parity.py).
+            # plugin_compile 은 apply.sh 의 py_compile 게이트(G43/G51)로, 이름 검사
+            # 앞에 선다.
+            "plugin_compile",
             "plugin_ast_names",
             "skill_symlinks",
             "codex_config_load",
@@ -815,6 +818,7 @@ class TestPreflightSuite:
             "[통과] profile_unknown_keys : 좋음\n"
             "[통과] channel_user_tools : 좋음\n"
             "[통과] mcp_credentials : 좋음\n"
+            "[통과] plugin_compile : 좋음\n"
             "[통과] plugin_ast_names : 좋음\n"
             "[통과] skill_symlinks : 좋음\n"
             "[통과] codex_config_load : 좋음\n"

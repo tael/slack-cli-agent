@@ -20,6 +20,7 @@ from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.preflight.check import PreflightContext
 from slack_cli_agent.preflight.checks import (
     CodexConfigLoadCheck,
+    CompileCheck,
     DuplicateMcpSystemCheck,
     FullDiskAccessCheck,
     McpScriptOwnershipCheck,
@@ -109,6 +110,85 @@ class TestPluginAstCheck:
         profile = make_profile(tmp_path, plugins=["colon_plugin_mod:Plugin"])
         result = PluginAstCheck().run(PreflightContext(profile=profile))
         assert result.ok is True
+
+
+# CompileCheck — G43/G51. 마메치 apply.sh/restart.sh 의 `py_compile bot.py`
+# 게이트 이식. 재기동 전 조직 코드(플러그인)가 컴파일되는지 본다. PluginAstCheck
+# 는 SyntaxError 를 일부러 삼키므로(이름 검사 전용), 이 점검이 없으면 구문이
+# 깨진 플러그인이 기동 점검을 통과한 뒤 임포트에서 터진다.
+
+
+class TestCompileCheck:
+    def _install_module(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, body: str) -> None:
+        pkg_dir = tmp_path / "compile_mods"
+        pkg_dir.mkdir(exist_ok=True)
+        (pkg_dir / f"{name}.py").write_text(body, encoding="utf-8")
+        monkeypatch.syspath_prepend(str(pkg_dir))
+        import importlib
+
+        importlib.invalidate_caches()
+        sys.modules.pop(name, None)
+
+    def test_플러그인이_없으면_통과한다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        result = CompileCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
+
+    def test_구문_오류가_있으면_fatal_실패한다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install_module(
+            tmp_path, monkeypatch, "syntax_broken_plugin_mod",
+            "def handler(:\n    return 1\n",
+        )
+        profile = make_profile(tmp_path, plugins=["syntax_broken_plugin_mod"])
+        result = CompileCheck().run(PreflightContext(profile=profile))
+        assert result.ok is False
+        assert result.fatal is True
+        assert "syntax_broken_plugin_mod" in result.detail
+
+    def test_정상_구문이면_미정의_이름이_있어도_통과한다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """컴파일은 구문만 본다 — 미정의 이름은 PluginAstCheck 의 몫이다."""
+        self._install_module(
+            tmp_path, monkeypatch, "names_only_plugin_mod",
+            "def handler():\n    return 어딘가에도_없는_이름\n",
+        )
+        profile = make_profile(tmp_path, plugins=["names_only_plugin_mod"])
+        result = CompileCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
+
+    def test_모듈을_못_찾으면_건너뛴다(self, tmp_path: Path) -> None:
+        """로드 실패는 PluginLoader 의 몫이다 — 겹쳐 보고하지 않는다."""
+        profile = make_profile(tmp_path, plugins=["없는모듈_zzz_compile"])
+        result = CompileCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
+
+    def test_콜론으로_클래스를_붙인_경로도_모듈만_본다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install_module(
+            tmp_path, monkeypatch, "colon_compile_plugin_mod",
+            "class Plugin:\n    pass\n",
+        )
+        profile = make_profile(tmp_path, plugins=["colon_compile_plugin_mod:Plugin"])
+        result = CompileCheck().run(PreflightContext(profile=profile))
+        assert result.ok is True
+
+    def test_PluginAstCheck가_삼키는_구문오류를_잡는다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """핵심 회귀: 같은 깨진 플러그인을 PluginAstCheck 는 통과시키고(이름
+        검사 전용, SyntaxError 를 continue 로 넘김) CompileCheck 만 막는다."""
+        self._install_module(
+            tmp_path, monkeypatch, "both_checks_plugin_mod",
+            "def handler(\n    return 1\n",
+        )
+        profile = make_profile(tmp_path, plugins=["both_checks_plugin_mod"])
+        ctx = PreflightContext(profile=profile)
+        assert PluginAstCheck().run(ctx).ok is True
+        assert CompileCheck().run(ctx).ok is False
 
 
 # SkillSymlinkCheck — G31. ALWAYS_SKILLS 심링크 실재 점검의 이식.
@@ -676,6 +756,12 @@ class TestPreflightSuite확장:
             SlackApiRegistrationCheck,
         ):
             assert cls.name in names, cls.name
+
+    def test_컴파일_점검이_표준_목록에_있고_이름검사보다_먼저_돈다(self) -> None:
+        """apply.sh 와 같은 순서: py_compile 먼저, 그 다음 이름 검사(check.py)."""
+        names = [c.name for c in PreflightSuite().checks]
+        assert CompileCheck.name in names
+        assert names.index(CompileCheck.name) < names.index(PluginAstCheck.name)
 
     def test_주입_인자가_실제_점검에_반영된다(self, tmp_path: Path) -> None:
         profile = make_profile(
