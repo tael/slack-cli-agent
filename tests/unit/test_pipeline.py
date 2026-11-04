@@ -346,6 +346,7 @@ def build_pipeline(
     participants: Any = None,
     linked_threads: Any = None,
     late_addendum: Any = None,
+    origin_alive: Any = None,
     consumption: Any = None,
     watch_queue: Any = None,
     response_archive: Any = None,
@@ -390,6 +391,8 @@ def build_pipeline(
         extra_kwargs["linked_threads"] = linked_threads
     if late_addendum is not None:
         extra_kwargs["late_addendum"] = late_addendum
+    if origin_alive is not None:
+        extra_kwargs["origin_alive"] = origin_alive
     if consumption is not None:
         extra_kwargs["consumption"] = consumption
     if watch_queue is not None:
@@ -1708,6 +1711,74 @@ class Test발송전재확인:
         pipeline.handle(ctx)
         assert parts["publisher"].posted[-1]["text"] == "첫 답"
         assert consumption.consumed_ts(ctx.thread_ts) == 0.0
+
+
+class Fake물음생존:
+    """캔 값으로 물음의 생존을 돌려준다 (True 살아있음, False 지워짐, None 모름)."""
+
+    def __init__(self, verdict: bool | None) -> None:
+        self.verdict = verdict
+        self.calls: list[tuple[str, str]] = []
+
+    def alive(self, channel: str, ts: str) -> bool | None:
+        self.calls.append((channel, ts))
+        return self.verdict
+
+
+class Test발송직전물음생존확인:
+    """답을 올리기 직전, 물음이 아직 그 스레드에 있는지 본다 (C34).
+
+    지워졌으면 답을 올리지 않는다. 접수 때 잡은 좌표가 이미 남의
+    스레드라 답만 덩그러니 남기 때문이다.
+    """
+
+    def test_물음이_지워졌으면_답을_올리지_않는다(self) -> None:
+        checker = Fake물음생존(False)
+        pipeline, parts = build_pipeline(
+            responses=[ok_response("답")], origin_alive=checker,
+        )
+        pipeline.handle(make_ctx())
+        assert parts["publisher"].posted == []
+        assert checker.calls  # 확인은 실제로 호출됐다
+
+    def test_지워졌을_때_origin_deleted로_기록한다(self) -> None:
+        pipeline, parts = build_pipeline(
+            responses=[ok_response("답")], origin_alive=Fake물음생존(False),
+        )
+        pipeline.handle(make_ctx())
+        assert any(
+            i["kind"] == IncidentKind.ORIGIN_DELETED for i in parts["audit"].incidents
+        )
+
+    def test_지워져_올리지_않아도_턴은_성공으로_집계한다(self) -> None:
+        """엔진은 돌았고 토큰도 썼다. 발송만 보류했을 뿐 턴 자체는 기록한다."""
+        pipeline, parts = build_pipeline(
+            responses=[ok_response("답")], origin_alive=Fake물음생존(False),
+        )
+        outcome = pipeline.handle(make_ctx())
+        assert outcome.ok is True
+        assert len(parts["audit"].records) == 1
+
+    def test_살아있으면_평소대로_올린다(self) -> None:
+        pipeline, parts = build_pipeline(
+            responses=[ok_response("답")], origin_alive=Fake물음생존(True),
+        )
+        pipeline.handle(make_ctx())
+        assert parts["publisher"].posted[-1]["text"] == "답"
+
+    def test_확인_실패_None은_보류하지_않고_올린다(self) -> None:
+        """조회 실패를 삭제로 읽으면 멀쩡한 답을 버린다. None 은 발송한다."""
+        pipeline, parts = build_pipeline(
+            responses=[ok_response("답")], origin_alive=Fake물음생존(None),
+        )
+        pipeline.handle(make_ctx())
+        assert parts["publisher"].posted[-1]["text"] == "답"
+
+    def test_확인기가_없으면_평소대로_올린다(self) -> None:
+        """프로필에 배선이 없으면 발송 보류 없이 그대로 올린다 (degrade)."""
+        pipeline, parts = build_pipeline(responses=[ok_response("답")])
+        pipeline.handle(make_ctx())
+        assert parts["publisher"].posted[-1]["text"] == "답"
 
 
 class Fake감시큐:

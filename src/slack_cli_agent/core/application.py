@@ -157,6 +157,7 @@ from ..slack.linked_threads import LinkedThreadReader
 from ..slack.listener import EventListener
 from ..slack.mentions import SelfMentionStripper
 from ..slack.names import BotUserResolver, DisplayNameResolver, UserGroupNameResolver, UserNamer
+from ..slack.origin_alive import SlackOriginAliveChecker
 from ..slack.owner_only_audit import OwnerOnlyChannelAudit
 from ..slack.participants import ThreadParticipants
 from ..slack.progress import (
@@ -755,6 +756,7 @@ class Application:
                     text, channel, attachments
                 ),
                 late_addendum=self._late_addendum(),
+                origin_alive=SlackOriginAliveChecker(self._client),
                 consumption=self.consumption,
                 watch_queue=self.watch_jobs(),
                 watch_results=self.watch_results(),
