@@ -1066,6 +1066,74 @@ class TestCodexEngineParse:
         assert resp.elapsed_source == "unknown"
 
 
+class TestCodexEngineSandboxSignals:
+    """codex exec 가 성공으로 끝났어도 샌드박스가 쓰기를 막았거나(blocked)
+    샌드박스 밖 도구로 돌아갔으면(bypass) 그 턴은 시킨 일을 못 한 것이다.
+    마메치 codex_runner.parse_codex_jsonl 패리티 — 성공 집계에 묻히지 않게
+    raw 에 신호를 남긴다 (H52)."""
+
+    def _parse(self, tmp_path: Path, items: list[dict]) -> EngineResponse:
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        lines = [json.dumps({"type": "thread.started", "thread_id": "th-1"})]
+        lines += [json.dumps({"type": "item.completed", "item": it}) for it in items]
+        lines.append(json.dumps({"type": "item.completed",
+                                 "item": {"type": "agent_message", "text": "답"}}))
+        return engine.parse("\n".join(lines), "", 0)
+
+    def test_도구_호출_이름을_raw에_모은다(self, tmp_path: Path) -> None:
+        resp = self._parse(tmp_path, [
+            {"type": "mcp_tool_call", "server": "jira", "tool": "search", "status": "completed"},
+        ])
+        assert resp.ok is True
+        assert resp.raw["tools"] == ["jira.search"]
+
+    def test_셸_차단_문구를_blocked에_담는다(self, tmp_path: Path) -> None:
+        resp = self._parse(tmp_path, [
+            {"type": "command_execution",
+             "aggregated_output": "sed: /etc/x: Read-only file system"},
+        ])
+        assert resp.ok is True
+        assert resp.raw["blocked"] == ["shell : Read-only file system"]
+
+    def test_mcp_도구_차단_문구를_blocked에_담는다(self, tmp_path: Path) -> None:
+        resp = self._parse(tmp_path, [
+            {"type": "mcp_tool_call", "server": "fs", "tool": "write", "status": "completed",
+             "output": "patch rejected"},
+        ])
+        assert resp.raw["blocked"] == ["fs.write : patch rejected"]
+
+    def test_명령줄의_낱말은_차단으로_오탐하지_않는다(self, tmp_path: Path) -> None:
+        # 모델이 검색한 명령 문자열에 차단 문구가 들어 있어도 잡지 않는다.
+        resp = self._parse(tmp_path, [
+            {"type": "command_execution",
+             "command": "grep 'Read-only file system' log.txt",
+             "aggregated_output": "no matches"},
+        ])
+        assert resp.raw["blocked"] == []
+
+    def test_우회_도구가_성공하면_bypass에_담는다(self, tmp_path: Path) -> None:
+        resp = self._parse(tmp_path, [
+            {"type": "mcp_tool_call", "server": "browser",
+             "tool": "browser_run_code_unsafe", "status": "completed"},
+        ])
+        assert resp.raw["bypass"] == ["browser.browser_run_code_unsafe"]
+
+    def test_우회_도구가_실패하면_bypass가_아니다(self, tmp_path: Path) -> None:
+        resp = self._parse(tmp_path, [
+            {"type": "mcp_tool_call", "server": "browser",
+             "tool": "browser_run_code_unsafe", "status": "failed",
+             "error": {"message": "nope"}},
+        ])
+        assert resp.raw["bypass"] == []
+
+    def test_깨끗한_턴은_신호가_비어_있다(self, tmp_path: Path) -> None:
+        resp = self._parse(tmp_path, [
+            {"type": "mcp_tool_call", "server": "jira", "tool": "search", "status": "completed"},
+        ])
+        assert resp.raw["blocked"] == []
+        assert resp.raw["bypass"] == []
+
+
 class Test지침이_비어도_경로_안내는_실린다:
     """리뷰 경로는 빈 시스템 프롬프트로 부른다(core/application.py:1309).
     codex 는 그 두 안내를 developer_instructions 하나에 묶어 둬서, 지침이

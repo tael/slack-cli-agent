@@ -134,6 +134,12 @@ class _CodexStream:
     usage: dict[str, Any]
     tool_errors: list[str]
     malformed: bool
+    #: 이번 턴에 부른 도구 이름. 진행 표시와 트러블슈팅이 쓴다.
+    tools: list[str]
+    #: 샌드박스가 쓰기를 막은 자리. 턴은 성공으로 끝나도 시킨 일은 못 했다.
+    blocked: list[str]
+    #: 샌드박스 밖 도구로 돌아간 자리. 막힌 것보다 무겁다.
+    bypass: list[str]
 
 
 #: options.sandbox values that mean something is actually enforced.
@@ -403,7 +409,10 @@ class CodexEngine(Engine):
         # elapsed stays 0.0/"unknown" — confirmed 2026-09-16 that codex exec
         # --json never emits a duration field on any event. EngineRunner
         # fills it from wall-clock time instead.
-        raw = {"thread_id": thread_id, "tool_errors": tool_errors, "usage": usage_data}
+        raw = {
+            "thread_id": thread_id, "tool_errors": tool_errors, "usage": usage_data,
+            "tools": stream.tools, "blocked": stream.blocked, "bypass": stream.bypass,
+        }
         usage = Usage.from_native(usage_data, CODEX_USAGE_KEY_MAP)
         if not body:
             return EngineResponse(
@@ -457,6 +466,46 @@ class CodexEngine(Engine):
     def tools_already_ran(self, stdout: str) -> bool:
         return any(mark in (stdout or "") for mark in self.TOOL_EVENT_MARKS)
 
+    #: 샌드박스가 쓰기를 막았을 때 출력에 나오는 문구 (2026-09-16 세션에서 수집,
+    #: 마메치 codex_runner.SANDBOX_BLOCKED_MARKS). 이 문구가 있으면 모델은
+    #: 시킨 일을 못 했는데 턴은 성공으로 끝나므로, 잡아서 남기지 않으면 실패가
+    #: 성공으로 집계된다. codex CLI 공통 문구라 조직 값이 아니다.
+    SANDBOX_BLOCKED_MARKS: ClassVar[tuple[str, ...]] = (
+        "blocked by read-only sandbox",
+        "patch rejected",
+        "rejected by user approval settings",
+        "Read-only file system",
+    )
+    #: 샌드박스 밖에서 파일을 쓸 수 있는 도구. 셸이 막히면 모델이 이쪽으로
+    #: 돌아간다 — 샌드박스를 지나지 않아 무엇을 고쳤는지 기록에 안 남는다.
+    SANDBOX_BYPASS_TOOLS: ClassVar[tuple[str, ...]] = (
+        "browser.browser_run_code_unsafe",
+    )
+
+    @staticmethod
+    def _item_text(item: Mapping[str, Any]) -> str:
+        """아이템에서 차단 문구를 찾을 텍스트를 모은다. 명령 자체(command/
+        parsed_cmd/arguments)는 뺀다 — 모델이 검색한 낱말이 그대로 걸려 오탐이
+        되기 때문이다 (마메치 codex_runner._item_text)."""
+        parts: list[str] = []
+        for key, value in (item or {}).items():
+            if key in ("command", "parsed_cmd", "arguments"):
+                continue
+            if isinstance(value, str):
+                parts.append(value)
+            elif isinstance(value, (dict, list)):
+                parts.append(json.dumps(value, ensure_ascii=False))
+        return "\n".join(parts)
+
+    @classmethod
+    def _blocked_mark(cls, item: Mapping[str, Any]) -> str | None:
+        """샌드박스 차단 문구가 있으면 그 문구를 돌려준다."""
+        text = cls._item_text(item).lower()
+        for mark in cls.SANDBOX_BLOCKED_MARKS:
+            if mark.lower() in text:
+                return mark
+        return None
+
     #: 토큰이 폐기됐을 때만 나오는 문구다. CLI 는 인증 실패도 다른 실패도
     #: 종료코드 1 로 내서 코드로는 못 가린다. 401 이라는 상태 코드만으로
     #: 좁히지 않는 이유는 MCP 서버 하나가 401 을 내도 codex 자체의 로그인은
@@ -469,8 +518,8 @@ class CodexEngine(Engine):
     )
     AUTH_FAILURE_NOTE = "codex 로그인이 풀렸다. codex login 으로 다시 로그인해야 한다."
 
-    @staticmethod
-    def _parse_jsonl(output: str) -> _CodexStream:
+    @classmethod
+    def _parse_jsonl(cls, output: str) -> _CodexStream:
         """Reads as far as the stream allows and says whether anything was
         unreadable, rather than raising. A run cut off mid-write leaves a
         truncated last line, and that is exactly when the events before it
@@ -479,6 +528,9 @@ class CodexEngine(Engine):
         text = ""
         usage: dict[str, Any] = {}
         tool_errors: list[str] = []
+        tools: list[str] = []
+        blocked: list[str] = []
+        bypass: list[str] = []
         malformed = False
         for line in output.splitlines():
             if not line.strip():
@@ -506,15 +558,35 @@ class CodexEngine(Engine):
                     malformed = True
                     continue
                 item = item or {}
-                if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+                item_type = item.get("type")
+                if item_type == "agent_message" and isinstance(item.get("text"), str):
                     text = item["text"]
-                elif item.get("type") == "error" and isinstance(item.get("message"), str):
+                elif item_type == "mcp_tool_call":
+                    label = f"{item.get('server', '?')}.{item.get('tool', '?')}"
+                    tools.append(label)
+                    if item.get("status") == "failed":
+                        error = item.get("error") or {}
+                        message = error.get("message") if isinstance(error, Mapping) else None
+                        tool_errors.append(f"{label} : {message or '실패'}")
+                    if label in cls.SANDBOX_BYPASS_TOOLS and item.get("status") != "failed":
+                        bypass.append(label)
+                    mark = cls._blocked_mark(item)
+                    if mark:
+                        blocked.append(f"{label} : {mark}")
+                elif item_type in ("command_execution", "async_command_execution"):
+                    tools.append("shell")
+                    mark = cls._blocked_mark(item)
+                    if mark:
+                        blocked.append(f"shell : {mark}")
+                elif item_type == "error" and isinstance(item.get("message"), str):
                     tool_errors.append(item["message"])
             elif kind == "turn.completed":
                 event_usage = event.get("usage")
                 if isinstance(event_usage, dict):
                     usage = event_usage
-        return _CodexStream(thread_id, text, usage, tool_errors, malformed)
+        return _CodexStream(
+            thread_id, text, usage, tool_errors, malformed, tools, blocked, bypass,
+        )
 
     @staticmethod
     def _toml_string(value: str) -> str:
