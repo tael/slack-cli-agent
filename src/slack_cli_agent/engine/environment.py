@@ -240,3 +240,28 @@ def create_environment_policy(
     actual lookup is delegated to the module-level registry.
     """
     return registry.create(engine_name, profile_name=profile_name, home_dir=home_dir)
+
+
+def turn_budget_env(
+    timeout_sec: float, *, now_wall: float, now_monotonic: float,
+) -> dict[str, str]:
+    """The turn deadline as env vars for the engine child process (A28).
+
+    The engine's own Stop hook (guard/finish_review.time_left) and the Bash
+    PreToolUse guard (guard/pretool/turn_budget) both read TURN_DEADLINE_MONO
+    first (sleep-proof, system-wide monotonic clock) and fall back to
+    TURN_DEADLINE (wall clock). Both are absolute epochs, not durations, so a
+    child that re-reads them mid-turn still computes the right remaining time.
+
+    Ported from mametchi's MAMETCHI_TURN_DEADLINE[_MONO] (bot.py), renamed to
+    organization-neutral names. ClaudeEnvironmentPolicy's allowlist already
+    carries both names through, so stamping them here is all the child needs to
+    finish inside its budget rather than being killed mid-write at timeout.
+
+    A pure function (clocks are passed in, not read) so a test can assert the
+    exact deadline without touching the wall or monotonic clock.
+    """
+    return {
+        "TURN_DEADLINE": str(now_wall + timeout_sec),
+        "TURN_DEADLINE_MONO": str(now_monotonic + timeout_sec),
+    }
