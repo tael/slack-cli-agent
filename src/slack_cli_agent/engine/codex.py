@@ -83,7 +83,9 @@ CODEX_USAGE_KEY_MAP: Mapping[str, str] = {
 }
 
 
-def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec]) -> list[str]:
+def _codex_mcp_config_args(
+    mcp_servers: Mapping[str, McpServerSpec], *, can_act: bool = False
+) -> list[str]:
     args: list[str] = []
     for name, server in mcp_servers.items():
         prefix = f"mcp_servers.{name}"
@@ -105,6 +107,10 @@ def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec]) -> list[str
             # have no place for it on a remote entry either, and outside the
             # branch the same profile ran differently per engine (sca-wdzh).
             for key, value in server.resolved_env().items():
+                args += ["-c", f"{prefix}.env.{key}={CodexEngine._toml_string(value)}"]
+            # Same stdio-only placement as env: a read-only turn omits the gate
+            # var so the spawned server sees no write clearance (H6/H7/H8).
+            for key, value in server.turn_env_for(can_act=can_act).items():
                 args += ["-c", f"{prefix}.env.{key}={CodexEngine._toml_string(value)}"]
         if server.disabled_tools:
             args += ["-c", f"{prefix}.disabled_tools={json.dumps(list(server.disabled_tools))}"]
@@ -252,7 +258,9 @@ class CodexEngine(Engine):
         # Always sent, never omitted: leaving it out lets the CLI pick its own
         # default while the audit records the requested value (sca-3kzk).
         cmd += ["-c", f"model_reasoning_effort={self._toml_string(self.resolve_effort(request))}"]
-        cmd += _codex_mcp_config_args(self.profile.mcp_servers)
+        cmd += _codex_mcp_config_args(
+            self.profile.mcp_servers, can_act=request.tools.can_act
+        )
         if not request.resume:
             instructions = request.system_prompt + self._session_path_note(request)
             if instructions:
