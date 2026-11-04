@@ -163,6 +163,15 @@ class StatePaths:
     def engine_settings(self, engine_type: str) -> Path:
         return self.engine_dir / f"settings-{engine_type}.json"
 
+    def pid_file(self, role: str) -> Path:
+        """PID of a running service process, one file per role.
+
+        bot.py kept a single `bot.pid`; this engine runs ingress and worker as
+        separate processes, so each records its own `<role>.pid` to avoid one
+        overwriting the other (reliability/pidfile.py).
+        """
+        return self.root / f"{role}.pid"
+
     @property
     def progress(self) -> Path:
         """One log per in-flight request, written by the engine's own tool hook.

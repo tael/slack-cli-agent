@@ -833,6 +833,90 @@ class TestWorkerCommand:
         assert app.close_calls == 1
 
 
+class TestWorkerCommandPid기록:
+    """기동한 워커 프로세스의 PID 를 상태 디렉터리에 남긴다 (F54)."""
+
+    def test_실행중_worker_pid파일에_현재_pid가_있고_종료후_지워진다(
+        self, tmp_path: Path
+    ) -> None:
+        import os
+
+        profiles = tmp_path / "profiles"
+        state_dir = tmp_path / "state"
+        write_profile(profiles, state_dir)
+
+        seen: dict[str, str] = {}
+
+        class 기록워커(FakeWorker):
+            def run_once(self) -> bool:
+                pid_path = state_dir / "worker.pid"
+                if pid_path.exists():
+                    seen["content"] = pid_path.read_text().strip()
+                return super().run_once()
+
+        worker = 기록워커(stop_after_run_once=1)
+        app = FakeApplication(worker=worker)
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
+        code = cli.run(
+            ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"],
+            stdout=io.StringIO(),
+        )
+        assert code == 0
+        # 실행 중에는 현재 프로세스 pid 가 파일에 있었고,
+        assert seen.get("content") == str(os.getpid())
+        # 정상 종료 뒤에는 지워져 죽은 상태 디렉터리와 구분된다.
+        assert not (state_dir / "worker.pid").exists()
+
+    def test_worker_id별로_다른_파일에_쓴다(self, tmp_path: Path) -> None:
+        import os
+
+        profiles = tmp_path / "profiles"
+        state_dir = tmp_path / "state"
+        write_profile(profiles, state_dir)
+
+        seen: dict[str, bool] = {}
+
+        class 기록워커(FakeWorker):
+            def run_once(self) -> bool:
+                seen["worker2"] = (state_dir / "worker2.pid").read_text().strip() == str(
+                    os.getpid()
+                )
+                return super().run_once()
+
+        worker = 기록워커(stop_after_run_once=1)
+        app = FakeApplication(worker=worker)
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
+        code = cli.run(
+            [
+                "worker",
+                "--profile",
+                "example",
+                "--profile-dir",
+                str(profiles),
+                "--once",
+                "--worker-id",
+                "worker2",
+            ],
+            stdout=io.StringIO(),
+        )
+        assert code == 0
+        assert seen.get("worker2") is True
+
+
 class TestWorkerCommand종료신호:
     """SIGTERM 을 받았을 때 처리 중인 요청을 마치고 끝나는가.
 
