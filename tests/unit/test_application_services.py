@@ -468,6 +468,48 @@ class Test복구보고:
         러너._task()
         assert [이름 for 이름, _ in client.calls if 이름 == "chat_postMessage"] == []
 
+    def test_오래_끊겼으면_네트워크_수준_장애로_알린다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        """auth_test 가 capture_after_sec(180초) 넘게 닿지 않은 끊김은 소켓 아래
+        계층(DNS/Wi-Fi) 장애로 보고, 복구 보고에 그 사실과 기간을 싣는다.
+        NetworkOutageEscalation 이 '진단 캡처할 만한 지속 장애' 를 판정하고,
+        assemble_recovery_report 가 그 줄을 조립한다 (G59)."""
+        시각 = [1000.0]
+        app = Application(profile, client, clock=lambda: 시각[0])
+        닿는다 = [True]
+        워커, _ = Test복구직후캐치업.워커를_바꾼다(app, 닿는다)
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        시각[0] += 300.0  # 180초를 넘는 지속 끊김 → 네트워크 수준으로 본다
+        닿는다[0] = True
+        러너._task()
+        합친것 = str([kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"])
+        assert "연결 복구" in 합친것
+        assert "DNS" in 합친것 or "Wi-Fi" in 합친것, 합친것
+        assert "5분" in 합친것, 합친것  # 300초 = 5분, 네트워크 장애 기간
+
+    def test_짧게_끊겼으면_네트워크_수준_장애로_보지_않는다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        """짧은 API 블립은 DNS/Wi-Fi 장애로 단정하지 않는다 — 평시 복구 보고만."""
+        시각 = [1000.0]
+        app = Application(profile, client, clock=lambda: 시각[0])
+        닿는다 = [True]
+        워커, _ = Test복구직후캐치업.워커를_바꾼다(app, 닿는다)
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        시각[0] += 20.0  # 180초 미만
+        닿는다[0] = True
+        러너._task()
+        합친것 = str([kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"])
+        assert "연결 복구" in 합친것
+        assert "DNS" not in 합친것 and "Wi-Fi" not in 합친것, 합친것
+
 
 class Test복구시남긴보고를즉시내보낸다:
     """끊긴 사이에 보내지 못하고 남겨둔 보고를 복구 회차에 바로 내보내는가.
