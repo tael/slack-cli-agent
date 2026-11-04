@@ -62,9 +62,18 @@ def run_streaming(
         reader.start()
     try:
         returncode = process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as expired:
         process.kill()
         process.wait()
+        # subprocess.run() 은 중단될 때 그때까지 받은 출력을 예외에 실어 준다.
+        # Popen 경로는 직접 실어야 한다 - 안 그러면 무엇을 하다 멈췄는지가
+        # 사라진다 (B11). 죽인 뒤 reader 를 잠깐 join 해 파이프에 남은 꼬리까지
+        # 거둔다.
+        for reader in readers:
+            reader.join(_DRAIN_TIMEOUT_SEC)
+        # text=True 라 실제론 str 이지만 typeshed 는 bytes 로 본다.
+        expired.stdout = "".join(out_chunks)  # type: ignore[assignment]
+        expired.stderr = "".join(err_chunks)  # type: ignore[assignment]
         raise
     for reader in readers:
         reader.join(_DRAIN_TIMEOUT_SEC)
