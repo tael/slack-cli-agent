@@ -495,6 +495,40 @@ class TestCatchUpDedup:
         assert ("add", "C1", "1.1", "white_check_mark") in client.calls
 
 
+class TestQueue대표건묶음:
+    """상시 큐에 같은 스레드로 밀린 요청은 최신 1건만 돌고 나머지는 표식만
+    받는다 (A30). catch_up 의 묶음 처리를 접수 경로에도 적용한 것이다."""
+
+    def test_같은_스레드_3건은_1건_처리_2건_표식만_남는다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=True))
+        worker, queue, client = make_worker(database=database, handler=handler)
+        for i in range(3):
+            queue.enqueue(ctx(f"1.{i}", "T1"))
+            time.sleep(0.001)
+
+        assert worker.run_once() is True
+
+        # 최신 1건만 처리기에 넘어간다
+        assert [c.ts for c in handler.received] == ["1.2"]
+        # 나머지 2건은 대표와 같은 완료 표식을 받는다
+        assert ("add", "C1", "1.2", "white_check_mark") in client.calls
+        assert ("add", "C1", "1.1", "white_check_mark") in client.calls
+        assert ("add", "C1", "1.0", "white_check_mark") in client.calls
+        assert queue.counts() == {"COMPLETED": 3}
+
+    def test_침묵_대표건의_묻힌_건은_입다문_표식을_받는다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=True, silent=True))
+        worker, queue, client = make_worker(database=database, handler=handler)
+        queue.enqueue(ctx("1.0", "T1"))
+        time.sleep(0.001)
+        queue.enqueue(ctx("1.1", "T1"))
+
+        worker.run_once()
+
+        assert ("add", "C1", "1.1", "zipper_mouth_face") in client.calls
+        assert ("add", "C1", "1.0", "zipper_mouth_face") in client.calls
+
+
 class TestShutdown:
     def test_종료하면_실행중_작업을_대기로_되돌린다(self, database) -> None:
         release = threading.Event()

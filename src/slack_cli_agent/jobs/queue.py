@@ -97,6 +97,70 @@ class SqliteJobQueue(SqliteRepository):
             )
         return self._to_job(row, attempts_delta=1, lease=lease)
 
+    def claim_next_representative(
+        self, worker_id: str
+    ) -> tuple[Job | None, list[RequestContext]]:
+        """Claim the newest queued job on the next eligible thread, burying the
+        older same-thread queued requests behind it.
+
+        The persistent queue serializes a thread and runs every backlogged
+        request one at a time, posting a reply for each. That repeats the
+        catch-up sweep's problem: when several requests pile up on one thread
+        while it is busy, only the newest needs an answer — its reply restores
+        the whole thread context — and the rest are the same request restated.
+        This mirrors `catchup._pick_representatives`/the original bot.py's
+        `pick_next_queued`: the newest becomes the representative and the older
+        ones are collapsed to COMPLETED and returned so the caller marks them
+        like the representative instead of answering each (A30).
+
+        Thread selection matches `claim_next`: the thread whose oldest queued
+        job has waited longest and which has nothing running, so cross-thread
+        fairness is unchanged — only within-thread backlog is collapsed.
+        """
+        now = self._now()
+        with self._transaction() as conn:
+            head = conn.execute(
+                """
+                SELECT thread_ts FROM jobs
+                 WHERE status = ?
+                   AND thread_ts NOT IN (
+                       SELECT thread_ts FROM jobs WHERE status = ?
+                   )
+                 ORDER BY created_at, id
+                 LIMIT 1
+                """,
+                (JobStatus.QUEUED.value, JobStatus.RUNNING.value),
+            ).fetchone()
+            if head is None:
+                return None, []
+            rows = conn.execute(
+                """
+                SELECT id, payload, attempts, created_at FROM jobs
+                 WHERE status = ? AND thread_ts = ?
+                 ORDER BY created_at, id
+                """,
+                (JobStatus.QUEUED.value, head["thread_ts"]),
+            ).fetchall()
+            rep_row = rows[-1]
+            lease = uuid4().hex
+            conn.execute(
+                """
+                UPDATE jobs
+                   SET status = ?, worker_id = ?, started_at = ?,
+                       heartbeat_ts = ?, attempts = attempts + 1, lease = ?
+                 WHERE id = ?
+                """,
+                (JobStatus.RUNNING.value, worker_id, now, now, lease, rep_row["id"]),
+            )
+            buried: list[RequestContext] = []
+            for row in rows[:-1]:
+                conn.execute(
+                    "UPDATE jobs SET status = ?, finished_at = ?, failure = ? WHERE id = ?",
+                    (JobStatus.COMPLETED.value, now, "대표 요청에 흡수됨", row["id"]),
+                )
+                buried.append(RequestContext.from_json(row["payload"]))
+        return self._to_job(rep_row, attempts_delta=1, lease=lease), buried
+
     def heartbeat(self, job_id: int, lease: str) -> None:
         self._execute(
             "UPDATE jobs SET heartbeat_ts = ? WHERE id = ? AND status = ? AND lease = ?",

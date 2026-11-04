@@ -82,11 +82,21 @@ class Worker:
         return self._inflight
 
     def run_once(self) -> bool:
-        job = self._queue.claim_next(self._worker_id)
+        job, buried = self._queue.claim_next_representative(self._worker_id)
         if job is None:
             return False
+        self._bury_behind(job, buried)
         self._process(job)
         return True
+
+    def _bury_behind(self, job: Job, buried: list[RequestContext]) -> None:
+        """Tracks the requests collapsed behind this representative so they get
+        the same reaction mark once it finishes, the same path a catch-up
+        representative's buried messages take (A30)."""
+        if not buried:
+            return
+        with self._lock:
+            self._skip_groups.setdefault(job.context.key, []).extend(buried)
 
     def _process(self, job: Job) -> None:
         context = job.context
@@ -148,11 +158,12 @@ class Worker:
             # One should_stop call per turn, same as the single-slot loop: the
             # caller's flag is also what the tests step through.
             free.acquire()
-            job = self._queue.claim_next(self._worker_id)
+            job, buried = self._queue.claim_next_representative(self._worker_id)
             if job is None:
                 free.release()
                 self._sleep(self._settings.queue_idle_sleep_sec)
                 continue
+            self._bury_behind(job, buried)
             thread = threading.Thread(
                 target=self._process_and_release, args=(job, free), daemon=True
             )
