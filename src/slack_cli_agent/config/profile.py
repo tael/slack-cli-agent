@@ -111,12 +111,14 @@ class McpServerSpec:
     args: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
     #: Env vars set from this turn's context rather than a fixed value, keyed
-    #: env-var-name -> context key. Two keys are honored: `can_act` sets the var
-    #: to "1" on an action turn and drops it on a read-only one (the write gate);
-    #: `channel` sets the var to this turn's opaque channel token and drops it
-    #: when the token is empty (the per-channel render guard). The var names and
-    #: the servers are organization config; the gating is the common skeleton
-    #: for mametchi's per-turn WRITE_ENABLED and MAMETCHI_POST_CHANNEL env.
+    #: env-var-name -> context key. Three keys are honored: `can_act` sets the
+    #: var to "1" on an action turn and drops it on a read-only one (the write
+    #: gate); `is_owner` sets the var to "1" on an owner turn and drops it
+    #: otherwise (the owner override that lifts a guard); `channel` sets the var
+    #: to this turn's opaque channel token and drops it when the token is empty
+    #: (the per-channel render guard). The var names and the servers are
+    #: organization config; the gating is the common skeleton for mametchi's
+    #: per-turn WRITE_ENABLED, MAMETCHI_POST_ANY, and MAMETCHI_POST_CHANNEL env.
     turn_env: Mapping[str, str] = field(default_factory=dict)
     cwd: Path | None = None
     url: str = ""
@@ -126,9 +128,13 @@ class McpServerSpec:
 
     #: Turn-context keys turn_env may point at. Kept small on purpose: an
     #: unknown key is a profile typo that would silently never fire. `can_act`
-    #: is the tool-axis write gate; `channel` is the opaque per-turn channel
-    #: token the caller supplies through EngineRequest.turn_context.
-    _TURN_ENV_KEYS: ClassVar[frozenset[str]] = frozenset({"can_act", "channel"})
+    #: is the tool-axis write gate and `is_owner` the trust-axis owner override —
+    #: both boolean gates the engine derives from the request; `channel` is the
+    #: opaque per-turn channel token the caller supplies through
+    #: EngineRequest.turn_context.
+    _TURN_ENV_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {"can_act", "is_owner", "channel"}
+    )
 
     @classmethod
     def from_dict(cls, name: str, data: Mapping[str, Any]) -> McpServerSpec:
@@ -161,23 +167,30 @@ class McpServerSpec:
         )
 
     def turn_env_for(
-        self, *, can_act: bool, turn_context: Mapping[str, str] | None = None
+        self,
+        *,
+        can_act: bool,
+        is_owner: bool = False,
+        turn_context: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
         """This turn's env additions for the server's process, by turn context.
 
-        `can_act` sets its var to "1" on an action turn and omits it otherwise,
-        so a server reading the var as a write gate stays closed on a read-only
-        turn. `channel` sets its var to the matching token from `turn_context`
-        and omits it when that token is empty or absent, so a server using the
-        var as a per-channel render guard falls back to its default. A remote
-        server has no process to receive env, so callers skip it the same way
-        they skip `env`.
+        `can_act` and `is_owner` are boolean gates: each sets its var to "1" when
+        true and omits it otherwise, so a server reading the var stays in its
+        default (write gate closed, override not applied) on the opposite turn.
+        They are independent — a read-only owner turn still lifts an owner
+        override. `channel` sets its var to the matching token from
+        `turn_context` and omits it when that token is empty or absent, so a
+        server using the var as a per-channel render guard falls back to its
+        default. A remote server has no process to receive env, so callers skip
+        it the same way they skip `env`.
         """
         ctx = turn_context or {}
+        gates = {"can_act": can_act, "is_owner": is_owner}
         out: dict[str, str] = {}
         for var, context_key in self.turn_env.items():
-            if context_key == "can_act":
-                if can_act:
+            if context_key in gates:
+                if gates[context_key]:
                     out[var] = "1"
             else:
                 value = ctx.get(context_key, "")

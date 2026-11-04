@@ -43,6 +43,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ..auth.principal import TrustLevel
 from ..auth.tools import READ_ONLY_TOOLS
 from ..config.profile import EngineSpec, McpServerSpec
 from .base import (
@@ -87,6 +88,7 @@ def _codex_mcp_config_args(
     mcp_servers: Mapping[str, McpServerSpec],
     *,
     can_act: bool = False,
+    is_owner: bool = False,
     turn_context: Mapping[str, str] | None = None,
 ) -> list[str]:
     args: list[str] = []
@@ -115,7 +117,7 @@ def _codex_mcp_config_args(
             # var so the spawned server sees no write clearance (H6/H7/H8), and
             # the channel var is omitted when no channel token is in context.
             for key, value in server.turn_env_for(
-                can_act=can_act, turn_context=turn_context
+                can_act=can_act, is_owner=is_owner, turn_context=turn_context
             ).items():
                 args += ["-c", f"{prefix}.env.{key}={CodexEngine._toml_string(value)}"]
         if server.disabled_tools:
@@ -267,6 +269,7 @@ class CodexEngine(Engine):
         cmd += _codex_mcp_config_args(
             self.profile.mcp_servers,
             can_act=request.tools.can_act,
+            is_owner=request.trust_level is TrustLevel.OWNER,
             turn_context=request.turn_context,
         )
         if not request.resume:

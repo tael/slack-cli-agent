@@ -44,6 +44,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ..auth.principal import TrustLevel
 from ..config.profile import McpServerSpec
 from .base import (
     TRUNCATED_RAW_KEY,
@@ -90,6 +91,7 @@ def _agy_mcp_servers(
     mcp_servers: Mapping[str, McpServerSpec],
     *,
     can_act: bool = False,
+    is_owner: bool = False,
     turn_context: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     servers: dict[str, Any] = {}
@@ -107,7 +109,11 @@ def _agy_mcp_servers(
             # so the spawned server reads no write clearance (H6/H7/H8); the
             # channel var is dropped when no channel token is in context.
             env = server.resolved_env()
-            env.update(server.turn_env_for(can_act=can_act, turn_context=turn_context))
+            env.update(
+                server.turn_env_for(
+                    can_act=can_act, is_owner=is_owner, turn_context=turn_context
+                )
+            )
             if env:
                 entry["env"] = env
             if server.cwd:
@@ -177,6 +183,7 @@ class GeminiEngine(Engine):
             request.workdir,
             self.profile.mcp_servers,
             can_act=request.tools.can_act,
+            is_owner=request.trust_level is TrustLevel.OWNER,
             turn_context=request.turn_context,
         )
 
@@ -434,9 +441,12 @@ class GeminiEngine(Engine):
         mcp_servers: Mapping[str, McpServerSpec],
         *,
         can_act: bool = False,
+        is_owner: bool = False,
         turn_context: Mapping[str, str] | None = None,
     ) -> None:
-        servers = _agy_mcp_servers(mcp_servers, can_act=can_act, turn_context=turn_context)
+        servers = _agy_mcp_servers(
+            mcp_servers, can_act=can_act, is_owner=is_owner, turn_context=turn_context
+        )
         if not servers:
             # An installed bot with no configured servers must not create
             # this file at all — see docs/패키징-경계.md.
