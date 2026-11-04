@@ -7,7 +7,7 @@ import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ..core.errors import ConfigError
 from ..core.secrets import contains_secret, redact
@@ -110,11 +110,21 @@ class McpServerSpec:
     command: str = ""
     args: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
+    #: Env vars set from this turn's context rather than a fixed value, keyed
+    #: env-var-name -> context key. Only `can_act` is supported: the var is "1"
+    #: on an action turn and absent on a read-only one. The var name and the
+    #: server are organization config; the gating is the common skeleton for
+    #: mametchi's per-turn WRITE_ENABLED gate.
+    turn_env: Mapping[str, str] = field(default_factory=dict)
     cwd: Path | None = None
     url: str = ""
     headers: Mapping[str, str] = field(default_factory=dict)
     disabled: bool = False
     disabled_tools: tuple[str, ...] = ()
+
+    #: Turn-context keys turn_env may point at. Kept small on purpose: an
+    #: unknown key is a profile typo that would silently never fire.
+    _TURN_ENV_KEYS: ClassVar[frozenset[str]] = frozenset({"can_act"})
 
     @classmethod
     def from_dict(cls, name: str, data: Mapping[str, Any]) -> McpServerSpec:
@@ -125,17 +135,40 @@ class McpServerSpec:
         if not command and not url:
             raise ConfigError(f"MCP 서버 {name}: command(로컬 실행) 또는 url(원격) 중 하나가 필요하다")
         cwd = data.get("cwd")
+        turn_env = {str(k): str(v) for k, v in (data.get("turn_env") or {}).items()}
+        for var, context_key in turn_env.items():
+            if context_key not in cls._TURN_ENV_KEYS:
+                allowed = ", ".join(sorted(cls._TURN_ENV_KEYS))
+                raise ConfigError(
+                    f"MCP 서버 {name}: turn_env 의 {var} 가 가리키는 턴 맥락 "
+                    f"'{context_key}' 을 모른다. 쓸 수 있는 값: {allowed}"
+                )
         return cls(
             name=name,
             command=command,
             args=tuple(str(a) for a in (data.get("args") or ())),
             env=dict(data.get("env") or {}),
+            turn_env=turn_env,
             cwd=Path(str(cwd)).expanduser() if cwd else None,
             url=url,
             headers=dict(data.get("headers") or {}),
             disabled=bool(data.get("disabled", False)),
             disabled_tools=tuple(str(t) for t in (data.get("disabled_tools") or ())),
         )
+
+    def turn_env_for(self, *, can_act: bool) -> dict[str, str]:
+        """This turn's env additions for the server's process, by turn context.
+
+        Only the `can_act` key is honored: its var is set to "1" on an action
+        turn and omitted otherwise, so a server reading the var as a write gate
+        stays closed on a read-only turn. A remote server has no process to
+        receive env, so callers skip it the same way they skip `env`.
+        """
+        out: dict[str, str] = {}
+        for var, context_key in self.turn_env.items():
+            if context_key == "can_act" and can_act:
+                out[var] = "1"
+        return out
 
     @property
     def is_remote(self) -> bool:

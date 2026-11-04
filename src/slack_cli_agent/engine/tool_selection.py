@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
+from ..auth.tools import READ_ONLY_TOOLS
 from .capability import ToolRestriction
 
 
@@ -64,3 +65,21 @@ class ToolSelection:
     @property
     def restriction(self) -> ToolRestriction:
         return _RESTRICTION[self.access]
+
+    @property
+    def can_act(self) -> bool:
+        """Whether this turn may write/act, not just read.
+
+        A read-only turn's allowlist is a subset of READ_ONLY_TOOLS; any tool
+        beyond that -- Bash, Edit, Write, or an MCP write tool -- makes it an
+        action turn. UNRESTRICTED can act; FORBIDDEN cannot. The engines gate
+        an MCP server's per-turn write env on this (McpServerSpec.turn_env),
+        mirroring mametchi's can_act -> WRITE_ENABLED gate (bot.py:2253): a
+        write-capable server stays closed on a turn that only reads, as
+        defense-in-depth beside the claude-side tool allowlist.
+        """
+        if self.access is ToolAccess.FORBIDDEN:
+            return False
+        if self.access is ToolAccess.UNRESTRICTED:
+            return True
+        return any(name not in READ_ONLY_TOOLS for name in self.names)
