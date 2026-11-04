@@ -247,6 +247,17 @@ class TestClaudeEnvironmentPolicy:
         assert env["POST_CHANNEL"] == "C002"
         assert env["ADVISOR_CHANNELS"] == "C001,C002"
 
+    def test_carries_code_first_channel_vars_for_the_stop_hook(self):
+        """G13: Stop 훅이 코드 우선 채널을 판정하도록 CODE_FIRST_CHANNELS 를
+        허용 목록으로 통과시킨다."""
+        policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        source = {**_rich_source_env(), "POST_CHANNEL": "C002", "CODE_FIRST_CHANNELS": "C002,C003"}
+
+        env = policy.build(source)
+
+        assert env["POST_CHANNEL"] == "C002"
+        assert env["CODE_FIRST_CHANNELS"] == "C002,C003"
+
     def test_carries_bot_profile_name_for_downstream_scripts(self):
         policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
         env = policy.build(_rich_source_env())

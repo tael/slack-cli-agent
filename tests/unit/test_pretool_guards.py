@@ -35,7 +35,7 @@ SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
 #: 수 있는 변수들. 서브프로세스마다 지우고 테스트가 명시한 값만 준다.
 _DEADLINE_VARS = (
     "TURN_DEADLINE", "TURN_DEADLINE_MONO", "TURN_WRAPUP_SEC", "TURN_BUDGET_LOG",
-    "POST_CHANNEL", "ADVISOR_CHANNELS",
+    "POST_CHANNEL", "ADVISOR_CHANNELS", "CODE_FIRST_CHANNELS",
 )
 
 
@@ -288,6 +288,47 @@ class TestFinishHook:
             "ADVISOR_CHANNELS": "C_ADVISOR,C_OTHER",
         }
         result, proc = run_hook(finish_hook.HOOK_SCRIPT, self._advisor_payload(tmp_path), env)
+        assert proc.returncode == 0
+        assert proc.stdout.strip() == ""
+        assert result is None
+
+    def _code_first_payload(self, tmp_path: Path) -> dict[str, Any]:
+        transcript_path = tmp_path / "codefirst.jsonl"
+        transcript_path.write_text(
+            json.dumps({
+                "type": "user",
+                "uuid": "cf-turn",
+                "message": {"role": "user", "content": "cm_v1 도 재무리포트로 분류하지?"},
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return {
+            "session_id": "fh-cf",
+            "transcript_path": str(transcript_path),
+            "last_assistant_message": "트래커 기준으로 cm_v1 은 재무리포트예요. https://notion.so/abc",
+        }
+
+    def test_코드우선채널_문서만_근거면_막는다(self, tmp_path: Path) -> None:
+        """G13 배선: POST_CHANNEL 이 CODE_FIRST_CHANNELS 에 들면 종료검수가
+        code_first 로 차단한다."""
+        env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+            "POST_CHANNEL": "C_CODE",
+            "CODE_FIRST_CHANNELS": "C_CODE,C_OTHER",
+        }
+        result, proc = run_hook(finish_hook.HOOK_SCRIPT, self._code_first_payload(tmp_path), env)
+        assert proc.returncode == 0
+        assert result is not None and result["decision"] == "block"
+
+    def test_비코드우선채널이면_같은_문서답도_통과한다(self, tmp_path: Path) -> None:
+        env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+            "POST_CHANNEL": "C_PLAIN",
+            "CODE_FIRST_CHANNELS": "C_CODE,C_OTHER",
+        }
+        result, proc = run_hook(finish_hook.HOOK_SCRIPT, self._code_first_payload(tmp_path), env)
         assert proc.returncode == 0
         assert proc.stdout.strip() == ""
         assert result is None
