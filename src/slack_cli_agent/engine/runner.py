@@ -64,6 +64,27 @@ PAYLOAD_KIND = "payload"
 #: the new-session retry does not run it again at the same disadvantage.
 ENGINE_CONFIG_REASON = "engine_config"
 
+#: How much of a timed-out turn's output to keep. The whole stream can be
+#: huge; the tail holds what the engine was doing when it stopped, which is
+#: what a human reads to find the cause (B11, bot.py 의 800자 꼬리와 같은 폭).
+TAIL_CHARS = 800
+
+
+def tail_chars(text: str | None, limit: int = TAIL_CHARS) -> str:
+    """Last `limit` characters of `text`; empty for None/empty."""
+    if not text:
+        return ""
+    return text[-limit:]
+
+
+def _as_text(raw: str | bytes | None) -> str:
+    """TimeoutExpired carries str under text=True, but tolerate bytes too."""
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", "replace")
+    return raw
+
 #: For the notice the person who asked reads. Axis names and levels are
 #: internal identifiers; putting them in a Slack reply tells nobody anything.
 AXIS_NAMES = {
@@ -194,15 +215,30 @@ class EngineRunner:
             completed = self._run(
                 cmd, cwd=str(request.workdir), timeout=timeout, **extra,
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as expired:
             timeout_int = int(timeout)
+            # 중단될 때 받은 출력은 '무엇을 하다 멈췄나'의 유일한 단서다.
+            # 원문은 로그-세이프 경계를 지켜 FailureDetail 엔 넣지 않고(수만 센다)
+            # 꼬리 800자만 로그로 남긴다 (B11).
+            out_text = _as_text(expired.stdout)
+            err_text = _as_text(expired.stderr)
+            if out_text or err_text:
+                log.warning(
+                    "엔진 %s 가 %d초 안에 안 끝나 중단했습니다. 마지막 출력(꼬리 %d자)"
+                    " stdout=%r stderr=%r",
+                    engine.name, timeout_int, TAIL_CHARS,
+                    tail_chars(out_text), tail_chars(err_text),
+                )
+            stdout_chars = len(out_text) if out_text else None
             return EngineResponse(
                 ok=False,
                 body=f"시간이 오래 걸려 중단했습니다. {timeout_int}초 안에 끝나지 않았습니다.",
                 session_id=None, model_actual=None,
                 elapsed=timeout, turns=None, usage=None,
                 raw={}, failure_reason="timeout",
-                failure_detail=FailureDetail(timeout_sec=timeout_int),
+                failure_detail=FailureDetail(
+                    timeout_sec=timeout_int, stdout_chars=stdout_chars
+                ),
                 elapsed_source=ElapsedSource.RUNNER,
                 engine=engine.name,
                 model_asked=request.model or "",
