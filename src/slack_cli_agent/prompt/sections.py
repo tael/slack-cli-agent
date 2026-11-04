@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from ..auth.principal import Principal, TrustLevel
 
 if TYPE_CHECKING:
+    from ..config.profile import PeerProfile
     from .knowledge import KnowledgeLoader
     from .library import PromptLibrary
 
@@ -262,6 +263,60 @@ class OwnerNoteSection(PromptSection):
         keep = ("NEVER_DISCLOSE",) if ctx.may_disclose_mechanism else ()
         name = "OWNER_NOTE" if ctx.is_owner else "NON_OWNER_NOTE"
         return ctx._library_or_raise().text(name, keep_slots=keep)
+
+
+class PeerRecoverySection(PromptSection):
+    """Tells the owner's turn how to revive a sibling bot that has gone down.
+
+    A downed bot cannot report its own death, so the owner asks the survivor,
+    which must then look at the peer's state, pid and logs and restart it. Giving
+    write permission without this note is not enough: the model otherwise assumes
+    everything outside its own state dir is blocked and never tries (mametchi
+    peer_recovery_note, bot.py:2614). Shown only when the mechanism is open to
+    the owner — a general user must not learn how to reach into the peer's files.
+    The peer's locations are org-specific and come from the profile; the wording
+    is common code.
+    """
+
+    def __init__(self, peer: PeerProfile | None) -> None:
+        self._peer = peer
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return self._peer is not None and ctx.may_disclose_mechanism and ctx.is_owner
+
+    def render(self, ctx: CompositionContext) -> str:
+        peer = self._peer
+        if peer is None:
+            return ""
+        name = peer.display_name
+        state = peer.state_dir
+        label = peer.launch_label
+        lines = [
+            "\n\n# 짝 봇을 되살리는 자리\n",
+            f"짝 봇 {name} 가 내려가면 스스로 알리지 못한다. 사람이 이 봇에 물을 때,",
+            "아래 자리를 보고 되살릴 수 있어야 한다. 되살리는 일 말고는 상대 자리에 쓰지 않는다.\n",
+            f"- 상태와 설정 : {state} 아래 전부 (읽기)",
+            f"- 작업 디렉터리 : {peer.work_root} (읽기)\n",
+            f"{name} 가 답하지 않는다고 하면 아래 순서로 본다.",
+            (
+                f"- 상태 : launchctl print gui/$(id -u)/{label}.worker 와 {label}.ingress 의 state 를"
+                " 먼저 본다. not running 이면 로그·토큰보다 기동부터 한다."
+            ),
+            (
+                f"- 프로세스 : 그 출력의 pid 를 {state}/worker.pid, {state}/ingress.pid 와 맞춘다."
+                " ps·pgrep 은 샌드박스가 막고, 두 봇이 같은 코드를 돌려 가려지지도 않는다."
+            ),
+            (
+                "- 로그 : launchctl 플리스트가 가리키는 stderr 를 파일 수정 시각과 함께 본다."
+                " 오래된 스택 추적을 지금 원인으로 인용하지 않는다."
+            ),
+            (
+                f"- 재기동 : launchctl kickstart -k gui/$(id -u)/{label}.worker (필요하면"
+                f" {label}.ingress 도). 자기 프로세스가 아니라 교착에 빠지지 않는다."
+            ),
+            f"\n{name} 의 코드와 설정을 고치는 것은 별개다. 되살리라고만 한 이상 상대 자리에 쓰지 않는다.",
+        ]
+        return "\n".join(lines)
 
 
 class SlackFormatSection(PromptSection):

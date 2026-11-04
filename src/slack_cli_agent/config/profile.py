@@ -35,7 +35,7 @@ KNOWN_KEYS = frozenset(
         "state_dir", "work_root", "data_dir", "attach_dir", "launch_label",
         "owner_user_id", "controller_user_ids", "troubleshoot_channel", "owner_dm", "credentials_file",
         "plugins", "usage_check_command", "agent_greeting", "agent_prompts",
-        "settings", "mcp_servers", "domain_file",
+        "settings", "mcp_servers", "domain_file", "peer",
     }
 )
 """Top-level keys `from_dict` reads. Anything else is dropped, so a mistyped
@@ -166,6 +166,43 @@ class AgentPrompt:
 
 
 @dataclass(frozen=True)
+class PeerProfile:
+    """Where a sibling bot lives, so this bot can revive it on the owner's word.
+
+    A bot that has gone down cannot announce its own death; the owner asks the
+    survivor, which then needs — in words — where the peer's state, pid and logs
+    are and how to restart it. Only org-specific locations live here; the
+    guidance text that uses them is common code (PeerRecoverySection). See
+    mametchi peer_recovery_note, bot.py:2614.
+    """
+
+    name: str
+    display_name: str
+    state_dir: Path
+    work_root: Path
+    launch_label: str
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> PeerProfile:
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise ConfigError("peer 블록에 name 이 없다")
+        raw_state = data.get("state_dir")
+        if not raw_state:
+            raise ConfigError("peer 블록에 state_dir 이 없다")
+        state_dir = Path(str(raw_state)).expanduser()
+        work_raw = data.get("work_root")
+        work_root = Path(str(work_raw)).expanduser() if work_raw else state_dir / "work"
+        return cls(
+            name=name,
+            display_name=str(data.get("display_name") or name),
+            state_dir=state_dir,
+            work_root=work_root,
+            launch_label=str(data.get("launch_label") or f"local.{name}"),
+        )
+
+
+@dataclass(frozen=True)
 class Profile:
     name: str
     display_name: str
@@ -200,6 +237,10 @@ class Profile:
     # org-specific value, so it lives in the profile, not the package. None
     # leaves the persona with no domain file, which is every bot that has none.
     domain_file: Path | None = None
+    # A sibling bot this one can revive on the owner's word. None means there is
+    # no peer, and the revival guidance is left out of the prompt entirely
+    # (PeerRecoverySection). Org-specific locations, so it lives in the profile.
+    peer: PeerProfile | None = None
     # The file this was read from. None when built straight from a dict, which
     # is every test and the init command -- checks about the file itself have
     # nothing to look at then.
@@ -329,6 +370,7 @@ class Profile:
             ),
             settings_override=dict(data.get("settings") or {}),
             mcp_servers=mcp_servers,
+            peer=(PeerProfile.from_dict(data["peer"]) if data.get("peer") else None),
         )
 
     @staticmethod
