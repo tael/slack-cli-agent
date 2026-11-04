@@ -82,6 +82,27 @@ class TestGaveUp:
         assert finish_review.gave_up(turn) is None
 
 
+class TestStoppedUnfinished:
+    def test_blocks_the_top40_answer(self):
+        turn = _turn(
+            "티켓은 만들었습니다. 다만 구독 삭제는 아직 실행하지 못했습니다. "
+            "Tableau에 로그인할 수단이 없어서예요."
+        )
+
+        assert finish_review.stopped_unfinished(turn) is not None
+        assert finish_review.decide(turn).action == "block"
+
+    def test_allows_when_waiting_on_ask(self):
+        turn = _turn("운영 반영은 진행하지 못했습니다. 승인 주시면 진행합니다.\n[[ASK]]\n[[NOWATCH]]")
+
+        assert finish_review.stopped_unfinished(turn) is None
+
+    def test_allows_finished_answer(self):
+        turn = _turn("구독 28건을 해지했고 재조회 잔존은 0건입니다.")
+
+        assert finish_review.stopped_unfinished(turn) is None
+
+
 class TestNotOpened:
     def test_blocks_when_answer_admits_skipping_the_open(self):
         turn = _turn("본문을 열어 보지 않아 완료조건 판단을 하지 못했다.")
@@ -301,6 +322,7 @@ class TestExtensionPoint:
         assert set(finish_review.default_registry.names()) == {
             "gave_up",
             "not_opened",
+            "stopped_unfinished",
             "absence_unopened",
             "offer",
             "handoff",
