@@ -19,12 +19,14 @@ import subprocess
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
 from ..auth.principal import TrustLevel
 from ..config.settings import RuntimeSettings
 from ..core.errors import ConfigError
+from ..core.timezones import KST
 from ..observability.progress_hook import append_tool
 from ..session.manager import AUTH_FAILURE_REASON, CAPABILITY_UNMET_REASON
 from .base import (
@@ -128,6 +130,56 @@ def _level(value: ToolRestriction | ExecutionIsolation | InstructionBoundary | N
     if value is None:
         return "요구 없음"
     return LEVEL_NAMES.get(value, str(value))
+
+
+def _switch_time(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, KST).strftime("%m-%d %H:%M")
+
+
+def switch_dm_body(*, bot_name: str, from_engine: str, to_engine: str,
+                   reason: str, detail: str, probe_ok: bool,
+                   probe_detail: str, switched_at: float) -> str:
+    """전환을 시작했음을 소유자에게 알리는 DM 본문 (B24).
+
+    사유·시각·확인결과를 담는다. 마메치 bot.py 의 engine_switch_notice 와
+    같은 구성이되, 한도 소진과 로그인 만료 두 계기를 구분한다 - 사람이 할 일이
+    다르기 때문이다(한도는 기다리면 풀리고 로그인은 다시 로그인해야 한다).
+    승인 전에는 전환 사유와 똑같이 답하므로, 바로 쓰려면 승인/거부를 안내한다.
+    """
+    cause = "로그인 만료" if reason == AUTH_FAILURE_REASON else "구독 한도 소진"
+    lines = [
+        f"*{bot_name} 실행기를 {to_engine} 로 바꿨습니다*",
+        "",
+        f"- 사유 : {from_engine} {cause}",
+        f"- 시각 : {_switch_time(switched_at)} KST",
+    ]
+    detail = (detail or "").strip()
+    if detail:
+        lines.append(f"- 원문 : {detail}")
+    if probe_ok:
+        lines += [
+            f"- 전환 확인 : {to_engine} 가 응답합니다",
+            "",
+            "지금은 승인 전이라 전환 사유와 똑같이 답합니다.",
+            f"{to_engine} 로 답하게 하려면 이 대화에서 `엔진 승인` 을,",
+            "쓰지 않으려면 `엔진 거부` 를 보내주세요.",
+        ]
+    else:
+        lines += [
+            f"- 전환 확인 실패 : {probe_detail}",
+            "",
+            f"{to_engine} 도 지금은 쓸 수 없습니다. 복구될 때까지 기다려야 합니다.",
+        ]
+    return "\n".join(lines)
+
+
+def recovery_dm_body(*, bot_name: str, primary_engine: str, recovered_at: float) -> str:
+    """기본 실행기가 돌아와 되돌렸음을 알리는 DM 본문 (B26)."""
+    return (
+        f"*{bot_name} 실행기를 {primary_engine} 로 되돌렸습니다*\n\n"
+        f"- {primary_engine} 가 정상 복귀해 원래 실행기로 답합니다\n"
+        f"- 시각 : {_switch_time(recovered_at)} KST"
+    )
 
 
 class CapabilityAuditPort(Protocol):
@@ -639,12 +691,18 @@ class FallbackEngine(Engine):
     PROBE_TIMEOUT_SEC = 120.0
 
     def __init__(self, primary: Engine, secondary: Engine, switcher: EngineSwitcher,
-               runner: EngineRunner) -> None:
+               runner: EngineRunner,
+               notify: Callable[[str], object] | None = None,
+               clock: Callable[[], float] = time.time) -> None:
         super().__init__(primary.profile, primary.settings)
         self.primary = primary
         self.secondary = secondary
         self.switcher = switcher
         self.runner = runner
+        # 전환·복귀를 소유자 DM 으로 알린다. 없으면(소유자 미설정) 발송만 생략하고
+        # 전환 자체는 그대로 일어난다. 알림 실패가 요청 처리를 끝내선 안 된다.
+        self._notify = notify
+        self._clock = clock
         # Delegate target for callers that invoke build_command/parse
         # directly on this class. run() decides which engine is
         # actually active and updates this.
@@ -752,10 +810,49 @@ class FallbackEngine(Engine):
 
     def _begin_switch(self, request: EngineRequest, reason: str, detail: str) -> None:
         probe_ok, probe_detail = self._probe_secondary(request)
-        self.switcher.begin_switch(
+        state = self.switcher.begin_switch(
             detail, engine_name=self.secondary.name, reason=reason,
             probe_ok=probe_ok, probe_detail=probe_detail,
         )
+        self._notify_switch(state, reason, detail, probe_ok, probe_detail)
+
+    def _bot_name(self) -> str:
+        return self.primary.profile.display_name or self.primary.profile.name
+
+    def _send(self, body: str, what: str) -> None:
+        """소유자 DM 을 보내되, 실패가 요청 처리를 끝내지 않게 삼킨다."""
+        if self._notify is None:
+            return
+        try:
+            self._notify(body)
+        except Exception:
+            log.exception("%s 알림에 실패했다", what)
+
+    def _notify_switch(self, state: Mapping[str, Any], reason: str, detail: str,
+                       probe_ok: bool, probe_detail: str) -> None:
+        """전환이 시작되면 소유자 DM 으로 사유·시각·확인결과를 push 한다 (B24·B25).
+
+        '엔진 상태' 를 조회하지 않아도 전환 사실이 바로 소유자에게 닿게 한다.
+        """
+        if self._notify is None:
+            return
+        body = switch_dm_body(
+            bot_name=self._bot_name(), from_engine=self.primary.name,
+            to_engine=self.secondary.name, reason=reason, detail=detail,
+            probe_ok=probe_ok, probe_detail=probe_detail,
+            switched_at=float(state.get("switched_at", self._clock())),
+        )
+        self._send(body, "실행기 전환")
+
+    def _notify_recovery(self) -> None:
+        """기본 엔진이 복귀하면 되돌렸다는 DM 을 발송한다 (B26)."""
+        if self._notify is None:
+            return
+        body = recovery_dm_body(
+            bot_name=self._bot_name(), primary_engine=self.primary.name,
+            recovered_at=self._clock(),
+        )
+        self._send(body, "실행기 복귀")
 
     def _run_secondary(self, request: EngineRequest) -> EngineResponse:
         """Handles this turn on the approved fallback engine.
@@ -802,6 +899,7 @@ class FallbackEngine(Engine):
         self.switcher.mark_probed(time.time())
         if response.ok and self.primary.detect_usage_limit(response) is None:
             self.switcher.recover()
+            self._notify_recovery()
             return response
         return None
 

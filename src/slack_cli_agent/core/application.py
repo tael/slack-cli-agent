@@ -422,6 +422,9 @@ class Application:
                     secondary,
                     EngineSwitcher(self._profile.paths.engine_state),
                     runner,
+                    # 전환·복귀를 소유자 DM 으로 push (B24~B26). 소유자 미설정이면
+                    # 발송만 생략하고 전환 자체는 그대로 일어난다.
+                    notify=self._notify_owner if self._profile.owner_user_id else None,
                 )
                 self._engine = fallback
                 # Passing the runner directly would bypass this class's fallback-switch logic.
