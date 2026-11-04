@@ -167,6 +167,34 @@ class TestAdvisorSkipped:
         assert finish_review.advisor_skipped(turn) is False
 
 
+class TestResolveAdvisorChannel:
+    """G16 배선: POST_CHANNEL 이 ADVISOR_CHANNELS 에 들면 자문 채널로 본다."""
+
+    def test_true_when_current_channel_is_in_the_configured_set(self):
+        env = {"POST_CHANNEL": "C002", "ADVISOR_CHANNELS": "C001,C002,C003"}
+
+        assert finish_review.resolve_advisor_channel(env) is True
+
+    def test_false_when_current_channel_is_not_configured(self):
+        env = {"POST_CHANNEL": "C009", "ADVISOR_CHANNELS": "C001,C002"}
+
+        assert finish_review.resolve_advisor_channel(env) is False
+
+    def test_false_when_no_current_channel(self):
+        assert finish_review.resolve_advisor_channel({"ADVISOR_CHANNELS": "C001"}) is False
+
+    def test_false_when_set_unconfigured(self):
+        assert finish_review.resolve_advisor_channel({"POST_CHANNEL": "C001"}) is False
+
+    def test_accepts_whitespace_separated_ids(self):
+        env = {"POST_CHANNEL": "C002", "ADVISOR_CHANNELS": "C001 C002\tC003"}
+
+        assert finish_review.resolve_advisor_channel(env) is True
+
+    def test_empty_env_is_false(self):
+        assert finish_review.resolve_advisor_channel({}) is False
+
+
 class TestDeniedUnretried:
     def test_blocks_when_a_denied_target_was_never_retried(self):
         turn = _turn(

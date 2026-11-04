@@ -236,6 +236,17 @@ class TestClaudeEnvironmentPolicy:
 
         assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
+    def test_carries_advisor_channel_vars_for_the_stop_hook(self):
+        """G16: Stop 훅이 자문 채널을 판정하도록 POST_CHANNEL/ADVISOR_CHANNELS 를
+        허용 목록으로 통과시킨다."""
+        policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        source = {**_rich_source_env(), "POST_CHANNEL": "C002", "ADVISOR_CHANNELS": "C001,C002"}
+
+        env = policy.build(source)
+
+        assert env["POST_CHANNEL"] == "C002"
+        assert env["ADVISOR_CHANNELS"] == "C001,C002"
+
     def test_carries_bot_profile_name_for_downstream_scripts(self):
         policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
         env = policy.build(_rich_source_env())
