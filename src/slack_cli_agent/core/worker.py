@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from ..admin.admission import AdminAdmission, ClaimUnavailable
 from ..config.settings import RuntimeSettings
 from ..core.context import RequestContext
-from ..core.lifecycle import InflightCounter
+from ..core.lifecycle import InflightCounter, InflightRegistry
 from ..core.ports import HandleOutcome, RequestHandler
 from ..jobs.heartbeat import WorkerHeartbeat
 from ..jobs.ports import Job, JobQueue, ReclaimResult
@@ -45,6 +45,10 @@ class Worker:
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         inflight: InflightCounter | None = None,
+        # Records each handling request's identity + start time so the state
+        # snapshot can list what is in flight (B51). None keeps a standalone
+        # Worker working — it just has nothing to list.
+        active: InflightRegistry | None = None,
         # reclaim picks the mark from this: a watched message put back in the
         # queue would otherwise read as waiting while its watch runs (sca-o1e).
         watch_jobs: ActiveWatchPort | None = None,
@@ -66,6 +70,7 @@ class Worker:
         # Shutdown checks this; without an injected one, a standalone Worker still
         # needs its own so shutdown knows whether to wait.
         self._inflight = inflight or InflightCounter()
+        self._active = active or InflightRegistry()
         self._lock = threading.Lock()
         self._running: dict[int, Job] = {}
         # Catch-up-representative key -> the requests it absorbed, so the same
@@ -80,6 +85,10 @@ class Worker:
     @property
     def inflight(self) -> InflightCounter:
         return self._inflight
+
+    @property
+    def active(self) -> InflightRegistry:
+        return self._active
 
     def run_once(self) -> bool:
         job, buried = self._queue.claim_next_representative(self._worker_id)
@@ -121,7 +130,9 @@ class Worker:
             # Only the actual handling counts as in-flight — claiming and
             # recording completion are quick, and it's the handling that shutdown
             # needs to wait for.
-            with self._inflight.work():
+            with self._inflight.work(), self._active.track(
+                context.channel, context.ts, self._now()
+            ):
                 outcome = self._safe_handle(context)
         finally:
             stop_event.set()

@@ -190,7 +190,7 @@ from .channel_kind import is_direct_message_channel
 from .context import RequestContext
 from .errors import AgentError
 from .ingress import IngressService
-from .lifecycle import InflightCounter
+from .lifecycle import InflightCounter, InflightRegistry
 from .periodic import PeriodicRunner
 from .pipeline import RequestPipeline
 from .services import ServiceGroup
@@ -286,6 +286,10 @@ class Application:
         # Worker and the state snapshot must share this counter, or the
         # state file always reports 0 in-flight.
         self.inflight = InflightCounter()
+        # Worker records each handling request here and the state snapshot
+        # reads it, so an operator can see what is in flight (B51). Shared
+        # for the same reason as the counter above.
+        self.active_inflight = InflightRegistry()
         self._started_at = time.time()
         self._shutting_down = False
 
@@ -1215,6 +1219,7 @@ class Application:
     def _snapshot_source(self) -> ApplicationSnapshotSource:
         return ApplicationSnapshotSource(
             inflight=self.inflight,
+            active=self.active_inflight,
             queue=self.queue(),
             # The snapshot is written by the worker, which has no socket. Its
             # own log watch would count zero forever and that reads as "no
@@ -1268,6 +1273,7 @@ class Application:
             settings=self._settings,
             worker_id=worker_id,
             inflight=self.inflight,
+            active=self.active_inflight,
             # reclaim picks the mark from this (sca-o1e).
             watch_jobs=self.watch_jobs(),
             admin=self._admin_admission(),
