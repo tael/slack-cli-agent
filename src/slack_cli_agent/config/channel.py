@@ -80,8 +80,11 @@ I82 — disposition of mametchi channels.json keys that are *not* core fields:
   The role *judgement* is common, but the user-ID lists and advisor model
   belong to the org, so they stay in ``extra`` for a plugin to read (same
   boundary as ``user_tools``, sca-ww4).
-* ``broadcast`` / ``shadow_source`` — target-channel wiring specific to an
-  org's channel topology; ``extra`` only.
+* ``broadcast`` — a per-channel flag an org's post MCP reads (mametchi
+  mermaid_render.py) to allow posting into the channel body, not just a
+  thread; ``extra`` only.
+* ``shadow_source`` — the paired source channel a shadow/mirror channel
+  mirrors (mametchi shadow_source_api); ``extra`` only.
 * ``extra_tools`` — channel-wide blanket tool list (A25). Captured in
   ``extra`` today; promoting it to a core field is tracked separately.
 * ``mention_only`` — *not* a replacement key: answering only mentions is the
