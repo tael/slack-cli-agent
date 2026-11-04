@@ -229,6 +229,7 @@ class MetricsCollector:
         reviews = self._read_reviews(db)
         sessions = self._read_sessions(db)
         queued_by_channel = self._read_queued_by_channel(db)
+        watch_verdicts = self._watch_verdicts(db, cutoff)
         channels = ChannelRegistry(paths.channels).all()
 
         latest = max((str(r.get("ts_kst") or "") for r in requests), default="")
@@ -242,7 +243,9 @@ class MetricsCollector:
             "channels": self._channel_rows(requests, channels, sessions, queued_by_channel, now),
             "responsiveness": self._responsiveness(requests),
             "reliability": self._reliability(requests, incident_counts, field_first_seen),
-            "quality": self._quality(reviews, requests, incident_counts, first_seen),
+            "quality": self._quality(
+                reviews, requests, incident_counts, first_seen, watch_verdicts
+            ),
             "usage": self._usage(requests, channels, field_first_seen),
             "followup": self._followup(requests),
             "tools": {"available": False, "reason": NOT_APPLICABLE_REASONS["tools"]},
@@ -302,6 +305,32 @@ class MetricsCollector:
             record["ts_kst"] = _kst(row["at"])
             out.append(record)
         return out, incidents, payloads
+
+    def _watch_verdicts(self, db: Database, cutoff: float) -> dict[str, int]:
+        """Counts how published replies landed on the watch question in the
+        window, by the `verdict` field of each watch_verdict row (J9).
+
+        watch_verdict is baseline traffic, so _read_requests only tallies it
+        by kind; the per-verdict breakdown lives in the payload and is read
+        here. An unparseable or unknown verdict is dropped — a bad row must
+        not inflate any of the three buckets.
+        """
+        rows = db.connect().execute(
+            "SELECT payload FROM audit WHERE kind = ? AND at >= ?",
+            (IncidentKind.WATCH_VERDICT.value, cutoff),
+        ).fetchall()
+        counts = {"watch": 0, "nowatch": 0, "missing": 0}
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            verdict = payload.get("verdict")
+            if verdict in counts:
+                counts[verdict] += 1
+        return counts
 
     def _kind_first_seen_map(self, db: Database) -> dict[str, float]:
         """Earliest `at` ever recorded for each kind, unbounded by the
@@ -525,6 +554,7 @@ class MetricsCollector:
         requests: Sequence[Mapping[str, Any]],
         incident_counts: collections.Counter[str],
         first_seen: Mapping[str, float],
+        watch_verdicts: Mapping[str, int],
     ) -> dict[str, Any]:
         kinds = collections.Counter(str(r["kind"]) for r in reviews)
         asked = collections.Counter(str(r.get("channel") or "") for r in requests)
@@ -540,6 +570,24 @@ class MetricsCollector:
                 "requests": total,
                 "rate_pct": _pct(hits, total) if total else None,
             })
+        watch_n = watch_verdicts.get("watch", 0)
+        nowatch_n = watch_verdicts.get("nowatch", 0)
+        missing_n = watch_verdicts.get("missing", 0)
+        watch_total = watch_n + nowatch_n + missing_n
+        watch_first = first_seen.get(IncidentKind.WATCH_VERDICT.value)
+        # 판정률: of every published reply, how often the model made an explicit
+        # watch call (registered a watch or said [[NOWATCH]]) rather than
+        # leaving it ambiguous. None before any verdict was ever recorded —
+        # a 0 would read as "always ambiguous" instead of "not instrumented".
+        nowatch_block = {
+            "watch": watch_n,
+            "nowatch": nowatch_n,
+            "missing": missing_n,
+            "total": watch_total,
+            "decided_pct": _pct(watch_n + nowatch_n, watch_total),
+            "missing_pct": _pct(missing_n, watch_total),
+            "tracked_since": _kst(watch_first) if watch_first is not None else None,
+        }
         silent = incident_counts.get(IncidentKind.SILENT.value, 0)
         tracked_since = {
             kind.value: (_kst(first_seen[kind.value]) if kind.value in first_seen else None)
@@ -562,6 +610,8 @@ class MetricsCollector:
                 IncidentKind.PROGRESS_UNKNOWN_TOOL.value, 0
             ),
             "blocks_resplit": incident_counts.get(IncidentKind.BLOCKS_RESPLIT.value, 0),
+            # NOWATCH 판정률 (J9): per-verdict breakdown + explicit-decision rate.
+            "nowatch": nowatch_block,
             # Per sca-qi5.1 item 5: None means this kind has never fired in
             # this store, so a 0 count in the window can't be told apart
             # from "not instrumented yet" without this.

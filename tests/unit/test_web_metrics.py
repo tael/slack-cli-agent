@@ -395,6 +395,75 @@ class Test검수_원장_기반_품질:
         assert quality["rewrites"] == 0
 
 
+class TestNOWATCH_판정률:
+    """J9: 발행마다 남는 watch_verdict 기록(watch/nowatch/missing)을
+    집계해 '봇이 후속관찰 필요 여부를 명시적으로 판정한 비율'(판정률)을 낸다.
+    """
+
+    def test_판정_종류별_건수와_판정률을_낸다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        for v, at in (("watch", 1_000.0), ("nowatch", 1_001.0),
+                      ("nowatch", 1_002.0), ("missing", 1_003.0)):
+            insert_incident(db, kind=IncidentKind.WATCH_VERDICT.value, at=at, verdict=v)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        nowatch = collector.collect(days=7)["quality"]["nowatch"]
+        assert nowatch["watch"] == 1
+        assert nowatch["nowatch"] == 2
+        assert nowatch["missing"] == 1
+        assert nowatch["total"] == 4
+        # watch+nowatch=3 중 4건 → 명시 판정률 75.0, 미판정률 25.0
+        assert nowatch["decided_pct"] == 75.0
+        assert nowatch["missing_pct"] == 25.0
+
+    def test_창_밖_판정은_빠진다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        # now=1_000_000, 7일창 → cutoff≈395_200. 100.0 은 창 밖, 999_000 은 창 안.
+        insert_incident(db, kind=IncidentKind.WATCH_VERDICT.value, at=100.0, verdict="watch")
+        insert_incident(db, kind=IncidentKind.WATCH_VERDICT.value, at=999_000.0, verdict="missing")
+        collector = MetricsCollector(profile, now=lambda: 1_000_000.0)
+        nowatch = collector.collect(days=7)["quality"]["nowatch"]
+        assert nowatch["total"] == 1
+        assert nowatch["missing"] == 1
+
+    def test_기록이_하나도_없으면_판정불가다(self, tmp_path: Path) -> None:
+        """기록 이전이면 0이 아니라 None(판정불가) — tracked_since 가 없다."""
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        nowatch = collector.collect(days=7)["quality"]["nowatch"]
+        assert nowatch["total"] == 0
+        assert nowatch["decided_pct"] is None
+        assert nowatch["missing_pct"] is None
+        assert nowatch["tracked_since"] is None
+
+    def test_판정값이_깨진_행은_건너뛴다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_incident(db, kind=IncidentKind.WATCH_VERDICT.value, at=1_000.0, verdict="watch")
+        # verdict 값이 알 수 없는 문자열이면 세 종류 어디에도 안 들어간다
+        insert_incident(db, kind=IncidentKind.WATCH_VERDICT.value, at=1_001.0, verdict="garbage")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        nowatch = collector.collect(days=7)["quality"]["nowatch"]
+        assert nowatch["watch"] == 1
+        assert nowatch["total"] == 1
+
+    def test_판정_집계는_사고_건수를_오염시키지_않는다(self, tmp_path: Path) -> None:
+        """watch_verdict 는 기준 트래픽이라 품질 사고 집계에 섞이면 안 된다."""
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        insert_incident(db, kind=IncidentKind.WATCH_VERDICT.value, at=1_001.0, verdict="missing")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        result = collector.collect(days=7)
+        reliability = result["reliability"]
+        # 성공률/실패사유에 watch_verdict 가 사고로 섞이지 않는다
+        assert all(i.get("kind") != IncidentKind.WATCH_VERDICT.value
+                   for i in reliability.get("incidents", []))
+
+
 class Test사고_종류별_건수:
     """sca-qi5.1: split_broken/post_failed/late_addendum 등 새 사건 종류를 센다."""
 
