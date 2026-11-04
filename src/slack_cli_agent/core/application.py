@@ -122,7 +122,11 @@ from ..reliability.pending_report import PendingReportStore
 from ..reliability.startup import StartupCatchup
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
 from ..reliability.watchresult import WatchOutcome, WatchResultReader
-from ..reliability.watchrunner import WatchJobChecker, watch_check_prompt
+from ..reliability.watchrunner import (
+    WatchJobChecker,
+    watch_check_prompt,
+    watch_supersede_prompt,
+)
 from ..render.blocks import BlockBuilder
 from ..render.markdown import MarkdownConverter
 from ..render.splitter import ContentSplitter
@@ -175,6 +179,7 @@ from ..slack.review_ports import (
     ThreadTranscriptPort,
 )
 from ..slack.roster import RosterBuilder
+from ..slack.thread_activity import SlackThreadActivity
 from ..slack.transcript import TranscriptBuilder
 from ..storage.admin_claims import AdminClaims
 from ..storage.connection_epochs import SqliteConnectionEpochs
@@ -974,6 +979,17 @@ class Application:
             self._watch_results.ensure_dir()
         return self._watch_results
 
+    def thread_activity(self) -> SlackThreadActivity:
+        """The pre-post duplicate check's two reads. Shares identity and the
+        transcript builder with the rest of the bot so "did I already reply"
+        and "what was said" use the same self-detection and formatting."""
+        return SlackThreadActivity(
+            client=self._client,
+            identity=self.identity,
+            transcript=self._transcript_builder(),
+            settings=self._settings,
+        )
+
     def watch_checker(self) -> WatchJobChecker:
         # owner notification needs an owner to send to; the DM channel itself
         # is resolved at send time (see owner_dm_channel)
@@ -989,6 +1005,12 @@ class Application:
             # checks/last_run are current state only. Without this there is no
             # record that a watch ever ran (sca-j3d).
             audit=self.audit(),
+            # The pre-post duplicate check. Both collaborators together, or the
+            # check stays off and the report posts as always (F40/F41): the main
+            # answer could land in the gap between a check starting and its
+            # report posting, and both would reach the channel.
+            thread_activity=self.thread_activity(),
+            run_supersede_check=self._run_watch_supersede_check,
         )
 
     def watch_result_cleanup_runner(self) -> PeriodicRunner:
@@ -1121,6 +1143,53 @@ class Application:
             # This check turn belongs to one watch run. Without it the audit
             # cannot say which watch a capability record came from (sca-4ol).
             request_id=f"watch-{job.id}-{job.run_id}",
+            readable_dirs=self.readable_dirs,
+            trust_level=job.trust,
+        ), CallOrigin.BACKGROUND)
+
+    def _run_watch_supersede_check(
+        self, job: WatchJob, transcript: str, draft: str
+    ) -> EngineResponse:
+        """The verdict turn for the pre-post duplicate check. Pure judgment:
+        the transcript and the draft are both in the prompt, so this turn
+        reads nothing and writes nothing -- it only answers with one tag. No
+        tools for that reason, which also keeps it from starting new work the
+        way `watch_check_prompt` forbids for the check turn next to it.
+        """
+        principal = Principal(
+            user_id=self._profile.owner_user_id if job.trust is TrustLevel.OWNER else "",
+            channel=job.channel,
+            trust=job.trust,
+            is_direct_message=is_direct_message_channel(job.channel),
+        )
+        config = self._channels.get(job.channel)
+        workdir = _watch_workdir(job, config, self._profile.work_root)
+        prompt = watch_supersede_prompt(job.condition, transcript, draft)
+        system_prompt = self._composer().compose(CompositionContext(
+            principal=principal,
+            prompt=prompt,
+            channel_mode=config.mode if config else "default",
+            channel_slug=slug_for(job.channel, config),
+            is_rich=channel_is_rich(config),
+            chat_level=config.chat if config else "normal",
+            # Same as the check turn: registration guidance would tell it how to
+            # start new work, which this judgment turn has no business doing.
+            watch_check=True,
+        ))
+        no_tools = ToolSelection.from_names([])
+        return self.engine_invoker.invoke(EngineRequest(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            session_id=None,
+            resume=False,
+            model=self.access_policy.model_for(principal),
+            effort=self.access_policy.effort_for(principal, prompt),
+            workdir=workdir,
+            tools=no_tools,
+            requirements=self.execution_policy.requirements_for(
+                config=config, tools=no_tools,
+            ),
+            request_id=f"watch-supersede-{job.id}-{job.run_id}",
             readable_dirs=self.readable_dirs,
             trust_level=job.trust,
         ), CallOrigin.BACKGROUND)
