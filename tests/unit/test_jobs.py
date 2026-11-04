@@ -88,6 +88,37 @@ class TestClaim:
     def test_대기_작업이_없으면_None_이다(self, queue: SqliteJobQueue) -> None:
         assert queue.claim_next("w1") is None
 
+    def test_잡으면_시도_횟수가_증가한다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.1"))
+        assert claim(queue, "w1").attempts == 1
+
+    def test_실패로_끝나도_그_스레드가_풀린다(self, queue: SqliteJobQueue) -> None:
+        queue.enqueue(ctx("1.1", "T1"))
+        queue.enqueue(ctx("1.2", "T1"))
+        first = claim(queue, "w1")
+        queue.complete(first.id, ok=False, failure="엔진 오류", lease=first.lease)
+        assert queue.claim_next("w2") is not None
+
+    def test_여러_워커가_동시에_불러도_한_번만_나온다(self, database) -> None:
+        SqliteJobQueue(database).enqueue(ctx("1.1"))
+        claimed: list[object] = []
+        barrier = threading.Barrier(4)
+
+        def worker(name: str) -> None:
+            queue = SqliteJobQueue(database)
+            barrier.wait()
+            job = queue.claim_next(name)
+            if job is not None:
+                claimed.append(job)
+
+        threads = [threading.Thread(target=worker, args=(f"w{i}",)) for i in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(claimed) == 1
+
 
 class TestClaimRepresentative:
     """같은 스레드에 밀린 요청을 최신 1건(대표)만 돌리고 나머지는 매장한다 (A30).
@@ -152,37 +183,6 @@ class TestClaimRepresentative:
         _job, buried = queue.claim_next_representative("w1")
 
         assert buried == [old]
-
-    def test_잡으면_시도_횟수가_증가한다(self, queue: SqliteJobQueue) -> None:
-        queue.enqueue(ctx("1.1"))
-        assert claim(queue, "w1").attempts == 1
-
-    def test_실패로_끝나도_그_스레드가_풀린다(self, queue: SqliteJobQueue) -> None:
-        queue.enqueue(ctx("1.1", "T1"))
-        queue.enqueue(ctx("1.2", "T1"))
-        first = claim(queue, "w1")
-        queue.complete(first.id, ok=False, failure="엔진 오류", lease=first.lease)
-        assert queue.claim_next("w2") is not None
-
-    def test_여러_워커가_동시에_불러도_한_번만_나온다(self, database) -> None:
-        SqliteJobQueue(database).enqueue(ctx("1.1"))
-        claimed: list[object] = []
-        barrier = threading.Barrier(4)
-
-        def worker(name: str) -> None:
-            queue = SqliteJobQueue(database)
-            barrier.wait()
-            job = queue.claim_next(name)
-            if job is not None:
-                claimed.append(job)
-
-        threads = [threading.Thread(target=worker, args=(f"w{i}",)) for i in range(4)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-
-        assert len(claimed) == 1
 
 
 class TestBlockedOnThread:
