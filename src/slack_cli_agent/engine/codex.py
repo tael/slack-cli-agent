@@ -403,6 +403,41 @@ class CodexEngine(Engine):
         # Codex has no subscription weekly-limit concept; the original doesn't check for it either.
         return None
 
+    #: 모델 하나가 지금 요청을 못 받는 상태를 알리는 문구. 2026-10-19 sol
+    #: 장애에서 모았다 - 15:57 은 "Selected model is at capacity", 23:46 은
+    #: 재시도를 다 쓴 429 로 끝났다. 계정 벽과 달리 모델을 바꾸면 풀린다.
+    MODEL_OUTAGE_HINTS: ClassVar[tuple[str, ...]] = (
+        "selected model is at capacity",
+        "429 too many requests",
+    )
+    #: 계정 단위 벽. 모델을 바꿔도 같으므로 모델 장애로 읽지 않는다.
+    ACCOUNT_LIMIT_HINTS: ClassVar[tuple[str, ...]] = (
+        "workspace is out of credits",
+        "out of credits",
+        "usage limit",
+    )
+    #: 출력에 이 표식이 있으면 그 턴은 이미 도구를 돌렸다. 다른 모델로 다시
+    #: 돌리면 같은 쓰기가 두 번 난다 - 폴백하지 않는다.
+    TOOL_EVENT_MARKS: ClassVar[tuple[str, ...]] = (
+        'command_execution"',
+        '"mcp_tool_call"',
+        '"file_change"',
+    )
+
+    def detect_model_outage(self, stdout: str, stderr: str = "") -> bool:
+        """Codex 실패가 모델 하나의 일시 장애인지 가른다 (B9). 계정 한도는 제외.
+
+        계정 크레딧 소진·사용 한도가 먼저 걸리면 모델을 바꿔도 같으므로 False
+        다 - 429 가 섞여 있어도 계정 벽이면 폴백하지 않는다.
+        """
+        text = f"{stdout or ''}\n{stderr or ''}".lower()
+        if any(hint in text for hint in self.ACCOUNT_LIMIT_HINTS):
+            return False
+        return any(hint in text for hint in self.MODEL_OUTAGE_HINTS)
+
+    def tools_already_ran(self, stdout: str) -> bool:
+        return any(mark in (stdout or "") for mark in self.TOOL_EVENT_MARKS)
+
     #: 토큰이 폐기됐을 때만 나오는 문구다. CLI 는 인증 실패도 다른 실패도
     #: 종료코드 1 로 내서 코드로는 못 가린다. 401 이라는 상태 코드만으로
     #: 좁히지 않는 이유는 MCP 서버 하나가 401 을 내도 codex 자체의 로그인은

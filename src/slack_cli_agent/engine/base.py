@@ -504,6 +504,25 @@ class Engine(ABC):
     @abstractmethod
     def detect_usage_limit(self, response: EngineResponse) -> UsageLimit | None: ...
 
+    def detect_model_outage(self, stdout: str, stderr: str = "") -> bool:
+        """이 엔진의 실패가 모델 하나의 일시 장애인지 본다 (B9).
+
+        True 면 같은 엔진 안에서 다른 모델로 같은 턴을 다시 돌릴 근거가 된다.
+        모델 폴백을 가진 엔진(코덱스)만 이 상태가 있다 - 기본은 아니다(False).
+        계정 단위 벽(크레딧 소진, 사용 한도)은 모델을 바꿔도 같으므로 여기
+        해당하지 않는다. 그런 것까지 모델 장애로 세면 같은 벽에 한 번 더 부딪친다.
+        """
+        return False
+
+    def tools_already_ran(self, stdout: str) -> bool:
+        """이 실패 출력에 도구 실행 흔적이 있으면 True. 폴백 재시도 금지 신호다.
+
+        도구가 이미 돈 턴을 다른 모델로 다시 돌리면 같은 쓰기가 두 번 난다.
+        출력 형식을 모르는 엔진은 보수적으로 True 를 내 재시도를 막는다. 모델
+        폴백이 없는 엔진은 어차피 detect_model_outage 가 False 라 쓰이지 않는다.
+        """
+        return True
+
     def detect_auth_failure(self, response: EngineResponse) -> str | None:
         """이 엔진의 로그인이 풀려 사람이 다시 로그인해야 하는 실패인지 본다.
 

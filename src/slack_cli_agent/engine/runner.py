@@ -69,6 +69,10 @@ ENGINE_CONFIG_REASON = "engine_config"
 #: what a human reads to find the cause (B11, bot.py 의 800자 꼬리와 같은 폭).
 TAIL_CHARS = 800
 
+#: 모델 폴백 재시도에 최소로 필요한 남은 시간(초). 이보다 적게 남았으면 다음
+#: 모델을 돌리지 않는다 - 시작하자마자 또 끊겨 슬롯만 축낸다 (B17).
+MODEL_RETRY_MIN_SEC = 60
+
 
 def tail_chars(text: str | None, limit: int = TAIL_CHARS) -> str:
     """Last `limit` characters of `text`; empty for None/empty."""
@@ -200,66 +204,126 @@ class EngineRunner:
         # CLI has to name the one enforced here (sca-ocie).
         request = dataclasses.replace(request, timeout_sec=timeout)
         self._record_payload(engine, request)
-        try:
-            engine.prepare(request)
-            cmd = engine.build_command(request)
-        except ConfigError as e:
-            return self._config_error_response(engine, request, e)
         source = self._source_env if self._source_env is not None else os.environ
-        extra: dict[str, Any] = {"env": policy.build(source)}
-        sink = self._progress_sink(engine, request)
-        if sink is not None:
-            extra["on_stdout_line"] = sink
-        started = time.monotonic()
-        try:
-            completed = self._run(
-                cmd, cwd=str(request.workdir), timeout=timeout, **extra,
-            )
-        except subprocess.TimeoutExpired as expired:
-            timeout_int = int(timeout)
-            # 중단될 때 받은 출력은 '무엇을 하다 멈췄나'의 유일한 단서다.
-            # 원문은 로그-세이프 경계를 지켜 FailureDetail 엔 넣지 않고(수만 센다)
-            # 꼬리 800자만 로그로 남긴다 (B11).
-            out_text = _as_text(expired.stdout)
-            err_text = _as_text(expired.stderr)
-            if out_text or err_text:
-                log.warning(
-                    "엔진 %s 가 %d초 안에 안 끝나 중단했습니다. 마지막 출력(꼬리 %d자)"
-                    " stdout=%r stderr=%r",
-                    engine.name, timeout_int, TAIL_CHARS,
-                    tail_chars(out_text), tail_chars(err_text),
+
+        # B9/B17 — 모델 하나의 일시 장애면 같은 엔진 안에서 폴백 모델로 순차
+        # 재시도한다. 폴백 목록이 없으면(기본) candidates 가 요청 모델 하나뿐이라
+        # 루프가 한 번만 돌아 예전과 같은 동작이다.
+        candidates = self._model_candidates(engine, request)
+        loop_started = time.monotonic()
+        last: EngineResponse | None = None
+        for index, model in enumerate(candidates):
+            is_last = index == len(candidates) - 1
+            if index == 0:
+                attempt_timeout = timeout
+            else:
+                # 폴백 시도는 남은 시간 안에서만 돈다. 시도마다 처음 상한을 새로
+                # 주지 않는다 - 한 요청이 슬롯을 끝없이 쥐지 않게 한다.
+                remaining = timeout - (time.monotonic() - loop_started)
+                if remaining < MODEL_RETRY_MIN_SEC:
+                    break
+                attempt_timeout = remaining
+            attempt = dataclasses.replace(request, model=model, timeout_sec=attempt_timeout)
+            try:
+                engine.prepare(attempt)
+                cmd = engine.build_command(attempt)
+            except ConfigError as e:
+                return self._config_error_response(engine, attempt, e)
+            extra: dict[str, Any] = {"env": policy.build(source)}
+            sink = self._progress_sink(engine, attempt)
+            if sink is not None:
+                extra["on_stdout_line"] = sink
+            started = time.monotonic()
+            try:
+                completed = self._run(
+                    cmd, cwd=str(attempt.workdir), timeout=attempt_timeout, **extra,
                 )
-            stdout_chars = len(out_text) if out_text else None
-            return EngineResponse(
-                ok=False,
-                body=f"시간이 오래 걸려 중단했습니다. {timeout_int}초 안에 끝나지 않았습니다.",
-                session_id=None, model_actual=None,
-                elapsed=timeout, turns=None, usage=None,
-                raw={}, failure_reason="timeout",
-                failure_detail=FailureDetail(
-                    timeout_sec=timeout_int, stdout_chars=stdout_chars
-                ),
-                elapsed_source=ElapsedSource.RUNNER,
+            except subprocess.TimeoutExpired as expired:
+                # 타임아웃은 모델 장애 폴백 계기가 아니다 - 다른 모델도 비슷한
+                # 시간이 걸릴 수 있고 남은 시간은 더 짧다. 그대로 중단 응답을 낸다.
+                return self._timeout_response(engine, attempt, expired, attempt_timeout)
+            wall_elapsed = time.monotonic() - started
+            # Stamped here rather than in each Engine.parse() so every engine
+            # reports it the same way, including ones added later.
+            response = dataclasses.replace(
+                engine.parse(completed.stdout, completed.stderr, completed.returncode),
                 engine=engine.name,
-                model_asked=request.model or "",
+                model_asked=attempt.model or "",
             )
-        wall_elapsed = time.monotonic() - started
-        # Stamped here rather than in each Engine.parse() so every engine reports
-        # it the same way, including ones added later.
-        response = dataclasses.replace(
-            engine.parse(completed.stdout, completed.stderr, completed.returncode),
+            # sca-cfa — some engines (Codex) never report their own elapsed time.
+            # Only fill in the runner's wall-clock measurement when the engine
+            # left it unknown; an engine-reported value is more precise (it can
+            # exclude time this process itself spent, e.g. queueing).
+            if response.elapsed_source == ElapsedSource.UNKNOWN:
+                response = dataclasses.replace(
+                    response, elapsed=wall_elapsed, elapsed_source=ElapsedSource.RUNNER
+                )
+            last = response
+            # 모델 하나의 장애이고, 도구가 안 돌았고, 다음 모델이 남았으면 넘어간다.
+            # 도구가 이미 돈 턴을 다시 돌리면 같은 쓰기가 두 번 난다.
+            if (not response.ok and not is_last
+                    and engine.detect_model_outage(completed.stdout, completed.stderr)
+                    and not engine.tools_already_ran(completed.stdout)):
+                log.warning(
+                    "엔진 %s 모델 장애, 다음 모델로 넘어갑니다 : %s -> %s",
+                    engine.name, model, candidates[index + 1],
+                )
+                continue
+            return response
+        # 폴백을 돌 시간이 모자라 멈춘 경우 - 마지막 실패를 그대로 돌려준다.
+        assert last is not None  # candidates 는 최소 요청 모델 하나라 늘 채워진다
+        return last
+
+    @staticmethod
+    def _model_candidates(engine: Engine, request: EngineRequest) -> list[str]:
+        """이번 턴에 순서대로 시도할 모델들. 첫 모델은 요청 모델, 이어서 겹치지
+        않는 폴백 모델들이다. 폴백이 없으면 요청 모델 하나뿐이다 (B17)."""
+        primary = request.model or ""
+        try:
+            spec = engine.spec
+        except ConfigError:
+            return [primary]
+        # getattr 기본값으로 둔다 - model_fallbacks 가 없는 엔진 구현이나 대역도
+        # 폴백 없이 요청 모델 하나로만 돈다.
+        fallbacks = getattr(spec, "model_fallbacks", ())
+        candidates = [primary]
+        for model in fallbacks:
+            if model and model != primary and model not in candidates:
+                candidates.append(model)
+        return candidates
+
+    @staticmethod
+    def _timeout_response(
+        engine: Engine, request: EngineRequest,
+        expired: subprocess.TimeoutExpired, timeout: float,
+    ) -> EngineResponse:
+        timeout_int = int(timeout)
+        # 중단될 때 받은 출력은 '무엇을 하다 멈췄나'의 유일한 단서다.
+        # 원문은 로그-세이프 경계를 지켜 FailureDetail 엔 넣지 않고(수만 센다)
+        # 꼬리 800자만 로그로 남긴다 (B11).
+        out_text = _as_text(expired.stdout)
+        err_text = _as_text(expired.stderr)
+        if out_text or err_text:
+            log.warning(
+                "엔진 %s 가 %d초 안에 안 끝나 중단했습니다. 마지막 출력(꼬리 %d자)"
+                " stdout=%r stderr=%r",
+                engine.name, timeout_int, TAIL_CHARS,
+                tail_chars(out_text), tail_chars(err_text),
+            )
+        stdout_chars = len(out_text) if out_text else None
+        return EngineResponse(
+            ok=False,
+            body=f"시간이 오래 걸려 중단했습니다. {timeout_int}초 안에 끝나지 않았습니다.",
+            session_id=None, model_actual=None,
+            elapsed=timeout, turns=None, usage=None,
+            raw={}, failure_reason="timeout",
+            failure_detail=FailureDetail(
+                timeout_sec=timeout_int, stdout_chars=stdout_chars
+            ),
+            elapsed_source=ElapsedSource.RUNNER,
             engine=engine.name,
-            # request.model is the resolved one: the branch above fills it from
-            # the engine spec when the caller left it empty.
             model_asked=request.model or "",
         )
-        # sca-cfa — some engines (Codex) never report their own elapsed time.
-        # Only fill in the runner's wall-clock measurement when the engine
-        # left it unknown; an engine-reported value is more precise (it can
-        # exclude time this process itself spent, e.g. queueing).
-        if response.elapsed_source == ElapsedSource.UNKNOWN:
-            response = dataclasses.replace(response, elapsed=wall_elapsed, elapsed_source=ElapsedSource.RUNNER)
-        return response
 
     @staticmethod
     def _config_error_response(
