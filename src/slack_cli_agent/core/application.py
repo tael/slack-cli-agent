@@ -117,8 +117,8 @@ from ..reliability.catchup import CatchupService
 from ..reliability.connection import ConnectionCatchupCoordinator
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
-from ..reliability.outage import OutageTracker
-from ..reliability.pending_report import PendingReportStore
+from ..reliability.outage import NetworkOutageEscalation, OutageTracker
+from ..reliability.pending_report import PendingReportStore, assemble_recovery_report
 from ..reliability.startup import StartupCatchup
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
 from ..reliability.watchresult import WatchOutcome, WatchResultReader
@@ -330,6 +330,10 @@ class Application:
         self._pending_report: PendingReportStore | None = None
         self._review_ledger_instance: ReviewLedger | None = None
         self._outage_tracker: OutageTracker | None = None
+        # Decides when a sustained Slack-API outage is long enough to read as a
+        # network-level (DNS/Wi-Fi) problem below the socket, so the recovery
+        # report can say so (G59). Stateless, so a single shared instance.
+        self._network_escalation = NetworkOutageEscalation()
         self._connection_epochs: SqliteConnectionEpochs | None = None
         self._transcript_reader_cache: dict[str, SessionTranscriptReader] = {}
         self._transcript_readers = transcript_readers or TranscriptReaderRegistry()
@@ -1804,7 +1808,12 @@ class Application:
         )
 
     def _report_recovery(
-        self, outage_sec: float, recovered: int, *, catchup_failed: bool = False
+        self,
+        outage_sec: float,
+        recovered: int,
+        *,
+        catchup_failed: bool = False,
+        network_outage_sec: float | None = None,
     ) -> None:
         # reports the recovered count explicitly — otherwise zero recovered
         # messages would look the same as catch-up never having run
@@ -1828,6 +1837,20 @@ class Application:
             lines += ["", "*기동하지 못하는 MCP 서버*"]
             lines += [f"- {name}" for name in broken]
             lines += ["", "도구가 빠진 채로 답하게 됩니다. 확인이 필요합니다."]
+        if network_outage_sec is not None:
+            # 소켓 아래 계층(DNS/Wi-Fi)까지 닿지 않은 지속 장애는 슬랙 API 블립과
+            # 다른 사고다. 2026-11-02 의 Errno 49 처럼 프로세스는 살아 있는데
+            # 이름해석·경로가 끊긴 상황을 운영자가 구분할 수 있게 그 사실과 기간을
+            # 따로 싣는다 (G59). assemble_recovery_report 가 그 줄을 조립한다.
+            lines += [
+                "",
+                assemble_recovery_report(
+                    reason="소켓 아래 계층(DNS/Wi-Fi)까지 닿지 않는 네트워크 수준 장애로 보입니다. "
+                    "이름해석·경로를 확인해 주세요.",
+                    now=self._clock(),
+                    network_outage_sec=network_outage_sec,
+                ),
+            ]
         self._notify_owner("\n".join(lines))
 
     def _catchup_retry_tick(self, worker: Worker) -> None:
@@ -1848,15 +1871,30 @@ class Application:
             # recovery can never be re-detected. The owner notification must
             # go out even if catch-up throws — otherwise a catch_up exception
             # swallows the only signal that the outage happened at all.
+            # A Slack-API outage that outlasts capture_after_sec is, by the
+            # 2026-11-02 incident's logic, long past a transient API blip and
+            # most likely network-level (DNS/Wi-Fi). Flag it so the recovery
+            # report names that layer; a short blip stays a plain reconnect.
+            network_outage_sec = (
+                outage_sec
+                if self._network_escalation.needs_capture(
+                    elapsed_sec=outage_sec, already_captured=False
+                )
+                else None
+            )
             try:
                 report = worker.catch_up(
                     self.channel_ids(), window_sec=self._recovery_window_sec(outage_sec)
                 )
             except Exception:
                 log.exception("복구 캐치업 실패")
-                self._report_recovery(outage_sec, 0, catchup_failed=True)
+                self._report_recovery(
+                    outage_sec, 0, catchup_failed=True, network_outage_sec=network_outage_sec
+                )
             else:
-                self._report_recovery(outage_sec, len(report.missed))
+                self._report_recovery(
+                    outage_sec, len(report.missed), network_outage_sec=network_outage_sec
+                )
 
         for status in worker.retry_catchup():
             if not status.alert:
