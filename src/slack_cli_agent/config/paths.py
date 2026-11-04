@@ -124,6 +124,15 @@ class StatePaths:
         return self.persona / "learned"
 
     @property
+    def local(self) -> Path:
+        """Per-bot channel rules the knowledge mirror must not touch. The mirror
+        copies a sibling bot's `knowledge/` and `prompts/` over this bot's every
+        night, so a rule meant for one bot only lives here and loads last, over
+        everything the mirror could have replaced (sca). Only `<channel>.md`.
+        """
+        return self.persona / "local"
+
+    @property
     def skills(self) -> Path:
         """Bot-owned skill files, kept out of any engine's shared home directory.
 

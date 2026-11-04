@@ -26,6 +26,13 @@ BUDGET_OMITTED_HEADER = (
     "그 주제를 다루게 되면 파일을 직접 읽는다. 없는 것으로 답하지 않는다.\n\n"
 )
 _CHANNEL_HEADER = "# 이 채널의 지식\n\n앞에 적힌 것과 다르게 적힌 항목이 있으면 여기를 따른다.\n\n"
+#: A per-bot channel rule that the knowledge mirror must not overwrite. The
+#: mirror copies a sibling bot's `knowledge/` over this bot's every night, so a
+#: rule meant for one bot only lives in `local/` instead and loads last, over
+#: everything the mirror could have replaced (마메치 load_persona 대응).
+_LOCAL_HEADER = (
+    "# 이 봇만의 채널 규정\n\n앞에 적힌 것과 다르게 적힌 항목이 있으면 여기를 따른다.\n\n"
+)
 _LEARNED_HEADER = (
     "# 학습이 쌓은 지식\n\n"
     "대화에서 확인한 것을 날짜와 함께 쌓은 것이다. 사람이 쓴 지식과 어긋나면\n"
@@ -61,6 +68,7 @@ class KnowledgeLoader:
         knowledge_dir: Path,
         domain_file: Path | None = None,
         learned_dir: Path | None = None,
+        local_dir: Path | None = None,
         always_skills: Collection[str] = (),
     ) -> None:
         self._persona_file = persona_file
@@ -69,6 +77,11 @@ class KnowledgeLoader:
         # None means this bot has no separate learned directory, which is the
         # shape every caller had before the two sources were split.
         self._learned_dir = learned_dir
+        # None means this bot keeps no mirror-exempt overlay. When set, a
+        # `<channel>.md` here loads last, after knowledge and learned, so it wins
+        # over anything the nightly mirror could have replaced. Channel-scoped
+        # only: common `_*.md` belongs in the mirrored `knowledge/` (sca).
+        self._local_dir = local_dir
         # Common knowledge files named after one of these (stem with its
         # leading "_" stripped, e.g. "_metabase.md" -> "metabase") load even
         # when their own `when:` marker doesn't match this request's words.
@@ -129,7 +142,20 @@ class KnowledgeLoader:
             else []
         )
         documents += [dataclasses.replace(doc, learned=True) for doc in learned]
+        documents += self._local_overlay(channel_slug)
         return tuple(documents), tuple(skipped)
+
+    def _local_overlay(self, channel_slug: str) -> list[KnowledgeDocument]:
+        """The per-bot channel rule, headed and placed last. Empty when there is
+        no local directory, no channel, or no file: a missing overlay is the
+        normal case, not an error."""
+        if self._local_dir is None or not channel_slug:
+            return []
+        local_file = self._local_dir / f"{channel_slug}.md"
+        text = _read_or_none(local_file)
+        if text is None:
+            return []
+        return [KnowledgeDocument(path=local_file, text=_LOCAL_HEADER + text)]
 
     def _from_dir(
         self, directory: Path, channel_slug: str, prompt: str, skipped: list[Path],
