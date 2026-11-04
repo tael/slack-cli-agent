@@ -441,6 +441,13 @@ class TestReviewReactions:
         """부품만 만들면 감시가 돌아 본 기록이 한 줄도 안 남는다(sca-j3d)."""
         assert app.watch_checker()._audit is app.audit()
 
+    def test_감시_확인기에_중복판정이_연결된다(self, app: Application) -> None:
+        """둘 다 안 꽂으면 _superseded 가 늘 False 라 확인이 도는 사이 올라온
+        본답변과 완료 보고가 둘 다 채널에 남는다(F40/F41)."""
+        checker = app.watch_checker()
+        assert checker._thread_activity is not None
+        assert checker._run_supersede_check is not None
+
     def test_엔진_실행기에_감사가_연결된다(self, app: Application) -> None:
         """부품만 만들면 보장 기록이 한 줄도 안 남는다(sca-dyb.15 2단계)."""
         assert app.engine_runner._audit is app.audit()
