@@ -323,6 +323,29 @@ def gave_up(turn: Turn) -> str | None:
 
 
 # --------------------------------------------------------------------------
+# stopped_unfinished — ended a do-it task with "couldn't / no means"
+# (2026-11-04 TOP40 구독 해지 : "구독 삭제는 아직 실행하지 못했습니다. Tableau에
+# 로그인할 수단이 없어서예요" 로 끝났다. 실제로는 SSO 로그인이 됐고 막힘은 권한이었다)
+# --------------------------------------------------------------------------
+
+_STOPPED_RE = re.compile(
+    r"(실행|처리|삭제|해지|진행|반영|적용|전환)(하지 못|할 수 없|을 못|를 못|못\s?했)[^\n]{0,20}"
+    r"|(수단|방법|경로|권한)(이|은)\s?없[^\n]{0,20}"
+)
+
+
+def stopped_unfinished(turn: Turn) -> str | None:
+    """The offending phrase, if the answer ends a do-it task by saying the
+    action couldn't be done or there's no means to do it. An answer that
+    explicitly waits on a human decision (`[[ASK]]`) is left alone."""
+    answer = turn.answer
+    if not answer or _ASK_LINE_RE.search(answer):
+        return None
+    match = _STOPPED_RE.search(_QUOTED.sub("", answer))
+    return match.group(0) if match else None
+
+
+# --------------------------------------------------------------------------
 # not_opened — admitted skipping an open it could have done
 # --------------------------------------------------------------------------
 
@@ -543,6 +566,14 @@ def _gave_up_guidance(hit: str) -> str:
     )
 
 
+def _stopped_unfinished_guidance(hit: str) -> str:
+    return (
+        f'"{hit}" 로 실행 지시를 끝내려 했다. 인증 문제인지 권한 문제인지 실제 호출로 가르고, '
+        "봇이 가진 다른 경로(다른 계정·프로파일, 저장소, 스킬, 지식 파일의 절차)를 찾아 같은 턴에 끝낸다. "
+        "김태일에게 비밀번호 등록이나 화면 조작을 넘기지 않는다. 사람만 할 수 있는 판단이면 이유와 함께 [[ASK]] 로 묻는다."
+    )
+
+
 def _not_opened_guidance(hit: str) -> str:
     return (
         f'"{hit}" 로 열람을 생략했다고 답에 썼다. 열 수 있는 문서, 스레드, 첨부는 같은 턴에 열어 본문으로 판정한다. '
@@ -628,6 +659,7 @@ def _build_common_registry() -> JudgmentRegistry:
     common = JudgmentRegistry()
     common.register("gave_up", gave_up, _gave_up_guidance)
     common.register("not_opened", not_opened, _not_opened_guidance)
+    common.register("stopped_unfinished", stopped_unfinished, _stopped_unfinished_guidance)
     common.register("absence_unopened", absence_unopened, _absence_unopened_guidance)
     common.register("offer", offer, _offer_guidance)
     common.register("handoff", handoff, _handoff_guidance)
