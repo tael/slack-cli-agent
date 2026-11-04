@@ -22,6 +22,7 @@ from .checks import (
     ChannelSettingsReadableCheck,
     ChannelUserToolsCheck,
     CodexConfigLoadCheck,
+    CompileCheck,
     DuplicateMcpSystemCheck,
     EngineBinaryCheck,
     EngineHomeCredentialCheck,
@@ -103,6 +104,11 @@ class PreflightSuite:
             # 표기가 안 풀리면 MCP 서버는 빈 자격으로 인증 실패만 낸다. 기동에서 막는다.
             McpCredentialCheck(),
             # 아래부터 B6 — 마메치 check.py 와 짝 맞춘 9종.
+            # CompileCheck 는 PluginAstCheck 앞 — apply.sh 가 py_compile 를 먼저
+            # 돌리고 그 다음 check.py(이름 검사)를 돌린 순서 그대로다. 깨진 구문은
+            # ast.parse 가 SyntaxError 로 터지고 PluginAstCheck 는 그것을 건너뛰므로,
+            # 컴파일 점검이 먼저 서야 기동 전에 걸린다.
+            CompileCheck(),
             PluginAstCheck(),
             SkillSymlinkCheck(),
             CodexConfigLoadCheck(),

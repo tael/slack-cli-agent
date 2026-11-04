@@ -558,6 +558,56 @@ def _undefined_name_lines(tree: ast.AST) -> dict[str, int]:
     return missing
 
 
+class CompileCheck(PreflightCheck):
+    """`py_compile`s every configured plugin module before boot.
+
+    Parity with the original `apply.sh`/`restart.sh` gate `python -m
+    py_compile bot.py`, which refused to restart the bot on a syntax error.
+    The org-written code imported at boot here is the set of `profile.plugins`
+    modules, not one monolithic file, so each is compiled in turn.
+
+    This sits deliberately *before* `PluginAstCheck` in the suite — the same
+    order `apply.sh` ran `py_compile` and then `check.py`. It matters: an
+    `ast.parse` of broken source raises `SyntaxError`, and PluginAstCheck
+    treats that as "can't read, not my job" and passes (its concern is
+    undefined names, not whether the file compiles). So without this check a
+    plugin that does not even parse sails through preflight and blows up at
+    import — long after boot has reported 기동 가능.
+
+    Degrades to a pass when a module can't be found or its source can't be
+    read, for the same reason PluginAstCheck does: locating and loading the
+    module is `PluginLoader`'s job and must not be reported twice. A syntax
+    error, by contrast, is exactly what this check exists to catch.
+    """
+
+    name: ClassVar[str] = "plugin_compile"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        if not ctx.profile.plugins:
+            return CheckResult(ok=True, detail="컴파일할 플러그인이 없다")
+        bad: list[str] = []
+        for entry in ctx.profile.plugins:
+            module_path = entry.partition(":")[0]
+            try:
+                spec = importlib.util.find_spec(module_path)
+            except (ImportError, ValueError, ModuleNotFoundError, AttributeError):
+                continue
+            if spec is None or not spec.origin or not spec.origin.endswith(".py"):
+                continue
+            try:
+                source = Path(spec.origin).read_text(encoding="utf-8")
+            except OSError:
+                continue
+            try:
+                compile(source, spec.origin, "exec")
+            except SyntaxError as exc:
+                where = f"{exc.lineno}행" if exc.lineno else "위치 미상"
+                bad.append(f"{module_path} : 구문 오류 - {exc.msg} ({where})")
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="플러그인 컴파일 점검 통과")
+
+
 class PluginAstCheck(PreflightCheck):
     """Checks every configured plugin module for a Load of a name nothing defines.
 
