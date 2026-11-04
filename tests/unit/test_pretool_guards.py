@@ -25,7 +25,12 @@ from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.guard import finish_hook
-from slack_cli_agent.guard.pretool import install_guard, scan_guard, turn_budget
+from slack_cli_agent.guard.pretool import (
+    install_guard,
+    restart_guard,
+    scan_guard,
+    turn_budget,
+)
 
 #: 이 워크트리의 src 루트. finish_hook.py 서브프로세스가 설치된(다른 워크트리의)
 #: slack_cli_agent 가 아니라 지금 짜고 있는 코드를 import 하도록 앞에 둔다.
@@ -36,6 +41,7 @@ SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
 _DEADLINE_VARS = (
     "TURN_DEADLINE", "TURN_DEADLINE_MONO", "TURN_WRAPUP_SEC", "TURN_BUDGET_LOG",
     "POST_CHANNEL", "ADVISOR_CHANNELS", "CODE_FIRST_CHANNELS",
+    "RESTART_GUARD_LABELS", "RESTART_GUARD_MARKER",
 )
 
 
@@ -112,6 +118,67 @@ class TestTurnBudget:
         result, proc = run_hook(
             turn_budget.HOOK_SCRIPT, payload, {"TURN_DEADLINE_MONO": str(mono_deadline)}
         )
+        assert proc.returncode == 0
+        assert result is None
+
+
+class TestRestartGuard:
+    def _run(
+        self, command: str, env: dict[str, str] | None = None
+    ) -> tuple[dict[str, Any] | None, subprocess.CompletedProcess[str]]:
+        payload = {"tool_name": "Bash", "session_id": "s1", "tool_input": {"command": command}}
+        return run_hook(restart_guard.HOOK_SCRIPT, payload, env)
+
+    def test_launchctl_kickstart_은_거부한다(self) -> None:
+        result, proc = self._run("launchctl kickstart -k gui/501/local.guchipachi.worker")
+        assert proc.returncode == 0
+        assert result is not None
+        hook_out = result["hookSpecificOutput"]
+        assert hook_out["hookEventName"] == "PreToolUse"
+        assert hook_out["permissionDecision"] == "deny"
+
+    def test_launchctl_list_조회는_통과한다(self) -> None:
+        result, proc = self._run("launchctl list | grep guchipachi")
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_재기동_스크립트는_거부한다(self) -> None:
+        result, proc = self._run("~/.guchipachi-sca/apply-restart.sh")
+        assert proc.returncode == 0
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_마커경로가_있으면_사유에_담긴다(self) -> None:
+        result, proc = self._run(
+            "launchctl stop local.guchipachi.worker",
+            {"RESTART_GUARD_MARKER": "/tmp/apply-request"},
+        )
+        assert proc.returncode == 0
+        assert result is not None
+        assert "/tmp/apply-request" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def test_봇라벨을_겨냥한_kill_은_거부한다(self) -> None:
+        result, proc = self._run(
+            "pkill -f local.guchipachi.worker", {"RESTART_GUARD_LABELS": "local.guchipachi.worker"}
+        )
+        assert proc.returncode == 0
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_무관한_프로세스_kill_은_통과한다(self) -> None:
+        result, proc = self._run(
+            "pkill -f some_unrelated_job", {"RESTART_GUARD_LABELS": "local.guchipachi.worker"}
+        )
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_라벨이_없으면_일반_kill_은_통과한다(self) -> None:
+        result, proc = self._run("kill 12345")
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_재기동과_무관한_명령은_통과한다(self) -> None:
+        result, proc = self._run("echo restart please")
         assert proc.returncode == 0
         assert result is None
 
@@ -335,15 +402,16 @@ class TestFinishHook:
 
 
 class TestClaudeEngineWiring:
-    def test_guard_hook_settings_에_bash_가드_3개와_stop_훅이_있다(self) -> None:
+    def test_guard_hook_settings_에_bash_가드_4개와_stop_훅이_있다(self) -> None:
         from slack_cli_agent.engine.claude import guard_hook_settings
 
         settings = guard_hook_settings()
         pretool_groups = settings["hooks"]["PreToolUse"]
         bash_group = next(g for g in pretool_groups if g["matcher"] == "Bash")
         commands = [h["command"] for h in bash_group["hooks"]]
-        assert len(commands) == 3
+        assert len(commands) == 4
         assert any("turn_budget.py" in c for c in commands)
+        assert any("restart_guard.py" in c for c in commands)
         assert any("install_guard.py" in c for c in commands)
         assert any("scan_guard.py" in c for c in commands)
         assert all(c.startswith(sys.executable) for c in commands)
@@ -391,5 +459,5 @@ class TestClaudeEngineWiring:
         assert "*" in matchers  # progress 훅
         assert "Bash" in matchers  # 가드 3종
         bash_group = next(g for g in pretool_groups if g["matcher"] == "Bash")
-        assert len(bash_group["hooks"]) == 3
+        assert len(bash_group["hooks"]) == 4
         assert settings["hooks"]["Stop"][0]["matcher"] == "*"
