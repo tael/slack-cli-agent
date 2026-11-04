@@ -441,7 +441,7 @@ class RequestPipeline:
         # signal, not content. Strip it here, after guards and the ask tag, so
         # it never reaches the channel in any render path (sca: rich_render fed
         # the bare tag into a table message's fallback text).
-        body = take_nowatch_tag(body)[0]
+        body, had_nowatch = take_nowatch_tag(body)
         body = self._strip_publish_markers(body, ctx)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich, flat=flat) or ""
@@ -453,6 +453,13 @@ class RequestPipeline:
         watch_desc = watch_desc or self._watch_desc_for_launched(workdir, run_id)
         watching = bool(watch_desc) and self._register_watch(
             ctx, principal, watch_desc, workdir, run_id, watch_due_at(watch_due_raw),
+        )
+        # Record how this reply landed on the watch question so the NOWATCH
+        # 판정률 can be aggregated (J9): a registered watch, an explicit
+        # [[NOWATCH]], or neither (the model left it ambiguous).
+        self._audit.record(
+            IncidentKind.WATCH_VERDICT.value, channel=ctx.channel, thread_ts=ctx.thread_ts,
+            verdict="watch" if watching else ("nowatch" if had_nowatch else "missing"),
         )
         # The final mark belongs to the worker: it owns queue completion and the
         # buried-message groups, and marking here too duplicated the Slack call

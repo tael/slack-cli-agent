@@ -64,6 +64,12 @@ class IncidentKind(StrEnum):
     #: (strip_unknown_tags, bot.py:1561's UNKNOWN_TAG_LINE_RE). Logged
     #: rather than silently eaten so an invented marker surfaces.
     UNKNOWN_TAG = "unknown_tag"
+    #: One published reply's watch disposition, as a `verdict` field:
+    #: "watch" (a follow-up watch was registered), "nowatch" (the model
+    #: ended with `[[NOWATCH]]` to say none was needed), or "missing"
+    #: (neither — it left the call ambiguous). Lets the NOWATCH 판정률 be
+    #: aggregated (J9, mametchi bot.py NOWATCH 감사). Baseline traffic.
+    WATCH_VERDICT = "watch_verdict"
 
     def __str__(self) -> str:
         return self.value
