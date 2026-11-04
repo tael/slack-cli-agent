@@ -150,16 +150,36 @@ class TestRunOnceEmpty:
 
 
 class TestRunOnceSuccess:
-    def test_작업을_집으면_처리기에_맥락이_그대로_넘어가고_성공완료가_불린다(self, database) -> None:
+    def test_작업을_집으면_처리기에_맥락이_넘어가고_성공완료가_불린다(self, database) -> None:
         handler = FakeHandler(outcome=HandleOutcome(ok=True))
-        worker, queue, _client = make_worker(database=database, handler=handler)
+        worker, queue, _client = make_worker(database=database, handler=handler, now=lambda: 1000.0)
         original = ctx("1.1")
         queue.enqueue(original)
 
         assert worker.run_once() is True
 
-        assert handler.received == [original]
+        # 첫 반응 시각(B38)만 더 찍히고 나머지는 그대로다.
+        assert handler.received == [original.with_first_reaction(1000.0)]
         assert queue.counts() == {"COMPLETED": 1}
+
+    def test_처리를_시작하면_첫_반응_시각이_맥락에_찍힌다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=True))
+        worker, queue, _client = make_worker(database=database, handler=handler, now=lambda: 1000.0)
+        queue.enqueue(ctx("1.1"))
+
+        worker.run_once()
+
+        assert len(handler.received) == 1
+        assert handler.received[0].first_reaction_at == 1000.0
+
+    def test_이미_찍힌_첫_반응_시각은_재처리때_밀리지_않는다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=True))
+        worker, queue, _client = make_worker(database=database, handler=handler, now=lambda: 2000.0)
+        queue.enqueue(ctx("1.1").with_first_reaction(1500.0))
+
+        worker.run_once()
+
+        assert handler.received[0].first_reaction_at == 1500.0
 
     def test_성공하면_처리_표식과_완료_표식이_남는다(self, database) -> None:
         handler = FakeHandler(outcome=HandleOutcome(ok=True))
