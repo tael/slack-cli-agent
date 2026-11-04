@@ -84,7 +84,10 @@ class TestGaveUp:
 
 class TestStoppedUnfinished:
     def test_blocks_the_top40_answer(self):
-        turn = _turn("티켓은 만들었습니다. 다만 구독 삭제는 아직 실행하지 못했습니다. Tableau에 로그인할 수단이 없어서예요.")
+        turn = _turn(
+            "티켓은 만들었습니다. 다만 구독 삭제는 아직 실행하지 못했습니다. "
+            "Tableau에 로그인할 수단이 없어서예요."
+        )
 
         assert finish_review.stopped_unfinished(turn) is not None
         assert finish_review.decide(turn).action == "block"
