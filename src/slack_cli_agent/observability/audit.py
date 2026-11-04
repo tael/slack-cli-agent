@@ -65,6 +65,11 @@ class IncidentKind(StrEnum):
     #: chat.update doesn't prove the markdown took; this records that it didn't.
     REWRITE_UNCONVERTED = "rewrite_unconverted"
     SILENT = "silent"
+    #: A reply arrived without a `[[RECIPIENT:...]]` tag while recipient
+    #: enforcement was on, so its body was withheld and only a notice posted
+    #: (J11/D3, bot.py:7872 missing_recipient). Records the block; the
+    #: snippet field holds the withheld body's head for troubleshooting.
+    MISSING_RECIPIENT = "missing_recipient"
     #: An undeclared `[[...]]` marker line dropped before publish
     #: (strip_unknown_tags, bot.py:1561's UNKNOWN_TAG_LINE_RE). Logged
     #: rather than silently eaten so an invented marker surfaces.

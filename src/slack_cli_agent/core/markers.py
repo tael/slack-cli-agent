@@ -148,6 +148,54 @@ def resolve_recipient(text: str, *, require_recipient: bool = False) -> Recipien
     return RecipientResolution(text=clean, recipient=recipient, blocked=blocked)
 
 
+# Any recipient tag, in any position -- not anchored at the end like
+# RECIPIENT_TAG. Used by pick_recipient_tag to count distinct choices in a
+# reply that was asked for the tag alone (bot.py:1974 RECIPIENT_TAG_ANY).
+RECIPIENT_TAG_ANY = re.compile(r"\[\[RECIPIENT:(?:OWNER|ASKER|BOT:[A-Z0-9]+)\]\]")
+
+
+def pick_recipient_tag(text: str) -> str | None:
+    """Returns the single `[[RECIPIENT:...]]` tag in `text`, or None when
+    there are zero or two-or-more *distinct* ones (A54, bot.py:1978
+    pick_recipient_tag).
+
+    The missing-recipient retry re-asks the model for just the tag; only an
+    unambiguous single choice is accepted, since a reply naming two different
+    recipients is exactly the mistake the block is there to catch. Repeating
+    the same tag is unambiguous and accepted.
+    """
+    tags: set[str] = set(RECIPIENT_TAG_ANY.findall(text or ""))
+    if len(tags) != 1:
+        return None
+    return tags.pop()
+
+
+# The reprompt handed back to the engine when a reply arrives without a
+# recipient tag (A53, bot.py:1962 missing_recipient_prompt). Deliberately
+# free of org-specific names/IDs: the three tag options are the protocol,
+# and who "OWNER" or a given bot is comes from config, not this string.
+_MISSING_RECIPIENT_PROMPT = (
+    "방금 답변에 수신자 표식이 없어 게시되지 않았다. 사용자 화면에는 아직 "
+    "아무것도 보이지 않는다. 본문은 그대로 두고, 이 답을 받을 쪽을 가리키는 "
+    "수신자 표식 하나만 답변 마지막 줄에 붙여 다시 보내라. 본문을 새로 쓰지 마라.\n"
+    "- 지금 말을 건 쪽에게 답하면 [[RECIPIENT:ASKER]]\n"
+    "- 봇 소유자에게 보고하거나 확인을 구하면 [[RECIPIENT:OWNER]]\n"
+    "- 특정 봇에게 답하면 [[RECIPIENT:BOT:그 봇의 사용자 ID]]\n"
+    "수신자를 정하지 못했으면 표식 없이 침묵 표식만 남겨라. 두 수신자를 한 "
+    "답변에 섞지 마라."
+)
+
+
+def missing_recipient_prompt() -> str:
+    """The reprompt string for a reply that lacked a recipient tag (A53,
+    bot.py:1962 missing_recipient_prompt). The body is already held by the
+    caller; the model is asked only to choose a tag so a rerun can't change
+    the answer text (re-running with the full task could repeat a side effect
+    the first turn already did).
+    """
+    return _MISSING_RECIPIENT_PROMPT
+
+
 # Markers with their own dedicated handling elsewhere (ASK_RE/NOWATCH_RE
 # above, guard/watch.py's WATCH_RE, take_recipient_tag). A line matching one
 # of these shapes is left untouched by strip_unknown_tags() -- stripping it
@@ -208,8 +256,11 @@ __all__ = [
     "ELAPSED_MODEL_LINE",
     "NOWATCH_RE",
     "NOWATCH_TAG",
+    "RECIPIENT_TAG_ANY",
     "Recipient",
     "RecipientResolution",
+    "missing_recipient_prompt",
+    "pick_recipient_tag",
     "resolve_recipient",
     "strip_unknown_tags",
     "take_ask_tag",
