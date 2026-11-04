@@ -63,7 +63,8 @@ def _now() -> float:
 KNOWN_KEYS = frozenset(
     {
         "name", "mode", "workdir", "model", "effort", "persona", "knowledge",
-        "trusted_users", "answer_unaddressed", "session_scope",
+        "trusted_users", "answer_unaddressed", "answer_top_level", "flat_reply",
+        "session_scope",
         "disclose_mechanism", "full_authority", "operator_full", "skills",
         "light_context", "rich", "chat",
         "progress", "bot_mentions",
@@ -104,6 +105,18 @@ class ChannelConfig:
     """Per-user extra tools. The org-specific value (an ops script, say) lives
     in the channel file, not in the installed package (sca-ww4)."""
     answer_unaddressed: bool = False
+    answer_top_level: bool = False
+    """Answers a mention-less *top-level* message (not a thread reply) in this
+    channel. `answer_unaddressed` only releases thread replies; a top-level
+    message with no mention is otherwise dropped unconditionally. A team
+    channel where people talk to each other must leave this off so the bot
+    doesn't butt in -- a separate key from `answer_unaddressed` for exactly
+    that reason (mametchi answer_top_level, bot.py:10089)."""
+    flat_reply: bool = False
+    """Posts the reply straight to the channel instead of opening a thread off
+    the triggering message. DMs already post flat; this extends that to a
+    channel that reads as a feed rather than a conversation (mametchi
+    flat_reply, bot.py:6458)."""
     session_scope: str = "thread"
     disclose_mechanism: bool = False
     full_authority: bool = False
@@ -185,6 +198,8 @@ class ChannelConfig:
                 for user, tools in (data.get("user_tools") or {}).items()
             },
             answer_unaddressed=bool(data.get("answer_unaddressed", False)),
+            answer_top_level=bool(data.get("answer_top_level", False)),
+            flat_reply=bool(data.get("flat_reply", False)),
             session_scope=str(data.get("session_scope") or "thread"),
             disclose_mechanism=bool(data.get("disclose_mechanism", False)),
             full_authority=bool(data.get("full_authority", False)),

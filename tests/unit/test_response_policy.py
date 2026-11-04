@@ -37,6 +37,21 @@ class TestConsiders:
         assert policy.considers(채널(answer_unaddressed=True)) is True
 
 
+class TestAnswersTopLevel:
+    def test_등록안된_채널은_최상위글_대상이_아니다(self, policy: ResponsePolicy) -> None:
+        assert policy.answers_top_level(None) is False
+
+    def test_answer_top_level이_꺼져_있으면_대상이_아니다(self, policy: ResponsePolicy) -> None:
+        assert policy.answers_top_level(채널()) is False
+
+    def test_answer_unaddressed만_켜도_최상위글은_안_연다(self, policy: ResponsePolicy) -> None:
+        # 두 키는 독립이다. 스레드 답글만 여는 answer_unaddressed 로는 최상위글이 안 열린다.
+        assert policy.answers_top_level(채널(answer_unaddressed=True)) is False
+
+    def test_answer_top_level이_켜져_있으면_대상이다(self, policy: ResponsePolicy) -> None:
+        assert policy.answers_top_level(채널(answer_top_level=True)) is True
+
+
 class TestAnswers:
     def test_봇이_안_낀_스레드는_안_받는다(self, policy: ResponsePolicy) -> None:
         state = ThreadState(joined=False, bot_asked=False)

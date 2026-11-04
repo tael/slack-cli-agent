@@ -67,6 +67,17 @@ class ResponsePolicy:
         """
         return bool(config and config.answer_unaddressed)
 
+    def answers_top_level(self, config: ChannelConfig | None) -> bool:
+        """Whether this channel answers a mention-less *top-level* message
+        (not a thread reply). A separate key from `answer_unaddressed`: that
+        one releases thread replies, this one the top-level feed, so a team
+        channel can open one without the other (mametchi, bot.py:10089). An
+        unregistered channel (config is None) never does. The caller still
+        rules out a self-mention (app_mention owns those) and a message
+        naming another bot before acting on this.
+        """
+        return bool(config and config.answer_top_level)
+
     def answers(
         self,
         config: ChannelConfig | None,

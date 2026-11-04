@@ -309,6 +309,9 @@ class RequestPipeline:
         # process, which has its own current directory (sca-6zt).
         workdir = (config.workdir if (config and config.workdir) else self._default_workdir).resolve()
         rich = channel_is_rich(config)
+        # A flat_reply channel posts straight to the channel, not a thread off
+        # the triggering message (A17, mametchi bot.py:6458).
+        flat = bool(config and config.flat_reply)
         channel_mode = config.mode if config else "default"
         channel_slug = slug_for(ctx.channel, config)
         chat_level = config.chat if config else "normal"
@@ -399,7 +402,7 @@ class RequestPipeline:
         if not response.ok:
             failure = response.failure_reason or "엔진 실행 실패"
             if response.user_facing and response.body.strip():
-                self._publisher.post(ctx.channel, ctx.thread_ts, response.body, rich)
+                self._publisher.post(ctx.channel, ctx.thread_ts, response.body, rich, flat=flat)
             self._record(
                 ctx, decision, model, effort, elapsed,
                 # A failed turn spends tokens too (sca-3g3a). gemini and codex
@@ -441,7 +444,7 @@ class RequestPipeline:
         body = take_nowatch_tag(body)[0]
         body = self._strip_publish_markers(body, ctx)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
-        posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich) or ""
+        posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich, flat=flat) or ""
         self._archive_response(ctx, body, response, elapsed)
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,

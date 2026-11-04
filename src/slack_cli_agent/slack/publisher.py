@@ -104,12 +104,15 @@ class MessagePublisher:
             body=part, note=note, text=self._blocks.preview(part or note), blocks=blocks
         )
 
-    def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None:
+    def post(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> str | None:
         """Posts using the channel's rendering mode.
 
         Rich channels get the markdown source verbatim in a markdown
         block; everything else gets it downgraded to mrkdwn. Channels
-        reply in a thread; DMs post directly.
+        reply in a thread; DMs post directly, and so does a `flat` channel
+        (flat_reply, A17) that reads as a feed rather than a conversation.
         """
         if rich:
             separated = self._verifier.separate_tables(text)
@@ -144,7 +147,11 @@ class MessagePublisher:
         # Empty means "no thread yet", same as None. Leaving "" in would
         # never take the res["ts"] branch below, so the caller gets "" back
         # and later chunks post at top level instead of under the first.
-        parent_ts = None if is_direct_message_channel(channel) else (thread_ts or None)
+        parent_ts = (
+            None
+            if (flat or is_direct_message_channel(channel))
+            else (thread_ts or None)
+        )
         sent = 0
         # A rejected chunk can be replaced in place by smaller pieces, so this
         # walks a mutable list rather than the original chunks (sca-2k7).
