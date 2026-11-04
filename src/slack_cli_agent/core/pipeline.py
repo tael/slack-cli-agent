@@ -120,6 +120,11 @@ class RequestPipeline:
         owner_user_id: str = "",
         reactions: ReactionPort | None = None,
         name_resolver: Callable[[str], str] = lambda user_id: user_id,
+        # Whether the asker is a bot, for AskerSection's bot-only branch
+        # (B1/B2). Default never-a-bot keeps the generic non-owner note when
+        # unwired. Looked up only for non-owner askers, since the owner is a
+        # person by definition.
+        asker_is_bot: Callable[[str], bool] = lambda user_id: False,
         group_resolver: Callable[[str], str] | None = None,
         mention_table: Callable[[], Mapping[str, str]] = dict,
         slow_reporter: SlowRequestReporter | None = None,
@@ -175,6 +180,7 @@ class RequestPipeline:
         self._owner_user_id = owner_user_id
         self._reactions = reactions
         self._name_resolver = name_resolver
+        self._asker_is_bot = asker_is_bot
         # The prompt body only. Slack's addressee check and this bot's own
         # mention removal read the raw text, so rendering earlier would break
         # them (sca-za2a).
@@ -542,6 +548,7 @@ class RequestPipeline:
     ) -> tuple[str, dict[str, Any]]:
         is_owner = principal.trust is TrustLevel.OWNER
         asker_name = "" if is_owner else (self._name_resolver(ctx.user) or ctx.user)
+        asker_is_bot = False if is_owner else self._asker_is_bot(ctx.user)
         config = self._channels.get(ctx.channel)
         composition_ctx = CompositionContext(
             principal=principal,
@@ -553,6 +560,7 @@ class RequestPipeline:
             is_rich=rich,
             asker_name=asker_name,
             asker_id="" if is_owner else ctx.user,
+            asker_is_bot=asker_is_bot,
             unaddressed=ctx.unaddressed,
             chat_level=chat_level,
             authority_granted=self._access.is_full_authority(principal),
