@@ -99,3 +99,28 @@ class Test미표식_차단_J11:
         )
         pipeline.handle(make_ctx())
         assert deps["publisher"].posted[0]["text"] == NOTICE_NO_RECIPIENT
+
+
+class TestApplication배선_J11:
+    """부품(파이프라인)의 동작과 조립(Application)에서의 전달은 다르다 — J11 의
+    원래 결함은 require_recipient 가 파이프라인엔 있었지만 application.py 가
+    settings 에서 넘기지 않아 상시 꺼져 있던 것이다(readable_dirs 와 같은 함정).
+    """
+
+    def test_설정이_켜지면_파이프라인까지_전달된다(self, tmp_path: Path) -> None:
+        from test_application import FakeSlackClient, write_profile
+
+        from slack_cli_agent.core.application import Application
+
+        profile = write_profile(tmp_path, settings={"require_recipient": True})
+        app = Application(profile, FakeSlackClient())
+        assert app.pipeline()._require_recipient is True
+
+    def test_설정이_없으면_파이프라인도_꺼짐이다(self, tmp_path: Path) -> None:
+        from test_application import FakeSlackClient, write_profile
+
+        from slack_cli_agent.core.application import Application
+
+        profile = write_profile(tmp_path)
+        app = Application(profile, FakeSlackClient())
+        assert app.pipeline()._require_recipient is False
