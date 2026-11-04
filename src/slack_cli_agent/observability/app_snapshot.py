@@ -8,9 +8,9 @@ registered" are different facts, distinguished via `None`.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
-from slack_cli_agent.core.lifecycle import InflightCounter
+from slack_cli_agent.core.lifecycle import InflightCounter, InflightRegistry
 
 # Only count in-flight statuses -- including finished ones would make
 # state readers think work is backed up when it isn't.
@@ -47,8 +47,13 @@ class ApplicationSnapshotSource:
         is_shutting_down: Callable[[], bool],
         started_at: float,
         connection_epochs: _ConnectionEpochs | None = None,
+        active: InflightRegistry | None = None,
     ) -> None:
         self._inflight = inflight
+        # None in a process that never handles requests (the socket ingress):
+        # it has no in-flight events to list, so it reports an empty list, not
+        # a lookup failure.
+        self._active = active
         self._queue = queue
         # None in a process that has no socket: the log watch there would count
         # zero forever, which reads as "no errors" (sca-qi5.3).
@@ -62,6 +67,14 @@ class ApplicationSnapshotSource:
 
     def inflight_count(self) -> int:
         return self._inflight.count
+
+    def active_events(self, now: float) -> list[dict[str, Any]]:
+        if self._active is None:
+            return []
+        try:
+            return self._active.snapshot(now)
+        except Exception:  # noqa: BLE001 -- don't let a lookup failure fail the whole snapshot
+            return []
 
     def queued_threads(self) -> Mapping[str, int]:
         try:

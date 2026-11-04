@@ -19,7 +19,12 @@ from .channel_commands import (
     UnaddressedOnCommand,
 )
 from .command import AdminCommand
-from .commands import ChannelListCommand, EngineStatusCommand, HelpCommand
+from .commands import (
+    ChannelListCommand,
+    EngineStatusCommand,
+    HelpCommand,
+    InflightStatusCommand,
+)
 from .engine_commands import EngineApproveCommand, EngineDenyCommand
 from .learning_commands import LearningApplyCommand, LearningRevertCommand, LearningShowCommand
 
@@ -29,6 +34,7 @@ def default_admin_commands(notices: NoticeCatalog) -> list[AdminCommand]:
         HelpCommand(),
         ChannelListCommand(),
         EngineStatusCommand(),
+        InflightStatusCommand(),
         EngineApproveCommand(),
         EngineDenyCommand(),
         ChatActiveCommand(notices),

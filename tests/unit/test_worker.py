@@ -118,6 +118,7 @@ def make_worker(
     now=time.time,
     heartbeat_queue=None,
     admin=None,
+    active=None,
 ):
     from slack_cli_agent.core.worker import Worker
 
@@ -136,6 +137,7 @@ def make_worker(
         now=now,
         sleep=sleep,
         admin=admin,
+        active=active,
     )
     return worker, queue, client
 
@@ -147,6 +149,34 @@ class TestRunOnceEmpty:
 
         assert worker.run_once() is False
         assert handler.received == []
+
+
+class TestActiveRegistry:
+    """처리 중인 요청이 레지스트리에 담겼다가(B51) 끝나면 빠진다."""
+
+    def test_처리하는_동안_레지스트리에_담기고_끝나면_빠진다(self, database) -> None:
+        from slack_cli_agent.core.lifecycle import InflightRegistry
+
+        registry = InflightRegistry()
+        seen: list[dict] = []
+
+        @dataclass
+        class SnapshotHandler:
+            def handle(self, context: RequestContext) -> HandleOutcome:
+                # 처리 도중에는 이 요청이 레지스트리에 보여야 한다.
+                seen.extend(registry.snapshot(now=1000.0))
+                return HandleOutcome(ok=True)
+
+        worker, queue, _client = make_worker(
+            database=database, handler=SnapshotHandler(), now=lambda: 1000.0, active=registry
+        )
+        queue.enqueue(ctx("1.1", channel="C9"))
+
+        worker.run_once()
+
+        assert seen == [{"channel": "C9", "ts": "1.1", "elapsed_sec": 0.0}]
+        # 처리가 끝나면 목록에서 빠진다.
+        assert registry.snapshot(now=1000.0) == []
 
 
 class TestRunOnceSuccess:

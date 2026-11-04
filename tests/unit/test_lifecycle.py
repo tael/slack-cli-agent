@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from slack_cli_agent.core.lifecycle import GracefulShutdown, InflightCounter
+from slack_cli_agent.core.lifecycle import (
+    GracefulShutdown,
+    InflightCounter,
+    InflightRegistry,
+)
 
 
 class TestInflightCounter:
@@ -37,6 +41,47 @@ class TestInflightCounter:
             assert counter.count == 1
             raise ValueError("작업 중 예외")
         assert counter.count == 0
+
+
+class TestInflightRegistry:
+    def test_시작값은_빈_목록이다(self):
+        reg = InflightRegistry()
+        assert reg.snapshot(now=100.0) == []
+
+    def test_enter한_요청이_경과시간과_함께_담긴다(self):
+        reg = InflightRegistry()
+        reg.enter("C1", "1.1", now=100.0)
+        rows = reg.snapshot(now=142.0)
+        assert rows == [{"channel": "C1", "ts": "1.1", "elapsed_sec": 42.0}]
+
+    def test_leave하면_목록에서_빠진다(self):
+        reg = InflightRegistry()
+        reg.enter("C1", "1.1", now=100.0)
+        reg.leave("C1", "1.1")
+        assert reg.snapshot(now=200.0) == []
+
+    def test_track_컨텍스트는_진입시_담고_종료시_뺀다(self):
+        reg = InflightRegistry()
+        with reg.track("C1", "1.1", now=100.0):
+            assert reg.snapshot(now=100.0) == [
+                {"channel": "C1", "ts": "1.1", "elapsed_sec": 0.0}
+            ]
+        assert reg.snapshot(now=100.0) == []
+
+    def test_track_컨텍스트는_예외가_나도_뺀다(self):
+        reg = InflightRegistry()
+        with pytest.raises(ValueError), reg.track("C1", "1.1", now=100.0):
+            raise ValueError("처리 중 예외")
+        assert reg.snapshot(now=100.0) == []
+
+    def test_오래된_요청이_먼저_나온다(self):
+        reg = InflightRegistry()
+        reg.enter("C1", "1.1", now=100.0)
+        reg.enter("C2", "2.2", now=130.0)
+        rows = reg.snapshot(now=140.0)
+        assert [r["channel"] for r in rows] == ["C1", "C2"]
+        assert rows[0]["elapsed_sec"] == 40.0
+        assert rows[1]["elapsed_sec"] == 10.0
 
 
 class TestGracefulShutdown:
