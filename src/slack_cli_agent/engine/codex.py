@@ -84,7 +84,10 @@ CODEX_USAGE_KEY_MAP: Mapping[str, str] = {
 
 
 def _codex_mcp_config_args(
-    mcp_servers: Mapping[str, McpServerSpec], *, can_act: bool = False
+    mcp_servers: Mapping[str, McpServerSpec],
+    *,
+    can_act: bool = False,
+    turn_context: Mapping[str, str] | None = None,
 ) -> list[str]:
     args: list[str] = []
     for name, server in mcp_servers.items():
@@ -109,8 +112,11 @@ def _codex_mcp_config_args(
             for key, value in server.resolved_env().items():
                 args += ["-c", f"{prefix}.env.{key}={CodexEngine._toml_string(value)}"]
             # Same stdio-only placement as env: a read-only turn omits the gate
-            # var so the spawned server sees no write clearance (H6/H7/H8).
-            for key, value in server.turn_env_for(can_act=can_act).items():
+            # var so the spawned server sees no write clearance (H6/H7/H8), and
+            # the channel var is omitted when no channel token is in context.
+            for key, value in server.turn_env_for(
+                can_act=can_act, turn_context=turn_context
+            ).items():
                 args += ["-c", f"{prefix}.env.{key}={CodexEngine._toml_string(value)}"]
         if server.disabled_tools:
             args += ["-c", f"{prefix}.disabled_tools={json.dumps(list(server.disabled_tools))}"]
@@ -259,7 +265,9 @@ class CodexEngine(Engine):
         # default while the audit records the requested value (sca-3kzk).
         cmd += ["-c", f"model_reasoning_effort={self._toml_string(self.resolve_effort(request))}"]
         cmd += _codex_mcp_config_args(
-            self.profile.mcp_servers, can_act=request.tools.can_act
+            self.profile.mcp_servers,
+            can_act=request.tools.can_act,
+            turn_context=request.turn_context,
         )
         if not request.resume:
             instructions = request.system_prompt + self._session_path_note(request)

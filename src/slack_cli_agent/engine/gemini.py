@@ -87,7 +87,10 @@ _USAGE_KEY_MAP: Mapping[str, str] = {
 
 
 def _agy_mcp_servers(
-    mcp_servers: Mapping[str, McpServerSpec], *, can_act: bool = False
+    mcp_servers: Mapping[str, McpServerSpec],
+    *,
+    can_act: bool = False,
+    turn_context: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     servers: dict[str, Any] = {}
     for name, server in mcp_servers.items():
@@ -101,9 +104,10 @@ def _agy_mcp_servers(
             if server.args:
                 entry["args"] = list(server.args)
             # turn_env merges onto the static env, dropped on a read-only turn
-            # so the spawned server reads no write clearance (H6/H7/H8).
+            # so the spawned server reads no write clearance (H6/H7/H8); the
+            # channel var is dropped when no channel token is in context.
             env = server.resolved_env()
-            env.update(server.turn_env_for(can_act=can_act))
+            env.update(server.turn_env_for(can_act=can_act, turn_context=turn_context))
             if env:
                 entry["env"] = env
             if server.cwd:
@@ -170,7 +174,10 @@ class GeminiEngine(Engine):
         self._ensure_settings_file(self.spec.home_dir)
         self._ensure_keychain_link(self.spec.home_dir)
         self._ensure_mcp_config_file(
-            request.workdir, self.profile.mcp_servers, can_act=request.tools.can_act
+            request.workdir,
+            self.profile.mcp_servers,
+            can_act=request.tools.can_act,
+            turn_context=request.turn_context,
         )
 
     def footprint_for(self, request: EngineRequest) -> PayloadFootprint:
@@ -423,9 +430,13 @@ class GeminiEngine(Engine):
 
     @staticmethod
     def _ensure_mcp_config_file(
-        workdir: Path, mcp_servers: Mapping[str, McpServerSpec], *, can_act: bool = False
+        workdir: Path,
+        mcp_servers: Mapping[str, McpServerSpec],
+        *,
+        can_act: bool = False,
+        turn_context: Mapping[str, str] | None = None,
     ) -> None:
-        servers = _agy_mcp_servers(mcp_servers, can_act=can_act)
+        servers = _agy_mcp_servers(mcp_servers, can_act=can_act, turn_context=turn_context)
         if not servers:
             # An installed bot with no configured servers must not create
             # this file at all — see docs/패키징-경계.md.

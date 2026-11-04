@@ -395,6 +395,10 @@ class RequestPipeline:
             progress_log=progress_log,
             request_id=request_id,
             budget_report=budget_report,
+            # Opaque to the engine layer: forwarded only so an MCP server whose
+            # turn_env names a `channel` key gets this turn's channel as env
+            # (mametchi's per-turn MAMETCHI_POST_CHANNEL render guard).
+            turn_context={"channel": ctx.channel},
         )
         # Counted rather than derived: the reset is the only trace a broken
         # resume leaves, and without it nothing can say how often context is

@@ -111,10 +111,12 @@ class McpServerSpec:
     args: tuple[str, ...] = ()
     env: Mapping[str, str] = field(default_factory=dict)
     #: Env vars set from this turn's context rather than a fixed value, keyed
-    #: env-var-name -> context key. Only `can_act` is supported: the var is "1"
-    #: on an action turn and absent on a read-only one. The var name and the
-    #: server are organization config; the gating is the common skeleton for
-    #: mametchi's per-turn WRITE_ENABLED gate.
+    #: env-var-name -> context key. Two keys are honored: `can_act` sets the var
+    #: to "1" on an action turn and drops it on a read-only one (the write gate);
+    #: `channel` sets the var to this turn's opaque channel token and drops it
+    #: when the token is empty (the per-channel render guard). The var names and
+    #: the servers are organization config; the gating is the common skeleton
+    #: for mametchi's per-turn WRITE_ENABLED and MAMETCHI_POST_CHANNEL env.
     turn_env: Mapping[str, str] = field(default_factory=dict)
     cwd: Path | None = None
     url: str = ""
@@ -123,8 +125,10 @@ class McpServerSpec:
     disabled_tools: tuple[str, ...] = ()
 
     #: Turn-context keys turn_env may point at. Kept small on purpose: an
-    #: unknown key is a profile typo that would silently never fire.
-    _TURN_ENV_KEYS: ClassVar[frozenset[str]] = frozenset({"can_act"})
+    #: unknown key is a profile typo that would silently never fire. `can_act`
+    #: is the tool-axis write gate; `channel` is the opaque per-turn channel
+    #: token the caller supplies through EngineRequest.turn_context.
+    _TURN_ENV_KEYS: ClassVar[frozenset[str]] = frozenset({"can_act", "channel"})
 
     @classmethod
     def from_dict(cls, name: str, data: Mapping[str, Any]) -> McpServerSpec:
@@ -156,18 +160,29 @@ class McpServerSpec:
             disabled_tools=tuple(str(t) for t in (data.get("disabled_tools") or ())),
         )
 
-    def turn_env_for(self, *, can_act: bool) -> dict[str, str]:
+    def turn_env_for(
+        self, *, can_act: bool, turn_context: Mapping[str, str] | None = None
+    ) -> dict[str, str]:
         """This turn's env additions for the server's process, by turn context.
 
-        Only the `can_act` key is honored: its var is set to "1" on an action
-        turn and omitted otherwise, so a server reading the var as a write gate
-        stays closed on a read-only turn. A remote server has no process to
-        receive env, so callers skip it the same way they skip `env`.
+        `can_act` sets its var to "1" on an action turn and omits it otherwise,
+        so a server reading the var as a write gate stays closed on a read-only
+        turn. `channel` sets its var to the matching token from `turn_context`
+        and omits it when that token is empty or absent, so a server using the
+        var as a per-channel render guard falls back to its default. A remote
+        server has no process to receive env, so callers skip it the same way
+        they skip `env`.
         """
+        ctx = turn_context or {}
         out: dict[str, str] = {}
         for var, context_key in self.turn_env.items():
-            if context_key == "can_act" and can_act:
-                out[var] = "1"
+            if context_key == "can_act":
+                if can_act:
+                    out[var] = "1"
+            else:
+                value = ctx.get(context_key, "")
+                if value:
+                    out[var] = value
         return out
 
     @property
