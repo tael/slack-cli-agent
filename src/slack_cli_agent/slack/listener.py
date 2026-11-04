@@ -159,10 +159,21 @@ class EventListener:
 
         channel = event.get("channel") or ""
         thread_ts = event.get("thread_ts")
+        text = event.get("text") or ""
         if not thread_ts:
+            # A top-level message named nobody. Normally that's not ours, but a
+            # channel can opt in with `answer_top_level` (mametchi bot.py:10089).
+            # A self-mention is app_mention's to handle; a message naming
+            # another bot is that bot's. Treat it as unaddressed either way.
+            config = self._channels.get(channel)
+            if (
+                self._policy.answers_top_level(config)
+                and not self._identity.is_mentioned(text)
+                and not calls_other_bot(self._is_bot, self._identity.user_id, text)
+            ):
+                return self._context_from_event(event, unaddressed=True, is_dm=False)
             return None
 
-        text = event.get("text") or ""
         if self._identity.is_mentioned(text):
             # app_mention already handles mentions; don't process this twice.
             return None

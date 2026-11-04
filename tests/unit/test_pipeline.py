@@ -193,8 +193,13 @@ class FakePublisher:
     def apply_elapsed_model_line(self, body: str, model: str, rich: bool) -> str:
         return body
 
-    def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None:
-        self.posted.append({"channel": channel, "thread_ts": thread_ts, "text": text, "rich": rich})
+    def post(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> str | None:
+        self.posted.append({
+            "channel": channel, "thread_ts": thread_ts, "text": text,
+            "rich": rich, "flat": flat,
+        })
         return self._posted_ts
 
 
@@ -1284,7 +1289,10 @@ class Test느린요청보고_첨부값:
             def __init__(self) -> None:
                 self.posts: list[str] = []
 
-            def post(self, channel: str, thread_ts: Any, text: str, rich: bool) -> str | None:
+            def post(
+                self, channel: str, thread_ts: Any, text: str, rich: bool,
+                *, flat: bool = False,
+            ) -> str | None:
                 self.posts.append(text)
                 return "ts-1"
 
@@ -1894,6 +1902,25 @@ def test_올린_응답을_채널_이름으로_기록한다():
     assert call["body"] == "최종 답변"
     assert call["ok"] is True
     assert call["turns"] == 1
+
+
+def test_flat_reply_채널은_게시자에_flat을_참으로_넘긴다():
+    # A17: flat_reply 채널은 publisher.post(flat=True) 로 스레드 없이 올린다.
+    pipeline, deps = build_pipeline(
+        responses=[ok_response("답변")],
+        channels={"C1": ChannelConfig(channel_id="C1", name="피드", flat_reply=True)},
+    )
+    pipeline.handle(make_ctx(channel="C1"))
+    assert deps["publisher"].posted[-1]["flat"] is True
+
+
+def test_일반_채널은_게시자에_flat을_거짓으로_넘긴다():
+    pipeline, deps = build_pipeline(
+        responses=[ok_response("답변")],
+        channels={"C1": ChannelConfig(channel_id="C1", name="잡담")},
+    )
+    pipeline.handle(make_ctx(channel="C1"))
+    assert deps["publisher"].posted[-1]["flat"] is False
 
 
 def test_기록한_소요_시간은_엔진_보고값이_아니라_파이프라인_측정값이다():

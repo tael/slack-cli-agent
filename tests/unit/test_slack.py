@@ -349,6 +349,29 @@ class TestMessagePublisher:
         _, kwargs = client.calls[0]
         assert "thread_ts" not in kwargs
 
+    def test_flat_채널은_스레드로_접지_않고_채널에_바로_올린다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        # flat_reply (A17): 일반 채널이라도 스레드를 열지 않고 채널에 바로 쓴다.
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        parent_ts = pub.post("C1", "100.0", "본문", rich=False, flat=True)
+        _, kwargs = client.calls[0]
+        assert "thread_ts" not in kwargs
+        # parent_ts 가 None 이었으므로 첫 조각의 ts 를 돌려준다.
+        assert parent_ts == "111.000000"
+
+    def test_flat이_아니면_여전히_스레드에_접는다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        pub.post("C1", "100.0", "본문", rich=False, flat=False)
+        _, kwargs = client.calls[0]
+        assert kwargs["thread_ts"] == "100.0"
+
     def test_리치_채널은_markdown_블록으로_넘긴다(
         self, settings, markdown, splitter, verifier, block_builder
     ) -> None:
@@ -883,6 +906,52 @@ class TestEventListener:
         listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
         event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
                  "text": "고마워"}
+        assert listener.from_message(event) is None
+
+    def test_answer_top_level_채널은_멘션없는_최상위글도_받는다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        # A18: 스레드가 아닌 최상위 글(thread_ts 없음)도 answer_top_level 채널은 받는다.
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_top_level": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "text": "오늘 배포 어떻게 됐어"}
+        ctx = listener.from_message(event)
+        assert ctx is not None
+        assert ctx.unaddressed is True
+
+    def test_answer_top_level이_꺼진_채널의_최상위글은_거른다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_unaddressed": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "text": "오늘 배포 어떻게 됐어"}
+        assert listener.from_message(event) is None
+
+    def test_answer_top_level_채널이라도_자기멘션_최상위글은_app_mention에_맡긴다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_top_level": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "text": "<@U_BOT> 봐줘"}
+        assert listener.from_message(event) is None
+
+    def test_answer_top_level_채널에서_다른봇을_부른_최상위글은_그봇에_맡긴다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_top_level": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        listener = EventListener(
+            FakeWebClient(), registry, gate, identity=fake_identity(),
+            is_bot=lambda uid: uid == "UOTHERBOT",
+        )
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "text": "<@UOTHERBOT> 봐줘"}
         assert listener.from_message(event) is None
 
     def test_answer_unaddressed가_켜진_채널에서_봇이_낀_스레드의_되물음답은_받는다(

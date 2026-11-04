@@ -42,7 +42,9 @@ class TranscriptPort(Protocol):
 class PublisherPort(Protocol):
     def apply_elapsed_model_line(self, body: str, model: str, rich: bool) -> str: ...
 
-    def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None: ...
+    def post(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> str | None: ...
 
 
 class AuditPort(Protocol):
