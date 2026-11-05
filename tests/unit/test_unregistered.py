@@ -85,7 +85,7 @@ class Test소유자_호출:
         assert f"<@{OWNER}>" in body
         assert "<@U1>님" in body
         assert "테스트봇" in body
-        assert "한 번 불러 주시면 등록됩니다" in body
+        assert "담당자 <@U_OWNER>님이 이 채널에서" in body
 
     def test_같은_채널은_간격_안에_다시_부르지_않는다(self, tmp_path: Path) -> None:
         replies: list[tuple[str, str, str]] = []
@@ -153,7 +153,7 @@ class Test소유자_호출:
 
         channel, thread_ts, body = replies[0]
         assert (channel, thread_ts) == ("C1", "")
-        assert "<@U9>님이" in body and "초대했습니다" in body
+        assert "<@U9>님이" in body and "초대했지만" in body
 
     def test_초대한_사람을_모르면_누군가로_적는다(self, tmp_path: Path) -> None:
         replies: list[tuple[str, str, str]] = []
