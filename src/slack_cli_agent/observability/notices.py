@@ -63,18 +63,16 @@ DEFAULT_NOTICES: Mapping[NoticeKey, str] = {
     NoticeKey.UNADDRESSED_ON: "이 채널에서는 이름을 안 불러도 답합니다.\n제가 이미 낀 스레드에서만 나섭니다.",
     NoticeKey.UNADDRESSED_OFF: "이제 이름을 불러야 답합니다.",
     NoticeKey.UNREGISTERED_MENTION: (
-        "<@{owner}> 이 채널은 아직 {bot} 응답 채널로 등록되지 않아 "
-        "<@{user}>님 질문에 답하지 못하고 있습니다. "
-        "이 채널에서 {bot}를 한 번 불러 주시면 등록됩니다."
+        "이 채널은 아직 {bot} 응답 채널로 등록되지 않아 <@{user}>님 질문에 답하지 못하고 있습니다. "
+        "등록은 담당자 <@{owner}>님이 이 채널에서 {bot}를 불러야 됩니다. 담당자에게는 개인 대화로 알렸습니다."
     ),
     NoticeKey.UNREGISTERED_INVITE: (
-        "<@{owner}> {who} {bot}를 이 채널에 초대했습니다. "
-        "아직 응답 채널로 등록되지 않아 이 채널에서는 답하지 못해요. "
-        "이 채널에서 {bot}를 한 번 불러 주시면 등록됩니다."
+        "{who} {bot}를 이 채널에 초대했지만 아직 응답 채널로 등록되지 않아 답하지 못합니다. "
+        "등록은 담당자 <@{owner}>님이 이 채널에서 {bot}를 불러야 됩니다. 담당자에게는 개인 대화로 알렸습니다."
     ),
     NoticeKey.UNREGISTERED_OWNER_DM: (
-        "미등록 채널 알림 : {who} <#{channel}> 채널에서 {bot}를 {action}. "
-        "채널 이름 {name}. 그 채널에서 {bot}를 한 번 부르면 등록됩니다."
+        "미등록 채널 알림 : {who} <#{channel}> 채널에서 {bot}를 {action}. 채널 이름 {name}.\n"
+        "그 채널에서 {bot}를 한 번 부르시면 등록됩니다. 채널 멤버가 아니면 채널 안 멘션 알림은 받지 못합니다."
     ),
 }
 
