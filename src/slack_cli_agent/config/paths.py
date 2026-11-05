@@ -167,6 +167,11 @@ class StatePaths:
         return self.root / "state.db"
 
     @property
+    def unregistered_channels(self) -> Path:
+        """When the owner was last called in each unregistered channel."""
+        return self.root / "unregistered_channels.json"
+
+    @property
     def audit_log(self) -> Path:
         """Audit log copy, kept alongside the DB since external tools read this format."""
         return self.root / "audit.jsonl"

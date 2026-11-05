@@ -140,9 +140,19 @@ class IngressService:
             gateway.on("assistant_thread_started", self.handle_assistant_thread_started)
 
     def handle_app_mention(self, event: Mapping[str, Any]) -> None:
-        self._process(self._listener.from_app_mention(event), event)
+        self._process(self._listener.from_app_mention(event), event, mentioned=True)
 
     def handle_message(self, event: Mapping[str, Any]) -> None:
+        # Ahead of the listener: its human-message filter drops channel_join,
+        # and the join event may carry this bot's bot_id.
+        joined = self._access.self_join(event)
+        if joined is not None:
+            channel, inviter = joined
+            self._spawn.spawn(
+                f"초대:{channel}",
+                lambda: self._access.call_owner(channel, inviter, "", "invite"),
+            )
+            return
         self._process(self._listener.from_message(event), event)
 
     def handle_assistant_thread_started(self, event: Mapping[str, Any]) -> None:
@@ -170,7 +180,9 @@ class IngressService:
         except Exception:
             log.exception("리액션 이벤트 처리 실패: %s", event.get("reaction"))
 
-    def _process(self, ctx: RequestContext | None, event: Mapping[str, Any]) -> None:
+    def _process(
+        self, ctx: RequestContext | None, event: Mapping[str, Any], *, mentioned: bool = False
+    ) -> None:
         # Exceptions are swallowed (one queue-storage failure shouldn't block all
         # later requests) but always logged, so a dropped request is distinguishable
         # from nothing having happened.
@@ -182,6 +194,8 @@ class IngressService:
             # Same position as the original (bot.py:4969): ahead of admin
             # dispatch, so a third party cannot run commands either.
             if not self._access.allows(ctx.channel, ctx.user):
+                if mentioned and not event.get("bot_id"):
+                    self._access.call_owner(ctx.channel, ctx.user, ctx.thread_ts, "mention")
                 return
 
             ctx = replace(ctx, text=self._strip_self_mention(ctx.text))
