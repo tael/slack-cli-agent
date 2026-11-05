@@ -250,6 +250,7 @@ class TestWiring:
         assert access._notice_log is not None
         assert access._owner_user_id == app._profile.owner_user_id
         assert access._bot_name == app._profile.display_name
+        assert access._notify_owner is not None
 
     def test_접수기에_스레드_실행기가_배선된다(self, app: Application) -> None:
         """InlineTaskSpawner 가 들어가면 점검이 소켓 처리기를 막는다."""

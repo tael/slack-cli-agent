@@ -1352,6 +1352,7 @@ class Application:
                     bot_name=self._profile.display_name,
                     self_user_id=lambda: self.identity.user_id,
                     notice_log=UnregisteredNoticeLog(self._profile.paths.unregistered_channels),
+                    notify_owner=self._notify_owner if self._profile.owner_user_id else None,
                 ),
                 strip_self_mention=SelfMentionStripper(self.identity).remove_self,
                 dedup=DeduplicationTracker(),
