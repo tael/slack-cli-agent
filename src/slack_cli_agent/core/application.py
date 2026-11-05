@@ -197,6 +197,7 @@ from .services import ServiceGroup
 from .spawn import ThreadTaskSpawner
 from .sweeplog import SweepLog
 from .timezones import KST
+from .unregistered import UnregisteredNoticeLog
 from .usage_check import UsageCheck, run_command
 from .worker import Worker
 
@@ -1347,6 +1348,10 @@ class Application:
                     channel_name=self._channel_names(),
                     notices=self._notices,
                     reply=self._reply,
+                    owner_user_id=self._profile.owner_user_id,
+                    bot_name=self._profile.display_name,
+                    self_user_id=lambda: self.identity.user_id,
+                    notice_log=UnregisteredNoticeLog(self._profile.paths.unregistered_channels),
                 ),
                 strip_self_mention=SelfMentionStripper(self.identity).remove_self,
                 dedup=DeduplicationTracker(),

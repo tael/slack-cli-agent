@@ -244,6 +244,13 @@ class TestWiring:
         assert gateway.handler_count("message") == 1
         assert gateway.handler_count("reaction_added") == 1
 
+    def test_접수기에_미등록_채널_소유자_호출이_배선된다(self, app: Application) -> None:
+        """기록이 없으면 미등록 채널 멘션이 다시 무응답이 된다."""
+        access = app.ingress()._access
+        assert access._notice_log is not None
+        assert access._owner_user_id == app._profile.owner_user_id
+        assert access._bot_name == app._profile.display_name
+
     def test_접수기에_스레드_실행기가_배선된다(self, app: Application) -> None:
         """InlineTaskSpawner 가 들어가면 점검이 소켓 처리기를 막는다."""
         assert isinstance(app.ingress()._spawn, ThreadTaskSpawner)

@@ -40,6 +40,8 @@ class NoticeKey(StrEnum):
     CHANNEL_UNREGISTERED = "channel_unregistered"
     UNADDRESSED_ON = "unaddressed_on"
     UNADDRESSED_OFF = "unaddressed_off"
+    UNREGISTERED_MENTION = "unregistered_mention"
+    UNREGISTERED_INVITE = "unregistered_invite"
 
 
 DEFAULT_NOTICES: Mapping[NoticeKey, str] = {
@@ -59,6 +61,16 @@ DEFAULT_NOTICES: Mapping[NoticeKey, str] = {
     NoticeKey.CHANNEL_UNREGISTERED: "{name} 을 목록에서 뺐습니다.\n다시 부르시면 등록됩니다.",
     NoticeKey.UNADDRESSED_ON: "이 채널에서는 이름을 안 불러도 답합니다.\n제가 이미 낀 스레드에서만 나섭니다.",
     NoticeKey.UNADDRESSED_OFF: "이제 이름을 불러야 답합니다.",
+    NoticeKey.UNREGISTERED_MENTION: (
+        "<@{owner}> 이 채널은 아직 {bot} 응답 채널로 등록되지 않아 "
+        "<@{user}>님 질문에 답하지 못하고 있습니다. "
+        "이 채널에서 {bot}를 한 번 불러 주시면 등록됩니다."
+    ),
+    NoticeKey.UNREGISTERED_INVITE: (
+        "<@{owner}> {who} {bot}를 이 채널에 초대했습니다. "
+        "아직 응답 채널로 등록되지 않아 이 채널에서는 답하지 못해요. "
+        "이 채널에서 {bot}를 한 번 불러 주시면 등록됩니다."
+    ),
 }
 
 
