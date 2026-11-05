@@ -376,6 +376,18 @@ class TestClaudeEngineBuildCommand:
         assert 실린것["hooks"]["Stop"]
         assert not (실린것.get("permissions") or {}).get("deny")
 
+    def test_PR과_커밋_귀속_문구를_끈다(self, tmp_path: Path) -> None:
+        """--setting-sources "" 로 사용자 settings 의 attribution 이 빠져 PR 본문에
+        Generated with Claude Code 가 붙었다(airflow #729, #730, 2026-11-05).
+        프로필 파일이 켜려 해도 엔진 기본값이 마지막에 덮는다."""
+        profile = claude_profile(tmp_path)
+        path = profile.paths.engine_settings("claude")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"attribution": {"pr": "켜기"}}), encoding="utf-8")
+        cmd = ClaudeEngine(profile, SETTINGS).build_command(request())
+        실린것 = json.loads(cmd[cmd.index("--settings") + 1])
+        assert 실린것["attribution"] == {"commit": "", "pr": ""}
+
     @staticmethod
     def 기본_settings를_쓴다(profile, 내용: dict) -> None:
         path = profile.paths.engine_settings("claude")
