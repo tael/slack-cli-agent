@@ -135,6 +135,15 @@ def _open_mcp_servers(names: tuple[str, ...], servers: Iterable[str]) -> set[str
     }
 
 
+#: Empty attribution for commits and PR bodies. --setting-sources "" drops the
+#: operator's ~/.claude/settings.json, so its own "attribution" block never
+#: reached the bot: claude then told the model to end PR bodies with
+#: "Generated with Claude Code" and commits with a Co-Authored-By trailer.
+#: That went out in meshkorea/vroong-meshdata-airflow #729 and #730
+#: (2026-11-05). Merged last so no profile file can turn it back on.
+NO_ATTRIBUTION_SETTINGS: dict[str, Any] = {"attribution": {"commit": "", "pr": ""}}
+
+
 def progress_hook_settings(log_path: Path) -> dict[str, Any]:
     """A settings fragment registering the tool-start hook for one request.
 
@@ -453,7 +462,7 @@ class ClaudeEngine(Engine):
             merged = merge_settings(merged, progress_hook_settings(request.progress_log))
         # Always on, regardless of progress_log: these are engine built-ins,
         # not a per-request feature toggle (sca-kos.B4).
-        return merge_settings(merged, guard_hook_settings())
+        return merge_settings(merged, guard_hook_settings(), NO_ATTRIBUTION_SETTINGS)
 
     @staticmethod
     def _operator_full_signal(request: EngineRequest) -> bool:
