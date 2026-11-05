@@ -48,6 +48,7 @@ def make_access(
     clock: Clock | None = None,
     owner: str = OWNER,
     registered: dict | None = None,
+    dms: list[str] | None = None,
 ) -> RequestAccess:
     profile = make_profile(tmp_path, owner)
     path = tmp_path / "channels.json"
@@ -67,6 +68,7 @@ def make_access(
         bot_name="테스트봇",
         self_user_id=lambda: BOT,
         notice_log=UnregisteredNoticeLog(tmp_path / "unreg.json", clock=clock or Clock()),
+        notify_owner=(lambda text: dms.append(text) or True) if dms is not None else None,
     )
 
 
@@ -198,3 +200,36 @@ class Test기록_파일:
 
         assert log.due("C1") is True
         assert log.due("C1") is False
+
+
+class TestOwnerDirectMessage:
+    """Slack does not notify a non-member mentioned in a private channel, so the
+    in-channel call alone may never reach the owner."""
+
+    def test_소유자_개인_대화로도_채널을_알린다(self, tmp_path: Path) -> None:
+        replies: list[tuple[str, str, str]] = []
+        dms: list[str] = []
+        access = make_access(tmp_path, replies, dms=dms)
+        access.call_owner("CNEW", "U_X", "1.1", "mention")
+        assert len(dms) == 1
+        assert "<#CNEW>" in dms[0] and "<@U_X>" in dms[0] and "이름-CNEW" in dms[0]
+
+    def test_초대도_개인_대화로_알린다(self, tmp_path: Path) -> None:
+        dms: list[str] = []
+        access = make_access(tmp_path, [], dms=dms)
+        access.call_owner("CNEW", "U_X", "", "invite")
+        assert len(dms) == 1 and "초대" in dms[0]
+
+    def test_간격_안에서는_개인_대화도_보내지_않는다(self, tmp_path: Path) -> None:
+        dms: list[str] = []
+        access = make_access(tmp_path, [], dms=dms)
+        access.call_owner("CNEW", "U_X", "1.1", "mention")
+        access.call_owner("CNEW", "U_X", "1.2", "mention")
+        assert len(dms) == 1
+
+    def test_채널_게시가_실패해도_개인_대화는_보낸다(self, tmp_path: Path) -> None:
+        dms: list[str] = []
+        access = make_access(tmp_path, [], dms=dms)
+        access._reply = lambda *a: (_ for _ in ()).throw(RuntimeError("not_in_channel"))
+        access.call_owner("CNEW", "U_X", "1.1", "mention")
+        assert len(dms) == 1

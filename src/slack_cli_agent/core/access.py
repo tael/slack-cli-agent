@@ -49,6 +49,8 @@ class RequestAccess:
         self_user_id: Callable[[], str] = lambda: "",
         # None leaves a refusal in an unregistered channel silent.
         notice_log: UnregisteredNoticeLog | None = None,
+        # Slack does not notify a non-member mentioned in a private channel.
+        notify_owner: Callable[[str], bool] | None = None,
     ) -> None:
         self._policy = policy
         self._channels = channels
@@ -59,6 +61,7 @@ class RequestAccess:
         self._bot_name = bot_name
         self._self_user_id = self_user_id
         self._notice_log = notice_log
+        self._notify_owner = notify_owner
 
     def allows(self, channel: str, user: str) -> bool:
         """The check itself says nothing; a mention in an unregistered channel
@@ -126,3 +129,17 @@ class RequestAccess:
             log.info("미등록 채널 %s 에서 소유자를 불렀다 (%s)", channel, kind)
         except Exception as exc:  # noqa: BLE001 - a failed notice must not break event handling
             log.warning("미등록 채널 %s 에 안내를 올리지 못했다 : %s", channel, exc)
+        if self._notify_owner is None:
+            return
+        text = self._notices.render(
+            NoticeKey.UNREGISTERED_OWNER_DM,
+            who=f"<@{user}>님이" if user else "누군가",
+            channel=channel,
+            name=self._channel_name(channel),
+            bot=self._bot_name,
+            action="초대했습니다" if kind == "invite" else "불렀습니다",
+        )
+        try:
+            self._notify_owner(text)
+        except Exception as exc:  # noqa: BLE001 - a failed DM must not break event handling
+            log.warning("소유자에게 미등록 채널 알림을 보내지 못했다 : %s", exc)

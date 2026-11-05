@@ -42,6 +42,7 @@ class NoticeKey(StrEnum):
     UNADDRESSED_OFF = "unaddressed_off"
     UNREGISTERED_MENTION = "unregistered_mention"
     UNREGISTERED_INVITE = "unregistered_invite"
+    UNREGISTERED_OWNER_DM = "unregistered_owner_dm"
 
 
 DEFAULT_NOTICES: Mapping[NoticeKey, str] = {
@@ -70,6 +71,10 @@ DEFAULT_NOTICES: Mapping[NoticeKey, str] = {
         "<@{owner}> {who} {bot}를 이 채널에 초대했습니다. "
         "아직 응답 채널로 등록되지 않아 이 채널에서는 답하지 못해요. "
         "이 채널에서 {bot}를 한 번 불러 주시면 등록됩니다."
+    ),
+    NoticeKey.UNREGISTERED_OWNER_DM: (
+        "미등록 채널 알림 : {who} <#{channel}> 채널에서 {bot}를 {action}. "
+        "채널 이름 {name}. 그 채널에서 {bot}를 한 번 부르면 등록됩니다."
     ),
 }
 
