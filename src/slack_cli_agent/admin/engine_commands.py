@@ -6,10 +6,63 @@ Writes go through `EngineSwitcher.approve`/`deny` rather than touching
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from typing import ClassVar
 
 from ..engine.switcher import EngineSwitcher
 from .command import AdminCommand, AdminContext, AdminResult
+
+
+class ModelChangeCommand(AdminCommand):
+    """Owner-only, allowlisted model change with an explicit full restart."""
+
+    name: ClassVar[str] = "model_change"
+    usage: ClassVar[str] = "모델 변경 <허용 모델>"
+    description: ClassVar[str] = "소유자 모델을 바꾸고 ingress·worker를 재기동한다"
+    _PREFIX: ClassVar[str] = "모델 변경 "
+
+    def matches(self, text: str) -> bool:
+        return text.strip().startswith(self._PREFIX)
+
+    def execute(self, ctx: AdminContext) -> AdminResult:
+        model = ctx.text.strip()[len(self._PREFIX):].strip()
+        allowed = ctx.profile.primary_engine.allowed_models
+        if not allowed:
+            return AdminResult("허용 모델 목록이 설정되지 않아 변경하지 않았습니다.", applied=False)
+        if model not in allowed:
+            return AdminResult(
+                "허용되지 않은 모델이라 변경하지 않았습니다. 허용 모델: " + ", ".join(allowed),
+                applied=False,
+            )
+        if not ctx.profile.source_file:
+            return AdminResult("프로필 파일 경로를 확인하지 못해 변경하지 않았습니다.", applied=False)
+        labels = ctx.profile.service_labels
+        if len(labels) != 2 or not all(label.startswith("local.") for label in labels):
+            return AdminResult("재기동 서비스 목록이 올바르지 않아 변경하지 않았습니다.", applied=False)
+        try:
+            data = json.loads(ctx.profile.source_file.read_text(encoding="utf-8"))
+            engine = data["primary_engine"]
+            engine["model"] = model
+            engine["model_owner"] = model
+            temporary = ctx.profile.source_file.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(ctx.profile.source_file)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return AdminResult(f"프로필을 바꾸지 못했습니다: {exc}", applied=False)
+        subprocess.Popen(
+            [
+                sys.executable, "-m", "slack_cli_agent.admin.delayed_restart",
+                str(ctx.profile.source_file), str(ctx.profile.paths.root / "model_change.json"), model, *labels,
+            ],
+            start_new_session=True,
+            close_fds=True,
+        )
+        return AdminResult(
+            f"모델을 {model}로 저장했고 ingress·worker 재기동을 예약했습니다. "
+            "다음 엔진 상태 명령에서 설정 모델과 재기동 결과를 확인할 수 있습니다."
+        )
 
 
 def _recovery_note(switcher: EngineSwitcher, primary: str) -> str:

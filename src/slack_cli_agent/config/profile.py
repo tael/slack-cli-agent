@@ -32,7 +32,7 @@ _SECRET_KEY_EXEMPT_BLOCK = "mcp_servers"
 KNOWN_KEYS = frozenset(
     {
         "name", "display_name", "primary_engine", "fallback_engine",
-        "state_dir", "work_root", "data_dir", "attach_dir", "launch_label",
+        "state_dir", "work_root", "data_dir", "attach_dir", "launch_label", "service_labels",
         "owner_user_id", "controller_user_ids", "troubleshoot_channel", "owner_dm", "credentials_file",
         "plugins", "usage_check_command", "agent_greeting", "agent_prompts",
         "settings", "mcp_servers", "domain_file", "light_workdir", "peer",
@@ -73,6 +73,7 @@ class EngineSpec:
     #: 비어 있으면(기본) 모델 폴백을 쓰지 않고 model 하나로만 돈다. 계정 한도는
     #: 모델을 바꿔도 같으므로 이 목록은 모델 단위 장애에만 쓰인다 (B9/B17).
     model_fallbacks: tuple[str, ...] = ()
+    allowed_models: tuple[str, ...] = ()
     options: Mapping[str, Any] = field(default_factory=dict)
     # Engine-specific home path (e.g. CODEX_HOME). Keeps sessions/auth
     # separated per bot, so it can't collide with the user's own home.
@@ -90,6 +91,7 @@ class EngineSpec:
             model=str(data["model"]),
             model_owner=str(data.get("model_owner", "")),
             model_fallbacks=tuple(str(m) for m in (data.get("model_fallbacks") or [])),
+            allowed_models=tuple(str(model) for model in (data.get("allowed_models") or ())),
             options=dict(data.get("options") or {}),
             home_dir=Path(str(home_dir)).expanduser() if home_dir else None,
         )
@@ -277,6 +279,9 @@ class Profile:
     owner_user_id: str
     troubleshoot_channel: str
     owner_dm: str = ""
+    #: Exact launchd services to restart after a profile change.  They are
+    #: explicit because ingress and worker are separate units.
+    service_labels: tuple[str, ...] = ()
     #: Other Slack users (usually another bot) that act with the owner's
     #: authority. Empty means only owner_user_id is the owner.
     controller_user_ids: frozenset[str] = frozenset()
@@ -421,6 +426,7 @@ class Profile:
             data_dir=cls._under(data, "data_dir", state_dir, "data"),
             attach_dir=cls._under(data, "attach_dir", state_dir, "attachments"),
             launch_label=str(data.get("launch_label") or f"local.{name}"),
+            service_labels=tuple(str(label) for label in (data.get("service_labels") or ())),
             owner_user_id=str(data.get("owner_user_id", "")),
             troubleshoot_channel=str(data.get("troubleshoot_channel", "")),
             owner_dm=str(data.get("owner_dm", "")),

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from slack_cli_agent.admin.command import AdminContext
-from slack_cli_agent.admin.engine_commands import EngineApproveCommand, EngineDenyCommand
+from slack_cli_agent.admin.engine_commands import EngineApproveCommand, EngineDenyCommand, ModelChangeCommand
 from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import Profile
@@ -41,6 +41,40 @@ def write_switch_state(ctx: AdminContext, **extra) -> None:
     state = {"engine": "codex", "approval": "pending", "detail": "한도 소진"}
     state.update(extra)
     path.write_text(json.dumps(state), encoding="utf-8")
+
+
+class TestModelChangeCommand:
+    def test_허용_모델이면_두_필드를_바꾸고_명시_서비스를_재기동한다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        profile_file = tmp_path / "example.json"
+        profile_file.write_text(json.dumps({
+            "name": "example", "primary_engine": {
+                "type": "codex", "binary": "codex", "model": "old", "model_owner": "old",
+                "allowed_models": ["new"],
+            }, "owner_user_id": "U_OWNER", "troubleshoot_channel": "C1",
+            "state_dir": str(tmp_path / "state"),
+            "service_labels": ["local.example.ingress", "local.example.worker"],
+        }), encoding="utf-8")
+        profile = Profile.load("example", [tmp_path])
+        base = make_context(tmp_path)
+        ctx = AdminContext(base.principal, base.channel, base.thread_ts, base.channels, profile, text="모델 변경 new")
+        launched: list[list[str]] = []
+        monkeypatch.setattr(
+            "slack_cli_agent.admin.engine_commands.subprocess.Popen",
+            lambda args, **kwargs: launched.append(args),
+        )
+        result = ModelChangeCommand().execute(ctx)
+        saved = json.loads(profile_file.read_text(encoding="utf-8"))
+        assert result.applied is True
+        assert saved["primary_engine"]["model"] == "new"
+        assert saved["primary_engine"]["model_owner"] == "new"
+        assert launched[0][-2:] == ["local.example.ingress", "local.example.worker"]
+
+    def test_허용되지_않은_모델은_파일을_바꾸지_않는다(self, tmp_path: Path) -> None:
+        ctx = make_context(tmp_path)
+        ctx = AdminContext(ctx.principal, ctx.channel, ctx.thread_ts, ctx.channels, ctx.profile, text="모델 변경 no")
+        assert ModelChangeCommand().execute(ctx).applied is False
 
 
 # 엔진 승인
