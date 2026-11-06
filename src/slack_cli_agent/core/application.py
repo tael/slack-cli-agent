@@ -181,6 +181,7 @@ from ..slack.review_ports import (
 )
 from ..slack.roster import RosterBuilder
 from ..slack.thread_activity import SlackThreadActivity
+from ..slack.tool_post import SlackToolPostMerger
 from ..slack.transcript import TranscriptBuilder
 from ..storage.admin_claims import AdminClaims
 from ..storage.connection_epochs import SqliteConnectionEpochs
@@ -766,6 +767,14 @@ class Application:
                 ),
                 late_addendum=self._late_addendum(),
                 origin_alive=SlackOriginAliveChecker(self._client),
+                tool_post_merger=SlackToolPostMerger(
+                    self._client,
+                    is_self=lambda msg: self.identity.is_self(msg),
+                    update=lambda channel, ts, text, rich: self.publisher().update(
+                        channel, ts, text, rich
+                    ),
+                    audit=self.audit().record,
+                ),
                 consumption=self.consumption,
                 watch_queue=self.watch_jobs(),
                 watch_results=self.watch_results(),

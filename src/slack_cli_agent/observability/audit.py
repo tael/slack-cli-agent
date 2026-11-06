@@ -85,6 +85,14 @@ class IncidentKind(StrEnum):
     #: those coordinates (C34, bot.py:8170 origin_deleted). `snippet` holds
     #: the withheld body's head for troubleshooting.
     ORIGIN_DELETED = "origin_deleted"
+    #: The engine had already posted a file in the thread through a tool, so
+    #: the final answer was written over that message instead of posted as a
+    #: second reply (2026-11-06 duplicate replies). `target_ts` is the file
+    #: message that now holds the answer.
+    TOOL_POST_MERGED = "tool_post_merged"
+    #: Rewriting the tool's file message failed; the answer was posted as a
+    #: separate reply instead, so it still reaches the thread.
+    TOOL_POST_MERGE_FAILED = "tool_post_merge_failed"
 
     def __str__(self) -> str:
         return self.value
