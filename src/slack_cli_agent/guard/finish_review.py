@@ -442,18 +442,33 @@ _DECISION_MARK_RE = re.compile(
 _ASK_LINE_RE = re.compile(r"^[ \t]*\[\[ASK\]\][ \t]*$", re.MULTILINE)
 
 
+#: A Bash call that ran the claude CLI with `--model <...advisor...>`. Some
+#: sessions run with the Agent tool disabled (2026-11-06 private-taeil: "Agent
+#: is disabled for this session"), so the advisor was called through the CLI
+#: and the old Agent/Task-only check blocked the answer three times with no
+#: way to pass. A CLI call with the advisor model is the same advisor call.
+_CLI_ADVISOR_RE = re.compile(r"\bclaude\b[^\n|;&]*--model[ =]\S*")
+
+
+def _is_advisor_call(call: ToolCall, hint: str) -> bool:
+    if call.name in ("Agent", "Task"):
+        return hint in str(call.input.get("model") or "")
+    if call.name == "Bash":
+        m = _CLI_ADVISOR_RE.search(str(call.input.get("command") or ""))
+        return bool(m and hint in m.group(0))
+    return False
+
+
 def advisor_skipped(turn: Turn, *, advisor_model_hint: str = "fable") -> bool:
     """True when this channel requires an advisor call before a decision
-    ships, the answer reads as asking for / stating a decision, and no
-    `Agent`/`Task` call this turn used the advisor model."""
+    ships, the answer reads as asking for / stating a decision, and no call
+    this turn used the advisor model — an `Agent`/`Task` call, or a Bash call
+    running the claude CLI with `--model` set to the advisor model."""
     if not turn.answer or not turn.is_advisor_channel:
         return False
     if not _ASK_LINE_RE.search(turn.answer) and not _DECISION_MARK_RE.search(turn.answer):
         return False
-    return not any(
-        call.name in ("Agent", "Task") and advisor_model_hint in str(call.input.get("model") or "")
-        for call in turn.tool_calls
-    )
+    return not any(_is_advisor_call(call, advisor_model_hint) for call in turn.tool_calls)
 
 
 # --------------------------------------------------------------------------
