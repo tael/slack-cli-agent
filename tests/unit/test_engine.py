@@ -1917,7 +1917,9 @@ class TestFallbackEngine:
         assert switcher.is_switched() is False
         assert len(secondary.parsed) == 0
 
-    def test_1차가_한도_소진이면_전환_상태를_즉시_남기고_이번_답은_그대로_낸다(self, tmp_path: Path) -> None:
+    def test_1차가_한도_소진이면_자동_승인하고_이번_턴부터_2차로_답한다(self, tmp_path: Path) -> None:
+        """한도는 승인을 기다릴 일이 아니다 (2026-11-06 김태일 지시).
+        2차가 확인 요청에 답하면 바로 승인하고 한도를 만난 이 턴을 2차로 답한다."""
         limit_response = EngineResponse(
             ok=False, body="한도 소진", session_id=None, model_actual=None,
             elapsed=0, turns=None, usage=None, failure_reason="usage_limit",
@@ -1930,6 +1932,21 @@ class TestFallbackEngine:
                                         model_actual=None, elapsed=0, turns=None, usage=None)
         fallback, _primary, _secondary, switcher = self._fallback(
             tmp_path, primary_response=limit_response, secondary_response=probe_response)
+        resp = fallback.run(request())
+        assert resp.body == "OK"
+        assert switcher.is_switched() is True
+        assert switcher.is_approved() is True
+
+    def test_2차_확인이_실패하면_승인하지_않고_한도_안내를_낸다(self, tmp_path: Path) -> None:
+        limit_response = EngineResponse(
+            ok=False, body="한도 소진", session_id=None, model_actual=None,
+            elapsed=0, turns=None, usage=None, failure_reason="usage_limit",
+            user_facing=True,
+        )
+        probe_fail = EngineResponse(ok=False, body="", session_id=None,
+                                    model_actual=None, elapsed=0, turns=None, usage=None)
+        fallback, _primary, _secondary, switcher = self._fallback(
+            tmp_path, primary_response=limit_response, secondary_response=probe_fail)
         resp = fallback.run(request())
         assert resp.body == "한도 소진"
         assert switcher.is_switched() is True
@@ -1949,13 +1966,13 @@ class TestFallbackEngine:
 
     def test_1차가_이미_사람에게_낼_답을_냈으면_그대로_쓴다(self, tmp_path: Path) -> None:
         """한도 안내는 엔진이 직접 낸다. 덮어쓰면 남은 한도 시각 같은 내용이
-        사라진다."""
+        사라진다. 2차 확인이 실패해 자동 승인하지 못한 경우다."""
         limit_response = EngineResponse(
             ok=False, body="주간 한도를 다 썼습니다. 목요일에 풀립니다.", session_id=None,
             model_actual=None, elapsed=0, turns=None, usage=None,
             failure_reason="usage_limit", user_facing=True,
         )
-        probe = EngineResponse(ok=True, body="OK", session_id=None, model_actual=None,
+        probe = EngineResponse(ok=False, body="", session_id=None, model_actual=None,
                                elapsed=0, turns=None, usage=None)
         fallback, _primary, _secondary, _switcher = self._fallback(
             tmp_path, primary_response=limit_response, secondary_response=probe)

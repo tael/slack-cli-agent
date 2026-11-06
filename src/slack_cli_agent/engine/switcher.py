@@ -66,14 +66,19 @@ class EngineSwitcher:
 
     def begin_switch(self, detail: str, *, engine_name: str = "",
                      reason: str = USAGE_LIMIT,
-                     probe_ok: bool = False, probe_detail: str = "") -> dict[str, Any]:
-        """Switches immediately; the bot only replies with a notice until approved."""
+                     probe_ok: bool = False, probe_detail: str = "",
+                     auto_approve: bool = False) -> dict[str, Any]:
+        """Switches immediately.
+
+        With auto_approve the fallback answers from this point on. Without it
+        the bot only replies with a notice until a human approves.
+        """
         state = {
             "engine": engine_name,
             "reason": reason,
             "detail": detail,
             "switched_at": time.time(),
-            "approval": "pending",
+            "approval": "approved" if auto_approve else "pending",
             "last_probe_at": time.time(),
             "probe_ok": probe_ok,
             "probe_detail": probe_detail,

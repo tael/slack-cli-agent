@@ -498,10 +498,12 @@ class TestEngineProbe_타임아웃:
 
         fallback.run(_request())
 
-        # 1차 호출(정상 요청 타임아웃) 하나, probe 호출(짧은 타임아웃) 하나.
-        assert len(seen_timeouts) == 2
+        # 1차 호출(정상 요청 타임아웃), probe 호출(짧은 타임아웃), 자동 승인 뒤
+        # 같은 턴의 2차 호출(정상 요청 타임아웃) 순서다.
+        assert len(seen_timeouts) == 3
         assert seen_timeouts[0] == SETTINGS.request_timeout_sec
         assert seen_timeouts[1] == 120
+        assert seen_timeouts[2] == SETTINGS.request_timeout_sec
 
 
 class Test사용량_노출_규칙:
