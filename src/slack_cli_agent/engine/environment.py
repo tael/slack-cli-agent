@@ -159,6 +159,12 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         "POST_CHANNEL",
         "ADVISOR_CHANNELS",
         "CODE_FIRST_CHANNELS",
+        # Stop hook model verify toggle and model (finish_review.
+        # resolve_verify_settings). On by default; these only override.
+        "SCA_FINISH_VERIFY",
+        "SCA_FINISH_VERIFY_MODEL",
+        # Set inside the nested verify claude so its own run never re-verifies.
+        "SCA_VERIFY_NESTED",
     })
 
     #: Empty on purpose: claude keeps its subscription credentials in the

@@ -49,7 +49,10 @@ them.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -566,21 +569,40 @@ _CLAIM_MARK_RE = re.compile(
 _NUM_RE = re.compile(r"(?<![\w.])\d(?:[\d,]*\d)?(?:\.\d+)?")
 #: Below this length, needs_verification() doesn't bother — a short answer
 #: has no room for an unsupported claim worth flagging, and running the
-#: check on every one-line reply would be pure overhead.
-_VERIFY_MIN_LEN = 200
+#: check on every reply costs a model call and a rewrite round trip.
+#: mametchi raised this 200 -> 400 after the median reply time tripled from
+#: block-then-rewrite loops on short answers.
+VERIFY_MIN_LEN = 400
+#: The verify judgment blocks a turn at most this many times. A second
+#: block on the same request mostly buys another re-query/rewrite loop.
+VERIFY_MAX_BLOCKS = 1
+#: Seconds the nested model call may take.
+VERIFY_TIMEOUT = 90
+#: Cap on tool-result text handed to the model.
+VERIFY_EVIDENCE_CHARS = 120_000
+#: Per-tool-result cap, so one huge dump can't crowd out the rest.
+VERIFY_CHUNK_CHARS = 12_000
+#: Cap on the user prompt included as evidence.
+VERIFY_PROMPT_CHARS = 8_000
+#: Default model for the nested check (settings: SCA_FINISH_VERIFY_MODEL).
+VERIFY_DEFAULT_MODEL = "sonnet"
+#: Set in the nested claude's env so a verify call never verifies itself.
+VERIFY_NESTED_ENV = "SCA_VERIFY_NESTED"
+_ANSWER_IDENT_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[_.][A-Za-z0-9]+)+")
 
 
 def needs_verification(answer: str) -> bool:
+    if "[[침묵]]" in (answer or ""):
+        return False
     body = "\n".join(line for line in (answer or "").splitlines() if not _TAG_LINE.match(line))
-    return len(body.strip()) >= _VERIFY_MIN_LEN and bool(_CLAIM_MARK_RE.search(body))
+    return len(body.strip()) >= VERIFY_MIN_LEN and bool(_CLAIM_MARK_RE.search(body))
 
 
-#: `answer, this-turn tool-result text -> unsupported sentences`. Pluggable so
-#: a profile can swap in an LLM-backed grounding check (what mametchi's
-#: unsupported_claims() does via a nested `claude -p` call); the default
-#: below is a subprocess-free heuristic, good enough to catch a bare
-#: invented figure without spawning another model call from inside a unit
-#: test.
+#: `answer, evidence text -> unsupported sentences`. The engine's Stop hook
+#: uses `ModelClaimVerifier` (a nested `claude -p` call, ported from
+#: mametchi's unsupported_claims()); `heuristic_claim_verifier` is the
+#: subprocess-free default of the pure `unsupported_claims()` function so
+#: unit tests never spawn a model.
 ClaimVerifier = Callable[[str, str], Sequence[str]]
 
 
@@ -603,13 +625,133 @@ def _tool_result_text(turn: Turn) -> str:
     return "\n".join(call.result for call in turn.tool_calls if call.result)
 
 
+def pick_evidence(answer: str, results: Sequence[str], *, limit: int = VERIFY_EVIDENCE_CHARS) -> str:
+    """Tool results that fit under `limit`, preferring ones that share
+    identifiers with the answer.
+
+    mametchi found that passing only the *last* N chars hid an earlier
+    lookup the answer actually rested on, and the checker then flagged a
+    grounded sentence. So when everything doesn't fit, results are ranked
+    by how many of the answer's identifiers they contain (ties: later
+    first) and packed greedily; the kept ones go out in session order.
+    """
+    chunks = [r[:VERIFY_CHUNK_CHARS] for r in results if r]
+    if sum(len(c) for c in chunks) <= limit:
+        return "\n".join(chunks)
+    keys = {k for k in _ANSWER_IDENT_RE.findall(answer or "") if len(k) >= 4}
+    keys |= set(re.findall(r"[A-Za-z_]{5,}", answer or ""))
+    ranked = sorted(
+        range(len(chunks)),
+        key=lambda i: (sum(1 for k in keys if k in chunks[i]), i),
+        reverse=True,
+    )
+    keep: set[int] = set()
+    used = 0
+    for i in ranked:
+        if used + len(chunks[i]) > limit:
+            continue
+        keep.add(i)
+        used += len(chunks[i])
+    return "\n".join(chunks[i] for i in sorted(keep))
+
+
+def _turn_evidence(turn: Turn) -> str:
+    results = [call.result for call in turn.tool_calls if call.result]
+    prompt = (turn.user_prompt or "")[:VERIFY_PROMPT_CHARS]
+    return (prompt + "\n" if prompt else "") + pick_evidence(turn.answer, results)
+
+
+_VERIFY_PROMPT = (
+    "아래 [근거] 는 한 봇이 이번 턴에 실행한 조회 결과와 사용자 입력이다. [답] 은 그 봇이 게시하려는 답이다.\n"
+    "[답] 에서 사실 주장 문장만 본다. 사실 주장은 수치, 원천과 계보, 원인, 있음과 없음, 누가 무엇을 했다는 귀속, "
+    "실행했다는 보고다.\n"
+    "그 중 [근거] 에서 직접 확인되지 않는 문장을 가려낸다. 결론을 좌우하는 문장부터 최대 3개만 낸다.\n"
+    "확인하지 못했다는 한계 문장, 의견, 제안, 인사는 사실 주장이 아니므로 제외한다.\n"
+    "[근거] 에 비슷한 단어가 있어도 문장이 말하는 관계 자체가 없으면 근거 없음이다. 예를 들어 "
+    "A 정의만 조회했는데 답이 B 의 원천이 A 라고 하면 근거 없음이다.\n"
+    'JSON 한 개만 답한다. 형식 {"unsupported": [{"sentence": "답의 문장 그대로", "why": "한 문장"}]}. '
+    "없으면 빈 배열.\n\n"
+)
+
+
+class ModelClaimVerifier:
+    """A `ClaimVerifier` backed by a separate model reading the evidence.
+
+    Runs a nested `claude -p` with no tools, no MCP servers and no setting
+    sources (so no hooks recurse). Any failure — missing CLI, timeout, no
+    JSON — returns no findings and leaves the reason in `status`: the turn
+    is let through and the failure recorded, never silently downgraded to
+    the number heuristic. `runner` is injectable for tests.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str = VERIFY_DEFAULT_MODEL,
+        timeout: float = VERIFY_TIMEOUT,
+        runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        executable: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
+        self.model = model
+        self.timeout = timeout
+        self._runner = runner
+        self._executable = executable
+        self._env = dict(os.environ if env is None else env)
+        self.status = "not_run"
+
+    def __call__(self, answer: str, evidence: str) -> list[str]:
+        if self._env.get(VERIFY_NESTED_ENV):
+            self.status = "skip_nested"
+            return []
+        exe = self._executable or shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+        prompt = _VERIFY_PROMPT + "[근거]\n" + evidence + "\n\n[답]\n" + (answer or "")
+        try:
+            proc = self._runner(
+                [exe, "-p", "--model", self.model, "--tools", "", "--strict-mcp-config",
+                 "--mcp-config", '{"mcpServers":{}}', "--setting-sources", ""],
+                input=prompt, capture_output=True, text=True, timeout=self.timeout,
+                env={**self._env, VERIFY_NESTED_ENV: "1"},
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed check never blocks
+            self.status = "error:" + type(exc).__name__
+            return []
+        out = proc.stdout or ""
+        start, end = out.find("{"), out.rfind("}")
+        if start < 0 or end <= start:
+            self.status = "error:no_json"
+            return []
+        try:
+            items = json.loads(out[start : end + 1]).get("unsupported") or []
+        except (ValueError, AttributeError):
+            self.status = "error:bad_json"
+            return []
+        found = [
+            f"{(x.get('sentence') or '')[:160]} ({(x.get('why') or '')[:80]})"
+            for x in items
+            if isinstance(x, dict) and (x.get("sentence") or "").strip()
+        ]
+        self.status = "ok"
+        return found[:3]
+
+
+def resolve_verify_settings(env: Mapping[str, str]) -> tuple[bool, str]:
+    """(model verify enabled, model name) from env. On unless
+    SCA_FINISH_VERIFY is 0/false/off — an engine default, not a profile
+    opt-in. Model from SCA_FINISH_VERIFY_MODEL, default sonnet."""
+    flag = (env.get("SCA_FINISH_VERIFY") or "").strip().lower()
+    enabled = flag not in {"0", "false", "off", "no"}
+    model = (env.get("SCA_FINISH_VERIFY_MODEL") or "").strip() or VERIFY_DEFAULT_MODEL
+    return enabled, model
+
+
 def unsupported_claims(turn: Turn, *, verifier: ClaimVerifier = heuristic_claim_verifier) -> list[str]:
     """Sentences in the answer that read as fact claims but aren't backed
-    by this turn's own tool results. Empty when the answer is too short to
-    bother checking (`needs_verification`)."""
+    by this turn's own tool results (and the user prompt). Empty when the
+    answer is too short to bother checking (`needs_verification`)."""
     if not needs_verification(turn.answer):
         return []
-    return list(verifier(turn.answer, _tool_result_text(turn)))
+    return list(verifier(turn.answer, _turn_evidence(turn)))
 
 
 def _advisor_skipped_check(turn: Turn) -> str | None:
@@ -739,9 +881,11 @@ class JudgmentRegistry:
     def names(self) -> list[str]:
         return sorted(self._rules)
 
-    def evaluate(self, turn: Turn) -> list[Finding]:
+    def evaluate(self, turn: Turn, *, skip: Sequence[str] = ()) -> list[Finding]:
         findings = []
         for rule in self._rules.values():
+            if rule.name in skip:
+                continue
             hit = rule.check(turn)
             if hit:
                 findings.append(Finding(name=rule.name, detail=hit, guidance=rule.guidance(hit)))
@@ -859,6 +1003,7 @@ def decide(
     max_blocks: int = 2,
     seconds_left: float | None = None,
     release_sec: int = 240,
+    claim_verifier: ClaimVerifier | None = None,
 ) -> StopDecision:
     """The Stop-hook decision for one turn.
 
@@ -877,7 +1022,19 @@ def decide(
     if not turn.has_transcript:
         return StopDecision(action="allow")
     active_registry = default_registry if registry is None else registry
-    findings = tuple(active_registry.evaluate(turn))
+    if claim_verifier is None:
+        findings = tuple(active_registry.evaluate(turn))
+    else:
+        findings = tuple(active_registry.evaluate(turn, skip=("verify",)))
+        # Model verify (mametchi's order): only when nothing cheaper already
+        # flagged the turn, at most VERIFY_MAX_BLOCKS blocks per request, and
+        # never so close to the deadline that the rewrite can't land.
+        budget_ok = seconds_left is None or seconds_left > release_sec + VERIFY_TIMEOUT
+        if not findings and budget_ok and block_count < VERIFY_MAX_BLOCKS:
+            claims = unsupported_claims(turn, verifier=claim_verifier)
+            if claims:
+                hit = " | ".join(claims)
+                findings = (Finding(name="verify", detail=hit, guidance=_verify_guidance(hit)),)
     if not findings:
         return StopDecision(action="allow")
     if seconds_left is not None and seconds_left < release_sec:
