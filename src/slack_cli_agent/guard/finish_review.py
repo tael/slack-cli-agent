@@ -360,6 +360,14 @@ def stopped_unfinished(turn: Turn) -> str | None:
 
 _NOT_OPENED_RE = re.compile(r"(열어\s?보지|읽어\s?보지|열람하지|열지|읽지)\s*(않|못)[^\n]{0,30}")
 _NOT_OPENED_TARGET_RE = re.compile(r"(판단|대조|확인|본문|내용|완료조건|있는지|없는지|안내)")
+#: 2026-11-06 : "원본 메시지를 열어 보지 않아 이름까지는 모릅니다" 는 위 대상 단어가 없어
+#: 통과했고, 구치파치가 원본을 열지 않은 채 "워크플로나 예약 발송" 추정을 게시했다.
+#: 원본, 원문, 첨부를 열지 않았다고 과거형으로 자백하거나 그래서 모른다고 쓴 문장도 잡는다.
+#: 두 봇 감사 로그 답 5,342건 재생에서 추가로 잡힌 11건이 모두 실제 미열람 자백이었다.
+_NOT_OPENED_PAST_RE = re.compile(
+    r"(열어\s?보지|읽어\s?보지|열람하지|열지|읽지)\s*(않았|않아서|않아\s|못했|못해|못한)[^\n]{0,30}"
+)
+_NOT_OPENED_SOURCE_RE = re.compile(r"(모르|모릅|알 수 없|알지 못|원본|원문|첨부|이름까지)")
 #: "the server didn't read the config" has a system as subject, not the
 #: model skipping a step — exempt so a legitimate system-failure
 #: description isn't misread as a confession.
@@ -375,7 +383,10 @@ def not_opened(turn: Turn) -> str | None:
         return None
     for sentence in re.split(r"[.\n]", _QUOTED.sub("", answer)):
         match = _NOT_OPENED_RE.search(sentence)
-        if not match or not _NOT_OPENED_TARGET_RE.search(sentence) or _NOT_OPENED_SYSTEM_RE.search(sentence):
+        if match and not _NOT_OPENED_TARGET_RE.search(sentence):
+            past = _NOT_OPENED_PAST_RE.search(sentence)
+            match = past if past and _NOT_OPENED_SOURCE_RE.search(sentence) else None
+        if not match or _NOT_OPENED_SYSTEM_RE.search(sentence):
             continue
         return match.group(0)
     return None

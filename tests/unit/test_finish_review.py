@@ -119,6 +119,16 @@ class TestNotOpened:
 
         assert finish_review.not_opened(turn) is None
 
+    def test_blocks_when_unopened_original_leaves_a_guess(self):
+        turn = _turn("어떤 워크플로인지는 원본 메시지를 열어 보지 않아 이름까지는 모릅니다.")
+
+        assert finish_review.not_opened(turn) is not None
+
+    def test_allows_policy_sentence_about_not_reading_files(self):
+        turn = _turn("마메치는 이 파일을 자동으로 읽지 않으므로 동작에는 영향이 없습니다.")
+
+        assert finish_review.not_opened(turn) is None
+
 
 class TestAbsenceUnopened:
     def test_blocks_when_ready_but_nothing_was_opened(self):
