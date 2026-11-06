@@ -53,7 +53,7 @@ class Test봇_수신자_멘션강제:
         )
         pipeline.handle(make_ctx(user="UPEER"))
         posted = deps["publisher"].posted[0]["text"]
-        assert posted.startswith("<@UPEER> ")
+        assert posted == "<@UPEER> 시험을 돌리고 있습니다."
 
     def test_봇화자에게_이미_멘션했으면_다시_붙이지_않는다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(
