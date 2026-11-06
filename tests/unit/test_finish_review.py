@@ -418,7 +418,7 @@ class TestModelVerify:
         assert finish_review.decide(turn, claim_verifier=verifier).action == "allow"
         assert verifier.status == "error:no_json"
 
-    def test_blocks_only_once_per_request(self):
+    def test_stops_blocking_after_max_blocks(self):
         payload = json.dumps({"unsupported": [{"sentence": "모두 제가 낸 검증 코드", "why": "x"}]}, ensure_ascii=False)
         runner = _fake_runner(stdout=payload)
         verifier = finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={})
@@ -428,6 +428,16 @@ class TestModelVerify:
 
         assert decision.action == "allow"
         assert runner.calls == []
+
+    def test_rewrite_after_first_block_is_verified_again(self):
+        payload = json.dumps({"unsupported": [{"sentence": "모두 제가 낸 검증 코드", "why": "x"}]}, ensure_ascii=False)
+        runner = _fake_runner(stdout=payload)
+        verifier = finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={})
+
+        decision = finish_review.decide(self._turn(), claim_verifier=verifier, block_count=1)
+
+        assert decision.action == "block"
+        assert len(runner.calls) == 1
 
     def test_short_answer_skips_the_model(self):
         runner = _fake_runner(stdout='{"unsupported": [{"sentence": "a", "why": "b"}]}')
