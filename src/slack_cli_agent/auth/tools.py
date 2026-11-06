@@ -29,6 +29,39 @@ log = logging.getLogger(__name__)
 #: with nothing closed at all (sca-6ewc).
 READ_ONLY_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob", "WebFetch", "WebSearch")
 
+#: MCP tools a read-only turn may keep, listed by exact name. A watch check is
+#: a read-only turn, and most watches look at Slack, Jira or a database: with
+#: only the built-in tools it could never see the result and answered "still
+#: running" until the job aged out (2026-11-06, watch job 22 on guchipachi).
+#: Names, not server wildcards: mcp__snowflake-rw__* or a post tool on the same
+#: server must not ride in. Metabase stays out -- that server also creates
+#: dashboards. Each is kept only when the profile's base tools already carry
+#: it, so a read-only turn never gains a server the profile did not have.
+READ_ONLY_MCP_TOOLS: tuple[str, ...] = (
+    "mcp__slack__slack_list_channels",
+    "mcp__slack__slack_channel_history",
+    "mcp__slack__slack_from_permalink",
+    "mcp__slack__slack_search",
+    "mcp__slack__slack_thread_replies",
+    "mcp__slack__slack_read_file",
+    "mcp__jira__jira_search",
+    "mcp__jira__jira_get_issue",
+    "mcp__jira__jira_get_comments",
+    "mcp__jira__jira_get_transitions",
+    "mcp__snowflake__run_snowflake_query",
+)
+
+
+def is_read_only_tool(name: str) -> bool:
+    """Whether a tool only reads. The engines use this to keep a turn read-only."""
+    return name in READ_ONLY_TOOLS or name in READ_ONLY_MCP_TOOLS
+
+
+def _granted_by(name: str, base_tools: Sequence[str]) -> bool:
+    """Whether the profile's base tools already grant this MCP tool."""
+    server = name.rsplit("__", 1)[0]
+    return name in base_tools or f"{server}__*" in base_tools
+
 
 class ToolPolicy:
     def __init__(
@@ -87,7 +120,11 @@ class ToolPolicy:
         dropped = tuple(name for name in self._base_tools if name not in READ_ONLY_TOOLS)
         if dropped:
             log.warning("읽기 전용 턴에서 뺀 도구 : %s", ", ".join(dropped))
-        return kept or READ_ONLY_TOOLS
+        builtin = kept or READ_ONLY_TOOLS
+        mcp = tuple(
+            name for name in READ_ONLY_MCP_TOOLS if _granted_by(name, self._base_tools)
+        )
+        return builtin + mcp
 
     def tools_for(
         self,

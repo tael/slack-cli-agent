@@ -48,7 +48,6 @@ from ..auth.principal import TrustLevel
 from ..config.profile import McpServerSpec
 from .base import (
     TRUNCATED_RAW_KEY,
-    UNTRUSTED_INPUT_MARK,
     ElapsedSource,
     Engine,
     EngineRequest,
@@ -56,6 +55,7 @@ from .base import (
     FailureDetail,
     Usage,
     UsageLimit,
+    input_mark_for,
     json_object_line,
 )
 from .capability import (
@@ -193,7 +193,7 @@ class GeminiEngine(Engine):
         base = super().footprint_for(request)
         return dataclasses.replace(
             base,
-            adapter_added_bytes=base.adapter_added_bytes + utf8_bytes(UNTRUSTED_INPUT_MARK),
+            adapter_added_bytes=base.adapter_added_bytes + utf8_bytes(input_mark_for(request)),
             instruction_transport=INSTRUCTION_TRANSPORT_USER_PROMPT,
             instruction_replayed_on_resume=request.resume,
         )
@@ -238,7 +238,7 @@ class GeminiEngine(Engine):
             + self.write_paths_note(request)
             + self.tool_ban_note(request)
             + self.tool_allow_note(request)
-            + UNTRUSTED_INPUT_MARK
+            + input_mark_for(request)
             + request.prompt
         )
         cmd += ["-p", prompt]

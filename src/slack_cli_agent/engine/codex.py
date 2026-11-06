@@ -44,16 +44,16 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from ..auth.principal import TrustLevel
-from ..auth.tools import READ_ONLY_TOOLS
+from ..auth.tools import is_read_only_tool
 from ..config.profile import EngineSpec, McpServerSpec
 from .base import (
-    UNTRUSTED_INPUT_MARK,
     Engine,
     EngineRequest,
     EngineResponse,
     FailureDetail,
     Usage,
     UsageLimit,
+    input_mark_for,
     json_object_line,
 )
 from .capability import (
@@ -198,7 +198,7 @@ class CodexEngine(Engine):
         ignore; the sandbox is the OS refusing the write (sca-f9k0).
         """
         if request.tools.access is ToolAccess.ALLOWLIST and all(
-            name in READ_ONLY_TOOLS for name in request.tools.names
+            is_read_only_tool(name) for name in request.tools.names
         ):
             return "read-only"
         return str(self.spec.options.get("sandbox", "danger-full-access"))
@@ -229,7 +229,7 @@ class CodexEngine(Engine):
             ))
         return dataclasses.replace(
             base,
-            adapter_added_bytes=base.adapter_added_bytes + utf8_bytes(UNTRUSTED_INPUT_MARK),
+            adapter_added_bytes=base.adapter_added_bytes + utf8_bytes(input_mark_for(request)),
             instruction_transport=INSTRUCTION_TRANSPORT_USER_PROMPT,
             instruction_replayed_on_resume=True,
         )
@@ -318,7 +318,7 @@ class CodexEngine(Engine):
         is the only place an ALLOWLIST request reaches the model (sca-f9k0).
         """
         note = self.tool_ban_note(request) + self.tool_allow_note(request)
-        return f"{note}{UNTRUSTED_INPUT_MARK}" if note else ""
+        return f"{note}{input_mark_for(request)}" if note else ""
 
     def _resume_prompt(self, request: EngineRequest) -> str:
         """Carries this turn's instructions in the prompt on a resumed turn.
@@ -340,7 +340,7 @@ class CodexEngine(Engine):
             + self.write_paths_note(request)
             + self.tool_ban_note(request)
             + self.tool_allow_note(request)
-            + UNTRUSTED_INPUT_MARK
+            + input_mark_for(request)
             + request.prompt
         )
 

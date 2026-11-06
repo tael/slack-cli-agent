@@ -395,3 +395,32 @@ class Test오너전권_채널플래그와_도구이름:
         principal = policy.principal_for("C1", TRUSTED_USER)
         assert principal.trust is TrustLevel.TRUSTED
         assert policy.channel_tools_for(principal) == ()
+
+
+class TestReadOnlyMcpTools:
+    """감시 확인 턴은 읽기 전용이다. 슬랙·지라·Snowflake 조회 도구가 빠지면
+    결과를 볼 수 없어 "아직" 만 답한다 (2026-11-06 구치파치 감시 22)."""
+
+    def _principal(self, tmp_path: Path):
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", {}))
+        return policy.principal_for("D1", OWNER)
+
+    def test_서버_와일드카드가_있으면_조회_도구만_남는다(self, tmp_path: Path) -> None:
+        tools = ToolPolicy(("Read", "Bash", "mcp__slack__*", "mcp__snowflake__*", "mcp__metabase__*"))
+        붙은것 = tools.tool_list_for(self._principal(tmp_path), readonly=True)
+        assert "mcp__slack__slack_thread_replies" in 붙은것
+        assert "mcp__snowflake__run_snowflake_query" in 붙은것
+        assert "mcp__slack__slack_post_message" not in 붙은것
+        assert not any(name.startswith("mcp__metabase__") for name in 붙은것)
+        assert "Bash" not in 붙은것
+
+    def test_프로필에_없는_서버는_더하지_않는다(self, tmp_path: Path) -> None:
+        tools = ToolPolicy(("Read", "mcp__snowflake-rw__*"))
+        붙은것 = tools.tool_list_for(self._principal(tmp_path), readonly=True)
+        assert not any(name.startswith("mcp__") for name in 붙은것)
+
+    def test_조회_도구만_있는_턴은_행동_턴이_아니다(self) -> None:
+        from slack_cli_agent.engine.tool_selection import ToolSelection
+
+        assert not ToolSelection.allow(["Read", "mcp__slack__slack_thread_replies"]).can_act
+        assert ToolSelection.allow(["Read", "mcp__slack__slack_post_message"]).can_act
