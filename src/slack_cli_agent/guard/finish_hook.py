@@ -36,14 +36,18 @@ import json
 import os
 import re
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.guard.finish_review import (
+    ModelClaimVerifier,
     decide,
+    needs_verification,
     resolve_advisor_channel,
     resolve_code_first_channel,
+    resolve_verify_settings,
     rows_since_last_human_input,
     time_left,
     turn_from_transcript_rows,
@@ -115,6 +119,19 @@ def _write_count(path: Path, value: int) -> None:
         pass
 
 
+def _log_verify(state_dir: Path | None, record: dict[str, Any]) -> None:
+    """Appends one verify record (status, findings, decision) so a skipped
+    or failed model check is visible afterwards instead of silent."""
+    if state_dir is None:
+        return
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        with open(state_dir / "finish-hook-verify.jsonl", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def main(argv: list[str]) -> int:
     try:
         payload = json.load(sys.stdin)
@@ -140,9 +157,25 @@ def main(argv: list[str]) -> int:
             block_count = _read_count(count_path)
 
         seconds_left = time_left(os.environ)
-        decision = decide(turn, block_count=block_count, seconds_left=seconds_left)
+        verify_on, verify_model = resolve_verify_settings(os.environ)
+        verifier = ModelClaimVerifier(model=verify_model) if verify_on else None
+        decision = decide(
+            turn, block_count=block_count, seconds_left=seconds_left, claim_verifier=verifier
+        )
         if decision.action == "block" and count_path is not None:
             _write_count(count_path, block_count + 1)
+        if verifier is not None and turn.has_transcript and needs_verification(turn.answer):
+            status = verifier.status
+            if status == "not_run":
+                status = "skip_flagged_or_budget"
+            _log_verify(state_dir, {
+                "t": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "session": str(session_id or ""),
+                "verify": status,
+                "model": verify_model,
+                "decision": decision.action,
+                "findings": [f.detail for f in decision.findings if f.name == "verify"],
+            })
 
         result = decision.to_hook_json()
         if result:

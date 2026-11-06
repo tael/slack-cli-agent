@@ -8,6 +8,8 @@ Turn/ToolCall 값 객체를 받는 순수 함수라, 여기서는 그 값 객체
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from slack_cli_agent.guard import finish_review
@@ -329,7 +331,7 @@ class TestDeniedUnretried:
 class TestVerify:
     def test_flags_a_fact_sentence_with_a_number_no_tool_result_supports(self):
         answer = (
-            "이번 턴 조회와 원인 분석 결과를 처음부터 끝까지 자세히 정리해서 답한다. " * 4
+            "이번 턴 조회와 원인 분석 결과를 처음부터 끝까지 자세히 정리해서 답한다. " * 10
             + "오늘 발생한 주문 지연 건수는 48291건이고 원인은 큐 적체 때문이다. "
             + "자세한 내용은 위 조회 결과를 참고한다."
         )
@@ -342,7 +344,7 @@ class TestVerify:
 
     def test_allows_when_the_number_is_grounded_in_a_tool_result(self):
         answer = (
-            "이번 턴 조회와 원인 분석 결과를 처음부터 끝까지 자세히 정리해서 답한다. " * 4
+            "이번 턴 조회와 원인 분석 결과를 처음부터 끝까지 자세히 정리해서 답한다. " * 10
             + "오늘 발생한 주문 지연 건수는 48291건이고 원인은 큐 적체 때문이다. "
             + "자세한 내용은 위 조회 결과를 참고한다."
         )
@@ -354,6 +356,116 @@ class TestVerify:
         turn = _turn("확인했고 특이사항 없다.")
 
         assert finish_review.unsupported_claims(turn) == []
+
+
+_LONG_PREFIX = "이번 턴 조회 결과를 처음부터 끝까지 자세히 정리해서 답한다. " * 12
+
+
+def _fake_runner(stdout: str = "", exc: Exception | None = None):
+    calls: list[dict] = []
+
+    def run(cmd, **kwargs):
+        calls.append({"cmd": cmd, **kwargs})
+        if exc is not None:
+            raise exc
+        import subprocess as _sp
+        return _sp.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    run.calls = calls  # type: ignore[attr-defined]
+    return run
+
+
+class TestModelVerify:
+    ANSWER = _LONG_PREFIX + "실패한 검증 코드는 모두 제가 낸 검증 코드이고 원인은 배포 설정 누락이다."
+
+    def _turn(self):
+        return _turn(self.ANSWER, tool_calls=(ToolCall(name="Bash", input={}, result="검증 실패 3건, 작성자 미상"),))
+
+    def test_flags_a_numberless_claim_the_model_finds_unsupported(self):
+        payload = json.dumps({"unsupported": [
+            {"sentence": "실패한 검증 코드는 모두 제가 낸 검증 코드이고", "why": "작성자 근거 없음"}]},
+            ensure_ascii=False)
+        runner = _fake_runner(stdout="결과: " + payload)
+        verifier = finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={})
+        turn = self._turn()
+
+        assert finish_review.heuristic_claim_verifier(turn.answer, "검증 실패 3건") == []
+        decision = finish_review.decide(turn, claim_verifier=verifier)
+
+        assert decision.action == "block"
+        assert decision.findings[0].name == "verify"
+        assert "제가 낸 검증 코드" in decision.findings[0].detail
+        assert verifier.status == "ok"
+        call = runner.calls[0]
+        assert call["cmd"][:4] == ["claude", "-p", "--model", "sonnet"]
+        assert "검증 실패 3건" in call["input"] and call["env"][finish_review.VERIFY_NESTED_ENV] == "1"
+
+    def test_model_failure_passes_and_records_status(self):
+        import subprocess as _sp
+        verifier = finish_review.ModelClaimVerifier(
+            runner=_fake_runner(exc=_sp.TimeoutExpired("claude", 90)), executable="claude", env={})
+
+        decision = finish_review.decide(self._turn(), claim_verifier=verifier)
+
+        assert decision.action == "allow"
+        assert verifier.status == "error:TimeoutExpired"
+
+    def test_no_json_passes_without_heuristic_fallback(self):
+        answer = _LONG_PREFIX + "오늘 지연 건수는 48291건이고 원인은 큐 적체 때문이다."
+        turn = _turn(answer, tool_calls=(ToolCall(name="Bash", input={}, result="큐 정상"),))
+        verifier = finish_review.ModelClaimVerifier(runner=_fake_runner(stdout="모름"), executable="claude", env={})
+
+        assert finish_review.decide(turn, claim_verifier=verifier).action == "allow"
+        assert verifier.status == "error:no_json"
+
+    def test_blocks_only_once_per_request(self):
+        payload = json.dumps({"unsupported": [{"sentence": "모두 제가 낸 검증 코드", "why": "x"}]}, ensure_ascii=False)
+        runner = _fake_runner(stdout=payload)
+        verifier = finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={})
+
+        decision = finish_review.decide(
+            self._turn(), claim_verifier=verifier, block_count=finish_review.VERIFY_MAX_BLOCKS)
+
+        assert decision.action == "allow"
+        assert runner.calls == []
+
+    def test_short_answer_skips_the_model(self):
+        runner = _fake_runner(stdout='{"unsupported": [{"sentence": "a", "why": "b"}]}')
+        verifier = finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={})
+        turn = _turn("원인은 배포 설정 누락이고 모두 제가 낸 코드다.")
+
+        assert finish_review.decide(turn, claim_verifier=verifier).action == "allow"
+        assert runner.calls == []
+
+    def test_skips_near_deadline(self):
+        runner = _fake_runner(stdout='{"unsupported": [{"sentence": "a", "why": "b"}]}')
+        verifier = finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={})
+
+        decision = finish_review.decide(self._turn(), claim_verifier=verifier, seconds_left=300)
+
+        assert decision.action == "allow" and runner.calls == []
+
+    def test_nested_call_does_not_verify_itself(self):
+        runner = _fake_runner(stdout='{"unsupported": [{"sentence": "a", "why": "b"}]}')
+        verifier = finish_review.ModelClaimVerifier(
+            runner=runner, executable="claude", env={finish_review.VERIFY_NESTED_ENV: "1"})
+
+        assert finish_review.decide(self._turn(), claim_verifier=verifier).action == "allow"
+        assert verifier.status == "skip_nested" and runner.calls == []
+
+    def test_settings_default_on_and_can_be_turned_off(self):
+        assert finish_review.resolve_verify_settings({}) == (True, "sonnet")
+        assert finish_review.resolve_verify_settings({"SCA_FINISH_VERIFY": "0"})[0] is False
+        assert finish_review.resolve_verify_settings({"SCA_FINISH_VERIFY_MODEL": "opus"}) == (True, "opus")
+
+    def test_pick_evidence_prefers_results_sharing_answer_identifiers(self):
+        filler = ["x" * 12000 for _ in range(12)]
+        relevant = "billable_fee 갱신은 settle_job 이 한다"
+        picked = finish_review.pick_evidence(
+            "billable_fee 는 settle_job 이 갱신한다", [relevant, *filler], limit=50_000)
+
+        assert relevant in picked
+        assert len(picked) <= 50_000 + 20
 
 
 class TestAllow:
