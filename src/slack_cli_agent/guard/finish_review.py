@@ -365,7 +365,7 @@ _NOT_OPENED_TARGET_RE = re.compile(r"(판단|대조|확인|본문|내용|완료�
 #: 원본, 원문, 첨부를 열지 않았다고 과거형으로 자백하거나 그래서 모른다고 쓴 문장도 잡는다.
 #: 두 봇 감사 로그 답 5,342건 재생에서 추가로 잡힌 11건이 모두 실제 미열람 자백이었다.
 _NOT_OPENED_PAST_RE = re.compile(
-    r"(열어\s?보지|읽어\s?보지|열람하지|열지|읽지)\s*(않았|않아서|않아\s|못했|못해|못한)[^\n]{0,30}"
+    r"(열어\s?보지|읽어\s?보지|열람하지|열지|읽지)\s*(않았(?!다고|다는)|않아서|않아\s|못했(?!다고|다는)|못해|못한)[^\n]{0,30}"
 )
 _NOT_OPENED_SOURCE_RE = re.compile(r"(모르|모릅|알 수 없|알지 못|원본|원문|첨부|이름까지)")
 #: "the server didn't read the config" has a system as subject, not the

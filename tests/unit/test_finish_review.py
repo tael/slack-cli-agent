@@ -124,6 +124,11 @@ class TestNotOpened:
 
         assert finish_review.not_opened(turn) is not None
 
+    def test_allows_reported_speech_about_the_rule(self):
+        turn = _turn("원문을 열지 않았다고 쓰거나 그래서 모른다고 쓴 문장을 막도록 판정을 넓혔다.")
+
+        assert finish_review.not_opened(turn) is None
+
     def test_allows_policy_sentence_about_not_reading_files(self):
         turn = _turn("마메치는 이 파일을 자동으로 읽지 않으므로 동작에는 영향이 없습니다.")
 
