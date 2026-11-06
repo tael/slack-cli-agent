@@ -85,6 +85,19 @@ def same_watch_target(a: str, b: str) -> bool:
         return False
     return len(ka & kb) / len(ka | kb) >= 0.5
 
+
+def distinct_watch_targets(a: str, b: str) -> bool:
+    """Whether two watch descriptions clearly name different things.
+
+    True only when both carry identifying tokens and share none -- two
+    different dag runs in one thread, say. Plain sentences, or one side
+    with no token, are not proof of a different target: 2026-11-06's
+    "old workers are gone" watch named no token at all and was about the
+    same restart as the pid-file watch before it.
+    """
+    ka, kb = _watch_target_keys(a), _watch_target_keys(b)
+    return bool(ka) and bool(kb) and not (ka & kb)
+
 # The model has repeatedly said "I'll keep an eye on it" / "I'll report back"
 # without the [[WATCH: ...]] tag, even with prompt guidance in place. Without
 # the tag nothing gets queued and no one actually follows up, so this is

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -388,7 +388,7 @@ class AskerSection(PromptSection):
     exchange needs to avoid waking the other bot on every sentence.
     """
 
-    def __init__(self, peer_bot_ids: Sequence[str] = ()) -> None:
+    def __init__(self, peer_bot_ids: Iterable[str] = ()) -> None:
         # Sibling bots the owner may tell this bot to talk to (profile
         # controller_user_ids). bot.py:2069-2077 names the peer in the owner note.
         self._peer_bot_ids = tuple(sorted(peer_bot_ids))

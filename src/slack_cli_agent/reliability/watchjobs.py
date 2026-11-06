@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from ..auth.principal import TrustLevel
-from ..guard.watch import same_watch_target
+from ..guard.watch import distinct_watch_targets, same_watch_target
 from ..storage.database import Database
 from ..storage.repository import SqliteRepository
 
@@ -122,6 +122,9 @@ class WatchJobPort(Protocol):
     def pending_reports(self) -> list[PendingReport]:
         """Reports still owed, oldest first."""
 
+    def open_siblings(self, job: WatchJob) -> list[int]:
+        """Open watches in the same thread registered after `job`."""
+
 
 class WatchJobQueue(SqliteRepository):
     def __init__(self, db: Database, now: Callable[[], float] = time.time) -> None:
@@ -141,6 +144,8 @@ class WatchJobQueue(SqliteRepository):
         due_at: float | None = None,
     ) -> int:
         self._supersede_same_target(channel, thread_ts, condition, due_at)
+        if not run_id:
+            condition = self._fold_open_siblings(channel, thread_ts, condition, msg_ts, due_at)
         cursor = self._execute(
             "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at, "
             "last_run, done, msg_ts, checks, trust_level, extra, workdir, run_id, due_at) "
@@ -198,6 +203,77 @@ class WatchJobQueue(SqliteRepository):
             f"UPDATE watch_jobs SET done = 1 WHERE id IN ({placeholders})", tuple(stale),
         )
         log.info("감시 교체 : 같은 스레드 기존 %d건 제거", len(stale))
+
+    def _fold_open_siblings(
+        self, channel: str, thread_ts: str, condition: str, msg_ts: str, due_at: float | None,
+    ) -> str:
+        """Merges still-open condition watches of this thread into the new one.
+
+        2026-11-06 test-agent: a restart was watched twice in one thread.
+        Job 25 checked the pid file, the request file and the account value;
+        job 26, added two minutes later after old workers were seen alive,
+        checked that those workers were gone. `same_watch_target` compares
+        long identifier tokens only, so the two never matched. Job 25 then
+        finished on its own and posted "restart confirmed" while job 26 was
+        still open, and the thread read the restart as done.
+
+        A new condition watch in a thread that already has one is the
+        conversation tightening what "done" means, not a second unrelated
+        promise. The old conditions are carried into the new row and the old
+        row is closed, so only one report can go out and it must satisfy
+        every condition. Result-file watches (`run_id` set) keep their own
+        rows: their completion is read from an exit status, not from text.
+        The same deadline-class rule as `_supersede_same_target` applies.
+        Watches that clearly name another target (two different dag runs)
+        stay separate, and a rerun of the same message is left to the
+        unique-index path that keeps enqueue idempotent (sca-efe).
+        """
+        rows = self._fetch_all(
+            "SELECT id, condition, due_at, msg_ts FROM watch_jobs "
+            "WHERE done = 0 AND channel = ? AND thread_ts = ? AND COALESCE(run_id, '') = '' "
+            "ORDER BY id",
+            (channel, thread_ts),
+        )
+        has_due = due_at is not None
+        older = [
+            row for row in rows
+            if bool(row["due_at"]) == has_due
+            and not (msg_ts and row["msg_ts"] == msg_ts)
+            and not distinct_watch_targets(row["condition"], condition)
+        ]
+        if not older:
+            return condition
+        ids = tuple(int(row["id"]) for row in older)
+        placeholders = ", ".join("?" for _ in ids)
+        self._execute(f"UPDATE watch_jobs SET done = 1 WHERE id IN ({placeholders})", ids)
+        log.info("감시 병합 : 같은 스레드 조건 감시 %d건을 새 감시에 합침", len(ids))
+        earlier = "\n".join(f"- {row['condition']}" for row in older)
+        return (
+            f"{condition}\n\n"
+            "앞서 같은 스레드에 등록된 아래 조건도 모두 충족해야 완료다.\n"
+            f"{earlier}"
+        )
+
+    def open_siblings(self, job: WatchJob) -> list[int]:
+        """Ids of newer open condition watches in this thread about the same work.
+
+        A newer open watch means the conversation asked for more than `job`
+        checks, so `job` finishing is not the whole thing finishing. Watches
+        that clearly name another target, result-file watches, and the other
+        deadline class are excluded -- those are separate promises with their
+        own reports.
+        """
+        rows = self._fetch_all(
+            "SELECT id, condition, due_at FROM watch_jobs WHERE done = 0 AND channel = ? "
+            "AND thread_ts = ? AND id > ? AND COALESCE(run_id, '') = '' ORDER BY id",
+            (job.channel, job.thread_ts, job.id),
+        )
+        has_due = job.due_at is not None
+        return [
+            int(row["id"]) for row in rows
+            if bool(row["due_at"]) == has_due
+            and not distinct_watch_targets(row["condition"], job.condition)
+        ]
 
     def active_watch(self, channel: str, msg_ts: str) -> bool:
         if not msg_ts:
