@@ -104,6 +104,24 @@ class TestStoppedUnfinished:
 
         assert finish_review.stopped_unfinished(turn) is None
 
+    @pytest.mark.parametrize("answer", [
+        "구치파치 실제 경로 시험은 통과했지만 마메치 실제 경로 시험은 끝내지 못했어요.",
+        "마메치는 코드 반영까지만 확인했고 검증은 마치지 못했습니다.",
+        "재기동 후 통합 테스트를 완료하지 못했습니다.",
+    ])
+    def test_blocks_unfinished_test_report(self, answer):
+        """2026-11-06 private-taeil: 두 봇 중 하나의 실제 경로 시험을
+        끝내지 않은 채 끝낸 답이 allow 로 통과했다."""
+        turn = _turn(answer)
+
+        assert finish_review.stopped_unfinished(turn) is not None
+        assert finish_review.decide(turn).action == "block"
+
+    def test_allows_finished_test_report(self):
+        turn = _turn("두 봇 모두 실제 한도 응답에서 codex 답변까지 3회씩 통과했습니다.")
+
+        assert finish_review.stopped_unfinished(turn) is None
+
 
 class TestNotOpened:
     def test_blocks_when_answer_admits_skipping_the_open(self):
@@ -357,6 +375,48 @@ class TestDeniedUnretried:
                     name="Bash",
                     input={"command": "aws s3 ls s3://my-long-bucket-name-x --profile b"},
                     result="ok: file.csv",
+                ),
+            ),
+        )
+
+        assert finish_review.denied_unretried(turn) is None
+
+    def test_blocks_when_codex_patch_retry_is_denied_again(self):
+        turn = _turn(
+            "재시도했지만 반영되지 않았습니다. 쓰기가 계속 차단됐습니다.",
+            tool_calls=(
+                ToolCall(
+                    name="Edit",
+                    input={"path": "/repo/src/finish_review.py"},
+                    result=("patch rejected: writing is blocked by read-only sandbox; "
+                            "rejected by user approval settings"),
+                ),
+                ToolCall(
+                    name="Edit",
+                    input={"path": "/repo/src/finish_review.py"},
+                    result=("patch rejected: writing is blocked by read-only sandbox; "
+                            "rejected by user approval settings"),
+                ),
+            ),
+        )
+
+        assert finish_review.denied_unretried(turn) is not None
+        assert finish_review.decide(turn).action == "block"
+
+    def test_allows_when_codex_patch_retry_succeeds(self):
+        turn = _turn(
+            "첫 시도는 차단됐지만 다른 경로로 반영했습니다.",
+            tool_calls=(
+                ToolCall(
+                    name="Edit",
+                    input={"path": "/repo/src/finish_review.py"},
+                    result=("patch rejected: writing is blocked by read-only sandbox; "
+                            "rejected by user approval settings"),
+                ),
+                ToolCall(
+                    name="Edit",
+                    input={"path": "/repo/src/finish_review.py"},
+                    result="Done!",
                 ),
             ),
         )
