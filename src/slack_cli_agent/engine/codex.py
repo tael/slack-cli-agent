@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from ..auth.principal import TrustLevel
-from ..auth.tools import READ_ONLY_TOOLS
+from ..auth.tools import is_read_only_tool
 from ..config.profile import EngineSpec, McpServerSpec
 from .base import (
     UNTRUSTED_INPUT_MARK,
@@ -198,7 +198,7 @@ class CodexEngine(Engine):
         ignore; the sandbox is the OS refusing the write (sca-f9k0).
         """
         if request.tools.access is ToolAccess.ALLOWLIST and all(
-            name in READ_ONLY_TOOLS for name in request.tools.names
+            is_read_only_tool(name) for name in request.tools.names
         ):
             return "read-only"
         return str(self.spec.options.get("sandbox", "danger-full-access"))

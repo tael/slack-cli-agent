@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..auth.policy import DEFAULT_EFFORT, EFFORT_LEVELS
 from ..auth.principal import TrustLevel
-from ..auth.tools import READ_ONLY_TOOLS
+from ..auth.tools import is_read_only_tool
 from ..core.errors import ConfigError
 from .capability import EngineCapabilities, ExecutionIsolation, ExecutionRequirements, ToolRestriction
 from .environment import EngineEnvironmentPolicy, create_environment_policy
@@ -649,7 +649,7 @@ class Engine(ABC):
             return ""
         if self.capabilities_for(request).tool_restriction is ToolRestriction.EXACT_ALLOWLIST:
             return ""
-        if all(name in READ_ONLY_TOOLS for name in request.tools.names):
+        if all(is_read_only_tool(name) for name in request.tools.names):
             return self.TOOL_READONLY_NOTE
         return self.TOOL_ALLOW_NOTE.format(names=", ".join(request.tools.names))
 
