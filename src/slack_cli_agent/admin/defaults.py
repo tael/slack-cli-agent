@@ -25,7 +25,7 @@ from .commands import (
     HelpCommand,
     InflightStatusCommand,
 )
-from .engine_commands import EngineApproveCommand, EngineDenyCommand
+from .engine_commands import EngineApproveCommand, EngineDenyCommand, ModelChangeCommand
 from .learning_commands import LearningApplyCommand, LearningRevertCommand, LearningShowCommand
 
 
@@ -37,6 +37,7 @@ def default_admin_commands(notices: NoticeCatalog) -> list[AdminCommand]:
         InflightStatusCommand(),
         EngineApproveCommand(),
         EngineDenyCommand(),
+        ModelChangeCommand(),
         ChatActiveCommand(notices),
         ChatNormalCommand(notices),
         ChatQuietCommand(notices),

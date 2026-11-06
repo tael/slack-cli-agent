@@ -86,12 +86,25 @@ class EngineStatusCommand(AdminCommand):
 
     def execute(self, ctx: AdminContext) -> AdminResult:
         state = self._read_state(ctx)
+        model_change = self._read_model_change(ctx)
+        model_lines = [f"- 설정 모델 : {ctx.profile.primary_engine.model_for_owner()}"]
+        if model_change:
+            services = model_change.get("services")
+            service_text = (
+                "완료" if model_change.get("complete") else "실패 또는 진행 중"
+            )
+            if isinstance(services, dict) and services:
+                service_text += " (" + ", ".join(
+                    f"{name}: {'정상' if ok else '실패'}" for name, ok in services.items()
+                ) + ")"
+            model_lines.append(f"- 모델 변경 재기동 : {service_text}")
         if not state:
             fallback = ctx.profile.fallback_engine.type if ctx.profile.fallback_engine else "(없음)"
             return AdminResult(
                 message=(
                     "*실행기 상태*\n\n"
                     f"- 지금 : {ctx.profile.primary_engine.type}\n"
+                    + "\n".join(model_lines) + "\n"
                     f"- 대체 : {fallback}\n"
                     "- 전환 : 없음"
                 )
@@ -102,6 +115,7 @@ class EngineStatusCommand(AdminCommand):
             message=(
                 "*실행기 상태*\n\n"
                 f"- 바꾼 실행기 : {state.get('engine')}\n"
+                + "\n".join(model_lines) + "\n"
                 f"- 승인 : {label}\n"
                 f"- 사유 : {state.get('detail') or '구독 한도 소진'}"
             )
@@ -118,6 +132,14 @@ class EngineStatusCommand(AdminCommand):
             return {}
         return data if isinstance(data, dict) else {}
 
+    @staticmethod
+    def _read_model_change(ctx: AdminContext) -> dict[str, Any]:
+        path = ctx.profile.paths.root / "model_change.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
 
 class InflightStatusCommand(AdminCommand):
     """Lists the requests being handled right now (B51).

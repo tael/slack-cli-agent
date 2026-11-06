@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ..auth.tools import READ_ONLY_TOOLS
+from ..auth.tools import is_read_only_tool
 from .capability import ToolRestriction
 
 
@@ -82,4 +82,4 @@ class ToolSelection:
             return False
         if self.access is ToolAccess.UNRESTRICTED:
             return True
-        return any(name not in READ_ONLY_TOOLS for name in self.names)
+        return any(not is_read_only_tool(name) for name in self.names)
