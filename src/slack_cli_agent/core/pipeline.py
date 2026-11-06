@@ -51,6 +51,7 @@ from ..slack.gate import ResponseGate
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
 from ..slack.mentions import MentionRenderer
 from ..slack.origin_alive import OriginAliveChecker
+from ..slack.tool_post import ToolPostMerger
 from ..slack.transcript import CurrentMessage
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
@@ -152,6 +153,10 @@ class RequestPipeline:
         # reply is posted (C34). Optional: without it the reply publishes as
         # before, so a profile with no wiring degrades to "publish anyway".
         origin_alive: OriginAliveChecker | None = None,
+        # Writes the final answer over a file message the engine already
+        # posted through a tool this turn, instead of a second reply
+        # (2026-11-06 duplicate replies). None posts as before.
+        tool_post_merger: ToolPostMerger | None = None,
         # Shared with the caller so both the late-addendum check and the queue see
         # the same consumed-messages record.
         consumption: ThreadConsumption | None = None,
@@ -217,6 +222,7 @@ class RequestPipeline:
         self._linked_threads = linked_threads
         self._late_addendum = late_addendum
         self._origin_alive = origin_alive
+        self._tool_post_merger = tool_post_merger
         self._consumption = consumption
         self._watch_queue = watch_queue
         self._tool_policy = tool_policy
@@ -523,7 +529,17 @@ class RequestPipeline:
                 truncated=_truncated(response), context_reset=context_reset,
             )
             return HandleOutcome(ok=True)
-        posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich, flat=flat) or ""
+        posted_ts = ""
+        # A file the engine posted itself already sits in the thread as a
+        # reply. Writing the answer over it keeps one reply holding both the
+        # file and the answer. flat replies go to the channel, not the thread
+        # the tool posted into, so they post as usual.
+        if self._tool_post_merger is not None and not flat:
+            posted_ts = self._tool_post_merger.merge(
+                ctx.channel, ctx.thread_ts, start, body, rich,
+            ) or ""
+        if not posted_ts:
+            posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich, flat=flat) or ""
         self._archive_response(ctx, body, response, elapsed)
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,

@@ -347,6 +347,7 @@ def build_pipeline(
     linked_threads: Any = None,
     late_addendum: Any = None,
     origin_alive: Any = None,
+    tool_post_merger: Any = None,
     consumption: Any = None,
     watch_queue: Any = None,
     response_archive: Any = None,
@@ -393,6 +394,8 @@ def build_pipeline(
         extra_kwargs["late_addendum"] = late_addendum
     if origin_alive is not None:
         extra_kwargs["origin_alive"] = origin_alive
+    if tool_post_merger is not None:
+        extra_kwargs["tool_post_merger"] = tool_post_merger
     if consumption is not None:
         extra_kwargs["consumption"] = consumption
     if watch_queue is not None:
@@ -1777,6 +1780,37 @@ class Test발송직전물음생존확인:
     def test_확인기가_없으면_평소대로_올린다(self) -> None:
         """프로필에 배선이 없으면 발송 보류 없이 그대로 올린다 (degrade)."""
         pipeline, parts = build_pipeline(responses=[ok_response("답")])
+        pipeline.handle(make_ctx())
+        assert parts["publisher"].posted[-1]["text"] == "답"
+
+
+class Fake도구게시합침:
+    def __init__(self, merged_ts: str | None) -> None:
+        self.merged_ts = merged_ts
+        self.calls: list[tuple] = []
+
+    def merge(self, channel, thread_ts, since, body, rich):
+        self.calls.append((channel, thread_ts, since, body, rich))
+        return self.merged_ts
+
+
+class Test파일게시메시지에답합치기:
+    """도구가 파일을 올린 턴은 답을 그 메시지에 합쳐 답이 하나만 남는다 (2026-11-06)."""
+
+    def test_합쳤으면_새로_올리지_않는다(self) -> None:
+        merger = Fake도구게시합침("1700000000.000999")
+        pipeline, parts = build_pipeline(
+            responses=[ok_response("답")], tool_post_merger=merger,
+        )
+        outcome = pipeline.handle(make_ctx())
+        assert parts["publisher"].posted == []
+        assert outcome.posted_ts == "1700000000.000999"
+        assert merger.calls and merger.calls[0][3] == "답"
+
+    def test_합칠_메시지가_없으면_평소대로_올린다(self) -> None:
+        pipeline, parts = build_pipeline(
+            responses=[ok_response("답")], tool_post_merger=Fake도구게시합침(None),
+        )
         pipeline.handle(make_ctx())
         assert parts["publisher"].posted[-1]["text"] == "답"
 
