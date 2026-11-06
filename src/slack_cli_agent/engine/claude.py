@@ -95,6 +95,19 @@ _USAGE_KEY_MAP: Mapping[str, str] = {
 MCP_PREFIX = "mcp__"
 
 
+def _server_wide_names(names: tuple[str, ...], servers: Iterable[str]) -> tuple[str, ...]:
+    """A bare server name in the allowlist means that whole server.
+
+    Profiles list MCP servers by name (owner_tools: ["snowflake", "csv"]), the
+    form the codex engine takes. Read as-is here, those names matched no
+    mcp__<server>__ prefix, so _mcp_denials closed every server with mcp__*
+    and the same names went into --tools as built-ins that do not exist.
+    2026-11-06 deagent: 21 test turns on this engine called no MCP tool at all.
+    """
+    server_set = set(servers)
+    return tuple(f"{MCP_PREFIX}{name}__*" if name in server_set else name for name in names)
+
+
 def _builtin_names(names: tuple[str, ...]) -> list[str]:
     """The built-in tools among what the caller allowed.
 
@@ -316,9 +329,10 @@ class ClaudeEngine(Engine):
             # --tools is what closes them: it names the built-in set itself,
             # and a Write call under --tools "Read,Grep,Glob" came back as
             # "No such tool available" (sca-6ewc).
-            args += ["--allowedTools", ",".join(request.tools.names)]
-            args += ["--tools", ",".join(_builtin_names(request.tools.names))]
-            denied = _mcp_denials(request.tools.names, mcp_servers)
+            names = _server_wide_names(request.tools.names, mcp_servers)
+            args += ["--allowedTools", ",".join(names)]
+            args += ["--tools", ",".join(_builtin_names(names))]
+            denied = _mcp_denials(names, mcp_servers)
             if denied:
                 args += ["--disallowedTools", ",".join(denied)]
         return args
