@@ -327,6 +327,10 @@ RECIPIENT_TAG = re.compile(
 )
 
 
+def _mentions(body: str | None, user_id: str) -> bool:
+    return any(m.group(1) == user_id for m in ANY_MENTION.finditer(body or ""))
+
+
 class RecipientResolver:
     """Parses the trailing `[[RECIPIENT:...]]` marker and forces a leading
     mention when the recipient turns out to be a bot (D3).
@@ -347,6 +351,19 @@ class RecipientResolver:
     def resolve(self, body: str, asker_id: str = "") -> tuple[str, Recipient | None]:
         m = RECIPIENT_TAG.search(body or "")
         if not m:
+            # A bot asker still has to be woken up when the model forgot the
+            # tag. Instructions alone did not hold: a turn resumed from an
+            # owner-opened session keeps the owner's "no mention" note and
+            # never sees the bot-asker note, so the reply to the peer bot went
+            # out unmentioned and the peer never learned the work was handed
+            # back (2026-11-06, 구치파치 -> 마메치 in rnd-pe팀-private).
+            # Enforced here, at publish time, where the session cannot drift.
+            if asker_id and self._is_bot(asker_id) and not _mentions(body, asker_id):
+                head = ADDRESSED_AT_HEAD.match(body or "")
+                rest = (body or "")[head.end() :].lstrip() if head else (body or "").lstrip()
+                return f"<@{asker_id}> {rest}".rstrip(), Recipient("bot", asker_id)
+            if asker_id and self._is_bot(asker_id):
+                return body, Recipient("bot", asker_id)
             return body, None
         kind, bot_id = m.group(1), m.group(2)
         # Whatever followed the tag (another trailer, like [[NOWATCH]]) is

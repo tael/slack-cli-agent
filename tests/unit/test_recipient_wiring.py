@@ -43,6 +43,38 @@ class Test봇_수신자_멘션강제:
         posted = deps["publisher"].posted[0]["text"]
         assert posted == "<@UPEER> 확인했습니다."
 
+    def test_봇화자에게_표식없이_답하면_그_봇을_멘션한다(self, tmp_path: Path) -> None:
+        # 이어받은 세션은 첫 턴의 소유자 지침만 보고 표식과 멘션을 빠뜨린다.
+        # 게시 단계에서 말을 건 봇을 깨운다 (2026-11-06 구치파치 -> 마메치).
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="Dear 마메치님, 시험을 돌리고 있습니다.")],
+            asker_is_bot=_is_bot({"UPEER"}),
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(user="UPEER"))
+        posted = deps["publisher"].posted[0]["text"]
+        assert posted.startswith("<@UPEER> ")
+
+    def test_봇화자에게_이미_멘션했으면_다시_붙이지_않는다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="진행합니다. <@UPEER> 결과는 곧 드립니다.")],
+            asker_is_bot=_is_bot({"UPEER"}),
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(user="UPEER"))
+        posted = deps["publisher"].posted[0]["text"]
+        assert posted.count("<@UPEER>") == 1
+
+    def test_사람화자에게_표식없이_답하면_멘션을_붙이지_않는다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="답입니다.")],
+            asker_is_bot=_is_bot({"UPEER"}),
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(user="UHUMAN"))
+        posted = deps["publisher"].posted[0]["text"]
+        assert "<@" not in posted
+
     def test_OWNER는_멘션을_붙이지_않는다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(
             responses=[ok_response(body="보고드립니다.\n[[RECIPIENT:OWNER]]")],

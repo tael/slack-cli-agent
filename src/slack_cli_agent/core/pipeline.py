@@ -825,7 +825,10 @@ class RequestPipeline:
         off the tag is still stripped and the body published as-is, so an
         unconfigured bot never falls silent over a missing tag.
         """
-        clean, recipient = self._recipient_resolver.resolve(body, ctx.user)
+        # The owner is never a bot; skipping it keeps owner turns free of a
+        # users.info round trip now that an untagged reply also checks the asker.
+        asker = "" if ctx.user == self._owner_user_id else ctx.user
+        clean, recipient = self._recipient_resolver.resolve(body, asker)
         if recipient is None and self._require_recipient:
             # Hand back the original body so the audit snippet shows what was
             # withheld; it is not published on this path.
