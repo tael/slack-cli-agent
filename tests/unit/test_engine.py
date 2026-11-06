@@ -7,6 +7,7 @@ import json
 import subprocess
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -924,6 +925,30 @@ class TestCodexEngineBuildCommand:
                                            system_prompt=""))
         assert UNTRUSTED_INPUT_MARK in cmd[-1]
         assert cmd[-1].endswith("안녕")
+
+    def test_소유자와_제어_봇의_요청은_지시로_표시한다(self, tmp_path: Path) -> None:
+        """2026-11-06 데이전트가 마메치(제어 봇)의 지시를 "슬랙 입력은 자료"
+        라는 표식을 근거로 거절했다. OWNER 턴은 지시 표식을 쓴다."""
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.engine.base import OWNER_INPUT_MARK
+        profile = codex_profile(tmp_path)
+        engine = CodexEngine(profile, SETTINGS)
+        req = replace(request(resume=True, model="gpt-5.6-sol", session_id="thread-abc",
+                              system_prompt="지침"), trust_level=TrustLevel.OWNER)
+        cmd = engine.build_command(req)
+        assert OWNER_INPUT_MARK in cmd[-1]
+        assert UNTRUSTED_INPUT_MARK not in cmd[-1]
+
+    def test_소유자가_아닌_요청은_자료_표식을_유지한다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.engine.base import OWNER_INPUT_MARK
+        profile = codex_profile(tmp_path)
+        engine = CodexEngine(profile, SETTINGS)
+        req = replace(request(resume=True, model="gpt-5.6-sol", session_id="thread-abc",
+                              system_prompt="지침"), trust_level=TrustLevel.TRUSTED)
+        cmd = engine.build_command(req)
+        assert UNTRUSTED_INPUT_MARK in cmd[-1]
+        assert OWNER_INPUT_MARK not in cmd[-1]
 
     def test_재개_턴의_지침은_슬랙_입력과_같은_계층이다(self, tmp_path: Path) -> None:
         """프롬프트 한 문자열 안에 든 지침은 native 경계가 아니다. 선언을
