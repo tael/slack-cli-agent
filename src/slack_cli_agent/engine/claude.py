@@ -69,6 +69,11 @@ from .tool_selection import ToolAccess
 _USAGE_LIMIT_HINTS = (
     "weekly limit", "usage limit", "rate limit",
     "hit your limit", "limit · resets", "limit reached",
+    # claude 2.1.318 문구. "You've hit your ${종류} limit", 팀 플랜의 사용량
+    # 소진 문구가 위 목록에 없어 한도가 일반 실패로 떨어졌다 (2026-11-06).
+    "you've hit your", "you've reached your", "session limit",
+    "out of extra usage", "out of usage credits", "org is out of usage",
+    "monthly spend limit", "spend limit reached",
 )
 
 # Claude's own vocabulary — its native keys already match the common ones,
@@ -543,13 +548,17 @@ class ClaudeEngine(Engine):
 
         if payload.get("is_error"):
             subtype = str(payload.get("subtype") or "")
-            is_limit = "limit" in subtype or "budget" in subtype
+            # 종료코드 0 에 subtype success 로 오고 한도는 api_error_status 429 나
+            # result 문구에만 있는 경우가 있다. 종료코드가 0 이 아닐 때만 문구를
+            # 보면 이 경우가 일반 실패로 떨어져 2차 전환이 일어나지 않는다.
+            text_limit = self._limit_from_payload(payload)
+            is_limit = text_limit is not None
             reason = "usage_limit" if is_limit else "is_error"
-            body = ("사용 한도에 걸려 중단했습니다." if is_limit
+            body = (self._limit_body(text_limit) if text_limit is not None
                     else "처리에 실패했습니다.")
             raw: dict[str, Any] = dict(payload)
-            if is_limit:
-                raw["usage_limit"] = {"detail": "", "source": "subtype"}
+            if text_limit is not None:
+                raw["usage_limit"] = {"detail": text_limit.detail, "source": text_limit.source}
             return EngineResponse(
                 ok=False, body=body, session_id=session_id, model_actual=model_actual,
                 elapsed=elapsed, turns=turns, usage=usage, raw=raw, failure_reason=reason,
@@ -627,9 +636,28 @@ class ClaudeEngine(Engine):
         try:
             payload = json.loads(stdout or "")
         except (json.JSONDecodeError, TypeError):
-            return None
+            payload = ClaudeEngine._result_event_static(stdout)
         if not isinstance(payload, Mapping):
             return None
+        return ClaudeEngine._limit_from_payload(payload)
+
+    @staticmethod
+    def _result_event_static(stdout: str) -> Mapping[str, Any] | None:
+        """stream-json 출력이면 마지막 result 이벤트를 꺼낸다."""
+        for line in reversed((stdout or "").splitlines()):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, Mapping) and event.get("type") == "result":
+                return event
+        return None
+
+    @staticmethod
+    def _limit_from_payload(payload: Mapping[str, Any]) -> UsageLimit | None:
         result = str(payload.get("result") or "")
         status = payload.get("api_error_status")
         subtype = str(payload.get("subtype") or "")

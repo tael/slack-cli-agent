@@ -138,7 +138,8 @@ def _switch_time(epoch: float) -> str:
 
 def switch_dm_body(*, bot_name: str, from_engine: str, to_engine: str,
                    reason: str, detail: str, probe_ok: bool,
-                   probe_detail: str, switched_at: float) -> str:
+                   probe_detail: str, switched_at: float,
+                   approved: bool = False) -> str:
     """전환을 시작했음을 소유자에게 알리는 DM 본문 (B24).
 
     사유·시각·확인결과를 담는다. 마메치 bot.py 의 engine_switch_notice 와
@@ -156,7 +157,14 @@ def switch_dm_body(*, bot_name: str, from_engine: str, to_engine: str,
     detail = (detail or "").strip()
     if detail:
         lines.append(f"- 원문 : {detail}")
-    if probe_ok:
+    if probe_ok and approved:
+        lines += [
+            f"- 전환 확인 : {to_engine} 가 응답합니다",
+            "",
+            f"이 요청부터 {to_engine} 로 답합니다. {from_engine} 가 돌아오면 자동으로 되돌립니다.",
+            "쓰지 않으려면 `엔진 거부` 를 보내주세요.",
+        ]
+    elif probe_ok:
         lines += [
             f"- 전환 확인 : {to_engine} 가 응답합니다",
             "",
@@ -794,7 +802,13 @@ class FallbackEngine(Engine):
         response = self.runner.run(self.primary, request)
         limit = self.primary.detect_usage_limit(response)
         if limit is not None:
-            self._begin_switch(request, EngineSwitcher.USAGE_LIMIT, limit.detail)
+            # 한도는 승인을 기다릴 일이 아니다 (2026-10-25, 2026-11-06 김태일 지시).
+            # 2차가 확인 요청에 답하면 바로 승인하고, 한도를 만난 이 턴부터
+            # 2차로 답한다. 2차도 답하지 않을 때만 안내문을 낸다.
+            state = self._begin_switch(request, EngineSwitcher.USAGE_LIMIT, limit.detail,
+                                       auto_approve=True)
+            if state.get("approval") == "approved":
+                return self._run_secondary(request)
             return self._announce_switch(response)
         auth_failure = self.primary.detect_auth_failure(response)
         if auth_failure is not None:
@@ -820,13 +834,17 @@ class FallbackEngine(Engine):
             failure_reason=self.switcher.reason(),
         )
 
-    def _begin_switch(self, request: EngineRequest, reason: str, detail: str) -> None:
+    def _begin_switch(self, request: EngineRequest, reason: str, detail: str,
+                      auto_approve: bool = False) -> Mapping[str, Any]:
         probe_ok, probe_detail = self._probe_secondary(request)
         state = self.switcher.begin_switch(
             detail, engine_name=self.secondary.name, reason=reason,
             probe_ok=probe_ok, probe_detail=probe_detail,
+            # 확인 요청이 실패한 2차를 승인하면 모든 요청이 2차 실패로 끝난다.
+            auto_approve=auto_approve and probe_ok,
         )
         self._notify_switch(state, reason, detail, probe_ok, probe_detail)
+        return state
 
     def _bot_name(self) -> str:
         return self.primary.profile.display_name or self.primary.profile.name
@@ -853,6 +871,7 @@ class FallbackEngine(Engine):
             to_engine=self.secondary.name, reason=reason, detail=detail,
             probe_ok=probe_ok, probe_detail=probe_detail,
             switched_at=float(state.get("switched_at", self._clock())),
+            approved=state.get("approval") == "approved",
         )
         self._send(body, "실행기 전환")
 
