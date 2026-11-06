@@ -424,3 +424,9 @@ class TestReadOnlyMcpTools:
 
         assert not ToolSelection.allow(["Read", "mcp__slack__slack_thread_replies"]).can_act
         assert ToolSelection.allow(["Read", "mcp__slack__slack_post_message"]).can_act
+
+    def test_소유자_도구에_둔_서버도_소유자_감시에는_남는다(self, tmp_path: Path) -> None:
+        tools = ToolPolicy(("Read", "Grep"), ("Bash", "mcp__slack__*"))
+        붙은것 = tools.tool_list_for(self._principal(tmp_path), readonly=True)
+        assert "mcp__slack__slack_thread_replies" in 붙은것
+        assert "Bash" not in 붙은것

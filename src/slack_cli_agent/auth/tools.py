@@ -89,8 +89,12 @@ class ToolPolicy:
     ) -> tuple[str, ...]:
         if readonly:
             # Skill is left off as well -- it can run anything, which is the
-            # same hole in a different place.
-            return self._readonly_tools()
+            # same hole in a different place. Read-only MCP tools come from what
+            # this principal would get on a normal turn: guchipachi keeps its
+            # MCP servers under owner_tools, so base_tools alone gave a watch
+            # check no Slack at all (2026-11-06, watch job 22).
+            granted = self.tool_list_for(principal, prompt=prompt)
+            return self._readonly_tools(granted)
         tools: list[str] = list(self._base_tools)
         if principal.trust is TrustLevel.OWNER:
             tools += self._owner_tools
@@ -115,14 +119,14 @@ class ToolPolicy:
                     tools.append(grant)
         return tuple(tools)
 
-    def _readonly_tools(self) -> tuple[str, ...]:
+    def _readonly_tools(self, granted: Sequence[str] = ()) -> tuple[str, ...]:
         kept = tuple(name for name in self._base_tools if name in READ_ONLY_TOOLS)
         dropped = tuple(name for name in self._base_tools if name not in READ_ONLY_TOOLS)
         if dropped:
             log.warning("읽기 전용 턴에서 뺀 도구 : %s", ", ".join(dropped))
         builtin = kept or READ_ONLY_TOOLS
         mcp = tuple(
-            name for name in READ_ONLY_MCP_TOOLS if _granted_by(name, self._base_tools)
+            name for name in READ_ONLY_MCP_TOOLS if _granted_by(name, tuple(self._base_tools) + tuple(granted))
         )
         return builtin + mcp
 
