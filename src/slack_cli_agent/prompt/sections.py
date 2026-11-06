@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -359,6 +359,24 @@ class ReviewFormatSection(PromptSection):
         return library.text("FORMAT_REVIEW_NOTE")
 
 
+
+#: bot.py:1962 RECIPIENT_RULE. pipeline._resolve_recipient already reads and
+#: strips the trailing tag, but no section told the model to write it, so a
+#: bot-to-bot hand-off could never be routed (2026-11-06 prompt dump parity).
+RECIPIENT_RULE = (
+    "\n\n답변 마지막 줄에 수신자 표식을 반드시 하나 쓴다. 표식은 이 답을 받는 쪽을 "
+    "적는다. 누가 말을 걸었는지와 상관없이 아래 셋 중 하나다.\n"
+    "- 지금 말을 건 쪽에게 답하면 [[RECIPIENT:ASKER]]. 말을 건 쪽이 사람이든 봇이든 같다\n"
+    "- 소유자에게 확인을 구하거나 보고하면 [[RECIPIENT:OWNER]]\n"
+    "- 말을 건 쪽이 아닌 다른 봇에게 검토나 지시를 보내면 "
+    "[[RECIPIENT:BOT:그 봇의 사용자 ID]]. 본문 첫머리에 같은 봇의 꺾쇠 멘션을 둔다\n"
+    "BOT 은 봇 계정에만 쓴다. 사람에게 하는 답에 BOT 을 쓰지 않는다.\n"
+    "두 수신자를 한 답변에 섞지 않는다. [[TO:...]] 같은 다른 형식은 인식되지 않는다. "
+    "이 표식은 게시 전에 지워진다.\n"
+    "답할 말이 없으면 수신자 표식 없이 [[침묵]] 한 줄만 쓴다. 설명 문장도 붙이지 않는다."
+)
+
+
 class AskerSection(PromptSection):
     """States who's asking — without this, lookups for one person get answered as if they were about another.
 
@@ -370,12 +388,29 @@ class AskerSection(PromptSection):
     exchange needs to avoid waking the other bot on every sentence.
     """
 
+    def __init__(self, peer_bot_ids: Sequence[str] = ()) -> None:
+        # Sibling bots the owner may tell this bot to talk to (profile
+        # controller_user_ids). bot.py:2069-2077 names the peer in the owner note.
+        self._peer_bot_ids = tuple(sorted(peer_bot_ids))
+
     def applies_to(self, ctx: CompositionContext) -> bool:
         return True
 
     def render(self, ctx: CompositionContext) -> str:
+        return self._render(ctx) + RECIPIENT_RULE
+
+    def _render(self, ctx: CompositionContext) -> str:
         library = ctx._library_or_raise()
         if ctx.is_owner:
+            bots = (
+                "\n같은 자리에 도는 다른 봇들은 사람이 아니다. 위 금지의 대상이 아니다.\n"
+                "소유자가 어느 봇과 이야기하라고 시키면 답변 첫머리에서 그 봇을 꺾쇠 멘션으로 "
+                "직접 부른다. 이름만 적으면 알림이 가지 않아 말이 오가지 않는다."
+            )
+            if self._peer_bot_ids:
+                bots += "\n함께 도는 짝 봇은 " + ", ".join(
+                    f"<@{uid}>" for uid in self._peer_bot_ids
+                ) + " 다."
             return (
                 "\n\n지금 말을 건 사람은 소유자 본인이다.\n"
                 "이 스레드에 다른 사람도 함께 있을 수 있다. "
@@ -383,6 +418,7 @@ class AskerSection(PromptSection):
                 "본문 첫 줄 대괄호 안이 시각과 그 말을 한 사람이다. 그것으로만 화자를 판단한다.\n"
                 "소유자의 말에 다른 사람을 멘션해 답하지 않는다. "
                 "소유자에게 하는 답에는 멘션을 붙이지 않는다."
+                + bots
                 + library.text("DIRECTION_NOTE")
             )
         if ctx.asker_is_bot:

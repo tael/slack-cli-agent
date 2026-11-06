@@ -522,7 +522,7 @@ class Application:
             PeerRecoverySection(self._profile.peer),
             SlackFormatSection(),
             ReviewFormatSection(),
-            AskerSection(),
+            AskerSection(peer_bot_ids=self._profile.controller_user_ids),
             AttachmentSection(),
             ThreadCoordsSection(),
             PresentPeopleSection(),
