@@ -17,7 +17,13 @@ from typing import Any
 from ..auth.execution_policy import ExecutionPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
-from ..config.channel import ChannelConfig, channel_is_rich
+from ..config.channel import (
+    ChannelConfig,
+    advisor_enabled,
+    airflow_admins,
+    channel_is_rich,
+    is_channel_operator,
+)
 from ..config.channel import channel_slug as slug_for
 from ..engine.base import (
     CONTEXT_RESET_RAW_KEY,
@@ -411,6 +417,7 @@ class RequestPipeline:
             # turn_env names a `channel` key gets this turn's channel as env
             # (mametchi's per-turn MAMETCHI_POST_CHANNEL render guard).
             turn_context={"channel": ctx.channel},
+            engine_env=self._engine_env(ctx.channel, config),
         )
         # Counted rather than derived: the reset is the only trace a broken
         # resume leaves, and without it nothing can say how often context is
@@ -680,9 +687,37 @@ class RequestPipeline:
             missed_files=ctx.missed_files,
             watch_run_id=run_id,
             watch_out_dir=str(self._watch_results.result_dir),
+            airflow_admin=bool(ctx.user) and ctx.user in airflow_admins(config),
+            operator=is_channel_operator(config, ctx.user, is_bot=asker_is_bot),
+            advisor_enabled=advisor_enabled(config),
         )
         text, report = self._composer.compose_with_report(composition_ctx)
         return text, report.as_audit_dict()
+
+    def _engine_env(self, channel: str, config: ChannelConfig | None) -> dict[str, str]:
+        """Per-turn env the engine's built-in Stop hook reads (finish_review):
+        POST_CHANNEL is this turn's channel, ADVISOR_CHANNELS and
+        CODE_FIRST_CHANNELS the comma-separated channel IDs whose channels.json
+        entry turned the advisor structure (G16) or code_first (G13) on.
+
+        Read per turn so an edit to channels.json applies without a restart.
+        A lookup that can only answer `get` (a test double, a plugin store)
+        still gets the current channel judged correctly -- the hook only asks
+        whether POST_CHANNEL is in the set.
+        """
+        list_all = getattr(self._channels, "all", None)
+        configs: Mapping[str, ChannelConfig] = (
+            list_all() if callable(list_all) else ({channel: config} if config else {})
+        )
+        return {
+            "POST_CHANNEL": channel,
+            "ADVISOR_CHANNELS": ",".join(
+                sorted(cid for cid, c in configs.items() if advisor_enabled(c))
+            ),
+            "CODE_FIRST_CHANNELS": ",".join(
+                sorted(cid for cid, c in configs.items() if c.code_first)
+            ),
+        }
 
     def _present_people(self, ctx: RequestContext) -> tuple[tuple[str, str], ...]:
         # A lookup failure just omits this from the prompt; it must not block the reply.

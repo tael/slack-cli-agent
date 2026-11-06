@@ -92,6 +92,8 @@ from ..prompt.knowledge import KnowledgeLoader
 from ..prompt.library import PromptLibrary
 from ..prompt.linked_threads import LinkedThreadNote
 from ..prompt.sections import (
+    AdvisorSection,
+    AirflowSection,
     AskerSection,
     AskSection,
     AttachmentSection,
@@ -520,14 +522,16 @@ class Application:
             PeerRecoverySection(self._profile.peer),
             SlackFormatSection(),
             ReviewFormatSection(),
-            AskerSection(),
+            AskerSection(peer_bot_ids=self._profile.controller_user_ids),
             AttachmentSection(),
             ThreadCoordsSection(),
             PresentPeopleSection(),
             TrustedSection(),
             SensitiveGuardSection(),
             AuthoritySection(),
+            AirflowSection(),
             WatchSection(),
+            AdvisorSection(),
             AskSection(),
             SilenceRuleSection(),
         ]

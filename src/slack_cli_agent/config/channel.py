@@ -79,7 +79,10 @@ I82 — disposition of mametchi channels.json keys that are *not* core fields:
 * ``operators`` / ``advisor`` / ``airflow_admins`` — role and routing keys.
   The role *judgement* is common, but the user-ID lists and advisor model
   belong to the org, so they stay in ``extra`` for a plugin to read (same
-  boundary as ``user_tools``, sca-ww4).
+  boundary as ``user_tools``, sca-ww4). The core reads them only through
+  advisor_enabled / airflow_admins / is_channel_operator below, to decide
+  which prompt sections apply and which channel IDs go into the engine's
+  ADVISOR_CHANNELS env.
 * ``broadcast`` — a per-channel flag an org's post MCP reads (mametchi
   mermaid_render.py) to allow posting into the channel body, not just a
   thread; ``extra`` only.
@@ -271,6 +274,35 @@ def channel_is_rich(config: HasRich | None) -> bool:
     "plain text" -- reading it as the latter stripped every answer of a bot with
     no channel file (sca-75v)."""
     return ChannelConfig(channel_id="").rich if config is None else config.rich
+
+
+def advisor_enabled(config: ChannelConfig | None) -> bool:
+    """Whether the channel turned the advisor structure on.
+
+    The key lives in ``extra`` as ``"advisor": {"executor": "<model>"}``
+    (I82: the model name belongs to the org). Only the dict shape counts,
+    same as mametchi advisor_executor (bot.py): a stray ``true`` or string
+    does not switch the advisor prompt and the Stop-hook judgement on.
+    """
+    return config is not None and isinstance(config.extra.get("advisor"), Mapping)
+
+
+def airflow_admins(config: ChannelConfig | None) -> frozenset[str]:
+    """Slack user IDs the channel lists under ``airflow_admins`` (``extra``).
+    Unlisted channels give nobody the Airflow role (mametchi authz.airflow_admins)."""
+    if config is None:
+        return frozenset()
+    return frozenset(str(u) for u in (config.extra.get("airflow_admins") or ()))
+
+
+def is_channel_operator(config: ChannelConfig | None, user: str, *, is_bot: bool = False) -> bool:
+    """True when the channel's ``operators`` list (``extra``) names the user or
+    holds ``"*"``. A bot is never an operator: letting a bot's mention open the
+    operator path erases the permission boundary (mametchi authz.is_operator)."""
+    if config is None or is_bot or not user:
+        return False
+    listed = {str(u) for u in (config.extra.get("operators") or ())}
+    return "*" in listed or user in listed
 
 
 class ChannelRegistry:

@@ -122,6 +122,13 @@ class EngineRequest:
     #: process, so Slack identifiers (the channel token) stay out of the engine
     #: layer's logic (sca-4ol). Empty means the caller supplied no context.
     turn_context: Mapping[str, str] = field(default_factory=dict)
+    #: Per-turn env facts for the engine child process itself (not an MCP
+    #: server): POST_CHANNEL, ADVISOR_CHANNELS, CODE_FIRST_CHANNELS, read by
+    #: the built-in Stop hook (guard/finish_review.py). EngineRunner merges
+    #: these onto the source env before the engine's env policy filters it, so
+    #: only names that policy allowlists ever reach the child. Opaque here like
+    #: turn_context; empty means the caller supplied none.
+    engine_env: Mapping[str, str] = field(default_factory=dict)
 
     def require_session_id(self) -> str:
         """For build_command, which only ever runs after EngineRunner filled it in.
