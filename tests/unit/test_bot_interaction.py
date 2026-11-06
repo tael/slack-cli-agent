@@ -370,7 +370,8 @@ class TestAskerSection_봇_3분기:
         ))
         note = AskerSection().render(ctx)
         assert "소유자 본인" in note
-        assert "다른 봇" not in note
+        # 소유자 갈래도 짝 봇 안내 줄에 "다른 봇" 이 들어간다(#71). 봇 화자 갈래 문구가 섞이지 않는지만 본다
+        assert "사람이 아니라 소유자가 함께 돌리는" not in note
 
     def test_봇이_물으면_사람이_아니라고_알린다(self) -> None:
         ctx = _ctx(asker_is_bot=True, asker_name="구치파치", asker_id="U0PEER")
