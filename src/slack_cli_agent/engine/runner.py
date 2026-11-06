@@ -260,9 +260,13 @@ class EngineRunner:
         # Stamp the turn deadline so the child engine's Stop hook and Bash
         # PreToolUse guard can see how much turn budget is left (A28). Computed
         # once per turn from the enforced timeout; the env policy's allowlist
-        # carries TURN_DEADLINE[_MONO] through to the child.
+        # carries TURN_DEADLINE[_MONO] through to the child. The caller's
+        # per-turn facts (request.engine_env: current channel, advisor and
+        # code-first channel sets) go on the same way; the policy still decides
+        # which names pass.
         source = {
             **base_source,
+            **request.engine_env,
             **turn_budget_env(timeout, now_wall=time.time(), now_monotonic=time.monotonic()),
         }
 

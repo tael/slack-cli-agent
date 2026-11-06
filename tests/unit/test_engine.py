@@ -1596,6 +1596,35 @@ class TestEngineRunner:
         remaining = float(env["TURN_DEADLINE_MONO"]) - before
         assert 900.0 <= remaining <= 900.0 + (after - before) + 1.0
 
+    def test_요청의_engine_env_가_claude_허용목록을_거쳐_자식에_실린다(self, tmp_path: Path) -> None:
+        """G16 — Stop 훅의 advisor 판정이 돌려면 POST_CHANNEL 과 ADVISOR_CHANNELS
+        가 claude 자식 환경에 있어야 한다. 허용목록에 없는 이름은 걸러진다."""
+        from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
+
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        잡힌환경: list[Any] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            잡힌환경.append(env)
+            return FakeCompleted(stdout="답변", returncode=0)
+
+        runner = EngineRunner(
+            SETTINGS, subprocess_runner=fake_subprocess,
+            environment_policy=ClaudeEnvironmentPolicy("test"), source_env={"PATH": "/bin"},
+        )
+        runner.run(engine, request(engine_env={
+            "POST_CHANNEL": "C_ADV",
+            "ADVISOR_CHANNELS": "C_ADV,C_OTHER",
+            "CODE_FIRST_CHANNELS": "C_CODE",
+            "NOT_ALLOWED": "x",
+        }))
+
+        env = 잡힌환경[0]
+        assert env["POST_CHANNEL"] == "C_ADV"
+        assert env["ADVISOR_CHANNELS"] == "C_ADV,C_OTHER"
+        assert env["CODE_FIRST_CHANNELS"] == "C_CODE"
+        assert "NOT_ALLOWED" not in env
+
     def test_CLI_에_알리는_제한시간이_실제_제한과_같다(self, tmp_path: Path) -> None:
         """agy 는 --print-timeout 으로 자기 제한을 받는다. 실행기가 더 짧은
         값으로 죽이면 CLI 는 자기 제한 전이라 정리를 안 한 채 끊긴다.

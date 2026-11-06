@@ -92,6 +92,8 @@ from ..prompt.knowledge import KnowledgeLoader
 from ..prompt.library import PromptLibrary
 from ..prompt.linked_threads import LinkedThreadNote
 from ..prompt.sections import (
+    AdvisorSection,
+    AirflowSection,
     AskerSection,
     AskSection,
     AttachmentSection,
@@ -527,7 +529,9 @@ class Application:
             TrustedSection(),
             SensitiveGuardSection(),
             AuthoritySection(),
+            AirflowSection(),
             WatchSection(),
+            AdvisorSection(),
             AskSection(),
             SilenceRuleSection(),
         ]

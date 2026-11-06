@@ -98,6 +98,15 @@ class CompositionContext:
     postmortem: bool = False
     debug_trace: bool = False
     format_review: bool = False
+    #: Whoever spoke is on this channel's `airflow_admins` list (channels.json
+    #: extra; mametchi is_airflow_admin, bot.py). Drives AirflowSection.
+    airflow_admin: bool = False
+    #: Whoever spoke is on this channel's `operators` list (or it holds "*")
+    #: and is not a bot (mametchi authz.is_operator). Drives AdvisorSection.
+    operator: bool = False
+    #: This channel's channels.json entry carries an `advisor` dict (mametchi
+    #: advisor_executor, bot.py). Drives AdvisorSection.
+    advisor_enabled: bool = False
     chat_level: str = "normal"
     silent_mark: str = SILENT_MARK
     library: PromptLibrary | None = None
@@ -461,6 +470,22 @@ class AuthoritySection(PromptSection):
         return library.text("MECHANISM_NOTE")
 
 
+class AirflowSection(PromptSection):
+    """AIRFLOW_NOTE for a speaker the channel lists under `airflow_admins`.
+
+    Placed after AuthoritySection on purpose: the guards before it close off
+    infrastructure talk, so this note has to come later to win (mametchi
+    bot.py build_system_prompt). Skipped during postmortem/debug/format-review:
+    those only look back and carry no tool to change anything.
+    """
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return ctx.airflow_admin and not ctx.aside
+
+    def render(self, ctx: CompositionContext) -> str:
+        return ctx._library_or_raise().text("AIRFLOW_NOTE")
+
+
 class WatchSection(PromptSection):
     """Skipped during postmortem/debug/format-review — those only look back, nothing to watch for."""
 
@@ -485,6 +510,28 @@ class WatchSection(PromptSection):
                 self.RUN_ID_SLOT, ctx.watch_run_id,
             ).replace(self.OUT_DIR_SLOT, ctx.watch_out_dir)
         return text
+
+
+class AdvisorSection(PromptSection):
+    """ADVISOR_NOTE in a channel that turned the advisor structure on.
+
+    Only for a speaker who gets the Agent tool -- the owner or a channel
+    operator. Given the note without the tool, the model writes that it
+    consulted an advisor it could not call (mametchi bot.py
+    build_system_prompt). Skipped during postmortem/debug/format-review like
+    WatchSection. The matching Stop-hook judgement reads ADVISOR_CHANNELS,
+    which the pipeline fills from the same channels.json key.
+    """
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return (
+            not ctx.aside
+            and (ctx.is_owner or ctx.operator)
+            and ctx.advisor_enabled
+        )
+
+    def render(self, ctx: CompositionContext) -> str:
+        return ctx._library_or_raise().text("ADVISOR_NOTE")
 
 
 class AskSection(PromptSection):

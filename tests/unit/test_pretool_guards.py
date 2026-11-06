@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.guard import finish_hook
+from slack_cli_agent.guard.posttool import parallel_nudge
 from slack_cli_agent.guard.pretool import (
     install_guard,
     restart_guard,
@@ -272,6 +273,84 @@ class TestScanGuard:
         assert not log_path.exists()
 
 
+def _assistant(message_id: str, *uses: tuple[str, dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "type": "assistant",
+        "message": {
+            "id": message_id,
+            "content": [{"type": "tool_use", "name": n, "input": i} for n, i in uses],
+        },
+    }
+
+
+def _tool_result() -> dict[str, Any]:
+    return {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}}
+
+
+def _human(text: str = "조사해 줘") -> dict[str, Any]:
+    return {"type": "user", "message": {"content": text}}
+
+
+class TestParallelNudge:
+    def _payload(self, tmp_path: Path, records: list[dict[str, Any]]) -> dict[str, Any]:
+        path = tmp_path / "transcript.jsonl"
+        path.write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n", encoding="utf-8",
+        )
+        return {"hook_event_name": "PostToolUse", "transcript_path": str(path)}
+
+    def _single_reads(self, n: int) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = [_human()]
+        for i in range(n):
+            records += [_assistant(f"m{i}", ("Read", {"file_path": f"/f{i}"})), _tool_result()]
+        return records
+
+    def test_단일_조회가_세번_이어지면_알린다(self, tmp_path: Path) -> None:
+        result, proc = run_hook(parallel_nudge.HOOK_SCRIPT, self._payload(tmp_path, self._single_reads(3)))
+        assert proc.returncode == 0
+        assert result is not None
+        out = result["hookSpecificOutput"]
+        assert out["hookEventName"] == "PostToolUse"
+        assert "3번" in out["additionalContext"]
+        assert "permissionDecision" not in out
+
+    def test_두번이면_조용하다(self, tmp_path: Path) -> None:
+        result, proc = run_hook(parallel_nudge.HOOK_SCRIPT, self._payload(tmp_path, self._single_reads(2)))
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_묶어_부른_응답이_끼면_다시_센다(self, tmp_path: Path) -> None:
+        records = [
+            *self._single_reads(2),
+            _assistant("mb", ("Read", {"file_path": "/a"}), ("Grep", {"pattern": "x"})), _tool_result(),
+            _assistant("mc", ("Glob", {"pattern": "*"})), _tool_result(),
+        ]
+        result, _ = run_hook(parallel_nudge.HOOK_SCRIPT, self._payload(tmp_path, records))
+        assert result is None
+
+    def test_새_요청이_오면_센_것을_버린다(self, tmp_path: Path) -> None:
+        records = [
+            *self._single_reads(2), _human("다음 일"),
+            _assistant("n1", ("Read", {"file_path": "/x"})), _tool_result(),
+        ]
+        result, _ = run_hook(parallel_nudge.HOOK_SCRIPT, self._payload(tmp_path, records))
+        assert result is None
+
+    def test_쓰기_명령은_조회로_세지_않는다(self) -> None:
+        assert parallel_nudge.is_read("Bash", {"command": "git push origin main"}) is False
+        assert parallel_nudge.is_read("Bash", {"command": "rg foo src"}) is True
+        assert parallel_nudge.is_read("mcp__slack__slack_search", {}) is True
+        assert parallel_nudge.is_read("mcp__slack__slack_post_message", {}) is False
+        assert parallel_nudge.is_read("Edit", {}) is False
+
+    def test_대화록이_없어도_실패하지_않는다(self, tmp_path: Path) -> None:
+        result, proc = run_hook(
+            parallel_nudge.HOOK_SCRIPT, {"transcript_path": str(tmp_path / "없음.jsonl")},
+        )
+        assert proc.returncode == 0
+        assert result is None
+
+
 class TestFinishHook:
     def test_transcript_가_없으면_빈_출력으로_통과한다(self, tmp_path: Path) -> None:
         payload = {
@@ -420,6 +499,11 @@ class TestClaudeEngineWiring:
         assert len(stop_groups) == 1
         assert stop_groups[0]["matcher"] == "*"
         assert "finish_hook.py" in stop_groups[0]["hooks"][0]["command"]
+
+        posttool_groups = settings["hooks"]["PostToolUse"]
+        assert len(posttool_groups) == 1
+        assert posttool_groups[0]["matcher"] == "*"
+        assert "parallel_nudge.py" in posttool_groups[0]["hooks"][0]["command"]
 
     def test_build_command_의_settings에_progress_훅과_bash_가드가_함께_실린다(
         self, tmp_path: Path
