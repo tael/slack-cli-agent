@@ -664,6 +664,8 @@ class RequestPipeline:
             missed_files=ctx.missed_files,
             watch_run_id=run_id,
             watch_out_dir=str(self._watch_results.result_dir),
+            conversation_channel=ctx.channel,
+            conversation_thread_ts=ctx.thread_ts or "",
         )
         text, report = self._composer.compose_with_report(composition_ctx)
         return text, report.as_audit_dict()

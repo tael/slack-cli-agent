@@ -93,6 +93,7 @@ from ..prompt.library import PromptLibrary
 from ..prompt.linked_threads import LinkedThreadNote
 from ..prompt.sections import (
     AskerSection,
+    ConversationSection,
     AskSection,
     AttachmentSection,
     AuthoritySection,
@@ -520,6 +521,7 @@ class Application:
             SlackFormatSection(),
             ReviewFormatSection(),
             AskerSection(),
+            ConversationSection(),
             AttachmentSection(),
             ThreadCoordsSection(),
             PresentPeopleSection(),

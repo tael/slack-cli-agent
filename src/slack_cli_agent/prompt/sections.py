@@ -87,6 +87,9 @@ class CompositionContext:
     # The watch check turn only looks; it must not get the registration
     # guidance, which tells the engine how to start new work (sca-ejy).
     watch_check: bool = False
+    conversation_channel: str = ""
+    """Channel of this turn. Tools that post files need it (csv_post_from_sql)."""
+    conversation_thread_ts: str = ""
     watch_run_id: str = ""
     """Result file name for this turn's background work, issued by the code.
     Empty means no name was minted, and the guidance that names it is left
@@ -607,4 +610,22 @@ class SilenceRuleSection(PromptSection):
             self._INTRO
             + guide
             + f"\n\n답하지 않기로 했으면 {ctx.silent_mark} 만 출력하고 끝내라. 다른 말을 붙이지 마라."
+        )
+
+
+class ConversationSection(PromptSection):
+    """States the channel and thread of this turn.
+
+    A tool that posts a file to the thread needs both values, and the engine
+    had no other way to learn them. Added 2026-11-06 for csv_post_from_sql.
+    """
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return bool(ctx.conversation_channel)
+
+    def render(self, ctx: CompositionContext) -> str:
+        thread = ctx.conversation_thread_ts or ""
+        return (
+            f"\n\n[이 대화의 좌표 : channel={ctx.conversation_channel} thread_ts={thread}]\n"
+            "파일을 올리는 도구(csv_post_from_sql)에 이 값을 그대로 준다. 이 줄은 답변에 옮겨 적지 않는다."
         )
