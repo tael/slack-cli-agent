@@ -573,9 +573,12 @@ _NUM_RE = re.compile(r"(?<![\w.])\d(?:[\d,]*\d)?(?:\.\d+)?")
 #: mametchi raised this 200 -> 400 after the median reply time tripled from
 #: block-then-rewrite loops on short answers.
 VERIFY_MIN_LEN = 400
-#: The verify judgment blocks a turn at most this many times. A second
-#: block on the same request mostly buys another re-query/rewrite loop.
-VERIFY_MAX_BLOCKS = 1
+#: The verify judgment blocks a turn at most this many times. 2026-11-06:
+#: with 1, the rewrite after the first block was never checked, and
+#: guchipachi's rewrite swapped the flagged claims for new unqueried
+#: guesses ("워크플로나 예약 발송") that went out unverified. 2 checks the
+#: rewrite once, matching mametchi's finish_work_hook.
+VERIFY_MAX_BLOCKS = 2
 #: Seconds the nested model call may take.
 VERIFY_TIMEOUT = 90
 #: Cap on tool-result text handed to the model.
@@ -836,7 +839,14 @@ def _code_first_guidance(hit: str) -> str:
 
 
 def _verify_guidance(hit: str) -> str:
-    return f"다음 문장은 이번 턴 조회 결과에 근거가 없다 : {hit}. 같은 턴에 직접 조회해 확정하고 답을 다시 쓴다."
+    return (
+        f"다음 문장은 이번 턴 조회 결과에 근거가 없다 : {hit}. "
+        "같은 턴에 그 문장이 말하는 대상을 원본 메시지, 코드, 데이터, 로그로 직접 조회해 확정하고 답을 다시 쓴다. "
+        "열려 있는 조회 도구로 확정할 수 있는 문장은 먼저 조회한다. "
+        "주장을 줄이거나 다른 추측으로 바꾸는 것으로 조회를 대신하지 않는다. "
+        "다시 쓴 답도 같은 검수를 다시 받는다. 같은 턴에 조회해도 확정되지 않는 문장만 답에서 뺀다. "
+        "이 차단으로 막힌 초안은 게시되지 않았다. 다시 쓴 답에서 그 초안을 앞선 답으로 가리키거나 정정하지 않는다."
+    )
 
 
 # --------------------------------------------------------------------------
