@@ -601,6 +601,103 @@ class CoreImportCheck(PreflightCheck):
         return CheckResult(ok=True, detail="코어 모듈 import 점검 통과")
 
 
+def _package_source_root() -> Path | None:
+    """The directory this package was imported from, or None.
+
+    For an editable install this is `src/slack_cli_agent` inside the working
+    tree; for a wheel install it is site-packages, which is not a git tree and
+    makes SourceTreeCheck pass. Tests replace this to keep the suite offline.
+    """
+    return Path(__file__).resolve().parents[1]
+
+
+class SourceTreeCheck(PreflightCheck):
+    """Warns when the tree the bot runs from has drifted from origin/main.
+
+    An editable install runs whatever is checked out. A branch switched in the
+    operational tree, or an uncommitted edit left there, reaches the next boot
+    without review. The check fetches origin, then asks two things: is HEAD an
+    ancestor of origin/main (being behind is fine, local commits are not), and
+    is the tree clean, untracked files included. Every finding is a warning:
+    the point is to make the drift visible at boot, not to keep the bot down,
+    and a failed fetch says nothing about the tree itself.
+    """
+
+    name: ClassVar[str] = "source_tree"
+
+    def __init__(
+        self,
+        root: Path | None = None,
+        *,
+        remote: str = "origin",
+        branch: str = "main",
+        timeout: float = 15.0,
+    ) -> None:
+        self._root = root
+        self._remote = remote
+        self._branch = branch
+        self._timeout = timeout
+
+    def _git(self, top: Path, *args: str, timeout: float = 10.0) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(top), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        root = self._root if self._root is not None else _package_source_root()
+        if root is None or shutil.which("git") is None:
+            return CheckResult(ok=True, detail="git 작업 트리가 아니라 점검하지 않는다")
+        try:
+            found = self._git(root, "rev-parse", "--show-toplevel")
+        except (OSError, subprocess.TimeoutExpired):
+            return CheckResult(ok=True, detail="git 작업 트리가 아니라 점검하지 않는다")
+        if found.returncode != 0:
+            return CheckResult(ok=True, detail="git 작업 트리가 아니라 점검하지 않는다")
+        top = Path(found.stdout.strip())
+        target = f"{self._remote}/{self._branch}"
+        problems: list[str] = []
+
+        try:
+            fetched = self._git(top, "fetch", "--quiet", self._remote, self._branch, timeout=self._timeout)
+            fetch_error = None if fetched.returncode == 0 else (fetched.stderr or fetched.stdout).strip()
+        except subprocess.TimeoutExpired:
+            fetch_error = f"{self._timeout:g}초 안에 끝나지 않았다"
+        except OSError as exc:
+            fetch_error = str(exc)
+        if fetch_error is not None:
+            last = fetch_error.splitlines()[-1][:200] if fetch_error else "원인 미상"
+            problems.append(f"원격 조회 실패, 로컬 {target} 기준으로 판정했다 ({last})")
+
+        try:
+            ancestor = self._git(top, "merge-base", "--is-ancestor", "HEAD", f"refs/remotes/{target}")
+            status = self._git(top, "status", "--porcelain")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            problems.append(f"git 상태를 읽지 못했다 : {exc}")
+            return CheckResult(ok=False, detail=f"{top} : " + "; ".join(problems), fatal=False)
+
+        if ancestor.returncode == 1:
+            head = self._git(top, "rev-parse", "--short", "HEAD").stdout.strip()
+            problems.append(f"HEAD {head} 가 {target} 의 조상이 아니다")
+        elif ancestor.returncode != 0:
+            problems.append(f"{target} 와 비교하지 못했다 : {ancestor.stderr.strip()[:200]}")
+        if status.returncode != 0:
+            problems.append(f"작업 트리 상태를 읽지 못했다 : {status.stderr.strip()[:200]}")
+        else:
+            dirty = [line[3:] for line in status.stdout.splitlines() if line.strip()]
+            if dirty:
+                shown = ", ".join(dirty[:5]) + (f" 외 {len(dirty) - 5}건" if len(dirty) > 5 else "")
+                problems.append(f"커밋하지 않은 변경 {len(dirty)}건 : {shown}")
+
+        if problems:
+            return CheckResult(ok=False, detail=f"{top} : " + "; ".join(problems), fatal=False)
+        return CheckResult(ok=True, detail=f"{top} : HEAD 가 {target} 의 조상이고 작업 트리가 깨끗하다")
+
+
 class CompileCheck(PreflightCheck):
     """`py_compile`s every configured plugin module before boot.
 
