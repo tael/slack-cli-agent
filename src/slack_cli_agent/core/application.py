@@ -17,6 +17,7 @@ import shlex
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1854,10 +1855,10 @@ class Application:
             is_direct_message=is_direct_message_channel(channel),
         )
 
-        def system_prompt(prompt: str) -> str:
+        def system_prompt(prompt: str, reviewer: Principal = principal) -> str:
             config = self._channels.get(channel)
             return self._composer().compose(CompositionContext(
-                principal=principal,
+                principal=reviewer,
                 # The review prompt carries the transcript; its words pick the
                 # topic knowledge, as bot.py load_persona did with the prompt.
                 prompt=prompt,
@@ -1869,7 +1870,7 @@ class Application:
                 # bot.py added thread_coords only on the normal reply path.
                 is_rich=channel_is_rich(config),
                 chat_level=config.chat if config else "normal",
-                authority_granted=self.access_policy.is_full_authority(principal),
+                authority_granted=self.access_policy.is_full_authority(reviewer),
                 # Same rule as an owner turn on the normal path (pipeline.py
                 # _compose_system_prompt), so a review sees the domain facts
                 # the reviewed conversation saw.
@@ -1881,6 +1882,26 @@ class Application:
                 format_review=format_review,
             ))
 
+        def scoped(requester: Principal, prompt: str) -> tuple[ToolSelection, str]:
+            """A non-owner's review turn (A18). Postmortem and debug trace say
+            they change nothing, so they get this person's read-only tools. A
+            format review also runs the one rewrite command it is told to run;
+            codex has no way to allow one command, so it stays read-only there
+            (codex _non_owner_reads_only) and the review only points things out.
+            The system prompt is composed for this person, so the owner's
+            guidance does not reach their turn."""
+            policy = self.tool_policy()
+            names = list(policy.tool_list_for(requester, prompt=prompt, readonly=True))
+            if format_review:
+                names.append(f"Bash({self.rewrite_command()}:*)")
+            tools = ToolSelection.from_names(
+                names, lookups=policy.lookups_for(requester, readonly=True),
+            )
+            reviewer = replace(
+                requester, channel=channel, is_direct_message=is_direct_message_channel(channel),
+            )
+            return tools, system_prompt(prompt, reviewer)
+
         return ReviewEngineCaller(
             # passing the runner directly here would also skip fallback-switch handling
             invoker=self.engine_invoker,
@@ -1889,6 +1910,7 @@ class Application:
             system_prompt=system_prompt,
             # 2026-11-07 김태일 "권한막힌게 왜이렇게 많니". 부검 지시는 코드를 열어 보라는데
             # 코드 위치를 work_root 로 알려 주고 실제 코드 폴더는 읽기 경로에 없어 Read 가 거부됐다.
+            scoped=scoped,
             readable_dirs=(paths.persona, paths.prompts, _CODE_ROOT),
             # 부검만 전용 모델이다 (마메치 model_for postmortem=True). 디버그
             # 추적과 서식 점검은 보고 채널의 일반 규칙(어드바이저 실행자, 채널
@@ -1934,6 +1956,8 @@ class Application:
                     by_user=by_user,
                     channel_name=getattr(config, "name", "") or channel,
                     rich=channel_is_rich(config),
+                    # The review runs at this person's level, not the owner's (A18).
+                    requester=principal,
                 )
             )
         except Exception:

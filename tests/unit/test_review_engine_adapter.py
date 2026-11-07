@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.auth.policy import OWNER_EFFORT_MIN
-from slack_cli_agent.auth.principal import TrustLevel
+from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import (
@@ -285,3 +285,41 @@ class Test요청_모델이_실행기에서_호출자까지_온다:
         # 실행기 경로를 안 본 것이 된다.
         assert response.failure_reason is None
         assert response.model_asked == "opus"
+
+
+class Test요청자:
+    @staticmethod
+    def _신뢰() -> Principal:
+        return Principal(user_id="U2", channel="C1", trust=TrustLevel.TRUSTED, is_direct_message=False)
+
+    def test_비소유자는_범위_함수가_준_도구와_지침으로_돈다(self) -> None:
+        받은: list[tuple[Principal, str]] = []
+
+        def 범위(requester: Principal, prompt: str) -> tuple[ToolSelection, str]:
+            받은.append((requester, prompt))
+            return ToolSelection.allow(["Read"]), "비소유자 지침"
+
+        caller, invoker = make_caller(tools=None, scoped=범위)
+        caller.run("프롬프트", None, False, requester=self._신뢰())
+        request = invoker.calls[0]
+        assert 받은 == [(self._신뢰(), "프롬프트")]
+        assert request.trust_level is TrustLevel.TRUSTED
+        assert request.tools.names == ("Read",)
+        assert request.system_prompt == "비소유자 지침"
+        assert request.requirements.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+
+    def test_범위_함수가_없으면_비소유자_점검을_돌리지_않는다(self) -> None:
+        """소유자 지침과 무제한 도구로 떨어지면 A18 이전과 같아진다."""
+        import pytest
+
+        caller, invoker = make_caller(tools=None)
+        with pytest.raises(RuntimeError):
+            caller.run("프롬프트", None, False, requester=self._신뢰())
+        assert invoker.calls == []
+
+    def test_소유자_요청자는_기존_조립을_쓴다(self) -> None:
+        caller, invoker = make_caller(tools=None)
+        owner = Principal(user_id="U1", channel="C1", trust=TrustLevel.OWNER, is_direct_message=False)
+        caller.run("프롬프트", None, False, requester=owner)
+        assert invoker.calls[0].trust_level is TrustLevel.OWNER
+        assert invoker.calls[0].tools.access is ToolAccess.UNRESTRICTED

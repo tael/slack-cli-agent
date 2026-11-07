@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
+from slack_cli_agent.auth.principal import Principal
 from slack_cli_agent.engine.base import EngineResponse, engine_usage_audit_fields
 from slack_cli_agent.observability.audit import REVIEW_CHECK_FAILED_KIND, REVIEW_KIND
 from slack_cli_agent.observability.slow_report import SlowRequestMeta
@@ -64,6 +65,9 @@ class ReviewTarget:
     channel_name: str
     # Resolved by the caller via is_rich(); whether the channel renders markdown blocks or plain text.
     rich: bool
+    # Who reacted, as the access policy sees them in this channel. The engine
+    # caller builds the turn at this level (A18). None is the owner turn.
+    requester: Principal | None = None
 
 
 # All ports below are runtime_checkable so wiring code can assert conformance in tests;
@@ -113,6 +117,7 @@ class EngineCaller(Protocol):
     def run(
         self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None,
         request_id: str = "",
+        requester: Principal | None = None,
     ) -> EngineResponse: ...
 
     @property
@@ -496,7 +501,9 @@ class ReviewTask(ABC):
         started, mono_started = time.time(), time.monotonic()
         request_id = f"{self.log_name}-{target.channel}-{target.ts}"
         with self._progress_display(target, thread_ts) as progress_log:
-            response = self._engine.run(prompt, None, False, progress_log, request_id)
+            response = self._engine.run(
+                prompt, None, False, progress_log, request_id, requester=target.requester,
+            )
         self._record_run(target, response, attempt="main")
         self._report_if_slow(target, response, flagged, started, time.monotonic() - mono_started)
 
@@ -522,6 +529,7 @@ class ReviewTask(ABC):
             retry_started, retry_mono = time.time(), time.monotonic()
             retry = self._engine.run(
                 self.missing_split_prompt(), response.session_id, True, None, request_id,
+                requester=target.requester,
             )
             self._record_run(target, retry, attempt="split_retry")
             # The retry is a second engine call and can be the slow one on its
@@ -542,7 +550,10 @@ class ReviewTask(ABC):
         if problems and session_id:
             log.warning("%s 내용 점검 미통과, 다시 쓰게 한다 : %s %s", self.log_name, request_id, problems)
             fix_started, fix_mono = time.time(), time.monotonic()
-            fix = self._engine.run(self.content_retry_prompt(problems), session_id, True, None, request_id)
+            fix = self._engine.run(
+                self.content_retry_prompt(problems), session_id, True, None, request_id,
+                requester=target.requester,
+            )
             self._record_run(target, fix, attempt="content_retry")
             self._report_if_slow(target, fix, flagged, fix_started, time.monotonic() - fix_mono, resume=True)
             if fix.ok and marker in fix.body:
