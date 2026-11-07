@@ -22,6 +22,7 @@ from ..slack.gateway import SlackGateway
 from ..slack.listener import EventListener
 from ..slack.reactions import ReactionMarker
 from .access import RequestAccess
+from .channel_kind import is_direct_message_channel
 from .context import RequestContext
 from .spawn import TaskSpawner
 
@@ -112,6 +113,9 @@ class IngressService:
         # Plugin event hooks (G1), registered after the core handlers so a
         # plugin sees an event only once the core has taken it.
         extra_handlers: Sequence[tuple[str, Callable[[Mapping[str, Any]], None]]] = (),
+        # (channel, user, text) for a DM the access check refused (E1). None,
+        # the default, keeps such a DM silent as before.
+        dm_reply: Callable[[str, str, str], None] | None = None,
     ) -> None:
         self._listener = listener
         self._access = access
@@ -135,6 +139,7 @@ class IngressService:
         self._assistant = assistant
         self._is_shutting_down = is_shutting_down
         self._extra_handlers = tuple(extra_handlers)
+        self._dm_reply = dm_reply
 
     def register(self, gateway: SlackGateway) -> None:
         gateway.on("app_mention", self.handle_app_mention)
@@ -186,6 +191,18 @@ class IngressService:
         except Exception:
             log.exception("리액션 이벤트 처리 실패: %s", event.get("reaction"))
 
+    def _answers_refused_dm(self, ctx: RequestContext, event: Mapping[str, Any]) -> bool:
+        """A person's refused DM with words in it, when DM replies are on.
+        A bot's DM is never answered: two bots would answer each other."""
+        return (
+            self._dm_reply is not None
+            and is_direct_message_channel(ctx.channel)
+            and bool(ctx.user)
+            and not event.get("bot_id")
+            and not ctx.from_bot
+            and bool((ctx.text or "").strip())
+        )
+
     def _process(
         self, ctx: RequestContext | None, event: Mapping[str, Any], *, mentioned: bool = False
     ) -> None:
@@ -202,6 +219,13 @@ class IngressService:
             if not self._access.allows(ctx.channel, ctx.user):
                 if mentioned and not event.get("bot_id"):
                     self._access.call_owner(ctx.channel, ctx.user, ctx.thread_ts, "mention")
+                elif self._answers_refused_dm(ctx, event):
+                    # Off the socket thread: the turn takes as long as a request.
+                    dm = self._dm_reply
+                    assert dm is not None
+                    dm_channel, dm_user = ctx.channel, ctx.user
+                    dm_text = self._strip_self_mention(ctx.text)
+                    self._spawn.spawn(f"DM:{dm_user}", lambda: dm(dm_channel, dm_user, dm_text))
                 return
 
             ctx = replace(ctx, text=self._strip_self_mention(ctx.text))

@@ -30,7 +30,7 @@ from slack_cli_agent.web.metrics import CONTEXT_RESET_RAW_KEY, MetricsCollector
 TOP_LEVEL_KEYS = {
     "generated_at", "window_days", "bot", "snapshot", "last_answer_kst",
     "channels", "responsiveness", "reliability", "quality", "usage", "followup",
-    "tools", "queue_wait", "usage_block", "session_total", "payload",
+    "tools", "queue_wait", "usage_block", "session_total", "payload", "dm",
 }
 
 

@@ -201,6 +201,7 @@ def make_ingress(
     lock_budget: Any = None,
     channels: ChannelRegistry | None = None,
     is_shutting_down: Callable[[], bool] | None = None,
+    dm_reply: Callable[[str, str, str], None] | None = None,
 ) -> IngressService:
     profile = make_profile(tmp_path)
     channels = channels if channels is not None else make_channels(tmp_path)
@@ -263,6 +264,7 @@ def make_ingress(
         lock_budget=lock_budget,
         notices=NoticeCatalog(),
         is_shutting_down=is_shutting_down,
+        dm_reply=dm_reply,
     )
 
 

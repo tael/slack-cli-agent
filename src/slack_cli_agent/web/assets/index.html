@@ -522,6 +522,11 @@ function renderStateTab(d){
         ? tile("첫 반응까지", dur(fr.median_sec),
                `p90 ${dur(fr.p90_sec)} · 표본 ${fr.count}건 (전체의 ${fr.sample_pct}%)`)
         : tile("첫 반응까지", nil, "계측 시작 이후 기록이 아직 없다")}
+    ${tile("비소유자 DM 답", num((d.dm||{}).replies, "건"),
+           `${num((d.dm||{}).people)}명 · 고정 안내문 ${num((d.dm||{}).fallback)}건 · ` +
+           `상한 초과 ${num((d.dm||{}).capped)}건 · 게시 실패 ${num((d.dm||{}).failed)}건 · ` +
+           `캐묻기 ${num((d.dm||{}).probes)}건` +
+           Object.entries((d.dm||{}).by_class||{}).map(([k,v]) => ` · ${esc(k)} ${num(v)}건`).join(""))}
     ${usageBlockTile(blk)}
   </div>
   <div class="grid cols2" style="margin-top:10px">

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Mapping
 from enum import StrEnum
@@ -147,6 +148,20 @@ class IncidentKind(StrEnum):
     CHANNEL_JOIN = "channel_join"
     CHANNEL_JOIN_FAILED = "channel_join_failed"
 
+    #: A non-owner DM answered by the isolated read-only turn (E1, mametchi
+    #: dm_redirect). `question` and `reply` hold both texts, `dm_kind` the
+    #: model's class, `fallback` whether the fixed notice went out instead.
+    DM_REPLY = "dm_reply"
+    #: A DM past the person's daily cap: recorded, not answered (E2).
+    DM_REPLY_CAPPED = "dm_reply_capped"
+    #: The reply could not be posted to the DM (E1, mametchi dm_redirect_failed).
+    DM_REPLY_FAILED = "dm_reply_failed"
+    #: A DM the word rule took for probing the bot's setup (E4). `count_today`
+    #: is that person's count for the day.
+    DM_PROBE = "dm_probe"
+    #: One daily DM report run (E8): `day`, `rows`, `ok`.
+    DM_REPORT = "dm_report"
+
     def __str__(self) -> str:
         return self.value
 
@@ -178,6 +193,12 @@ BASELINE_KINDS: tuple[IncidentKind, ...] = (
     IncidentKind.UNREGISTERED_MENTION,
     IncidentKind.UNREGISTERED_INVITE,
     IncidentKind.CHANNEL_JOIN,
+    # DM traffic is read by its own rollup (metrics.py _dm); a probe or a cap
+    # is the person's doing, not a fault of the bot.
+    IncidentKind.DM_REPLY,
+    IncidentKind.DM_REPLY_CAPPED,
+    IncidentKind.DM_PROBE,
+    IncidentKind.DM_REPORT,
 )
 #: Read by metrics.py as well -- a kind that is baseline here must not be
 #: tallied as an incident there.
@@ -261,6 +282,28 @@ class AuditLog(SqliteRepository):
             turns=turns,
             **extra,
         )
+
+    def rows_between(self, start: float, end: float, prefix: str) -> list[dict[str, Any]]:
+        """Rows whose kind starts with `prefix` in [start, end), oldest
+        first, payload fields merged in (E8 reads a day's dm_ rows)."""
+        rows = self._fetch_all(
+            "SELECT at, kind, channel, payload FROM audit"
+            " WHERE at >= ? AND at < ? AND kind LIKE ? ORDER BY id",
+            (start, end, prefix.replace("%", "") + "%"),
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            # LIKE reads "_" as any one character; the prefix is literal.
+            if not str(row["kind"]).startswith(prefix):
+                continue
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            record = dict(payload) if isinstance(payload, dict) else {}
+            record.update(kind=row["kind"], channel=row["channel"], at=row["at"])
+            out.append(record)
+        return out
 
     def _append_jsonl(self, line: Mapping[str, Any]) -> None:
         self._jsonl_path.parent.mkdir(parents=True, exist_ok=True)

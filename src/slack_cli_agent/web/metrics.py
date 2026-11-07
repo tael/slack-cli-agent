@@ -242,6 +242,7 @@ class MetricsCollector:
         sessions = self._read_sessions(db)
         queued_by_channel = self._read_queued_by_channel(db)
         watch_verdicts = self._watch_verdicts(db, cutoff)
+        dm = self._dm(db, cutoff)
         channels = ChannelRegistry(paths.channels).all()
 
         latest = max((str(r.get("ts_kst") or "") for r in requests), default="")
@@ -265,6 +266,7 @@ class MetricsCollector:
             "payload": self._payload(payload_rows),
             "usage_block": self._usage_block(),
             "session_total": len(sessions),
+            "dm": dm,
         }
 
     # --- 원천 읽기 -----------------------------------------------------
@@ -373,6 +375,47 @@ class MetricsCollector:
             if verdict in counts:
                 counts[verdict] += 1
         return counts
+
+    def _dm(self, db: Database, cutoff: float) -> dict[str, Any]:
+        """Non-owner DM traffic in the window (E7): rows per dm_ kind, the
+        model's classes, how many got the fixed notice, the people who
+        wrote and the probe count. Reads payloads, so a bad row is skipped
+        rather than counted."""
+        rows = db.connect().execute(
+            "SELECT kind, payload FROM audit WHERE kind LIKE 'dm%' AND at >= ?",
+            (cutoff,),
+        ).fetchall()
+        kinds: collections.Counter[str] = collections.Counter()
+        classes: collections.Counter[str] = collections.Counter()
+        people: set[str] = set()
+        fallback = 0
+        for row in rows:
+            kind = str(row["kind"])
+            if not kind.startswith("dm_"):
+                continue
+            kinds[kind] += 1
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("user"):
+                people.add(str(payload["user"]))
+            if kind == IncidentKind.DM_REPLY.value:
+                classes[str(payload.get("dm_kind") or "미분류")] += 1
+                if payload.get("fallback"):
+                    fallback += 1
+        return {
+            "replies": kinds.get(IncidentKind.DM_REPLY.value, 0),
+            "capped": kinds.get(IncidentKind.DM_REPLY_CAPPED.value, 0),
+            "failed": kinds.get(IncidentKind.DM_REPLY_FAILED.value, 0),
+            "probes": kinds.get(IncidentKind.DM_PROBE.value, 0),
+            "reports": kinds.get(IncidentKind.DM_REPORT.value, 0),
+            "fallback": fallback,
+            "people": len(people),
+            "by_class": dict(classes.most_common()),
+        }
 
     def _kind_first_seen_map(self, db: Database) -> dict[str, float]:
         """Earliest `at` ever recorded for each kind, unbounded by the
