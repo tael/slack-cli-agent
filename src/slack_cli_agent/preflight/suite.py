@@ -23,6 +23,7 @@ from .checks import (
     ChannelUserToolsCheck,
     CodexConfigLoadCheck,
     CompileCheck,
+    CoreImportCheck,
     DuplicateMcpSystemCheck,
     EngineBinaryCheck,
     EngineHomeCredentialCheck,
@@ -103,6 +104,10 @@ class PreflightSuite:
             ChannelUserToolsCheck(),
             # 표기가 안 풀리면 MCP 서버는 빈 자격으로 인증 실패만 낸다. 기동에서 막는다.
             McpCredentialCheck(),
+            # 기동 명령은 게이트 통과 뒤에야 core.application 을 import 한다. 여기서
+            # 먼저 시도하지 않으면 깨진 코어가 기동 가능으로 통과하고 종료코드 1 로
+            # 죽어 launchd 재기동이 반복된다.
+            CoreImportCheck(),
             # 아래부터 B6 — 마메치 check.py 와 짝 맞춘 9종.
             # CompileCheck 는 PluginAstCheck 앞 — apply.sh 가 py_compile 를 먼저
             # 돌리고 그 다음 check.py(이름 검사)를 돌린 순서 그대로다. 깨진 구문은
