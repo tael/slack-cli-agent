@@ -75,6 +75,12 @@ from .pipeline_ports import (
     TranscriptPort,
 )
 from .ports import HandleOutcome
+from .unposted_render import (
+    NOTICE_UNPOSTED_RENDER,
+    rendered_and_posted,
+    rendered_without_posting,
+    unposted_render_prompt,
+)
 
 log = logging.getLogger(__name__)
 
@@ -528,6 +534,9 @@ class RequestPipeline:
             )
             return HandleOutcome(ok=True, posted_ts=notice_ts)
         body = self._strip_publish_markers(body, ctx)
+        # After the markers are taken: the notice must not sit between the body
+        # and a trailing tag the strip reads from the end.
+        body = self._recover_unposted_render(body, ctx, request, decision, response)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         # Right before the post, confirm the question is still in its thread.
         # If the asker deleted it mid-turn, the intake coordinates now point at
@@ -792,6 +801,37 @@ class RequestPipeline:
         if self._consumption is not None:
             self._consumption.mark(ctx.thread_ts, addendum_ts)
         return rerun.body, body
+
+    def _recover_unposted_render(
+        self,
+        body: str,
+        ctx: RequestContext,
+        request: EngineRequest,
+        decision: SessionDecision,
+        response: EngineResponse,
+    ) -> str:
+        # A diagram rendered to a local PNG never reaches the thread on its
+        # own (D1). One rerun in the same session with the same tools asks for
+        # the post; the first answer stays the answer, and the tool post merger
+        # writes it over the file message. If the rerun still doesn't post, the
+        # body says so, so nobody goes looking for a picture that isn't there.
+        if not rendered_without_posting(response):
+            return body
+        log.warning("렌더만 하고 올리지 않았다. 올리게 한다 : %s", ctx.ts)
+        rerun = self._invoker.invoke(replace(
+            request,
+            prompt=unposted_render_prompt(ctx.channel, ctx.thread_ts),
+            resume=True,
+            session_id=decision.session_id,
+        ))
+        posted = rerun.ok and rendered_and_posted(rerun)
+        self._audit.record(
+            IncidentKind.RENDER_WITHOUT_POST.value,
+            channel=ctx.channel, thread_ts=ctx.thread_ts, recovered=posted,
+        )
+        if posted:
+            return body
+        return f"{body.rstrip()}\n\n{NOTICE_UNPOSTED_RENDER}"
 
     def _apply_guards(
         self,
