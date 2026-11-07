@@ -75,6 +75,12 @@ from .pipeline_ports import (
     TranscriptPort,
 )
 from .ports import HandleOutcome
+from .unposted_render import (
+    NOTICE_UNPOSTED_RENDER,
+    rendered_and_posted,
+    rendered_without_posting,
+    unposted_render_prompt,
+)
 
 log = logging.getLogger(__name__)
 
@@ -506,9 +512,15 @@ class RequestPipeline:
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
 
-        body, previous_body = self._absorb_late_addendum(ctx, scope, decision, request, response)
+        # Every engine call that may have run tools for this answer: the render
+        # check reads them together, since a rerun can post what the first
+        # call only rendered, or render what the first call never touched.
+        turn_calls: list[EngineResponse] = [response]
+        body, previous_body = self._absorb_late_addendum(
+            ctx, scope, decision, request, response, turn_calls,
+        )
         body, watch_desc, watch_due_raw = self._apply_guards(
-            body, ctx, principal, request, decision, previous_body
+            body, ctx, principal, request, decision, previous_body, turn_calls,
         )
         body = self._apply_ask_tag(body, ctx)
         # The model ends a reply that needs no watch with `[[NOWATCH]]`; it is a
@@ -537,6 +549,9 @@ class RequestPipeline:
             )
             return HandleOutcome(ok=True, posted_ts=notice_ts)
         body = self._strip_publish_markers(body, ctx)
+        # After the markers are taken: the notice must not sit between the body
+        # and a trailing tag the strip reads from the end.
+        body = self._recover_unposted_render(body, ctx, request, decision, turn_calls)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         # Right before the post, confirm the question is still in its thread.
         # If the asker deleted it mid-turn, the intake coordinates now point at
@@ -765,6 +780,7 @@ class RequestPipeline:
         decision: SessionDecision,
         request: EngineRequest,
         response: EngineResponse,
+        turn_calls: list[EngineResponse] | None = None,
     ) -> tuple[str, str | None]:
         # Returns (body to post, previous body). previous_body is None unless a
         # re-run happened — the loss-detection guard only runs when it's set. If the
@@ -789,6 +805,8 @@ class RequestPipeline:
             resume=True,
             session_id=decision.session_id,
         ))
+        if turn_calls is not None:
+            turn_calls.append(rerun)
         self._audit.record(
             IncidentKind.LATE_ADDENDUM.value,
             channel=ctx.channel, thread_ts=ctx.thread_ts,
@@ -802,6 +820,59 @@ class RequestPipeline:
             self._consumption.mark(ctx.thread_ts, addendum_ts)
         return rerun.body, body
 
+    def _recover_unposted_render(
+        self,
+        body: str,
+        ctx: RequestContext,
+        request: EngineRequest,
+        decision: SessionDecision,
+        turn_calls: Sequence[EngineResponse],
+    ) -> str:
+        # A diagram rendered to a local PNG never reaches the thread on its
+        # own (D1). One rerun in the same session with the same tools asks for
+        # the post; the first answer stays the answer, and the tool post merger
+        # writes it over the file message. If the rerun still doesn't post, the
+        # body says so, so nobody goes looking for a picture that isn't there.
+        # Judged over every call of the turn, failed calls taken off: a post
+        # the channel guard refused left nothing in the thread.
+        if not rendered_without_posting(turn_calls):
+            return body
+        # A deleted question gets no answer (C34); the rerun would still put
+        # the diagram into whatever thread now holds these coordinates.
+        if self._origin_alive is not None and self._origin_alive.alive(ctx.channel, ctx.ts) is False:
+            return body
+        resumable = self._resumable(turn_calls[-1])
+        posted = False
+        if resumable:
+            log.warning("렌더만 하고 올리지 않았다. 올리게 한다 : %s", ctx.ts)
+            rerun = self._invoker.invoke(replace(
+                request,
+                prompt=unposted_render_prompt(ctx.channel, ctx.thread_ts),
+                resume=True,
+                session_id=decision.session_id,
+            ))
+            posted = rerun.ok and rendered_and_posted(rerun)
+        else:
+            log.warning("렌더만 하고 올리지 않았다. 대체 엔진 턴이라 다시 돌리지 않는다 : %s", ctx.ts)
+        self._audit.record(
+            IncidentKind.RENDER_WITHOUT_POST.value,
+            channel=ctx.channel, thread_ts=ctx.thread_ts, recovered=posted,
+            rerun=resumable,
+        )
+        if posted:
+            return body
+        return f"{body.rstrip()}\n\n{NOTICE_UNPOSTED_RENDER}"
+
+    def _resumable(self, response: EngineResponse) -> bool:
+        # A fallback turn ran on the secondary, which opens a fresh session on
+        # every call and drops the per-turn env (FallbackEngine._run_secondary).
+        # A rerun there would get "post the same source" with no source in its
+        # context and no POST_CHANNEL, so it is not attempted.
+        secondary = getattr(self._engine, "secondary", None)
+        if secondary is None:
+            return True
+        return bool(response.engine) and response.engine != getattr(secondary, "name", None)
+
     def _apply_guards(
         self,
         body: str,
@@ -810,6 +881,7 @@ class RequestPipeline:
         request: EngineRequest,
         decision: SessionDecision,
         previous_body: str | None = None,
+        turn_calls: list[EngineResponse] | None = None,
     ) -> tuple[str, str, str]:
         # A rewrite rerun is chained at most once — the second guard run
         # (is_rewrite_retry=True) has its own `rerun` ignored, which is what caps
@@ -833,6 +905,8 @@ class RequestPipeline:
             request, prompt=result.rerun.rewrite_prompt, resume=True, session_id=decision.session_id,
         )
         rerun_response = self._invoker.invoke(rerun_request)
+        if turn_calls is not None:
+            turn_calls.append(rerun_response)
         # A rewrite that comes back silent is a refusal, not a rewrite. Sending
         # it would put the mark itself in the channel, and RewriteLossGuard
         # would then merge it onto the previous body (sca-2ak).

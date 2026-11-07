@@ -105,6 +105,11 @@ class IncidentKind(StrEnum):
     #: Credential-shaped strings were masked out of a reply before it was
     #: posted (A17). `count` says how many; the value itself is never kept.
     SECRET_REDACTED = "secret_redacted"
+    #: The turn rendered a Mermaid PNG without posting it, so it was rerun
+    #: once in the same session to post (D1, mametchi render_without_post).
+    #: `recovered` says whether that rerun posted successfully; `rerun` is
+    #: False on a fallback-engine turn, which cannot resume the session.
+    RENDER_WITHOUT_POST = "render_without_post"
 
     def __str__(self) -> str:
         return self.value
