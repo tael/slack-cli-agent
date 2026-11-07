@@ -41,7 +41,7 @@ from ..engine.base import (
     Usage,
     model_usage_audit,
 )
-from ..engine.capability import ExecutionIsolation
+from ..engine.capability import EngineCapabilities, ExecutionIsolation
 from ..engine.runner import EngineInvoker
 from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
@@ -55,7 +55,7 @@ from ..observability.progress import ProgressCoordinator
 from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter
 from ..prompt.composer import PromptComposer
-from ..prompt.sections import CompositionContext, is_silent
+from ..prompt.sections import TIER_NOTES, CompositionContext, TurnTierSection, is_silent
 from ..reliability.restart import TURN_ID_ENV
 from ..reliability.watchjobs import WatchJobPort
 from ..reliability.watchresult import WatchResultReader
@@ -114,7 +114,6 @@ def turn_reach(engine: Engine, request: EngineRequest) -> tuple[bool, tuple[str,
     sandbox refused and hid tools the turn had. Skill grants are left out:
     they run no command (codex._is_skill_grant).
     """
-    tools = request.tools
     try:
         isolation = engine.capabilities_for(request).execution_isolation
     except Exception:
@@ -122,6 +121,12 @@ def turn_reach(engine: Engine, request: EngineRequest) -> tuple[bool, tuple[str,
         # where it surfaces.
         log.warning("권한 등급 고지용 실행 보장을 읽지 못했다", exc_info=True)
         isolation = None
+    return _reach_under(request.tools, isolation)
+
+
+def _reach_under(
+    tools: ToolSelection, isolation: ExecutionIsolation | None,
+) -> tuple[bool, tuple[str, ...]]:
     if not tools.can_act or isolation is ExecutionIsolation.READONLY_SANDBOX:
         return True, ()
     acting = tuple(
@@ -131,6 +136,41 @@ def turn_reach(engine: Engine, request: EngineRequest) -> tuple[bool, tuple[str,
     if tools.names and not acting:
         return True, ()
     return False, acting
+
+
+def tier_note_retarget(
+    principal: Principal, tier: str,
+) -> Callable[[EngineRequest, EngineCapabilities], EngineRequest]:
+    """Rewrites the tier note for the engine that actually runs the request.
+
+    The note is composed before run() from the engine the switch state points
+    at, and the fallback engine is always the other kind. A mid-turn switch or
+    a recovery probe then ran one engine on a note written for the other: a
+    'Bash ... 실행 도구' line reached codex's read-only sandbox (A12 review).
+    A request carries only two possible notes, read-only or its acting tools,
+    so whichever is not the running engine's is replaced by the one that is.
+    """
+    section = TurnTierSection()
+
+    def note(reach: tuple[bool, tuple[str, ...]]) -> str:
+        return section.render(CompositionContext(
+            principal=principal, turn_tier=tier,
+            turn_reads_only=reach[0], turn_acting_tools=reach[1],
+        ))
+
+    def retarget(request: EngineRequest, capabilities: EngineCapabilities) -> EngineRequest:
+        if tier not in TIER_NOTES:
+            return request
+        wanted = _reach_under(request.tools, capabilities.execution_isolation)
+        others = {_reach_under(request.tools, None), (True, ())} - {wanted}
+        prompt = request.system_prompt
+        for other in others:
+            prompt = prompt.replace(note(other), note(wanted))
+        if prompt == request.system_prompt:
+            return request
+        return replace(request, system_prompt=prompt)
+
+    return retarget
 
 
 def _domain_applies(workdir: Path | None, home: Path) -> bool:
@@ -518,7 +558,10 @@ class RequestPipeline:
             ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
             tier=tier, reach=reach,
         )
-        request = replace(request, system_prompt=system_prompt, budget_report=budget_report)
+        request = replace(
+            request, system_prompt=system_prompt, budget_report=budget_report,
+            retarget=tier_note_retarget(principal, tier),
+        )
         # Counted rather than derived: the reset is the only trace a broken
         # resume leaves, and without it nothing can say how often context is
         # lost (sca-er9n, bot.py:5142).

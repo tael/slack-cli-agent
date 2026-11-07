@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -125,6 +125,16 @@ class EngineRequest:
     #: or review turn, which writes no request row, still says what it ran as
     #: (A12 review). Empty means the caller worked none out.
     turn_tier: str = ""
+    #: Rewrites what the caller wrote for one engine's guarantees when another
+    #: engine ends up running the request: FallbackEngine switching inside a
+    #: turn, or a recovery probe on the primary. Opaque like request_id: the
+    #: engine layer only calls it with the running engine's capabilities and
+    #: never reads what it changes. Without it a tier note composed for the
+    #: secondary's read-only sandbox reached the primary, or the reverse
+    #: (A12 review). None means nothing in the request depends on the engine.
+    retarget: Callable[[EngineRequest, EngineCapabilities], EngineRequest] | None = field(
+        default=None, compare=False, repr=False,
+    )
     #: Opaque per-turn context an MCP server's turn_env may draw an env var from
     #: (McpServerSpec.turn_env `channel` key). Opaque the same way request_id is:
     #: this layer never reads the values, only forwards them to the server

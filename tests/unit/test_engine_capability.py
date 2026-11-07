@@ -360,7 +360,10 @@ class Test폴백은_실제로_도는_엔진의_보장을_낸다:
         """대리가 자기 기본값을 돌려주면 폴백 턴의 기록이 전부 거짓이 된다."""
         폴백 = self._폴백(tmp_path)
         assert 폴백.capabilities_for(request()) == ClaudeEngine.capabilities
-        폴백._active = 폴백.secondary
+        # 실행 전에도 묻는다 (pipeline.turn_reach). 직전 턴의 _active 가 아니라
+        # 전환 상태로 이번 턴에 돌 엔진을 고른다 (A12 리뷰).
+        폴백.switcher.begin_switch("weekly limit", engine_name="gemini")
+        폴백.switcher.approve()
         assert 폴백.capabilities_for(request()) == GeminiEngine.capabilities
 
 

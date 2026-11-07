@@ -24,6 +24,7 @@ from slack_cli_agent.auth.policy import turn_tier
 from slack_cli_agent.auth.principal import Principal, TrustLevel, TurnTier
 from slack_cli_agent.config.channel import ChannelConfig
 from slack_cli_agent.engine.capability import EngineCapabilities, ExecutionIsolation
+from slack_cli_agent.engine.tool_selection import ToolSelection
 from slack_cli_agent.prompt.sections import TIER_NOTES, CompositionContext, TurnTierSection
 
 
@@ -262,3 +263,96 @@ class Test보장_기록:
         runner._record_capabilities(FakeEngine(), request, EngineCapabilities())
 
         assert records[0]["tier"] == "readonly"
+
+
+class Test대체_엔진:
+    """검토 결함 (A12 리뷰 2차). 대체 엔진으로 돈 턴은 감사 행에 등급이 빠졌고,
+    지침의 도달 범위는 직전 턴 엔진 기준이라 전환 직후나 복구 탐침 턴에
+    반대 엔진의 샌드박스를 설명했다. 대체 엔진은 늘 1차와 다른 종류다."""
+
+    _ACTING = ToolSelection.allow(["Read", "Bash"])
+
+    def _fallback(self, tmp_path):
+        from test_engine import SETTINGS, FakeCompleted, RecordingEngine, codex_profile, named, 통과정책
+
+        from slack_cli_agent.engine.runner import EngineRunner, FallbackEngine
+        from slack_cli_agent.engine.switcher import EngineSwitcher
+
+        profile = codex_profile(tmp_path)
+        primary = named(RecordingEngine, "claude")(profile, SETTINGS)
+        secondary = named(RecordingEngine, "codex")(profile, SETTINGS)
+        # Claude 1차는 비소유자 operator 턴에 Bash 를 쥐고, codex 2차는 read-only 로 돈다.
+        primary.capabilities_for = lambda request: EngineCapabilities(  # type: ignore[method-assign]
+            execution_isolation=ExecutionIsolation.NONE,
+        )
+        secondary.capabilities_for = lambda request: EngineCapabilities(  # type: ignore[method-assign]
+            execution_isolation=ExecutionIsolation.READONLY_SANDBOX,
+        )
+        switcher = EngineSwitcher(tmp_path / "engine_state.json")
+        runner = EngineRunner(
+            SETTINGS,
+            subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(stdout="", returncode=0),
+            environment_policy=통과정책(),
+        )
+        return FallbackEngine(primary, secondary, switcher, runner), primary, secondary, switcher
+
+    def _request(self, engine) -> Any:
+        from pathlib import Path
+
+        from slack_cli_agent.core.pipeline import tier_note_retarget, turn_reach
+        from slack_cli_agent.engine.base import EngineRequest
+
+        principal = _principal()
+        base = EngineRequest(
+            prompt="p", system_prompt="", session_id=None, resume=False, model=None,
+            effort="", workdir=Path("/tmp"), tools=self._ACTING, turn_tier="operator",
+        )
+        reach = turn_reach(engine, base)
+        note = _render(turn_tier="operator", turn_reads_only=reach[0], turn_acting_tools=reach[1])
+        from dataclasses import replace
+        return replace(base, system_prompt=f"앞 지침\n{note}\n뒤 지침",
+                       retarget=tier_note_retarget(principal, "operator"))
+
+    def test_대체_엔진_턴의_보장_기록에_등급이_남는다(self, tmp_path) -> None:
+        fallback, _primary, secondary, switcher = self._fallback(tmp_path)
+        switcher.begin_switch("weekly limit", engine_name="codex")
+        switcher.approve()
+
+        fallback._run_secondary(self._request(fallback))
+
+        assert secondary.built[0].turn_tier == "operator"
+
+    def test_전환_상태면_실행_전_도달_범위를_대체_엔진_기준으로_쓴다(self, tmp_path) -> None:
+        from slack_cli_agent.core.pipeline import turn_reach
+
+        fallback, _primary, _secondary, switcher = self._fallback(tmp_path)
+        switcher.begin_switch("weekly limit", engine_name="codex")
+        switcher.approve()
+
+        # 새로 띄운 프로세스라 _active 는 1차다. 실행할 엔진은 2차다.
+        assert turn_reach(fallback, self._request(fallback)) == (True, ())
+
+    def test_턴_안에서_대체_엔진으로_넘어가면_조회_전용_문장을_받는다(self, tmp_path) -> None:
+        fallback, _primary, secondary, _switcher = self._fallback(tmp_path)
+        request = self._request(fallback)
+        assert "Bash" in request.system_prompt  # 1차 기준으로 썼다
+
+        fallback._run_secondary(request)
+
+        sent = secondary.built[0].system_prompt
+        assert "이 턴은 조회만 한다" in sent
+        assert "실행 도구는 Bash" not in sent
+        assert sent.startswith("앞 지침\n") and sent.endswith("\n뒤 지침")
+
+    def test_복구_탐침은_1차_기준_문장을_받는다(self, tmp_path) -> None:
+        fallback, primary, _secondary, switcher = self._fallback(tmp_path)
+        switcher.begin_switch("weekly limit", engine_name="codex")
+        switcher.approve()
+        request = self._request(fallback)
+        assert "이 턴은 조회만 한다" in request.system_prompt  # 2차 기준으로 썼다
+
+        fallback._probe_primary_recovery(request)
+
+        sent = primary.built[0].system_prompt
+        assert "이 턴에 붙은 실행 도구는 Bash 이다" in sent
+        assert "이 턴은 조회만 한다" not in sent
