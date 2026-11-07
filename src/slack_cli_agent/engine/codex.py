@@ -427,9 +427,30 @@ class CodexEngine(Engine):
             turns=None, usage=usage, raw=raw, failure_reason=None,
         )
 
+    #: 워크스페이스 크레딧 소진 문구. 마메치 bot.py 의 CODEX_CREDIT_HINTS 와 같다.
+    #: 이 요청도 다음 요청도 똑같이 막히는 계정 벽이라 대체 엔진 전환 계기다.
+    CREDIT_HINTS: ClassVar[tuple[str, ...]] = (
+        "workspace is out of credits",
+        "out of credits",
+    )
+
     def detect_usage_limit(self, response: EngineResponse) -> UsageLimit | None:
-        # Codex has no subscription weekly-limit concept; the original doesn't check for it either.
-        return None
+        """크레딧 소진을 사용량 한도로 돌려준다. 다른 실패는 None 이다.
+
+        Codex 는 크레딧 소진을 종료코드 1 과 JSONL 오류 이벤트로 알린다.
+        CLI 원문(stdout, stderr)만 본다 - 본문에는 사람이 쓴 말이 섞인다.
+        """
+        if response.ok:
+            return None
+        text = self._failure_text(response)
+        low = text.lower()
+        hint = next((h for h in self.CREDIT_HINTS if h in low), None)
+        if hint is None:
+            return None
+        detail = next(
+            (line.strip() for line in text.splitlines() if hint in line.lower()), hint,
+        )
+        return UsageLimit(detail=detail, source="hint")
 
     #: 모델 하나가 지금 요청을 못 받는 상태를 알리는 문구. 2026-10-19 sol
     #: 장애에서 모았다 - 15:57 은 "Selected model is at capacity", 23:46 은
