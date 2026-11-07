@@ -952,6 +952,74 @@ class TestEventListener:
         event = {"channel": "C1", "bot_id": "B_CTRL", "ts": "1.0", "text": "<@U_BOT> 봐줘"}
         assert listener.from_app_mention(event).user == ""
 
+    def test_bots_info_일시_실패는_그_자리에서_한_번_더_물어_복원한다(
+        self, gate: ResponseGate
+    ) -> None:
+        """한 번의 일시 실패로 user 가 비면 답 첫머리 멘션이 빠져 부른 봇이
+        답을 받지 못한다 (C5). 같은 이벤트 처리 안에서 한 번 더 묻는다."""
+
+        class FlakyClient(FakeWebClient):
+            def bots_info(self, **kwargs: Any) -> dict:
+                self.calls.append(("bots_info", kwargs))
+                if len(self.calls) == 1:
+                    raise RuntimeError("connection reset")
+                return {"bot": {"user_id": "U_CTRL"}}
+
+        client = FlakyClient()
+        listener = EventListener(client, ChannelRegistry(Path("/nonexistent.json")), gate,
+                                 identity=fake_identity())
+        event = {"channel": "C1", "bot_id": "B_CTRL", "ts": "1.0", "text": "<@U_BOT> 봐줘"}
+        assert listener.from_app_mention(event).user == "U_CTRL"
+        assert listener.from_app_mention(event).user == "U_CTRL"
+        assert [name for name, _ in client.calls] == ["bots_info", "bots_info"]
+
+    def test_bots_info_연속_실패는_간격을_두고_다시_묻고_성공은_캐시한다(
+        self, gate: ResponseGate
+    ) -> None:
+        """실패를 캐시하지 않되 매 이벤트마다 묻지도 않는다. 간격이 지나면 다시
+        물어 복원하고, 복원한 값은 이후 호출 없이 쓴다."""
+        now = [1000.0]
+
+        class OutageClient(FakeWebClient):
+            down = True
+
+            def bots_info(self, **kwargs: Any) -> dict:
+                self.calls.append(("bots_info", kwargs))
+                if self.down:
+                    raise RuntimeError("ratelimited")
+                return {"bot": {"user_id": "U_CTRL"}}
+
+        client = OutageClient()
+        listener = EventListener(client, ChannelRegistry(Path("/nonexistent.json")), gate,
+                                 identity=fake_identity(), clock=lambda: now[0],
+                                 bot_user_retry_interval_sec=60.0)
+        event = {"channel": "C1", "bot_id": "B_CTRL", "ts": "1.0", "text": "<@U_BOT> 봐줘"}
+        assert listener.from_app_mention(event).user == ""
+        assert len(client.calls) == 2
+        now[0] += 30
+        assert listener.from_app_mention(event).user == ""
+        assert len(client.calls) == 2
+        client.down = False
+        now[0] += 31
+        assert listener.from_app_mention(event).user == "U_CTRL"
+        assert len(client.calls) == 3
+        assert listener.from_app_mention(event).user == "U_CTRL"
+        assert len(client.calls) == 3
+
+    def test_bots_info_실패는_경고_로그로_남긴다(
+        self, gate: ResponseGate, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        class FailingClient(FakeWebClient):
+            def bots_info(self, **kwargs: Any) -> dict:
+                raise RuntimeError("ratelimited")
+
+        listener = EventListener(FailingClient(), ChannelRegistry(Path("/nonexistent.json")), gate,
+                                 identity=fake_identity())
+        event = {"channel": "C1", "bot_id": "B_CTRL", "ts": "1.0", "text": "<@U_BOT> 봐줘"}
+        with caplog.at_level(logging.WARNING):
+            listener.from_app_mention(event)
+        assert any("B_CTRL" in r.getMessage() for r in caplog.records)
+
     def test_DM_메시지는_바로_컨텍스트가_된다(self, gate: ResponseGate) -> None:
         registry = ChannelRegistry(Path("/nonexistent.json"))
         listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
