@@ -517,6 +517,48 @@ def _재시도_rig(database, 응답들) -> Rig:
     return rig
 
 
+class Test재시도도_요청자를_넘긴다:
+    """재시도는 같은 세션을 이어 쓴다. 요청자가 빠지면 그 턴은 소유자 턴으로
+    떨어져 같은 세션에서 무제한 도구가 열린다 (A18 검토)."""
+
+    @staticmethod
+    def _요청자() -> Any:
+        from slack_cli_agent.auth.principal import Principal, TrustLevel
+
+        return Principal(user_id="U2", channel="C1", trust=TrustLevel.TRUSTED, is_direct_message=False)
+
+    def test_구분선_재시도에_요청자를_넘긴다(self, database) -> None:
+        requester = self._요청자()
+        rig = _재시도_rig(database, [_ok_response("구분선없는본문"), _ok_response("요약===상세===상세내용")])
+        rig.task.run(replace(_대상, requester=requester))
+        assert len(rig.engine.calls) == 2
+        assert rig.engine.requesters == [requester, requester]
+
+    def test_내용_재작성에_요청자를_넘긴다(self, database) -> None:
+        requester = self._요청자()
+        rig = _내용점검_rig(database, [_ok_response("요약===상세===끊김"), _ok_response("새요약===상세===이어짐")])
+        rig.task.run(replace(_대상, requester=requester))
+        assert len(rig.engine.calls) == 2
+        assert rig.engine.requesters == [requester, requester]
+
+
+class Test게시_전_마무리:
+    def test_finish_body_가_고친_본문을_게시한다(self, database) -> None:
+        """서식 점검은 여기서 비소유자 교정본을 원 메시지에 쓰고 본문에서 뺀다 (A18)."""
+        rig = make_rig(database, record={"answer": "답"})
+        받은: list[Any] = []
+
+        def 마무리(target: ReviewTarget, body: str, record: Any) -> str:
+            받은.append((target.ts, body, record))
+            return "고친요약===상세===고친상세"
+
+        rig.task.finish_body = 마무리  # type: ignore[method-assign]
+        rig.task.run(_대상)
+        assert 받은 == [("1.1", "요약===상세===상세내용", {"answer": "답"})]
+        assert "고친요약" in rig.publisher.posts[0][2]
+        assert rig.publisher.posts[1][2] == "고친상세"
+
+
 class Test세션ID는엔진이정한다:
     """세션 ID 형식은 그 요청을 실제로 받는 CLI 의 것이다(sca-k6s).
 

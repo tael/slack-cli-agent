@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from review_support import assert_header_is_one_table
 
@@ -126,3 +126,106 @@ class Test머리말:
         header = task.build_header(target, {"model": "opus", "effort": "high"}, "https://slack/x")
         assert "| 요청한 사람 | <@U1> |" in header
         assert_header_is_one_table(header)
+
+
+class FakeRewriter:
+    """MessagePublisher.update 대역. 받은 대상과 본문을 남긴다."""
+
+    def __init__(self, fail: Exception | None = None) -> None:
+        self.calls: list[tuple[str, str, str, bool]] = []
+        self._fail = fail
+
+    def update(self, channel: str, ts: str, text: str, rich: bool) -> list[str]:
+        self.calls.append((channel, ts, text, rich))
+        if self._fail is not None:
+            raise self._fail
+        return ["markdown"]
+
+
+def _비소유자_대상(**overrides: Any) -> ReviewTarget:
+    from slack_cli_agent.auth.principal import Principal, TrustLevel
+
+    requester = Principal(user_id="U2", channel="C1", trust=TrustLevel.TRUSTED, is_direct_message=False)
+    kwargs: dict[str, Any] = {
+        "channel": "C1", "ts": "1.1", "by_user": "U2", "channel_name": "회의방",
+        "rich": True, "requester": requester,
+    }
+    kwargs.update(overrides)
+    return ReviewTarget(**kwargs)
+
+
+class Test비소유자_교정:
+    """비소유자 서식 점검은 명령을 실행하지 않는다. 교정본을 리포트에 담으면
+    봇이 지목한 메시지 1건만 고친다 (A18 검토).
+
+    명령 접두 허용(:*)은 --channel, --update, 파일 인자를 모두 열어 두어 다른
+    봇 메시지를 덮거나 작업 디렉터리 밖 파일을 게시할 수 있었다. 쓰기 도구가
+    없어 교정본 파일을 만들 수도 없었다.
+    """
+
+    _기록: ClassVar[dict[str, str]] = {"answer": "| 표 | 원문 |\n|---|---|\n| a | b |"}
+
+    def test_프롬프트에_교정_명령을_주지_않는다(self) -> None:
+        task = make_task(rewriter=FakeRewriter())
+        prompt = task.build_prompt(
+            _비소유자_대상(), transcript="", flagged="미리보기", question="", record=self._기록,
+        )
+        assert "slack_cli_agent.cli rewrite" not in prompt
+        assert "--update" not in prompt
+        assert "===== 교정본 =====" in prompt
+        assert "명령을 실행하지 않는다" in prompt
+
+    def test_교정본을_지목한_메시지_1건에만_쓴다(self) -> None:
+        rewriter = FakeRewriter()
+        task = make_task(rewriter=rewriter)
+        body = (
+            "## 위반\n- 표 앞 빈 줄\n\n## 교정했습니다\n"
+            "===== 교정본 =====\n고친 본문\n===== 교정본 끝 =====\n===상세===상세"
+        )
+        out = task.finish_body(_비소유자_대상(), body, self._기록)
+        assert rewriter.calls == [("C1", "1.1", "고친 본문", True)]
+        assert "고친 본문" not in out
+        assert "===== 교정본" not in out
+        assert "원 메시지를 고쳤습니다" in out
+        assert out.endswith("===상세===상세")
+
+    def test_여러_조각_답이면_교정본이_있어도_고치지_않는다(self) -> None:
+        rewriter = FakeRewriter()
+        task = make_task(rewriter=rewriter)
+        record = {"answer": "긴 답", "answer_parts": ["1", "2"]}
+        out = task.finish_body(
+            _비소유자_대상(), "===== 교정본 =====\n고친 본문\n===== 교정본 끝 =====", record,
+        )
+        assert rewriter.calls == []
+        assert "고친 본문" not in out
+
+    def test_원문기록이_없으면_고치지_않는다(self) -> None:
+        rewriter = FakeRewriter()
+        task = make_task(rewriter=rewriter)
+        task.finish_body(_비소유자_대상(), "===== 교정본 =====\n고친 본문\n===== 교정본 끝 =====", None)
+        assert rewriter.calls == []
+
+    def test_갱신이_실패하면_실패를_적는다(self) -> None:
+        task = make_task(rewriter=FakeRewriter(fail=RuntimeError("chat.update 거부")))
+        out = task.finish_body(
+            _비소유자_대상(), "===== 교정본 =====\n고친 본문\n===== 교정본 끝 =====", self._기록,
+        )
+        assert "고치지 못했습니다" in out
+        assert "chat.update 거부" in out
+
+    def test_교정본이_없으면_본문을_그대로_둔다(self) -> None:
+        rewriter = FakeRewriter()
+        task = make_task(rewriter=rewriter)
+        assert task.finish_body(_비소유자_대상(), "위반 없음", self._기록) == "위반 없음"
+        assert rewriter.calls == []
+
+    def test_소유자_턴은_봇이_고치지_않는다(self) -> None:
+        """소유자 턴은 지금처럼 명령으로 직접 고친다. 봇이 한 번 더 쓰지 않는다."""
+        rewriter = FakeRewriter()
+        task = make_task(rewriter=rewriter)
+        target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
+        body = "===== 교정본 =====\n고친 본문\n===== 교정본 끝 ====="
+        assert task.finish_body(target, body, self._기록) == body
+        assert rewriter.calls == []
+        prompt = task.build_prompt(target, transcript="", flagged="x", question="", record=self._기록)
+        assert "--channel C1 --update 1.1" in prompt

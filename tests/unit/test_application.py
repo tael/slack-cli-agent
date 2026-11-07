@@ -2735,8 +2735,8 @@ class TestReviewRequesterScope:
     """리액션한 사람의 등급으로 점검 턴을 조립한다 (A18).
 
     점검 엔진은 trust OWNER 와 무제한 도구로 고정돼 있어, 채널 신뢰 사용자가
-    리액션 하나로 소유자 권한 턴을 돌렸다. 비소유자는 조회만, 서식 점검은
-    rewrite 명령 하나만 더한다. 소유자는 지금과 같다.
+    리액션 하나로 소유자 권한 턴을 돌렸다. 비소유자는 조회만 한다. 서식 점검의
+    교정은 봇이 지목한 메시지 1건에 쓴다. 소유자는 지금과 같다.
     """
 
     @staticmethod
@@ -2798,14 +2798,26 @@ class TestReviewRequesterScope:
             assert 문맥[0].principal.trust is TrustLevel.TRUSTED, emoji
             assert not 문맥[0].full_authority, emoji
 
-    def test_신뢰_사용자의_서식_점검은_rewrite_명령_하나만_더한다(
+    def test_신뢰_사용자의_서식_점검도_조회_전용이다(
         self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """rewrite 명령 접두 허용은 다른 채널, 다른 메시지, 임의 파일을 열어
+        두었다 (A18 검토). 교정은 봇이 지목한 메시지 1건에만 쓴다."""
+        from slack_cli_agent.engine.codex import _non_owner_reads_only
+
         app = self._앱(profile, client)
         request, _ = self._요청(app, monkeypatch, "pencil2", "U_TRUSTED")
         assert request.trust_level is TrustLevel.TRUSTED
-        쓰기 = [name for name in request.tools.names if not request.tools.reads(name)]
-        assert 쓰기 == [f"Bash({app.rewrite_command()}:*)"]
+        assert not request.tools.can_act, request.tools.names
+        assert not any(name.startswith("Bash") for name in request.tools.names)
+        assert _non_owner_reads_only(request)
+
+    def test_서식_점검은_봇이_교정본을_쓸_수단을_받는다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        app = self._앱(profile, client)
+        task = app.review_tasks()["pencil2"]
+        assert task._rewriter is not None
 
     def test_소유자의_점검은_지금과_같다(
         self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch

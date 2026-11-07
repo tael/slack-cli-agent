@@ -288,6 +288,14 @@ class ReviewTask(ABC):
         """
         raise NotImplementedError
 
+    def finish_body(
+        self, target: ReviewTarget, body: str, record: Mapping[str, Any] | None
+    ) -> str:
+        """Last step on the engine's answer before it is split and posted.
+        Default leaves it as it is; the format review applies a non-owner's
+        correction here (A18)."""
+        return body
+
     def content_problems(self, detail: str) -> list[str]:
         """Mechanical problems in the detail part, as sentences. Empty passes.
 
@@ -541,6 +549,7 @@ class ReviewTask(ABC):
                 body = retry.body
                 session_id = retry.session_id or session_id
 
+        body = self.finish_body(target, body, record)
         if marker in body:
             summary, detail = body.split(marker, 1)
         else:

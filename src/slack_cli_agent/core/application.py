@@ -1808,6 +1808,7 @@ class Application:
                     persona_dir=str(paths.persona),
                     prompts_dir=str(paths.prompts),
                     rewrite_command=self.rewrite_command(),
+                    rewriter=self.publisher(),
                     engine=self._review_engine(format_review=True),
                     **shared,
                 ),
@@ -1883,17 +1884,16 @@ class Application:
             ))
 
         def scoped(requester: Principal, prompt: str) -> tuple[ToolSelection, str]:
-            """A non-owner's review turn (A18). Postmortem and debug trace say
-            they change nothing, so they get this person's read-only tools. A
-            format review also runs the one rewrite command it is told to run;
-            codex has no way to allow one command, so it stays read-only there
-            (codex _non_owner_reads_only) and the review only points things out.
-            The system prompt is composed for this person, so the owner's
-            guidance does not reach their turn."""
+            """A non-owner's review turn (A18). Every kind gets this person's
+            read-only tools, on Claude and Codex alike. A format review's
+            correction comes back in the reply and FormatReviewTask writes it
+            to the flagged message itself: a Bash(<rewrite>:*) grant left
+            --channel, --update and the file argument open, and the turn had
+            no Write to make the file anyway (A18 review). The system prompt
+            is composed for this person, so the owner's guidance does not
+            reach their turn."""
             policy = self.tool_policy()
             names = list(policy.tool_list_for(requester, prompt=prompt, readonly=True))
-            if format_review:
-                names.append(f"Bash({self.rewrite_command()}:*)")
             tools = ToolSelection.from_names(
                 names, lookups=policy.lookups_for(requester, readonly=True),
             )
