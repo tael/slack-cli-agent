@@ -344,3 +344,50 @@ def test_그림자_턴의_effort_는_원본_글로_오르지_않는다(tmp_path:
     app._invoker = _Invoker()  # type: ignore[assignment]
     app._shadow_turn("원본 답글 : ultrathink 로 봐라", "C1", "shadow-judge-x")
     assert seen and seen[0] != "high"
+
+
+def test_그림자_턴의_모델별_사용량을_감사에_남긴다(tmp_path: Path) -> None:
+    """A14 : 그림자 답변과 판정도 엔진 호출이라 모델별 집계에 들어가야 한다."""
+    from types import SimpleNamespace
+
+    from slack_cli_agent.engine.base import MODEL_USAGE_KEY, ModelUsage
+    from slack_cli_agent.observability.audit import ENGINE_SPEND_KIND
+
+    app = Application(write_profile(tmp_path), FakeSlackClient())
+    기록: list[tuple[str, dict[str, Any]]] = []
+    app._audit = SimpleNamespace(record=lambda kind, **f: 기록.append((kind, f)))  # type: ignore[assignment]
+
+    class _Invoker:
+        def invoke(self, request: Any, origin: Any) -> Any:
+            return SimpleNamespace(
+                ok=False, body="", session_id="s-shadow", engine="claude", usage=None,
+                model_asked="sonnet",
+                model_usage={"claude-sonnet-4": ModelUsage(output_tokens=7, cost_usd=0.01)},
+            )
+
+    app._invoker = _Invoker()  # type: ignore[assignment]
+    app._shadow_turn("질문", "C1", "shadow-judge-x")
+    [(_, 행)] = [r for r in 기록 if r[0] == ENGINE_SPEND_KIND]
+    assert 행["purpose"] == "shadow_turn"
+    assert 행["channel"] == "C1"
+    assert 행[MODEL_USAGE_KEY]["claude-sonnet-4"]["output_tokens"] == 7
+    assert 행["session_id"] == "s-shadow"
+
+
+def test_그림자_턴이_모델별_표가_없으면_비용_행을_쓰지_않는다(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from slack_cli_agent.observability.audit import ENGINE_SPEND_KIND
+
+    app = Application(write_profile(tmp_path), FakeSlackClient())
+    기록: list[tuple[str, dict[str, Any]]] = []
+    app._audit = SimpleNamespace(record=lambda kind, **f: 기록.append((kind, f)))  # type: ignore[assignment]
+
+    class _Invoker:
+        def invoke(self, request: Any, origin: Any) -> Any:
+            return SimpleNamespace(ok=False, body="", session_id=None, engine="codex", usage=None,
+                                   model_asked=None, model_usage=None)
+
+    app._invoker = _Invoker()  # type: ignore[assignment]
+    app._shadow_turn("질문", "C1", "shadow-x")
+    assert not [r for r in 기록 if r[0] == ENGINE_SPEND_KIND]

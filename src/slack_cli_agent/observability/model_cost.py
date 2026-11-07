@@ -14,17 +14,52 @@ reading.
 from __future__ import annotations
 
 import collections
-from collections.abc import Iterable, Mapping, Sequence
+import logging
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ..engine.base import MODEL_USAGE_KEY, MODEL_USAGE_SESSION_KEY, USAGE_FIELDS
-from .audit import REQUEST_KIND
+from ..engine.base import (
+    MODEL_USAGE_KEY,
+    MODEL_USAGE_SESSION_KEY,
+    USAGE_FIELDS,
+    EngineResponse,
+    engine_usage_audit_fields,
+)
+from .audit import ENGINE_SPEND_KIND, REQUEST_KIND
 
 #: How far before the window the collector reads rows so a session that began
 #: earlier still has its previous row to subtract. A session resumed after
 #: longer than this has its first in-window row counted whole (over-count).
 LOOKBACK_SEC = 30 * 86400
+
+log = logging.getLogger(__name__)
+
+
+def record_engine_spend(
+    record: Callable[..., None],
+    response: EngineResponse,
+    *,
+    purpose: str,
+    channel: str = "",
+) -> bool:
+    """Writes an engine_spend row for a call that has no audit row of its own
+    (shadow turns, the nightly learning analysis), so the per-model rollup
+    counts it (A14). Nothing is written when the engine gave no per-model
+    table. Best effort: a spend row that cannot be written must not fail the
+    call it describes. Returns whether a row was written."""
+    try:
+        fields = engine_usage_audit_fields(response)
+        if MODEL_USAGE_KEY not in fields:
+            return False
+        record(
+            ENGINE_SPEND_KIND, channel=channel, purpose=purpose, ok=response.ok,
+            engine=response.engine, model=response.model_asked, **fields,
+        )
+    except Exception:
+        log.warning("엔진 사용량 기록 실패 : %s", purpose, exc_info=True)
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -157,7 +192,7 @@ def rollup(spends: Sequence[RowSpend], cutoff: float, day_of: Any) -> dict[str, 
     for spend in in_window:
         for model, row in spend.by_model.items():
             agg = by_model.setdefault(model, {
-                "model": model, **{name: 0 for name in USAGE_FIELDS},
+                "model": model, **dict.fromkeys(USAGE_FIELDS, 0),
                 "cost_usd": None, "calls": 0,
             })
             spent = False
