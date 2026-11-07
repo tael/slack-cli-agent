@@ -64,6 +64,9 @@ class PeriodicRunner:
     def stop(self) -> None:
         self._stop.set()
 
+    def is_stopping(self) -> bool:
+        return self._stop.is_set()
+
     def join(self, timeout: float | None = None) -> None:
         if self._thread is not None:
             self._thread.join(timeout)

@@ -1466,6 +1466,8 @@ class Application:
                     ThreadTaskSpawner(),
                     self.concurrency_slots(),
                     self._settings.request_timeout_sec,
+                    policy=self.access_policy,
+                    self_user_id=lambda: self.identity.user_id,
                 ),
                 # The handler runs on one of slack-sdk's ten pool threads, so a
                 # long lock wait here delays every event behind it (sca-9l1).
