@@ -41,7 +41,7 @@ from ..guard.base import GuardContext
 from ..guard.mentions import AddresseeGuard, RecipientResolver
 from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
-from ..guard.watch import WatchPromiseGuard, watch_due_at
+from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
 from ..observability.audit import IncidentKind
 from ..observability.progress import ProgressCoordinator
 from ..observability.response_archive import ResponseArchive
@@ -838,7 +838,12 @@ class RequestPipeline:
         # would then merge it onto the previous body (sca-2ak).
         if not rerun_response.ok or is_silent(rerun_response.body):
             self._record_guard_incidents(ctx, result.details)
-            return result.body, _watch_desc_of(result), _watch_due_of(result)
+            body_out = result.body
+            # An untagged promise whose rewrite never arrived still must not
+            # go out as-is: cut it like a failed retry does (bot.py:8249-8255).
+            if result.rerun.guard_name == WatchPromiseGuard.name:
+                body_out = cut_untagged_promise(body_out)
+            return body_out, _watch_desc_of(result), _watch_due_of(result)
 
         retry_ctx = replace(guard_ctx, previous_body=result.body, is_rewrite_retry=True)
         final_result = self._guards.run(rerun_response.body, retry_ctx)

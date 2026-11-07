@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from slack_cli_agent.guard.base import GuardContext
@@ -14,6 +16,8 @@ from slack_cli_agent.guard.watch import (
     promise_search,
     promise_without_watch_prompt,
 )
+from slack_cli_agent.prompt.sections import SILENT_MARK
+from tests.unit.test_pipeline import build_pipeline, fail_response, make_ctx, ok_response
 
 CASES = [
     # 2026-09-01 사건 문장
@@ -22,13 +26,13 @@ CASES = [
     ("백그라운드로 확인 중입니다. 완료되면 결과와 함께 보고할게요.", True),
     # 2026-09-19 구 패턴이 통과시킨 문장
     ("코덱스 재검토가 돌고 있습니다. 결과가 나오면 확인해 올리겠습니다", True),
-    ("결과가 나오는 대로 두 안이 각각 몇 건을 해소하고 몇 건 얼마를 남기는지 "
-     "표로 올리겠습니다.", True),
+    (("결과가 나오는 대로 두 안이 각각 몇 건을 해소하고 몇 건 얼마를 남기는지 "
+      "표로 올리겠습니다."), True),
     ("두 세션 결과가 나오는 대로 각각 올리겠습니다.", True),
     ("회신이 들어오는 대로 블로커를 정리해 올리겠습니다.", True),
     ("결과가 나오면 단계별 결과와 차액 대조 표를 올리겠습니다.", True),
-    ("재기동 끝나면 아무 말이나 한마디 주시면 그 턴에 교체까지 끝내고 "
-     "결과를 올리겠습니다.", True),
+    (("재기동 끝나면 아무 말이나 한마디 주시면 그 턴에 교체까지 끝내고 "
+      "결과를 올리겠습니다."), True),
     # 정상 답
     ("PR 생성까지 완료했습니다.", False),
     ("머지 확인했습니다.", False),
@@ -64,7 +68,9 @@ def test_본문의_약속은_그대로_잡는다() -> None:
 
 
 def test_인용이_있는_답은_재요청하지_않는다() -> None:
-    body = "시뮬레이션 예시입니다.\n> 결과가 나오면 말씀드릴게요\n위 문장은 고객 발화입니다."
+    """인용 줄에는 가림 전 정규식도 잡는 구 어휘를 둔다. 가림이 없으면
+    재요청이 일어나 실패해야 이 시험이 가림을 고정한다."""
+    body = "시뮬레이션 예시입니다.\n> 끝나면 보고하겠습니다\n위 문장은 고객 발화입니다."
     result = WatchPromiseGuard().apply(body, GuardContext())
     assert result.rerun is None
     assert result.body == body
@@ -74,13 +80,13 @@ def test_재시도_실패_시_인용_뒤의_본문_약속에서_자른다() -> N
     """인용 안의 표현에서 자르면 인용 이후 본문이 통째로 사라진다.
     가린 본문에서 찾은 위치(본문 약속의 조건절 시작)에서 자른다."""
     body = (
-        "> 결과가 나오면 말씀드릴게요\n"
+        "> 끝나면 보고하겠습니다\n"
         "위 인용은 예시입니다.\n"
         "재실행이 끝나면 다시 보고하겠습니다."
     )
     result = WatchPromiseGuard().apply(body, GuardContext(is_rewrite_retry=True))
     assert result.body == (
-        "> 결과가 나오면 말씀드릴게요\n위 인용은 예시입니다.\n재실행이\n\n"
+        "> 끝나면 보고하겠습니다\n위 인용은 예시입니다.\n재실행이\n\n"
         "확인이 더 필요하면 다시 말씀해 주세요."
     )
 
@@ -91,3 +97,27 @@ def test_보정_프롬프트() -> None:
     assert "[[WATCH:" in out
     assert "다시 물어봐" in out
     assert "새로 지어내지 않는다" in out
+
+
+PROMISE_BODY = "인용 예시입니다.\n> 끝나면 보고하겠습니다\n재실행을 걸었습니다. 끝나면 다시 보고하겠습니다."
+CUT_BODY = "인용 예시입니다.\n> 끝나면 보고하겠습니다\n재실행을 걸었습니다.\n\n확인이 더 필요하면 다시 말씀해 주세요."
+
+
+@pytest.mark.parametrize(
+    "rerun",
+    [fail_response("timeout"), ok_response(body=f"{SILENT_MARK} 답할 것이 없습니다")],
+    ids=["재작성_실패", "재작성_침묵"],
+)
+def test_재작성이_안_되면_약속_위치에서_자른다(rerun, tmp_path: Path) -> None:
+    """마메치 bot.py:8249-8255 else 분기. 재작성 재실행이 실패하거나 침묵해도
+    태그 없는 약속을 그대로 게시하지 않고 잘라 표준 문구를 붙인다."""
+    pipeline, deps = build_pipeline(
+        responses=[ok_response(body=PROMISE_BODY), rerun],
+        guards=[WatchPromiseGuard()],
+        tmp_path=tmp_path,
+    )
+    outcome = pipeline.handle(make_ctx())
+
+    assert outcome.ok is True
+    assert len(deps["runner"].calls) == 2
+    assert deps["publisher"].posted[0]["text"] == CUT_BODY

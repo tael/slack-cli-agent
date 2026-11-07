@@ -143,6 +143,25 @@ def promise_search(text: str) -> re.Match[str] | None:
     return PROMISE_WITHOUT_WATCH_RE.search(_mask_quotes_and_code(text))
 
 
+PROMISE_FALLBACK_LINE = "확인이 더 필요하면 다시 말씀해 주세요."
+
+
+def cut_untagged_promise(body: str) -> str:
+    """Cuts the reply at its first untagged promise and appends the fallback.
+
+    Matches bot.py:8241-8255: used both when the rewrite still promises and
+    when the rewrite run itself failed or came back silent. The cut position
+    comes from the masked text, whose offsets equal the original's, so a
+    quoted example above the promise survives. No promise leaves the body
+    untouched.
+    """
+    cut = promise_search(body or "")
+    if not cut:
+        return body
+    trimmed = body[: cut.start()].rstrip()
+    return f"{trimmed}\n\n{PROMISE_FALLBACK_LINE}" if trimmed else PROMISE_FALLBACK_LINE
+
+
 def promise_without_watch_prompt(body: str) -> str:
     """Rewrite prompt asking the model to either add the [[WATCH: ...]] tag
     or drop the follow-up promise entirely.
@@ -236,14 +255,8 @@ class WatchPromiseGuard(OutputGuard):
             # cut the promise text out and append the standard fallback line.
             # The match comes from the masked text, whose offsets equal the
             # original's, so a quoted example above the promise survives.
-            trimmed = body[: cut.start()].rstrip()
-            trimmed += (
-                "\n\n확인이 더 필요하면 다시 말씀해 주세요."
-                if trimmed
-                else "확인이 더 필요하면 다시 말씀해 주세요."
-            )
             return GuardResult(
-                body=trimmed,
+                body=cut_untagged_promise(body),
                 changed=True,
                 detail={"promise_without_watch_retry_failed": True},
             )
