@@ -34,10 +34,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-#: Exit code a worker returns after draining for an apply request. Distinct
-#: from run.sh's 78 (preflight block), which stops launchd from restarting;
-#: this one is EX_TEMPFAIL, so KeepAlive brings the worker straight back.
-RESTART_EXIT_CODE = 75
+#: Env var carrying "channel:ts" of the running turn to the engine child, for
+#: the marker's second line. mametchi bot.py MAMETCHI_TURN.
+TURN_ID_ENV = "TURN_ID"
+
+#: How long a worker holds new claims for a marker nobody picks up. The
+#: supervisor (mametchi watchdog.py, every 60s, 15s grace) restarts the worker
+#: and ingress itself; the worker never exits on the marker, or one request
+#: restarts it twice. Past this, no supervisor is assumed and claims resume.
+APPLY_HOLD_MAX_SEC = 180.0
 
 #: How long a drain or shutdown still waits on the turn that wrote the
 #: marker. That turn is meant to end right after writing it; waiting longer

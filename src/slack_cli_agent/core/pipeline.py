@@ -36,6 +36,7 @@ from ..engine.base import (
     Usage,
 )
 from ..engine.runner import EngineInvoker
+from ..reliability.restart import TURN_ID_ENV
 from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
 from ..guard.figurative import FigurativeGuard
@@ -433,7 +434,12 @@ class RequestPipeline:
             # turn_env names a `channel` key gets this turn's channel as env
             # (mametchi's per-turn MAMETCHI_POST_CHANNEL render guard).
             turn_context={"channel": ctx.channel},
-            engine_env=self._engine_env(ctx.channel, config),
+            engine_env={
+                **self._engine_env(ctx.channel, config),
+                # The marker's second line, so the worker can tell the turn
+                # that asked for a restart (reliability/restart.py).
+                TURN_ID_ENV: f"{ctx.channel}:{ctx.ts}",
+            },
         )
         # Counted rather than derived: the reset is the only trace a broken
         # resume leaves, and without it nothing can say how often context is

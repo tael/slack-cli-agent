@@ -59,6 +59,13 @@ TURN_WRAPUP_SEC = 60
 DEFAULT_MCP_TOOL_TIMEOUT_MS = "300000"
 
 
+def _turn_id(source_env: Mapping[str, str]) -> dict[str, str]:
+    """TURN_ID ("channel:ts") when the runner stamped one: a turn writes it as
+    the apply-request marker's second line (reliability/restart.py), the same
+    as mametchi apply.sh with MAMETCHI_TURN. Not a credential."""
+    return {"TURN_ID": source_env["TURN_ID"]} if source_env.get("TURN_ID") else {}
+
+
 class EngineEnvironmentPolicy(ABC):
     """Contract for choosing env vars for one engine.
 
@@ -121,6 +128,7 @@ class CodexEnvironmentPolicy(EngineEnvironmentPolicy):
             # bot's token and channel config.
             "BOT_PROFILE": self.profile_name,
             **NON_INTERACTIVE_ENV,
+            **_turn_id(source_env),
         }
 
 
@@ -145,6 +153,7 @@ class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
             "HOME": source_env.get("HOME", ""),
             "BOT_PROFILE": self.profile_name,
             **NON_INTERACTIVE_ENV,
+            **_turn_id(source_env),
         }
 
 
@@ -193,6 +202,8 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         "SCA_FINISH_VERIFY_MODEL",
         # Set inside the nested verify claude so its own run never re-verifies.
         "SCA_VERIFY_NESTED",
+        # "channel:ts" of this turn, for the apply-request marker's second line.
+        "TURN_ID",
     })
 
     #: Empty on purpose: claude keeps its subscription credentials in the

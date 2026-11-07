@@ -530,9 +530,7 @@ class WorkerCommand(PreflightGatedServiceCommand):
         finally:
             worker.shutdown()
             app.close()
-        # Nonzero after an apply-request drain so the log shows why it left;
-        # launchd's KeepAlive starts the new code either way.
-        return int(getattr(worker, "exit_code", 0))
+        return 0
 
 
 class LearnCommand(ProfileAwareCommand):

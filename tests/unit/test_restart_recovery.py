@@ -349,14 +349,28 @@ class Test재기동요청읽기:
         assert watch.pending() is not None
 
 
+def _지금() -> float:
+    return float(int(time.time()))
+
+
+def _steps(n: int):
+    """n 번째 호출부터 멈추라고 답하는 should_stop."""
+    count = {"n": 0}
+
+    def should_stop() -> bool:
+        count["n"] += 1
+        return count["n"] > n
+
+    return should_stop
+
+
 class Test재기동요청_워커_유예:
-    """apply-request 표식이 있으면 새 작업을 집지 않고, 진행 중 작업이 끝나면
-    재기동 종료 코드로 나온다. 표식을 남긴 턴은 30초 뒤 기다리지 않고 다음
-    기동에서 다시 돌리지 않는다 (마메치 bot.py on_terminate)."""
+    """apply-request 표식이 있으면 새 작업을 집지 않고 감시기의 TERM 을 기다린다.
+    워커가 스스로 나가면 감시기의 kickstart 가 한 번 더 재기동한다. 표식을 남긴
+    턴은 30초 뒤 기다리지 않고 다음 기동에서 다시 돌리지 않는다 (마메치 bot.py
+    on_terminate, watchdog.py take_over_sca_apply)."""
 
-    def _worker(self, database, handler, request_box: list, max_concurrent: int = 2):
-        import time as _time
-
+    def _worker(self, database, handler, request_box: list, max_concurrent: int = 2, **kw):
         from test_worker import make_worker
 
         from slack_cli_agent.config.settings import RuntimeSettings
@@ -369,57 +383,122 @@ class Test재기동요청_워커_유예:
                 heartbeat_interval_sec=0.01, max_concurrent=max_concurrent,
                 queue_idle_sleep_sec=0.01, shutdown_grace_sec=3.0,
             ),
-            sleep=_time.sleep,
+            sleep=time.sleep,
         )
-        worker.watch_restart_requests(
-            lambda: request_box[0] if request_box else None, requester_grace_sec=0.1
-        )
+        kw.setdefault("requester_grace_sec", 0.1)
+        worker.watch_restart_requests(lambda: request_box[0] if request_box else None, **kw)
         return worker, queue, client
 
-    def test_표식이_있으면_새_작업을_집지_않는다(self, database) -> None:
+    def test_표식이_있으면_새_작업을_집지_않고_스스로_나가지도_않는다(self, database) -> None:
         from test_worker import FakeHandler, ctx
 
-        from slack_cli_agent.reliability.restart import RESTART_EXIT_CODE, ApplyRequest
+        from slack_cli_agent.reliability.restart import ApplyRequest
 
         for slots in (1, 2):
             handler = FakeHandler()
             worker, queue, _ = self._worker(
-                database, handler, [ApplyRequest(requested_at=1.0)], max_concurrent=slots
+                database, handler, [ApplyRequest(requested_at=_지금())], max_concurrent=slots
             )
             queue.enqueue(ctx(f"{slots}.0", thread=f"t{slots}"))
-            worker.run_forever(lambda: False)
+            stop = _steps(30)
+            worker.run_forever(stop)
             assert handler.received == []
-            assert worker.exit_code == RESTART_EXIT_CODE
+            # should_stop 이 멈추라고 할 때까지 돌았다 : 표식만으로 돌아오지 않는다.
+            assert stop() is True
             assert f"{slots}.0" in [j.context.ts for j in queue.pending()]
+            assert not hasattr(worker, "exit_code")
 
-    def test_진행_중_작업이_끝난_뒤에_나온다(self, database) -> None:
-        import time as _time
+    def test_표식이_사라지면_다시_집는다(self, database) -> None:
+        from test_worker import FakeHandler, ctx
+
+        from slack_cli_agent.reliability.restart import ApplyRequest
+
+        handler = FakeHandler()
+        box: list = [ApplyRequest(requested_at=_지금())]
+        worker, queue, _ = self._worker(database, handler, box)
+        queue.enqueue(ctx("1.0", thread="t1"))
+        assert worker.holding_claims()
+        box.clear()
+        worker.run_forever(_steps(30))
+        assert [c.ts for c in handler.received] == ["1.0"]
+
+    def test_아무도_집지_않는_표식은_보류_한도_뒤_다시_집는다(self, database) -> None:
+        """감시기가 없으면 보류가 끝나지 않아 모든 응답이 멈춘다."""
+        from test_worker import FakeHandler, ctx
+
+        from slack_cli_agent.reliability.restart import ApplyRequest
+
+        handler = FakeHandler()
+        box: list = [ApplyRequest(requested_at=_지금())]
+        worker, queue, _ = self._worker(database, handler, box, hold_max_sec=0.1)
+        queue.enqueue(ctx("1.0", thread="t1"))
+        worker.run_forever(_steps(200))
+        assert [c.ts for c in handler.received] == ["1.0"]
+
+    def test_슬롯이_다_찬_동안_생긴_표식도_빈_슬롯에_새_작업을_넣지_않는다(self, database) -> None:
+        import threading
 
         from test_worker import ctx
 
         from slack_cli_agent.core.ports import HandleOutcome
-        from slack_cli_agent.reliability.restart import RESTART_EXIT_CODE, ApplyRequest
+        from slack_cli_agent.reliability.restart import ApplyRequest
 
         box: list = []
-        끝: list[str] = []
+        시작: list[str] = []
+        풀기 = threading.Event()
         holder: dict = {}
 
-        class 표식남기는핸들러:
+        class 막는핸들러:
             def handle(self, context):
+                시작.append(context.ts)
                 if context.ts == "1.0":
-                    box.append(ApplyRequest(requested_at=1.0, turn_id="C1:다른턴"))
-                    holder["queue"].enqueue(ctx("2.0", thread="t2"))
-                    _time.sleep(0.2)
+                    # 두 슬롯이 다 찬 뒤 표식이 생기고 새 작업이 들어온다.
+                    while len(시작) < 2:
+                        time.sleep(0.01)
+                    box.append(ApplyRequest(requested_at=_지금()))
+                    holder["queue"].enqueue(ctx("3.0", thread="t3"))
+                    return HandleOutcome(ok=True)
+                풀기.wait(timeout=5)
+                return HandleOutcome(ok=True)
+
+        worker, queue, _ = self._worker(database, 막는핸들러(), box)
+        holder["queue"] = queue
+        queue.enqueue(ctx("1.0", thread="t1"))
+        queue.enqueue(ctx("2.0", thread="t2"))
+        threading.Timer(0.5, 풀기.set).start()
+        worker.run_forever(_steps(100))
+        assert sorted(시작) == ["1.0", "2.0"]
+        assert [j.context.ts for j in queue.pending()] == ["3.0"]
+
+    def test_종료할_때_요청한_턴이_아닌_작업은_끝까지_기다린다(self, database) -> None:
+        """grace 가 지났다고 끊으면 슬랙 중간 게시와 파일 쓰기가 남은 채 다시 돈다."""
+        from test_worker import ctx
+
+        from slack_cli_agent.core.ports import HandleOutcome
+        from slack_cli_agent.reliability.restart import ApplyRequest
+
+        box: list = [ApplyRequest(requested_at=_지금() + 10, turn_id="C1:9.0")]
+        끝: list[str] = []
+
+        class 느린핸들러:
+            def handle(self, context):
+                time.sleep(0.5)
                 끝.append(context.ts)
                 return HandleOutcome(ok=True)
 
-        worker, queue, _ = self._worker(database, 표식남기는핸들러(), box)
-        holder["queue"] = queue
+        worker, queue, _ = self._worker(database, 느린핸들러(), [])
         queue.enqueue(ctx("1.0", thread="t1"))
-        worker.run_forever(lambda: False)
+        진행 = {"n": 0}
+
+        def should_stop() -> bool:
+            진행["n"] += 1
+            if 진행["n"] == 3:
+                worker._restart_request = lambda: box[0]
+                return True
+            return False
+
+        worker.run_forever(should_stop)
         assert 끝 == ["1.0"]
-        assert worker.exit_code == RESTART_EXIT_CODE
-        assert [j.context.ts for j in queue.pending()] == ["2.0"]
 
     def test_요청한_턴은_유예_뒤_기다리지_않고_다시_돌리지_않는다(self, database) -> None:
         from test_worker import BlockingHandler, ctx
@@ -430,41 +509,11 @@ class Test재기동요청_워커_유예:
         box: list = []
         worker, queue, client = self._worker(database, handler, box)
         queue.enqueue(ctx("5.0", thread="t5"))
-        멈춤 = {"n": 0}
-
-        def should_stop() -> bool:
-            if handler.entered_event.is_set() and not box:
-                box.append(ApplyRequest(requested_at=1.0, turn_id="C1:5.0"))
-            멈춤["n"] += 1
-            return 멈춤["n"] > 100000
-
-        try:
-            worker.run_forever(should_stop)
-            # 막힌 채로 돌아왔다 : 요청한 턴을 끝까지 기다리지 않았다.
-            assert not handler.release_event.is_set()
-            assert worker.restart_requester_discount(0.0) == 0
-            assert worker.restart_requester_discount(0.1) == 1
-            worker.shutdown()
-            # 다시 큐로 돌리지 않는다. 돌리면 같은 턴이 또 재기동을 예약한다.
-            assert queue.pending() == []
-            assert ("add", "C1", "5.0", "hourglass") not in client.calls
-        finally:
-            handler.release()
-
-    def test_TERM_이_먼저_와도_요청한_턴을_기다리지_않고_다시_돌리지_않는다(self, database) -> None:
-        """감시기의 kickstart 가 워커가 표식을 보기 전에 닿는 경우다."""
-        from test_worker import BlockingHandler, ctx
-
-        from slack_cli_agent.reliability.restart import ApplyRequest
-
-        handler = BlockingHandler()
-        box: list = []
-        worker, queue, _client = self._worker(database, handler, box)
-        queue.enqueue(ctx("6.0", thread="t6"))
 
         def should_stop() -> bool:
             if handler.entered_event.is_set():
-                box.append(ApplyRequest(requested_at=1.0, turn_id="C1:6.0"))
+                if not box:
+                    box.append(ApplyRequest(requested_at=_지금(), turn_id="C1:5.0"))
                 return True
             return False
 
@@ -473,17 +522,79 @@ class Test재기동요청_워커_유예:
             worker.run_forever(should_stop)
             # 처리기는 5초 동안 막혀 있다. 유예 0.1초 뒤 돌아와야 한다.
             assert time.monotonic() - 시작 < 2.0
-            assert worker.exit_code == 0
+            assert worker.restart_requester_discount(0.0) == 0
+            assert worker.restart_requester_discount(0.1) == 1
+            # 감시기가 kickstart 뒤 표식을 지워도 요청한 턴을 기억한다.
+            box.clear()
+            assert worker.restart_requester_discount(0.1) == 1
             worker.shutdown()
+            # 다시 큐로 돌리지 않는다. 돌리면 같은 턴이 또 재기동을 예약한다.
             assert queue.pending() == []
+            assert ("add", "C1", "5.0", "hourglass") not in client.calls
         finally:
             handler.release()
 
-    def test_주입이_없으면_종료_코드는_0이다(self, database) -> None:
+    def _요청자_판정(self, database, request, requester_ok=None) -> tuple[int, list]:
+        from test_worker import BlockingHandler, ctx
+
+        handler = BlockingHandler()
+        box: list = []
+        kw = {"requester_ok": requester_ok} if requester_ok else {}
+        worker, queue, _ = self._worker(database, handler, box, **kw)
+        queue.enqueue(ctx("7.0", thread="t7"))
+        try:
+            def should_stop() -> bool:
+                if handler.entered_event.is_set():
+                    box.append(request)
+                    return True
+                return False
+
+            worker._requester_grace_sec = 0.0
+            discount = None
+            # 요청자가 아니면 끝까지 기다리므로 별도 스레드에서 돌린다.
+            import threading
+
+            t = threading.Thread(target=worker.run_forever, args=(should_stop,), daemon=True)
+            t.start()
+            handler.entered_event.wait(timeout=2)
+            time.sleep(0.05)
+            discount = worker.restart_requester_discount(1.0)
+            worker.shutdown()
+            return discount, [j.context.ts for j in queue.pending()]
+        finally:
+            handler.release()
+
+    def test_표식보다_늦게_시작한_작업은_요청자로_보지_않는다(self, database) -> None:
+        """표식에 적힌 턴이 표식을 쓴 턴인지 대조한다."""
+        from slack_cli_agent.reliability.restart import ApplyRequest
+
+        discount, pending = self._요청자_판정(
+            database, ApplyRequest(requested_at=_지금() - 100, turn_id="C1:7.0")
+        )
+        assert discount == 0
+        assert pending == ["7.0"]
+
+    def test_요청자_허용_조건을_통과하지_못하면_요청자로_보지_않는다(self, database) -> None:
+        """소유자가 아닌 사람의 요청을 다른 턴이 적은 표식으로 완료 처리하지 않는다."""
+        from slack_cli_agent.reliability.restart import ApplyRequest
+
+        request = ApplyRequest(requested_at=_지금() + 10, turn_id="C1:7.0")
+        discount, pending = self._요청자_판정(
+            database, request, requester_ok=lambda c: c.user == "U_OWNER"
+        )
+        assert discount == 0
+        assert pending == ["7.0"]
+        discount, pending = self._요청자_판정(
+            database, request, requester_ok=lambda c: c.user == "U1"
+        )
+        assert discount == 1
+        assert pending == []
+
+    def test_주입이_없으면_보류도_차감도_없다(self, database) -> None:
         from test_worker import make_worker
 
         worker, _q, _c = make_worker(database=database)
-        assert worker.exit_code == 0
+        assert worker.holding_claims() is False
         assert worker.restart_requester_discount(100.0) == 0
 
 
@@ -506,3 +617,55 @@ def test_종료_대기는_요청한_턴을_빼고_센다() -> None:
     shutdown.trigger()
     assert sum(waits) == 30
     assert 완료 == [True]
+
+
+class Test재기동요청_배선:
+    """운영 경로에서 표식 둘째 줄의 턴 식별자가 실제로 채워지고, 감시 확인도
+    보류된다. 시험이 turn_id 를 직접 넣으면 이 공백을 잡지 못한다."""
+
+    def test_파이프라인이_턴_식별자를_엔진_환경에_싣는다(self, tmp_path: Path) -> None:
+        from test_pipeline import build_pipeline, make_ctx, ok_response
+
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        context = make_ctx(channel="C1")
+        pipeline.handle(context)
+
+        env = deps["runner"].calls[0].engine_env
+        assert env["TURN_ID"] == f"C1:{context.ts}"
+
+    def test_세_엔진_모두_턴_식별자를_자식에_넘긴다(self) -> None:
+        from slack_cli_agent.engine.environment import (
+            ClaudeEnvironmentPolicy,
+            CodexEnvironmentPolicy,
+            GeminiEnvironmentPolicy,
+        )
+
+        for policy in (ClaudeEnvironmentPolicy, CodexEnvironmentPolicy, GeminiEnvironmentPolicy):
+            env = policy("test").build({"PATH": "/bin", "TURN_ID": "C1:5.0"})
+            assert env["TURN_ID"] == "C1:5.0", policy.__name__
+            assert "TURN_ID" not in policy("test").build({"PATH": "/bin"})
+
+    def test_재기동_안내에_둘째_줄_형식이_있다(self, monkeypatch) -> None:
+        from slack_cli_agent.guard.pretool import restart_guard
+
+        monkeypatch.setattr(restart_guard, "_MARKER_PATH", "/x/apply-request")
+        hint = restart_guard._marker_hint()
+        assert '"$TURN_ID"' in hint and "/x/apply-request" in hint
+
+    def test_보류_중에는_감시_확인을_돌리지_않는다(self, tmp_path: Path, monkeypatch) -> None:
+        from test_application import FakeSlackClient, write_profile
+
+        from slack_cli_agent.core.application import Application
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        checks: list[int] = []
+        monkeypatch.setattr(
+            type(app.watch_checker()), "check_once", lambda self: checks.append(1)
+        )
+        보류 = {"on": True}
+        runner = app.watch_runner(hold=lambda: 보류["on"])
+        runner._task()
+        assert checks == []
+        보류["on"] = False
+        runner._task()
+        assert checks == [1]

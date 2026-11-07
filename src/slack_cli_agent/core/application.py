@@ -1113,10 +1113,18 @@ class Application:
         )
         self._watch_result_log.record(removed)
 
-    def watch_runner(self) -> PeriodicRunner:
-        # without this runner, watch jobs get registered but never checked
+    def watch_runner(self, hold: Callable[[], bool] | None = None) -> PeriodicRunner:
+        # without this runner, watch jobs get registered but never checked.
+        # `hold` skips a tick: a check is an engine turn outside the claim
+        # loop, and one started after an apply request is cut by the restart.
+        check = self.watch_checker().check_once
+
+        def tick() -> None:
+            if hold is None or not hold():
+                check()
+
         return PeriodicRunner(
-            self.watch_checker().check_once,
+            tick,
             self._settings.watch_check_interval_sec,
             name="watch_jobs",
         )
@@ -1371,10 +1379,14 @@ class Application:
         )
         # A marker from before this process started was for the restart
         # that produced it; following it again would loop.
+        # Only an owner turn can be the requester the marker names; any other
+        # turn that could write it must not get someone's request completed.
+        owner = self._profile.owner_user_id
         worker.watch_restart_requests(
             ApplyRequestWatch(
                 paths=self._profile.paths.apply_requests, started_at=time.time()
-            ).pending
+            ).pending,
+            requester_ok=lambda context: bool(owner) and context.user == owner,
         )
         return worker
 
@@ -2091,7 +2103,7 @@ class Application:
         return ServiceGroup(
             [
                 self.state_snapshot_runner(),
-                self.watch_runner(),
+                self.watch_runner(hold=worker.holding_claims),
                 self.watch_result_cleanup_runner(),
                 self.job_purge_runner(),
                 self.epoch_purge_runner(),
