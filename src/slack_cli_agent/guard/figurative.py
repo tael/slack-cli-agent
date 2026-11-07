@@ -17,6 +17,7 @@ the original. This step must never stop a reply from going out.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -53,8 +54,20 @@ FIGURATIVE_CHECK_SYSTEM_WORK = (
 #: Trailing `[[...]]` markers (WATCH, ASK, ...) are cut off before correction
 #: and put back after, so the corrector never sees or mangles them.
 _TAIL_TAG_RE = re.compile(r"(?:\n[ \t]*\[\[[^\]\n]*\]\][ \t]*)+\s*$")
-_KEEP_TOKEN_RE = re.compile(r"<[@#!][^>]+>|https?://\S+|```")
+#: Tokens a correction must keep exactly: whole fenced blocks (an unclosed
+#: fence falls back to the bare ```), mentions, links, `[[...]]` markers
+#: anywhere in the body, inline code, and digit sequences such as 1,234,
+#: run ids and amounts. The prompt asks the corrector to leave these alone;
+#: this enforces it.
+_KEEP_TOKEN_RE = re.compile(
+    r"```.*?```|```|<[@#!][^>]+>|https?://\S+|\[\[[^\]\n]*\]\]|`[^`\n]+`|\d+(?:[.,:]\d+)*",
+    re.DOTALL,
+)
+#: A body longer than this is posted uncorrected. Sending only the head and
+#: swapping the result in would drop the rest (mametchi bot.py:7339 did).
 _MAX_INPUT_CHARS = 6000
+
+log = logging.getLogger(__name__)
 
 
 def is_chat_channel(config: ChannelConfig | None) -> bool:
@@ -67,8 +80,9 @@ def is_chat_channel(config: ChannelConfig | None) -> bool:
 
 def figurative_accept(original: str, revised: str) -> bool:
     """Whether a correction can replace the original. Rejects an empty
-    result, a length outside 0.5-1.5x, and any mention, link or code fence
-    that disappeared, changed or was added."""
+    result, a length outside 0.5-1.5x, and any `_KEEP_TOKEN_RE` token
+    (code block, mention, link, marker, inline code, number) that
+    disappeared, changed or was added."""
     if not revised or not revised.strip():
         return False
     ratio = len(revised) / max(len(original), 1)
@@ -113,7 +127,7 @@ class ModelFigurativeCorrector:
                 [exe, "-p", "--model", self.model, "--tools", "", "--strict-mcp-config",
                  "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "",
                  "--no-session-persistence", "--system-prompt", system],
-                input="<reply>\n" + text[:_MAX_INPUT_CHARS] + "\n</reply>",
+                input="<reply>\n" + text + "\n</reply>",
                 capture_output=True, text=True, timeout=self.timeout, env=self._env, cwd="/tmp",
             )
         except Exception:  # noqa: BLE001 - a failed check never blocks the reply
@@ -159,14 +173,25 @@ class FigurativeGuard(OutputGuard):
         main, tail = (body[: m.start()], body[m.start():]) if m else (body, "")
         if not main.strip():
             return unchanged
+        mode = "chat" if chat else "work"
+        if len(main) > _MAX_INPUT_CHARS:
+            log.info("figurative check skipped: body too long (%d chars, limit %d) channel=%s",
+                     len(main), _MAX_INPUT_CHARS, ctx.channel)
+            return unchanged
         verdict = self._corrector(main, work=not chat)
-        if not verdict or not verdict.get("changed"):
+        if not verdict:
+            log.warning("figurative check could not run (corrector failed or bad JSON) mode=%s channel=%s",
+                        mode, ctx.channel)
+            return unchanged
+        if not verdict.get("changed"):
             return unchanged
         revised = str(verdict.get("text") or "").strip("\n")
         if not figurative_accept(main.strip("\n"), revised):
+            log.warning("figurative correction rejected: tokens or length differ from original "
+                        "mode=%s channel=%s before=%d after=%d", mode, ctx.channel, len(main), len(revised))
             return GuardResult(body=body, changed=False, detail={"rejected": True})
         fixes = [f for f in (verdict.get("fixes") or []) if isinstance(f, dict)][:10]
         return GuardResult(
             body=revised + tail, changed=True,
-            detail={"mode": "chat" if chat else "work", "fixes": fixes},
+            detail={"mode": mode, "fixes": fixes},
         )

@@ -150,3 +150,55 @@ class Test모델교정기:
         def boom(cmd, **kwargs):
             raise subprocess.TimeoutExpired(cmd, 1)
         assert ModelFigurativeCorrector(runner=boom, executable="c")("x", work=True) is None
+
+
+class Test검토보완:
+    def test_상한_초과_본문은_교정을_건너뛰어_뒷부분을_잃지_않는다(self, caplog) -> None:
+        body = WORK_BODY * 120
+        assert len(body) > 6000
+        corrector = FakeCorrector({"changed": True, "text": body[:6000].replace("맞닿은", "연결된")})
+        with caplog.at_level("INFO", logger="slack_cli_agent.guard.figurative"):
+            result = _guard(corrector).apply(body, GuardContext(channel="C1"))
+        assert not result.changed and result.body == body
+        assert corrector.calls == []
+        assert "too long" in caplog.text
+
+    def test_모델_교정기는_입력을_자르지_않는다(self) -> None:
+        seen: list[Any] = []
+
+        def run(cmd, **kwargs):
+            seen.append(kwargs)
+            return subprocess.CompletedProcess(cmd, 0, stdout="{}", stderr="")
+        ModelFigurativeCorrector(runner=run, executable="c")("가" * 7000, work=True)
+        assert seen[0]["input"] == "<reply>\n" + "가" * 7000 + "\n</reply>"
+
+    def test_거부되면_경고를_남긴다(self, caplog) -> None:
+        body = "<@U1> " + WORK_BODY
+        corrector = FakeCorrector({"changed": True, "text": WORK_BODY.replace("맞닿은", "연결된")})
+        with caplog.at_level("WARNING", logger="slack_cli_agent.guard.figurative"):
+            _guard(corrector).apply(body, GuardContext(channel="C1"))
+        assert "rejected" in caplog.text
+
+    def test_교정기가_실패하면_경고를_남긴다(self, caplog) -> None:
+        with caplog.at_level("WARNING", logger="slack_cli_agent.guard.figurative"):
+            result = _guard(FakeCorrector(None)).apply(WORK_BODY, GuardContext(channel="C1"))
+        assert result.body == WORK_BODY
+        assert "could not run" in caplog.text
+
+    def test_숫자가_바뀌면_거부(self) -> None:
+        assert not figurative_accept("실패 1,234건이 맞닿은 지점에서 났다", "실패 1,243건이 연결된 지점에서 났다")
+
+    def test_코드블록_안이_바뀌면_거부(self) -> None:
+        original = "쿼리가 맞닿은 부분\n```sql\nSELECT a FROM t\n```\n입니다"
+        revised = "쿼리가 연결된 부분\n```sql\nSELECT b FROM t\n```\n입니다"
+        assert not figurative_accept(original, revised)
+
+    def test_본문_중간_이중대괄호_표식이_사라지면_거부(self) -> None:
+        original = "확인 부탁드립니다\n[[ASK]]\n이 결과가 맞닿은 지점입니다"
+        revised = "확인 부탁드립니다\n이 결과가 연결된 지점입니다 여기"
+        assert not figurative_accept(original, revised)
+
+    def test_숫자_코드_표식이_그대로면_수용(self) -> None:
+        original = "1,234건이 맞닿은 부분\n```\nSELECT 1\n```\n[[ASK]]\n끝"
+        revised = "1,234건이 연결된 부분\n```\nSELECT 1\n```\n[[ASK]]\n끝"
+        assert figurative_accept(original, revised)
