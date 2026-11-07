@@ -822,6 +822,8 @@ class Application:
                 # short approval ("좋아") arriving hours later still reads as an
                 # answer and not a stray reaction — see session/awaiting.py.
                 awaiting=SqliteAwaitingStore(self._database),
+                # 워커에서 받아쓴다. 접수 경로에서 돌면 소켓 핸들러가 밀린다(G6).
+                transcriber=Transcriber(),
             )
         return self._pipeline
 
@@ -1855,7 +1857,6 @@ class Application:
                 attach_dir=self._profile.attach_dir,
                 token_provider=self._token_provider,
                 downloader=self._download,
-                transcriber=Transcriber(),
             )
         return self._attachments
 

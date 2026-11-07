@@ -200,10 +200,10 @@ class IngressService:
 
             ctx = replace(ctx, text=self._strip_self_mention(ctx.text))
 
-            # bot.py:4973. Asked back instead of queued, so a mention with no
-            # request in it never costs an engine turn (sca-yb8q). Attachments
-            # do not count: the original checks the text before it saves them
-            # (bot.py:5075), so a file with no words is asked back too.
+            # bot.py:7705. Asked back instead of queued, so a mention with no
+            # request in it never costs an engine turn (sca-yb8q). A message
+            # with attachments is queued even with no words, as in the
+            # original since 2026-10-22 (voice memos, G6).
             if ctx.has_no_request:
                 self._reply(
                     ctx.channel, ctx.thread_ts, self._notices.render(NoticeKey.ASK_WHAT)

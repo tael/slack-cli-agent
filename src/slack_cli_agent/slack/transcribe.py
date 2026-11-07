@@ -11,11 +11,15 @@ launchd 가 주는 PATH 에는 ffmpeg 가 없어 mlx-whisper 가 파일을 열�
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 #: (글, 실패 사유). 성공이면 사유는 빈 문자열, 실패면 글이 None 이다.
 TranscribeResult = tuple[str | None, str]
@@ -56,7 +60,17 @@ class Transcriber:
             return None, f"받아쓰기 엔진이 없다 : {exe}"
         # 첨부와 같은 디렉터리에 둔다. 하위 디렉터리에 두면 첨부 정리가 지우지 못한다.
         out = Path(path).parent
-        name = Path(path).stem + "_stt"  # 점을 넣으면 mlx-whisper 가 확장자로 보고 잘라낸다
+        # 점을 넣으면 mlx-whisper 가 확장자로 보고 잘라낸다. 확장자까지 이름에 넣는다.
+        # stem 만 쓰면 한 메시지의 voice.m4a 와 voice.webm 이 같은 글 파일을 쓴다.
+        name = Path(path).name.replace(".", "_") + "_stt"
+        txt = out / f"{name}.txt"
+        # 재시도나 되짚기가 같은 ts 디렉터리에 다시 받으면 지난 실행의 글 파일이
+        # 남아 있다. 엔진이 글을 다시 쓰지 않고 0 으로 끝나면 그 글을 이번 결과로
+        # 읽게 되므로 먼저 지운다.
+        try:
+            txt.unlink(missing_ok=True)
+        except OSError as exc:
+            return None, f"지난 받아쓰기 결과를 지우지 못했다 : {exc}"
         env = dict(os.environ, PATH=STT_PATH + ":" + os.environ.get("PATH", ""))
         try:
             proc = self._runner(
@@ -69,7 +83,6 @@ class Transcriber:
             return None, f"받아쓰기가 {self._timeout_sec}초 안에 끝나지 않았다"
         except Exception as exc:  # noqa: BLE001 - 실패 사유를 그대로 프롬프트에 싣는다
             return None, f"받아쓰기를 실행하지 못했다 : {exc}"
-        txt = out / f"{name}.txt"
         if proc.returncode != 0 or not txt.exists():
             tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
             return None, f"받아쓰기 실패, 종료 코드 {proc.returncode} : {tail[0]}"
@@ -77,3 +90,40 @@ class Transcriber:
         if not heard:
             return None, "받아쓴 글이 비어 있다. 말소리를 찾지 못했다"
         return heard, ""
+
+
+def transcribe_files(
+    files: Sequence[Mapping[str, Any]], transcriber: TranscribeFn | None
+) -> tuple[Mapping[str, Any], ...]:
+    """저장된 음성 첨부에 `transcript` 또는 `transcript_error` 를 붙여 돌려준다.
+
+    워커가 큐에서 꺼낸 뒤 부른다. 접수 단계(소켓 핸들러 스레드)에서 부르면
+    클립마다 최대 180초 동안 접수 표식이 늦고 뒤 이벤트가 밀린다. 마메치도
+    큐에 넣은 뒤 handle_request 에서 받아쓴다(bot.py:7861).
+
+    실패도 사유를 그대로 실어 프롬프트가 실패를 밝히게 한다.
+    """
+    out: list[Mapping[str, Any]] = []
+    for f in files:
+        path = f.get("local_path")
+        if not path or not is_audio(f.get("mimetype")) or "transcript" in f or "transcript_error" in f:
+            out.append(f)
+            continue
+        heard = dict(f)
+        if transcriber is None:
+            heard["transcript_error"] = "받아쓰기 엔진이 설정되지 않았다"
+            out.append(heard)
+            continue
+        t0 = time.time()
+        try:
+            words, why = transcriber(str(path))
+        except Exception as exc:  # noqa: BLE001 - 한 클립 실패가 요청 전체를 막지 않는다
+            words, why = None, f"받아쓰기를 실행하지 못했다 : {exc}"
+        log.info("음성을 받아썼다 : %s %.1f초 %s", f.get("name"),
+                 time.time() - t0, "성공" if words else why)
+        if words:
+            heard["transcript"] = words
+        else:
+            heard["transcript_error"] = why or "받아쓰기 실패"
+        out.append(heard)
+    return tuple(out)

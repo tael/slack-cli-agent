@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.auth.principal import Principal, TrustLevel
+from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.prompt.sections import AttachmentSection, CompositionContext
 from slack_cli_agent.slack.attachments import AttachmentStore, DownloadResult
-from slack_cli_agent.slack.transcribe import Transcriber
-
+from slack_cli_agent.slack.transcribe import Transcriber, transcribe_files
 
 STRANGER = Principal(user_id="U9", channel="C1", trust=TrustLevel.GENERAL, is_direct_message=False)
 
@@ -52,7 +52,7 @@ def test_받아쓴_글을_공백_정리해_돌려준다(tmp_path: Path) -> None:
     call = runner.calls[0]
     assert "--language" in call["args"] and "ko" in call["args"]
     # 점을 넣으면 mlx-whisper 가 확장자로 보고 잘라낸다
-    assert call["args"][call["args"].index("--output-name") + 1] == "voice_stt"
+    assert call["args"][call["args"].index("--output-name") + 1] == "voice_m4a_stt"
     assert call["stdin"] is subprocess.DEVNULL
     assert call["env"]["PATH"].startswith("/opt/homebrew/bin")
 
@@ -81,54 +81,94 @@ def test_빈_글은_실패(tmp_path: Path) -> None:
     assert words is None and "말소리를 찾지 못했다" in why
 
 
-def _store(tmp_path: Path, transcriber: Any) -> AttachmentStore:
-    return AttachmentStore(
-        attach_dir=tmp_path / "attach",
-        token_provider=lambda: "xoxb",
-        downloader=lambda url, token: DownloadResult("application/octet-stream", b"data"),
-        transcriber=transcriber,
+def test_확장자만_다른_두_클립은_글_파일이_겹치지_않는다(tmp_path: Path) -> None:
+    runner = _Runner()
+    t = Transcriber(binary=_engine(tmp_path), runner=runner)
+    for n in ("voice.m4a", "voice.webm"):
+        (tmp_path / n).write_bytes(b"x")
+        t(str(tmp_path / n))
+    names = [c["args"][c["args"].index("--output-name") + 1] for c in runner.calls]
+    assert len(set(names)) == 2
+
+
+def test_지난_실행의_글_파일을_이번_결과로_읽지_않는다(tmp_path: Path) -> None:
+    clip = tmp_path / "voice.m4a"
+    clip.write_bytes(b"x")
+    (tmp_path / "voice_m4a_stt.txt").write_text("지난번 말")
+    # 엔진이 0 으로 끝났지만 글을 쓰지 않았다
+    runner = _Runner(text=None)
+    words, why = Transcriber(binary=_engine(tmp_path), runner=runner)(str(clip))
+    assert words is None and "종료 코드 0" in why
+
+
+def _saved() -> tuple[dict[str, Any], ...]:
+    return (
+        {"name": "voice.m4a", "mimetype": "audio/mp4", "local_path": "/a/voice.m4a"},
+        {"name": "photo.png", "mimetype": "image/png", "local_path": "/a/photo.png"},
     )
 
 
-def _event() -> dict[str, Any]:
-    return {"ts": "1.0", "files": [
+def test_첨부_저장은_받아쓰지_않는다(tmp_path: Path) -> None:
+    """접수 경로(소켓 핸들러)에서 받아쓰면 접수가 밀린다. 저장만 한다(G6 검토)."""
+    store = AttachmentStore(
+        attach_dir=tmp_path / "attach",
+        token_provider=lambda: "xoxb",
+        downloader=lambda url, token: DownloadResult("application/octet-stream", b"data"),
+    )
+    files, missed = store.download({"ts": "1.0", "files": [
         {"name": "voice.m4a", "mimetype": "audio/mp4", "url_private": "https://s/1", "size": 4},
-        {"name": "photo.png", "mimetype": "image/png", "url_private": "https://s/2", "size": 4},
-    ]}
+    ]})
+    assert missed == 0
+    assert "transcript" not in files[0] and "transcript_error" not in files[0]
 
 
-def test_음성_첨부만_받아쓴다(tmp_path: Path) -> None:
+def test_음성_첨부만_받아쓴다() -> None:
     calls: list[str] = []
 
     def fake(path: str) -> tuple[str | None, str]:
         calls.append(path)
         return "회의 잡아 줘", ""
 
-    files, missed = _store(tmp_path, fake).download(_event())
-    assert missed == 0
-    assert len(calls) == 1 and calls[0].endswith("voice.m4a")
-    voice, photo = files
+    voice, photo = transcribe_files(_saved(), fake)
+    assert calls == ["/a/voice.m4a"]
     assert voice["transcript"] == "회의 잡아 줘"
     assert "transcript" not in photo and "transcript_error" not in photo
 
 
-def test_받아쓰기_실패는_사유를_싣는다(tmp_path: Path) -> None:
-    files, _ = _store(tmp_path, lambda p: (None, "받아쓰기 실패, 종료 코드 1 : x")).download(_event())
+def test_받아쓰기_실패는_사유를_싣는다() -> None:
+    files = transcribe_files(_saved(), lambda p: (None, "받아쓰기 실패, 종료 코드 1 : x"))
     assert files[0]["transcript_error"] == "받아쓰기 실패, 종료 코드 1 : x"
     assert "transcript" not in files[0]
 
 
-def test_받아쓰기_예외도_실패로_싣는다(tmp_path: Path) -> None:
+def test_받아쓰기_예외도_실패로_싣는다() -> None:
     def boom(path: str) -> tuple[str | None, str]:
         raise RuntimeError("터짐")
 
-    files, _ = _store(tmp_path, boom).download(_event())
+    files = transcribe_files(_saved(), boom)
     assert "받아쓰기를 실행하지 못했다" in files[0]["transcript_error"]
 
 
-def test_받아쓰기기가_없으면_실패로_싣는다(tmp_path: Path) -> None:
-    files, _ = _store(tmp_path, None).download(_event())
+def test_받아쓰기기가_없으면_실패로_싣는다() -> None:
+    files = transcribe_files(_saved(), None)
     assert "받아쓰기 엔진이 설정되지 않았다" in files[0]["transcript_error"]
+
+
+def test_이미_받아쓴_첨부는_다시_받아쓰지_않는다() -> None:
+    calls: list[str] = []
+    done = ({"name": "v.m4a", "mimetype": "audio/mp4", "local_path": "/a/v.m4a",
+             "transcript": "앞서 들은 말"},)
+    files = transcribe_files(done, lambda p: (calls.append(p), ("x", ""))[1])
+    assert calls == [] and files[0]["transcript"] == "앞서 들은 말"
+
+
+def test_첨부만_있는_말은_요청이다() -> None:
+    """접수와 되짚기가 함께 쓰는 판정이다. 음성 메모는 본문이 비어 온다(G6 검토)."""
+    base = RequestContext(channel="C1", user="U1", ts="1.0", thread_ts="1.0", text="  ")
+    assert base.has_no_request
+    with_file = RequestContext(channel="C1", user="U1", ts="1.0", thread_ts="1.0", text="",
+                               files=({"name": "voice.m4a"},))
+    assert not with_file.has_no_request
 
 
 def test_프롬프트에_받아쓴_말과_지시를_싣는다() -> None:

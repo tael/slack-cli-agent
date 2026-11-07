@@ -358,6 +358,7 @@ def build_pipeline(
     awaiting: Any = None,
     default_workdir: Path | None = None,
     light_workdir: Path | None = None,
+    transcriber: Any = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -414,6 +415,8 @@ def build_pipeline(
         extra_kwargs["awaiting"] = awaiting
     if light_workdir is not None:
         extra_kwargs["light_workdir"] = light_workdir
+    if transcriber is not None:
+        extra_kwargs["transcriber"] = transcriber
     extra_kwargs.setdefault(
         "watch_results",
         WatchResultReader((tmp_path or Path("/tmp")) / ".watch-out"),
@@ -1431,6 +1434,41 @@ class Test첨부파일:
         pipeline.handle(make_ctx())
         assert parts["composer"].contexts[0].files == ()
         assert parts["composer"].contexts[0].missed_files == 0
+
+
+class Test음성_첨부는_워커에서_받아쓴다:
+    """접수(소켓 핸들러)에서 받아쓰면 클립마다 최대 180초 동안 접수 표식과
+    뒤 이벤트가 밀린다. 마메치처럼 큐에서 꺼낸 뒤 받아쓴다(G6 검토)."""
+
+    def test_처리_표식_뒤에_받아쓴_말을_프롬프트_맥락에_싣는다(self) -> None:
+        reactions = FakeReactions()
+        order: list[list[tuple[str, str, str]]] = []
+
+        def fake(path: str) -> tuple[str | None, str]:
+            order.append(list(reactions.events))
+            return "회의 잡아 줘", ""
+
+        files = (
+            {"name": "voice.m4a", "mimetype": "audio/mp4", "local_path": "/a/voice.m4a"},
+            {"name": "a.png", "mimetype": "image/png", "local_path": "/a/a.png"},
+        )
+        pipeline, parts = build_pipeline(
+            responses=[ok_response()], reactions=reactions, transcriber=fake,
+        )
+        pipeline.handle(make_ctx(files=files))
+
+        voice, photo = parts["composer"].contexts[0].files
+        assert voice["transcript"] == "회의 잡아 줘"
+        assert "transcript" not in photo
+        # 받아쓰기 전에 처리 표식이 이미 달렸다
+        assert len(order) == 1 and order[0][0][0] == "processing"
+
+    def test_받아쓰기기가_없으면_실패_사유를_싣는다(self) -> None:
+        files = ({"name": "voice.m4a", "mimetype": "audio/mp4", "local_path": "/a/voice.m4a"},)
+        pipeline, parts = build_pipeline(responses=[ok_response()])
+        pipeline.handle(make_ctx(files=files))
+        voice = parts["composer"].contexts[0].files[0]
+        assert "받아쓰기 엔진이 설정되지 않았다" in voice["transcript_error"]
 
 
 class Test첨부_디렉터리는_해당_파일의_자리로만_열린다:

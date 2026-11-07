@@ -58,6 +58,7 @@ from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_a
 from ..slack.mentions import MentionRenderer
 from ..slack.origin_alive import OriginAliveChecker
 from ..slack.tool_post import ToolPostMerger
+from ..slack.transcribe import TranscribeFn, transcribe_files
 from ..slack.transcript import CurrentMessage
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
@@ -192,6 +193,10 @@ class RequestPipeline:
         # [[ASK]] tag still gets stripped either way, since leaving it in
         # the posted body would expose an internal protocol marker.
         awaiting: AwaitingPort | None = None,
+        # 음성 첨부 받아쓰기(G6). 접수가 아니라 여기서 부른다: 클립마다 최대
+        # 180초라 소켓 핸들러에서 돌면 접수 표식과 뒤 이벤트가 밀린다.
+        # None 이면 음성 첨부에 실패 사유를 싣는다.
+        transcriber: TranscribeFn | None = None,
     ) -> None:
         self._access = access_policy
         self._transcript = transcript_builder
@@ -239,6 +244,7 @@ class RequestPipeline:
         self._now = now
         self._monotonic = monotonic
         self._awaiting = awaiting
+        self._transcriber = transcriber
         self._gate = ResponseGate()
 
     def handle(self, ctx: RequestContext) -> HandleOutcome:
@@ -344,6 +350,9 @@ class RequestPipeline:
         # Wall clock alone can't distinguish "actually slow" from "device slept".
         mono_start = self._monotonic()
         self._mark_processing(ctx)
+        # 처리 표식을 단 뒤에 받아쓴다. 받아쓰는 동안에도 화면에 진행이 보인다.
+        if ctx.files:
+            ctx = replace(ctx, files=transcribe_files(ctx.files, self._transcriber))
 
         principal = self._access.principal_for(ctx.channel, ctx.user)
         model = self._access.model_for(principal)
