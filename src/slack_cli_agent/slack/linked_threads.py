@@ -89,10 +89,22 @@ class LinkedThreadReader:
                 continue
             read = self._read_of(self._transcript, link.channel, link.thread_ts)
             name = self._name_of(self._channel_name, link.channel)
-            if not read.read_ok and as_owner and self._owner_transcript is not None:
-                read = self._read_of(self._owner_transcript, link.channel, link.thread_ts)
-                if read.read_ok and name == link.channel and self._owner_channel_name:
-                    name = self._name_of(self._owner_channel_name, link.channel)
+            if not read.read_ok and as_owner:
+                if self._owner_transcript is None:
+                    # 꺼진 이유가 로그에 없으면 실측 실패를 추적하지 못한다(D5).
+                    log.warning(
+                        "소유자 턴이지만 소유자 세션이 설정되지 않아 다시 읽지 않았다 : %s",
+                        link.channel,
+                    )
+                elif link.channel.startswith("D"):
+                    # 개인 대화 링크는 소유자 세션으로도 읽지 않는다. 비공개 채널을
+                    # 읽게 하려는 경로이고, 소유자의 DM 이 다른 사람이 보는 답에 실릴
+                    # 수 있다. MCP 조회도 개인 대화를 열지 않는다(D5).
+                    log.info("개인 대화 링크라 소유자 세션으로 읽지 않는다 : %s", link.channel)
+                else:
+                    read = self._read_of(self._owner_transcript, link.channel, link.thread_ts)
+                    if read.read_ok and name == link.channel and self._owner_channel_name:
+                        name = self._name_of(self._owner_channel_name, link.channel)
             body, read_ok = read.body, read.read_ok
             if not read_ok:
                 fallback = self._attachment_fallback(link, attachments)

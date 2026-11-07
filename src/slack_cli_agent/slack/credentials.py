@@ -12,6 +12,7 @@ credentials file it does not use.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 from collections.abc import Mapping
@@ -24,6 +25,8 @@ from ..core.secrets import redact
 
 if TYPE_CHECKING:
     from ..config.profile import Profile
+
+log = logging.getLogger(__name__)
 
 BOT_TOKEN_ENV = "SLACK_BOT_TOKEN"
 APP_TOKEN_ENV = "SLACK_APP_TOKEN"
@@ -155,7 +158,8 @@ class CredentialResolver:
         unknown = len(set(data) - _ALLOWED_KEYS)
         if unknown:
             raise ConfigError(
-                f"자격 파일에 모르는 키가 {unknown}개 있다. bot_token 과 app_token 만 쓴다 : {path}"
+                f"자격 파일에 모르는 키가 {unknown}개 있다. "
+                f"bot_token, app_token, user_token, user_cookie 만 쓴다 : {path}"
             )
         for key in sorted(data):
             value = data[key]
@@ -169,19 +173,37 @@ class CredentialResolver:
         )
 
 
-def owner_session_client(resolver: CredentialResolver) -> object | None:
+def owner_session_client(resolver: CredentialResolver, *, owner_user_id: str = "") -> object | None:
     """소유자 사용자 세션으로 슬랙을 읽는 클라이언트. user_token 이 없으면 None 이고,
     그러면 소유자 턴의 링크 선읽기도 봇 토큰만 쓴다(D5).
 
     호출하는 쪽이 소유자 턴에서만 쓴다. 이 클라이언트는 소유자가 멤버인 비공개
     대화까지 읽는다.
+
+    owner_user_id 가 있는데 세션을 만들지 못하면 경고를 남긴다. 2026-11-07 실측에서
+    #114 머지 뒤에도 운영 자격 파일에 user_token 이 없어 이 경로가 꺼진 채 떴고,
+    그 사실이 로그에 없어 원인을 바로 찾지 못했다.
     """
     token = resolver.user_token()
     if not token:
+        if owner_user_id:
+            log.warning(
+                "소유자 세션 토큰이 없다. 자격 파일 user_token 또는 %s 가 비어 있어 "
+                "봇이 초대되지 않은 비공개 링크는 소유자 턴에도 읽지 않는다",
+                USER_TOKEN_ENV,
+            )
+        return None
+    cookie = resolver.user_cookie()
+    if token.startswith("xoxc-") and not cookie:
+        # 브라우저 세션 토큰은 d 쿠키 없이 invalid_auth 다. 매 링크마다 실패할
+        # 클라이언트를 만드는 대신 기동 시점에 한 번 밝히고 끈다.
+        log.warning(
+            "소유자 세션 토큰이 xoxc 인데 user_cookie(%s) 가 없어 소유자 세션을 끈다",
+            USER_COOKIE_ENV,
+        )
         return None
     from slack_sdk import WebClient  # lazy import so assembly tests don't need the SDK
 
-    cookie = resolver.user_cookie()
     headers = {"Cookie": "d=" + cookie} if cookie else {}
     return WebClient(token=token, headers=headers)
 
