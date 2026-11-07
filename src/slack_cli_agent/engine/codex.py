@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from ..auth.principal import TrustLevel
-from ..auth.tools import is_read_only_tool
+from ..auth.tools import SKILL_TOOL, is_read_only_tool
 from ..config.profile import EngineSpec, McpServerSpec
 from .base import (
     Engine,
@@ -67,7 +67,7 @@ from .footprint import (
     PayloadFootprint,
     utf8_bytes,
 )
-from .tool_selection import ToolAccess
+from .tool_selection import ToolAccess, ToolSelection
 
 # sca-dyb.4 — confirmed 2026-09-16 against the real CLI's turn.completed
 # event: Codex doesn't use Claude's cache_read_input_tokens/
@@ -82,6 +82,28 @@ CODEX_USAGE_KEY_MAP: Mapping[str, str] = {
     "cache_read_tokens": "cached_input_tokens",
     "cache_creation_tokens": "cache_write_input_tokens",
 }
+
+
+def _is_skill_grant(name: str) -> bool:
+    """Skill or Skill(<name>). codex has no Skill tool: the grant opens nothing
+    and closes nothing, so it must not decide whether the turn may write."""
+    return name == SKILL_TOOL or (name.startswith(f"{SKILL_TOOL}(") and name.endswith(")"))
+
+
+def _codex_reads_only(tools: ToolSelection) -> bool:
+    """An allowlist whose non-skill entries are all read tools.
+
+    always_skills puts Skill(<name>) on every turn, a non-owner's included.
+    Counted as a write tool, it turned a read-only turn into workspace-write
+    with network and --approve-for-me (W1).
+    """
+    return tools.access is ToolAccess.ALLOWLIST and all(
+        is_read_only_tool(name) for name in tools.names if not _is_skill_grant(name)
+    )
+
+
+def _codex_can_act(tools: ToolSelection) -> bool:
+    return tools.can_act and not _codex_reads_only(tools)
 
 
 def _codex_mcp_config_args(
@@ -197,9 +219,7 @@ class CodexEngine(Engine):
         allowlist would otherwise reach it as a sentence the model may
         ignore; the sandbox is the OS refusing the write (sca-f9k0).
         """
-        if request.tools.access is ToolAccess.ALLOWLIST and all(
-            is_read_only_tool(name) for name in request.tools.names
-        ):
+        if _codex_reads_only(request.tools):
             return "read-only"
         return str(self.spec.options.get("sandbox", "danger-full-access"))
 
@@ -265,8 +285,9 @@ class CodexEngine(Engine):
         if request.resume:
             cmd.append("resume")
         cmd += ["--json", "--skip-git-repo-check"]
-        if self.spec.options.get("network"):
-            # The read-only sandbox blocks network too; the profile decides whether to open it.
+        if self.spec.options.get("network") and sandbox == "workspace-write":
+            # The key only lifts workspace-write; a read-only turn keeps it off
+            # so the command shows the network closed, not just the sandbox.
             cmd += ["-c", "sandbox_workspace_write.network_access=true"]
         cmd += ["-m", request.require_model()]
         # Always sent, never omitted: leaving it out lets the CLI pick its own
@@ -274,7 +295,7 @@ class CodexEngine(Engine):
         cmd += ["-c", f"model_reasoning_effort={self._toml_string(self.resolve_effort(request))}"]
         cmd += _codex_mcp_config_args(
             self.profile.mcp_servers,
-            can_act=request.tools.can_act,
+            can_act=_codex_can_act(request.tools),
             is_owner=request.trust_level is TrustLevel.OWNER,
             turn_context=request.turn_context,
         )

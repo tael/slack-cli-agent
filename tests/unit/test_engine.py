@@ -882,6 +882,46 @@ class TestCodexEngineBuildCommand:
         assert "sandbox_workspace_write.network_access=true" in cmd
         assert "--approve-for-me" in cmd
 
+    @pytest.mark.parametrize("skills", [["Skill(daily-quote)", "Skill(jira)"], ["Skill"]])
+    def test_비소유자_읽기_턴은_스킬_허가가_붙어도_read_only_로_돈다(
+        self, tmp_path: Path, skills: list[str],
+    ) -> None:
+        """always_skills 의 Skill(<name>) 과 채널 Skill 은 읽기 도구 목록에
+        없어 읽기 턴을 쓰기 턴으로 바꿨다. codex 에는 Skill 도구가 없어 그
+        허가가 막을 것도 열 것도 없는데, workspace-write, 통신, 자동 승인이
+        함께 열렸다."""
+        engine = CodexEngine(
+            codex_profile(tmp_path, options={"sandbox": "workspace-write", "network": True}),
+            SETTINGS,
+        )
+        tools = ToolSelection.allow(["Read", "Grep", "Glob", *skills])
+        요청 = request(resume=False, trust_level=TrustLevel.GENERAL, tools=tools)
+        cmd = engine.build_command(요청)
+
+        assert 'sandbox_mode="read-only"' in cmd
+        assert "sandbox_workspace_write.network_access=true" not in cmd
+        assert "--approve-for-me" not in cmd
+        assert engine.blocks_outbound_writes(요청)
+
+    def test_비소유자_읽기_턴은_스킬_허가가_붙어도_MCP_쓰기_게이트를_닫는다(
+        self, tmp_path: Path,
+    ) -> None:
+        profile = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            fallback={"type": "codex", "binary": "codex", "model": "gpt-5.6-sol",
+                      "options": {"sandbox": "workspace-write", "network": True}},
+            tmp_path=tmp_path,
+            mcp_servers={"jira": {"command": "jira-mcp",
+                                  "turn_env": {"WRITE_ENABLED": "can_act"}}},
+        )
+        engine = CodexEngine(profile, SETTINGS)
+        cmd = engine.build_command(request(
+            resume=False, trust_level=TrustLevel.GENERAL,
+            tools=ToolSelection.allow(["Read", "Grep", "Skill(jira)"]),
+        ))
+
+        assert not any("WRITE_ENABLED" in tok for tok in cmd)
+
     def test_MCP_도구가_섞이면_내리지_않는다(self, tmp_path: Path) -> None:
         """READ_ONLY_TOOLS 는 내장 도구만 담는다. MCP 도구가 밖으로 쓰는지를
         코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰)."""
