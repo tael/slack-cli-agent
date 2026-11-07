@@ -100,7 +100,14 @@ def watch_check_prompt(description: str, outcome: WatchOutcome = WatchOutcome.UN
         f"지켜보는 작업 : {description}\n\n"
         "아직 끝나지 않았으면 다른 말 없이 답변 끝에 " + WATCH_STILL_TAG + " 만 붙여라.\n"
         "성공이든 실패든 끝났으면, 그 결과를 알리는 완료 보고 문구를 평소 답변 형식으로 쓰고 "
-        "맨 끝에 " + WATCH_DONE_TAG + " 를 붙여라."
+        "맨 끝에 " + WATCH_DONE_TAG + " 를 붙여라.\n\n"
+        "완료 판정 기준\n"
+        "- 위에 적힌 조건을 하나씩 이번 턴에 직접 조회한 결과로 확인한다. 하나라도 확인하지 "
+        "못했으면 끝나지 않은 것이다\n"
+        "- 재기동을 지켜보는 경우 새 프로세스가 실제로 떠 있는지와 이전 프로세스가 "
+        "종료됐는지를 프로세스 목록으로 확인한다. pid 파일이나 요청 파일 상태만으로 "
+        "재기동 완료라고 쓰지 않는다\n"
+        "- 보고에는 조건마다 확인한 값을 적는다. 확인하지 않은 범위를 완료라고 쓰지 않는다"
     )
 
 
@@ -276,6 +283,23 @@ class WatchJobChecker:
                     "감시 확인 응답의 태그가 모순된다. 완료로 처리한다 : 작업 %d, 확인 %d회",
                     job.id, job.checks,
                 )
+            newer = self._open_siblings(job)
+            if newer:
+                # Completion contract: a newer open watch in this thread asks
+                # for more than this job checks, so this job finishing is not
+                # the work finishing. Posting here is what made 2026-11-06's
+                # "restart confirmed" go out while the stricter worker check
+                # was still open. Close quietly; the newer watch reports.
+                log.info(
+                    "감시 완료 보고 보류 : 작업 %d, 같은 스레드 뒤 감시 %s 가 열려 있음",
+                    job.id, newer,
+                )
+                self._queue.mark_done(job.id)
+                self._settle_mark(job, failed=False)
+                self._record(
+                    WATCH_FINISHED_KIND, job, outcome=outcome.name, deferred_to=newer,
+                )
+                return
             self._finish(job, response.body, checked_at=now)
             return
 
@@ -316,6 +340,13 @@ class WatchJobChecker:
                 self._reactions.mark_done(job.channel, job.msg_ts)
         except Exception as exc:  # noqa: BLE001 — cosmetic; see module docstring
             log.error("감시 표식 정리 실패 : 작업 %d, 채널 %s, %s", job.id, job.channel, exc)
+
+    def _open_siblings(self, job: WatchJob) -> list[int]:
+        try:
+            return list(self._queue.open_siblings(job))
+        except Exception as exc:  # noqa: BLE001 - a failed lookup must not drop the report
+            log.warning("같은 스레드 감시 조회 실패 : 작업 %d, %s", job.id, exc)
+            return []
 
     def _outcome_of(self, job: WatchJob) -> WatchOutcome:
         if self._results is None:

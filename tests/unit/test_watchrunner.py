@@ -1551,3 +1551,132 @@ class Test발송직전_중복_판정:
         c.check_once()
 
         assert 발행.게시내역 == []
+
+
+class Test같은_스레드_감시_완료_계약:
+    """2026-11-06 test-agent 재기동 감시 재현.
+
+    작업 25 는 pid 파일, 요청 파일, 계정값만 보았고 2분 뒤 작업 26 이 이전
+    worker 종료 확인을 더했다. 25 가 혼자 끝나 "재기동 확인" 을 올린 것이 사고다.
+    """
+
+    조건25 = "구치파치 재기동 확인 : bot.pid 값 변경, apply-request 소멸, claude_account taeil.kim"
+    조건26 = "이전 worker 34667, 42173 종료를 ps 로 확인"
+
+    def test_뒤에_등록한_조건_감시가_앞_조건을_물려받는다(self, 큐: 시계달린큐) -> None:
+        첫 = 큐.enqueue("C1", "100.1", self.조건25, msg_ts="100.2")
+        큐.시각["값"] += 109
+        둘 = 큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3")
+        열린 = 큐.due(큐.시각["값"] + 10_000, 0)
+        assert [j.id for j in 열린] == [둘]
+        assert 첫 != 둘
+        assert self.조건25 in 열린[0].condition
+        assert self.조건26 in 열린[0].condition
+
+    def test_앞_조건만_충족돼도_완료_보고가_나가지_않는다(self, 큐: 시계달린큐) -> None:
+        큐.enqueue("C1", "100.1", self.조건25, msg_ts="100.2")
+        큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3")
+        발행 = 가짜발행()
+        본조건: list[str] = []
+
+        def run(job: WatchJob, outcome: WatchOutcome) -> EngineResponse:
+            본조건.append(job.condition)
+            # 합쳐진 감시 하나만 확인되고, 이전 worker 종료가 아직이라 미완료.
+            return 응답(ok=True, body=WATCH_STILL_TAG)
+
+        큐.시각["값"] += 10_000
+        체커(큐=큐, run_check=run, 발행=발행).check_once()
+        assert 발행.게시내역 == []
+        assert len(본조건) == 1
+
+    def test_뒤_감시가_열려_있으면_앞_감시는_조용히_닫힌다(
+        self, 큐: 시계달린큐, database: Database,
+    ) -> None:
+        # 병합 전에 이미 두 행이 열려 있던 경우(이전 버전이 쓴 행)를 직접 만든다.
+        앞 = 큐.enqueue("C1", "100.1", self.조건25, msg_ts="100.2")
+        with database.connect() as 연결:
+            연결.execute(
+                "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at, last_run, "
+                "done, msg_ts, checks, trust_level, extra, workdir, run_id, due_at) "
+                "VALUES ('C1', '100.1', ?, 1001, NULL, 0, '100.3', 0, 0, '', '', '', NULL)",
+                (self.조건26,),
+            )
+        감사 = 가짜감사()
+        발행 = 가짜발행()
+
+        def run(job: WatchJob, outcome: WatchOutcome) -> EngineResponse:
+            if job.id == 앞:
+                return 응답(ok=True, body="재기동을 확인했습니다 " + WATCH_DONE_TAG)
+            return 응답(ok=True, body=WATCH_STILL_TAG)
+
+        큐.시각["값"] += 10_000
+        체커(큐=큐, run_check=run, 발행=발행, 감사=감사).check_once()
+        assert 발행.게시내역 == []
+        남은 = 큐.due(큐.시각["값"] + 10_000, 0)
+        assert [j.condition for j in 남은] == [self.조건26]
+        assert any(r[0] == WATCH_FINISHED_KIND and r[1].get("deferred_to") for r in 감사.기록)
+
+    def test_합쳐진_감시가_전부_충족되면_한_번만_보고한다(self, 큐: 시계달린큐) -> None:
+        큐.enqueue("C1", "100.1", self.조건25, msg_ts="100.2")
+        큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3")
+        발행 = 가짜발행()
+        큐.시각["값"] += 10_000
+        체커(
+            큐=큐, 발행=발행,
+            run_check=기록하고_응답([], 응답(ok=True, body="모두 확인했습니다 " + WATCH_DONE_TAG)),
+        ).check_once()
+        assert len(발행.게시내역) == 1
+        assert 큐.due(큐.시각["값"] + 10_000, 0) == []
+
+    def test_결과_파일_감시는_합치지_않는다(self, 큐: 시계달린큐) -> None:
+        큐.enqueue("C1", "100.1", "배치 A", msg_ts="100.2", run_id="aaa")
+        큐.enqueue("C1", "100.1", "배치 B", msg_ts="100.3", run_id="bbb")
+        assert len(큐.due(큐.시각["값"] + 10_000, 0)) == 2
+
+    def test_대상이_다른_뒤_감시는_앞_감시_보고를_막지_않는다(self, 큐: 시계달린큐) -> None:
+        큐.enqueue("C1", "100.1", "dag_id=ingest_orders_daily run 확인", msg_ts="100.2")
+        큐.enqueue("C1", "100.1", "dag_id=billing_export_weekly run 확인", msg_ts="100.3")
+        발행 = 가짜발행()
+
+        def run(job: WatchJob, outcome: WatchOutcome) -> EngineResponse:
+            if "ingest" in job.condition:
+                return 응답(ok=True, body="ingest 끝났습니다 " + WATCH_DONE_TAG)
+            return 응답(ok=True, body=WATCH_STILL_TAG)
+
+        큐.시각["값"] += 10_000
+        체커(큐=큐, run_check=run, 발행=발행).check_once()
+        assert len(발행.게시내역) == 1
+
+    def test_확인_지시문이_조건별_직접_확인을_요구한다(self) -> None:
+        from slack_cli_agent.reliability.watchrunner import watch_check_prompt
+
+        지시 = watch_check_prompt("재기동")
+        assert "이전 프로세스가 종료" in 지시
+        assert "하나라도 확인하지 못했으면 끝나지 않은 것" in 지시
+
+    def test_권한이_다른_앞_감시는_합치지_않는다(self, 큐: 시계달린큐) -> None:
+        # 감시 확인 턴은 행의 trust 로 돈다. 일반 사용자 조건을 소유자 행에 합치면
+        # 그 조건이 소유자 권한 턴에서 실행된다.
+        from slack_cli_agent.auth.principal import TrustLevel
+
+        큐.enqueue("C1", "100.1", self.조건25, msg_ts="100.2", trust=TrustLevel.GENERAL)
+        큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3", trust=TrustLevel.OWNER)
+        열린 = 큐.due(큐.시각["값"] + 10_000, 0)
+        assert len(열린) == 2
+        소유자행 = next(j for j in 열린 if j.trust is TrustLevel.OWNER)
+        assert self.조건25 not in 소유자행.condition
+        assert 큐.open_siblings(next(j for j in 열린 if j.trust is TrustLevel.GENERAL)) == []
+
+    def test_같은_메시지_재실행은_다른_감시를_닫지_않는다(
+        self, 큐: 시계달린큐, database: Database,
+    ) -> None:
+        둘 = 큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3")
+        with database.connect() as 연결:
+            연결.execute(
+                "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at, last_run, "
+                "done, msg_ts, checks, trust_level, extra, workdir, run_id, due_at) "
+                "VALUES ('C1', '100.1', ?, 1001, NULL, 0, '100.9', 0, 0, '', '', '', NULL)",
+                (self.조건25,),
+            )
+        assert 큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3") == 둘
+        assert len(큐.due(큐.시각["값"] + 10_000, 0)) == 2

@@ -157,7 +157,11 @@ class Test활성감시멱등:
         from slack_cli_agent.reliability.watchjobs import WatchJobQueue
 
         q = WatchJobQueue(database, now=lambda: 1000.0)
-        assert q.enqueue("C1", "111.1", "가") != q.enqueue("C1", "111.1", "나")
+        # 대상이 분명히 다른 두 감시로 둔다. 대상 표시가 없는 평문 감시는 같은
+        # 스레드의 조건 감시로 합쳐지므로 이 시험의 대상이 아니다(2026-11-06).
+        가 = "dag_id=ingest_orders_daily 확인"
+        나 = "dag_id=billing_export_weekly 확인"
+        assert q.enqueue("C1", "111.1", 가) != q.enqueue("C1", "111.1", 나)
         assert len(q.due(2000.0, 0.0)) == 2
 
     def test_다른_채널은_따로_센다(self, database) -> None:
