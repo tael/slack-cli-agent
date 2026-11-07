@@ -2823,3 +2823,55 @@ def test_요청_중_이사가_끝나면_새_슬러그로_기록한다():
     pipeline.handle(make_ctx())
 
     assert archive.calls[0]["channel_slug"] == "새이름"
+
+
+class Test모델별_사용량을_요청_기록에_남긴다:
+    """A14 : 요청 기록에 모델별 usage 와 엔진이 보고한 비용이 있어야 조언자
+    모델을 따로 집계한다."""
+
+    @staticmethod
+    def _table(out: int, cost: float) -> dict[str, Any]:
+        from slack_cli_agent.engine.base import ModelUsage
+        return {
+            "claude-sonnet-5-5": ModelUsage(output_tokens=out, cost_usd=cost),
+            "claude-opus-5-5": ModelUsage(output_tokens=out * 2, cost_usd=cost * 3),
+        }
+
+    def test_조언자_모델이_따로_남는다(self, tmp_path: Path) -> None:
+        응답 = replace(ok_response(), model_usage=self._table(100, 0.1))
+        pipeline, deps = build_pipeline(responses=[응답], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1"))
+
+        기록 = deps["audit"].records[-1]["model_usage"]
+        assert 기록["claude-opus-5-5"]["output_tokens"] == 200
+        assert 기록["claude-opus-5-5"]["cost_usd"] == pytest.approx(0.3)
+        assert 기록["claude-sonnet-5-5"]["cost_usd"] == pytest.approx(0.1)
+        json.dumps(deps["audit"].records[-1], ensure_ascii=False)
+
+    def test_재실행이_있으면_마지막_호출의_누적표를_쓴다(self, tmp_path: Path) -> None:
+        """재실행은 같은 세션을 이어 쓰고 표는 세션 누적이다. 첫 호출 표를
+        남기면 재실행의 토큰이 기록에서 빠진다."""
+        첫 = replace(ok_response("본문 " * 40), model_usage=self._table(100, 0.1))
+        재 = replace(ok_response("고친 본문 " * 40), model_usage=self._table(150, 0.2))
+        pipeline, deps = build_pipeline(
+            responses=[첫, 재], late_addendum=Fake늦은추가말("새 말", "1700000009.000000"),
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(user="U1"))
+
+        기록 = deps["audit"].records[-1]["model_usage"]
+        assert 기록["claude-sonnet-5-5"]["output_tokens"] == 150
+
+    def test_실패와_침묵도_남긴다(self, tmp_path: Path) -> None:
+        for 응답 in (
+            replace(fail_response(), model_usage=self._table(5, 0.01)),
+            replace(ok_response(body=f"{SILENT_MARK} 없음"), model_usage=self._table(5, 0.01)),
+        ):
+            pipeline, deps = build_pipeline(responses=[응답, 응답], tmp_path=tmp_path)
+            pipeline.handle(make_ctx(user="U1"))
+            assert "claude-opus-5-5" in deps["audit"].records[-1]["model_usage"]
+
+    def test_표가_없으면_키를_안_넣는다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1"))
+        assert "model_usage" not in deps["audit"].records[-1]

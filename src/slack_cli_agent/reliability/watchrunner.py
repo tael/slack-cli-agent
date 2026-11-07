@@ -16,9 +16,10 @@ from typing import Any, Protocol, runtime_checkable
 
 from ..config.channel import channel_is_rich
 from ..config.settings import RuntimeSettings
-from ..engine.base import EngineResponse
+from ..engine.base import MODEL_USAGE_KEY, EngineResponse, engine_usage_audit_fields
 from ..guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG, WATCH_SUPERSEDED_TAG
 from ..observability.audit import (
+    ENGINE_SPEND_KIND,
     WATCH_ABANDONED_KIND,
     WATCH_CHECKED_KIND,
     WATCH_FINISHED_KIND,
@@ -311,6 +312,8 @@ class WatchJobChecker:
             engine=response.engine, model=response.model_asked, **실제모델,
             elapsed=response.elapsed, turns=response.turns,
             failure=response.failure_reason or "", body_len=len(response.body),
+            # The check is an engine call too; the per-model rollup reads it (A14).
+            **engine_usage_audit_fields(response),
         )
 
         if outcome in _TERMINAL:
@@ -456,6 +459,7 @@ class WatchJobChecker:
         except Exception as exc:  # noqa: BLE001 - see docstring
             log.warning("감시 확인 전 기보고 판정 실패 : 작업 %d, %s", job.id, exc)
             return False
+        self._record_spend(job, verdict, purpose="watch_reported_check")
         return _already_reported(verdict)
 
     def _origin_deleted(self, job: WatchJob) -> bool:
@@ -493,9 +497,22 @@ class WatchJobChecker:
         except Exception as exc:  # noqa: BLE001 — see docstring: a failed recheck must not drop the report
             log.warning("감시 완료 보고 전 중복 판정 실패 : 작업 %d, %s", job.id, exc)
             return False
+        self._record_spend(job, verdict, purpose="watch_supersede_check")
         if not verdict.ok:
             return False
         return WATCH_SUPERSEDED_TAG in (verdict.body or "")
+
+    def _record_spend(self, job: WatchJob, response: EngineResponse, *, purpose: str) -> None:
+        """The verdict calls spend tokens but leave no row of their own, so
+        the per-model rollup would miss them (A14). Only written when the
+        engine reported a per-model table."""
+        fields = engine_usage_audit_fields(response)
+        if MODEL_USAGE_KEY not in fields:
+            return
+        self._record(
+            ENGINE_SPEND_KIND, job, purpose=purpose, ok=response.ok,
+            engine=response.engine, model=response.model_asked, **fields,
+        )
 
     def _record(self, kind: str, job: WatchJob, **fields: Any) -> None:
         """Best effort by contract: a watch that already ran must not be lost

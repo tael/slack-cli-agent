@@ -29,16 +29,20 @@ from ..config.channel import ChannelConfig, ChannelRegistry, advisor_enabled
 from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
 from ..core.channel_kind import is_direct_message_channel
-from ..engine.base import CONTEXT_RESET_RAW_KEY, TRUNCATED_RAW_KEY, USAGE_FIELDS
+from ..engine.base import CONTEXT_RESET_RAW_KEY, MODEL_USAGE_KEY, TRUNCATED_RAW_KEY, USAGE_FIELDS
 from ..engine.registry import registry_for_profile
 from ..jobs.ports import JobStatus
 from ..observability.audit import (
     BASELINE_KIND_VALUES,
     PAYLOAD_KIND,
+    ENGINE_SPEND_KIND,
     REQUEST_KIND,
+    REVIEW_KIND,
+    WATCH_CHECKED_KIND,
     IncidentKind,
     normalize_kind,
 )
+from ..observability import model_cost
 from ..storage.database import Database
 
 KST = timezone(timedelta(hours=9))
@@ -66,7 +70,10 @@ NOT_APPLICABLE_REASONS: dict[str, str] = {
     # here would bake in a stale rate with no way to tell when it applied.
     # Token counts (usage.tokens) are recorded instead; deriving cost from
     # those is left to a reporting layer that can date its price table.
-    "usage.cost_total_usd": "감사 기록에 비용 필드가 없다(단가는 모델·시점마다 달라 토큰 수만 남긴다)",
+    # The cost shown is the engine's own costUSD per model (A14), never one
+    # computed here from a price table. An engine that reports none (codex,
+    # gemini) keeps this reason.
+    "usage.cost_total_usd": "감사 기록에 엔진이 보고한 모델별 비용이 없다",
     "usage.turns_median": "감사 기록에 턴 수가 없다",
     "usage.question_len_median": "감사 기록에 질문 원문이 없다",
     "usage.answer_len_median": "감사 기록에 답변 원문이 없다",
@@ -100,6 +107,10 @@ _SLOW_EDGES = (10, 30, 60, 120, 300, 600, 900)
 
 def _kst(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, KST).isoformat(timespec="seconds")
+
+
+def _kst_day(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, KST).strftime("%Y-%m-%d")
 
 
 def _pct(part: int, whole: int) -> float | None:
@@ -226,6 +237,7 @@ class MetricsCollector:
         requests, incident_counts, payload_rows = self._read_requests(db, cutoff)
         first_seen = self._kind_first_seen_map(db)
         field_first_seen = self._usage_field_first_seen(db)
+        model_spend = self._model_spend(db, cutoff)
         reviews = self._read_reviews(db)
         sessions = self._read_sessions(db)
         queued_by_channel = self._read_queued_by_channel(db)
@@ -237,7 +249,7 @@ class MetricsCollector:
         return {
             "generated_at": _kst(now),
             "window_days": days,
-            "bot": self._bot_fields(field_first_seen),
+            "bot": self._bot_fields(field_first_seen, model_spend),
             "snapshot": snapshot,
             "last_answer_kst": latest or None,
             "channels": self._channel_rows(requests, channels, sessions, queued_by_channel, now),
@@ -246,7 +258,7 @@ class MetricsCollector:
             "quality": self._quality(
                 reviews, requests, incident_counts, first_seen, watch_verdicts
             ),
-            "usage": self._usage(requests, channels, field_first_seen),
+            "usage": self._usage(requests, channels, field_first_seen, model_spend),
             "followup": self._followup(requests),
             "tools": {"available": False, "reason": NOT_APPLICABLE_REASONS["tools"]},
             "queue_wait": self._queue_wait(requests),
@@ -305,6 +317,36 @@ class MetricsCollector:
             record["ts_kst"] = _kst(row["at"])
             out.append(record)
         return out, incidents, payloads
+
+    def _model_spend(self, db: Database, cutoff: float) -> dict[str, Any]:
+        """Per-model tokens and engine-reported cost in the window (A14).
+
+        Request, review, watch-check and engine-spend rows carry the session-cumulative
+        table. Rows from LOOKBACK_SEC before the window are read too, only so
+        a session's first in-window row has its previous row to subtract.
+        """
+        rows = db.connect().execute(
+            "SELECT at, kind, channel, payload FROM audit"
+            " WHERE at >= ? AND kind IN (?, ?, ?, ?) AND payload LIKE ? ORDER BY at, id",
+            (
+                cutoff - model_cost.LOOKBACK_SEC,
+                REQUEST_KIND, REVIEW_KIND, WATCH_CHECKED_KIND, ENGINE_SPEND_KIND,
+                f'%"{MODEL_USAGE_KEY}"%',
+            ),
+        ).fetchall()
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            payload["at"] = row["at"]
+            payload["kind"] = normalize_kind(row["kind"])
+            payload.setdefault("channel", row["channel"])
+            records.append(payload)
+        return model_cost.rollup(model_cost.row_spends(records), cutoff, _kst_day)
 
     def _watch_verdicts(self, db: Database, cutoff: float) -> dict[str, int]:
         """Counts how published replies landed on the watch question in the
@@ -427,9 +469,13 @@ class MetricsCollector:
 
     # --- 지표 계산 -------------------------------------------------------
 
-    def _bot_fields(self, field_first_seen: Mapping[str, float]) -> dict[str, Any]:
+    def _bot_fields(
+        self, field_first_seen: Mapping[str, float], model_spend: Mapping[str, Any],
+    ) -> dict[str, Any]:
         engine = self._profile.primary_engine
         not_applicable = dict(NOT_APPLICABLE_REASONS)
+        if model_spend.get("cost_total_usd") is not None:
+            not_applicable.pop("usage.cost_total_usd", None)
         if "by_user" in field_first_seen:
             not_applicable.pop("usage.by_user", None)
         if "turns_median" in field_first_seen:
@@ -625,6 +671,7 @@ class MetricsCollector:
         requests: Sequence[Mapping[str, Any]],
         channels: Mapping[str, ChannelConfig],
         field_first_seen: Mapping[str, float],
+        model_spend: Mapping[str, Any],
     ) -> dict[str, Any]:
         total = len(requests)
         by_channel: collections.Counter[str] = collections.Counter(
@@ -681,10 +728,18 @@ class MetricsCollector:
             "user_count": len(by_user_counter) if user_tracked_since else None,
             "by_model": [{"model": m, "count": n} for m, n in by_model.most_common()],
             "by_effort": [{"effort": e, "count": n} for e, n in by_effort.most_common()],
-            "cost_total_usd": None,
-            "cost_median_usd": None,
-            "cost_by_day": [],
-            "cost_by_channel": [],
+            # Engine-reported cost, summed per model from each row's own
+            # spend (A14). The advisor model is its own line here.
+            "cost_total_usd": model_spend.get("cost_total_usd"),
+            "cost_median_usd": model_spend.get("cost_median_usd"),
+            "cost_by_day": list(model_spend.get("cost_by_day") or []),
+            "cost_by_channel": [
+                {**row, "name": channels[row["channel"]].name if row["channel"] in channels else row["channel"]}
+                for row in model_spend.get("cost_by_channel") or []
+            ],
+            "cost_by_kind": dict(model_spend.get("cost_by_kind") or {}),
+            "by_model_usage": list(model_spend.get("by_model") or []),
+            "model_usage_sample": int(model_spend.get("sample") or 0),
             "turns_median": _quantile(turns_values, 0.5) if turns_tracked_since else None,
             "question_len_median": None,
             "answer_len_median": None,

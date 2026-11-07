@@ -1711,3 +1711,58 @@ class Test같은_스레드_감시_완료_계약:
             )
         assert 큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3") == 둘
         assert len(큐.due(큐.시각["값"] + 10_000, 0)) == 2
+
+
+class Test감시_기록의_모델별_사용량:
+    """A14 : 감시 확인도 엔진 호출이다. 모델별 집계에 들어가야 한다."""
+
+    def test_모델별_표와_세션을_남긴다(self, 큐) -> None:
+        from slack_cli_agent.engine.base import ModelUsage
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        응답값 = replace(
+            응답(ok=True, body=f"아직입니다 {WATCH_STILL_TAG}"), session_id="ws1",
+            model_usage={"claude-haiku-4-5": ModelUsage(output_tokens=9, cost_usd=0.002)},
+        )
+        감사 = 가짜감사()
+        c = 체커(큐=큐, run_check=lambda job, outcome: 응답값, 감사=감사)
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        기록 = dict(감사.기록)[WATCH_CHECKED_KIND]
+        assert 기록["model_usage"]["claude-haiku-4-5"]["output_tokens"] == 9
+        assert 기록["session_id"] == "ws1"
+
+    def test_중복_판정_호출의_사용량도_따로_남긴다(self, 큐) -> None:
+        """판정 호출은 결과 행이 따로 없어 집계에서 빠졌다 (A14)."""
+        from slack_cli_agent.engine.base import ModelUsage
+        from slack_cli_agent.observability.audit import ENGINE_SPEND_KIND
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        감사 = 가짜감사()
+        판정 = replace(
+            응답(ok=True, body=WATCH_SUPERSEDED_TAG), session_id="v1",
+            model_usage={"claude-haiku-4-5": ModelUsage(output_tokens=3, cost_usd=0.001)},
+        )
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            스레드활동=가짜스레드활동(다시_말함=True), 감사=감사,
+            run_supersede_check=lambda job, transcript, draft: 판정,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        [기록] = [f for k, f in 감사.기록 if k == ENGINE_SPEND_KIND]
+        assert 기록["purpose"] == "watch_supersede_check"
+        assert 기록["model_usage"]["claude-haiku-4-5"]["output_tokens"] == 3
+
+    def test_표가_없으면_사용량_행을_안_남긴다(self, 큐) -> None:
+        from slack_cli_agent.observability.audit import ENGINE_SPEND_KIND
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        감사 = 가짜감사()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            스레드활동=가짜스레드활동(다시_말함=True), 감사=감사,
+            run_supersede_check=lambda job, transcript, draft: 응답(ok=True, body=WATCH_SUPERSEDED_TAG),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        assert not [k for k, _ in 감사.기록 if k == ENGINE_SPEND_KIND]

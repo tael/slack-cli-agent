@@ -912,3 +912,29 @@ class Test재작성본이_5Why_절을_지우는_경우:
     def test_Why_행을_줄이면_원본을_올린다(self, database) -> None:
         두_행 = _끊긴_5Why.replace("| Why 3 | 왜 구름이 많았나 | 습도가 높았다 | 미확인 |\n", "")
         self._원본을_올렸는지_본다(self._run(database, 두_행))
+
+
+class Test점검_기록의_모델별_사용량:
+    """A14 : 부검은 부검 모델로 엔진을 쓰는데 점검 기록에 usage 가 없어
+    모델별 비용 집계에서 빠졌다."""
+
+    def test_usage_와_모델별_표와_세션을_남긴다(self, database) -> None:
+        from slack_cli_agent.engine.base import ModelUsage, Usage
+        response = EngineResponse(
+            ok=True, body="요약===상세===상세내용", session_id="rs1", model_actual=None,
+            elapsed=1.0, turns=1, usage=Usage(input_tokens=3, output_tokens=4),
+            model_usage={"claude-opus-5-5": ModelUsage(output_tokens=4, cost_usd=0.5)},
+        )
+        rig = make_rig(database, engine_responses=[response])
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        [(kind, fields)] = rig.audit.rows
+        assert kind == "review"
+        assert fields["model_usage"]["claude-opus-5-5"]["cost_usd"] == 0.5
+        assert fields["usage"]["output_tokens"] == 4
+        assert fields["session_id"] == "rs1"
+
+    def test_표가_없으면_키를_안_넣는다(self, database) -> None:
+        rig = make_rig(database)
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        [(_, fields)] = rig.audit.rows
+        assert "model_usage" not in fields

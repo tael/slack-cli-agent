@@ -27,13 +27,16 @@ from ..config.channel import (
 from ..config.channel import channel_slug as slug_for
 from ..engine.base import (
     CONTEXT_RESET_RAW_KEY,
+    MODEL_USAGE_KEY,
     NO_DETAIL,
     TRUNCATED_RAW_KEY,
     Engine,
     EngineRequest,
     EngineResponse,
     FailureDetail,
+    ModelUsage,
     Usage,
+    model_usage_audit,
 )
 from ..engine.runner import EngineInvoker
 from ..reliability.restart import TURN_ID_ENV
@@ -506,7 +509,7 @@ class RequestPipeline:
                 # both fill usage on their failure responses; leaving it out
                 # made the usage rollup read lower than actual.
                 ok=False, usage=response.usage, turns=response.turns, failure=failure,
-                model_actual=response.model_actual,
+                model_actual=response.model_actual, model_usage=response.model_usage,
                 failure_detail=response.failure_detail,
                 truncated=_truncated(response),
                 context_reset=context_reset,
@@ -525,6 +528,7 @@ class RequestPipeline:
         if is_silent(response.body):
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
+                     model_usage=response.model_usage,
                      truncated=_truncated(response), context_reset=context_reset)
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
@@ -562,6 +566,7 @@ class RequestPipeline:
             self._record(
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                 turns=response.turns, model_actual=response.model_actual,
+                model_usage=_turn_model_usage(turn_calls),
                 truncated=_truncated(response), context_reset=context_reset,
             )
             return HandleOutcome(ok=True, posted_ts=notice_ts)
@@ -585,6 +590,7 @@ class RequestPipeline:
             self._record(
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                 turns=response.turns, model_actual=response.model_actual,
+                model_usage=_turn_model_usage(turn_calls),
                 truncated=_truncated(response), context_reset=context_reset,
             )
             return HandleOutcome(ok=True)
@@ -613,6 +619,7 @@ class RequestPipeline:
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
+                     model_usage=_turn_model_usage(turn_calls),
                      truncated=_truncated(response), context_reset=context_reset,
                      # The format review rewrites a message from this body: on a
                      # rich channel Slack only hands back the notification
@@ -858,7 +865,7 @@ class RequestPipeline:
         ctx: RequestContext,
         request: EngineRequest,
         decision: SessionDecision,
-        turn_calls: Sequence[EngineResponse],
+        turn_calls: list[EngineResponse],
     ) -> str:
         # A diagram rendered to a local PNG never reaches the thread on its
         # own (D1). One rerun in the same session with the same tools asks for
@@ -883,6 +890,9 @@ class RequestPipeline:
                 resume=True,
                 session_id=decision.session_id,
             ))
+            # After the check above read the list: the rerun spends tokens in
+            # the same session, so the audit row takes its usage table (A14).
+            turn_calls.append(rerun)
             posted = rerun.ok and rendered_and_posted(rerun)
         else:
             log.warning("렌더만 하고 올리지 않았다. 대체 엔진 턴이라 다시 돌리지 않는다 : %s", ctx.ts)
@@ -1123,6 +1133,10 @@ class RequestPipeline:
         # Absent rather than empty when unknown: an empty value would read as
         # "same as asked" in the troubleshooting table (sca-asrp).
         model_actual: str | None = None,
+        # Session-cumulative per-model table (A14). Absent when the engine
+        # gives none, like model_actual: an empty table would read as "no
+        # model spent anything".
+        model_usage: Mapping[str, ModelUsage] | None = None,
         failure: str = "",
         failure_detail: FailureDetail = NO_DETAIL,
         # None only where no EngineResponse reached this point, so the key is
@@ -1151,6 +1165,9 @@ class RequestPipeline:
             extra[TRUNCATED_RAW_KEY] = truncated
         if model_actual:
             extra["model_actual"] = model_actual
+        model_usage_record = model_usage_audit(model_usage)
+        if model_usage_record:
+            extra[MODEL_USAGE_KEY] = model_usage_record
         if failure:
             extra["failure"] = failure
         if failure_detail:
@@ -1229,6 +1246,21 @@ class _AnswerFields:
     body: str
     question: str
     parts: tuple[str, ...]
+
+
+def _turn_model_usage(turn_calls: Sequence[EngineResponse]) -> Mapping[str, ModelUsage] | None:
+    """The per-model table that covers every engine call of this turn (A14).
+
+    Reruns (late addendum, guard rewrite, render recovery) resume the same
+    session, and the table is session-cumulative, so the last call that
+    carries one already holds the earlier calls' tokens. Recording the first
+    call's table would leave the reruns -- often an advisor call among them --
+    out of the request row.
+    """
+    for response in reversed(turn_calls):
+        if response.model_usage:
+            return response.model_usage
+    return None
 
 
 def _truncated(response: EngineResponse) -> bool:

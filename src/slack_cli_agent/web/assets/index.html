@@ -464,12 +464,24 @@ function renderStateTab(d){
       <div class="dim" style="margin-top:8px;font-size:11.5px">
         model 과 effort 는 최근에 기록을 시작해 표본이 전체보다 적다</div></div>
     <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">일별 비용</div>
-      ${isNA("cost")
-        ? `<div class="dim">${na("cost")}</div>`
+      ${isNA("usage.cost_total_usd")
+        ? `<div class="dim">${na("usage.cost_total_usd")}</div>`
         : bars((us.cost_by_day||[]).map(c => ({label:c.day.slice(5), value:c.usd})), " USD") +
           `<div class="dim" style="margin-top:8px;font-size:11.5px">
             누적 ${num(us.cost_total_usd)} USD · 요청당 중위 ${num(us.cost_median_usd)} USD</div>`}</div>
   </div>
+  <div class="panel" style="margin-top:10px">
+    <div class="k dim" style="font-size:11px;margin-bottom:8px">모델별 토큰과 비용</div>
+    ${(us.by_model_usage||[]).length
+      ? table([{label:"모델"},{label:"호출",num:true},{label:"입력",num:true},{label:"캐시쓰기",num:true},
+               {label:"캐시읽기",num:true},{label:"출력",num:true},{label:"비용 USD",num:true}],
+          us.by_model_usage.map(m => [esc(m.model), num(m.calls), num(m.input_tokens),
+            num(m.cache_creation_tokens), num(m.cache_read_tokens), num(m.output_tokens),
+            m.cost_usd === null || m.cost_usd === undefined ? nil : num(m.cost_usd)]))
+        + `<div class="dim" style="margin-top:8px;font-size:11.5px">
+            엔진이 보고한 모델별 값을 세션 안에서 직전 기록과의 차이로 합산했다.
+            조언자·서브에이전트 모델도 따로 한 줄이다. 표본 ${num(us.model_usage_sample)}건</div>`
+      : `<div class="dim">모델별 사용량 기록이 이 기간에 없다</div>`}</div>
   <div class="grid tiles" style="margin-top:10px">
     ${tile("질문 길이 중위", num(us.question_len_median, "자"), "")}
     ${tile("답변 길이 중위", num(us.answer_len_median, "자"), "")}
