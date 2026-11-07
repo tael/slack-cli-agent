@@ -72,7 +72,7 @@ DEFAULT_NOTICES: Mapping[NoticeKey, str] = {
     ),
     NoticeKey.UNREGISTERED_OWNER_DM: (
         "미등록 채널 알림 : {who} <#{channel}> 채널에서 {bot}를 {action}. 채널 이름 {name}.\n"
-        "그 채널에서 {bot}를 한 번 부르시면 등록됩니다. 채널 멤버가 아니면 채널 안 멘션 알림은 받지 못합니다."
+        "{thread}그 채널에서 {bot}를 한 번 부르시면 등록됩니다. 채널 멤버가 아니면 채널 안 멘션 알림은 받지 못합니다."
     ),
 }
 

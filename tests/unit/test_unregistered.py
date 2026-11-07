@@ -49,6 +49,7 @@ def make_access(
     owner: str = OWNER,
     registered: dict | None = None,
     dms: list[str] | None = None,
+    permalink=None,
 ) -> RequestAccess:
     profile = make_profile(tmp_path, owner)
     path = tmp_path / "channels.json"
@@ -69,6 +70,7 @@ def make_access(
         self_user_id=lambda: BOT,
         notice_log=UnregisteredNoticeLog(tmp_path / "unreg.json", clock=clock or Clock()),
         notify_owner=(lambda text: dms.append(text) or True) if dms is not None else None,
+        permalink=permalink,
     )
 
 
@@ -233,3 +235,47 @@ class TestOwnerDirectMessage:
         access._reply = lambda *a: (_ for _ in ()).throw(RuntimeError("not_in_channel"))
         access.call_owner("CNEW", "U_X", "1.1", "mention")
         assert len(dms) == 1
+
+
+class TestOwnerDirectMessagePermalink:
+    """The owner's DM carries a link to the thread where the bot was called, so
+    the owner does not have to hunt for it (bot.py notify_unregistered_channel)."""
+
+    def test_개인_대화에_스레드_링크를_붙인다(self, tmp_path: Path) -> None:
+        dms: list[str] = []
+        asked: list[tuple[str, str]] = []
+
+        def permalink(channel: str, ts: str) -> str:
+            asked.append((channel, ts))
+            return "https://x.slack.com/archives/CNEW/p11"
+
+        access = make_access(tmp_path, [], dms=dms, permalink=permalink)
+        access.call_owner("CNEW", "U_X", "1.1", "mention")
+        assert asked == [("CNEW", "1.1")]
+        assert "스레드 : https://x.slack.com/archives/CNEW/p11" in dms[0]
+
+    def test_스레드가_없으면_링크를_묻지_않는다(self, tmp_path: Path) -> None:
+        dms: list[str] = []
+        asked: list[tuple[str, str]] = []
+        access = make_access(
+            tmp_path, [], dms=dms, permalink=lambda c, t: asked.append((c, t)) or "L"
+        )
+        access.call_owner("CNEW", "U_X", "", "invite")
+        assert asked == [] and "스레드 :" not in dms[0]
+
+    def test_링크_조회가_실패해도_개인_대화는_보낸다(self, tmp_path: Path) -> None:
+        dms: list[str] = []
+
+        def broken(channel: str, ts: str) -> str:
+            raise RuntimeError("슬랙 장애")
+
+        access = make_access(tmp_path, [], dms=dms, permalink=broken)
+        access.call_owner("CNEW", "U_X", "1.1", "mention")
+        assert len(dms) == 1 and "스레드 :" not in dms[0]
+
+    def test_링크가_비면_줄을_넣지_않는다(self, tmp_path: Path) -> None:
+        dms: list[str] = []
+        access = make_access(tmp_path, [], dms=dms, permalink=lambda c, t: "")
+        access.call_owner("CNEW", "U_X", "1.1", "mention")
+        assert "스레드 :" not in dms[0]
+        assert "\n\n" not in dms[0]
