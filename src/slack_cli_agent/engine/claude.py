@@ -115,8 +115,20 @@ def _builtin_names(names: tuple[str, ...]) -> list[str]:
     --tools takes names from the built-in set. MCP tools are not in it, so
     they ride on --allowedTools alone. An empty result is still passed: dropping the argument opens every
     built-in tool, which is the opposite of an allowlist naming none.
+
+    A scoped grant goes in as its bare tool. --tools "Read,Bash(echo:*)" left
+    Bash off the model's list -- the turn answered that it had no Bash tool --
+    while --tools "Read,Bash" with the same --allowedTools ran echo and refused
+    ls in dontAsk (claude 2.1.319, measured 2026-11-07). The scope is held by
+    --allowedTools, which keeps the scoped form and never the bare name. The
+    owner's format review lost its rewrite command this way: "No such tool
+    available: Bash" (#test-agent 1794051030.555249, B6).
     """
-    return [name for name in names if not name.startswith(MCP_PREFIX)]
+    builtins = (
+        name.split("(", 1)[0] if "(" in name and name.endswith(")") else name
+        for name in names if not name.startswith(MCP_PREFIX)
+    )
+    return list(dict.fromkeys(builtins))
 
 
 def _mcp_denials(names: tuple[str, ...], servers: Iterable[str]) -> list[str]:
