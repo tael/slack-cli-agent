@@ -427,3 +427,107 @@ class Test표식이_가리키는_로그:
         _실행(_wrapper(tmp_path, 봇), tmp_path, "worker")
         표식내용 = _표식(봇, "worker").read_text(encoding="utf-8")
         assert "worker.out.log" in 표식내용
+
+
+class Test잠자기방지:
+    """봇이 도는 동안 시스템 유휴 잠자기를 막는다 (H67).
+
+    마메치는 2026-09-15 AC 전원에서도 Maintenance Sleep 으로 내려가 소켓이 끊기고
+    그 사이 멘션을 놓쳤다. caffeinate -s 로 감싸 이를 막았다. 이 wrapper 에는
+    그것이 없었다. caffeinate 를 본체 앞에 두면 TERM 이 본체로 안 가므로, 본체를
+    자식으로 띄우고 caffeinate 는 -w 로 그 pid 가 살아 있는 동안만 붙인다.
+    """
+
+    def _가짜_caffeinate(self, tmp_path: Path) -> Path:
+        가짜 = tmp_path / "caffeinate"
+        가짜.write_text(f'#!/bin/bash\necho "$@" > "{tmp_path}/caffeinate인자.txt"\n', encoding="utf-8")
+        가짜.chmod(0o755)
+        return 가짜
+
+    def test_본체_pid_에_caffeinate_s_를_건다(self, tmp_path: Path) -> None:
+        봇 = _봇자리(tmp_path, 종료코드=0, 지연초=1)
+        cli = 봇 / "venv" / "bin" / "slack-cli-agent"
+        cli.write_text(f'#!/bin/bash\necho $$ > "{봇}/pid.txt"\nsleep 1\nexit 0\n', encoding="utf-8")
+        run = _wrapper(tmp_path, 봇)
+        env = dict(os.environ, HOME=str(tmp_path), CAFFEINATE=str(self._가짜_caffeinate(tmp_path)))
+        결과 = subprocess.run(
+            ["/bin/bash", str(run), "worker"], capture_output=True, text=True, env=env, timeout=20
+        )
+        assert 결과.returncode == 0, 결과.stderr
+        인자 = (tmp_path / "caffeinate인자.txt").read_text(encoding="utf-8").split()
+        pid = (봇 / "pid.txt").read_text(encoding="utf-8").strip()
+        assert "-s" in 인자
+        assert 인자[인자.index("-w") + 1] == pid
+
+    def test_caffeinate_가_없어도_뜨고_종료코드를_지킨다(self, tmp_path: Path) -> None:
+        """caffeinate 가 없는 환경에서 기동 자체가 실패하면 잠자기 방지가 봇을 멈춘다."""
+        봇 = _봇자리(tmp_path, 종료코드=78)
+        run = _wrapper(tmp_path, 봇)
+        env = dict(os.environ, HOME=str(tmp_path), CAFFEINATE=str(tmp_path / "없음"))
+        결과 = subprocess.run(
+            ["/bin/bash", str(run), "worker"], capture_output=True, text=True, env=env, timeout=20
+        )
+        assert 결과.returncode == 78
+        assert _표식(봇, "worker").is_file()
+
+
+class Test본체_stdin:
+    def test_본체_stdin_은_비어_있다(self, tmp_path: Path) -> None:
+        """엔진 CLI 는 인자로 프롬프트를 받아도 stdin 을 먼저 읽는다. 열린 stdin 을
+        물려받으면 EOF 를 못 받아 멈춘다 (2026-09-28 codex exec 43분 공전)."""
+        봇 = _봇자리(tmp_path, 종료코드=0)
+        cli = 봇 / "venv" / "bin" / "slack-cli-agent"
+        cli.write_text(f'#!/bin/bash\ncat > "{봇}/stdin.txt"\nexit 0\n', encoding="utf-8")
+        proc = subprocess.Popen(
+            ["/bin/bash", str(_wrapper(tmp_path, 봇)), "worker"],
+            env=dict(os.environ, HOME=str(tmp_path)),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            proc.wait(timeout=10)
+        finally:
+            proc.kill()
+            if proc.stdin:
+                proc.stdin.close()
+        assert proc.returncode == 0
+        assert (봇 / "stdin.txt").read_text(encoding="utf-8") == ""
+
+
+class Test종료유예:
+    """wrapper 의 KILL 유예가 worker 의 진행 중 작업 대기보다 짧으면, worker 가
+    작업을 마치려고 기다리는 중에 wrapper 가 먼저 죽인다. 20초 KILL 과 330초
+    대기가 맞지 않았다 (H67). launchd 도 ExitTimeOut 기본값 20초 뒤 KILL 하므로
+    plist 쪽도 함께 맞아야 한다.
+    """
+
+    def _wrapper_기본값(self) -> float:
+        import re
+
+        본문 = TEMPLATE.read_text(encoding="utf-8")
+        찾음 = re.search(r'SHUTDOWN_GRACE_SEC="\$\{SHUTDOWN_GRACE_SEC:-(\d+)\}"', 본문)
+        assert 찾음, "wrapper 에 유예 기본값이 없다"
+        return float(찾음.group(1))
+
+    def test_wrapper_유예가_worker_대기보다_길다(self) -> None:
+        from slack_cli_agent.config.settings import RuntimeSettings
+
+        assert self._wrapper_기본값() > RuntimeSettings().shutdown_grace_sec
+
+    def test_프로필이_worker_대기를_wrapper_유예_이상으로_올리지_않는다(self) -> None:
+        import json
+
+        기본값 = self._wrapper_기본값()
+        for p in (REPO / "profiles").glob("*.json"):
+            설정 = json.loads(p.read_text(encoding="utf-8")).get("settings") or {}
+            if "shutdown_grace_sec" in 설정:
+                assert float(설정["shutdown_grace_sec"]) < 기본값, p.name
+
+    def test_launchd_ExitTimeOut_이_wrapper_유예보다_길다(self) -> None:
+        import re
+
+        본문 = (REPO / "tools" / "register-launchd.sh").read_text(encoding="utf-8")
+        찾음 = re.search(r"<key>ExitTimeOut</key><integer>(\d+)</integer>", 본문)
+        assert 찾음, "plist 에 ExitTimeOut 이 없어 launchd 가 20초 뒤 KILL 한다"
+        assert float(찾음.group(1)) > self._wrapper_기본값()

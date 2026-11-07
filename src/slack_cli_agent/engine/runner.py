@@ -599,6 +599,8 @@ class EngineRunner:
         return subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
             env=dict(env) if env is not None else None, check=False,
+            # Same reason as run_streaming: an inherited stdin can hang the CLI.
+            stdin=subprocess.DEVNULL,
         )
 
 
