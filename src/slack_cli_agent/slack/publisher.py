@@ -24,6 +24,7 @@ from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.channel_kind import is_direct_message_channel
 from slack_cli_agent.core.errors import SlackError
 from slack_cli_agent.core.markers import ELAPSED_MODEL_LINE
+from slack_cli_agent.core.secrets import count_outbound_secrets, redact_outbound
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.render.blocks import BlockBuilder
 from slack_cli_agent.render.markdown import MarkdownConverter
@@ -143,6 +144,23 @@ class MessagePublisher:
             body=part, note=note, text=self._blocks.preview(part or note), blocks=blocks
         )
 
+    def _redact(self, channel: str, thread_ts: str, text: str) -> str:
+        """Masks credentials before anything is sent (A17).
+
+        Runs ahead of csv extraction and splitting, so the uploaded file, every
+        chunk and the plain-text fallback all start from the masked body. The
+        audit row carries the count only, never the value.
+        """
+        found = count_outbound_secrets(text)
+        if not found:
+            return text
+        log.warning("게시 본문의 비밀값 %d 건을 가렸다 : 채널 %s", found, channel)
+        self._audit(
+            kind=IncidentKind.SECRET_REDACTED.value, channel=channel,
+            thread_ts=thread_ts or "", count=found,
+        )
+        return redact_outbound(text)
+
     def post(
         self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
     ) -> str | None:
@@ -163,6 +181,7 @@ class MessagePublisher:
         the guard pipeline, so every caller (watch reports, review results,
         engine failure bodies) gets it (bot.py:6532).
         """
+        text = self._redact(channel, thread_ts, text)
         text, _ = fix_notion_links(text)
         text, csv_payloads = extract_csv_blocks(text)
         if rich:
@@ -341,6 +360,7 @@ class MessagePublisher:
         Slack was given, so the caller can report what the message became
         ([] for a plain-text channel).
         """
+        text = self._redact(channel, ts, text)
         # Same Notion `p/` fix as post(), so a correction can't post a dead link.
         text, _ = fix_notion_links(text)
         if rich:
