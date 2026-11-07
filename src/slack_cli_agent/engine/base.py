@@ -575,6 +575,9 @@ class Engine(ABC):
         # 이 아닌 한 줄을 내서 bad_json 으로 떨어진다.
         if response.ok or not self.AUTH_FAILURE_MARKERS:
             return None
+        status = self.AUTH_FAILURE_API_STATUS
+        if status is not None and self._api_error_status(response) == status:
+            return self.AUTH_FAILURE_NOTE
         text = self._failure_text(response).lower()
         if not any(marker.lower() in text for marker in self.AUTH_FAILURE_MARKERS):
             return None
@@ -586,6 +589,17 @@ class Engine(ABC):
 
     #: 감지했을 때 사람에게 낼 한 줄. 다시 로그인하는 법이 엔진마다 다르다.
     AUTH_FAILURE_NOTE: ClassVar[str] = ""
+
+    #: CLI 자신의 API 호출이 낸 상태 코드 중 로그인 만료를 뜻하는 값 (C7).
+    #: 문구가 아니라 구조화된 필드라 도구·MCP 서버 출력과 섞이지 않는 엔진만
+    #: 댄다. None 이면 상태 코드로 판정하지 않는다.
+    AUTH_FAILURE_API_STATUS: ClassVar[int | None] = None
+
+    def _api_error_status(self, response: EngineResponse) -> int | None:
+        """CLI 자신의 API 오류 상태 코드. 담는 자리는 엔진이 정한다."""
+        raw = response.raw if isinstance(response.raw, Mapping) else {}
+        value = raw.get("api_error_status")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
 
     @staticmethod
     def _failure_text(response: EngineResponse) -> str:

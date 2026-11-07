@@ -517,11 +517,34 @@ class ClaudeEngine(Engine):
     #: 문구는 좁게 잡는다. 'invalid api key' 나 'not logged in' 같은 조각은
     #: gh·aws 같은 도구도 내므로, 그것으로 판정하면 CLI 로그인은 멀쩡한데
     #: 1차가 통째로 내려간다.
+    #: 2026-11-07 마메치 운영 로그의 만료 401 239줄은 모두 'Failed to
+    #: authenticate. API Error: 401 OAuth access token has expired.' 였다. 같은
+    #: 상태를 만료·폐기 문구만으로 내는 응답도 잡도록 OAuth 문구 둘을 더한다.
+    #: 'OAuth' 로 시작하는 전체 구절이라 gh·aws 의 짧은 인증 오류와 겹치지 않는다.
     AUTH_FAILURE_MARKERS: ClassVar[tuple[str, ...]] = (
         "Please run /login",
         "Failed to authenticate.",
+        "OAuth access token has expired",
+        "OAuth token has been revoked",
     )
     AUTH_FAILURE_NOTE = "claude 로그인이 풀렸다. claude 에서 /login 으로 다시 로그인해야 한다."
+    #: result 이벤트의 api_error_status 는 claude 자신의 API 호출 결과다. MCP
+    #: 서버의 401 은 이 필드에 오지 않으므로 문구 없이 401 만 와도 만료로 본다.
+    AUTH_FAILURE_API_STATUS: ClassVar[int | None] = 401
+
+    def _api_error_status(self, response: EngineResponse) -> int | None:
+        """is_error 경로는 raw 에 필드가 있고, 종료코드가 0 이 아니면 stdout 의
+        result 이벤트에 있다 (2026-11-07 운영 로그는 종료코드 1 이었다)."""
+        found = super()._api_error_status(response)
+        if found is not None:
+            return found
+        raw = response.raw if isinstance(response.raw, Mapping) else {}
+        stdout = raw.get("stdout")
+        payload = self._result_event(stdout) if isinstance(stdout, str) and stdout else None
+        if payload is None:
+            return None
+        value = payload.get("api_error_status")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
 
     def new_session_id(self) -> str:
         return str(uuid.uuid4())
