@@ -54,3 +54,19 @@ def judge_prompt(*, bot: str, question: str, answer: str, replies: str) -> str:
         "- 도구를 쓰지 않아도 된다. 판정에 필요한 사실 확인만 한다\n"
         "- 수신자 표식은 [[RECIPIENT:ASKER]] 로 둔다"
     )
+
+
+def offline_judge_prompt(*, bot: str, question: str, answer: str, replies: str) -> str:
+    """The offline evaluator's verdict (mametchi shadow_eval.py judge_prompt):
+    the live verdict's content criteria plus a tone axis, as one JSON line."""
+    return (
+        f"원본 채널 질문에 {bot}가 실제 답을 보지 않고 낸 답이 있다. 원본 스레드의 실제 답과 대조한다.\n\n"
+        f"질문 :\n{question}\n\n{bot} 답 :\n{answer}\n\n원본 스레드의 실제 답 :\n{replies}\n\n"
+        "두 축으로 판정한다\n"
+        "- 내용 : 맞음, 일부 맞음, 틀림, 판정 불가 중 하나. 결론, 담당자, 절차, 수치가 같은지 본다. "
+        "실제 답에 없는 행동을 약속했거나 질문자에게 불필요한 일을 시켰으면 낮춘다\n"
+        "- 말투 : 같음, 비슷함, 다름 중 하나. 인사와 공감, 길이, 1인칭 여부, 이모지, 되묻기 여부를 본다\n"
+        "출력은 JSON 한 줄만 쓴다. 다른 글을 붙이지 않는다\n"
+        '{"content": "...", "tone": "...", "actual": "실제 답 요지 한 줄", '
+        f'"diff": "{bot} 답과 다른 점 한 줄", "missing": "맞히려면 알아야 했던 사실 한 줄"}}'
+    )
