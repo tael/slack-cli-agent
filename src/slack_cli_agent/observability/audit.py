@@ -127,6 +127,11 @@ class IncidentKind(StrEnum):
     #: `recovered` says whether that rerun posted successfully; `rerun` is
     #: False on a fallback-engine turn, which cannot resume the session.
     RENDER_WITHOUT_POST = "render_without_post"
+    #: A codex turn made pictures and called no posting tool, so the code
+    #: uploaded them to the thread (D2, mametchi generated_image_autopost).
+    #: `files` names them; the _FAILED kind carries `error` instead.
+    GENERATED_IMAGE_AUTOPOST = "generated_image_autopost"
+    GENERATED_IMAGE_AUTOPOST_FAILED = "generated_image_autopost_failed"
 
     def __str__(self) -> str:
         return self.value

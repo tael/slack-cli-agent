@@ -56,6 +56,11 @@ from ..session.awaiting import AwaitingPort
 from ..session.manager import SessionDecision, SessionManager
 from ..session.ports import SessionKey, SessionScope
 from ..slack.gate import ResponseGate
+from ..slack.generated_images import (
+    NOTICE_IMAGE_UPLOAD_FAILED,
+    GeneratedImagePoster,
+    ImageUpload,
+)
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
 from ..slack.mentions import MentionRenderer
 from ..slack.origin_alive import OriginAliveChecker
@@ -170,6 +175,10 @@ class RequestPipeline:
         # posted through a tool this turn, instead of a second reply
         # (2026-11-06 duplicate replies). None posts as before.
         tool_post_merger: ToolPostMerger | None = None,
+        # Uploads pictures a codex turn made and never posted (D2). The tool
+        # post merger then writes the answer over that file message. None
+        # leaves them on disk as before.
+        generated_images: GeneratedImagePoster | None = None,
         # Shared with the caller so both the late-addendum check and the queue see
         # the same consumed-messages record.
         consumption: ThreadConsumption | None = None,
@@ -240,6 +249,7 @@ class RequestPipeline:
         self._late_addendum = late_addendum
         self._origin_alive = origin_alive
         self._tool_post_merger = tool_post_merger
+        self._generated_images = generated_images
         self._consumption = consumption
         self._watch_queue = watch_queue
         self._tool_policy = tool_policy
@@ -523,6 +533,9 @@ class RequestPipeline:
         self._sessions.touch(key, ctx.ts)
 
         if is_silent(response.body):
+            # A silent answer still owes the picture the turn made; mametchi
+            # uploaded it without a comment.
+            self._upload_generated_images(ctx, start, [response], flat)
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
                      truncated=_truncated(response), context_reset=context_reset)
@@ -571,6 +584,7 @@ class RequestPipeline:
         # After the markers are taken: the notice must not sit between the body
         # and a trailing tag the strip reads from the end.
         body = self._recover_unposted_render(body, ctx, request, decision, turn_calls)
+        body, image_ts = self._post_generated_images(body, ctx, start, turn_calls, flat)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         # Right before the post, confirm the question is still in its thread.
         # If the asker deleted it mid-turn, the intake coordinates now point at
@@ -600,9 +614,15 @@ class RequestPipeline:
         # file and the answer. flat replies go to the channel, not the thread
         # the tool posted into, so they post as usual.
         if self._tool_post_merger is not None and not flat:
-            posted_ts = self._tool_post_merger.merge(
-                ctx.channel, ctx.thread_ts, start, body, rich,
-            ) or ""
+            if image_ts:
+                # The upload just ran; the thread may not list its message yet.
+                posted_ts = self._tool_post_merger.merge(
+                    ctx.channel, ctx.thread_ts, start, body, rich, target_ts=image_ts,
+                ) or ""
+            else:
+                posted_ts = self._tool_post_merger.merge(
+                    ctx.channel, ctx.thread_ts, start, body, rich,
+                ) or ""
             # The merged answer is the tool's reply itself, one message.
             answer_parts = (posted_ts,) if posted_ts else ()
         if not posted_ts:
@@ -860,7 +880,7 @@ class RequestPipeline:
         ctx: RequestContext,
         request: EngineRequest,
         decision: SessionDecision,
-        turn_calls: Sequence[EngineResponse],
+        turn_calls: list[EngineResponse],
     ) -> str:
         # A diagram rendered to a local PNG never reaches the thread on its
         # own (D1). One rerun in the same session with the same tools asks for
@@ -885,6 +905,8 @@ class RequestPipeline:
                 resume=True,
                 session_id=decision.session_id,
             ))
+            # Later steps read what the turn posted; the rerun is part of it.
+            turn_calls.append(rerun)
             posted = rerun.ok and rendered_and_posted(rerun)
         else:
             log.warning("렌더만 하고 올리지 않았다. 대체 엔진 턴이라 다시 돌리지 않는다 : %s", ctx.ts)
@@ -896,6 +918,42 @@ class RequestPipeline:
         if posted:
             return body
         return f"{body.rstrip()}\n\n{NOTICE_UNPOSTED_RENDER}"
+
+    def _post_generated_images(
+        self,
+        body: str,
+        ctx: RequestContext,
+        since: float,
+        turn_calls: Sequence[EngineResponse],
+        flat: bool,
+    ) -> tuple[str, str | None]:
+        # Codex's image generation leaves the picture on disk; the model
+        # doesn't always post it (D2). Uploaded before the answer; the ts of
+        # the file message goes to the tool post merger so the answer lands
+        # in it.
+        upload = self._upload_generated_images(ctx, since, turn_calls, flat)
+        if upload is None or upload.ok:
+            return body, upload.ts if upload else None
+        return f"{body.rstrip()}\n\n{NOTICE_IMAGE_UPLOAD_FAILED}", None
+
+    def _upload_generated_images(
+        self,
+        ctx: RequestContext,
+        since: float,
+        turn_calls: Sequence[EngineResponse],
+        flat: bool,
+    ) -> ImageUpload | None:
+        """None when there was nothing to upload or the question is gone."""
+        if self._generated_images is None:
+            return None
+        images = self._generated_images.pending(since, turn_calls)
+        if not images:
+            return None
+        # A deleted question gets no answer (C34), and no picture either.
+        if self._origin_alive is not None and self._origin_alive.alive(ctx.channel, ctx.ts) is False:
+            return None
+        thread_ts = None if flat else ctx.thread_ts
+        return self._generated_images.upload(ctx.channel, thread_ts, images)
 
     def _resumable(self, response: EngineResponse) -> bool:
         # A fallback turn ran on the secondary, which opens a fresh session on
