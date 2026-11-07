@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from ..auth.principal import TrustLevel
-from ..auth.tools import SKILL_TOOL, is_read_only_tool
+from ..auth.tools import SKILL_TOOL
 from ..config.profile import EngineSpec, McpServerSpec
 from .base import (
     Engine,
@@ -102,7 +102,7 @@ def _codex_reads_only(tools: ToolSelection) -> bool:
     if tools.access is ToolAccess.FORBIDDEN:
         return True
     return tools.access is ToolAccess.ALLOWLIST and all(
-        is_read_only_tool(name) for name in tools.names if not _is_skill_grant(name)
+        tools.reads(name) for name in tools.names if not _is_skill_grant(name)
     )
 
 

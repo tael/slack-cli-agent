@@ -2623,6 +2623,9 @@ class _도구정책:
     ) -> tuple[str, ...]:
         return self._tools
 
+    def lookups_for(self, principal: Any, *, asker_is_bot: bool = False) -> tuple[str, ...]:
+        return ()
+
 
 class Test실행_보장_요구를_세운다:
     """부품은 runner 에 있는데 요구를 세우는 곳이 없어 운영에서 한 번도

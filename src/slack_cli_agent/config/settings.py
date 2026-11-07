@@ -198,6 +198,12 @@ class RuntimeSettings:
     # browser actions here are dropped. Empty by default, so an
     # operator gets nothing until the profile names it.
     operator_tools: tuple[str, ...] = ()
+    # The lookup bundle every non-owner turn gets on top of base_tools
+    # (mametchi ALLOWED_TOOLS + READ_SHELL_TOOLS): read-only MCP tools and
+    # scoped read wrappers, named one by one. Server wildcards, browser actions
+    # and the bare write tools are dropped. Empty by default; the tool names
+    # are organisation configuration and come from the profile.
+    readonly_tools: tuple[str, ...] = ()
 
     # Skills granted on every ordinary turn as `Skill(<name>)` entries, even in
     # a channel with skills disabled -- a read-only query skill a bot should

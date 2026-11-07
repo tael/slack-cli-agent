@@ -8,6 +8,11 @@
     the channel lists the user           base + user_tools, extra_tools, airflow wrapper
     otherwise                            base tools only
 
+Every non-owner turn, and every read-only turn, also gets the profile's
+readonly_tools: the lookup bundle (read-only MCP tools, path-named read
+wrappers) named one by one. lookups_for tells ToolSelection which of those
+names are reads, so the bundle alone never makes a turn able to act.
+
 Read-only by default. Skill is appended last, and only when the request
 isn't aside (postmortem/debug/format-check) and the channel has it enabled.
 """
@@ -16,6 +21,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
 from .policy import OPERATOR_FULL, OPERATOR_TOOLS, AccessExtension
 from .principal import Principal, TrustLevel
@@ -124,6 +130,85 @@ def _granted_by(name: str, base_tools: Sequence[str]) -> bool:
     return name in base_tools or f"{server}__*" in base_tools
 
 
+#: Commands a scoped Bash grant must not name: each runs whatever its
+#: arguments say or writes files, so Bash(<one of these>:*) is a bare shell
+#: under another name. Wrappers outside the home are refused by location;
+#: this list catches a copy of one of them placed under the home.
+_SHELL_RUNNERS: frozenset[str] = frozenset({
+    "sh", "bash", "zsh", "dash", "ksh", "ksh93", "mksh", "csh", "tcsh", "fish",
+    "pwsh", "env", "xargs", "sudo", "su", "exec", "eval", "node", "perl", "ruby",
+    "php", "osascript", "curl", "wget", "ssh", "scp", "nc", "rm", "mv", "cp",
+    "tee", "dd", "chmod", "chown", "awk", "gawk", "find", "sed", "git", "aws",
+})
+
+#: Directory names that hold installed programs rather than wrapper scripts.
+_PROGRAM_DIRS: frozenset[str] = frozenset({"bin", "sbin", "libexec"})
+
+
+def _under_home(path: str) -> bool:
+    if path.startswith("~/"):
+        return True
+    home = str(Path.home()).rstrip("/")
+    return bool(home) and path.startswith(home + "/")
+
+
+def _is_read_wrapper(name: str) -> bool:
+    """Whether a scoped grant is Bash(<path to a wrapper under the home>...).
+
+    Bash(curl:*) or Bash(python3:*) passed the bare-name filter, and
+    engine/claude.py then lifts the bare Bash deny for any scoped Bash grant,
+    so a non-owner turn ran that command (A10 review). A path alone was not
+    enough either: Bash(/usr/bin/awk:*), Bash(/bin/ksh93:*) and
+    Bash(/usr/bin/git:*) passed, and each runs commands or writes files (A10
+    re-review). So the check allows rather than blocks: a wrapper is a script
+    under the user's home, as mametchi's READ_SHELL_TOOLS are, not in a
+    bin/sbin/libexec directory, not named like a shell or general program,
+    with no glob, ".." segment or interpreter. Any other scoped grant
+    (Edit(...), Write(...)) is not a lookup either.
+    """
+    tool, _, rest = name.partition("(")
+    if tool != "Bash" or not rest.endswith(")"):
+        return False
+    command = rest[:-1].split(":", 1)[0].split()
+    if not command:
+        return False
+    path = command[0]
+    parts = path.split("/")
+    base = parts[-1]
+    return (
+        _under_home(path)
+        and "*" not in path
+        and ".." not in parts
+        and not _PROGRAM_DIRS.intersection(parts[:-1])
+        and base not in _SHELL_RUNNERS
+        and not base.startswith("python")
+    )
+
+
+def _lookup_bundle(names: Sequence[str]) -> tuple[str, ...]:
+    """The profile's readonly_tools as a non-owner may get them (A10).
+
+    mametchi hands every non-owner its lookup MCP tools and read wrappers
+    (bot.py:486 ALLOWED_TOOLS, 788 READ_SHELL_TOOLS); sca gave Read, Grep and
+    Glob only, so a non-owner asking for a Snowflake figure had no way to look
+    it up. Which tools count as lookups is organisation configuration, so the
+    profile names them. A server wildcard (any spelling) would open the send
+    and delete tools on the same server, a browser action works the owner's
+    logins, a bare Bash/Edit/Write writes, and a scoped grant that is not a
+    path-named Bash wrapper runs anything: each is dropped whatever the
+    profile says.
+    """
+    def dropped_name(name: str) -> bool:
+        if "(" in name:
+            return not _is_read_wrapper(name)
+        return _is_server_wildcard(name) or _is_browser_action(name) or name in OPERATOR_TOOLS
+
+    dropped = [name for name in names if dropped_name(name)]
+    if dropped:
+        log.warning("readonly_tools 에서 뺀 도구 : %s", ", ".join(dropped))
+    return tuple(dict.fromkeys(name for name in names if name not in dropped))
+
+
 class ToolPolicy:
     def __init__(
         self,
@@ -134,6 +219,7 @@ class ToolPolicy:
         always_skills: Sequence[str] = (),
         operator_level: Callable[..., str] | None = None,
         operator_tools: Sequence[str] = (),
+        readonly_tools: Sequence[str] = (),
     ) -> None:
         self._base_tools = tuple(base_tools)
         self._owner_tools = tuple(owner_tools)
@@ -142,6 +228,7 @@ class ToolPolicy:
         self._always_skills = tuple(always_skills)
         self._operator_level = operator_level
         self._operator_grant = tuple(operator_tools)
+        self._readonly_grant = _lookup_bundle(readonly_tools)
 
     def tool_list_for(
         self,
@@ -167,6 +254,7 @@ class ToolPolicy:
             if self._channel_tools is not None:
                 tools += [t for t in self._channel_tools(principal) if t not in tools]
         else:
+            tools += [t for t in self._readonly_grant if t not in tools]
             if not aside:
                 tools += [t for t in self._operator_tools(principal, asker_is_bot) if t not in tools]
             for ext in self._extensions:
@@ -189,6 +277,37 @@ class ToolPolicy:
                 if grant not in tools:
                     tools.append(grant)
         return tuple(tools)
+
+    def lookups_for(
+        self,
+        principal: Principal,
+        *,
+        readonly: bool = False,
+        aside: bool = False,
+        asker_is_bot: bool = False,
+    ) -> tuple[str, ...]:
+        """The names in this turn's list that count as reads, not actions.
+
+        ToolSelection.can_act knows only READ_ONLY_TOOLS and
+        READ_ONLY_MCP_TOOLS, so the bundle's wrappers and metabase or notion
+        lookups made every non-owner turn an action turn, and claude and gemini
+        set an MCP server's can_act write gate to "1" for it (A10 review).
+        mametchi keeps can_act = is_owner or (operator and not aside) and False
+        for everyone else (bot.py build_command); this hands the bundle over
+        as reads on exactly those turns. A read-only turn counts it as reads
+        for anyone, the owner's watch check included.
+        """
+        if readonly:
+            return self._readonly_grant
+        if principal.trust is TrustLevel.OWNER:
+            return ()
+        if (
+            not aside
+            and self._operator_level is not None
+            and self._operator_level(principal, is_bot=asker_is_bot)
+        ):
+            return ()
+        return self._readonly_grant
 
     def _operator_tools(self, principal: Principal, is_bot: bool) -> tuple[str, ...]:
         """The profile's operator_tools for a channel operator (mametchi
@@ -225,7 +344,11 @@ class ToolPolicy:
         mcp = tuple(
             name for name in READ_ONLY_MCP_TOOLS if _granted_by(name, tuple(self._base_tools) + tuple(granted))
         )
-        return builtin + mcp
+        # mametchi gives postmortem, debug and no_act turns ALLOWED_TOOLS +
+        # READ_SHELL_TOOLS too (bot.py base_tools); a watch check without the
+        # wrappers had fewer means than mametchi's (A10 review).
+        kept_so_far = builtin + mcp
+        return kept_so_far + tuple(name for name in self._readonly_grant if name not in kept_so_far)
 
     def tools_for(
         self,
