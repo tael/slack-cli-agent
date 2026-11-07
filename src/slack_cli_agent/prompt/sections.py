@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..auth.principal import Principal, TrustLevel
+from ..auth.principal import Principal, TrustLevel, TurnTier
 
 if TYPE_CHECKING:
     from ..config.profile import PeerProfile
@@ -111,6 +111,10 @@ class CompositionContext:
     #: This channel's channels.json entry carries an `advisor` dict (mametchi
     #: advisor_executor, bot.py). Drives AdvisorSection.
     advisor_enabled: bool = False
+    #: The tier this turn runs as (auth.policy.turn_tier). Empty leaves the
+    #: tier note out -- a caller that never worked one out must not get a
+    #: guessed one. Drives TurnTierSection (A12).
+    turn_tier: str = ""
     chat_level: str = "normal"
     silent_mark: str = SILENT_MARK
     library: PromptLibrary | None = None
@@ -756,3 +760,43 @@ class SilenceRuleSection(PromptSection):
             + guide
             + f"\n\n답하지 않기로 했으면 {ctx.silent_mark} 만 출력하고 끝내라. 다른 말을 붙이지 마라."
         )
+
+
+#: One line per tier: what this turn was handed. Keyed by TurnTier values.
+TIER_NOTES: Mapping[str, str] = {
+    TurnTier.OWNER_TRUSTED: "소유자 턴, 전권 자리. 이 턴에 붙은 실행 도구 전부를 쓴다",
+    TurnTier.OWNER: "소유자 턴. 소유자 도구 전부를 쓴다",
+    TurnTier.DELEGATED: "소유자가 위임한 일을 처리하는 턴. 위임 범위의 실행 도구를 쓴다",
+    TurnTier.OPERATOR_FULL: (
+        "operator 턴. 제한 없는 셸과 파일 쓰기를 포함한 operator 도구를 쓴다. "
+        "봇 자체 수정, 재기동, 자격증명 값 출력은 소유자 확인이 필요하다"
+    ),
+    TurnTier.OPERATOR: "operator 턴. operator 도구로 실행할 수 있다. 제한 없는 셸과 파일 쓰기는 없다",
+    TurnTier.AIRFLOW: "Airflow 관리자 턴. 조회 도구와 Airflow 제어 수단만 있다. 그 밖의 실행 도구는 없다",
+    TurnTier.BOT: "다른 봇의 턴. 조회 도구만 있다",
+    TurnTier.READ: "조회 전용 턴. 붙은 조회 도구로 찾아 답한다. 쓰기와 실행 도구는 없다",
+    TurnTier.READONLY: "조회 전용 점검 턴. 조회 도구만 있다",
+}
+
+
+class TurnTierSection(PromptSection):
+    """States this turn's permission tier on every turn (A12, mametchi
+    turn_tier_note bot.py:820).
+
+    The model only sees the tools it got, so it read a tool out of this
+    turn's reach as one that does not exist and wrote "there is no way",
+    which a colleague then repeated as fact (2026-10-14). The system prompt
+    is resent each turn (codex replays it inside a resumed prompt), so a
+    tier change between turns of one thread reaches the model.
+    """
+
+    _RULE = (
+        "권한 밖 수단은 '이 턴 권한 밖'이라고 적는다. '수단이 없다'고 쓰지 않는다. "
+        "조회로 답할 수 있는 질문은 붙은 조회 도구로 먼저 찾아 답한다"
+    )
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return ctx.turn_tier in TIER_NOTES
+
+    def render(self, ctx: CompositionContext) -> str:
+        return f"[이 턴 권한 : {TIER_NOTES[ctx.turn_tier]}. {self._RULE}]"

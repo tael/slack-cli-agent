@@ -118,6 +118,7 @@ from ..prompt.sections import (
     SlackFormatSection,
     ThreadCoordsSection,
     TrustedSection,
+    TurnTierSection,
     WatchSection,
 )
 from ..reliability.catchup import CatchupService, RetryStatus, StuckCause
@@ -608,6 +609,7 @@ class Application:
             WatchSection(),
             AdvisorSection(),
             AskSection(),
+            TurnTierSection(),
             SilenceRuleSection(),
         ]
         sections.extend(s for p in self._plugins for s in p.prompt_sections())

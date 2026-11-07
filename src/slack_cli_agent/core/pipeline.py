@@ -16,6 +16,7 @@ from typing import Any
 
 from ..auth.execution_policy import ExecutionPolicy
 from ..auth.delegation import DelegationRecorder
+from ..auth.policy import turn_tier
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
 from ..config.channel import (
@@ -433,8 +434,20 @@ class RequestPipeline:
         request_id = self._new_request_id()
 
         prompt = self._build_prompt(ctx, scope, decision)
+        # Worked out once: the note tells the model which tier it runs as and
+        # the audit row keeps the same value, so the dashboard reads what the
+        # turn ran as rather than re-deriving it from a config that may have
+        # changed since (A12, mametchi bot.py:7967).
+        tier = turn_tier(
+            principal, config,
+            full_authority=self._access.is_full_authority(principal),
+            delegated=principal.delegated,
+            is_bot=principal.trust is not TrustLevel.OWNER
+            and (ctx.from_bot or self._asker_is_bot(ctx.user)),
+        ).value
         system_prompt, budget_report = self._compose_system_prompt(
-            ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id
+            ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
+            tier=tier,
         )
 
         progress_log = (
@@ -530,7 +543,7 @@ class RequestPipeline:
                 model_actual=response.model_actual, model_usage=_turn_model_usage([response]),
                 failure_detail=response.failure_detail,
                 truncated=_truncated(response),
-                context_reset=context_reset,
+                context_reset=context_reset, tier=tier,
             )
             return HandleOutcome(ok=False, failure=failure)
 
@@ -550,7 +563,7 @@ class RequestPipeline:
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
                      model_usage=_turn_model_usage([response]),
-                     truncated=_truncated(response), context_reset=context_reset)
+                     truncated=_truncated(response), context_reset=context_reset, tier=tier)
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
 
@@ -589,7 +602,7 @@ class RequestPipeline:
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                 turns=response.turns, model_actual=response.model_actual,
                 model_usage=_turn_model_usage(turn_calls),
-                truncated=_truncated(response), context_reset=context_reset,
+                truncated=_truncated(response), context_reset=context_reset, tier=tier,
             )
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
@@ -615,7 +628,7 @@ class RequestPipeline:
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                 turns=response.turns, model_actual=response.model_actual,
                 model_usage=_turn_model_usage(turn_calls),
-                truncated=_truncated(response), context_reset=context_reset,
+                truncated=_truncated(response), context_reset=context_reset, tier=tier,
             )
             return HandleOutcome(ok=True)
         posted_ts = ""
@@ -651,7 +664,7 @@ class RequestPipeline:
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
                      model_usage=_turn_model_usage(turn_calls),
-                     truncated=_truncated(response), context_reset=context_reset,
+                     truncated=_truncated(response), context_reset=context_reset, tier=tier,
                      # The format review rewrites a message from this body: on a
                      # rich channel Slack only hands back the notification
                      # preview, and without the stored body it must not
@@ -771,6 +784,8 @@ class RequestPipeline:
         rich: bool,
         chat_level: str,
         run_id: str = "",
+        *,
+        tier: str = "",
     ) -> tuple[str, dict[str, Any]]:
         is_owner = principal.trust is TrustLevel.OWNER
         asker_name = "" if is_owner else (self._name_resolver(ctx.user) or ctx.user)
@@ -818,6 +833,7 @@ class RequestPipeline:
             operator=operator,
             operator_full=operator and bool(config and config.operator_full),
             advisor_enabled=advisor_enabled(config),
+            turn_tier=tier,
         )
         text, report = self._composer.compose_with_report(composition_ctx)
         return text, report.as_audit_dict()
@@ -1326,8 +1342,13 @@ class RequestPipeline:
         # is "before this was instrumented", not "no resets".
         context_reset: bool = False,
         answer: _AnswerFields | None = None,
+        # The tier this turn ran as (A12). Left out when unknown, the same
+        # way model_actual is, so a missing key never reads as "read".
+        tier: str = "",
     ) -> None:
         extra: dict[str, Any] = {CONTEXT_RESET_RAW_KEY: context_reset}
+        if tier:
+            extra["tier"] = tier
         if answer is not None:
             extra["answer"] = answer.body
             extra["question"] = answer.question
