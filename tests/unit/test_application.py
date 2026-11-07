@@ -2825,8 +2825,57 @@ class TestReviewRequesterScope:
         from slack_cli_agent.engine.tool_selection import ToolAccess
 
         app = self._앱(profile, client)
-        for emoji in ("dango", "brain", "pencil2"):
+        for emoji in ("dango", "brain"):
             request, 문맥 = self._요청(app, monkeypatch, emoji, "U_OWNER")
             assert request.trust_level is TrustLevel.OWNER, emoji
             assert request.tools.access is ToolAccess.UNRESTRICTED, emoji
             assert 문맥[0].principal.trust is TrustLevel.OWNER, emoji
+
+    def test_소유자의_서식_점검은_교정_명령과_조회_도구를_받는다(
+        self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B6 : 무제한 선택은 claude 에 --allowedTools 를 하나도 넘기지 않아,
+        dontAsk 모드가 Write, rewrite Bash, 슬랙 조회를 전부 거부했다
+        (#test-agent 1794048787.569739 실측). 소유자 서식 점검은 교정본 파일을
+        쓸 Write, rewrite 명령 하나, 조회 도구를 명시 허용 목록으로 받는다."""
+        from slack_cli_agent.engine.tool_selection import ToolAccess
+
+        app = self._앱(profile, client)
+        # 운영 프로필처럼 소유자 턴에 맨 Write, Edit, Bash 가 있다.
+        monkeypatch.setattr(app.tool_policy(), "_owner_tools", ("Write", "Edit", "Bash"))
+        request, 문맥 = self._요청(app, monkeypatch, "pencil2", "U_OWNER")
+        names = request.tools.names
+        assert request.trust_level is TrustLevel.OWNER
+        assert request.tools.access is ToolAccess.ALLOWLIST
+        assert f"Bash({app.rewrite_command()}:*)" in names
+        assert "Write" in names
+        assert "Read" in names
+        # 맨 셸과 편집은 열지 않는다. 고치는 수단은 rewrite 명령 하나다.
+        assert "Bash" not in names
+        assert "Edit" not in names
+        assert 문맥[0].principal.trust is TrustLevel.OWNER
+
+    def test_소유자에게_없는_쓰기는_서식_점검에도_주지_않는다(
+        self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = self._앱(profile, client)
+        policy = app.tool_policy()
+        monkeypatch.setattr(policy, "_owner_tools", ("WebFetch",))
+        request, _ = self._요청(app, monkeypatch, "pencil2", "U_OWNER")
+        assert "Write" not in request.tools.names
+        assert not any(name.startswith("Bash(") and "rewrite" in name for name in request.tools.names)
+
+    def test_소유자_서식_점검의_claude_명령에_허용_목록이_실린다(
+        self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from slack_cli_agent.engine.claude import ClaudeEngine
+
+        app = self._앱(profile, client)
+        # 운영 프로필처럼 소유자 턴에 맨 Write, Edit, Bash 가 있다.
+        monkeypatch.setattr(app.tool_policy(), "_owner_tools", ("Write", "Edit", "Bash"))
+        request, _ = self._요청(app, monkeypatch, "pencil2", "U_OWNER")
+        args = ClaudeEngine(profile.primary_engine, profile)._tool_args(request, {})
+        assert "--allowedTools" in args
+        allowed = args[args.index("--allowedTools") + 1]
+        assert f"Bash({app.rewrite_command()}:*)" in allowed
+        assert "Write" in allowed
