@@ -8,6 +8,9 @@
     the channel lists the user           base + user_tools, extra_tools, airflow wrapper
     otherwise                            base tools only
 
+Every non-owner turn also gets the profile's readonly_tools: the lookup
+bundle (read-only MCP tools, scoped read wrappers) named one by one.
+
 Read-only by default. Skill is appended last, and only when the request
 isn't aside (postmortem/debug/format-check) and the channel has it enabled.
 """
@@ -124,6 +127,27 @@ def _granted_by(name: str, base_tools: Sequence[str]) -> bool:
     return name in base_tools or f"{server}__*" in base_tools
 
 
+def _lookup_bundle(names: Sequence[str]) -> tuple[str, ...]:
+    """The profile's readonly_tools as a non-owner may get them (A10).
+
+    mametchi hands every non-owner its lookup MCP tools and read wrappers
+    (bot.py:486 ALLOWED_TOOLS, 788 READ_SHELL_TOOLS); sca gave Read, Grep and
+    Glob only, so a non-owner asking for a Snowflake figure had no way to look
+    it up. Which tools count as lookups is organisation configuration, so the
+    profile names them. A server wildcard (any spelling) would open the send
+    and delete tools on the same server, a browser action works the owner's
+    logins, and a bare Bash/Edit/Write writes: each is dropped whatever the
+    profile says. A scoped grant such as Bash(<wrapper>:*) stays.
+    """
+    dropped = [
+        name for name in names
+        if _is_server_wildcard(name) or _is_browser_action(name) or name in OPERATOR_TOOLS
+    ]
+    if dropped:
+        log.warning("readonly_tools 에서 뺀 도구 : %s", ", ".join(dropped))
+    return tuple(dict.fromkeys(name for name in names if name not in dropped))
+
+
 class ToolPolicy:
     def __init__(
         self,
@@ -134,6 +158,7 @@ class ToolPolicy:
         always_skills: Sequence[str] = (),
         operator_level: Callable[..., str] | None = None,
         operator_tools: Sequence[str] = (),
+        readonly_tools: Sequence[str] = (),
     ) -> None:
         self._base_tools = tuple(base_tools)
         self._owner_tools = tuple(owner_tools)
@@ -142,6 +167,7 @@ class ToolPolicy:
         self._always_skills = tuple(always_skills)
         self._operator_level = operator_level
         self._operator_grant = tuple(operator_tools)
+        self._readonly_grant = _lookup_bundle(readonly_tools)
 
     def tool_list_for(
         self,
@@ -167,6 +193,7 @@ class ToolPolicy:
             if self._channel_tools is not None:
                 tools += [t for t in self._channel_tools(principal) if t not in tools]
         else:
+            tools += [t for t in self._readonly_grant if t not in tools]
             if not aside:
                 tools += [t for t in self._operator_tools(principal, asker_is_bot) if t not in tools]
             for ext in self._extensions:

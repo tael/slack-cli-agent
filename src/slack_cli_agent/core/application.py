@@ -527,6 +527,7 @@ class Application:
                 always_skills=self._settings.always_skills or ALWAYS_SKILLS,
                 operator_level=self.access_policy.operator_level,
                 operator_tools=self._settings.operator_tools,
+                readonly_tools=self._settings.readonly_tools,
             )
         return self._tool_policy
 
