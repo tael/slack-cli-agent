@@ -1044,6 +1044,18 @@ class Test가드사건기록:
 
         assert not any(i["kind"] == IncidentKind.WRONG_ADDRESSEE for i in deps["audit"].incidents)
 
+    def test_요청이_부른_사람은_지우지도_기록하지도_않는다(self, tmp_path: Path) -> None:
+        """파이프라인이 요청 본문을 가드에 넘긴다 (B2)."""
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="<@UOTHER> 님 안녕하세요")],
+            guards=[AddresseeGuard()],
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(text="<@UOTHER> 님께 인사 전해 줘"))
+
+        assert not any(i["kind"] == IncidentKind.WRONG_ADDRESSEE for i in deps["audit"].incidents)
+        assert any("<@UOTHER>" in p["text"] for p in deps["publisher"].posted)
+
     def test_재작성이_앞_답보다_크게_짧으면_rewrite_loss로_기록된다(self, tmp_path: Path) -> None:
         long_first = "본문 " * 100
         checker = Fake늦은추가말("새 말", "1700000009.000000")

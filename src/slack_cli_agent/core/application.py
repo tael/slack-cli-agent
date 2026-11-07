@@ -614,17 +614,24 @@ class Application:
         """Read per request, like `_bot_mentions_allowed`."""
         return is_chat_channel(self._channels.get(channel))
 
+    def _is_bot_or_peer(self, user_id: str) -> bool:
+        """A controller is a bot even when users_info fails. Both mention
+        guards read this one verdict, so a peer that AddresseeGuard keeps at
+        the head has already been through BotMentionGuard's channel check (B2)."""
+        return user_id in self._profile.controller_user_ids or self._bot_users.is_bot(user_id)
+
     def _guards(self) -> GuardPipeline:
         guards: list[OutputGuard] = [
             PlainMentionGuard(),
-            # Before AddresseeGuard so a bot mention at the head is turned
-            # into a name here rather than cut with a note meant for people.
+            # Before AddresseeGuard: in a channel without `bot_mentions` a bot
+            # mention at the head becomes a name here, so AddresseeGuard's
+            # bot exception never lets one through that this guard would cut.
             BotMentionGuard(
-                is_bot=self._bot_users.is_bot,
+                is_bot=self._is_bot_or_peer,
                 display_name=self._names.resolve,
                 allowed_in=self._bot_mentions_allowed,
             ),
-            AddresseeGuard(),
+            AddresseeGuard(is_bot=self._is_bot_or_peer),
             WatchPromiseGuard(),
             RewriteLossGuard(self._settings),
             # safe to always include — a no-op when the drop-line list is empty
