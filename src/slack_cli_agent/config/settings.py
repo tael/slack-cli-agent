@@ -109,6 +109,25 @@ class RuntimeSettings:
     figurative_model: str = "sonnet"
     figurative_timeout_sec: float = 45
 
+    #: E1-E8: answer a non-owner's DM with an isolated read-only turn
+    #: instead of ignoring it (mametchi notify_dm_redirect). Off by default:
+    #: a colleague sees the bot answer, so a profile opts in.
+    dm_reply: bool = False
+    #: Replies one person gets a day; the first DM past it gets one notice,
+    #: later ones are only recorded. 0 means no cap. mametchi raised 10 to 50
+    #: on 2026-10-27.
+    dm_daily_limit: int = 50
+    #: A person's probe count for the day that warns the owner (mametchi
+    #: DM_PROBE_WARN_AT).
+    dm_probe_warn_at: tuple[int, ...] = (2, 5)
+    #: Empty uses the engine's own model. mametchi used opus: on 2026-10-14
+    #: sonnet misread ordinary questions as probes.
+    dm_model: str = ""
+    #: KST hour the daily DM report goes out, for yesterday (mametchi 09시).
+    dm_report_hour: int = 9
+    #: How often the report job checks whether it is due; the check is a file read.
+    dm_report_interval_sec: float = 600
+
     progress_tick_sec: float = 3
     progress_idle_sec: float = 45
 

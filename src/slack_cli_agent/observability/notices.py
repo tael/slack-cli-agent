@@ -43,6 +43,14 @@ class NoticeKey(StrEnum):
     UNREGISTERED_MENTION = "unregistered_mention"
     UNREGISTERED_INVITE = "unregistered_invite"
     UNREGISTERED_OWNER_DM = "unregistered_owner_dm"
+    #: Non-owner DM replies (E1-E5, E8).
+    DM_FALLBACK = "dm_fallback"
+    DM_CAPPED = "dm_capped"
+    DM_OWNER_DIGEST = "dm_owner_digest"
+    DM_PROBE_WARN = "dm_probe_warn"
+    DM_REPORT = "dm_report"
+    DM_REPORT_EMPTY = "dm_report_empty"
+    DM_REPORT_FAILED = "dm_report_failed"
 
 
 DEFAULT_NOTICES: Mapping[NoticeKey, str] = {
@@ -74,6 +82,24 @@ DEFAULT_NOTICES: Mapping[NoticeKey, str] = {
         "미등록 채널 알림 : {who} <#{channel}> 채널에서 {bot}를 {action}. 채널 이름 {name}.\n"
         "{thread}그 채널에서 {bot}를 한 번 부르시면 등록됩니다. 채널 멤버가 아니면 채널 안 멘션 알림은 받지 못합니다."
     ),
+    # E3: posted when the isolated turn fails or gives nothing. Fixed text, so
+    # a failure never shows the engine's own error string to a colleague.
+    NoticeKey.DM_FALLBACK: (
+        "지금은 DM 답을 만들지 못했어요. 업무 문의는 관련된 분들이 함께 볼 수 있게 "
+        "공개 채널에서 저를 불러 주세요."
+    ),
+    NoticeKey.DM_CAPPED: (
+        "오늘 DM 으로 답할 수 있는 횟수를 넘었어요. 내일 다시 보내 주시거나 공개 채널에서 불러 주세요."
+    ),
+    NoticeKey.DM_OWNER_DIGEST: (
+        "DM 알림 : {kind}\n- 질문자 : <@{user}>{restriction}\n\n받은 글\n{question}\n\n보낸 답{fallback}\n{reply}"
+    ),
+    NoticeKey.DM_PROBE_WARN: (
+        ":warning: <@{user}>님이 DM 으로 내부 구성을 캐묻고 있어요. 오늘 {count}번째예요.\n{text}"
+    ),
+    NoticeKey.DM_REPORT: "DM 일일 점검 {day}\n{body}",
+    NoticeKey.DM_REPORT_EMPTY: "DM 일일 점검 {day} : DM 기록 없음",
+    NoticeKey.DM_REPORT_FAILED: "DM 일일 점검 {day} : 분석 실패 ({reason}). 기록 {count}건은 감사 로그에 있어요.",
 }
 
 

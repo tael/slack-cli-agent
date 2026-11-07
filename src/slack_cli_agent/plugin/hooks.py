@@ -151,6 +151,14 @@ def background_runners(
     return runners
 
 
+def background_job_runner(
+    name: str, job: BackgroundJob, slots: ConcurrencySlots, wait_sec: float,
+) -> PeriodicRunner:
+    """One job's runner, for a core job that needs the same slot handling as
+    a plugin's (E8's daily DM report)."""
+    return _job_runner(name, job, slots, wait_sec)
+
+
 def _job_runner(name: str, job: BackgroundJob, slots: ConcurrencySlots, wait_sec: float) -> PeriodicRunner:
     holder: list[PeriodicRunner] = []
     engine = engine_slot(slots, wait_sec, stopping=lambda: holder[0].is_stopping())

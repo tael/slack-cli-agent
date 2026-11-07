@@ -75,6 +75,15 @@ from ..learning.reactions import ReactionCollector
 from ..learning.render import ProposalRenderer
 from ..learning.schedule import DailyBatchSchedule
 from ..observability.app_snapshot import ApplicationSnapshotSource
+from ..dm.daily_report import DmDailyReport
+from ..dm.prompts import (
+    DEFAULT_REPLY_SYSTEM,
+    DEFAULT_REPORT_SYSTEM,
+    REPLY_FILE,
+    REPORT_FILE,
+    load_prompt,
+)
+from ..dm.service import DmReplyService
 from ..observability.audit import AuditLog
 from ..observability.model_cost import record_engine_spend
 from ..observability.notices import NoticeCatalog
@@ -90,7 +99,13 @@ from ..observability.slow_report import (
 )
 from ..observability.state_snapshot import StateSnapshotBuilder, StateSnapshotWriter
 from ..plugin.base import BotPlugin
-from ..plugin.hooks import background_runners, event_callbacks
+from ..plugin.hooks import (
+    BackgroundJob,
+    background_job_runner,
+    background_runners,
+    engine_slot,
+    event_callbacks,
+)
 from ..plugin.loader import PluginLoader
 from ..prompt.composer import PromptComposer, SystemPromptComposer
 from ..prompt.knowledge import KnowledgeLoader
@@ -227,6 +242,9 @@ _CODE_ROOT = Path(__file__).resolve().parents[3]
 
 log = logging.getLogger(__name__)
 
+#: Local file tools a non-owner's DM turn does not get (mametchi DM_TOOLS).
+_DM_LOCAL_FILE_TOOLS: frozenset[str] = frozenset({"Read", "Grep", "Glob"})
+
 # One prompt file per channel mode, by naming convention — mode "agent_coach"
 # maps to prompts/prompt_agent_coach.md without needing a lookup table.
 # "chat" is the casual-banter mode: a channel where business/internal-system
@@ -353,6 +371,7 @@ class Application:
         self._engine: Engine | None = None
         self._gateway: SlackGateway | None = None
         self._ingress: IngressService | None = None
+        self._dm_reply: DmReplyService | None = None
         self._admin: AdminAdmission | None = None
         self._admin_claims: AdminClaims | None = None
         self._pipeline: RequestPipeline | None = None
@@ -1539,6 +1558,120 @@ class Application:
             calls = tool_calls_in(find(response.session_id) if find else None)
         return TurnResult(ok=response.ok, body=response.body, tool_calls=calls)
 
+    # --- 비소유자 DM 응대 (E1-E8) ----------------------------------------
+
+    def dm_reply_service(self) -> DmReplyService | None:
+        """None unless `dm_reply` is on and an owner is set: without an owner
+        nobody would see the full copy of what a colleague was told (E5)."""
+        if not self._settings.dm_reply or not self._profile.owner_user_id:
+            return None
+        if self._dm_reply is None:
+            notice_log = UnregisteredNoticeLog(self._profile.paths.unregistered_channels)
+            self._dm_reply = DmReplyService(
+                run_turn=self._run_dm_turn,
+                post=lambda channel, text: self.publisher().post(channel, "", text, False),
+                audit=self.audit().record,
+                notices=self._notices,
+                daily_limit=self._settings.dm_daily_limit,
+                notify_owner=self._notify_owner,
+                slot=engine_slot(self.concurrency_slots(), self._settings.request_timeout_sec),
+                context=lambda user: notice_log.recent_context(user, self._channels.is_registered),
+                probe_warn_at=self._settings.dm_probe_warn_at,
+            )
+        return self._dm_reply
+
+    def _dm_reply_callback(self) -> Callable[[str, str, str], None] | None:
+        service = self.dm_reply_service()
+        return service.handle if service is not None else None
+
+    def dm_turn_tools(self, user: str, channel: str) -> ToolSelection:
+        """The read-only selection a non-owner's DM turn gets: A10's lookup
+        bundle and read-only MCP tools, no Skill, no browser action, no bare
+        write tool. Read, Grep and Glob are dropped as in mametchi (DM_TOOLS):
+        the local files hold the owner's own records. Nothing left is a ban,
+        never an open turn."""
+        principal = Principal(
+            user_id=user, channel=channel, trust=TrustLevel.GENERAL, is_direct_message=True,
+        )
+        policy = self.tool_policy()
+        names = [
+            name for name in policy.tool_list_for(principal, readonly=True)
+            if name not in _DM_LOCAL_FILE_TOOLS
+        ]
+        if not names:
+            return ToolSelection.forbid_all()
+        return ToolSelection.from_names(names, lookups=policy.lookups_for(principal, readonly=True))
+
+    def _dm_workdir(self) -> Path:
+        # Empty on purpose: the turn has no business with any bot file.
+        workdir = self._profile.paths.root / "dm-work"
+        workdir.mkdir(parents=True, exist_ok=True)
+        return workdir
+
+    def _run_dm_turn(self, prompt: str) -> EngineResponse:
+        # The DM channel is not needed by the turn; the tool list is the same
+        # for every non-owner DM.
+        tools = self.dm_turn_tools("", "D")
+        system = load_prompt(
+            self._profile.paths.prompts, REPLY_FILE, DEFAULT_REPLY_SYSTEM, self._profile.display_name,
+        )
+        return self.engine_invoker.invoke(EngineRequest(
+            prompt=prompt,
+            system_prompt=system,
+            # No session: every DM starts clean and leaves nothing to resume.
+            session_id=None,
+            resume=False,
+            model=self._settings.dm_model or None,
+            effort=DEFAULT_EFFORT,
+            workdir=self._dm_workdir(),
+            tools=tools,
+            requirements=self.execution_policy.requirements_for(config=None, tools=tools),
+            trust_level=TrustLevel.GENERAL,
+            request_id=f"dm-{time.time():.6f}",
+        ))
+
+    def _run_dm_report_turn(self, prompt: str) -> EngineResponse:
+        tools = ToolSelection.forbid_all()
+        return self.engine_invoker.invoke(EngineRequest(
+            prompt=prompt,
+            system_prompt=load_prompt(
+                self._profile.paths.prompts, REPORT_FILE, DEFAULT_REPORT_SYSTEM,
+                self._profile.display_name,
+            ),
+            session_id=None,
+            resume=False,
+            model=self._settings.dm_model or None,
+            effort=DEFAULT_EFFORT,
+            workdir=self._dm_workdir(),
+            tools=tools,
+            requirements=self.execution_policy.requirements_for(config=None, tools=tools),
+            trust_level=TrustLevel.OWNER,
+            request_id=f"dm-report-{time.time():.6f}",
+        ), CallOrigin.BACKGROUND)
+
+    def dm_report_runners(self) -> list[PeriodicRunner]:
+        """The daily DM report as a G1 background job on the worker, so its
+        engine call waits for the same slots as requests. Empty unless DM
+        replies are on."""
+        if self.dm_reply_service() is None:
+            return []
+        report = DmDailyReport(
+            rows=self.audit().rows_between,
+            run_turn=self._run_dm_report_turn,
+            notify_owner=self._notify_owner,
+            audit=self.audit().record,
+            notices=self._notices,
+            state_path=self._profile.paths.root / "dm_daily_report.json",
+            run_hour=self._settings.dm_report_hour,
+        )
+        job = BackgroundJob(
+            name="dm_daily_report", run=report.tick,
+            interval_sec=self._settings.dm_report_interval_sec,
+        )
+        return [background_job_runner(
+            "core:dm_daily_report", job, self.concurrency_slots(), self._settings.request_timeout_sec,
+        )]
+
     def worker(self, worker_id: str = "worker") -> Worker:
         # unlike the other components here, a new Worker is created on every
         # call — worker_id must differ per process
@@ -1710,6 +1843,7 @@ class Application:
                     policy=self.access_policy,
                     self_user_id=lambda: self.identity.user_id,
                 ),
+                dm_reply=self._dm_reply_callback(),
                 # The handler runs on one of slack-sdk's ten pool threads, so a
                 # long lock wait here delays every event behind it (sca-9l1).
                 lock_budget=lambda: self.database.latency_budget(
@@ -2432,6 +2566,7 @@ class Application:
                 self.stale_reclaim_runner(worker),
                 *self.shadow_runners(),
                 *self.plugin_job_runners("worker"),
+                *self.dm_report_runners(),
             ],
             name="worker",
             watch_interval_sec=self._settings.service_watch_interval_sec,
