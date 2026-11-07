@@ -30,7 +30,7 @@ class ReviewEngineCaller:
         workdir: Path,
         system_prompt: str | Callable[[str], str],
         readable_dirs: Sequence[Path] = (),
-        model: str | None = None,
+        model: str | Callable[[], str] | None = None,
         effort: str | None = None,
         tools: ToolSelection | None = None,
     ) -> None:
@@ -39,14 +39,19 @@ class ReviewEngineCaller:
         self._system_prompt = system_prompt
         self._readable_dirs = tuple(readable_dirs)
         # 소유자에게 큰 모델을 강제하지 않는다 (A13). 점검별 모델은 호출부가 정한다.
-        self._model = model or profile.primary_engine.model
+        # callable 이면 실행할 때마다 다시 고른다. 점검 객체는 캐시되므로
+        # 생성 시점 값으로 두면 channels.json 수정이 재기동 전까지 반영되지 않는다.
+        self._model_source = model
+        self._default_model = profile.primary_engine.model
         self._effort = effort or OWNER_EFFORT_MIN
         self._tools = tools or ToolSelection.unrestricted()
         self._execution_policy = ExecutionPolicy()
 
     @property
     def model(self) -> str:
-        return self._model
+        source = self._model_source
+        chosen = source() if callable(source) else source
+        return chosen or self._default_model
 
     @property
     def effort(self) -> str:
@@ -69,7 +74,7 @@ class ReviewEngineCaller:
             system_prompt=system_prompt,
             session_id=session_id,
             resume=resume,
-            model=self._model,
+            model=self.model,
             effort=self._effort,
             workdir=self._workdir,
             readable_dirs=self._readable_dirs,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
 import sqlite3
 import sys
@@ -486,6 +487,26 @@ class TestReviewReactions:
         assert tasks["brain"]._engine.model == "model-ch"
         assert tasks["pencil2"]._engine.model == "model-ch"
         assert tasks["dango"]._engine.model == "model-big"
+
+    def test_점검_모델은_채널_설정을_고치면_재기동_없이_바뀐다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """review_tasks() 는 처음 부를 때 캐시된다. 모델을 생성 시점에 정하면
+        channels.json 을 고쳐도 점검만 재기동 전까지 옛 모델로 돈다. 마메치
+        run_claude 는 호출할 때마다 model_for 를 부른다."""
+        binary = tmp_path / "bin" / "fake-engine"
+        profile = write_profile(tmp_path, primary_engine={
+            "type": "claude", "binary": str(binary), "model": "model-a",
+        })
+        app = Application(profile, client)
+        tasks = app.review_tasks()
+        assert tasks["brain"]._engine.model == "model-a"
+        ChannelRegistry(profile.paths.channels).update("C_TROUBLE", {"model": "model-ch"})
+        bumped = time.time() + 5
+        os.utime(profile.paths.channels, (bumped, bumped))
+        assert app.review_tasks() is tasks
+        assert tasks["brain"]._engine.model == "model-ch"
+        assert tasks["pencil2"]._engine.model == "model-ch"
 
     def test_점검_셋_모두에_감사가_연결된다(self, app: Application) -> None:
         """한 종류만 연결하면 그 종류 말고는 소요 기록이 안 남는다(sca-fy5)."""

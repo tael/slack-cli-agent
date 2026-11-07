@@ -1703,9 +1703,12 @@ class Application:
             # 추적과 서식 점검은 보고 채널의 일반 규칙(어드바이저 실행자, 채널
             # model, 기본 model)을 따른다. 마메치 run_claude 가 이 둘을
             # model_for(TROUBLESHOOT_CHANNEL, is_owner) 로 고르는 것과 같다.
+            # 호출할 때마다 고른다. review_tasks() 가 캐시되므로 값으로 넘기면
+            # 보고 채널 model 이나 advisor.executor 수정이 재기동 전까지
+            # 점검에만 반영되지 않는다.
             model=(
-                self._profile.primary_engine.model_for_postmortem() if postmortem
-                else self.access_policy.model_for(principal)
+                self._profile.primary_engine.model_for_postmortem if postmortem
+                else lambda: self.access_policy.model_for(principal)
             ),
         )
 

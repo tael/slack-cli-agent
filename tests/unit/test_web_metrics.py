@@ -827,6 +827,14 @@ class Test채널별_행:
         assert rows["C2"]["model"] == profile.primary_engine.model
         assert rows["C2"]["model_inherited"] is True
 
+    def test_봇_정보는_소유자_모델이_아니라_부검_모델을_낸다(self, tmp_path: Path) -> None:
+        """A13 부터 소유자 대화는 채널 model 이나 기본 model 로 돈다.
+        model_owner 는 부검 기본값으로만 쓰이므로 안내문도 부검 모델을 보인다."""
+        profile = make_profile(tmp_path)
+        bot = MetricsCollector(profile, now=lambda: 1_100.0).collect(days=7)["bot"]
+        assert "owner_model" not in bot
+        assert bot["postmortem_model"] == "model-owner"
+
     def test_대기줄_건수는_jobs_표에서_읽는다(self, tmp_path: Path) -> None:
         profile = make_profile(tmp_path)
         db = open_db(profile)

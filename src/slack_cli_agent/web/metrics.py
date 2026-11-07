@@ -445,7 +445,9 @@ class MetricsCollector:
             "display_name": self._profile.display_name,
             "engine": engine.type,
             "default_model": engine.model,
-            "owner_model": engine.model_for_owner(),
+            # A13 부터 소유자 대화도 채널 model 이나 기본 model 로 돈다.
+            # model_owner 는 부검 기본값으로만 남아 있어 부검 모델을 보인다.
+            "postmortem_model": engine.model_for_postmortem(),
             "not_applicable": not_applicable,
         }
 
