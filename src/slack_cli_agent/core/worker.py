@@ -79,7 +79,12 @@ class Worker:
         # needs its own so shutdown knows whether to wait.
         self._inflight = inflight or InflightCounter()
         self._active = active or InflightRegistry()
-        self._lock = threading.Lock()
+        # Reentrant: the TERM handler runs on the main thread and reads the
+        # running set through restart_requester_discount. The main thread also
+        # takes this lock in its claim loop (holding_claims, _enqueue_new), so
+        # a signal landing inside that section would wait on its own thread's
+        # lock until SIGKILL with a plain Lock.
+        self._lock = threading.RLock()
         self._running: dict[int, Job] = {}
         # Catch-up-representative key -> the requests it absorbed, so the same
         # reaction mark gets applied to them once the representative finishes.
