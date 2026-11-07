@@ -556,6 +556,7 @@ class Application:
             domain_file=self._profile.domain_file, learned_dir=paths.learned,
             local_dir=paths.local,
             always_skills=self._settings.always_skills or ALWAYS_SKILLS,
+            wiki_dir=paths.wiki,
         )
         return SystemPromptComposer(
             library, knowledge, self._prompt_sections(),

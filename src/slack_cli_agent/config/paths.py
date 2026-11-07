@@ -133,6 +133,12 @@ class StatePaths:
         return self.persona / "local"
 
     @property
+    def wiki(self) -> Path:
+        """Topic pages of domain facts. Only `index.md` is sent every turn; the
+        model opens a page itself when the topic matches (마메치 WIKI_DIR)."""
+        return self.persona / "wiki"
+
+    @property
     def skills(self) -> Path:
         """Bot-owned skill files, kept out of any engine's shared home directory.
 
