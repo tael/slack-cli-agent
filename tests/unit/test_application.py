@@ -2484,6 +2484,68 @@ class Test봇멘션가드연결:
         assert "<@U0TAEL>" in result.body
 
 
+class Test수신자가드_예외_조립:
+    """첫머리 멘션 예외(짝 봇, 봇 계정, 요청 본문 멘션)가 조립에서도 성립하는가 (B2)."""
+
+    def test_요청이_부른_사람은_첫머리에_남고_안내문이_없다(self, tmp_path: Path) -> None:
+        client = FakeSlackClient()
+        client.users_info = lambda **kw: {  # type: ignore[method-assign]
+            "user": {"id": kw.get("user"), "is_bot": False, "profile": {"real_name": "홍길동"}}
+        }
+        app = Application.from_profile(write_profile(tmp_path), client=client)
+        ctx = GuardContext(asker_id="U0ASK", request_text="<@U0NEW> 님께 인사해 줘")
+
+        result = app._guards().run("<@U0NEW> 님 반갑습니다", ctx)
+
+        assert result.body == "<@U0NEW> 님 반갑습니다"
+
+    def test_엉뚱한_사람은_지우되_안내문을_붙이지_않는다(self, tmp_path: Path) -> None:
+        client = FakeSlackClient()
+        client.users_info = lambda **kw: {  # type: ignore[method-assign]
+            "user": {"id": kw.get("user"), "is_bot": False, "profile": {"real_name": "홍길동"}}
+        }
+        app = Application.from_profile(write_profile(tmp_path), client=client)
+
+        result = app._guards().run("<@U0ELSE> 님 확인했습니다", GuardContext(asker_id="U0ASK"))
+
+        assert result.body == "확인했습니다"
+
+    def test_짝_봇_조회가_실패해도_봇_멘션_허용_없는_채널에서는_이름으로_바뀐다(
+        self, tmp_path: Path,
+    ) -> None:
+        """짝 봇 예외가 BotMentionGuard 의 채널 판정을 건너뛰지 않는다. 조회 실패로
+        짝 봇을 사람으로 읽으면 bot_mentions 가 없는 채널에서 멘션이 살아 나가
+        서로 깨우는 고리가 열린다."""
+        client = FakeSlackClient()
+
+        def broken(**_kw: Any) -> dict[str, Any]:
+            raise RuntimeError("users_info 실패")
+
+        client.users_info = broken  # type: ignore[method-assign]
+        app = Application.from_profile(
+            write_profile(tmp_path, controller_user_ids=["U0PEER"]), client=client,
+        )
+
+        result = app._guards().run("<@U0PEER> 이 건 같이 봐 주세요", GuardContext(asker_id="U0ASK"))
+
+        assert "<@U0PEER>" not in result.body
+        assert "첫머리를 지웠" not in result.body
+
+    def test_짝_봇은_조회가_실패해도_봇으로_판정한다(self, tmp_path: Path) -> None:
+        client = FakeSlackClient()
+
+        def broken(**_kw: Any) -> dict[str, Any]:
+            raise RuntimeError("users_info 실패")
+
+        client.users_info = broken  # type: ignore[method-assign]
+        app = Application.from_profile(
+            write_profile(tmp_path, controller_user_ids=["U0PEER"]), client=client,
+        )
+
+        assert app._is_bot_or_peer("U0PEER") is True
+        assert app._is_bot_or_peer("U0HUMAN") is False
+
+
 class Test점검느린보고연결:
     """점검 경로에도 느린 실행 보고가 붙는가 (sca-xck).
 

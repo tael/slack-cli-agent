@@ -47,6 +47,9 @@ class GuardContext:
     owner_user_id: str = ""
     # Plain-text name -> Slack user ID, used by PlainMentionGuard.
     mention_names: Mapping[str, str] = field(default_factory=dict)
+    # The request text as received. AddresseeGuard keeps a leading mention of
+    # anyone this text itself mentions ("greet <@A> and <@B>").
+    request_text: str = ""
     # Body before rewrite; RewriteLossGuard only checks for loss when set.
     previous_body: str | None = None
     # Whether this body is a rewrite from WatchPromiseGuard's rerun request.

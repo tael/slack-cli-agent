@@ -986,6 +986,7 @@ class RequestPipeline:
             is_owner=is_owner,
             owner_user_id=self._owner_user_id,
             mention_names=self._mention_table(),
+            request_text=ctx.text,
             previous_body=previous_body,
         )
         result = self._guards.run(body, guard_ctx)
