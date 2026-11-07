@@ -194,6 +194,9 @@ from ..slack.transcript import TranscriptBuilder
 from ..storage.admin_claims import AdminClaims
 from ..storage.connection_epochs import SqliteConnectionEpochs
 from ..storage.database import Database
+from ..welcome.plugin import WelcomePlugin
+from ..welcome.service import WelcomeService
+from ..welcome.store import WelcomeStore
 from .access import RequestAccess
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
@@ -351,6 +354,8 @@ class Application:
         self._reactions: ReactionMarker | None = None
         self._publisher: MessagePublisher | None = None
         self._review_tasks: dict[str, ReviewTask] | None = None
+        self._welcome: WelcomePlugin | None = None
+        self._welcome_service: WelcomeService | None = None
         self._identity: SlackBotIdentity | None = None
         self._roster_builder: RosterBuilder | None = None
         self._roster_refresher: PeriodicRunner | None = None
@@ -1408,7 +1413,7 @@ class Application:
         job waits for the same slots as requests and reviews, at most as
         long as one request may run."""
         return background_runners(
-            self._plugins,
+            self._hook_plugins(),
             process,
             self.concurrency_slots(),
             self._settings.request_timeout_sec,
@@ -1450,8 +1455,43 @@ class Application:
 
     def _admin_router(self) -> AdminRouter:
         commands = default_admin_commands(self._notices)
-        commands.extend(c for p in self._plugins for c in p.admin_commands())
+        commands.extend(c for p in self._hook_plugins() for c in p.admin_commands())
         return AdminRouter(commands)
+
+    def _hook_plugins(self) -> tuple[BotPlugin, ...]:
+        """Profile plugins plus the core modules built on the same hooks:
+        the welcome (G2). Kept out of `plugins`, which lists what the profile
+        loaded."""
+        if self._welcome is None:
+            self._welcome = WelcomePlugin(self._channels, self.welcome_service)
+        return (*self._plugins, self._welcome)
+
+    def welcome_service(self) -> WelcomeService:
+        """A read-only owner-tier turn: it looks the joiner up and writes
+        one post; the post itself goes through the publisher (G2)."""
+        if self._welcome_service is None:
+            owner = Principal(
+                user_id=self._profile.owner_user_id, channel="",
+                trust=TrustLevel.OWNER, is_direct_message=False,
+            )
+            caller = ReviewEngineCaller(
+                invoker=self.engine_invoker,
+                profile=self._profile,
+                workdir=self._profile.work_root,
+                system_prompt="슬랙 채널에 올릴 환영 글을 쓴다. 사용자 메시지의 지시를 따른다.",
+                tools=ToolSelection.allow(self.tool_policy().tool_list_for(owner, readonly=True)),
+            )
+            library = PromptLibrary(self._profile.paths.prompts)
+            self._welcome_service = WelcomeService(
+                store=WelcomeStore(self._database),
+                client=self._client,
+                channels=self._channels,
+                publisher=self.publisher(),
+                run=lambda prompt: caller.run(prompt, None, False),
+                template=lambda: library.text("welcome"),
+                self_user_id=lambda: self.identity.user_id,
+            )
+        return self._welcome_service
 
     def _admin_admission(self) -> AdminAdmission:
         """Built once and shared: the socket path and catch-up have to reach
@@ -1537,7 +1577,7 @@ class Application:
                 notices=self._notices,
                 is_shutting_down=lambda: self._shutting_down,
                 extra_handlers=event_callbacks(
-                    self._plugins,
+                    self._hook_plugins(),
                     ThreadTaskSpawner(),
                     self.concurrency_slots(),
                     self._settings.request_timeout_sec,

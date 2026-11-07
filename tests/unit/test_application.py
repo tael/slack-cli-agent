@@ -274,7 +274,8 @@ class TestWiring:
         gateway = app.gateway()
         app.ingress().register(gateway)
         assert gateway.handler_count("app_mention") == 1
-        assert gateway.handler_count("message") == 1
+        # 코어 처리기와 입장 환영 훅 (G2)
+        assert gateway.handler_count("message") == 2
         assert gateway.handler_count("reaction_added") == 1
 
     def test_접수기에_미등록_채널_소유자_호출이_배선된다(self, app: Application) -> None:
