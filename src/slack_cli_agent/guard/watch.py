@@ -128,6 +128,35 @@ def promise_without_watch_prompt(body: str) -> str:
     )
 
 
+# A watch check turn runs read-only (tool_list_for(readonly=True)): it can
+# read files, logs and Slack, but cannot run ps, send a test request or call
+# anything that acts. 2026-11-07 17:23 a reply put "check the worker PID
+# changed and send a request to see the status line" into a watch; the 17:41
+# check turn could do neither and handed both back to the owner. Prompt rules
+# had already said WATCH is for checking only (watch_note.md) and still the
+# tag went through, so the registration itself is stopped here.
+WATCH_NEEDS_ACTION_RE = re.compile(
+    r"(\bps\b|pgrep|프로세스\s*목록|\[테스트\]|테스트\s*(요청|메시지|질문)"
+    r"|요청을?\s*(보내|넣|날려)|(직접|실제로?)\s*(요청|실행|호출|보내)"
+    r"|실행해\s*(보|서)|돌려\s*(보|서))"
+)
+
+
+def watch_needs_action_prompt(body: str, desc: str) -> str:
+    return (
+        "방금 낸 답의 [[WATCH: ...]] 에 실행해야 확인되는 항목이 있다.\n"
+        f"감시 문장 : {desc}\n\n"
+        "감시 확인 턴은 읽기 전용이라 ps, 테스트 요청 보내기, 명령 실행을 하지 못한다. "
+        "그대로 등록하면 확인 턴은 그 항목을 미완료로 남기고 사람에게 넘긴다.\n\n"
+        f"방금 쓴 답 :\n{body}\n\n"
+        "아래 둘 중 하나로 다시 쓴다.\n"
+        "1. 이 턴에 실행할 수 있으면 지금 실행하고 결과를 답에 쓴다. 그 항목은 WATCH 에서 뺀다.\n"
+        "2. 이 턴이 끝난 뒤에만 생기는 결과면, 읽기만으로 판정할 증거로 감시 문장을 바꾼다. "
+        "예 : worker.pid 와 state.json started_at 이 어느 시각 이후인지, worker 로그에 "
+        "특정 문구가 찍혔는지, 슬랙 스레드에 어떤 답이 올라왔는지."
+    )
+
+
 class WatchPromiseGuard(OutputGuard):
     """Extracts the [[WATCH:]] target for registration, and requests a
     rewrite when a follow-up promise has no tag.
@@ -144,6 +173,19 @@ class WatchPromiseGuard(OutputGuard):
         if m:
             desc = m.group("desc").strip()
             due = m.group("due") or ""
+            if WATCH_NEEDS_ACTION_RE.search(desc):
+                if not ctx.is_rewrite_retry:
+                    return GuardResult(
+                        body=body,
+                        changed=False,
+                        detail={"watch_needs_action": desc},
+                        rerun=RerunRequest(
+                            reason="watch_needs_action",
+                            rewrite_prompt=watch_needs_action_prompt(body, desc),
+                            guard_name=self.name,
+                        ),
+                    )
+                log.warning("실행이 필요한 감시가 재작성 뒤에도 남아 그대로 등록한다 : %s", desc)
             stripped = WATCH_RE.sub("", body).rstrip()
             return GuardResult(
                 body=stripped, changed=True, detail={"watch_desc": desc, "watch_due": due},

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -580,3 +581,21 @@ def test_agent_status_rejected_falls_back() -> None:
     assert backup.opened == ["확인하는 중"]
     assert backup.lines == ["파일 읽는 중"]
     assert backup.closed == 1
+
+
+# 2026-11-07 : 성공이 로그에 안 남아 읽기 전용 확인 턴이 상태줄 동작을 판정하지 못했다.
+def test_agent_status_logs_success_and_failure(caplog: pytest.LogCaptureFixture) -> None:
+    from slack_cli_agent.slack.progress import SlackAgentStatusProgressSink
+
+    caplog.set_level(logging.INFO, logger="slack_cli_agent.slack.progress")
+    sink = SlackAgentStatusProgressSink(_StatusClient(), "C1", "111.1")
+    sink.open("확인하는 중")
+    sink.close()
+    assert "에이전트 상태 설정 : status=processing C1:111.1" in caplog.text
+    assert "에이전트 상태 설정 : status=active C1:111.1" in caplog.text
+
+    caplog.clear()
+    failing = SlackAgentStatusProgressSink(_StatusClient(fail=True), "C1", "111.1")
+    with pytest.raises(RuntimeError):
+        failing.open("확인하는 중")
+    assert "에이전트 상태 설정 실패 : status=processing C1:111.1 invalid_arguments" in caplog.text

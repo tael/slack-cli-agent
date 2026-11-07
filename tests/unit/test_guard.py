@@ -201,6 +201,35 @@ class TestWatchPromiseGuard:
         assert result.detail["watch_desc"] == "dag_id=foo run_id=bar"
         assert result.rerun is None
 
+    def test_watch_needing_action_requests_rerun(self) -> None:
+        """2026-11-07 17:23 : 읽기 전용 확인 턴이 할 수 없는 ps, 테스트 요청을 감시에 넣었다."""
+        guard = WatchPromiseGuard()
+        body = (
+            "재기동 예약했습니다.\n\n[[WATCH: 재기동 뒤 ps 로 worker PID 교체를 확인하고 "
+            "실제 요청을 보내 상태줄이 뜨는지 확인]]"
+        )
+        result = guard.apply(body, GuardContext())
+        assert result.rerun is not None
+        assert result.rerun.reason == "watch_needs_action"
+        assert "watch_desc" not in result.detail
+
+    def test_watch_needing_action_registers_after_retry(self) -> None:
+        guard = WatchPromiseGuard()
+        body = "답.\n\n[[WATCH: [테스트] 요청으로 상태줄 확인]]"
+        result = guard.apply(body, GuardContext(is_rewrite_retry=True))
+        assert result.rerun is None
+        assert result.detail["watch_desc"] == "[테스트] 요청으로 상태줄 확인"
+
+    def test_readable_evidence_watch_is_registered(self) -> None:
+        guard = WatchPromiseGuard()
+        body = (
+            "답.\n\n[[WATCH: worker.pid 가 17:23 이후 값인지와 worker.err.log 에 "
+            "'에이전트 상태 설정 : status=processing' 이 찍혔는지 확인]]"
+        )
+        result = guard.apply(body, GuardContext())
+        assert result.rerun is None
+        assert result.detail["watch_desc"].startswith("worker.pid")
+
     def test_plain_answer_is_untouched(self) -> None:
         guard = WatchPromiseGuard()
         body = "그냥 답변입니다"
