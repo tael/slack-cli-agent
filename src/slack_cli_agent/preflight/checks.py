@@ -8,6 +8,7 @@ node` shebang silently fail, dropping the tool without any error.
 from __future__ import annotations
 
 import ast
+import importlib
 import importlib.util
 import json
 import os
@@ -556,6 +557,48 @@ def _undefined_name_lines(tree: ast.AST) -> dict[str, int]:
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in defined:
             missing.setdefault(node.id, node.lineno)
     return missing
+
+
+#: Modules the long-running commands import only after the gate has passed.
+#: `cli._default_application` pulls in `core.application` lazily. That module
+#: does not import the Slack SDK at module level: `Application.from_profile`
+#: imports `slack_sdk.WebClient` and the ingress connector imports
+#: `slack_sdk.socket_mode` inside the call, so both are listed explicitly.
+CORE_BOOT_MODULES: tuple[str, ...] = (
+    "slack_cli_agent.core.application",
+    "slack_sdk",
+    "slack_sdk.socket_mode",
+    "slack_sdk.socket_mode.response",
+)
+
+
+class CoreImportCheck(PreflightCheck):
+    """Imports the core modules boot needs, before boot.
+
+    worker and ingress import `core.application` only after the suite reports
+    기동 가능. A broken core (a syntax error, a missing dependency, an
+    exception at module level) therefore passed every check and then died with
+    an ImportError, exit code 1, which launchd answers with a restart every
+    10 seconds. Restarting does not fix a broken install, so the failure has
+    to surface here, where a fatal result becomes EX_CONFIG (78) and run.sh
+    leaves a block marker.
+    """
+
+    name: ClassVar[str] = "core_import"
+
+    def __init__(self, modules: Sequence[str] = CORE_BOOT_MODULES) -> None:
+        self._modules = tuple(modules)
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        bad: list[str] = []
+        for module in self._modules:
+            try:
+                importlib.import_module(module)
+            except Exception as exc:  # noqa: BLE001 - any module-level failure blocks boot
+                bad.append(f"{module} : {exc!r}")
+        if bad:
+            return CheckResult(ok=False, detail="코어 모듈 import 실패 - " + "; ".join(bad))
+        return CheckResult(ok=True, detail="코어 모듈 import 점검 통과")
 
 
 class CompileCheck(PreflightCheck):
