@@ -23,6 +23,7 @@ from ..slack.listener import EventListener
 from ..slack.reactions import ReactionMarker
 from .access import RequestAccess
 from .context import RequestContext
+from .slots import ConcurrencySlots
 from .spawn import TaskSpawner
 
 log = logging.getLogger(__name__)
@@ -109,6 +110,14 @@ class IngressService:
         # None means this caller has no shutdown flag to read, so no restart
         # notice goes out. The request is queued either way.
         is_shutting_down: Callable[[], bool] | None = None,
+        # The cap the worker's requests also take, as bot.py's one `_slots`
+        # did (bot.py:1166). None runs reviews uncapped, which is what this
+        # package did before A16; only a caller with no worker should leave it.
+        review_slots: ConcurrencySlots | None = None,
+        # How long a review waits for a slot before it is dropped, as the
+        # original's `_slots.acquire(timeout=TIMEOUT_SEC)` (bot.py:8993).
+        # None waits without end.
+        review_slot_wait_sec: float | None = None,
     ) -> None:
         self._listener = listener
         self._access = access
@@ -131,6 +140,8 @@ class IngressService:
         self._clock = time.monotonic
         self._assistant = assistant
         self._is_shutting_down = is_shutting_down
+        self._review_slots = review_slots
+        self._review_slot_wait_sec = review_slot_wait_sec
 
     def register(self, gateway: SlackGateway) -> None:
         gateway.on("app_mention", self.handle_app_mention)
@@ -176,9 +187,24 @@ class IngressService:
                 return
             # A review calls the engine and takes minutes; running it here
             # would block every other Slack event for that whole time.
-            self._spawn.spawn(f"점검:{result[0]}", lambda: self._on_reaction(*result))
+            self._spawn.spawn(f"점검:{result[0]}", lambda: self._review(*result))
         except Exception:
             log.exception("리액션 이벤트 처리 실패: %s", event.get("reaction"))
+
+    def _review(self, emoji: str, channel: str, ts: str, actor: str) -> None:
+        """Waits on the spawned thread, never on the Slack handler, so a full
+        pool holds up only the review and not the events behind it."""
+        if self._review_slots is None:
+            self._on_reaction(emoji, channel, ts, actor)
+            return
+        token = self._review_slots.acquire(timeout=self._review_slot_wait_sec)
+        if token is None:
+            log.warning("점검을 시작할 자리가 없다. 넘긴다 : %s %s:%s", emoji, channel, ts)
+            return
+        try:
+            self._on_reaction(emoji, channel, ts, actor)
+        finally:
+            self._review_slots.release(token)
 
     def _process(
         self, ctx: RequestContext | None, event: Mapping[str, Any], *, mentioned: bool = False

@@ -25,6 +25,7 @@ from ..reliability.catchup import CatchupReport, RetryStatus
 from ..reliability.ports import CatchupPort
 from ..reliability.watchjobs import ActiveWatchPort
 from ..slack.reactions import ReactionMarker
+from .slots import ConcurrencySlots, SlotToken, ThreadSlots
 
 _Mark = Callable[[str, str], None]
 
@@ -55,8 +56,13 @@ class Worker:
         # None keeps the old behavior: everything recovered goes to the model.
         # A missing injection must not make a recovered request disappear.
         admin: AdminAdmission | None = None,
+        # Shared with the ingress reviews so the two together stay under
+        # max_concurrent, as bot.py's one `_slots` did (A16). None keeps the
+        # cap inside this process.
+        slots: ConcurrencySlots | None = None,
     ) -> None:
         self._queue = queue
+        self._slots = slots
         self._handler = handler
         self._heartbeat = heartbeat
         self._catchup = catchup
@@ -156,27 +162,30 @@ class Worker:
         # are free to run at once -- what serialized them was this process handling
         # one at a time (sca-si6). max_concurrent is that cap, same as the original
         # bot.py's semaphore.
-        slots = max(1, int(self._settings.max_concurrent))
-        if slots == 1:
+        size = max(1, int(self._settings.max_concurrent))
+        if size == 1 and self._slots is None:
             while not should_stop():
                 if not self.run_once():
                     self._sleep(self._settings.queue_idle_sleep_sec)
             return
 
-        free = threading.Semaphore(slots)
+        free = self._slots if self._slots is not None else ThreadSlots(size)
         running: list[threading.Thread] = []
         while not should_stop():
             # One should_stop call per turn, same as the single-slot loop: the
-            # caller's flag is also what the tests step through.
-            free.acquire()
+            # caller's flag is also what the tests step through. The wait is
+            # bounded so a pool held by reviews still lets shutdown through.
+            token = free.acquire(timeout=self._settings.queue_idle_sleep_sec)
+            if token is None:
+                continue
             job, buried = self._queue.claim_next_representative(self._worker_id)
             if job is None:
-                free.release()
+                free.release(token)
                 self._sleep(self._settings.queue_idle_sleep_sec)
                 continue
             self._bury_behind(job, buried)
             thread = threading.Thread(
-                target=self._process_and_release, args=(job, free), daemon=True
+                target=self._process_and_release, args=(job, free, token), daemon=True
             )
             thread.start()
             running.append(thread)
@@ -186,11 +195,13 @@ class Worker:
         for thread in running:
             thread.join()
 
-    def _process_and_release(self, job: Job, free: threading.Semaphore) -> None:
+    def _process_and_release(
+        self, job: Job, free: ConcurrencySlots, token: SlotToken
+    ) -> None:
         try:
             self._process(job)
         finally:
-            free.release()
+            free.release(token)
 
     def _safe_handle(self, context: RequestContext) -> HandleOutcome:
         # RequestHandler is contracted not to raise, but if it does anyway, only this

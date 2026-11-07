@@ -197,6 +197,7 @@ from .lifecycle import InflightCounter, InflightRegistry
 from .periodic import PeriodicRunner
 from .pipeline import RequestPipeline, _domain_applies
 from .services import ServiceGroup
+from .slots import ConcurrencySlots, FileSlots
 from .spawn import ThreadTaskSpawner
 from .sweeplog import SweepLog
 from .timezones import KST
@@ -1287,6 +1288,12 @@ class Application:
             )
         return self._catchup_service
 
+    def concurrency_slots(self) -> ConcurrencySlots:
+        """The one cap the worker's requests and the ingress reviews share
+        (A16). Each call opens its own handle; the lock files are what is
+        shared, so the ingress and worker processes see the same pool."""
+        return FileSlots(self._profile.paths.root / "slots", self._settings.max_concurrent)
+
     def worker(self, worker_id: str = "worker") -> Worker:
         # unlike the other components here, a new Worker is created on every
         # call — worker_id must differ per process
@@ -1303,6 +1310,7 @@ class Application:
             # reclaim picks the mark from this (sca-o1e).
             watch_jobs=self.watch_jobs(),
             admin=self._admin_admission(),
+            slots=self.concurrency_slots(),
         )
 
     def _admin_router(self) -> AdminRouter:
@@ -1385,6 +1393,8 @@ class Application:
                 allowed_reactions=self.allowed_reactions(),
                 on_reaction=self.on_reaction,
                 spawn=ThreadTaskSpawner(),
+                review_slots=self.concurrency_slots(),
+                review_slot_wait_sec=self._settings.request_timeout_sec,
                 notices=self._notices,
                 is_shutting_down=lambda: self._shutting_down,
                 # The handler runs on one of slack-sdk's ten pool threads, so a

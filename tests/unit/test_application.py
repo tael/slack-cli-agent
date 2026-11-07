@@ -209,6 +209,19 @@ class TestStateSetup:
         profile = write_profile(tmp_path, settings={"없는키": 1})
         assert Application(profile, client).settings.max_concurrent == 10
 
+    def test_점검과_워커가_같은_동시_실행_상한을_쓴다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        """접수 프로세스의 점검이 워커 요청과 한 상한을 나눈다 (A16)."""
+        profile = write_profile(tmp_path, settings={"max_concurrent": 1})
+        ingress_app = Application(profile, client)
+        worker_app = Application(profile, client)
+        review = ingress_app.ingress()._review_slots
+        requests = worker_app.worker()._slots
+        assert review is not None and requests is not None
+        held = review.acquire(timeout=0)
+        assert held is not None
+        assert requests.acquire(timeout=0) is None
+        review.release(held)
+
     def test_DB_스키마를_적용한다(self, app: Application) -> None:
         version = app.database.connect().execute("PRAGMA user_version").fetchone()[0]
         assert int(version) > 0
