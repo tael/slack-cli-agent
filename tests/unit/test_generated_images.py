@@ -227,6 +227,10 @@ class Test파이프라인:
         assert updates == [("C1", "1700000002.000200", "방 이미지예요")]
         assert outcome.posted_ts == "1700000002.000200"
         assert client.replies_calls == 0
+        # 서식 점검이 덮어쓸 답 조각은 답이 들어간 그림 메시지 하나다.
+        rec = parts["audit"].records[0]
+        assert rec["answer_ts"] == "1700000002.000200"
+        assert rec["answer_parts"] == ["1700000002.000200"]
 
     def test_공유_ts_를_모르면_스레드를_읽어_합친다(self) -> None:
         class TsUnknown(Fake게시기):
