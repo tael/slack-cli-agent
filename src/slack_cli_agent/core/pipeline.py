@@ -515,7 +515,7 @@ class RequestPipeline:
         body, blocked_recipient = self._resolve_recipient(body, ctx)
         if blocked_recipient:
             notice_ts = self._publisher.post(
-                ctx.channel, ctx.thread_ts, NOTICE_NO_RECIPIENT, False,
+                ctx.channel, ctx.thread_ts, NOTICE_NO_RECIPIENT, False, flat=flat,
             ) or ""
             self._audit.record(
                 IncidentKind.MISSING_RECIPIENT.value, channel=ctx.channel,

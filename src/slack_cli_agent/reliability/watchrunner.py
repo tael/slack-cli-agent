@@ -46,7 +46,9 @@ class WatchChannelLookup(Protocol):
 class WatchReportPublisher(Protocol):
     """What the checker needs. MessagePublisher satisfies it."""
 
-    def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None: ...
+    def post(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> str | None: ...
 
 _TERMINAL = (WatchOutcome.SUCCEEDED, WatchOutcome.FAILED)
 
@@ -224,8 +226,12 @@ class WatchJobChecker:
 
     def _post_report(self, job_id: int, channel: str, thread_ts: str, body: str) -> bool:
         config = self._channels.get(channel)
+        # A flat_reply channel posts its answers at top level, so the report
+        # goes there too; left in the thread it hides under the triggering
+        # message (B3, mametchi bot.py:6565 applies flat_reply to every post).
+        flat = bool(getattr(config, "flat_reply", False))
         try:
-            self._publisher.post(channel, thread_ts, body, channel_is_rich(config))
+            self._publisher.post(channel, thread_ts, body, channel_is_rich(config), flat=flat)
         except Exception as exc:  # noqa: BLE001 — a post failure must not stop the job from being marked done
             # The body can carry Slack conversations or file contents, so the
             # log gets the identifiers only.

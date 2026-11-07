@@ -1349,8 +1349,12 @@ class Application:
         )
 
     def _reply(self, channel: str, thread_ts: str, message: str) -> None:
-        # admin command replies are always plain text, regardless of channel rich-mode config
-        self.publisher().post(channel, thread_ts, message, rich=False)
+        # admin command replies are always plain text, regardless of channel rich-mode config.
+        # A flat_reply channel still gets them at top level, where its answers
+        # land (B3, mametchi bot.py:6565).
+        config = self._channels.get(channel)
+        flat = bool(config and config.flat_reply)
+        self.publisher().post(channel, thread_ts, message, rich=False, flat=flat)
 
     def ingress(self) -> IngressService:
         if self._ingress is None:

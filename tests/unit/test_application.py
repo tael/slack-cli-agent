@@ -2546,3 +2546,30 @@ class Test노출금지자리표조립:
         assert "<<AIRFLOW_CTL>>" not in text
         assert f"제어 도구 : {Path('~/bin/airflow_ctl.sh').expanduser()} <명령>" in text
         application.close()
+
+
+class Test관리명령응답_flat:
+    """B3: flat_reply 채널은 답이 채널 최상위에 오른다. 관리 명령 응답만 스레드로
+    가면 같은 채널 안에서 답의 위치가 갈린다(마메치 post_reply 는 모든 게시에
+    flat_reply 를 적용한다, bot.py:6565)."""
+
+    def _app(self, profile: Profile, client: FakeSlackClient, flat: bool) -> Application:
+        profile.paths.root.mkdir(parents=True, exist_ok=True)
+        profile.paths.channels.write_text(
+            json.dumps({"C_FEED": {"name": "피드", "flat_reply": flat}}), encoding="utf-8"
+        )
+        return Application(profile, client)
+
+    def test_flat_채널이면_스레드없이_올린다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        self._app(profile, client, True)._reply("C_FEED", "1.1", "완료")
+        posted = [kw for name, kw in client.calls if name == "chat_postMessage"]
+        assert posted and "thread_ts" not in posted[0]
+
+    def test_일반_채널이면_스레드로_올린다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        self._app(profile, client, False)._reply("C_FEED", "1.1", "완료")
+        posted = [kw for name, kw in client.calls if name == "chat_postMessage"]
+        assert posted and posted[0].get("thread_ts") == "1.1"

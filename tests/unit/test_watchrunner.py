@@ -56,6 +56,7 @@ def 큐(database: Database) -> 시계달린큐:
 @dataclass
 class 가짜채널설정:
     rich: bool = False
+    flat_reply: bool = False
 
 
 class 가짜채널목록:
@@ -70,11 +71,15 @@ class 가짜채널목록:
 class 가짜발행:
     실패: bool = False
     게시내역: list[tuple[str, str, str, bool]] = field(default_factory=list)
+    flat내역: list[bool] = field(default_factory=list)
 
-    def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None:
+    def post(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> str | None:
         if self.실패:
             raise RuntimeError("발신 실패")
         self.게시내역.append((channel, thread_ts, text, rich))
+        self.flat내역.append(flat)
         return "999.9"
 
 
@@ -210,6 +215,32 @@ class Test완료처리:
         c.check_once()
 
         assert 발행.게시내역[0][3] is True
+
+    def test_flat채널이면감시보고가스레드없이나간다(self, 큐) -> None:
+        # B3: flat_reply 채널은 본답변이 채널 최상위에 올라가므로 감시 보고도
+        # 스레드에 숨기지 않고 같은 위치에 올린다.
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
+            발행=발행, 채널목록=가짜채널목록({"C1": 가짜채널설정(flat_reply=True)}),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.flat내역 == [True]
+
+    def test_일반채널이면감시보고가스레드로나간다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
+            발행=발행, 채널목록=가짜채널목록({"C1": 가짜채널설정()}),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.flat내역 == [False]
 
     def test_게시가예외를내도완료표시는된다(self, 큐) -> None:
         큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")

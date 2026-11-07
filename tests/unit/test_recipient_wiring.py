@@ -101,6 +101,21 @@ class Test미표식_차단_J11:
         kinds = [i["kind"] for i in deps["audit"].incidents]
         assert "missing_recipient" in kinds
 
+    def test_flat_채널이면_안내도_스레드없이_올린다(self, tmp_path: Path) -> None:
+        # B3: flat_reply 채널은 본답변이 채널 최상위에 오르므로 그 대신 나가는
+        # 안내도 같은 위치에 올린다. 스레드에 숨기면 요청자가 보지 못한다.
+        from slack_cli_agent.config.channel import ChannelConfig
+
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="표식 없는 답입니다.")],
+            require_recipient=True,
+            channels={"C1": ChannelConfig(channel_id="C1", name="피드", flat_reply=True)},
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(channel="C1"))
+        assert deps["publisher"].posted[0]["text"] == NOTICE_NO_RECIPIENT
+        assert deps["publisher"].posted[0]["flat"] is True
+
     def test_플래그_켜도_표식_있으면_정상_게시(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(
             responses=[ok_response(body="보고드립니다.\n[[RECIPIENT:OWNER]]")],
