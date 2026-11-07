@@ -23,7 +23,11 @@ from typing import Any
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.channel_kind import is_direct_message_channel
 from slack_cli_agent.core.errors import SlackError
-from slack_cli_agent.core.markers import ELAPSED_MODEL_LINE, strip_control_tags
+from slack_cli_agent.core.markers import (
+    ELAPSED_MODEL_LINE,
+    split_leaked_tags,
+    strip_control_tags,
+)
 from slack_cli_agent.core.secrets import count_outbound_secrets, redact_outbound
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.render.blocks import BlockBuilder
@@ -168,10 +172,19 @@ class MessagePublisher:
         if not leaked:
             return text
         log.warning("내부 표식이 본문에 남아 있었다. 떼고 올린다 : %s", leaked)
-        self._audit(
-            kind=IncidentKind.CONTROL_TAG_LEAK.value, channel=channel,
-            thread_ts=thread_ts, tags=leaked,
-        )
+        # Same split as the main pipeline's _strip_publish_markers, so an
+        # invented marker lands under unknown_tag whichever path posted it.
+        known, unknown = split_leaked_tags(leaked)
+        if known:
+            self._audit(
+                kind=IncidentKind.CONTROL_TAG_LEAK.value, channel=channel,
+                thread_ts=thread_ts, tags=known,
+            )
+        if unknown:
+            self._audit(
+                kind=IncidentKind.UNKNOWN_TAG.value, channel=channel,
+                thread_ts=thread_ts, tags=unknown,
+            )
         if not cleaned.strip():
             self._audit(
                 kind=IncidentKind.EMPTY_AFTER_TAGS.value, channel=channel,
@@ -203,10 +216,10 @@ class MessagePublisher:
         # Last gate before any send: watch reports, reviews and notices reach
         # here without the main pipeline's marker pass, so one path forgetting
         # to strip would leak the marker (B4, bot.py:6511-6530).
-        text = self._strip_control_tags(channel, thread_ts, text)
-        if text is None:
+        cleaned = self._strip_control_tags(channel, thread_ts, text)
+        if cleaned is None:
             return None
-        text = self._redact(channel, thread_ts, text)
+        text = self._redact(channel, thread_ts, cleaned)
         text, _ = fix_notion_links(text)
         text, csv_payloads = extract_csv_blocks(text)
         if rich:

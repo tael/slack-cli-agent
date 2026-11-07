@@ -262,11 +262,20 @@ _CONTROL_TAG_LINE_RE = re.compile(
 
 # A trailing `[[WATCH: ...]]` may span several lines, so the line pass below
 # can't see it. Same shape as guard/watch.py's WATCH_RE (kept here so core
-# doesn't import guard).
+# doesn't import guard), narrowed after PR #108 review: the tag has to start
+# its own line and hold no other `[[`/`]]`. Unanchored, the lazy body ran from
+# a mid-sentence mention all the way to a later marker and ate the lines in
+# between. It is matched only after the line pass, so a trailing [[NOWATCH]]
+# line is already gone and can't stretch the match.
 _TRAILING_WATCH_RE = re.compile(
-    r"\n{0,2}\[\[WATCH(?:@\d{4}-\d{2}-\d{2})?:\s*.+?\s*\]\]\s*\Z",
+    r"(?:\A|\n)[ \t]*(\[\[WATCH(?:@\d{4}-\d{2}-\d{2})?:(?:(?!\[\[|\]\]).)+?\]\])\s*\Z",
     re.DOTALL,
 )
+
+
+def _inside_open_fence(prefix: str) -> bool:
+    """True when `prefix` leaves a ``` fence open, i.e. what follows is code."""
+    return sum(1 for ln in prefix.split("\n") if ln.strip().startswith("```")) % 2 == 1
 
 
 def strip_control_tags(text: str) -> tuple[str, list[str]]:
@@ -282,10 +291,6 @@ def strip_control_tags(text: str) -> tuple[str, list[str]]:
     if not text or "[[" not in text:
         return text, []
     dropped: list[str] = []
-    m = _TRAILING_WATCH_RE.search(text)
-    if m:
-        dropped.append(m.group(0).strip())
-        text = text[: m.start()]
     out: list[str] = []
     in_fence = False
     for line in text.split("\n"):
@@ -301,9 +306,14 @@ def strip_control_tags(text: str) -> tuple[str, list[str]]:
             dropped.append("unknown:" + stripped)
             continue
         out.append(line)
+    rest = "\n".join(out)
+    m = _TRAILING_WATCH_RE.search(rest)
+    if m and not _inside_open_fence(rest[: m.start()]):
+        dropped.append(m.group(1))
+        rest = rest[: m.start()]
     if not dropped:
         return text, []
-    return "\n".join(out).rstrip(), dropped
+    return rest.rstrip(), dropped
 
 
 def split_leaked_tags(dropped: list[str]) -> tuple[list[str], list[str]]:
