@@ -98,6 +98,9 @@ class IncidentKind(StrEnum):
     #: called this time or the cooldown held it (bot.py:7431). Baseline traffic.
     UNREGISTERED_MENTION = "unregistered_mention"
     UNREGISTERED_INVITE = "unregistered_invite"
+    #: Credential-shaped strings were masked out of a reply before it was
+    #: posted (A17). `count` says how many; the value itself is never kept.
+    SECRET_REDACTED = "secret_redacted"
 
     def __str__(self) -> str:
         return self.value
