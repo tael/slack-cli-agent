@@ -18,7 +18,7 @@ from ..auth.execution_policy import ExecutionPolicy
 from ..auth.delegation import DelegationRecorder
 from ..auth.policy import turn_tier
 from ..auth.principal import Principal, TrustLevel
-from ..auth.tools import ToolPolicy
+from ..auth.tools import SKILL_TOOL, ToolPolicy
 from ..config.channel import (
     ChannelConfig,
     advisor_enabled,
@@ -41,8 +41,8 @@ from ..engine.base import (
     Usage,
     model_usage_audit,
 )
+from ..engine.capability import ExecutionIsolation
 from ..engine.runner import EngineInvoker
-from ..reliability.restart import TURN_ID_ENV
 from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
 from ..guard.figurative import FigurativeGuard
@@ -56,6 +56,7 @@ from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter
 from ..prompt.composer import PromptComposer
 from ..prompt.sections import CompositionContext, is_silent
+from ..reliability.restart import TURN_ID_ENV
 from ..reliability.watchjobs import WatchJobPort
 from ..reliability.watchresult import WatchResultReader
 from ..session.awaiting import AwaitingPort
@@ -101,6 +102,35 @@ from .unposted_render import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def turn_reach(engine: Engine, request: EngineRequest) -> tuple[bool, tuple[str, ...]]:
+    """(reads_only, acting tool names) for the tier note (A12 review).
+
+    From the request, not the tier: codex runs every non-owner turn under a
+    read-only sandbox with MCP calls closed (codex._non_owner_reads_only), and
+    a READ turn can still carry a scoped user_tools grant such as
+    Bash(ops_ctl.sh:*). A note written from the tier alone promised tools the
+    sandbox refused and hid tools the turn had. Skill grants are left out:
+    they run no command (codex._is_skill_grant).
+    """
+    tools = request.tools
+    try:
+        isolation = engine.capabilities_for(request).execution_isolation
+    except Exception:
+        # The runner raises the same error on the run itself; the note is not
+        # where it surfaces.
+        log.warning("권한 등급 고지용 실행 보장을 읽지 못했다", exc_info=True)
+        isolation = None
+    if not tools.can_act or isolation is ExecutionIsolation.READONLY_SANDBOX:
+        return True, ()
+    acting = tuple(
+        name for name in tools.names
+        if not tools.reads(name) and name != SKILL_TOOL and not name.startswith(f"{SKILL_TOOL}(")
+    )
+    if tools.names and not acting:
+        return True, ()
+    return False, acting
 
 
 def _domain_applies(workdir: Path | None, home: Path) -> bool:
@@ -434,6 +464,7 @@ class RequestPipeline:
         request_id = self._new_request_id()
 
         prompt = self._build_prompt(ctx, scope, decision)
+        tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
         # Worked out once: the note tells the model which tier it runs as and
         # the audit row keeps the same value, so the dashboard reads what the
         # turn ran as rather than re-deriving it from a config that may have
@@ -445,19 +476,16 @@ class RequestPipeline:
             is_bot=principal.trust is not TrustLevel.OWNER
             and (ctx.from_bot or self._asker_is_bot(ctx.user)),
         ).value
-        system_prompt, budget_report = self._compose_system_prompt(
-            ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
-            tier=tier,
-        )
 
         progress_log = (
             self._progress.log_path_for(config, ctx.channel, ctx.ts)
             if self._progress is not None else None
         )
-        tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
         request = EngineRequest(
             prompt=prompt,
-            system_prompt=system_prompt,
+            # Composed below: the tier note reads what this request can reach,
+            # which the engine decides from the finished request.
+            system_prompt="",
             session_id=decision.session_id,
             resume=decision.resume,
             model=model,
@@ -472,7 +500,7 @@ class RequestPipeline:
             delegated=principal.delegated,
             progress_log=progress_log,
             request_id=request_id,
-            budget_report=budget_report,
+            turn_tier=tier,
             # Opaque to the engine layer: forwarded only so an MCP server whose
             # turn_env names a `channel` key gets this turn's channel as env
             # (mametchi's per-turn MAMETCHI_POST_CHANNEL render guard), and one
@@ -485,6 +513,12 @@ class RequestPipeline:
                 TURN_ID_ENV: f"{ctx.channel}:{ctx.ts}",
             },
         )
+        reach = turn_reach(self._engine, request)
+        system_prompt, budget_report = self._compose_system_prompt(
+            ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
+            tier=tier, reach=reach,
+        )
+        request = replace(request, system_prompt=system_prompt, budget_report=budget_report)
         # Counted rather than derived: the reset is the only trace a broken
         # resume leaves, and without it nothing can say how often context is
         # lost (sca-er9n, bot.py:5142).
@@ -516,8 +550,11 @@ class RequestPipeline:
                 earlier_note = self._earlier_launch_note(earlier_run_id)
                 if earlier_note:
                     prompt = f"{prompt}\n\n{earlier_note}"
+                # The tier goes again: without it the retry lost the note while
+                # its audit row still named the tier (A12 review).
                 retry_prompt, retry_budget = self._compose_system_prompt(
-                    ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id
+                    ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
+                    tier=tier, reach=reach,
                 )
                 request = replace(
                     request, session_id=decision.session_id, resume=False, prompt=prompt,
@@ -786,6 +823,7 @@ class RequestPipeline:
         run_id: str = "",
         *,
         tier: str = "",
+        reach: tuple[bool, tuple[str, ...]] = (False, ()),
     ) -> tuple[str, dict[str, Any]]:
         is_owner = principal.trust is TrustLevel.OWNER
         asker_name = "" if is_owner else (self._name_resolver(ctx.user) or ctx.user)
@@ -834,6 +872,8 @@ class RequestPipeline:
             operator_full=operator and bool(config and config.operator_full),
             advisor_enabled=advisor_enabled(config),
             turn_tier=tier,
+            turn_reads_only=reach[0],
+            turn_acting_tools=reach[1],
         )
         text, report = self._composer.compose_with_report(composition_ctx)
         return text, report.as_audit_dict()

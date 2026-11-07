@@ -120,6 +120,11 @@ class EngineRequest:
     #: does, so the engine layer stays out of how prompts are assembled
     #: (sca-ygd). Empty means the caller composed nothing to report.
     budget_report: Mapping[str, Any] = field(default_factory=dict)
+    #: The permission tier this turn runs as (auth.policy.turn_tier). Opaque
+    #: like request_id: only the capability record reads it, so a watch check
+    #: or review turn, which writes no request row, still says what it ran as
+    #: (A12 review). Empty means the caller worked none out.
+    turn_tier: str = ""
     #: Opaque per-turn context an MCP server's turn_env may draw an env var from
     #: (McpServerSpec.turn_env `channel` key). Opaque the same way request_id is:
     #: this layer never reads the values, only forwards them to the server

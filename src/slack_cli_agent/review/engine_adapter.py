@@ -36,6 +36,9 @@ class ReviewEngineCaller:
         tools: ToolSelection | None = None,
         scoped: Callable[[Principal, str], tuple[ToolSelection, str]] | None = None,
         owner_tools: Callable[[str], ToolSelection] | None = None,
+        #: A callable gets the requester (None for the owner turn) and the
+        #: tools the turn got, so a scoped non-owner turn records its own tier.
+        turn_tier: str | Callable[[Principal | None, ToolSelection], str] = "",
     ) -> None:
         self._invoker = invoker
         self._workdir = workdir
@@ -57,6 +60,9 @@ class ReviewEngineCaller:
         # lookups all came back denied on an owner's format review (B6).
         self._owner_tools = owner_tools
         self._execution_policy = ExecutionPolicy()
+        # Recorded on the capability row: a review writes no request row, so
+        # without it the audit cannot say what the turn ran as (A12 review).
+        self._turn_tier = turn_tier
 
     @property
     def model(self) -> str:
@@ -76,6 +82,7 @@ class ReviewEngineCaller:
         if requester is None or requester.trust is TrustLevel.OWNER:
             tools = self._owner_tools(prompt) if self._owner_tools is not None else self._tools
             trust = TrustLevel.OWNER
+            scoped_requester: Principal | None = None
             # A callable is composed per call, so an edit to the persona or the
             # prompt files reaches the next review without a restart, as it does
             # for a normal request. It gets the review prompt so topic knowledge
@@ -91,6 +98,7 @@ class ReviewEngineCaller:
                 raise RuntimeError("비소유자 점검 범위가 연결되지 않아 점검을 돌리지 않는다")
             tools, system_prompt = self._scoped(requester, prompt)
             trust = requester.trust
+            scoped_requester = requester
         request = EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
@@ -109,5 +117,9 @@ class ReviewEngineCaller:
             # One review calls the engine twice (main and split retry). Same
             # key so the audit reads them as one review (sca-4ol).
             request_id=request_id,
+            turn_tier=(
+                self._turn_tier(scoped_requester, tools) if callable(self._turn_tier)
+                else self._turn_tier
+            ),
         )
         return self._invoker.invoke(request)

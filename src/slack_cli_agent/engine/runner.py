@@ -631,6 +631,8 @@ class EngineRunner:
             # decision, not how the request ended.
             "outcome": _outcome(unmet, downgraded),
         }
+        if request.turn_tier:
+            record_fields["tier"] = request.turn_tier
         try:
             self._audit.record(CAPABILITY_KIND, **record_fields)
         except Exception:

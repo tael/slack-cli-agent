@@ -317,6 +317,24 @@ class Test요청자:
             caller.run("프롬프트", None, False, requester=self._신뢰())
         assert invoker.calls == []
 
+    def test_등급은_실제_요청자와_받은_도구로_정한다(self) -> None:
+        """비소유자 점검 턴의 등급이 소유자 값으로 남으면 감사가 틀린다 (A12, A18)."""
+        받은: list[tuple[Principal | None, tuple[str, ...]]] = []
+
+        def 등급(requester: Principal | None, tools: ToolSelection) -> str:
+            받은.append((requester, tools.names))
+            return "readonly" if requester else "owner_trusted"
+
+        def 범위(requester: Principal, prompt: str) -> tuple[ToolSelection, str]:
+            return ToolSelection.allow(["Read"]), "비소유자 지침"
+
+        caller, invoker = make_caller(tools=None, scoped=범위, turn_tier=등급)
+        caller.run("프롬프트", None, False, requester=self._신뢰())
+        caller.run("프롬프트", None, False)
+        assert [c.turn_tier for c in invoker.calls] == ["readonly", "owner_trusted"]
+        assert 받은[0] == (self._신뢰(), ("Read",))
+        assert 받은[1][0] is None
+
     def test_소유자_요청자는_기존_조립을_쓴다(self) -> None:
         caller, invoker = make_caller(tools=None)
         owner = Principal(user_id="U1", channel="C1", trust=TrustLevel.OWNER, is_direct_message=False)
