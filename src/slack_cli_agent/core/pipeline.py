@@ -284,6 +284,9 @@ class RequestPipeline:
         # [[ASK]] tag still gets stripped either way, since leaving it in
         # the posted body would expose an internal protocol marker.
         awaiting: AwaitingPort | None = None,
+        # Fixed per profile: the apply-request marker path and launchd labels
+        # the self-restart guard reads (H3). None leaves the guard pathless.
+        restart_env: Mapping[str, str] | None = None,
         # 음성 첨부 받아쓰기(G6). 접수가 아니라 여기서 부른다: 클립마다 최대
         # 180초라 소켓 핸들러에서 돌면 접수 표식과 뒤 이벤트가 밀린다.
         # None 이면 음성 첨부에 실패 사유를 싣는다.
@@ -340,6 +343,7 @@ class RequestPipeline:
         self._now = now
         self._monotonic = monotonic
         self._awaiting = awaiting
+        self._restart_env = dict(restart_env or {})
         self._transcriber = transcriber
         self._gate = ResponseGate()
 
@@ -547,6 +551,7 @@ class RequestPipeline:
             # naming `turn_id` gets this turn's key for its audit row (C10).
             turn_context={"channel": ctx.channel, "turn_id": f"{ctx.channel}:{ctx.ts}"},
             engine_env={
+                **self._restart_env,
                 **self._engine_env(ctx.channel, config),
                 # The marker's second line, so the worker can tell the turn
                 # that asked for a restart (reliability/restart.py).

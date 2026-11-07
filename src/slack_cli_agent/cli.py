@@ -744,6 +744,22 @@ def _run_rollback(argv: list[str]) -> bool:
     return done.returncode == 0
 
 
+def _run_check(argv: list[str]) -> tuple[bool, str]:
+    import subprocess
+
+    # The pre-restart check (H3, mametchi apply.sh's py_compile and regression
+    # run). A hung or missing command fails the check, and the bot keeps
+    # running the code it already loaded.
+    try:
+        done = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=600, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return False, f"점검 명령 실행 실패 : {exc}"
+    return done.returncode == 0, (done.stdout or "") + (done.stderr or "")
+
+
 def _pid_alive(pid: str) -> bool:
     try:
         os.kill(int(pid), 0)
@@ -787,6 +803,13 @@ def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
         def rollback() -> bool:
             return _run_rollback(argv)
 
+    check = None
+    if args.check_command:
+        check_argv = shlex.split(args.check_command)
+
+        def check() -> tuple[bool, str]:
+            return _run_check(check_argv)
+
     return ApplySupervisor(
         request_path=request,
         running_path=running,
@@ -799,6 +822,7 @@ def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
         notify=_owner_dm_sender(profile),
         busy=lambda: active_reviews(paths.database, now=time.time()),
         rollback=rollback,
+        check=check,
     )
 
 
@@ -828,6 +852,11 @@ class SuperviseCommand(ProfileAwareCommand):
             "--rollback-command",
             default=None,
             help="재기동 뒤 아무 프로세스도 안 돌 때 실행할 되돌리기 명령. 없으면 되돌리지 않는다",
+        )
+        parser.add_argument(
+            "--check-command",
+            default=None,
+            help="재기동 전에 실행할 점검 명령(예 pytest). 실패하면 재기동하지 않고 DM 으로 알린다",
         )
 
     def execute_with_profile(

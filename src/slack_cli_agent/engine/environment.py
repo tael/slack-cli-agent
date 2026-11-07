@@ -275,6 +275,11 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         "SCA_FINISH_VERIFY_MODEL",
         # Set inside the nested verify claude so its own run never re-verifies.
         "SCA_VERIFY_NESTED",
+        # Where the self-restart guard points a turn instead (apply-request
+        # marker) and which labels it treats as the bot itself (H3). Paths and
+        # launchd labels, not credentials.
+        "RESTART_GUARD_MARKER",
+        "RESTART_GUARD_LABELS",
         # TURN_ID ("channel:ts") and its aliases go through _with_turn_id().
     })
 
