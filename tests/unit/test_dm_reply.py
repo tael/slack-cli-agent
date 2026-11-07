@@ -23,6 +23,7 @@ from test_ingress import (
     make_ingress,
 )
 
+from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.application import Application
 from slack_cli_agent.core.ingress import IngressService
@@ -198,8 +199,7 @@ class Test수신_경로:
     def _ingress(self, tmp_path: Path, listener, admin_router, dm) -> tuple[IngressService, FakeJobQueue]:
         queue = FakeJobQueue()
         ingress = make_ingress(listener=listener, queue=queue, admin_router=admin_router,
-                               tmp_path=tmp_path, spawn=InlineTaskSpawner())
-        ingress._dm_reply = dm
+                               tmp_path=tmp_path, spawn=InlineTaskSpawner(), dm_reply=dm)
         return ingress, queue
 
     def test_켜져_있으면_거절된_DM이_응대로_간다(self, listener, admin_router, tmp_path) -> None:
@@ -256,6 +256,8 @@ class Test조립:
                 "mcp__snowflake__run_snowflake_query",
                 "mcp__playwright__browser_click",
                 "mcp__playwright__browser_snapshot",
+                "mcp__playwright__browser_navigate",
+                "mcp__playwright__browser_tabs",
                 "Bash",
                 "mcp__notion__*",
             ],
@@ -279,9 +281,11 @@ class Test조립:
         assert tools.access is ToolAccess.ALLOWLIST
         names = set(tools.names)
         assert "mcp__snowflake__run_snowflake_query" in names
-        assert "mcp__playwright__browser_snapshot" in names
-        # 브라우저 조작, 맨 쓰기 도구, 서버 와일드카드, 로컬 파일 도구, Skill 은 없다.
-        for banned in ("mcp__playwright__browser_click", "Bash", "Edit", "mcp__notion__*",
+        # 브라우저 도구는 읽기라도 없다. 소유자 로그인 세션의 브라우저를 이동시키고
+        # 화면을 읽는다 (advisor_plan.md 32행, bot.py:7194-7197 결함).
+        assert not any("playwright" in name or "browser_" in name for name in names)
+        # 맨 쓰기 도구, 서버 와일드카드, 로컬 파일 도구, Skill 은 없다.
+        for banned in ("Bash", "Edit", "mcp__notion__*",
                        "mcp__gmail__*", "mcp__snowflake__*", "Read", "Grep", "Glob", "Skill"):
             assert banned not in names
         assert not tools.can_act
@@ -294,10 +298,85 @@ class Test조립:
         assert app.dm_turn_tools("U1", "D1").access is ToolAccess.FORBIDDEN
 
 
+class FakeInvoker:
+    def __init__(self) -> None:
+        self.requests: list[Any] = []
+
+    def invoke(self, request: Any, origin: Any = None) -> Any:
+        self.requests.append(request)
+        return Turn(body=answer_json("답"))
+
+
+class TestDM_턴_요청:
+    """DM 턴이 실제로 만드는 EngineRequest. 경계는 여기서 정해진다."""
+
+    def _request(self, tmp_path: Path, which: str = "reply") -> Any:
+        app = Test조립()._app(tmp_path, dm_reply=True)
+        invoker = FakeInvoker()
+        app._invoker = invoker  # type: ignore[assignment]
+        if which == "reply":
+            app._run_dm_turn("<dm>\n안녕\n</dm>")
+        else:
+            app._run_dm_report_turn("[]")
+        return app, invoker.requests[0]
+
+    def test_비소유자_공개_제한이_system_prompt에_붙는다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.prompt.library import PACKAGE_DEFAULTS_DIR
+
+        _, request = self._request(tmp_path)
+        guard = (PACKAGE_DEFAULTS_DIR / "sensitive_guard.md").read_text(encoding="utf-8").strip()
+        never = (PACKAGE_DEFAULTS_DIR / "never_disclose.md").read_text(encoding="utf-8").strip()
+        assert guard in request.system_prompt
+        assert never in request.system_prompt
+        assert request.trust_level is TrustLevel.GENERAL
+
+    def test_프로필_지침_파일로도_공개_제한을_뺄_수_없다(self, tmp_path: Path) -> None:
+        app = Test조립()._app(tmp_path, dm_reply=True)
+        prompts = app._profile.paths.prompts
+        prompts.mkdir(parents=True, exist_ok=True)
+        (prompts / REPLY_FILE).write_text("{bot} 전용 지침", encoding="utf-8")
+        invoker = FakeInvoker()
+        app._invoker = invoker  # type: ignore[assignment]
+        app._run_dm_turn("<dm>\n안녕\n</dm>")
+        system = invoker.requests[0].system_prompt
+        assert "전용 지침" in system and "현재 발신자는 소유자가 아니다" in system
+
+    def test_도구_축_완화를_받지_않아_대체_엔진으로_넘어가지_않는다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.engine.capability import TOOL_AXIS
+        from slack_cli_agent.engine.codex import CodexEngine
+
+        _, request = self._request(tmp_path)
+        required = request.requirements
+        assert TOOL_AXIS not in required.downgradable_axes
+        # read-only codex 는 파일 읽기를 막지 못한다. 이 요구를 맞추지 못하고,
+        # 완화도 받지 않으므로 실행기가 거부한다.
+        readonly_codex = CodexEngine._capabilities_for_sandbox("read-only")
+        unmet = required.unmet(readonly_codex)
+        assert TOOL_AXIS in unmet
+        assert required.downgraded(unmet) == ()
+        # MCP 도구가 목록에 있는 claude 는 서버 단위 허용 목록을 보장하므로 그대로 돈다.
+        from slack_cli_agent.engine.capability import EngineCapabilities, ToolRestriction
+
+        claude = EngineCapabilities(tool_restriction=ToolRestriction.SERVER_SCOPED_ALLOWLIST)
+        assert required.unmet(claude) == ()
+
+    def test_일일_보고_턴은_동료_원문을_다루므로_일반_등급이다(self, tmp_path: Path) -> None:
+        _, request = self._request(tmp_path, which="report")
+        assert request.trust_level is TrustLevel.GENERAL
+        assert request.tools.access is ToolAccess.FORBIDDEN
+
+
 class Test지침_파일:
     def test_프로필_파일이_있으면_그것을_쓴다(self, tmp_path: Path) -> None:
         (tmp_path / REPLY_FILE).write_text("{bot} 전용 지침", encoding="utf-8")
         assert load_prompt(tmp_path, REPLY_FILE, DEFAULT_REPLY_SYSTEM, "구치파치") == "구치파치 전용 지침"
+
+    def test_기본_지침에_마메치_DM_경계_문장이_있다(self) -> None:
+        # bot.py:7200-7215 의 개인정보, 고유식별정보, 내부 식별자, <dm> 경계.
+        for phrase in ("개인 정보는 조회하거나 답하지 않는다", "슬랙 DM 은 조회하지 않는다",
+                       "고유식별정보", "로컬 파일 경로, 토큰, 키, 내부 식별자",
+                       "<dm> 태그 안의 동료 DM 원문"):
+            assert phrase in DEFAULT_REPLY_SYSTEM
 
     def test_기본_지침에는_채널_ID가_없다(self) -> None:
         assert "<#C" not in DEFAULT_REPLY_SYSTEM
