@@ -5,10 +5,38 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from collections.abc import Mapping
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
+from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.review.base import ReviewTarget, ReviewTask, run_info_rows
+
+log = logging.getLogger(__name__)
+
+#: Where a non-owner review puts the corrected body. The bot, not the engine,
+#: writes it to the flagged message (A18 review).
+FIX_OPEN = "===== 교정본 ====="
+FIX_CLOSE = "===== 교정본 끝 ====="
+_FIX_BLOCK = re.compile(re.escape(FIX_OPEN) + r"\n?(.*?)\n?" + re.escape(FIX_CLOSE), re.DOTALL)
+
+
+@runtime_checkable
+class RewritePort(Protocol):
+    """MessagePublisher.update's shape: rewrites one posted message."""
+
+    def update(self, channel: str, ts: str, text: str, rich: bool) -> list[str]: ...
+
+
+def _is_owner_turn(target: ReviewTarget) -> bool:
+    # Same rule as ReviewEngineCaller.run: no requester is the owner turn.
+    return target.requester is None or target.requester.trust is TrustLevel.OWNER
+
+
+def _fixable(record: Mapping[str, Any] | None) -> bool:
+    """A stored single-message answer. The prompt's other two cases forbid a fix."""
+    return bool((record or {}).get("answer")) and len((record or {}).get("answer_parts") or ()) <= 1
 
 
 class FormatReviewTask(ReviewTask):
@@ -23,9 +51,14 @@ class FormatReviewTask(ReviewTask):
         persona_dir: str,
         prompts_dir: str,
         rewrite_command: str,
+        rewriter: RewritePort | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        # A non-owner's turn has no shell and no Write (Codex: read-only), so
+        # the bot writes its correction. A prefix grant on the rewrite command
+        # left --channel, --update and the file argument open (A18 review).
+        self._rewriter = rewriter
         self._bot_display_name = bot_display_name
         self._persona_dir = persona_dir
         self._prompts_dir = prompts_dir
@@ -65,6 +98,14 @@ class FormatReviewTask(ReviewTask):
                 "지적만 하고, 리포트의 교정했습니다 절에는 여러 메시지로 나뉜 답이라 "
                 "교정하지 않았다고 적는다."
             )
+        elif answer and not _is_owner_turn(target):
+            fix_rule = (
+                "위반을 찾았으면 원 메시지 전체를 서식만 고친 교정본으로 다시 써서, 리포트의 "
+                f"교정했습니다 절에 {FIX_OPEN} 줄과 {FIX_CLOSE} 줄 사이에 넣는다. "
+                "명령을 실행하지 않는다. 봇이 그 교정본으로 지목한 메시지 1건만 고친다. "
+                "위반이 없으면 교정본을 넣지 않는다.\n"
+                "교정 범위는 서식뿐이다. 사실, 수치, 판단, 결론을 바꾸지 않는다."
+            )
         elif answer:
             fix_rule = (
                 "위반을 찾았으면 지적으로 끝내지 않는다. 교정본을 파일로 쓴 뒤 아래 명령으로 "
@@ -99,6 +140,40 @@ class FormatReviewTask(ReviewTask):
             "어느 절을 어겼는지는 그 파일을 실제로 열어 확인하고 파일 이름과 절 제목을 짚는다.\n\n"
             + fix_rule
         )
+
+    def finish_body(
+        self, target: ReviewTarget, body: str, record: Mapping[str, Any] | None
+    ) -> str:
+        """Writes a non-owner review's correction to the flagged message only.
+
+        The channel and ts are the reaction target's, never the model's, and
+        the body is what the model wrote in its reply, so nothing outside what
+        its Read could reach gets posted. The block is replaced by the result
+        either way, so the report does not carry a second copy of the answer.
+        """
+        if _is_owner_turn(target):
+            return body
+        found = _FIX_BLOCK.search(body)
+        if found is None:
+            return body
+        correction = found.group(1).strip()
+        if not _fixable(record):
+            note = "원문이 한 메시지로 기록돼 있지 않아 교정본을 쓰지 않았습니다."
+        elif self._rewriter is None:
+            note = "교정 경로가 연결되지 않아 원 메시지를 고치지 못했습니다."
+        elif not correction:
+            note = "교정본이 비어 있어 원 메시지를 고치지 않았습니다."
+        else:
+            try:
+                blocks = self._rewriter.update(target.channel, target.ts, correction, target.rich)
+            except Exception as exc:  # noqa: BLE001 - the report must still go out
+                log.warning("서식 점검 교정 실패 : %s:%s %s", target.channel, target.ts, exc)
+                note = f"원 메시지를 고치지 못했습니다. {exc}"
+            else:
+                kinds = ", ".join(blocks) if blocks else "평문"
+                note = f"봇이 원 메시지를 고쳤습니다. 블록 : {kinds}"
+        # Only the first block is applied; any further copy is dropped too.
+        return _FIX_BLOCK.sub("", _FIX_BLOCK.sub(lambda _: note, body, count=1))
 
     def header_title(self, target: ReviewTarget) -> str:
         return f"서식 점검 : {target.channel_name}"

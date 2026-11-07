@@ -89,14 +89,16 @@ class FakeEngine:
         self.calls: list[tuple[str, str | None, bool]] = []
         self.progress_logs: list[Path | None] = []
         self.request_ids: list[str] = []
+        self.requesters: list[Any] = []
 
     def run(
         self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None,
-        request_id: str = "",
+        request_id: str = "", requester: Any = None,
     ) -> EngineResponse:
         self.calls.append((prompt, session_id, resume))
         self.progress_logs.append(progress_log)
         self.request_ids.append(request_id)
+        self.requesters.append(requester)
         return self._responses.pop(0)
 
 
@@ -343,6 +345,17 @@ class Test정상흐름:
         assert detail_thread == "parent.1"
         assert detail_text == "상세내용"
 
+    def test_리액션한_사람을_엔진에_넘긴다(self, database) -> None:
+        """엔진이 요청자를 모르면 점검 턴은 소유자 권한으로 고정된다 (A18)."""
+        from slack_cli_agent.auth.principal import Principal, TrustLevel
+
+        requester = Principal(user_id="U2", channel="C1", trust=TrustLevel.TRUSTED, is_direct_message=False)
+        rig = make_rig(database)
+        rig.task.run(ReviewTarget(
+            channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True, requester=requester,
+        ))
+        assert rig.engine.requesters and set(rig.engine.requesters) == {requester}
+
     def test_완료기록을남긴다(self, database) -> None:
         rig = make_rig(database)
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
@@ -502,6 +515,48 @@ def _재시도_rig(database, 응답들) -> Rig:
     rig = make_rig(database, engine_responses=응답들)
     rig.task.__class__ = 재시도하는Task
     return rig
+
+
+class Test재시도도_요청자를_넘긴다:
+    """재시도는 같은 세션을 이어 쓴다. 요청자가 빠지면 그 턴은 소유자 턴으로
+    떨어져 같은 세션에서 무제한 도구가 열린다 (A18 검토)."""
+
+    @staticmethod
+    def _요청자() -> Any:
+        from slack_cli_agent.auth.principal import Principal, TrustLevel
+
+        return Principal(user_id="U2", channel="C1", trust=TrustLevel.TRUSTED, is_direct_message=False)
+
+    def test_구분선_재시도에_요청자를_넘긴다(self, database) -> None:
+        requester = self._요청자()
+        rig = _재시도_rig(database, [_ok_response("구분선없는본문"), _ok_response("요약===상세===상세내용")])
+        rig.task.run(replace(_대상, requester=requester))
+        assert len(rig.engine.calls) == 2
+        assert rig.engine.requesters == [requester, requester]
+
+    def test_내용_재작성에_요청자를_넘긴다(self, database) -> None:
+        requester = self._요청자()
+        rig = _내용점검_rig(database, [_ok_response("요약===상세===끊김"), _ok_response("새요약===상세===이어짐")])
+        rig.task.run(replace(_대상, requester=requester))
+        assert len(rig.engine.calls) == 2
+        assert rig.engine.requesters == [requester, requester]
+
+
+class Test게시_전_마무리:
+    def test_finish_body_가_고친_본문을_게시한다(self, database) -> None:
+        """서식 점검은 여기서 비소유자 교정본을 원 메시지에 쓰고 본문에서 뺀다 (A18)."""
+        rig = make_rig(database, record={"answer": "답"})
+        받은: list[Any] = []
+
+        def 마무리(target: ReviewTarget, body: str, record: Any) -> str:
+            받은.append((target.ts, body, record))
+            return "고친요약===상세===고친상세"
+
+        rig.task.finish_body = 마무리  # type: ignore[method-assign]
+        rig.task.run(_대상)
+        assert 받은 == [("1.1", "요약===상세===상세내용", {"answer": "답"})]
+        assert "고친요약" in rig.publisher.posts[0][2]
+        assert rig.publisher.posts[1][2] == "고친상세"
 
 
 class Test세션ID는엔진이정한다:

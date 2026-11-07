@@ -2729,3 +2729,104 @@ class Test관리명령응답_flat:
         self._app(profile, client, False)._reply("C_FEED", "1.1", "완료")
         posted = [kw for name, kw in client.calls if name == "chat_postMessage"]
         assert posted and posted[0].get("thread_ts") == "1.1"
+
+
+class TestReviewRequesterScope:
+    """리액션한 사람의 등급으로 점검 턴을 조립한다 (A18).
+
+    점검 엔진은 trust OWNER 와 무제한 도구로 고정돼 있어, 채널 신뢰 사용자가
+    리액션 하나로 소유자 권한 턴을 돌렸다. 비소유자는 조회만 한다. 서식 점검의
+    교정은 봇이 지목한 메시지 1건에 쓴다. 소유자는 지금과 같다.
+    """
+
+    @staticmethod
+    def _앱(profile: Profile, client: FakeSlackClient) -> Application:
+        profile.paths.root.mkdir(parents=True, exist_ok=True)
+        profile.paths.channels.write_text(
+            json.dumps({"C_ONE": {"name": "하나", "trusted_users": ["U_TRUSTED"]}}),
+            encoding="utf-8",
+        )
+        return Application(profile, client)
+
+    @staticmethod
+    def _요청(
+        app: Application, monkeypatch: pytest.MonkeyPatch, emoji: str, by_user: str
+    ) -> tuple[Any, list[CompositionContext]]:
+        from slack_cli_agent.engine.base import EngineRequest, EngineResponse
+
+        task = app.review_tasks()[emoji]
+        잡은: list[ReviewTarget] = []
+        monkeypatch.setattr(task, "run", 잡은.append)
+        app.on_reaction(emoji, "C_ONE", "1.0", by_user)
+        assert len(잡은) == 1
+
+        받은: list[EngineRequest] = []
+
+        class 기록기:
+            def invoke(self, request: EngineRequest, origin: Any = None) -> EngineResponse:
+                받은.append(request)
+                return EngineResponse(
+                    ok=True, body="", session_id="s", model_actual=None,
+                    elapsed=0.0, turns=None, usage=None,
+                )
+
+        문맥: list[CompositionContext] = []
+
+        class 조립기:
+            def compose(self, ctx: CompositionContext) -> str:
+                문맥.append(ctx)
+                return "지침"
+
+        monkeypatch.setattr(app, "_composer", lambda: 조립기())
+        task._engine._invoker = 기록기()
+        task._engine.run("점검", None, False, requester=잡은[0].requester)
+        return 받은[0], 문맥
+
+    def test_신뢰_사용자의_부검은_조회_전용이다(
+        self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from slack_cli_agent.engine.codex import _non_owner_reads_only
+        from slack_cli_agent.engine.tool_selection import ToolAccess
+
+        app = self._앱(profile, client)
+        for emoji in ("dango", "brain"):
+            request, 문맥 = self._요청(app, monkeypatch, emoji, "U_TRUSTED")
+            assert request.trust_level is TrustLevel.TRUSTED, emoji
+            assert request.tools.access is ToolAccess.ALLOWLIST, emoji
+            assert not request.tools.can_act, (emoji, request.tools.names)
+            assert _non_owner_reads_only(request), emoji
+            assert 문맥[0].principal.trust is TrustLevel.TRUSTED, emoji
+            assert not 문맥[0].full_authority, emoji
+
+    def test_신뢰_사용자의_서식_점검도_조회_전용이다(
+        self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """rewrite 명령 접두 허용은 다른 채널, 다른 메시지, 임의 파일을 열어
+        두었다 (A18 검토). 교정은 봇이 지목한 메시지 1건에만 쓴다."""
+        from slack_cli_agent.engine.codex import _non_owner_reads_only
+
+        app = self._앱(profile, client)
+        request, _ = self._요청(app, monkeypatch, "pencil2", "U_TRUSTED")
+        assert request.trust_level is TrustLevel.TRUSTED
+        assert not request.tools.can_act, request.tools.names
+        assert not any(name.startswith("Bash") for name in request.tools.names)
+        assert _non_owner_reads_only(request)
+
+    def test_서식_점검은_봇이_교정본을_쓸_수단을_받는다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        app = self._앱(profile, client)
+        task = app.review_tasks()["pencil2"]
+        assert task._rewriter is not None
+
+    def test_소유자의_점검은_지금과_같다(
+        self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from slack_cli_agent.engine.tool_selection import ToolAccess
+
+        app = self._앱(profile, client)
+        for emoji in ("dango", "brain", "pencil2"):
+            request, 문맥 = self._요청(app, monkeypatch, emoji, "U_OWNER")
+            assert request.trust_level is TrustLevel.OWNER, emoji
+            assert request.tools.access is ToolAccess.UNRESTRICTED, emoji
+            assert 문맥[0].principal.trust is TrustLevel.OWNER, emoji
