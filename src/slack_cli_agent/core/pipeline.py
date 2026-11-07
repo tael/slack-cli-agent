@@ -352,10 +352,13 @@ class RequestPipeline:
         is_bot = principal.trust is not TrustLevel.OWNER and (
             from_bot or self._asker_is_bot(principal.user_id)
         )
-        return ToolSelection.from_names(self._tool_policy.tool_list_for(
-            principal, prompt=prompt, skills_enabled=bool(config and config.skills),
-            asker_is_bot=is_bot,
-        ))
+        return ToolSelection.from_names(
+            self._tool_policy.tool_list_for(
+                principal, prompt=prompt, skills_enabled=bool(config and config.skills),
+                asker_is_bot=is_bot,
+            ),
+            lookups=self._tool_policy.lookups_for(principal, asker_is_bot=is_bot),
+        )
 
     def _progress_session(self, ctx: RequestContext, log_path: Path | None) -> AbstractContextManager[None]:
         """The progress display for this request, or a pass-through when it has none."""

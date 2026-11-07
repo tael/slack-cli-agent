@@ -1219,9 +1219,12 @@ class Application:
             # to start new work, which watch_check_prompt forbids (sca-ejy).
             watch_check=True,
         ))
-        watch_tools = ToolSelection.from_names(self.tool_policy().tool_list_for(
-            principal, prompt=prompt, readonly=True, skills_enabled=False,
-        ))
+        watch_tools = ToolSelection.from_names(
+            self.tool_policy().tool_list_for(
+                principal, prompt=prompt, readonly=True, skills_enabled=False,
+            ),
+            lookups=self.tool_policy().lookups_for(principal, readonly=True),
+        )
         return self.engine_invoker.invoke(EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
