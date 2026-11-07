@@ -117,6 +117,9 @@ def test_health_응답이_없으면_실패로_끝낸다(tmp_path: Path) -> None:
 
     assert done.returncode != 0
     assert "기동 확인 실패" in done.stderr
+    # A job left registered after a failed check keeps restarting on bind errors.
+    기록 = _launchctl_기록(tmp_path).splitlines()
+    assert "bootstrap" in 기록[-2] and 기록[-1].startswith("bootout")
 
 
 def test_정상이면_프로필_디렉터리를_넘기고_봇_목록을_낸다(tmp_path: Path) -> None:

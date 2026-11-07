@@ -92,7 +92,9 @@ URL="http://127.0.0.1:$PORT"
 waited=0
 until "$CURL" -fsS -m 2 "$URL/api/health" 2>/dev/null | grep -q '"ok"'; do
   if [ "$waited" -ge "$HEALTH_TIMEOUT" ]; then
-    fail "기동 확인 실패 : $URL/api/health 가 ${HEALTH_TIMEOUT}초 안에 응답하지 않았다. 로그 $D/logs/web.err.log"
+    # 등록을 남겨 두면 bind 실패로 재기동만 반복한다. 내리고 끝낸다.
+    "$LAUNCHCTL" bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+    fail "기동 확인 실패 : $URL/api/health 가 ${HEALTH_TIMEOUT}초 안에 응답하지 않아 등록을 해제했다. 로그 $D/logs/web.err.log"
   fi
   sleep 1
   waited=$((waited + 1))
