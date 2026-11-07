@@ -859,6 +859,29 @@ class TestCodexEngineBuildCommand:
         )
         assert 'sandbox_mode="danger-full-access"' in cmd
 
+    @pytest.mark.parametrize("trust_level", [TrustLevel.OWNER, TrustLevel.TRUSTED])
+    def test_workspace_write_프로필의_소유자와_controller_턴은_쓰기를_유지한다(
+        self, tmp_path: Path, trust_level: TrustLevel,
+    ) -> None:
+        """Fallback turns for the owner and configured controller carry write
+        tools.  A read-only profile once overrode that authority after an
+        automatic engine switch, so pin both trust paths to the configured
+        workspace-write sandbox.
+        """
+        engine = CodexEngine(
+            codex_profile(tmp_path, options={"sandbox": "workspace-write", "network": True}),
+            SETTINGS,
+        )
+        cmd = engine.build_command(request(
+            resume=False,
+            trust_level=trust_level,
+            tools=ToolSelection.allow(["Read", "Write", "Edit", "Bash"]),
+        ))
+
+        assert 'sandbox_mode="workspace-write"' in cmd
+        assert "sandbox_workspace_write.network_access=true" in cmd
+        assert "--approve-for-me" in cmd
+
     def test_MCP_도구가_섞이면_내리지_않는다(self, tmp_path: Path) -> None:
         """READ_ONLY_TOOLS 는 내장 도구만 담는다. MCP 도구가 밖으로 쓰는지를
         코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰)."""

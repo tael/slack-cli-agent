@@ -284,7 +284,15 @@ _HANDOFF_ASK_RE = re.compile(
 )
 #: Claude Code's own tool-permission denial strings, plus the Korean
 #: equivalents a bot might render them as. Not AWS- or any-vendor-specific.
-_DENIED_RE = re.compile(r"has been denied|Permission to use|권한이 거부|permission denied", re.IGNORECASE)
+# 2026-11-06: Codex reports a sandbox refusal as ``patch rejected: writing
+# is blocked by read-only sandbox; rejected by user approval settings``.
+# It contains neither the old ``permission denied`` phrase nor a successful
+# tool result, so the refusal used to pass the end-of-turn review.
+_DENIED_RE = re.compile(
+    r"has been denied|Permission to use|권한이 거부|permission denied|"
+    r"writing is blocked by [^\n]*sandbox|rejected by user approval settings",
+    re.IGNORECASE,
+)
 _HANDOFF_WINDOW = 120
 
 
@@ -337,8 +345,12 @@ def gave_up(turn: Turn) -> str | None:
 # 로그인할 수단이 없어서예요" 로 끝났다. 실제로는 SSO 로그인이 됐고 막힘은 권한이었다)
 # --------------------------------------------------------------------------
 
+# 2026-11-06: "마메치 실제 경로 시험은 끝내지 못했어요" 가 위 동사 목록에 없어
+# 통과했다. 시험, 검증, 점검, 완료와 "끝내지 못", "마치지 못" 문형을 더한다.
 _STOPPED_RE = re.compile(
-    r"(실행|처리|삭제|해지|진행|반영|적용|전환)(하지 못|할 수 없|을 못|를 못|못\s?했)[^\n]{0,20}"
+    r"(실행|처리|삭제|해지|진행|반영|적용|전환|시험|테스트|검증|점검|완료)"
+    r"(하지 못|할 수 없|을 못|를 못|못\s?했)[^\n]{0,20}"
+    r"|(시험|테스트|검증|점검|작업|확인)[^\n.]{0,12}(끝내지|마치지|끝나지)\s?(못|않)[^\n]{0,20}"
     r"|(수단|방법|경로|권한)(이|은)\s?없[^\n]{0,20}"
 )
 
@@ -552,7 +564,10 @@ def code_first_doc_only(turn: Turn) -> str | None:
 # denied_unretried — a tool denial that was never retried another way
 # --------------------------------------------------------------------------
 
-_UNCONFIRMED_RE = re.compile(r"(확인하지 못|확인되지 않|확인 못|조회하지 못|막혀 있|조회가 막|권한이 없)")
+_UNCONFIRMED_RE = re.compile(
+    r"(확인하지 못|확인되지 않|확인 못|조회하지 못|막혀 있|조회가 막|권한이 없|"
+    r"반영되지 않|계속 차단|쓰기가 [^.\n]{0,12}차단)"
+)
 #: 6+ char dotted/dashed/underscored identifiers — bucket names, resource
 #: ARNs, dag ids, anything specific enough that seeing it again means the
 #: same target was actually retried, not just the same tool used elsewhere.
@@ -576,8 +591,17 @@ def denied_unretried(turn: Turn) -> str | None:
         targets = _call_targets(call)
         if not targets:
             continue
-        retried = any(_call_targets(other) & targets for other in calls[i + 1 :])
-        if not retried:
+        # A second call that is denied in the same way is not recovery.  The
+        # old check counted the call itself and let "retried twice, still
+        # blocked" ship as a finished answer.  Require a later non-denied
+        # result for the same target before treating the refusal as handled.
+        recovered = any(
+            (_call_targets(other) & targets)
+            and bool(other.result.strip())
+            and not _DENIED_RE.search(other.result)
+            for other in calls[i + 1 :]
+        )
+        if not recovered:
             return next(iter(sorted(targets)))
     return None
 
