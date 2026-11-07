@@ -253,6 +253,27 @@ class PeerProfile:
     state_dir: Path
     work_root: Path
     launch_label: str
+    # Process layout. The default is an sca peer: one launchd job per service
+    # (<label>.worker, <label>.ingress) and <state_dir>/<service>.pid. A peer on
+    # another runtime (mametchi bot.py: one label, bot.pid, logs/stderr.log,
+    # restart.sh) sets services to [] and names its own files and command, so
+    # the guidance never points at labels or files that do not exist (C12).
+    services: tuple[str, ...] = ("worker", "ingress")
+    pid_files: tuple[Path, ...] = ()
+    log_files: tuple[Path, ...] = ()
+    restart_command: str = ""
+
+    def launch_labels(self) -> tuple[str, ...]:
+        if not self.services:
+            return (self.launch_label,)
+        return tuple(f"{self.launch_label}.{svc}" for svc in self.services)
+
+    def resolved_pid_files(self) -> tuple[Path, ...]:
+        if self.pid_files:
+            return self.pid_files
+        if not self.services:
+            return (self.state_dir / "bot.pid",)
+        return tuple(self.state_dir / f"{svc}.pid" for svc in self.services)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> PeerProfile:
@@ -271,7 +292,28 @@ class PeerProfile:
             state_dir=state_dir,
             work_root=work_root,
             launch_label=str(data.get("launch_label") or f"local.{name}"),
+            services=(
+                tuple(_peer_str_list(data, "services")) if "services" in data else ("worker", "ingress")
+            ),
+            pid_files=tuple(_peer_path(state_dir, v) for v in _peer_str_list(data, "pid_files")),
+            log_files=tuple(_peer_path(state_dir, v) for v in _peer_str_list(data, "log_files")),
+            restart_command=str(data.get("restart_command") or "").strip(),
         )
+
+
+def _peer_str_list(data: Mapping[str, Any], key: str) -> list[str]:
+    raw = data.get(key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(v, str) and v.strip() for v in raw):
+        raise ConfigError(f"peer 블록의 {key} 는 빈 값 없는 문자열 목록이어야 한다")
+    return [v.strip() for v in raw]
+
+
+def _peer_path(state_dir: Path, value: str) -> Path:
+    """Relative entries are under the peer's state_dir."""
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else state_dir / path
 
 
 @dataclass(frozen=True)

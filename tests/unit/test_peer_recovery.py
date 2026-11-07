@@ -135,3 +135,87 @@ def test_section_shown_to_owner_with_granted_authority() -> None:
     principal = Principal(user_id="U_OWNER", channel="C1", trust=TrustLevel.OWNER, is_direct_message=False)
     ctx = CompositionContext(principal=principal, authority_granted=True)
     assert section.applies_to(ctx) is True
+
+
+# C12: the real peer of guchipachi is mametchi, which runs bot.py under one
+# launch label (com.taeil.mametchi), writes bot.pid and logs/stderr.log, and is
+# restarted with `BOT_PROFILE=mametchi restart.sh`. The default sca layout
+# (<label>.worker / <label>.ingress, worker.pid / ingress.pid) would point the
+# model at labels and files that do not exist.
+
+
+def _mametchi_layout_profile() -> Profile:
+    data = {
+        "name": "guchipachi",
+        "primary_engine": {"type": "codex", "binary": "codex", "model": "gpt-5"},
+        "owner_user_id": "U1",
+        "troubleshoot_channel": "C1",
+        "peer": {
+            "name": "mametchi",
+            "display_name": "마메치",
+            "state_dir": "/home/op/.mametchi",
+            "launch_label": "com.taeil.mametchi",
+            "services": [],
+            "pid_files": ["bot.pid"],
+            "log_files": ["logs/stderr.log"],
+            "restart_command": "BOT_PROFILE=mametchi /home/op/mametchi-slack-bot/restart.sh",
+        },
+    }
+    return Profile.from_dict(data)
+
+
+def test_peer_layout_fields_parsed() -> None:
+    peer = _mametchi_layout_profile().peer
+    assert peer is not None
+    assert peer.services == ()
+    assert peer.pid_files == (Path("/home/op/.mametchi/bot.pid"),)
+    assert peer.log_files == (Path("/home/op/.mametchi/logs/stderr.log"),)
+    assert peer.restart_command.startswith("BOT_PROFILE=mametchi")
+
+
+def test_single_label_peer_renders_its_own_layout() -> None:
+    peer = _mametchi_layout_profile().peer
+    text = PeerRecoverySection(peer).render(_ctx(TrustLevel.OWNER, dm=True))
+    assert "gui/$(id -u)/com.taeil.mametchi " in text
+    assert "com.taeil.mametchi.worker" not in text
+    assert "com.taeil.mametchi.ingress" not in text
+    assert "/home/op/.mametchi/bot.pid" in text
+    assert "worker.pid" not in text
+    assert "/home/op/.mametchi/logs/stderr.log" in text
+    assert "BOT_PROFILE=mametchi /home/op/mametchi-slack-bot/restart.sh" in text
+    assert "kickstart -k gui/$(id -u)/com.taeil.mametchi" in text
+
+
+def test_default_layout_unchanged_for_sca_peer() -> None:
+    data = {
+        "name": "mametchi",
+        "primary_engine": {"type": "claude", "binary": "claude", "model": "m"},
+        "owner_user_id": "U1",
+        "troubleshoot_channel": "C1",
+        "peer": {"name": "guchipachi", "state_dir": "/home/op/.guchipachi-sca",
+                 "launch_label": "local.guchipachi"},
+    }
+    peer = Profile.from_dict(data).peer
+    assert peer is not None
+    assert peer.services == ("worker", "ingress")
+    text = PeerRecoverySection(peer).render(_ctx(TrustLevel.OWNER, dm=True))
+    assert "local.guchipachi.worker" in text
+    assert "local.guchipachi.ingress" in text
+    assert "/home/op/.guchipachi-sca/worker.pid" in text
+
+
+def test_peer_layout_rejects_wrong_types() -> None:
+    import pytest
+
+    from slack_cli_agent.core.errors import ConfigError
+
+    base = {
+        "name": "guchipachi",
+        "primary_engine": {"type": "codex", "binary": "codex", "model": "gpt-5"},
+        "owner_user_id": "U1",
+        "troubleshoot_channel": "C1",
+    }
+    with pytest.raises(ConfigError):
+        Profile.from_dict({**base, "peer": {"name": "m", "state_dir": "/x", "services": "worker"}})
+    with pytest.raises(ConfigError):
+        Profile.from_dict({**base, "peer": {"name": "m", "state_dir": "/x", "pid_files": "bot.pid"}})
