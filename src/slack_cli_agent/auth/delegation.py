@@ -10,17 +10,20 @@ execution path, which is why mametchi took its peer back out of operators on
 2026-09-21.
 
 The file format is mametchi's ~/.mametchi/delegations.json: a JSON list of
-rows with channel, message_ts, to, by, created and expires. This side only
-reads it. Any failure reads as "no delegation", so the turn falls back to
-read-only rather than opening anything.
+rows with channel, message_ts, to, by, created and expires. DelegationLedger
+reads it; any failure reads as "no delegation", so the turn falls back to
+read-only rather than opening anything. DelegationRecorder is the writing
+side, for a profile that delegates (mametchi delegation.record): the
+pipeline calls it only after an owner turn posted a reply addressed to a bot.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +33,8 @@ log = logging.getLogger(__name__)
 #: with the same figure; checking `created` too keeps a row with an inflated
 #: expiry from living past it.
 TTL_SEC = 1800
+#: mametchi cuts the stored scope (the posted body) at the same length.
+SCOPE_MAX = 500
 
 
 class DelegationLedger:
@@ -92,3 +97,69 @@ class DelegationLedger:
         if not isinstance(data, list):
             return []
         return [row for row in data if isinstance(row, Mapping)]
+
+
+class DelegationRecorder:
+    """Writes one row per posted message ts that handed work to another bot.
+
+    Same rows as mametchi delegation.record: expired rows are pruned on each
+    write, the file is replaced atomically under an exclusive lock on a
+    sibling `.lock`, so this and a mametchi process can share one file.
+    `delegator` is this profile's name; the receiving bot accepts only rows
+    whose `by` matches its own delegation_by.
+    """
+
+    def __init__(self, path: Path, *, delegator: str, clock: Callable[[], float] = time.time) -> None:
+        self._path = path
+        self._delegator = delegator
+        self._clock = clock
+
+    def record(
+        self,
+        channel: str,
+        thread_ts: str,
+        origin_ts: str,
+        message_ts: Sequence[str],
+        to_user: str,
+        scope: str = "",
+    ) -> int:
+        """Appends the rows and returns how many were written."""
+        if not (self._delegator and channel and message_ts and to_user):
+            return 0
+        now = self._clock()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._path.with_suffix(".lock"), "w", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            rows = [r for r in self._load() if _expires(r) > now]
+            for ts in message_ts:
+                rows.append({
+                    "channel": channel,
+                    "thread_ts": thread_ts,
+                    "origin_ts": origin_ts,
+                    "message_ts": ts,
+                    "to": to_user,
+                    "by": self._delegator,
+                    "scope": (scope or "")[:SCOPE_MAX],
+                    "created": now,
+                    "expires": now + TTL_SEC,
+                })
+            tmp = self._path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(self._path)
+        return len(message_ts)
+
+    def _load(self) -> list[Mapping[str, Any]]:
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [row for row in data if isinstance(row, Mapping)]
+
+
+def _expires(row: Mapping[str, Any]) -> float:
+    try:
+        return float(row.get("expires", 0))
+    except (TypeError, ValueError):
+        return 0.0

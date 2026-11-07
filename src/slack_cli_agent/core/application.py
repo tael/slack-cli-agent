@@ -26,7 +26,7 @@ from ..admin.admission import AdminAdmission
 from ..admin.command import AdminContext
 from ..admin.defaults import default_admin_commands
 from ..admin.router import AdminRouter
-from ..auth.delegation import DelegationLedger
+from ..auth.delegation import DelegationLedger, DelegationRecorder
 from ..auth.execution_policy import ExecutionPolicy
 from ..auth.policy import DEFAULT_EFFORT, AccessPolicy
 from ..auth.principal import Principal, TrustLevel
@@ -909,6 +909,12 @@ class Application:
                 awaiting=SqliteAwaitingStore(self._database),
                 # 워커에서 받아쓴다. 접수 경로에서 돌면 소켓 핸들러가 밀린다(G6).
                 transcriber=Transcriber(),
+                # A8: this bot hands work to another bot through the ledger
+                # that bot reads. Off unless the profile names the file.
+                delegation_recorder=(
+                    DelegationRecorder(self._profile.delegation_record, delegator=self._profile.name)
+                    if self._profile.delegation_record is not None else None
+                ),
             )
         return self._pipeline
 

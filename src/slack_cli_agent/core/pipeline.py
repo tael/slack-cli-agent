@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from ..auth.execution_policy import ExecutionPolicy
+from ..auth.delegation import DelegationRecorder
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
 from ..config.channel import (
@@ -44,7 +45,7 @@ from ..reliability.restart import TURN_ID_ENV
 from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
 from ..guard.figurative import FigurativeGuard
-from ..guard.mentions import AddresseeGuard, RecipientResolver
+from ..guard.mentions import AddresseeGuard, Recipient, RecipientResolver
 from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
@@ -216,6 +217,9 @@ class RequestPipeline:
         # 180초라 소켓 핸들러에서 돌면 접수 표식과 뒤 이벤트가 밀린다.
         # None 이면 음성 첨부에 실패 사유를 싣는다.
         transcriber: TranscribeFn | None = None,
+        # Writes the ts of an owner-turn reply addressed to a bot into the
+        # delegation ledger that bot reads (A8). None: this bot never delegates.
+        delegation_recorder: DelegationRecorder | None = None,
     ) -> None:
         self._access = access_policy
         self._transcript = transcript_builder
@@ -252,6 +256,7 @@ class RequestPipeline:
         self._linked_threads = linked_threads
         self._late_addendum = late_addendum
         self._origin_alive = origin_alive
+        self._delegation_recorder = delegation_recorder
         self._tool_post_merger = tool_post_merger
         self._generated_images = generated_images
         self._consumption = consumption
@@ -570,9 +575,9 @@ class RequestPipeline:
         # and with enforcement on a missing tag withholds the body entirely so
         # the owner never relays an answer to the wrong party (D3/J11). Runs
         # after ASK/NOWATCH are taken so the tag the resolver sees is trailing.
-        body, blocked_recipient = self._resolve_recipient(body, ctx)
+        body, blocked_recipient, recipient = self._resolve_recipient(body, ctx)
         if blocked_recipient:
-            body, blocked_recipient = self._retry_recipient_tag(
+            body, blocked_recipient, recipient = self._retry_recipient_tag(
                 body, ctx, request, decision, response, turn_calls,
             )
         if blocked_recipient:
@@ -641,6 +646,7 @@ class RequestPipeline:
             if receipt is not None and receipt.body:
                 posted_body = receipt.body
         self._archive_response(ctx, body, response, elapsed)
+        self._record_delegation(ctx, principal, recipient, answer_parts, posted_body)
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
@@ -1073,12 +1079,51 @@ class RequestPipeline:
             self._awaiting.set_awaiting(ctx.channel, ctx.thread_ts, waiting)
         return clean
 
-    def _resolve_recipient(self, body: str, ctx: RequestContext) -> tuple[str, bool]:
+    def _record_delegation(
+        self,
+        ctx: RequestContext,
+        principal: Principal,
+        recipient: Recipient | None,
+        posted: Sequence[str],
+        body: str,
+    ) -> None:
+        """Writes the posted ts into the delegation ledger when the owner's
+        own turn just addressed a bot (A8, mametchi bot.py:8435-8446).
+
+        Only the owner's turn writes: a turn some bot started, delegated or
+        not, never extends the ledger, so a delegation cannot chain back. A
+        bot mentioned inside a reply to the owner is not a hand-over; only a
+        resolved bot recipient is. The answer is already up, so a write
+        failure is logged and the turn stays a success.
+        """
+        if self._delegation_recorder is None or recipient is None or recipient.kind != "bot":
+            return
+        if not posted or principal.delegated or principal.trust is not TrustLevel.OWNER:
+            return
+        if not self._owner_user_id or ctx.user != self._owner_user_id:
+            return
+        try:
+            n = self._delegation_recorder.record(
+                ctx.channel, ctx.thread_ts, ctx.ts, tuple(posted), recipient.bot_id, scope=body,
+            )
+        except Exception:
+            log.exception("위임 원장에 적지 못했다 : %s", ctx.ts)
+            return
+        if n:
+            self._audit.record(
+                IncidentKind.DELEGATION_RECORDED.value, channel=ctx.channel,
+                thread_ts=ctx.thread_ts, message_ts=ctx.ts, to=recipient.bot_id,
+                posted=list(posted),
+            )
+
+    def _resolve_recipient(
+        self, body: str, ctx: RequestContext,
+    ) -> tuple[str, bool, Recipient | None]:
         """Resolves the trailing `[[RECIPIENT:...]]` tag into a concrete
         recipient and forces the leading mention a bot recipient needs to be
         notified (D3, bot.py:5425-5471 take_recipient_tag).
 
-        Returns `(body, blocked)`. When the tag names a bot (or an ASKER that
+        Returns `(body, blocked, recipient)`. When the tag names a bot (or an ASKER that
         turns out to be a bot), the body comes back with a `<@id>` prefix and
         any wrong leading bot-mention stripped. When there is no resolvable
         recipient and enforcement is on, `blocked=True` tells `handle` to
@@ -1093,8 +1138,8 @@ class RequestPipeline:
         if recipient is None and self._require_recipient:
             # Hand back the original body so the audit snippet shows what was
             # withheld; it is not published on this path.
-            return body, True
-        return clean, False
+            return body, True, None
+        return clean, False, recipient
 
     def _retry_recipient_tag(
         self,
@@ -1104,7 +1149,7 @@ class RequestPipeline:
         decision: SessionDecision,
         response: EngineResponse,
         turn_calls: list[EngineResponse],
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, bool, Recipient | None]:
         """Asks the model once more for just the recipient tag of a reply that
         came back without one (B1, bot.py:8085-8112 missing_recipient retry).
 
@@ -1112,7 +1157,7 @@ class RequestPipeline:
         a rerun that rewrites the answer can't change what is posted. The
         rerun has every tool forbidden: it resumes the same session, and the
         first turn may already have filed a ticket or sent a message that a
-        tool-carrying rerun could repeat. Returns `(body, blocked)` the same
+        tool-carrying rerun could repeat. Returns `(body, blocked, recipient)` the same
         way `_resolve_recipient` does.
         """
         self._audit.record(
@@ -1126,7 +1171,7 @@ class RequestPipeline:
                 IncidentKind.MISSING_RECIPIENT_RETRY.value, channel=ctx.channel,
                 thread_ts=ctx.thread_ts, attempted=False, ok=False, recovered=False, tag=None,
             )
-            return body, True
+            return body, True, None
         rerun = self._invoker.invoke(replace(
             request,
             prompt=missing_recipient_prompt(),
@@ -1137,18 +1182,19 @@ class RequestPipeline:
         turn_calls.append(rerun)
         tag = pick_recipient_tag(rerun.body) if rerun.ok else None
         blocked = True
+        recipient: Recipient | None = None
         if tag:
             # Drop a tag the first pass could not resolve (a BOT: id that is no
             # bot) before appending the new one; left in place it would be
             # read again instead of the choice just made.
             held, _ = take_recipient_tag(body)
-            body, blocked = self._resolve_recipient(f"{held.rstrip()}\n{tag}", ctx)
+            body, blocked, recipient = self._resolve_recipient(f"{held.rstrip()}\n{tag}", ctx)
         self._audit.record(
             IncidentKind.MISSING_RECIPIENT_RETRY.value, channel=ctx.channel,
             thread_ts=ctx.thread_ts, attempted=True, ok=rerun.ok, recovered=not blocked,
             tag=tag, reply=(rerun.body or "")[:300],
         )
-        return body, blocked
+        return body, blocked, recipient
 
     def _strip_publish_markers(self, body: str, ctx: RequestContext) -> str:
         """Last body pass before publish: strips every leftover `[[...]]`
