@@ -1076,7 +1076,22 @@ class Application:
             # report posting, and both would reach the channel.
             thread_activity=self.thread_activity(),
             run_supersede_check=self._run_watch_supersede_check,
+            # A question deleted between registration and report would leave
+            # the report in a thread that is no longer the asker's (C6).
+            origin_alive=SlackOriginAliveChecker(self._client),
         )
+
+    def _watch_transcript(self, job: WatchJob) -> str:
+        """What the thread said since registration, for the check turn's
+        already-reported verdict. A failed read gives an empty transcript, so
+        the check runs as before rather than not at all."""
+        try:
+            return self.thread_activity().transcript_since(
+                job.channel, job.thread_ts, job.created_at,
+            )
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            log.warning("감시 확인용 스레드 조회 실패 : 작업 %d, %s", job.id, exc)
+            return ""
 
     def watch_result_cleanup_runner(self) -> PeriodicRunner:
         # A run_id is issued per request, so work started without a watch tag --
@@ -1172,7 +1187,10 @@ class Application:
         config = self._channels.get(job.channel)
         workdir = _watch_workdir(job, config, self._profile.work_root)
         결과파일 = self.watch_results().path_for(job.run_id)
-        prompt = watch_check_prompt(job.condition, outcome, str(결과파일) if 결과파일 else "")
+        prompt = watch_check_prompt(
+            job.condition, outcome, str(결과파일) if 결과파일 else "",
+            transcript=self._watch_transcript(job),
+        )
         system_prompt = self._composer().compose(CompositionContext(
             principal=principal,
             prompt=prompt,
