@@ -91,3 +91,11 @@ class Test창과_비용:
         assert result["cost_by_channel"][0] == {"channel": "TS", "usd": 0.4}
         assert result["cost_median_usd"] == pytest.approx(0.1)
         assert [m["model"] for m in result["by_model"]] == ["opus", "sonnet"]
+
+
+def test_표의_세션_키가_있으면_그것으로_묶는다() -> None:
+    a = 행(1, "row-a", {"m": (100, 1.0)})
+    b = 행(2, "row-b", {"m": (150, 1.5)})
+    a["model_usage_session"] = b["model_usage_session"] = "eng"
+    spends = row_spends([a, b])
+    assert spends[1].by_model["m"]["output_tokens"] == 50

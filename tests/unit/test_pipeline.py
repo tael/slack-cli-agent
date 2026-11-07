@@ -2875,3 +2875,11 @@ class Test모델별_사용량을_요청_기록에_남긴다:
         pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
         pipeline.handle(make_ctx(user="U1"))
         assert "model_usage" not in deps["audit"].records[-1]
+
+    def test_표를_낸_세션을_함께_남긴다(self, tmp_path: Path) -> None:
+        """집계는 세션 안에서 직전 행을 뺀다. 실패한 실행이나 세션 초기화 뒤에는
+        행의 session_id 와 표의 세션이 다를 수 있다."""
+        응답 = replace(ok_response(session_id="eng-s"), model_usage=self._table(1, 0.01))
+        pipeline, deps = build_pipeline(responses=[응답], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(user="U1"))
+        assert deps["audit"].records[-1]["model_usage_session"] == "eng-s"

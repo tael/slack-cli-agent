@@ -345,6 +345,10 @@ MODEL_USAGE_KEY = "model_usage"
 """Name the per-model usage table is written under in the audit record.
 Writers (pipeline, review, watch) and the metrics rollup share it (A14)."""
 
+MODEL_USAGE_SESSION_KEY = "model_usage_session"
+"""The session a request row's table counts, written beside it when the
+request row's own session_id may name another session (A14)."""
+
 
 @dataclass(frozen=True)
 class ModelUsage:

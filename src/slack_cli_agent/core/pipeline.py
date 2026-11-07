@@ -28,6 +28,7 @@ from ..config.channel import channel_slug as slug_for
 from ..engine.base import (
     CONTEXT_RESET_RAW_KEY,
     MODEL_USAGE_KEY,
+    MODEL_USAGE_SESSION_KEY,
     NO_DETAIL,
     TRUNCATED_RAW_KEY,
     Engine,
@@ -509,7 +510,7 @@ class RequestPipeline:
                 # both fill usage on their failure responses; leaving it out
                 # made the usage rollup read lower than actual.
                 ok=False, usage=response.usage, turns=response.turns, failure=failure,
-                model_actual=response.model_actual, model_usage=response.model_usage,
+                model_actual=response.model_actual, model_usage=_turn_model_usage([response]),
                 failure_detail=response.failure_detail,
                 truncated=_truncated(response),
                 context_reset=context_reset,
@@ -528,7 +529,7 @@ class RequestPipeline:
         if is_silent(response.body):
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
-                     model_usage=response.model_usage,
+                     model_usage=_turn_model_usage([response]),
                      truncated=_truncated(response), context_reset=context_reset)
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
@@ -1136,7 +1137,7 @@ class RequestPipeline:
         # Session-cumulative per-model table (A14). Absent when the engine
         # gives none, like model_actual: an empty table would read as "no
         # model spent anything".
-        model_usage: Mapping[str, ModelUsage] | None = None,
+        model_usage: _TurnModelUsage | None = None,
         failure: str = "",
         failure_detail: FailureDetail = NO_DETAIL,
         # None only where no EngineResponse reached this point, so the key is
@@ -1165,9 +1166,15 @@ class RequestPipeline:
             extra[TRUNCATED_RAW_KEY] = truncated
         if model_actual:
             extra["model_actual"] = model_actual
-        model_usage_record = model_usage_audit(model_usage)
+        model_usage_record = model_usage_audit(model_usage.table) if model_usage else None
         if model_usage_record:
             extra[MODEL_USAGE_KEY] = model_usage_record
+            # The session the table counts. After a context reset or a
+            # failed run it can differ from the row's session_id, and the
+            # rollup subtracts within one session (A14).
+            session = model_usage.session_id or decision.session_id
+            if session:
+                extra[MODEL_USAGE_SESSION_KEY] = session
         if failure:
             extra["failure"] = failure
         if failure_detail:
@@ -1248,7 +1255,14 @@ class _AnswerFields:
     parts: tuple[str, ...]
 
 
-def _turn_model_usage(turn_calls: Sequence[EngineResponse]) -> Mapping[str, ModelUsage] | None:
+@dataclass(frozen=True)
+class _TurnModelUsage:
+    table: Mapping[str, ModelUsage]
+    #: The session of the call that reported the table, when it said.
+    session_id: str
+
+
+def _turn_model_usage(turn_calls: Sequence[EngineResponse]) -> _TurnModelUsage | None:
     """The per-model table that covers every engine call of this turn (A14).
 
     Reruns (late addendum, guard rewrite, render recovery) resume the same
@@ -1259,7 +1273,7 @@ def _turn_model_usage(turn_calls: Sequence[EngineResponse]) -> Mapping[str, Mode
     """
     for response in reversed(turn_calls):
         if response.model_usage:
-            return response.model_usage
+            return _TurnModelUsage(response.model_usage, response.session_id or "")
     return None
 
 

@@ -18,7 +18,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ..engine.base import MODEL_USAGE_KEY, USAGE_FIELDS
+from ..engine.base import MODEL_USAGE_KEY, MODEL_USAGE_SESSION_KEY, USAGE_FIELDS
 from .audit import REQUEST_KIND
 
 #: How far before the window the collector reads rows so a session that began
@@ -122,7 +122,7 @@ def row_spends(records: Iterable[Mapping[str, Any]]) -> list[RowSpend]:
         table = _table(record)
         if table is None:
             continue
-        session = str(record.get("session_id") or "")
+        session = str(record.get(MODEL_USAGE_SESSION_KEY) or record.get("session_id") or "")
         own = table
         if session and session in last:
             delta = _minus(table, last[session])
