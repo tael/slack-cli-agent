@@ -2105,6 +2105,34 @@ class Test감시확인턴의_실행자리:
         assert str(요청.workdir) not in ("", ".")
 
 
+class Test감시중복판정턴의_도구:
+    """중복 판정 턴은 대화와 초안을 프롬프트로 받고 태그 하나만 답한다.
+    from_names([]) 는 금지가 아니라 무제한이라 이 턴이 모든 도구를 받았다.
+    비소유자 감시 작업이면 남의 입력이 쓰기, 통신, 자동 승인이 열린 턴에
+    들어갔다.
+    """
+
+    def test_중복_판정_턴은_도구를_전부_막는다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.engine.tool_selection import ToolAccess
+        from slack_cli_agent.reliability.watchjobs import WatchJob
+
+        잡은요청: list[Any] = []
+
+        def 기록(self: Any, engine: Any, request: Any) -> None:
+            잡은요청.append(request)
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        monkeypatch.setattr(EngineRunner, "run", 기록)
+        app._run_watch_supersede_check(WatchJob(
+            id=1, channel="C1", thread_ts="1.1", condition="배포 확인",
+            created_at=0.0, last_run=None, trust=TrustLevel.GENERAL,
+        ), "대화 내용", "완료 보고 초안")
+
+        assert 잡은요청 and 잡은요청[0].tools.access is ToolAccess.FORBIDDEN
+        assert 잡은요청[0].tools.can_act is False
+
+
 class Test감시체커_배선:
     """부품을 만든 것과 조립에 연결한 것은 다르다. 확인 콜백의 시그니처가
     바뀌었는데 조립을 안 고치면 단위 시험은 전부 통과하고 운영에서만 죽는다.

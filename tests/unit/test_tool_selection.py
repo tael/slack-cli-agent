@@ -112,8 +112,10 @@ class Test엔진이_도구_금지를_다루는_법:
         요청 = request(tools=ToolSelection.forbid_all())
         codex = CodexEngine(codex_profile(tmp_path), SETTINGS)
         gemini = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
-        # codex 는 샌드박스가 꺼진 기본값이라 NONE 이고, agy 는 언제나 NONE 이다.
-        assert codex.capabilities_for(요청).tool_restriction is ToolRestriction.NONE
+        # codex 는 금지 턴을 read-only 샌드박스로 내리므로 COARSE_SANDBOX 까지만
+        # 선언한다. 도구 자체를 막지는 못하므로 ALL_FORBIDDEN 은 아니다.
+        # agy 는 언제나 NONE 이다.
+        assert codex.capabilities_for(요청).tool_restriction is ToolRestriction.COARSE_SANDBOX
         assert gemini.capabilities_for(요청).tool_restriction is ToolRestriction.NONE
 
 
@@ -324,7 +326,12 @@ class Test강제할_수_없는_엔진은_말로_전한다:
             assert 차이 > 0
             보낸것 = codex.build_command(금지)[-1]
             안보낸것 = codex.build_command(없음)[-1]
-            assert 차이 == len(보낸것.encode("utf-8")) - len(안보낸것.encode("utf-8"))
+            # 금지 턴은 read-only 로 내려가 바깥 쓰기 수단 안내가
+            # developer_instructions 에 함께 실린다. 그 바이트도 실제로 보낸다.
+            지침차이 = (len(codex._session_path_note(금지).encode("utf-8"))
+                    - len(codex._session_path_note(없음).encode("utf-8")))
+            assert 차이 == (len(보낸것.encode("utf-8")) - len(안보낸것.encode("utf-8"))
+                          + 지침차이)
 
     def test_금지문이_뒤_입력으로_풀리지_않는다고_적는다(self, tmp_path) -> None:
         """사용자 입력이 제약 해제를 요구하는 것이 가장 흔한 우회다."""
