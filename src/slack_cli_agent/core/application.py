@@ -86,6 +86,7 @@ from ..observability.slow_report import (
 )
 from ..observability.state_snapshot import StateSnapshotBuilder, StateSnapshotWriter
 from ..plugin.base import BotPlugin
+from ..plugin.hooks import background_runners, event_callbacks
 from ..plugin.loader import PluginLoader
 from ..prompt.composer import PromptComposer, SystemPromptComposer
 from ..prompt.knowledge import KnowledgeLoader
@@ -1342,6 +1343,17 @@ class Application:
         shared, so the ingress and worker processes see the same pool."""
         return FileSlots(self._profile.paths.root / "slots", self._settings.max_concurrent)
 
+    def plugin_job_runners(self, process: str) -> list[PeriodicRunner]:
+        """Plugin background jobs for one process (G1). An engine-calling
+        job waits for the same slots as requests and reviews, at most as
+        long as one request may run."""
+        return background_runners(
+            self._plugins,
+            process,
+            self.concurrency_slots(),
+            self._settings.request_timeout_sec,
+        )
+
     def worker(self, worker_id: str = "worker") -> Worker:
         # unlike the other components here, a new Worker is created on every
         # call — worker_id must differ per process
@@ -1449,6 +1461,12 @@ class Application:
                 spawn=ThreadTaskSpawner(),
                 notices=self._notices,
                 is_shutting_down=lambda: self._shutting_down,
+                extra_handlers=event_callbacks(
+                    self._plugins,
+                    ThreadTaskSpawner(),
+                    self.concurrency_slots(),
+                    self._settings.request_timeout_sec,
+                ),
                 # The handler runs on one of slack-sdk's ten pool threads, so a
                 # long lock wait here delays every event behind it (sca-9l1).
                 lock_budget=lambda: self.database.latency_budget(
@@ -2063,6 +2081,7 @@ class Application:
                 self.attachment_cleanup_runner(),
                 self.pending_report_runner(),
                 self.stale_review_runner(),
+                *self.plugin_job_runners("ingress"),
             ],
             name="ingress",
             watch_interval_sec=self._settings.service_watch_interval_sec,
@@ -2086,6 +2105,7 @@ class Application:
                 self.pending_report_runner(),
                 self.learning_batch_runner(),
                 self.stale_reclaim_runner(worker),
+                *self.plugin_job_runners("worker"),
             ],
             name="worker",
             watch_interval_sec=self._settings.service_watch_interval_sec,

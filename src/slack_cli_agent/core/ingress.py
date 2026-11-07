@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import replace
 from typing import Any, ClassVar
@@ -109,6 +109,9 @@ class IngressService:
         # None means this caller has no shutdown flag to read, so no restart
         # notice goes out. The request is queued either way.
         is_shutting_down: Callable[[], bool] | None = None,
+        # Plugin event hooks (G1), registered after the core handlers so a
+        # plugin sees an event only once the core has taken it.
+        extra_handlers: Sequence[tuple[str, Callable[[Mapping[str, Any]], None]]] = (),
     ) -> None:
         self._listener = listener
         self._access = access
@@ -131,6 +134,7 @@ class IngressService:
         self._clock = time.monotonic
         self._assistant = assistant
         self._is_shutting_down = is_shutting_down
+        self._extra_handlers = tuple(extra_handlers)
 
     def register(self, gateway: SlackGateway) -> None:
         gateway.on("app_mention", self.handle_app_mention)
@@ -138,6 +142,8 @@ class IngressService:
         gateway.on("reaction_added", self.handle_reaction)
         if self._assistant is not None:
             gateway.on("assistant_thread_started", self.handle_assistant_thread_started)
+        for event_type, handler in self._extra_handlers:
+            gateway.on(event_type, handler)
 
     def handle_app_mention(self, event: Mapping[str, Any]) -> None:
         self._process(self._listener.from_app_mention(event), event, mentioned=True)
