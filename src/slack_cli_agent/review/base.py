@@ -295,16 +295,22 @@ class ReviewTask(ABC):
         # reaction during the wait is refused by is_reviewed at once.
         self._ledger.begin(self.log_name, target.channel, target.ts, by=target.by_user)
         token: object | None = None
-        if self._slots is not None:
-            token = self._slots.acquire(timeout=self._slot_wait_sec)
-            if token is None:
-                self._ledger.drop(self.log_name, target.channel, target.ts)
-                log.warning(
-                    "점검을 시작할 자리가 없다. 넘긴다 : %s %s:%s",
-                    self.log_name, target.channel, target.ts,
-                )
-                return
         try:
+            if self._slots is not None:
+                token = self._slots.acquire(timeout=self._slot_wait_sec)
+                if token is None:
+                    self._ledger.drop(self.log_name, target.channel, target.ts)
+                    log.warning(
+                        "점검을 시작할 자리가 없다. 넘긴다 : %s %s:%s",
+                        self.log_name, target.channel, target.ts,
+                    )
+                    return
+                # The ledger's stale limit covers the run only. Restart the clock
+                # here so the wait does not eat into it and let a repeat reaction
+                # start a second review mid-run.
+                self._ledger.begin(
+                    self.log_name, target.channel, target.ts, by=target.by_user
+                )
             self._execute(target)
         except Exception as exc:  # noqa: BLE001 — any failure must roll back the ledger and notify
             self._ledger.drop(self.log_name, target.channel, target.ts)

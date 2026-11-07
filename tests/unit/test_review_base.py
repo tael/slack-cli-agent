@@ -179,8 +179,8 @@ _MISSING = object()
 
 def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, progress=None,
              audit=None, owner_only_channels=frozenset({"TS"}), slow_reporter=None,
-             slots=None, slot_wait_sec=None) -> Rig:
-    ledger = ReviewLedger(database)
+             slots=None, slot_wait_sec=None, now=None) -> Rig:
+    ledger = ReviewLedger(database, now)
     reactions = FakeReactions()
     publisher = FakePublisher()
     engine = FakeEngine(engine_responses or [_ok_response("요약===상세===상세내용")])
@@ -290,6 +290,43 @@ class Test동시_실행_상한:
         rig.task._message_lookup = BrokenMessageLookup()
         rig.task.run(_대상)
         assert (slots.free, slots.released) == (1, 1)
+
+    def test_자리를_오래_기다려도_실행_중에는_진행_중으로_남는다(self, database) -> None:
+        """원장의 기준 시간은 실행 시간만 감안한다. 대기 시간이 실행 예산을 쓰면
+        긴 점검 도중 반복 리액션이 두 번째 점검을 실행한다."""
+        clock = [0.0]
+
+        class WaitingSlots(FakeSlots):
+            def acquire(self, timeout: float | None = None) -> object | None:
+                clock[0] += 900
+                return super().acquire(timeout)
+
+        rig = make_rig(database, slots=WaitingSlots(1), slot_wait_sec=900,
+                       now=lambda: clock[0])
+        seen: list[bool] = []
+        inner = rig.engine.run
+
+        def slow_run(*args: Any, **kwargs: Any) -> EngineResponse:
+            clock[0] += 1000
+            seen.append(rig.ledger.is_reviewed("fake_kind", "C1", "1.1"))
+            return inner(*args, **kwargs)
+
+        rig.engine.run = slow_run  # type: ignore[method-assign]
+        rig.task.run(_대상)
+        assert seen == [True]
+
+    def test_자리_잡기가_예외를_내도_원장을_되돌리고_알린다(self, database) -> None:
+        class BrokenSlots(FakeSlots):
+            def acquire(self, timeout: float | None = None) -> object | None:
+                raise OSError("슬롯 디렉터리 쓰기 실패")
+
+        slots = BrokenSlots(1)
+        rig = make_rig(database, slots=slots, slot_wait_sec=7)
+        rig.task.run(_대상)
+        assert rig.engine.calls == []
+        assert rig.ledger.find("fake_kind", "C1", "1.1") is None
+        assert any("슬롯 디렉터리 쓰기 실패" in str(p) for p in rig.publisher.posts)
+        assert slots.released == 0
 
 
 class Test정상흐름:
