@@ -16,8 +16,9 @@ from typing import Any
 
 from ..auth.execution_policy import ExecutionPolicy
 from ..auth.delegation import DelegationRecorder
+from ..auth.policy import turn_tier
 from ..auth.principal import Principal, TrustLevel
-from ..auth.tools import ToolPolicy
+from ..auth.tools import SKILL_TOOL, ToolPolicy
 from ..config.channel import (
     ChannelConfig,
     advisor_enabled,
@@ -40,8 +41,8 @@ from ..engine.base import (
     Usage,
     model_usage_audit,
 )
+from ..engine.capability import EngineCapabilities, ExecutionIsolation
 from ..engine.runner import EngineInvoker
-from ..reliability.restart import TURN_ID_ENV
 from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
 from ..guard.figurative import FigurativeGuard
@@ -54,7 +55,8 @@ from ..observability.progress import ProgressCoordinator
 from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter
 from ..prompt.composer import PromptComposer
-from ..prompt.sections import CompositionContext, is_silent
+from ..prompt.sections import TIER_NOTES, CompositionContext, TurnTierSection, is_silent
+from ..reliability.restart import TURN_ID_ENV
 from ..reliability.watchjobs import WatchJobPort
 from ..reliability.watchresult import WatchResultReader
 from ..session.awaiting import AwaitingPort
@@ -100,6 +102,75 @@ from .unposted_render import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def turn_reach(engine: Engine, request: EngineRequest) -> tuple[bool, tuple[str, ...]]:
+    """(reads_only, acting tool names) for the tier note (A12 review).
+
+    From the request, not the tier: codex runs every non-owner turn under a
+    read-only sandbox with MCP calls closed (codex._non_owner_reads_only), and
+    a READ turn can still carry a scoped user_tools grant such as
+    Bash(ops_ctl.sh:*). A note written from the tier alone promised tools the
+    sandbox refused and hid tools the turn had. Skill grants are left out:
+    they run no command (codex._is_skill_grant).
+    """
+    try:
+        isolation = engine.capabilities_for(request).execution_isolation
+    except Exception:
+        # The runner raises the same error on the run itself; the note is not
+        # where it surfaces.
+        log.warning("권한 등급 고지용 실행 보장을 읽지 못했다", exc_info=True)
+        isolation = None
+    return _reach_under(request.tools, isolation)
+
+
+def _reach_under(
+    tools: ToolSelection, isolation: ExecutionIsolation | None,
+) -> tuple[bool, tuple[str, ...]]:
+    if not tools.can_act or isolation is ExecutionIsolation.READONLY_SANDBOX:
+        return True, ()
+    acting = tuple(
+        name for name in tools.names
+        if not tools.reads(name) and name != SKILL_TOOL and not name.startswith(f"{SKILL_TOOL}(")
+    )
+    if tools.names and not acting:
+        return True, ()
+    return False, acting
+
+
+def tier_note_retarget(
+    principal: Principal, tier: str,
+) -> Callable[[EngineRequest, EngineCapabilities], EngineRequest]:
+    """Rewrites the tier note for the engine that actually runs the request.
+
+    The note is composed before run() from the engine the switch state points
+    at, and the fallback engine is always the other kind. A mid-turn switch or
+    a recovery probe then ran one engine on a note written for the other: a
+    'Bash ... 실행 도구' line reached codex's read-only sandbox (A12 review).
+    A request carries only two possible notes, read-only or its acting tools,
+    so whichever is not the running engine's is replaced by the one that is.
+    """
+    section = TurnTierSection()
+
+    def note(reach: tuple[bool, tuple[str, ...]]) -> str:
+        return section.render(CompositionContext(
+            principal=principal, turn_tier=tier,
+            turn_reads_only=reach[0], turn_acting_tools=reach[1],
+        ))
+
+    def retarget(request: EngineRequest, capabilities: EngineCapabilities) -> EngineRequest:
+        if tier not in TIER_NOTES:
+            return request
+        wanted = _reach_under(request.tools, capabilities.execution_isolation)
+        others = {_reach_under(request.tools, None), (True, ())} - {wanted}
+        prompt = request.system_prompt
+        for other in others:
+            prompt = prompt.replace(note(other), note(wanted))
+        if prompt == request.system_prompt:
+            return request
+        return replace(request, system_prompt=prompt)
+
+    return retarget
 
 
 def _domain_applies(workdir: Path | None, home: Path) -> bool:
@@ -433,18 +504,28 @@ class RequestPipeline:
         request_id = self._new_request_id()
 
         prompt = self._build_prompt(ctx, scope, decision)
-        system_prompt, budget_report = self._compose_system_prompt(
-            ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id
-        )
+        tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
+        # Worked out once: the note tells the model which tier it runs as and
+        # the audit row keeps the same value, so the dashboard reads what the
+        # turn ran as rather than re-deriving it from a config that may have
+        # changed since (A12, mametchi bot.py:7967).
+        tier = turn_tier(
+            principal, config,
+            full_authority=self._access.is_full_authority(principal),
+            delegated=principal.delegated,
+            is_bot=principal.trust is not TrustLevel.OWNER
+            and (ctx.from_bot or self._asker_is_bot(ctx.user)),
+        ).value
 
         progress_log = (
             self._progress.log_path_for(config, ctx.channel, ctx.ts)
             if self._progress is not None else None
         )
-        tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
         request = EngineRequest(
             prompt=prompt,
-            system_prompt=system_prompt,
+            # Composed below: the tier note reads what this request can reach,
+            # which the engine decides from the finished request.
+            system_prompt="",
             session_id=decision.session_id,
             resume=decision.resume,
             model=model,
@@ -459,7 +540,7 @@ class RequestPipeline:
             delegated=principal.delegated,
             progress_log=progress_log,
             request_id=request_id,
-            budget_report=budget_report,
+            turn_tier=tier,
             # Opaque to the engine layer: forwarded only so an MCP server whose
             # turn_env names a `channel` key gets this turn's channel as env
             # (mametchi's per-turn MAMETCHI_POST_CHANNEL render guard), and one
@@ -471,6 +552,15 @@ class RequestPipeline:
                 # that asked for a restart (reliability/restart.py).
                 TURN_ID_ENV: f"{ctx.channel}:{ctx.ts}",
             },
+        )
+        reach = turn_reach(self._engine, request)
+        system_prompt, budget_report = self._compose_system_prompt(
+            ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
+            tier=tier, reach=reach,
+        )
+        request = replace(
+            request, system_prompt=system_prompt, budget_report=budget_report,
+            retarget=tier_note_retarget(principal, tier),
         )
         # Counted rather than derived: the reset is the only trace a broken
         # resume leaves, and without it nothing can say how often context is
@@ -503,8 +593,11 @@ class RequestPipeline:
                 earlier_note = self._earlier_launch_note(earlier_run_id)
                 if earlier_note:
                     prompt = f"{prompt}\n\n{earlier_note}"
+                # The tier goes again: without it the retry lost the note while
+                # its audit row still named the tier (A12 review).
                 retry_prompt, retry_budget = self._compose_system_prompt(
-                    ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id
+                    ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
+                    tier=tier, reach=reach,
                 )
                 request = replace(
                     request, session_id=decision.session_id, resume=False, prompt=prompt,
@@ -530,7 +623,7 @@ class RequestPipeline:
                 model_actual=response.model_actual, model_usage=_turn_model_usage([response]),
                 failure_detail=response.failure_detail,
                 truncated=_truncated(response),
-                context_reset=context_reset,
+                context_reset=context_reset, tier=tier,
             )
             return HandleOutcome(ok=False, failure=failure)
 
@@ -550,7 +643,7 @@ class RequestPipeline:
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
                      model_usage=_turn_model_usage([response]),
-                     truncated=_truncated(response), context_reset=context_reset)
+                     truncated=_truncated(response), context_reset=context_reset, tier=tier)
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
 
@@ -589,7 +682,7 @@ class RequestPipeline:
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                 turns=response.turns, model_actual=response.model_actual,
                 model_usage=_turn_model_usage(turn_calls),
-                truncated=_truncated(response), context_reset=context_reset,
+                truncated=_truncated(response), context_reset=context_reset, tier=tier,
             )
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
@@ -615,7 +708,7 @@ class RequestPipeline:
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                 turns=response.turns, model_actual=response.model_actual,
                 model_usage=_turn_model_usage(turn_calls),
-                truncated=_truncated(response), context_reset=context_reset,
+                truncated=_truncated(response), context_reset=context_reset, tier=tier,
             )
             return HandleOutcome(ok=True)
         posted_ts = ""
@@ -651,7 +744,7 @@ class RequestPipeline:
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
                      model_usage=_turn_model_usage(turn_calls),
-                     truncated=_truncated(response), context_reset=context_reset,
+                     truncated=_truncated(response), context_reset=context_reset, tier=tier,
                      # The format review rewrites a message from this body: on a
                      # rich channel Slack only hands back the notification
                      # preview, and without the stored body it must not
@@ -771,6 +864,9 @@ class RequestPipeline:
         rich: bool,
         chat_level: str,
         run_id: str = "",
+        *,
+        tier: str = "",
+        reach: tuple[bool, tuple[str, ...]] = (False, ()),
     ) -> tuple[str, dict[str, Any]]:
         is_owner = principal.trust is TrustLevel.OWNER
         asker_name = "" if is_owner else (self._name_resolver(ctx.user) or ctx.user)
@@ -818,6 +914,9 @@ class RequestPipeline:
             operator=operator,
             operator_full=operator and bool(config and config.operator_full),
             advisor_enabled=advisor_enabled(config),
+            turn_tier=tier,
+            turn_reads_only=reach[0],
+            turn_acting_tools=reach[1],
         )
         text, report = self._composer.compose_with_report(composition_ctx)
         return text, report.as_audit_dict()
@@ -1326,8 +1425,13 @@ class RequestPipeline:
         # is "before this was instrumented", not "no resets".
         context_reset: bool = False,
         answer: _AnswerFields | None = None,
+        # The tier this turn ran as (A12). Left out when unknown, the same
+        # way model_actual is, so a missing key never reads as "read".
+        tier: str = "",
     ) -> None:
         extra: dict[str, Any] = {CONTEXT_RESET_RAW_KEY: context_reset}
+        if tier:
+            extra["tier"] = tier
         if answer is not None:
             extra["answer"] = answer.body
             extra["question"] = answer.question

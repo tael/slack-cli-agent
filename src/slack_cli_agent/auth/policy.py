@@ -12,12 +12,12 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from ..config.channel import advisor_enabled, is_channel_operator
+from ..config.channel import advisor_enabled, airflow_admins, is_channel_operator
 from ..core.channel_kind import is_direct_message_channel
-from .principal import Principal, TrustLevel
+from .principal import Principal, TrustLevel, TurnTier
 
 if TYPE_CHECKING:
-    from ..config.channel import ChannelRegistry
+    from ..config.channel import ChannelConfig, ChannelRegistry
     from ..config.profile import Profile
     from .delegation import DelegationLedger
 
@@ -43,6 +43,36 @@ OPERATOR_TOOLS: frozenset[str] = frozenset({"Bash", "Edit", "Write", "NotebookEd
 #: operator_level results. Empty means not an operator.
 OPERATOR = "operator"
 OPERATOR_FULL = "operator_full"
+
+
+def turn_tier(
+    principal: Principal,
+    config: ChannelConfig | None,
+    *,
+    full_authority: bool,
+    is_bot: bool = False,
+    delegated: bool = False,
+    readonly: bool = False,
+) -> TurnTier:
+    """The tier this turn runs as, in mametchi authz.tier's order (A12).
+
+    readonly first: a postmortem or watch check strips tools whoever asked.
+    The owner splits on full authority (own DM or a full_authority channel).
+    A bot is never an operator, so it is decided before the operator lists.
+    """
+    if readonly:
+        return TurnTier.READONLY
+    if principal.trust is TrustLevel.OWNER:
+        return TurnTier.OWNER_TRUSTED if full_authority else TurnTier.OWNER
+    if delegated:
+        return TurnTier.DELEGATED
+    if is_bot:
+        return TurnTier.BOT
+    if is_channel_operator(config, principal.user_id):
+        return TurnTier.OPERATOR_FULL if config and config.operator_full else TurnTier.OPERATOR
+    if principal.user_id and principal.user_id in airflow_admins(config):
+        return TurnTier.AIRFLOW
+    return TurnTier.READ
 
 
 class AccessExtension(ABC):  # noqa: B024 — 확장점이다. 기본이 no-op 이라 강제할 메서드가 없다

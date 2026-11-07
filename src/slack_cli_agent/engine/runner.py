@@ -631,6 +631,8 @@ class EngineRunner:
             # decision, not how the request ended.
             "outcome": _outcome(unmet, downgraded),
         }
+        if request.turn_tier:
+            record_fields["tier"] = request.turn_tier
         try:
             self._audit.record(CAPABILITY_KIND, **record_fields)
         except Exception:
@@ -814,9 +816,36 @@ class FallbackEngine(Engine):
         return self._active.readable_paths_note(paths)
 
     def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
-        # A fallback turn runs the secondary. Reporting this class's own
-        # default would make every capability record on that turn false.
-        return self._active.capabilities_for(request)
+        # Asked before run() (pipeline.turn_reach), so it answers for the
+        # engine run() will pick from the switch state, not the one the last
+        # turn left in _active: that was stale at boot and after another
+        # process switched. Reporting this class's own default would make
+        # every capability record on a fallback turn false.
+        return self._planned().capabilities_for(request)
+
+    def _planned(self) -> Engine:
+        if self.switcher.load() and self.switcher.is_approved():
+            return self.secondary
+        return self.primary
+
+    @staticmethod
+    def _fit(engine: Engine, request: EngineRequest) -> EngineRequest:
+        """The request as the engine about to run it must see it.
+
+        A turn can change engine after its prompt was written: a usage limit
+        mid-turn, a recovery probe, a failed probe falling to the secondary.
+        The fallback engine is always a different kind (profile.validate), so
+        the other engine's sandbox would otherwise be described (A12 review).
+        """
+        if request.retarget is None:
+            return request
+        try:
+            return request.retarget(request, engine.capabilities_for(request))
+        except Exception:
+            # The runner raises the same capability error on the run itself;
+            # failing here would only hide it behind this one.
+            log.warning("실행 엔진에 맞춰 요청을 고치지 못했다", exc_info=True)
+            return request
 
     # -- The real entry point.
     def run(self, request: EngineRequest,
@@ -858,7 +887,7 @@ class FallbackEngine(Engine):
         아니다 - 그것까지 넣으면 한 번 끊긴 것으로 엔진이 바뀐다.
         """
         self._active = self.primary
-        response = self.runner.run(self.primary, request)
+        response = self.runner.run(self.primary, self._fit(self.primary, request))
         limit = self.primary.detect_usage_limit(response)
         if limit is not None:
             # 한도는 승인을 기다릴 일이 아니다 (2026-10-25, 2026-11-06 김태일 지시).
@@ -988,8 +1017,12 @@ class FallbackEngine(Engine):
             # tokens for every turn served by the fallback (C10).
             turn_context=request.turn_context,
             engine_env=request.engine_env,
+            # The tier the capability record names. Dropped, a fallback turn's
+            # record lost it (A12 review).
+            turn_tier=request.turn_tier,
+            retarget=request.retarget,
         )
-        return self.runner.run(self.secondary, fallback_request)
+        return self.runner.run(self.secondary, self._fit(self.secondary, fallback_request))
 
     def _probe_primary_recovery(self, request: EngineRequest) -> EngineResponse | None:
         """Probes whether the primary has recovered, using a real request.
@@ -999,7 +1032,7 @@ class FallbackEngine(Engine):
         and this turn can be handled immediately.
         """
         self._active = self.primary
-        response = self.runner.run(self.primary, request)
+        response = self.runner.run(self.primary, self._fit(self.primary, request))
         self.switcher.mark_probed(time.time())
         if response.ok and self.primary.detect_usage_limit(response) is None:
             self.switcher.recover()

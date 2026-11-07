@@ -28,8 +28,8 @@ from ..admin.defaults import default_admin_commands
 from ..admin.router import AdminRouter
 from ..auth.delegation import DelegationLedger, DelegationRecorder
 from ..auth.execution_policy import ExecutionPolicy
-from ..auth.policy import DEFAULT_EFFORT, AccessPolicy
-from ..auth.principal import Principal, TrustLevel
+from ..auth.policy import DEFAULT_EFFORT, AccessPolicy, turn_tier
+from ..auth.principal import Principal, TrustLevel, TurnTier
 from ..auth.tools import ToolPolicy
 from ..config.channel import (
     TOOL_ENFORCEMENT_STRICT,
@@ -139,6 +139,7 @@ from ..prompt.sections import (
     SlackFormatSection,
     ThreadCoordsSection,
     TrustedSection,
+    TurnTierSection,
     WatchSection,
 )
 from ..reliability.catchup import CatchupService, RetryStatus, StuckCause
@@ -232,7 +233,7 @@ from .errors import AgentError
 from .ingress import IngressService
 from .lifecycle import InflightCounter, InflightRegistry
 from .periodic import PeriodicRunner
-from .pipeline import RequestPipeline, _domain_applies
+from .pipeline import RequestPipeline, _domain_applies, turn_reach
 from .services import ServiceGroup
 from .slots import ConcurrencySlots, FileSlots
 from .spawn import ThreadTaskSpawner
@@ -662,6 +663,7 @@ class Application:
             WatchSection(),
             AdvisorSection(),
             AskSection(),
+            TurnTierSection(),
             SilenceRuleSection(),
         ]
         sections.extend(s for p in self._plugins for s in p.prompt_sections())
@@ -1345,26 +1347,15 @@ class Application:
         workdir = _watch_workdir(job, config, self._profile.work_root)
         결과파일 = self.watch_results().path_for(job.run_id)
         prompt = watch_check_prompt(job.condition, outcome, str(결과파일) if 결과파일 else "")
-        system_prompt = self._composer().compose(CompositionContext(
-            principal=principal,
-            prompt=prompt,
-            channel_mode=config.mode if config else "default",
-            channel_slug=slug_for(job.channel, config),
-            is_rich=channel_is_rich(config),
-            chat_level=config.chat if config else "normal",
-            # This turn only looks: the registration guidance would tell it how
-            # to start new work, which watch_check_prompt forbids (sca-ejy).
-            watch_check=True,
-        ))
         watch_tools = ToolSelection.from_names(
             self.tool_policy().tool_list_for(
                 principal, prompt=prompt, readonly=True, skills_enabled=False,
             ),
             lookups=self.tool_policy().lookups_for(principal, readonly=True),
         )
-        return self.engine_invoker.invoke(EngineRequest(
+        request = EngineRequest(
             prompt=prompt,
-            system_prompt=system_prompt,
+            system_prompt="",
             # Left empty on purpose: the engine that ends up running this
             # check mints one in its own format (sca-56y).
             session_id=None,
@@ -1385,7 +1376,34 @@ class Application:
             request_id=f"watch-{job.id}-{job.run_id}",
             readable_dirs=self.readable_dirs,
             trust_level=job.trust,
-        ), CallOrigin.BACKGROUND)
+            # readonly tools, so the readonly tier (A12 review): without it
+            # the check turn had no tier note and no tier in its audit.
+            turn_tier=TurnTier.READONLY.value,
+        )
+        return self.engine_invoker.invoke(
+            self._with_watch_prompt(request, principal, config, prompt),
+            CallOrigin.BACKGROUND,
+        )
+
+    def _with_watch_prompt(
+        self, request: EngineRequest, principal: Principal,
+        config: ChannelConfig | None, prompt: str,
+    ) -> EngineRequest:
+        reads_only, acting = turn_reach(self.engine, request)
+        return replace(request, system_prompt=self._composer().compose(CompositionContext(
+            principal=principal,
+            prompt=prompt,
+            channel_mode=config.mode if config else "default",
+            channel_slug=slug_for(principal.channel, config),
+            is_rich=channel_is_rich(config),
+            chat_level=config.chat if config else "normal",
+            # This turn only looks: the registration guidance would tell it how
+            # to start new work, which watch_check_prompt forbids (sca-ejy).
+            watch_check=True,
+            turn_tier=request.turn_tier,
+            turn_reads_only=reads_only,
+            turn_acting_tools=acting,
+        )))
 
     def _run_watch_supersede_check(
         self, job: WatchJob, transcript: str, draft: str
@@ -1418,23 +1436,12 @@ class Application:
         )
         config = self._channels.get(job.channel)
         workdir = _watch_workdir(job, config, self._profile.work_root)
-        system_prompt = self._composer().compose(CompositionContext(
-            principal=principal,
-            prompt=prompt,
-            channel_mode=config.mode if config else "default",
-            channel_slug=slug_for(job.channel, config),
-            is_rich=channel_is_rich(config),
-            chat_level=config.chat if config else "normal",
-            # Same as the check turn: registration guidance would tell it how to
-            # start new work, which this judgment turn has no business doing.
-            watch_check=True,
-        ))
         # forbid_all, not from_names([]): no names means unrestricted, which
         # handed a non-owner job's thread to a turn with every tool open.
         no_tools = ToolSelection.forbid_all()
-        return self.engine_invoker.invoke(EngineRequest(
+        request = EngineRequest(
             prompt=prompt,
-            system_prompt=system_prompt,
+            system_prompt="",
             session_id=None,
             resume=False,
             model=self.access_policy.model_for(principal),
@@ -1449,7 +1456,14 @@ class Application:
             request_id=request_id,
             readable_dirs=self.readable_dirs,
             trust_level=job.trust,
-        ), CallOrigin.BACKGROUND)
+            turn_tier=TurnTier.READONLY.value,
+        )
+        # Same composition as the check turn: registration guidance would tell
+        # it how to start new work, which this judgment turn has no business doing.
+        return self.engine_invoker.invoke(
+            self._with_watch_prompt(request, principal, config, prompt),
+            CallOrigin.BACKGROUND,
+        )
 
     def mark_shutting_down(self) -> None:
         # without this flag, anything reading the state file can't tell a
@@ -2050,9 +2064,39 @@ class Application:
             trust=TrustLevel.OWNER,
             is_direct_message=is_direct_message_channel(channel),
         )
+        # ReviewEngineCaller passes no tools, so a review runs unrestricted as
+        # the owner; the tier says that rather than readonly, which mametchi
+        # uses because its review strips tools (A12 review).
+        # Worked out per call like model below: review_tasks() is cached, and
+        # a value fixed here would miss a channels.json edit until a restart.
+        review_tools = ToolSelection.unrestricted()
 
-        def system_prompt(prompt: str, reviewer: Principal = principal) -> str:
+        # A non-owner's review (A18) runs with that person's read-only tools,
+        # so its tier and reach are worked out from the requester and the
+        # tools the turn actually got, not from the owner's.
+        def tier(
+            reviewer: Principal | None = None, tools: ToolSelection = review_tools,
+        ) -> str:
+            who = reviewer or principal
+            return turn_tier(
+                who, self._channels.get(channel),
+                full_authority=self.access_policy.is_full_authority(who),
+                readonly=not tools.can_act,
+            ).value
+
+        def system_prompt(
+            prompt: str, reviewer: Principal = principal, tools: ToolSelection | None = None,
+        ) -> str:
+            # The owner turn's reach note names the tools the adapter will hand
+            # it: a format review gets owner_format_tools, not unrestricted.
+            if tools is None:
+                tools = owner_format_tools(prompt) if format_review else review_tools
             config = self._channels.get(channel)
+            reads_only, acting = turn_reach(self.engine, EngineRequest(
+                prompt=prompt, system_prompt="", session_id=None, resume=False,
+                model=None, effort="", workdir=self._profile.work_root,
+                tools=tools, trust_level=reviewer.trust,
+            ))
             return self._composer().compose(CompositionContext(
                 principal=reviewer,
                 # The review prompt carries the transcript; its words pick the
@@ -2076,6 +2120,9 @@ class Application:
                 postmortem=postmortem,
                 debug_trace=debug_trace,
                 format_review=format_review,
+                turn_tier=tier(reviewer, tools),
+                turn_reads_only=reads_only,
+                turn_acting_tools=acting,
             ))
 
         def scoped(requester: Principal, prompt: str) -> tuple[ToolSelection, str]:
@@ -2095,7 +2142,7 @@ class Application:
             reviewer = replace(
                 requester, channel=channel, is_direct_message=is_direct_message_channel(channel),
             )
-            return tools, system_prompt(prompt, reviewer)
+            return tools, system_prompt(prompt, reviewer, tools)
 
         def owner_format_tools(prompt: str) -> ToolSelection:
             """The owner's format review turn (B6).
@@ -2131,6 +2178,8 @@ class Application:
             scoped=scoped,
             owner_tools=owner_format_tools if format_review else None,
             readable_dirs=(paths.persona, paths.prompts, _CODE_ROOT),
+            tools=review_tools,
+            turn_tier=tier,
             # 부검만 전용 모델이다 (마메치 model_for postmortem=True). 디버그
             # 추적과 서식 점검은 보고 채널의 일반 규칙(어드바이저 실행자, 채널
             # model, 기본 model)을 따른다. 마메치 run_claude 가 이 둘을

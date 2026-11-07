@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..auth.principal import Principal, TrustLevel
+from ..auth.principal import Principal, TrustLevel, TurnTier
 
 if TYPE_CHECKING:
     from ..config.profile import PeerProfile
@@ -111,6 +111,18 @@ class CompositionContext:
     #: This channel's channels.json entry carries an `advisor` dict (mametchi
     #: advisor_executor, bot.py). Drives AdvisorSection.
     advisor_enabled: bool = False
+    #: The tier this turn runs as (auth.policy.turn_tier). Empty leaves the
+    #: tier note out -- a caller that never worked one out must not get a
+    #: guessed one. Drives TurnTierSection (A12).
+    turn_tier: str = ""
+    #: What this turn can actually reach, worked out from the tools it got and
+    #: the engine's sandbox (pipeline.turn_reach), not from the tier: codex
+    #: runs every non-owner turn read-only whatever the tier says, and a READ
+    #: turn can still hold a scoped grant from user_tools (A12 review).
+    #: reads_only: nothing beyond lookups runs. acting_tools: the granted
+    #: tools that act, empty when the selection is unrestricted.
+    turn_reads_only: bool = False
+    turn_acting_tools: tuple[str, ...] = ()
     chat_level: str = "normal"
     silent_mark: str = SILENT_MARK
     library: PromptLibrary | None = None
@@ -756,3 +768,62 @@ class SilenceRuleSection(PromptSection):
             + guide
             + f"\n\n답하지 않기로 했으면 {ctx.silent_mark} 만 출력하고 끝내라. 다른 말을 붙이지 마라."
         )
+
+
+#: Who this turn runs as, one line per tier. What it can reach is a separate
+#: sentence built from the actual tools (TurnTierSection._reach): a tier line
+#: that promised tools told a codex operator turn it could run what its
+#: read-only sandbox refused (A12 review).
+TIER_NOTES: Mapping[str, str] = {
+    TurnTier.OWNER_TRUSTED: "소유자 턴, 전권 자리",
+    TurnTier.OWNER: "소유자 턴",
+    TurnTier.DELEGATED: "소유자가 위임한 일을 처리하는 턴",
+    TurnTier.OPERATOR_FULL: (
+        "operator_full 채널의 operator 턴. "
+        "봇 자체 수정, 재기동, 자격증명 값 출력은 소유자 확인이 필요하다"
+    ),
+    TurnTier.OPERATOR: "operator 턴",
+    TurnTier.AIRFLOW: "Airflow 관리자 턴",
+    TurnTier.BOT: "다른 봇의 턴",
+    TurnTier.READ: "비소유자 턴",
+    TurnTier.READONLY: "조회 전용 점검 턴",
+}
+
+#: Acting tools named in the note. More than this is cut with a count: an
+#: owner turn holds dozens and the note is resent every turn.
+_ACTING_TOOLS_SHOWN = 8
+
+
+class TurnTierSection(PromptSection):
+    """States this turn's permission tier on every turn (A12, mametchi
+    turn_tier_note bot.py:820).
+
+    The model only sees the tools it got, so it read a tool out of this
+    turn's reach as one that does not exist and wrote "there is no way",
+    which a colleague then repeated as fact (2026-10-14). The system prompt
+    is resent each turn (codex replays it inside a resumed prompt), so a
+    tier change between turns of one thread reaches the model.
+    """
+
+    _RULE = (
+        "권한 밖 수단은 '이 턴 권한 밖'이라고 적는다. '수단이 없다'고 쓰지 않는다. "
+        "조회로 답할 수 있는 질문은 붙은 조회 도구로 먼저 찾아 답한다"
+    )
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return ctx.turn_tier in TIER_NOTES
+
+    @staticmethod
+    def _reach(ctx: CompositionContext) -> str:
+        if ctx.turn_reads_only:
+            return "이 턴은 조회만 한다. 파일 쓰기, 쓰기 명령, 외부 쓰기는 이 턴 권한 밖이다"
+        names = ctx.turn_acting_tools
+        if not names:
+            return "이 턴에 붙은 실행 도구를 쓴다"
+        shown = ", ".join(names[:_ACTING_TOOLS_SHOWN])
+        rest = len(names) - _ACTING_TOOLS_SHOWN
+        more = f" 외 {rest}개" if rest > 0 else ""
+        return f"이 턴에 붙은 실행 도구는 {shown}{more} 이다. 그 밖의 실행은 이 턴 권한 밖이다"
+
+    def render(self, ctx: CompositionContext) -> str:
+        return f"[이 턴 권한 : {TIER_NOTES[ctx.turn_tier]}. {self._reach(ctx)}. {self._RULE}]"
