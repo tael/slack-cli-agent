@@ -1653,3 +1653,30 @@ class Test같은_스레드_감시_완료_계약:
         지시 = watch_check_prompt("재기동")
         assert "이전 프로세스가 종료" in 지시
         assert "하나라도 확인하지 못했으면 끝나지 않은 것" in 지시
+
+    def test_권한이_다른_앞_감시는_합치지_않는다(self, 큐: 시계달린큐) -> None:
+        # 감시 확인 턴은 행의 trust 로 돈다. 일반 사용자 조건을 소유자 행에 합치면
+        # 그 조건이 소유자 권한 턴에서 실행된다.
+        from slack_cli_agent.auth.principal import TrustLevel
+
+        큐.enqueue("C1", "100.1", self.조건25, msg_ts="100.2", trust=TrustLevel.GENERAL)
+        큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3", trust=TrustLevel.OWNER)
+        열린 = 큐.due(큐.시각["값"] + 10_000, 0)
+        assert len(열린) == 2
+        소유자행 = next(j for j in 열린 if j.trust is TrustLevel.OWNER)
+        assert self.조건25 not in 소유자행.condition
+        assert 큐.open_siblings(next(j for j in 열린 if j.trust is TrustLevel.GENERAL)) == []
+
+    def test_같은_메시지_재실행은_다른_감시를_닫지_않는다(
+        self, 큐: 시계달린큐, database: Database,
+    ) -> None:
+        둘 = 큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3")
+        with database.connect() as 연결:
+            연결.execute(
+                "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at, last_run, "
+                "done, msg_ts, checks, trust_level, extra, workdir, run_id, due_at) "
+                "VALUES ('C1', '100.1', ?, 1001, NULL, 0, '100.9', 0, 0, '', '', '', NULL)",
+                (self.조건25,),
+            )
+        assert 큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3") == 둘
+        assert len(큐.due(큐.시각["값"] + 10_000, 0)) == 2

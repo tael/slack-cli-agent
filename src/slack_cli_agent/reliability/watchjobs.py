@@ -145,7 +145,9 @@ class WatchJobQueue(SqliteRepository):
     ) -> int:
         self._supersede_same_target(channel, thread_ts, condition, due_at)
         if not run_id:
-            condition = self._fold_open_siblings(channel, thread_ts, condition, msg_ts, due_at)
+            condition = self._fold_open_siblings(
+                channel, thread_ts, condition, msg_ts, due_at, trust,
+            )
         cursor = self._execute(
             "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at, "
             "last_run, done, msg_ts, checks, trust_level, extra, workdir, run_id, due_at) "
@@ -206,6 +208,7 @@ class WatchJobQueue(SqliteRepository):
 
     def _fold_open_siblings(
         self, channel: str, thread_ts: str, condition: str, msg_ts: str, due_at: float | None,
+        trust: TrustLevel,
     ) -> str:
         """Merges still-open condition watches of this thread into the new one.
 
@@ -226,10 +229,20 @@ class WatchJobQueue(SqliteRepository):
         The same deadline-class rule as `_supersede_same_target` applies.
         Watches that clearly name another target (two different dag runs)
         stay separate, and a rerun of the same message is left to the
-        unique-index path that keeps enqueue idempotent (sca-efe).
+        unique-index path that keeps enqueue idempotent (sca-efe): when this
+        message already has an active watch nothing is folded, since the
+        insert will be rejected and the folded rows would be lost.
+        Only rows of the same trust level fold: the check turn runs with the
+        row's trust, so a general user's condition must not ride along in an
+        owner-trust turn.
         """
+        if msg_ts and self._fetch_one(
+            "SELECT id FROM watch_jobs WHERE done = 0 AND channel = ? AND msg_ts = ?",
+            (channel, msg_ts),
+        ) is not None:
+            return condition
         rows = self._fetch_all(
-            "SELECT id, condition, due_at, msg_ts FROM watch_jobs "
+            "SELECT id, condition, due_at, msg_ts, trust_level FROM watch_jobs "
             "WHERE done = 0 AND channel = ? AND thread_ts = ? AND COALESCE(run_id, '') = '' "
             "ORDER BY id",
             (channel, thread_ts),
@@ -238,6 +251,7 @@ class WatchJobQueue(SqliteRepository):
         older = [
             row for row in rows
             if bool(row["due_at"]) == has_due
+            and int(row["trust_level"]) == int(trust)
             and not (msg_ts and row["msg_ts"] == msg_ts)
             and not distinct_watch_targets(row["condition"], condition)
         ]
@@ -259,14 +273,15 @@ class WatchJobQueue(SqliteRepository):
 
         A newer open watch means the conversation asked for more than `job`
         checks, so `job` finishing is not the whole thing finishing. Watches
-        that clearly name another target, result-file watches, and the other
-        deadline class are excluded -- those are separate promises with their
+        that clearly name another target, result-file watches, other trust
+        levels, and the other deadline class are excluded -- those are separate promises with their
         own reports.
         """
         rows = self._fetch_all(
             "SELECT id, condition, due_at FROM watch_jobs WHERE done = 0 AND channel = ? "
-            "AND thread_ts = ? AND id > ? AND COALESCE(run_id, '') = '' ORDER BY id",
-            (job.channel, job.thread_ts, job.id),
+            "AND thread_ts = ? AND id > ? AND COALESCE(run_id, '') = '' "
+            "AND trust_level = ? ORDER BY id",
+            (job.channel, job.thread_ts, job.id, int(job.trust)),
         )
         has_due = job.due_at is not None
         return [
