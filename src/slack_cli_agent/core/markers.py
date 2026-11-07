@@ -132,12 +132,11 @@ def resolve_recipient(text: str, *, require_recipient: bool = False) -> Recipien
     decides whether the caller should block publish.
 
     `require_recipient` is the config flag from the parity acceptance
-    criteria: bot.py:7904-7907 hard-blocks (posts `NOTICE_NO_RECIPIENT`
-    instead of the body) whenever no tag resolved. This repo defaults the
-    flag off so a deployment that hasn't configured owner_id/asker_id yet
-    degrades to "publish anyway" instead of going silent; a caller that has
-    those configured can pass `require_recipient=True` to get bot.py's
-    behavior.
+    criteria (bot.py:8085-8133): with it on, a reply with no tag is blocked
+    from publish. The pipeline then re-asks for the tag alone once
+    (`missing_recipient_prompt`, `pick_recipient_tag`) and stays silent if
+    it still has none. This helper defaults the flag off; the deployment
+    default lives in RuntimeSettings.
 
     Only classifies -- actually refusing to publish, mention enforcement,
     and the ASKER-is-a-bot reclassification are the caller's job (see
