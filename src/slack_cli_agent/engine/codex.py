@@ -438,19 +438,44 @@ class CodexEngine(Engine):
         """크레딧 소진을 사용량 한도로 돌려준다. 다른 실패는 None 이다.
 
         Codex 는 크레딧 소진을 종료코드 1 과 JSONL 오류 이벤트로 알린다.
-        CLI 원문(stdout, stderr)만 본다 - 본문에는 사람이 쓴 말이 섞인다.
+        CLI 자신이 낸 오류만 본다 - stderr, 최상위 ``error`` 이벤트의 message,
+        ``turn.failed`` 의 error.message 다. stdout 의 나머지(도구 출력, MCP
+        결과, 모델 메시지)와 본문은 보지 않는다. 이 문구를 담은 코드를 읽고
+        다른 이유로 실패한 턴이 크레딧 소진으로 읽혀 엔진이 바뀐다.
         """
         if response.ok:
             return None
-        text = self._failure_text(response)
-        low = text.lower()
-        hint = next((h for h in self.CREDIT_HINTS if h in low), None)
-        if hint is None:
-            return None
-        detail = next(
-            (line.strip() for line in text.splitlines() if hint in line.lower()), hint,
-        )
-        return UsageLimit(detail=detail, source="hint")
+        raw = response.raw if isinstance(response.raw, Mapping) else {}
+        lines = [*self._cli_error_messages(str(raw.get("stdout") or "")),
+                 *str(raw.get("stderr") or "").splitlines()]
+        for line in lines:
+            low = line.lower()
+            if any(hint in low for hint in self.CREDIT_HINTS):
+                return UsageLimit(detail=line.strip(), source="hint")
+        return None
+
+    @staticmethod
+    def _cli_error_messages(stdout: str) -> list[str]:
+        """JSONL 에서 CLI 가 낸 오류 문구만 꺼낸다. item 안의 텍스트는 뺀다."""
+        messages: list[str] = []
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(event, Mapping):
+                continue
+            kind = event.get("type")
+            if kind == "error":
+                message = event.get("message")
+            elif kind == "turn.failed":
+                error = event.get("error")
+                message = error.get("message") if isinstance(error, Mapping) else None
+            else:
+                continue
+            if isinstance(message, str):
+                messages.append(message)
+        return messages
 
     #: 모델 하나가 지금 요청을 못 받는 상태를 알리는 문구. 2026-10-19 sol
     #: 장애에서 모았다 - 15:57 은 "Selected model is at capacity", 23:46 은

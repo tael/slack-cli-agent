@@ -39,6 +39,25 @@ CREDIT_STDOUT = "\n".join([
 def _engine(tmp_path: Path) -> CodexEngine:
     return CodexEngine(codex_profile(tmp_path), SETTINGS)
 
+#: 도구 출력에 크레딧 문구가 있고 다른 이유(스트림 끊김)로 실패한 턴.
+#: 봇이 이 리포나 마메치 bot.py 의 CODEX_CREDIT_HINTS 줄을 읽은 경우다.
+TOOL_OUTPUT_STDOUT = "\n".join([
+    json.dumps({"type": "thread.started", "thread_id": "th-tool"}),
+    json.dumps({"type": "item.completed", "item": {
+        "type": "command_execution", "command": "grep -n CODEX_CREDIT_HINTS bot.py",
+        "aggregated_output":
+            '2500:CODEX_CREDIT_HINTS = ("workspace is out of credits", "out of credits")\n',
+        "exit_code": 0, "status": "completed"}}),
+    json.dumps({"type": "item.completed", "item": {
+        "type": "mcp_tool_call", "server": "slack", "tool": "conversations_add_message",
+        "status": "completed"}}),
+    json.dumps({"type": "item.completed", "item": {
+        "type": "agent_message", "text": "out of credits 문구를 찾았습니다."}}),
+    json.dumps({"type": "error", "message": "stream disconnected before completion"}),
+    json.dumps({"type": "turn.failed",
+                "error": {"message": "stream disconnected before completion"}}),
+])
+
 
 class Test크레딧_소진_판정:
     def test_크레딧_소진은_사용량_한도다(self, tmp_path: Path) -> None:
@@ -86,6 +105,24 @@ class Test크레딧_소진_판정:
         assert engine.detect_usage_limit(response) is None
 
 
+    def test_도구_출력과_모델_메시지의_문구는_판정하지_않는다(self, tmp_path: Path) -> None:
+        engine = _engine(tmp_path)
+        response = engine.parse(TOOL_OUTPUT_STDOUT, "", 1)
+        assert not response.ok
+        assert engine.detect_usage_limit(response) is None
+
+    def test_turn_failed_오류_메시지만_있어도_판정한다(self, tmp_path: Path) -> None:
+        engine = _engine(tmp_path)
+        stdout = "\n".join([
+            json.dumps({"type": "thread.started", "thread_id": "th-credit"}),
+            json.dumps({"type": "turn.failed",
+                        "error": {"message": "Your workspace is out of credits."}}),
+        ])
+        limit = engine.detect_usage_limit(engine.parse(stdout, "", 1))
+        assert limit is not None
+        assert limit.detail == "Your workspace is out of credits."
+
+
 class Test크레딧_소진이면_대체_엔진으로_전환한다:
     def test_FallbackEngine_이_2차로_답한다(self, tmp_path: Path) -> None:
         profile = codex_profile(tmp_path)
@@ -106,3 +143,25 @@ class Test크레딧_소진이면_대체_엔진으로_전환한다:
         assert response.ok
         assert response.body == "2차 답"
         assert switcher.load().get("approval") == "approved"
+
+    def test_도구_출력에_문구가_있는_실패는_전환하지_않는다(self, tmp_path: Path) -> None:
+        profile = codex_profile(tmp_path)
+        primary = _engine(tmp_path)
+        secondary = named(RecordingEngine, "claude")(profile, SETTINGS)
+        switcher = EngineSwitcher(tmp_path / "engine_state.json")
+        calls: list[str] = []
+
+        def fake(cmd: list[str], cwd: Any, timeout: Any, **kwargs: Any) -> FakeCompleted:
+            calls.append(cmd[0])
+            if cmd[0] == "fake-bin":
+                return FakeCompleted(stdout="2차 답", returncode=0)
+            return FakeCompleted(stdout=TOOL_OUTPUT_STDOUT, returncode=1)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake, environment_policy=통과정책())
+        engine = FallbackEngine(primary, secondary, switcher, runner)
+
+        response = engine.run(request(model=None))
+
+        assert not response.ok
+        assert "fake-bin" not in calls
+        assert switcher.load().get("approval") != "approved"
