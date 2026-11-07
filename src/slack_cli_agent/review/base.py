@@ -284,11 +284,12 @@ class ReviewTask(ABC):
         """
         return []
 
-    def rewrite_problems(self, detail: str) -> list[str]:
-        """`content_problems` for the rewrite. Only called after the first
-        answer failed, so a kind can count what the rewrite dropped (a
-        postmortem's whole 5 Why section) instead of letting it pass."""
-        return self.content_problems(detail)
+    def rewrite_rejected(self, detail: str) -> bool:
+        """True when the rewrite removed what `content_problems` checks (a
+        postmortem's whole 5 Why section). Such a rewrite is never taken,
+        however few problems it counts: the first answer and its problems
+        are posted instead."""
+        return False
 
     def content_retry_prompt(self, problems: list[str]) -> str:
         """Rewrite request for `content_problems`. Same resume rule as
@@ -532,10 +533,13 @@ class ReviewTask(ABC):
             self._report_if_slow(target, fix, flagged, fix_started, time.monotonic() - fix_mono, resume=True)
             if fix.ok and marker in fix.body:
                 summary2, detail2 = fix.body.split(marker, 1)
-                problems2 = self.rewrite_problems(detail2)
-                # A rewrite can come back worse; take it only when it found fewer problems.
-                if len(problems2) < len(problems):
-                    summary, detail, problems = summary2, detail2, problems2
+                if self.rewrite_rejected(detail2):
+                    log.warning("%s 재작성본이 점검 대상을 지워 원래 것을 올린다 : %s", self.log_name, request_id)
+                else:
+                    problems2 = self.content_problems(detail2)
+                    # A rewrite can come back worse; take it only when it found fewer problems.
+                    if len(problems2) < len(problems):
+                        summary, detail, problems = summary2, detail2, problems2
         if problems:
             # Posting a failed check silently would make the check pointless.
             log.error("%s 내용 점검을 통과하지 못한 채 게시한다 : %s", self.log_name, request_id)

@@ -10,12 +10,11 @@ that repeats its question, adjacent answers that say the same thing, an
 answer not carried into the next question, and a root cause that doesn't
 summarize Why 5. The depth of the argument is not judged here.
 
-Difference from mametchi: a first answer without a `## 5 Why` section
-passes. The bundled postmortem_note.md has no 5 Why section; only a profile
-prompt that asks for one (guchipachi's does) opts into the check. A rewrite
-is checked with `required=True`, as mametchi always did: once the first
-answer had the section, a rewrite that drops or renames it must not count
-as passing.
+Difference from mametchi: a detail without a `## 5 Why` section passes.
+The bundled postmortem_note.md has no 5 Why section; only a profile prompt
+that asks for one (guchipachi's does) opts into the check. A rewrite that
+drops or renames the section is not taken (`PostmortemTask.rewrite_rejected`):
+it would count fewer problems while hiding the table.
 """
 
 from __future__ import annotations
@@ -83,15 +82,11 @@ def _overlap(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
-def check_five_why(detail: str, *, required: bool = False) -> list[str]:
-    """Problems found in the detail's 5 Why chain, as sentences. Empty means pass.
-
-    `required` counts a missing section as a problem; without it a detail
-    with no section passes.
-    """
+def check_five_why(detail: str) -> list[str]:
+    """Problems found in the detail's 5 Why chain, as sentences. Empty means pass."""
     section = md_section(detail or "", "5 Why")
     if not section.strip():
-        return ["상세에 `## 5 Why` 절이 없다."] if required else []
+        return []
 
     steps: list[tuple[int, str, str, str]] = []
     for cells in _table_rows(section):

@@ -849,25 +849,25 @@ _끊긴_5Why = (
 
 
 class 부검점검Task(FakeReviewTask):
-    """부검과 같은 점검 규칙을 쓴다. 재작성본은 rewrite_problems 로 센다."""
+    """부검과 같은 점검 규칙을 쓴다. 절을 지운 재작성본은 받지 않는다."""
 
     def content_problems(self, detail: str) -> list[str]:
         from slack_cli_agent.review.five_why import check_five_why
 
         return check_five_why(detail)
 
-    def rewrite_problems(self, detail: str) -> list[str]:
-        from slack_cli_agent.review.five_why import check_five_why
+    def rewrite_rejected(self, detail: str) -> bool:
+        from slack_cli_agent.review.five_why import md_section
 
-        return check_five_why(detail, required=True)
+        return not md_section(detail, "5 Why").strip()
 
     def content_retry_prompt(self, problems: list[str]) -> str:
         return "다시 써라"
 
 
 class Test재작성본이_5Why_절을_지우는_경우:
-    """B8 보완 — 재작성본이 `## 5 Why` 절을 지우거나 제목을 바꿔도
-    경고 머리말과 review_check_failed 감사 기록 없이 올라가지 않는다."""
+    """B8 보완 — 재작성본이 `## 5 Why` 절을 지우거나 제목을 바꾸면 문제 수가
+    줄어도 받지 않는다. 원본과 원본의 문제 목록으로 경고와 감사를 남긴다."""
 
     def _run(self, database, 재작성_상세: str) -> Rig:
         rig = make_rig(
@@ -881,16 +881,25 @@ class Test재작성본이_5Why_절을_지우는_경우:
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
         return rig
 
-    def test_절을_지우면_경고와_감사를_남긴다(self, database) -> None:
-        rig = self._run(database, "## 근본원인\n알 수 없다.\n")
-        head = rig.publisher.posts[0][2]
-        assert "점검을 통과하지 못했습니다" in head
-        assert "상세에 `## 5 Why` 절이 없다." in head
-        failed = [f for k, f in rig.audit.rows if k == "review_check_failed"]
-        assert len(failed) == 1
+    def _원본을_올렸는지_본다(self, rig: Rig) -> None:
+        from slack_cli_agent.review.five_why import check_five_why
 
-    def test_절_제목을_바꾸면_경고와_감사를_남긴다(self, database) -> None:
-        rig = self._run(database, _끊긴_5Why.replace("## 5 Why\n", "## 5 Why 분석\n", 1))
-        head = rig.publisher.posts[0][2]
-        assert "점검을 통과하지 못했습니다" in head
-        assert [k for k, _ in rig.audit.rows].count("review_check_failed") == 1
+        원본_문제 = check_five_why(_끊긴_5Why)
+        # 재작성본의 문제 1건보다 많아야 '문제 수가 줄었다' 는 조건이 성립한다.
+        assert len(원본_문제) >= 2
+        summary_post, detail_post = rig.publisher.posts
+        assert "원요약" in summary_post[2]
+        assert "새요약" not in summary_post[2]
+        assert detail_post[2] == _끊긴_5Why.strip()
+        assert "점검을 통과하지 못했습니다" in summary_post[2]
+        assert "절이 없다" not in summary_post[2]
+        failed = [f for k, f in rig.audit.rows if k == "review_check_failed"]
+        assert [f["problems"] for f in failed] == [원본_문제]
+
+    def test_절을_지우면_원본을_올린다(self, database) -> None:
+        self._원본을_올렸는지_본다(self._run(database, "## 근본원인\n알 수 없다.\n"))
+
+    def test_절_제목을_바꾸면_원본을_올린다(self, database) -> None:
+        self._원본을_올렸는지_본다(
+            self._run(database, _끊긴_5Why.replace("## 5 Why\n", "## 5 Why 분석\n", 1))
+        )

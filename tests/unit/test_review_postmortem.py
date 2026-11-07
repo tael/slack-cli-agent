@@ -115,12 +115,11 @@ class Test5Why점검:
     def test_5_Why_절이_없으면_문제가_없다(self) -> None:
         assert make_task().content_problems("## 원인\n본문") == []
 
-    def test_재작성본에서_5_Why_절이_사라지면_문제로_센다(self) -> None:
+    def test_재작성본에서_5_Why_절이_사라지면_받지_않는다(self) -> None:
         task = make_task()
-        assert task.rewrite_problems("## 원인\n본문") == ["상세에 `## 5 Why` 절이 없다."]
-        assert task.rewrite_problems("## 5 Why 분석\n| Why 1 | a | b | c |\n") == [
-            "상세에 `## 5 Why` 절이 없다."
-        ]
+        assert task.rewrite_rejected("## 원인\n본문")
+        assert task.rewrite_rejected("## 5 Why 분석\n| Why 1 | a | b | c |\n")
+        assert not task.rewrite_rejected("## 5 Why\n| Why 1 | a | b | c |\n")
 
     def test_재작성_요청은_부검_구분선을_쓴다(self) -> None:
         prompt = make_task().content_retry_prompt(["Why 2 의 근거 칸이 비어 있다."])
