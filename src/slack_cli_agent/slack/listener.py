@@ -26,9 +26,10 @@ from slack_cli_agent.guard.mentions import (
     talking_to_peer,
 )
 from slack_cli_agent.session.awaiting import AwaitingPort
+from slack_cli_agent.slack.blocks import event_body
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import BotIdentity
-from slack_cli_agent.slack.message_kind import MessageKind
+from slack_cli_agent.slack.message_kind import HUMAN_SUBTYPES, MessageKind
 from slack_cli_agent.slack.policy import ResponsePolicy, ThreadState
 
 
@@ -125,7 +126,9 @@ class EventListener:
         # exactly the kind of loop C19's cap exists to stop from running
         # away in the first place.
         if event.get("bot_id"):
-            if not self._identity.is_mentioned(event.get("text") or ""):
+            # The body, not just `text`: a rich post's `text` is only its
+            # notification preview, and the mention may sit in its blocks (C1).
+            if not self._identity.is_mentioned(event_body(event)):
                 return None
             # A peer named this bot: count the turn and stop once the thread's
             # bot-to-bot exchange has gone past its cap (C19). Counting here,
@@ -180,7 +183,36 @@ class EventListener:
         root_self = bool(msgs) and msgs[0].get("ts") == thread_ts and self._identity.is_self(msgs[0])
         return joined, asked, peer_talk, root_self
 
+    #: Subtypes a bot's own post can carry and still be a request. Edits,
+    #: deletions and join notices are not; only these pass for a bot.
+    _BOT_POST_SUBTYPES = frozenset({"bot_message"})
+
+    def _named_only_in_blocks(self, event: Mapping[str, Any]) -> bool:
+        """Whether this bot is named in the message's blocks but not in its
+        `text` (C1).
+
+        Slack derives app_mention from `text`, so a rich post whose mention
+        sits only in its blocks raises no app_mention, and the request was
+        never taken. A mention in `text` is left to app_mention, so the same
+        message is not taken twice.
+        """
+        if not event.get("blocks") or self._identity.is_self(event):
+            return False
+        if event.get("bot_id"):
+            subtype = event.get("subtype")
+            if subtype and subtype not in self._BOT_POST_SUBTYPES | HUMAN_SUBTYPES:
+                return False
+        elif not self._kind.is_human(event):
+            return False
+        return not self._identity.is_mentioned(
+            event.get("text") or ""
+        ) and self._identity.is_mentioned(event_body(event))
+
     def from_message(self, event: Mapping[str, Any]) -> RequestContext | None:
+        if event.get("channel_type") != "im" and self._named_only_in_blocks(event):
+            # Taken as the mention it is, through the same checks app_mention
+            # gets, including the bot-to-bot cap (C19) and its reset (C18).
+            return self.from_app_mention(event)
         if not self._kind.is_human(event):
             return None
 
