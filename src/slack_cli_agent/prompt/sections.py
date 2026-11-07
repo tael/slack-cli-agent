@@ -609,9 +609,27 @@ class AttachmentSection(PromptSection):
 
     def render(self, ctx: CompositionContext) -> str:
         lines = ["", "", "이 말에 파일이 붙어 있다."]
+        heard = False
+        others = False
         for f in ctx.files:
             lines.append(f"- {f.get('name')} ({f.get('mimetype')}) : {f.get('local_path')}")
-        if ctx.files:
+            # 음성은 첨부 저장 단계에서 받아썼다(G6, bot.py:6864-6882 이식).
+            if f.get("transcript"):
+                lines.append(f"  - 받아쓴 말 : {f['transcript']}")
+                heard = True
+            elif f.get("transcript_error"):
+                lines.append(f"  - 받아쓰기 실패 : {f['transcript_error']}")
+                heard = True
+            else:
+                others = True
+        if heard:
+            lines.append(
+                "음성 클립은 말을 건 사람이 소리로 한 말이다. "
+                "받아쓴 말을 그 사람의 요청으로 보고 답한다. 음성 파일은 열지 않는다. "
+                "답 첫 줄에 '> 들은 말 : <받아쓴 말>' 한 줄을 둔다. "
+                "받아쓰기에 실패했으면 실패 사유를 그대로 적고 내용을 짐작하지 않는다."
+            )
+        if others:
             lines.append(
                 "그 경로를 열어 내용을 직접 보고 답한다. 열어 보지 않고 이름만으로 짐작하지 않는다."
             )

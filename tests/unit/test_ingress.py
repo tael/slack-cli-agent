@@ -1396,6 +1396,25 @@ class Test빈_본문은_되묻는다:
         assert replies == []
         assert len(queue.enqueued) == 1
 
+    def test_첨부만_있는_멘션은_되묻지_않고_접수된다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """음성 메모는 보통 본문이 비었거나 멘션뿐이다. 마메치는 2026-10-22 부터
+        첨부만 있는 말도 요청으로 받는다(bot.py:7705, G6 검토)."""
+        queue = FakeJobQueue()
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router,
+            tmp_path=tmp_path, replies=replies,
+        )
+
+        ingress.handle_app_mention(mention_event(
+            text="<@U_BOT>", files=[{"name": "voice.m4a", "mimetype": "audio/mp4"}],
+        ))
+
+        assert replies == []
+        assert len(queue.enqueued) == 1
+
 
 class Test재시작_중에는_안내한다:
     """원본 bot.py:4978-4986. 재시작 중이면 그 사실을 알린다."""

@@ -187,6 +187,7 @@ from ..slack.review_ports import (
 from ..slack.roster import RosterBuilder
 from ..slack.thread_activity import SlackThreadActivity
 from ..slack.tool_post import SlackToolPostMerger
+from ..slack.transcribe import Transcriber
 from ..slack.transcript import TranscriptBuilder
 from ..storage.admin_claims import AdminClaims
 from ..storage.connection_epochs import SqliteConnectionEpochs
@@ -831,6 +832,8 @@ class Application:
                 # short approval ("좋아") arriving hours later still reads as an
                 # answer and not a stray reaction — see session/awaiting.py.
                 awaiting=SqliteAwaitingStore(self._database),
+                # 워커에서 받아쓴다. 접수 경로에서 돌면 소켓 핸들러가 밀린다(G6).
+                transcriber=Transcriber(),
             )
         return self._pipeline
 

@@ -45,10 +45,12 @@ class RequestContext:
 
         Both the socket path and catch-up ask this before queueing; written
         twice, one side would be fixed and the other left behind (sca-zct1).
-        Attachments do not count — the original checks the text before it
-        saves them (bot.py:5075).
+        A message with attachments is a request even with no words: a voice
+        memo usually arrives with empty text or a mention only. The original
+        has accepted these since 2026-10-22 (bot.py:7705,
+        `if not text and not event.get("files")`).
         """
-        return not self.text.strip()
+        return not self.text.strip() and not self.files
 
     def marked_late(self) -> RequestContext:
         return replace(self, late=True)
