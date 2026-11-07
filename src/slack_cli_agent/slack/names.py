@@ -116,6 +116,8 @@ class BotUserResolver:
         self._retry_interval_sec = retry_interval_sec
         self._cache: dict[str, bool] = {}
         self._failed_at: dict[str, float] = {}
+        self._bot_user: dict[str, str] = {}
+        self._bot_failed_at: dict[str, float] = {}
 
     def is_bot(self, user_id: str) -> bool:
         if not user_id:
@@ -140,6 +142,36 @@ class BotUserResolver:
             log.warning("사용자 조회 실패, 사람으로 본다 : %s : %s", user_id, exc)
             return None
         return bool(user.get("is_bot") or user.get("id") == "USLACKBOT")
+
+    def user_of_bot(self, bot_id: str) -> str:
+        """The bot user behind a bot_id-only post (C3).
+
+        A bot posting with chat:write.customize has no `user` field. The live
+        path maps it through bots.info (listener._bot_user_id); catch-up needs
+        the same answer or a recovered peer request has no asker. A failed
+        lookup is empty and retried after the same interval as `is_bot`.
+        """
+        if not bot_id:
+            return ""
+        if bot_id in self._bot_user:
+            return self._bot_user[bot_id]
+        last = self._bot_failed_at.get(bot_id)
+        if last is not None and self._clock() - last < self._retry_interval_sec:
+            return ""
+        try:
+            info = self._client.bots_info(bot=bot_id)
+        except Exception as exc:  # noqa: BLE001 - a failed lookup is retried later, not cached
+            log.warning("봇 조회 실패, 요청자 없음으로 본다 : %s : %s", bot_id, exc)
+            self._bot_failed_at[bot_id] = self._clock()
+            return ""
+        user_id = str((info.get("bot") or {}).get("user_id") or "")
+        if not user_id:
+            self._bot_failed_at[bot_id] = self._clock()
+            return ""
+        self._bot_user[bot_id] = user_id
+        # bots.info itself confirms this user is a bot.
+        self._cache[user_id] = True
+        return user_id
 
     def known(self, user_id: str) -> bool:
         """Cache-only verdict: never calls Slack, not even on a cache miss (C25).

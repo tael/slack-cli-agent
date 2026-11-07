@@ -292,6 +292,9 @@ class Application:
         self._user_namer: UserNamer | None = None
         self._group_names = UserGroupNameResolver(client)
         self._bot_users = BotUserResolver(client)
+        # One bot-to-bot cap for the listener and catch-up (C3, C19); two
+        # counters would let catch-up answer a mention the live path capped.
+        self._peer_exchange = PeerExchangeLimiter()
         self._channel_name_resolver: ChannelNameResolver | None = None
         self._usage_check_run = run_command
         self._notices = NoticeCatalog()
@@ -1354,6 +1357,10 @@ class Application:
                 settings=self._settings,
                 identity=self.identity,
                 attachments=self.attachments(),
+                # The listener's C16/C17 checks use this lookup too (C3).
+                is_bot=self._bot_users.is_bot,
+                bot_user_of=self._bot_users.user_of_bot,
+                peer_limiter=self._peer_exchange,
             )
         return self._catchup_service
 
@@ -1465,7 +1472,7 @@ class Application:
                     # Caps bot-to-bot roundtrips in a thread (C19), reset when
                     # a human speaks (C18), so two bots can't wake each other
                     # forever if the outgoing mention-strip ever misses.
-                    peer_limiter=PeerExchangeLimiter(),
+                    peer_limiter=self._peer_exchange,
                 ),
                 # The one place the access check runs. Catch-up needs no second
                 # one: it only sweeps channels that are already registered
