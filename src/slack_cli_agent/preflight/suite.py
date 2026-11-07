@@ -41,6 +41,7 @@ from .checks import (
     ScriptCapabilityGradeCheck,
     SkillSymlinkCheck,
     SlackApiRegistrationCheck,
+    SourceTreeCheck,
     ToolAllowlistEnforcementCheck,
     UsageCheckCommandCheck,
     WorkdirCheck,
@@ -108,6 +109,9 @@ class PreflightSuite:
             # 먼저 시도하지 않으면 깨진 코어가 기동 가능으로 통과하고 종료코드 1 로
             # 죽어 launchd 재기동이 반복된다.
             CoreImportCheck(),
+            # fatal=False: 운영 트리가 origin/main 에서 벗어난 것을 기동 시점에 보이는
+            # 것이 목적이다. 원격 조회 실패도 경고로만 남긴다.
+            SourceTreeCheck(),
             # 아래부터 B6 — 마메치 check.py 와 짝 맞춘 9종.
             # CompileCheck 는 PluginAstCheck 앞 — apply.sh 가 py_compile 를 먼저
             # 돌리고 그 다음 check.py(이름 검사)를 돌린 순서 그대로다. 깨진 구문은
