@@ -1631,20 +1631,59 @@ class Test폴백엔진연결:
         기록되지 않고 계속 1차 엔진만 불린다.
         """
         application = Application(self._폴백있는프로필(tmp_path), client)
-        caller = application._review_engine()
-        assert caller._invoker is application.engine_invoker
+        for task in application.review_tasks().values():
+            assert task._engine._invoker is application.engine_invoker
         application.close()
 
     def test_점검_경로가_읽을_자리를_받는다(
         self, tmp_path: Path, client: FakeSlackClient
     ) -> None:
-        """점검은 빈 시스템 지침으로 세션을 연다. 엔진이 그 조건에서 경로
-        안내를 빼면 점검이 읽어도 되는 자리를 모른 채 돈다 (sca-9u18)."""
+        """엔진이 경로 안내를 빼면 점검이 읽어도 되는 자리를 모른 채 돈다 (sca-9u18)."""
         application = Application(self._폴백있는프로필(tmp_path), client)
-        caller = application._review_engine()
         paths = application._profile.paths
-        assert caller._system_prompt == ""
-        assert caller._readable_dirs == (paths.persona, paths.prompts)
+        for task in application.review_tasks().values():
+            assert task._engine._readable_dirs == (paths.persona, paths.prompts)
+        application.close()
+
+    def test_점검_세_종류가_페르소나와_종류별_지침을_시스템_지침으로_받는다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        """점검 프롬프트는 "형식은 시스템 프롬프트에 적힌 부검 형식을 따른다"고
+        말한다. 시스템 지침이 비어 있으면 엔진은 따를 형식도, 수정하지 말라는
+        준수 사항도, 봇 페르소나도 받지 못한다. 원본 bot.py 는 부검·디버그
+        추적·서식 점검 모두 build_system_prompt 에 postmortem/debug_trace/
+        format_review 를 켜서 페르소나와 *_NOTE 를 실었다."""
+        from slack_cli_agent.engine.base import EngineRequest, EngineResponse
+
+        profile.paths.persona.mkdir(parents=True, exist_ok=True)
+        (profile.paths.persona / "PERSONA.md").write_text("시험봇 페르소나 원문", encoding="utf-8")
+        application = Application(profile, client)
+        지침 = {
+            "dango": "현재 작업은 사후 분석이다",
+            "brain": "현재 단계는 디버그 프로세스다",
+            "pencil2": "현재 단계는 서식 점검이다",
+        }
+        class 기록기:
+            def __init__(self) -> None:
+                self.받은: list[EngineRequest] = []
+
+            def invoke(self, request: EngineRequest, origin: Any = None) -> EngineResponse:
+                self.받은.append(request)
+                return EngineResponse(
+                    ok=True, body="", session_id="s", model_actual=None,
+                    elapsed=0.0, turns=None, usage=None,
+                )
+
+        for 이모지, task in application.review_tasks().items():
+            기록 = 기록기()
+            task._engine._invoker = 기록
+            task._engine.run("점검", None, False)
+            시스템 = 기록.받은[0].system_prompt
+            assert "시험봇 페르소나 원문" in 시스템, 이모지
+            assert 지침[이모지] in 시스템, 이모지
+            for 다른이모지, 다른지침 in 지침.items():
+                if 다른이모지 != 이모지:
+                    assert 다른지침 not in 시스템, (이모지, 다른이모지)
         application.close()
 
 
