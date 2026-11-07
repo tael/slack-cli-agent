@@ -213,9 +213,12 @@ class MessagePublisher:
         When the body is nothing but file links, stripping would leave it empty
         and the reply would silently vanish (post returns None, update raises).
         A duplicated card beats no answer, so the links stay in that case.
+        The model footer (apply_elapsed_model_line) does not count as content:
+        a rich answer of one link plus that footer would otherwise post the
+        footer alone.
         """
         stripped = strip_file_permalinks(text)
-        if stripped != text and not stripped.strip():
+        if stripped != text and not ELAPSED_MODEL_LINE.sub("", stripped).strip():
             log.info("본문이 파일 링크뿐이라 떼지 않았다 : %s", thread_ts)
             return text
         if stripped != text:

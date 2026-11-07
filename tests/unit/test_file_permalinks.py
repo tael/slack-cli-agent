@@ -126,3 +126,22 @@ def test_link_only_correction_keeps_link() -> None:
     make_publisher(client, audits).update("C1", "1.0", FILE_URL, False)
     assert "/files/" in client.sent_text()
     assert audits == []
+
+
+def test_link_only_body_with_model_footer_keeps_link() -> None:
+    """rich 채널 본 답변은 게시 전에 실행 모델 꼬리 줄이 붙는다. 꼬리 줄만 남는 것도 빈 본문으로 본다."""
+    client, audits = FakeClient(), []
+    publisher = make_publisher(client, audits)
+    body = publisher.apply_elapsed_model_line(f"<{FILE_URL}>", "gpt-5", True)
+    assert publisher.post("C1", "1.0", body, True)
+    assert "/files/" in client.sent_text()
+    assert audits == []
+
+
+def test_link_with_text_and_model_footer_still_strips() -> None:
+    client, audits = FakeClient(), []
+    publisher = make_publisher(client, audits)
+    body = publisher.apply_elapsed_model_line(f"보고서 : <{FILE_URL}|report.pdf>", "gpt-5", True)
+    publisher.post("C1", "1.0", body, True)
+    assert "/files/" not in client.sent_text()
+    assert [a["kind"] for a in audits] == [IncidentKind.FILE_PERMALINK_STRIPPED.value]
