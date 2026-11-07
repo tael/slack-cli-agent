@@ -1379,14 +1379,17 @@ class Application:
         )
         # A marker from before this process started was for the restart
         # that produced it; following it again would loop.
-        # Only an owner turn can be the requester the marker names; any other
+        # Only an OWNER turn can be the requester the marker names; any other
         # turn that could write it must not get someone's request completed.
-        owner = self._profile.owner_user_id
+        # OWNER is the access policy's verdict, so controller_user_ids count
+        # too -- they get the write tools that can write the marker.
+        policy = self.access_policy
         worker.watch_restart_requests(
             ApplyRequestWatch(
                 paths=self._profile.paths.apply_requests, started_at=time.time()
             ).pending,
-            requester_ok=lambda context: bool(owner) and context.user == owner,
+            requester_ok=lambda context: policy.principal_for(context.channel, context.user).trust
+            is TrustLevel.OWNER,
         )
         return worker
 
