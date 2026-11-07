@@ -1721,8 +1721,9 @@ class Application:
         if task is None:
             return
         # The original bot.py had no permission check here (bot.py:6144), but a
-        # review runs on the owner's model at medium effort or higher, so anyone
-        # adding the emoji repeatedly spends that. Owner and the channel's
+        # review runs at medium effort or higher (postmortem on the postmortem
+        # model, trace and format review on the report channel's model_for), so
+        # anyone adding the emoji repeatedly spends that. Owner and the channel's
         # trusted_users only (사용자 결정 2026-09-18, sca-cg9).
         # `accepts_request` on top of that: trust alone let a DM entry in the
         # channel file hand a non-owner a conversation a normal request would
