@@ -26,7 +26,7 @@ from ..admin.command import AdminContext
 from ..admin.defaults import default_admin_commands
 from ..admin.router import AdminRouter
 from ..auth.execution_policy import ExecutionPolicy
-from ..auth.policy import AccessPolicy
+from ..auth.policy import DEFAULT_EFFORT, AccessPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelConfig, ChannelRegistry, channel_is_rich
@@ -117,7 +117,7 @@ from ..prompt.sections import (
     TrustedSection,
     WatchSection,
 )
-from ..reliability.catchup import CatchupService
+from ..reliability.catchup import CatchupService, RetryStatus, StuckCause
 from ..reliability.connection import ConnectionCatchupCoordinator
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
@@ -148,6 +148,8 @@ from ..review.trace import DebugTraceTask
 from ..session.awaiting import SqliteAwaitingStore
 from ..session.manager import SessionManager
 from ..session.store import SqliteSessionStore
+from ..shadow.service import ShadowPlugin, ShadowService, TurnResult, shadow_pairs, tool_calls_in
+from ..shadow.store import ShadowStore
 from ..slack.assistant import DEFAULT_GREETING, AssistantPanel
 from ..slack.attachments import AttachmentStore, DownloadResult
 from ..slack.channel_names import ChannelNameResolver
@@ -155,6 +157,7 @@ from ..slack.credentials import CredentialResolver, owner_session_client, resolv
 from ..slack.download import HttpDownloader
 from ..slack.gate import ResponseGate
 from ..slack.gateway import SlackGateway
+from ..slack.generated_images import SlackGeneratedImagePoster
 from ..slack.history import HistoryReader
 from ..slack.history_port import SlackHistoryPort
 from ..slack.identity import BotIdentity, SlackBotIdentity
@@ -194,6 +197,9 @@ from ..slack.transcript import TranscriptBuilder
 from ..storage.admin_claims import AdminClaims
 from ..storage.connection_epochs import SqliteConnectionEpochs
 from ..storage.database import Database
+from ..welcome.plugin import WelcomePlugin
+from ..welcome.service import WelcomeService
+from ..welcome.store import WelcomeStore
 from .access import RequestAccess
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
@@ -237,6 +243,31 @@ USAGE_CHECK_FIRST_DELAY_SEC = 60.0
 def mode_prompt_names(modes: Sequence[str] = KNOWN_MODES) -> dict[str, str]:
     return {mode: f"PROMPT_{mode.upper()}" for mode in modes}
 
+
+
+def _stuck_cause_text(status: RetryStatus) -> str:
+    """Explains, per cause, why catch-up for a channel can't finish.
+
+    The alert used to always blame an empty channel history, which was
+    wrong once an unreadable long thread also kept a channel on the retry
+    list (PR #124): the owner would look for a Slack outage that wasn't there.
+    """
+    if status.cause == StuckCause.UNREADABLE_THREAD:
+        return (
+            f"긴 스레드 {status.unreadable_threads}개를 끝까지 읽지 못했습니다.\n"
+            "중간 페이지를 읽다 실패했거나 읽을 수 있는 페이지 수 한도를 넘었습니다.\n"
+            "그 스레드에서 답을 기다리는 요청이 있어도 잡히지 않습니다.\n"
+            "끝까지 읽은 나머지 스레드는 이번 점검에 반영했습니다."
+        )
+    if status.cause == StuckCause.UNKNOWN_IDENTITY:
+        return (
+            "봇 자신의 사용자 정보를 확인하지 못해 부름 여부를 판정하지 못합니다.\n"
+            "그 채널에서 답을 기다리는 요청이 있어도 잡히지 않습니다."
+        )
+    return (
+        "슬랙이 채널 기록을 계속 빈 목록으로 돌려줍니다.\n"
+        "그 채널에서 답을 기다리는 요청이 있어도 잡히지 않습니다."
+    )
 
 class Application:
     """Builds and wires every component that makes up one bot."""
@@ -326,6 +357,9 @@ class Application:
         self._reactions: ReactionMarker | None = None
         self._publisher: MessagePublisher | None = None
         self._review_tasks: dict[str, ReviewTask] | None = None
+        self._welcome: WelcomePlugin | None = None
+        self._welcome_service: WelcomeService | None = None
+        self._welcome_caller: ReviewEngineCaller | None = None
         self._identity: SlackBotIdentity | None = None
         self._roster_builder: RosterBuilder | None = None
         self._roster_refresher: PeriodicRunner | None = None
@@ -527,6 +561,7 @@ class Application:
                 always_skills=self._settings.always_skills or ALWAYS_SKILLS,
                 operator_level=self.access_policy.operator_level,
                 operator_tools=self._settings.operator_tools,
+                readonly_tools=self._settings.readonly_tools,
             )
         return self._tool_policy
 
@@ -589,17 +624,24 @@ class Application:
         """Read per request, like `_bot_mentions_allowed`."""
         return is_chat_channel(self._channels.get(channel))
 
+    def _is_bot_or_peer(self, user_id: str) -> bool:
+        """A controller is a bot even when users_info fails. Both mention
+        guards read this one verdict, so a peer that AddresseeGuard keeps at
+        the head has already been through BotMentionGuard's channel check (B2)."""
+        return user_id in self._profile.controller_user_ids or self._bot_users.is_bot(user_id)
+
     def _guards(self) -> GuardPipeline:
         guards: list[OutputGuard] = [
             PlainMentionGuard(),
-            # Before AddresseeGuard so a bot mention at the head is turned
-            # into a name here rather than cut with a note meant for people.
+            # Before AddresseeGuard: in a channel without `bot_mentions` a bot
+            # mention at the head becomes a name here, so AddresseeGuard's
+            # bot exception never lets one through that this guard would cut.
             BotMentionGuard(
-                is_bot=self._bot_users.is_bot,
+                is_bot=self._is_bot_or_peer,
                 display_name=self._names.resolve,
                 allowed_in=self._bot_mentions_allowed,
             ),
-            AddresseeGuard(),
+            AddresseeGuard(is_bot=self._is_bot_or_peer),
             WatchPromiseGuard(),
             RewriteLossGuard(self._settings),
             # safe to always include — a no-op when the drop-line list is empty
@@ -769,7 +811,11 @@ class Application:
         return self._channel_name_resolver
 
     def _history_port(self) -> SlackHistoryPort:
-        return SlackHistoryPort(HistoryReader(self._client, self._settings), self._client)
+        return SlackHistoryPort(
+            HistoryReader(self._client, self._settings),
+            self._client,
+            max_pages=self._settings.history_max_pages,
+        )
 
     def queue(self) -> SqliteJobQueue:
         if self._queue is None:
@@ -824,6 +870,10 @@ class Application:
                     update=lambda channel, ts, text, rich: self.publisher().update(
                         channel, ts, text, rich
                     ),
+                    audit=self.audit().record,
+                ),
+                generated_images=SlackGeneratedImagePoster(
+                    self._client, codex_home_for=self._codex_home_for,
                     audit=self.audit().record,
                 ),
                 consumption=self.consumption,
@@ -1218,9 +1268,12 @@ class Application:
             # to start new work, which watch_check_prompt forbids (sca-ejy).
             watch_check=True,
         ))
-        watch_tools = ToolSelection.from_names(self.tool_policy().tool_list_for(
-            principal, prompt=prompt, readonly=True, skills_enabled=False,
-        ))
+        watch_tools = ToolSelection.from_names(
+            self.tool_policy().tool_list_for(
+                principal, prompt=prompt, readonly=True, skills_enabled=False,
+            ),
+            lookups=self.tool_policy().lookups_for(principal, readonly=True),
+        )
         return self.engine_invoker.invoke(EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
@@ -1375,11 +1428,84 @@ class Application:
         job waits for the same slots as requests and reviews, at most as
         long as one request may run."""
         return background_runners(
-            self._plugins,
+            self._hook_plugins(),
             process,
             self.concurrency_slots(),
             self._settings.request_timeout_sec,
         )
+
+    def shadow_runners(self) -> list[PeriodicRunner]:
+        """Shadow evaluation (G4): mirrors questions from each channel's
+        `shadow_source` into it and answers them blind. Its engine turns wait
+        for the same slots as requests, like a plugin job."""
+        owner = self._owner_client
+
+        def source_api(method: str, **params: Any) -> Any:
+            return owner.api_call(method, params=params).data
+
+        def post(channel: str, thread_ts: str | None, text: str) -> str | None:
+            rich = channel_is_rich(self._channels.get(channel))
+            return self.publisher().post(channel, thread_ts or "", text, rich)
+
+        def judge_enabled(channel: str) -> bool:
+            config = self._channels.get(channel)
+            return bool(config and config.extra.get("shadow_judge"))
+
+        service = ShadowService(
+            store=ShadowStore(self._database),
+            source_api=source_api if owner is not None else None,
+            post=post,
+            run_turn=self._shadow_turn,
+            pairs=lambda: shadow_pairs(self._channels.all()),
+            judge_enabled=judge_enabled,
+            name_of=self.user_namer(),
+            audit=self.audit().record,
+            requests_path=self._profile.paths.root / "shadow_requests.json",
+            bot_name=self._profile.display_name,
+            is_self=lambda m: bool(m.get("user")) and m.get("user") == self.identity.user_id,
+            max_parallel=self._settings.max_concurrent,
+        )
+        return background_runners(
+            [ShadowPlugin(service)], "worker", self.concurrency_slots(), self._settings.request_timeout_sec,
+        )
+
+    def _shadow_turn(self, prompt: str, channel: str, request_id: str) -> TurnResult:
+        """A read-only turn for someone who is not the owner: the question's
+        author is a stranger in the source channel, and the answer must not
+        reach what only the owner may see."""
+        principal = Principal(user_id="", channel=channel, trust=TrustLevel.GENERAL, is_direct_message=False)
+        config = self._channels.get(channel)
+        system_prompt = self._composer().compose(CompositionContext(
+            principal=principal,
+            prompt=prompt,
+            channel_mode=config.mode if config else "default",
+            channel_slug=slug_for(channel, config),
+            is_rich=channel_is_rich(config),
+            chat_level=config.chat if config else "normal",
+        ))
+        tools = ToolSelection.from_names(self.tool_policy().tool_list_for(principal, prompt=prompt, readonly=True))
+        response = self.engine_invoker.invoke(EngineRequest(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            session_id=None,
+            resume=False,
+            model=self.access_policy.model_for(principal),
+            # Not the prompt: it carries the source question and thread replies,
+            # and a third party's "ultrathink" would raise the effort.
+            effort=self.access_policy.effort_for(principal, ""),
+            workdir=self._profile.work_root,
+            tools=tools,
+            requirements=self.execution_policy.requirements_for(config=config, tools=tools),
+            request_id=request_id,
+            readable_dirs=self.readable_dirs,
+            trust_level=TrustLevel.GENERAL,
+        ), CallOrigin.BACKGROUND)
+        calls = None
+        if response.ok and response.session_id:
+            reader: Any = self.transcript_reader(response.engine)
+            find = getattr(reader, "find_transcript_path", None) or getattr(reader, "transcript_path", None)
+            calls = tool_calls_in(find(response.session_id) if find else None)
+        return TurnResult(ok=response.ok, body=response.body, tool_calls=calls)
 
     def worker(self, worker_id: str = "worker") -> Worker:
         # unlike the other components here, a new Worker is created on every
@@ -1417,8 +1543,48 @@ class Application:
 
     def _admin_router(self) -> AdminRouter:
         commands = default_admin_commands(self._notices)
-        commands.extend(c for p in self._plugins for c in p.admin_commands())
+        commands.extend(c for p in self._hook_plugins() for c in p.admin_commands())
         return AdminRouter(commands)
+
+    def _hook_plugins(self) -> tuple[BotPlugin, ...]:
+        """Profile plugins plus the core modules built on the same hooks:
+        the welcome (G2). Kept out of `plugins`, which lists what the profile
+        loaded."""
+        if self._welcome is None:
+            self._welcome = WelcomePlugin(self._channels, self.welcome_service)
+        return (*self._plugins, self._welcome)
+
+    def welcome_service(self) -> WelcomeService:
+        """A read-only turn: it looks the joiner up and writes one post; the
+        post itself goes through the publisher (G2). Owner tools cut to the
+        read-only set, but the general model and effort: mametchi called it
+        with is_owner=False, and any joiner starts one."""
+        if self._welcome_service is None:
+            owner = Principal(
+                user_id=self._profile.owner_user_id, channel="",
+                trust=TrustLevel.OWNER, is_direct_message=False,
+            )
+            caller = ReviewEngineCaller(
+                invoker=self.engine_invoker,
+                profile=self._profile,
+                workdir=self._profile.work_root,
+                system_prompt="슬랙 채널에 올릴 환영 글을 쓴다. 사용자 메시지의 지시를 따른다.",
+                model=self._profile.primary_engine.model,
+                effort=DEFAULT_EFFORT,
+                tools=ToolSelection.allow(self.tool_policy().tool_list_for(owner, readonly=True)),
+            )
+            self._welcome_caller = caller
+            library = PromptLibrary(self._profile.paths.prompts)
+            self._welcome_service = WelcomeService(
+                store=WelcomeStore(self._database),
+                client=self._client,
+                channels=self._channels,
+                publisher=self.publisher(),
+                run=lambda prompt: caller.run(prompt, None, False),
+                template=lambda: library.text("welcome"),
+                self_user_id=lambda: self.identity.user_id,
+            )
+        return self._welcome_service
 
     def _admin_admission(self) -> AdminAdmission:
         """Built once and shared: the socket path and catch-up have to reach
@@ -1504,7 +1670,7 @@ class Application:
                 notices=self._notices,
                 is_shutting_down=lambda: self._shutting_down,
                 extra_handlers=event_callbacks(
-                    self._plugins,
+                    self._hook_plugins(),
                     ThreadTaskSpawner(),
                     self.concurrency_slots(),
                     self._settings.request_timeout_sec,
@@ -1762,6 +1928,16 @@ class Application:
             reader = self._transcript_readers.create(name, self._profile.work_root, spec=spec)
             self._transcript_reader_cache[name] = reader
         return reader
+
+    def _codex_home_for(self, engine: str) -> Path | None:
+        """CODEX_HOME of the slot that answered, None for a non-codex engine.
+
+        A spec without home_dir runs codex under its own default, ~/.codex.
+        """
+        spec = self._engine_spec_for(engine)
+        if spec is None or spec.type != "codex":
+            return None
+        return spec.home_dir if spec.home_dir is not None else Path.home() / ".codex"
 
     def _engine_spec_for(self, engine: str) -> EngineSpec | None:
         """None for a name in neither slot. The registry then hands back an empty
@@ -2118,8 +2294,7 @@ class Application:
                 "*캐치업을 오래 마치지 못하고 있습니다*\n\n"
                 f"- 채널 : {status.channel}\n"
                 f"- {status.stuck_sec / 60:.0f}분째입니다\n\n"
-                "슬랙이 채널 기록을 계속 빈 목록으로 돌려줍니다.\n"
-                "그 채널에서 답을 기다리는 요청이 있어도 잡히지 않습니다."
+                f"{_stuck_cause_text(status)}"
             )
 
     def ingress_services(self, restart: Callable[[str], None]) -> ServiceGroup:
@@ -2161,6 +2336,7 @@ class Application:
                 self.pending_report_runner(),
                 self.learning_batch_runner(),
                 self.stale_reclaim_runner(worker),
+                *self.shadow_runners(),
                 *self.plugin_job_runners("worker"),
             ],
             name="worker",

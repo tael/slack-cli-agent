@@ -81,10 +81,14 @@ class IncidentKind(StrEnum):
     REWRITE_UNCONVERTED = "rewrite_unconverted"
     SILENT = "silent"
     #: A reply arrived without a `[[RECIPIENT:...]]` tag while recipient
-    #: enforcement was on, so its body was withheld and only a notice posted
-    #: (J11/D3, bot.py:7872 missing_recipient). Records the block; the
-    #: snippet field holds the withheld body's head for troubleshooting.
+    #: enforcement was on (J11/D3, bot.py:8097 missing_recipient). The body is
+    #: held while the tag alone is re-asked; the snippet field holds its head
+    #: for troubleshooting.
     MISSING_RECIPIENT = "missing_recipient"
+    #: How the tool-less re-ask for a missing tag went (B1, bot.py:8106
+    #: missing_recipient_retry): `recovered` False means the turn ended
+    #: silent with neither the body nor a notice posted.
+    MISSING_RECIPIENT_RETRY = "missing_recipient_retry"
     #: An undeclared `[[...]]` marker line dropped before publish
     #: (strip_unknown_tags, bot.py:1561's UNKNOWN_TAG_LINE_RE). Logged
     #: rather than silently eaten so an invented marker surfaces.
@@ -128,6 +132,11 @@ class IncidentKind(StrEnum):
     #: `recovered` says whether that rerun posted successfully; `rerun` is
     #: False on a fallback-engine turn, which cannot resume the session.
     RENDER_WITHOUT_POST = "render_without_post"
+    #: A codex turn made pictures and called no posting tool, so the code
+    #: uploaded them to the thread (D2, mametchi generated_image_autopost).
+    #: `files` names them; the _FAILED kind carries `error` instead.
+    GENERATED_IMAGE_AUTOPOST = "generated_image_autopost"
+    GENERATED_IMAGE_AUTOPOST_FAILED = "generated_image_autopost_failed"
 
     def __str__(self) -> str:
         return self.value

@@ -419,17 +419,17 @@ class TestRuntimeSettings지울문구목록:
 
 
 class TestRuntimeSettings수신자강제:
-    """require_recipient — 파이프라인의 미표식 차단(J11)을 켜는 설정.
+    """require_recipient — 파이프라인의 미표식 재요청·차단(J11, B1)을 켜는 설정.
 
-    기본은 꺼짐이라 수신자 표식을 쓰지 않는 봇은 "그냥 게시"로 떨어진다.
+    모든 턴의 시스템 프롬프트가 표식을 요구하므로(RECIPIENT_RULE) 기본은 켜짐이다.
     """
 
-    def test_기본값은_꺼짐이다(self) -> None:
-        assert RuntimeSettings().require_recipient is False
+    def test_기본값은_켜짐이다(self) -> None:
+        assert RuntimeSettings().require_recipient is True
 
-    def test_설정으로_켤_수_있다(self) -> None:
-        settings = RuntimeSettings().override({"require_recipient": True})
-        assert settings.require_recipient is True
+    def test_설정으로_끌_수_있다(self) -> None:
+        settings = RuntimeSettings().override({"require_recipient": False})
+        assert settings.require_recipient is False
 
 
 class TestStatePaths상태기록:

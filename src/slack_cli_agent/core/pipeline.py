@@ -60,6 +60,11 @@ from ..session.awaiting import AwaitingPort
 from ..session.manager import SessionDecision, SessionManager
 from ..session.ports import SessionKey, SessionScope
 from ..slack.gate import ResponseGate
+from ..slack.generated_images import (
+    NOTICE_IMAGE_UPLOAD_FAILED,
+    GeneratedImagePoster,
+    ImageUpload,
+)
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
 from ..slack.mentions import MentionRenderer
 from ..slack.origin_alive import OriginAliveChecker
@@ -69,10 +74,13 @@ from ..slack.transcript import CurrentMessage
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
 from .markers import (
+    missing_recipient_prompt,
+    pick_recipient_tag,
     split_leaked_tags,
     strip_control_tags,
     take_ask_tag,
     take_nowatch_tag,
+    take_recipient_tag,
 )
 from .pipeline_ports import (
     AccessPolicyPort,
@@ -109,13 +117,6 @@ def _domain_applies(workdir: Path | None, home: Path) -> bool:
         return True
     return False
 
-
-#: Posted in place of the body when recipient enforcement is on and a reply
-#: arrived with no `[[RECIPIENT:...]]` tag (J11, bot.py:1261
-#: NOTICE_NO_RECIPIENT). The body is withheld so the owner never becomes an
-#: accidental relay to the wrong person or bot; only the fact of the block is
-#: shown.
-NOTICE_NO_RECIPIENT = "답변을 만들었지만 받을 사람을 확정하지 못해 게시하지 않았습니다. 다시 요청해 주세요."
 
 LAUNCHED_WATCH_DESC = "코드가 발급한 이름으로 띄운 백그라운드 작업"
 """Watch description for work launched without a tag.
@@ -156,10 +157,11 @@ class RequestPipeline:
         # unwired. Looked up only for non-owner askers, since the owner is a
         # person by definition.
         asker_is_bot: Callable[[str], bool] = lambda user_id: False,
-        # J11: when True, a reply with no `[[RECIPIENT:...]]` tag has its body
-        # withheld and only NOTICE_NO_RECIPIENT posted. Off by default so a bot
-        # set up without owner/asker wiring degrades to "publish anyway" rather
-        # than to silence -- enforcement is opt-in per deployment.
+        # J11/B1: when True, a reply with no `[[RECIPIENT:...]]` tag gets one
+        # tool-less re-ask for the tag alone; still none, and the turn ends
+        # silent. The deployment default is on (RuntimeSettings); this
+        # component default stays off so a pipeline built without settings
+        # publishes rather than goes quiet.
         require_recipient: bool = False,
         group_resolver: Callable[[str], str] | None = None,
         mention_table: Callable[[], Mapping[str, str]] = dict,
@@ -177,6 +179,10 @@ class RequestPipeline:
         # posted through a tool this turn, instead of a second reply
         # (2026-11-06 duplicate replies). None posts as before.
         tool_post_merger: ToolPostMerger | None = None,
+        # Uploads pictures a codex turn made and never posted (D2). The tool
+        # post merger then writes the answer over that file message. None
+        # leaves them on disk as before.
+        generated_images: GeneratedImagePoster | None = None,
         # Shared with the caller so both the late-addendum check and the queue see
         # the same consumed-messages record.
         consumption: ThreadConsumption | None = None,
@@ -247,6 +253,7 @@ class RequestPipeline:
         self._late_addendum = late_addendum
         self._origin_alive = origin_alive
         self._tool_post_merger = tool_post_merger
+        self._generated_images = generated_images
         self._consumption = consumption
         self._watch_queue = watch_queue
         self._tool_policy = tool_policy
@@ -356,10 +363,13 @@ class RequestPipeline:
         is_bot = principal.trust is not TrustLevel.OWNER and (
             from_bot or self._asker_is_bot(principal.user_id)
         )
-        return ToolSelection.from_names(self._tool_policy.tool_list_for(
-            principal, prompt=prompt, skills_enabled=bool(config and config.skills),
-            asker_is_bot=is_bot,
-        ))
+        return ToolSelection.from_names(
+            self._tool_policy.tool_list_for(
+                principal, prompt=prompt, skills_enabled=bool(config and config.skills),
+                asker_is_bot=is_bot,
+            ),
+            lookups=self._tool_policy.lookups_for(principal, asker_is_bot=is_bot),
+        )
 
     def _progress_session(self, ctx: RequestContext, log_path: Path | None) -> AbstractContextManager[None]:
         """The progress display for this request, or a pass-through when it has none."""
@@ -527,6 +537,9 @@ class RequestPipeline:
         self._sessions.touch(key, ctx.ts)
 
         if is_silent(response.body):
+            # A silent answer still owes the picture the turn made; mametchi
+            # uploaded it without a comment.
+            self._upload_generated_images(ctx, start, [response], flat)
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
                      model_usage=_turn_model_usage([response]),
@@ -557,24 +570,27 @@ class RequestPipeline:
         # after ASK/NOWATCH are taken so the tag the resolver sees is trailing.
         body, blocked_recipient = self._resolve_recipient(body, ctx)
         if blocked_recipient:
-            notice_ts = self._publisher.post(
-                ctx.channel, ctx.thread_ts, NOTICE_NO_RECIPIENT, False, flat=flat,
-            ) or ""
-            self._audit.record(
-                IncidentKind.MISSING_RECIPIENT.value, channel=ctx.channel,
-                thread_ts=ctx.thread_ts, snippet=body[:300],
+            body, blocked_recipient = self._retry_recipient_tag(
+                body, ctx, request, decision, response, turn_calls,
             )
+        if blocked_recipient:
+            # Neither the body nor a notice goes out: the body has no settled
+            # recipient, and a notice on a turn the model meant to keep quiet
+            # is noise of its own (bot.py:8113-8117). The silent outcome still
+            # marks the request done, so catch-up doesn't re-run it.
             self._record(
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                 turns=response.turns, model_actual=response.model_actual,
                 model_usage=_turn_model_usage(turn_calls),
                 truncated=_truncated(response), context_reset=context_reset,
             )
-            return HandleOutcome(ok=True, posted_ts=notice_ts)
+            self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
+            return HandleOutcome(ok=True, silent=True)
         body = self._strip_publish_markers(body, ctx)
         # After the markers are taken: the notice must not sit between the body
         # and a trailing tag the strip reads from the end.
         body = self._recover_unposted_render(body, ctx, request, decision, turn_calls)
+        body, image_ts = self._post_generated_images(body, ctx, start, turn_calls, flat)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         # Right before the post, confirm the question is still in its thread.
         # If the asker deleted it mid-turn, the intake coordinates now point at
@@ -605,9 +621,15 @@ class RequestPipeline:
         # file and the answer. flat replies go to the channel, not the thread
         # the tool posted into, so they post as usual.
         if self._tool_post_merger is not None and not flat:
-            posted_ts = self._tool_post_merger.merge(
-                ctx.channel, ctx.thread_ts, start, body, rich,
-            ) or ""
+            if image_ts:
+                # The upload just ran; the thread may not list its message yet.
+                posted_ts = self._tool_post_merger.merge(
+                    ctx.channel, ctx.thread_ts, start, body, rich, target_ts=image_ts,
+                ) or ""
+            else:
+                posted_ts = self._tool_post_merger.merge(
+                    ctx.channel, ctx.thread_ts, start, body, rich,
+                ) or ""
             # The merged answer is the tool's reply itself, one message.
             answer_parts = (posted_ts,) if posted_ts else ()
         if not posted_ts:
@@ -891,8 +913,9 @@ class RequestPipeline:
                 resume=True,
                 session_id=decision.session_id,
             ))
-            # After the check above read the list: the rerun spends tokens in
-            # the same session, so the audit row takes its usage table (A14).
+            # Later steps read what the turn posted; the rerun is part of it.
+            # The rerun also spends tokens in the same session, so the audit
+            # row takes its usage table too (A14).
             turn_calls.append(rerun)
             posted = rerun.ok and rendered_and_posted(rerun)
         else:
@@ -905,6 +928,42 @@ class RequestPipeline:
         if posted:
             return body
         return f"{body.rstrip()}\n\n{NOTICE_UNPOSTED_RENDER}"
+
+    def _post_generated_images(
+        self,
+        body: str,
+        ctx: RequestContext,
+        since: float,
+        turn_calls: Sequence[EngineResponse],
+        flat: bool,
+    ) -> tuple[str, str | None]:
+        # Codex's image generation leaves the picture on disk; the model
+        # doesn't always post it (D2). Uploaded before the answer; the ts of
+        # the file message goes to the tool post merger so the answer lands
+        # in it.
+        upload = self._upload_generated_images(ctx, since, turn_calls, flat)
+        if upload is None or upload.ok:
+            return body, upload.ts if upload else None
+        return f"{body.rstrip()}\n\n{NOTICE_IMAGE_UPLOAD_FAILED}", None
+
+    def _upload_generated_images(
+        self,
+        ctx: RequestContext,
+        since: float,
+        turn_calls: Sequence[EngineResponse],
+        flat: bool,
+    ) -> ImageUpload | None:
+        """None when there was nothing to upload or the question is gone."""
+        if self._generated_images is None:
+            return None
+        images = self._generated_images.pending(since, turn_calls)
+        if not images:
+            return None
+        # A deleted question gets no answer (C34), and no picture either.
+        if self._origin_alive is not None and self._origin_alive.alive(ctx.channel, ctx.ts) is False:
+            return None
+        thread_ts = None if flat else ctx.thread_ts
+        return self._generated_images.upload(ctx.channel, thread_ts, images)
 
     def _resumable(self, response: EngineResponse) -> bool:
         # A fallback turn ran on the secondary, which opens a fresh session on
@@ -937,6 +996,7 @@ class RequestPipeline:
             is_owner=is_owner,
             owner_user_id=self._owner_user_id,
             mention_names=self._mention_table(),
+            request_text=ctx.text,
             previous_body=previous_body,
         )
         result = self._guards.run(body, guard_ctx)
@@ -1026,6 +1086,60 @@ class RequestPipeline:
             # withheld; it is not published on this path.
             return body, True
         return clean, False
+
+    def _retry_recipient_tag(
+        self,
+        body: str,
+        ctx: RequestContext,
+        request: EngineRequest,
+        decision: SessionDecision,
+        response: EngineResponse,
+        turn_calls: list[EngineResponse],
+    ) -> tuple[str, bool]:
+        """Asks the model once more for just the recipient tag of a reply that
+        came back without one (B1, bot.py:8085-8112 missing_recipient retry).
+
+        The body stays with the code; only the tag is taken from the rerun, so
+        a rerun that rewrites the answer can't change what is posted. The
+        rerun has every tool forbidden: it resumes the same session, and the
+        first turn may already have filed a ticket or sent a message that a
+        tool-carrying rerun could repeat. Returns `(body, blocked)` the same
+        way `_resolve_recipient` does.
+        """
+        self._audit.record(
+            IncidentKind.MISSING_RECIPIENT.value, channel=ctx.channel,
+            thread_ts=ctx.thread_ts, snippet=body[:300],
+        )
+        if not self._resumable(response):
+            # A fallback turn's secondary opens a fresh session that never saw
+            # the answer, so it has nothing to choose a recipient for.
+            self._audit.record(
+                IncidentKind.MISSING_RECIPIENT_RETRY.value, channel=ctx.channel,
+                thread_ts=ctx.thread_ts, attempted=False, ok=False, recovered=False, tag=None,
+            )
+            return body, True
+        rerun = self._invoker.invoke(replace(
+            request,
+            prompt=missing_recipient_prompt(),
+            resume=True,
+            session_id=decision.session_id,
+            tools=ToolSelection.forbid_all(),
+        ))
+        turn_calls.append(rerun)
+        tag = pick_recipient_tag(rerun.body) if rerun.ok else None
+        blocked = True
+        if tag:
+            # Drop a tag the first pass could not resolve (a BOT: id that is no
+            # bot) before appending the new one; left in place it would be
+            # read again instead of the choice just made.
+            held, _ = take_recipient_tag(body)
+            body, blocked = self._resolve_recipient(f"{held.rstrip()}\n{tag}", ctx)
+        self._audit.record(
+            IncidentKind.MISSING_RECIPIENT_RETRY.value, channel=ctx.channel,
+            thread_ts=ctx.thread_ts, attempted=True, ok=rerun.ok, recovered=not blocked,
+            tag=tag, reply=(rerun.body or "")[:300],
+        )
+        return body, blocked
 
     def _strip_publish_markers(self, body: str, ctx: RequestContext) -> str:
         """Last body pass before publish: strips every leftover `[[...]]`

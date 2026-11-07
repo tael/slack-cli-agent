@@ -41,7 +41,7 @@ class RuntimeSettings:
     history_read_pause_sec: float = 2.0
     history_max_msgs: int = 40
     history_max_chars: int = 12000
-    #: How many conversations_replies pages read_thread follows via next_cursor
+    #: How many conversations_replies pages read_full_thread follows via next_cursor
     #: before stopping. A thread longer than one page (history_max_msgs) returns
     #: its replies oldest-first, so without this the most recent replies are
     #: dropped (F17, mametchi bot.py 되짚기 페이지네이션). Caps a runaway thread.
@@ -198,6 +198,12 @@ class RuntimeSettings:
     # browser actions here are dropped. Empty by default, so an
     # operator gets nothing until the profile names it.
     operator_tools: tuple[str, ...] = ()
+    # The lookup bundle every non-owner turn gets on top of base_tools
+    # (mametchi ALLOWED_TOOLS + READ_SHELL_TOOLS): read-only MCP tools and
+    # scoped read wrappers, named one by one. Server wildcards, browser actions
+    # and the bare write tools are dropped. Empty by default; the tool names
+    # are organisation configuration and come from the profile.
+    readonly_tools: tuple[str, ...] = ()
 
     # Skills granted on every ordinary turn as `Skill(<name>)` entries, even in
     # a channel with skills disabled -- a read-only query skill a bot should
@@ -209,12 +215,12 @@ class RuntimeSettings:
     # actual prefix text is org-specific and doesn't belong in code.
     dropped_line_heads: tuple[str, ...] = ()
 
-    # J11: when True, a reply carrying no `[[RECIPIENT:...]]` tag has its body
-    # withheld (only NOTICE_NO_RECIPIENT is posted) so the wrong person never
-    # receives a reply the model never addressed. Off by default: enforcement
-    # needs a bot whose persona actually emits the tag, so it is opt-in per
-    # deployment rather than a silent engine default (pipeline.py require_recipient).
-    require_recipient: bool = False
+    # J11/B1: when True, a reply carrying no `[[RECIPIENT:...]]` tag is held
+    # while the tag alone is re-asked once with no tools; still none, and the
+    # turn ends silent so the wrong person never receives a reply the model
+    # never addressed. On by default: every turn's system prompt now demands
+    # the tag (prompt/sections.py RECIPIENT_RULE). A profile can set it false.
+    require_recipient: bool = True
 
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """Overrides only the fields present in `values`; unknown keys are

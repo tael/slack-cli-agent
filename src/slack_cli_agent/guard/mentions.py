@@ -111,11 +111,41 @@ class AddresseeGuard(OutputGuard):
     this but both depend on the model complying, so this checks it in code.
 
     Only the leading mention is checked — a mention mid-body could be a
-    draft or a quote, so it's left alone. When it strips a mention, it
-    leaves a note in the body rather than silently editing.
+    draft or a quote, so it's left alone. A stripped mention is reported in
+    `detail` for the audit log; the body gets no note (mametchi bot.py:5581
+    `guard_wrong_addressee` strips silently, B2).
+
+    Two more heads are kept, as in the original (B2):
+
+    - any bot account, the peer bot included (Application passes a verdict
+      that counts controllers as bots even when users_info fails). The
+      mistake this prevents is pinging the wrong person; a bot mention is how
+      one bot hands work to another, and BotMentionGuard (which runs first
+      with the same verdict) already decides per channel whether a bot may
+      be mentioned at all;
+    - anyone the request text itself mentions outside code spans. "Greet
+      <@A> and <@B>" makes calling A and B the instruction; the asker has
+      already notified them (2026-10-15 sandbox-rnd 17:35).
     """
 
     name: ClassVar[str] = "wrong_addressee"
+
+    def __init__(self, is_bot: Callable[[str], bool] | None = None) -> None:
+        self._is_bot = is_bot
+
+    def _bot(self, user_id: str) -> bool:
+        if self._is_bot is None:
+            return False
+        try:
+            return bool(self._is_bot(user_id))
+        except Exception:  # noqa: BLE001 - an unreadable verdict counts as a person
+            return False
+
+    @staticmethod
+    def _requested(user_id: str, request_text: str) -> bool:
+        if not request_text or "<@" not in request_text:
+            return False
+        return user_id in ANY_MENTION.findall(CODE_SPANS.sub("", request_text))
 
     @staticmethod
     def _guard_wrong_addressee(
@@ -136,7 +166,8 @@ class AddresseeGuard(OutputGuard):
         )
         if wrong is None:
             return GuardResult(body=body, changed=False)
-        fixed = fixed + "\n\n(다른 분을 부르는 첫머리를 지웠습니다.)"
+        if self._bot(wrong) or self._requested(wrong, ctx.request_text):
+            return GuardResult(body=body, changed=False)
         return GuardResult(body=fixed, changed=True, detail={"wrong_target": wrong})
 
 

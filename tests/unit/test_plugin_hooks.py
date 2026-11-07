@@ -340,7 +340,8 @@ def test_message_훅을_붙여도_코어_핸들러가_먼저_돈다(tmp_path: Pa
     gateway = SlackGateway(client=None)
     ingress.register(gateway)
     handlers = gateway._handlers["message"]
-    assert len(handlers) == 2
+    # 코어 처리기, 이 플러그인의 훅, 코어 입장 환영 훅 (G2) 순서다
+    assert len(handlers) == 3
     assert handlers[0] == ingress.handle_message
 
 

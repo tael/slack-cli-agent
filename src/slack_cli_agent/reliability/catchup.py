@@ -26,6 +26,8 @@ from ..slack.message_kind import HUMAN_SUBTYPES, MessageKind
 from ..slack.policy import addresses_someone_else
 from .ports import HistoryReader
 
+_UNKNOWN_IDENTITY_REASON = "봇 신원을 몰라 부름 판정 불가"
+
 # Marks the bot puts on a message once it's answered or decided not to.
 SILENT_MARK_EMOJI = "zipper_mouth_face"
 DONE_EMOJI: frozenset[str] = frozenset({"white_check_mark", SILENT_MARK_EMOJI})
@@ -94,6 +96,17 @@ class CatchupReport:
     """Channels whose history couldn't be confirmed this round."""
 
 
+class StuckCause:
+    """Why a channel stayed on the retry list, so the owner alert can say so."""
+
+    EMPTY_HISTORY = "empty_history"
+    """Slack kept returning an empty channel history."""
+    UNKNOWN_IDENTITY = "unknown_identity"
+    """The bot's own identity is unknown, so mentions can't be judged."""
+    UNREADABLE_THREAD = "unreadable_thread"
+    """Some thread couldn't be read to its last page (failed page or page cap)."""
+
+
 @dataclass(frozen=True)
 class RetryStatus:
     """Status `retry_pending` returns for one channel."""
@@ -102,6 +115,10 @@ class RetryStatus:
     stuck_sec: float
     alert: bool
     missed: tuple[RequestContext, ...] = ()
+    cause: str = StuckCause.EMPTY_HISTORY
+    """One of StuckCause; picks the owner alert's explanation."""
+    unreadable_threads: int = 0
+    """Threads left undecided this round when cause is UNREADABLE_THREAD."""
 
 
 class CatchupService:
@@ -170,12 +187,30 @@ class CatchupService:
         return self._identity.is_mentioned(event_body(msg))
 
     def find_missed(self, channel: str, window: float) -> Outcome[list[RequestContext]]:
-        """Finds mentions that never got a reply, including thread replies."""
+        """Finds mentions that never got a reply, including thread replies.
+
+        Unknown when any thread in the window could not be read in full;
+        sweep and retry_pending use _scan to keep the rest of the channel.
+        """
+        outcome, undecided = self._scan(channel, window)
+        if outcome.is_found and undecided:
+            return Outcome.unknown("스레드를 끝까지 읽지 못해 판정 불가")
+        return outcome
+
+    def _scan(self, channel: str, window: float) -> tuple[Outcome[list[RequestContext]], int]:
+        """Returns the missed mentions found and how many threads were undecidable.
+
+        One unreadable thread (a failed later page, or the page cap on a long
+        thread) must not throw away the rest of the channel. Returning early
+        would leave every other thread's missed mention unrecovered until the
+        retry gives up with an alert (PR #124 review). The caller still keeps
+        the channel on the retry list while the count is non-zero.
+        """
         if not self._identity.known:
             # Without identity we can't judge what counts as a mention. Returning
             # an empty list here would look the same as "nothing missed" and this
             # round would drop out of retry, so the gap never gets recovered.
-            return Outcome.unknown("봇 신원을 몰라 부름 판정 불가")
+            return Outcome.unknown(_UNKNOWN_IDENTITY_REASON), 0
 
         now = self._now()
         oldest = now - window
@@ -186,10 +221,11 @@ class CatchupService:
         hist = self._history.read_history(channel, discover, CATCHUP_MAX_THREADS_PER_CHANNEL)
         if hist is None:
             # Can't tell an empty result apart from a Slack-side glitch.
-            return Outcome.unknown("기록을 여러 번 읽어도 비어 판정 불가")
+            return Outcome.unknown("기록을 여러 번 읽어도 비어 판정 불가"), 0
 
         # (asking message, its thread, was the bot directly mentioned)
         candidates: list[tuple[Mapping[str, Any], str, bool]] = []
+        undecided = 0
 
         for msg in hist:
             ts = str(msg.get("ts") or "")
@@ -200,9 +236,16 @@ class CatchupService:
                 latest = float(msg.get("latest_reply") or ts or 0)
                 if latest < oldest:
                     continue
-                thread = self._history.read_thread(channel, thread_ts, 50)
-                if not thread:
+                full = self._history.read_full_thread(channel, thread_ts, 50)
+                if full is None:
+                    # A truncated thread may be missing the bot's latest
+                    # reply, so it can't be judged. Count it so the channel
+                    # stays on the retry list, and keep scanning the others.
+                    undecided += 1
                     continue
+                if not full:
+                    continue
+                thread = full
             else:
                 if float(ts or 0) < oldest:
                     continue
@@ -311,7 +354,7 @@ class CatchupService:
                 continue
             missed.append(recovered)
         missed.sort(key=lambda c: float(c.ts))
-        return Outcome.found(missed)
+        return Outcome.found(missed), undecided
 
     def sweep(self, channels: list[str], window: float) -> CatchupReport:
         """Finds missed requests across all registered channels."""
@@ -320,7 +363,7 @@ class CatchupService:
         unchecked: list[str] = []
 
         for channel in channels:
-            outcome = self.find_missed(channel, window)
+            outcome, undecided = self._scan(channel, window)
             if outcome.is_unknown:
                 unchecked.append(channel)
                 continue
@@ -328,6 +371,8 @@ class CatchupService:
             representatives, rest = self._pick_representatives(outcome.value())
             missed.extend(representatives)
             skipped.extend(rest)
+            if undecided:
+                unchecked.append(channel)
 
         if unchecked:
             self._queue_retry(unchecked)
@@ -399,16 +444,33 @@ class CatchupService:
 
         statuses: list[RetryStatus] = []
         for ch, first, _tries in due:
-            outcome = self.find_missed(ch, self._settings.catchup_window_sec)
-            if outcome.is_unknown:
+            outcome, undecided = self._scan(ch, self._settings.catchup_window_sec)
+            if outcome.is_unknown or undecided:
+                # Missed mentions in the readable threads are recovered now,
+                # not held back until the unreadable one clears or alerts.
+                found = outcome.value() if outcome.is_found else []
+                representatives, _ = self._pick_representatives(found)
                 stuck = now - first
                 if stuck >= CATCHUP_ALERT_AFTER_SEC:
                     # Alerting itself is the caller's job; this only sets alert=True.
                     self._pending.pop(ch, None)
                 else:
                     self._queue_retry([ch])
+                if outcome.is_found:
+                    cause = StuckCause.UNREADABLE_THREAD
+                elif outcome.reason == _UNKNOWN_IDENTITY_REASON:
+                    cause = StuckCause.UNKNOWN_IDENTITY
+                else:
+                    cause = StuckCause.EMPTY_HISTORY
                 statuses.append(
-                    RetryStatus(channel=ch, stuck_sec=stuck, alert=stuck >= CATCHUP_ALERT_AFTER_SEC)
+                    RetryStatus(
+                        channel=ch,
+                        stuck_sec=stuck,
+                        alert=stuck >= CATCHUP_ALERT_AFTER_SEC,
+                        missed=tuple(representatives),
+                        cause=cause,
+                        unreadable_threads=undecided,
+                    )
                 )
                 continue
 

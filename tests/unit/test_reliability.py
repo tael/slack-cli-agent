@@ -20,6 +20,7 @@ from identity_support import fake_identity
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.result import OutcomeKind
 from slack_cli_agent.observability.notices import NoticeCatalog
+from slack_cli_agent.reliability.catchup import StuckCause
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import SlackBotIdentity
 
@@ -173,7 +174,8 @@ class FakeHistoryReader:
     """`HistoryReader` 대역. 채널별 응답을 미리 등록해 둔다."""
 
     history: dict[str, list[Mapping[str, Any]] | None] = field(default_factory=dict)
-    threads: dict[str, list[Mapping[str, Any]]] = field(default_factory=dict)
+    #: None 이면 그 스레드를 끝까지 읽지 못한 것이다.
+    threads: dict[str, list[Mapping[str, Any]] | None] = field(default_factory=dict)
     history_calls: list[tuple[str, float, int]] = field(default_factory=list)
 
     def read_history(self, channel, oldest, limit):
@@ -181,6 +183,9 @@ class FakeHistoryReader:
         return self.history.get(channel)
 
     def read_thread(self, channel, thread_ts, limit):
+        return (self.threads.get(thread_ts) or [])[:limit]
+
+    def read_full_thread(self, channel, thread_ts, page_size):
         return self.threads.get(thread_ts, [])
 
 
@@ -390,6 +395,77 @@ class TestFindMissed:
         report = service.sweep(["C1"], window=3600)
 
         assert report.unchecked_channels == ["C1"]
+
+    def test_스레드를_끝까지_못_읽으면_판정_불가로_다시_볼_목록에_남는다(self) -> None:
+        """뒤 페이지 실패나 페이지 상한은 "놓친 요청 없음" 이 아니다.
+
+        건너뛰면 그 회차가 재시도 목록에서 빠져 긴 스레드의 부름을 회수하지
+        못한다.
+        """
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "98000.0", "user": "U1", "text": "<@U_BOT> 질문", "reply_count": 600},
+                ]
+            },
+            threads={"98000.0": None},
+        )
+        service = make_service(history)
+
+        assert service.find_missed("C1", window=3600).kind is OutcomeKind.UNKNOWN
+        assert service.sweep(["C1"], window=3600).unchecked_channels == ["C1"]
+
+    def test_못_읽은_스레드가_있어도_같은_채널의_다른_부름은_회수한다(self) -> None:
+        """긴 스레드 하나를 못 읽었다고 채널 전체 회수를 버리지 않는다 (PR #124 검토).
+
+        못 읽은 스레드 때문에 채널은 재시도 목록에 남지만, 다른 스레드와
+        최상위 메시지의 미응답 부름은 이번 회차에 회수한다.
+        """
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "98000.0", "user": "U1", "text": "<@U_BOT> 긴 스레드", "reply_count": 600},
+                    {"ts": "98500.0", "user": "U2", "text": "<@U_BOT> 다른 스레드", "reply_count": 1},
+                    {"ts": "99000.0", "user": "U3", "text": "<@U_BOT> 최상위 질문"},
+                ]
+            },
+            threads={
+                "98000.0": None,
+                "98500.0": [
+                    {"ts": "98500.0", "user": "U2", "text": "<@U_BOT> 다른 스레드"},
+                    {"ts": "98600.0", "user": "U2", "thread_ts": "98500.0", "text": "<@U_BOT> 아직 답 없나"},
+                ],
+            },
+        )
+        service = make_service(history)
+
+        report = service.sweep(["C1"], window=3600)
+
+        assert sorted(c.ts for c in report.missed) == ["98600.0", "99000.0"]
+        assert report.unchecked_channels == ["C1"]
+
+    def test_재시도에서도_못_읽은_스레드_밖의_부름은_회수한다(self) -> None:
+        history = FakeHistoryReader(history={"C1": None})
+        now = 100_000.0
+        service = make_service(history, now=now)
+        service.sweep(["C1"], window=3600)
+
+        history.history["C1"] = [
+            {"ts": "98000.0", "user": "U1", "text": "<@U_BOT> 긴 스레드", "reply_count": 600},
+            {"ts": "99000.0", "user": "U3", "text": "<@U_BOT> 최상위 질문"},
+        ]
+        history.threads["98000.0"] = None
+        service._now = lambda: now + 31  # type: ignore[attr-defined]
+
+        statuses = service.retry_pending()
+
+        assert len(statuses) == 1
+        assert [m.ts for m in statuses[0].missed] == ["99000.0"]
+        assert statuses[0].alert is False
+        assert statuses[0].cause == StuckCause.UNREADABLE_THREAD
+        assert statuses[0].unreadable_threads == 1
+        # 못 읽은 스레드가 남아 있으니 다음 회차에 다시 본다.
+        assert "C1" in service._pending  # type: ignore[attr-defined]
 
     def test_이미_답변_표식이_있으면_빠진다(self) -> None:
         history = FakeHistoryReader(
@@ -675,6 +751,33 @@ class TestRetryPending:
         assert len(statuses) == 1
         assert statuses[0].channel == "C1"
         assert [m.ts for m in statuses[0].missed] == ["800.0"]
+
+    def test_기록이_계속_비면_빈_기록을_사유로_남긴다(self) -> None:
+        """소유자 알림이 막힌 사유를 맞게 설명하려면 사유가 상태에 실려야 한다."""
+        history = FakeHistoryReader(history={"C1": None})
+        now = 1000.0
+        service = make_service(history, now=now)
+        service.sweep(["C1"], window=3600)
+        service._now = lambda: now + 31  # type: ignore[attr-defined]
+
+        statuses = service.retry_pending()
+
+        assert [(s.cause, s.unreadable_threads) for s in statuses] == [(StuckCause.EMPTY_HISTORY, 0)]
+
+    def test_신원을_모르면_신원_미확인을_사유로_남긴다(self) -> None:
+        class 조회실패:
+            def auth_test(self, **kwargs):
+                raise RuntimeError("슬랙에 못 닿는다")
+
+        history = FakeHistoryReader(history={"C1": []})
+        now = 1000.0
+        service = make_service(history, now=now, identity=SlackBotIdentity(조회실패()))
+        service.sweep(["C1"], window=3600)
+        service._now = lambda: now + 31  # type: ignore[attr-defined]
+
+        statuses = service.retry_pending()
+
+        assert [s.cause for s in statuses] == [StuckCause.UNKNOWN_IDENTITY]
 
 
 # health.py — SocketErrorWatch, HealthMonitor

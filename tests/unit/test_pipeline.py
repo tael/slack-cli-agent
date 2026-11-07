@@ -369,6 +369,7 @@ def build_pipeline(
     late_addendum: Any = None,
     origin_alive: Any = None,
     tool_post_merger: Any = None,
+    generated_images: Any = None,
     consumption: Any = None,
     watch_queue: Any = None,
     response_archive: Any = None,
@@ -418,6 +419,8 @@ def build_pipeline(
         extra_kwargs["origin_alive"] = origin_alive
     if tool_post_merger is not None:
         extra_kwargs["tool_post_merger"] = tool_post_merger
+    if generated_images is not None:
+        extra_kwargs["generated_images"] = generated_images
     if consumption is not None:
         extra_kwargs["consumption"] = consumption
     if watch_queue is not None:
@@ -1043,6 +1046,18 @@ class Test가드사건기록:
         pipeline.handle(make_ctx())
 
         assert not any(i["kind"] == IncidentKind.WRONG_ADDRESSEE for i in deps["audit"].incidents)
+
+    def test_요청이_부른_사람은_지우지도_기록하지도_않는다(self, tmp_path: Path) -> None:
+        """파이프라인이 요청 본문을 가드에 넘긴다 (B2)."""
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="<@UOTHER> 님 안녕하세요")],
+            guards=[AddresseeGuard()],
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(text="<@UOTHER> 님께 인사 전해 줘"))
+
+        assert not any(i["kind"] == IncidentKind.WRONG_ADDRESSEE for i in deps["audit"].incidents)
+        assert any("<@UOTHER>" in p["text"] for p in deps["publisher"].posted)
 
     def test_재작성이_앞_답보다_크게_짧으면_rewrite_loss로_기록된다(self, tmp_path: Path) -> None:
         long_first = "본문 " * 100
@@ -2622,6 +2637,9 @@ class _도구정책:
         self, principal: Any, *, prompt: str, skills_enabled: bool, asker_is_bot: bool = False
     ) -> tuple[str, ...]:
         return self._tools
+
+    def lookups_for(self, principal: Any, *, asker_is_bot: bool = False) -> tuple[str, ...]:
+        return ()
 
 
 class Test실행_보장_요구를_세운다:

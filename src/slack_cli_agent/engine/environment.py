@@ -157,6 +157,39 @@ class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
         }
 
 
+def _account_file_token(source_env: Mapping[str, str]) -> str | None:
+    """Re-read the Claude subscription token named by CLAUDE_ACCOUNT_FILE, per turn.
+
+    The launcher used to read the token once into CLAUDE_CODE_OAUTH_TOKEN, so
+    switching accounts (a bot account vs a personal one, e.g. when one hits its
+    usage limit) needed a restart. When CLAUDE_ACCOUNT_FILE names a file holding
+    an account name, the token is looked up as <dir>/<name> in each directory of
+    CLAUDE_TOKEN_DIRS (colon-separated) on every turn, so an external switcher
+    only rewrites that one file. Any miss keeps the launcher's token. The token
+    value is never logged.
+    """
+    account_file = source_env.get("CLAUDE_ACCOUNT_FILE")
+    token_dirs = source_env.get("CLAUDE_TOKEN_DIRS")
+    if not account_file or not token_dirs:
+        return None
+    try:
+        name = Path(account_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not name or "/" in name or name.startswith("."):
+        return None
+    for d in token_dirs.split(":"):
+        if not d:
+            continue
+        try:
+            token = (Path(d) / name).read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if token:
+            return token
+    return None
+
+
 class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
     """Claude's process environment — allowlist, same shape as Codex/Gemini.
 
@@ -220,6 +253,9 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         for key in self.ADDITIONAL_ALLOWED_VARS:
             if key in source_env:
                 env[key] = source_env[key]
+        account_token = _account_file_token(source_env)
+        if account_token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = account_token
         env.setdefault("MCP_TOOL_TIMEOUT", DEFAULT_MCP_TOOL_TIMEOUT_MS)
         env.update(NON_INTERACTIVE_ENV)
         return env

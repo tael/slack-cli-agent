@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from ..auth.tools import is_read_only_tool
@@ -32,6 +32,11 @@ class ToolSelection:
 
     access: ToolAccess = ToolAccess.UNRESTRICTED
     names: tuple[str, ...] = ()
+    #: Names the tool policy vouches are lookups on this turn (ToolPolicy.
+    #: lookups_for): the profile's readonly_tools on a non-owner or read-only
+    #: turn. Counted as reads by can_act and reads_only. Left out of equality:
+    #: it qualifies names, it is not another selection.
+    lookups: frozenset[str] = field(default=frozenset(), compare=False)
 
     def __post_init__(self) -> None:
         # frozen keeps the value from changing; it does not keep a caller from
@@ -53,10 +58,12 @@ class ToolSelection:
         return cls(access=ToolAccess.ALLOWLIST, names=tuple(names))
 
     @classmethod
-    def from_names(cls, names: Sequence[str]) -> ToolSelection:
+    def from_names(cls, names: Sequence[str], *, lookups: Sequence[str] = ()) -> ToolSelection:
         """What a tool policy produced. No names is not a ban -- only a caller
         that means "this turn has no tools" says forbid_all()."""
-        return cls.allow(names) if names else cls.unrestricted()
+        if not names:
+            return cls.unrestricted()
+        return cls(access=ToolAccess.ALLOWLIST, names=tuple(names), lookups=frozenset(lookups))
 
     @classmethod
     def forbid_all(cls) -> ToolSelection:
@@ -70,9 +77,9 @@ class ToolSelection:
     def can_act(self) -> bool:
         """Whether this turn may write/act, not just read.
 
-        A read-only turn's allowlist is a subset of READ_ONLY_TOOLS; any tool
-        beyond that -- Bash, Edit, Write, or an MCP write tool -- makes it an
-        action turn. UNRESTRICTED can act; FORBIDDEN cannot. The engines gate
+        A read-only turn's allowlist is a subset of READ_ONLY_TOOLS plus the
+        lookups the policy vouched for; any tool beyond that -- Bash, Edit,
+        Write, or an MCP write tool -- makes it an action turn. UNRESTRICTED can act; FORBIDDEN cannot. The engines gate
         an MCP server's per-turn write env on this (McpServerSpec.turn_env),
         mirroring mametchi's can_act -> WRITE_ENABLED gate (bot.py:2253): a
         write-capable server stays closed on a turn that only reads, as
@@ -82,4 +89,8 @@ class ToolSelection:
             return False
         if self.access is ToolAccess.UNRESTRICTED:
             return True
-        return any(not is_read_only_tool(name) for name in self.names)
+        return any(not self.reads(name) for name in self.names)
+
+    def reads(self, name: str) -> bool:
+        """Whether one name in this selection only reads."""
+        return is_read_only_tool(name) or name in self.lookups

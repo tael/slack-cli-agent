@@ -135,6 +135,8 @@ class Test묶음구성:
             "pending_report",
             "learning_batch",
             "stale_reclaim",
+            "welcome:retro",
+            "shadow:loop",
         }
 
     def test_정체_작업_회수는_주기로_돈다(self, app: Application) -> None:
@@ -242,6 +244,52 @@ class Test캐치업재시도:
         app.catchup_retry_runner(워커)._task()
         보낸것 = [kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"]
         assert any("C9" in str(kwargs) for kwargs in 보낸것), 보낸것
+
+    def test_빈_기록이_사유면_빈_목록이라고_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        from slack_cli_agent.reliability.catchup import RetryStatus, StuckCause
+
+        워커 = app.worker()
+        워커.retry_catchup = lambda: [  # type: ignore[method-assign]
+            RetryStatus(channel="C9", stuck_sec=7200.0, alert=True, cause=StuckCause.EMPTY_HISTORY)
+        ]
+        app.catchup_retry_runner(워커)._task()
+        본문 = str([kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"])
+        assert "빈 목록" in 본문
+        assert "스레드" not in 본문
+
+    def test_긴_스레드를_못_읽은_것이_사유면_그렇게_알린다(
+        self, app: Application, client: FakeSlackClient
+    ) -> None:
+        """사유가 다른데 "빈 목록" 이라고 알리면 소유자가 없는 슬랙 장애를 찾는다 (PR #124 검토)."""
+        from slack_cli_agent.reliability.catchup import RetryStatus, StuckCause
+
+        워커 = app.worker()
+        워커.retry_catchup = lambda: [  # type: ignore[method-assign]
+            RetryStatus(
+                channel="C9",
+                stuck_sec=7200.0,
+                alert=True,
+                cause=StuckCause.UNREADABLE_THREAD,
+                unreadable_threads=2,
+            )
+        ]
+        app.catchup_retry_runner(워커)._task()
+        본문 = str([kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"])
+        assert "C9" in 본문
+        assert "긴 스레드 2개를 끝까지 읽지 못했습니다" in 본문
+        assert "빈 목록" not in 본문
+
+    def test_신원을_모르는_것이_사유면_그렇게_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        from slack_cli_agent.reliability.catchup import RetryStatus, StuckCause
+
+        워커 = app.worker()
+        워커.retry_catchup = lambda: [  # type: ignore[method-assign]
+            RetryStatus(channel="C9", stuck_sec=7200.0, alert=True, cause=StuckCause.UNKNOWN_IDENTITY)
+        ]
+        app.catchup_retry_runner(워커)._task()
+        본문 = str([kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"])
+        assert "사용자 정보를 확인하지 못해" in 본문
+        assert "빈 목록" not in 본문
 
     def test_막히지_않았으면_안_알린다(self, app: Application, client: FakeSlackClient) -> None:
         from slack_cli_agent.reliability.catchup import RetryStatus
