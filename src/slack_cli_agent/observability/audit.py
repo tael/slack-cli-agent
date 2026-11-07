@@ -137,6 +137,11 @@ class IncidentKind(StrEnum):
     #: `files` names them; the _FAILED kind carries `error` instead.
     GENERATED_IMAGE_AUTOPOST = "generated_image_autopost"
     GENERATED_IMAGE_AUTOPOST_FAILED = "generated_image_autopost_failed"
+    #: A registered `"join": true` channel the bot joined at start (G3,
+    #: mametchi channel_join). Routine, so baseline; the _FAILED kind carries
+    #: `error` and counts as an incident.
+    CHANNEL_JOIN = "channel_join"
+    CHANNEL_JOIN_FAILED = "channel_join_failed"
 
     def __str__(self) -> str:
         return self.value
@@ -168,6 +173,7 @@ BASELINE_KINDS: tuple[IncidentKind, ...] = (
     # A refused attempt the bot answered by calling the owner, not a fault.
     IncidentKind.UNREGISTERED_MENTION,
     IncidentKind.UNREGISTERED_INVITE,
+    IncidentKind.CHANNEL_JOIN,
 )
 #: Read by metrics.py as well -- a kind that is baseline here must not be
 #: tallied as an incident there.

@@ -126,6 +126,7 @@ from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
 from ..reliability.outage import NetworkOutageEscalation, OutageTracker
 from ..reliability.pending_report import PendingReportStore, assemble_recovery_report
+from ..reliability.channel_join import join_registered_channels
 from ..reliability.restart import ApplyRequestWatch
 from ..reliability.startup import StartupCatchup
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
@@ -2225,6 +2226,17 @@ class Application:
             name="startup_catchup",
         )
 
+    def channel_join_runner(self) -> PeriodicRunner:
+        """Joins the `"join": true` channels once at start (G3). Pinned to
+        the ingress, which runs once, so several workers don't each call
+        conversations.join. The interval only spaces the one pass from the
+        no-op ticks after it."""
+        once = StartupCatchup(
+            lambda: join_registered_channels(self._client, self._channels, audit=self.audit().record),
+            passes=1,
+        )
+        return PeriodicRunner(once.tick, 3600.0, name="channel_join")
+
     def _startup_catchup_tick(self, worker: Worker) -> None:
         report = worker.catch_up(self.channel_ids())
         log.info("기동 캐치업: 다시 처리한 요청 %d건", len(report.missed))
@@ -2361,6 +2373,7 @@ class Application:
                 self.attachment_cleanup_runner(),
                 self.pending_report_runner(),
                 self.stale_review_runner(),
+                self.channel_join_runner(),
                 *self.plugin_job_runners("ingress"),
             ],
             name="ingress",
