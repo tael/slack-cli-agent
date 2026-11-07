@@ -118,7 +118,11 @@ def test_위임_판정에_요청_메시지_ts_가_넘어가고_엔진_요청에_
             return Principal(user_id=user, channel=channel, trust=TrustLevel.GENERAL,
                              is_direct_message=False, is_controller=True, delegated=True)
 
-    policy = ToolPolicy(base_tools=("Read",), owner_tools=("Write", "mcp__jira__*"))
+    policy = ToolPolicy(
+        base_tools=("Read",), owner_tools=("Write", "mcp__jira__*"),
+        operator_level=lambda p, is_bot=False: "operator" if p.delegated else "",
+        operator_tools=("Write", "mcp__jira__create_issue"),
+    )
     pipeline, parts = build_pipeline(responses=[ok_response()], tool_policy=policy)
     pipeline._access = Delegating()
 
@@ -129,7 +133,7 @@ def test_위임_판정에_요청_메시지_ts_가_넘어가고_엔진_요청에_
     assert call.delegated is True
     assert call.trust_level is TrustLevel.GENERAL
     # Write 는 operator_full 채널에서만 열린다
-    assert call.tools.names == ("Read", "mcp__jira__*")
+    assert call.tools.names == ("Read", "mcp__jira__create_issue")
 
 
 def test_위임_턴은_봇_화자이자_operator_로_지침을_조립한다() -> None:

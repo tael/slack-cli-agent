@@ -260,6 +260,25 @@ the reader, not stored) already excludes.
 """
 
 
+V12_SHADOW_SQL = """
+CREATE TABLE shadow_seen (
+  source  TEXT PRIMARY KEY,
+  last_ts TEXT NOT NULL
+);
+CREATE TABLE shadow_items (
+  source     TEXT NOT NULL,
+  ts         TEXT NOT NULL,
+  payload    TEXT NOT NULL,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY (source, ts)
+);
+"""
+"""Shadow evaluation (G4, bot.py shadow_qa.json): how far each source
+channel was read, and one row per mirrored question with its link post,
+blind answer and verdict. A file rewritten whole by parallel answer threads
+lost rows; a row per question does not."""
+
+
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
@@ -272,6 +291,7 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (9, "관리 명령 점유 원장 추가", _statements(V9_ADMIN_CLAIMS_SQL)),
     (10, "감시 작업에 기한 추가", _statements(V10_WATCH_JOB_DUE_AT_SQL)),
     (11, "답 대기 중인 스레드 표시 추가", _statements(V11_AWAITING_REPLY_SQL)),
+    (12, "그림자 평가 상태 추가", _statements(V12_SHADOW_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

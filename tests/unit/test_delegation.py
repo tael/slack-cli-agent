@@ -18,7 +18,9 @@ CTRL = "U_CTRL"
 ME = "U_ME"
 NOW = 1_800_000_000.0
 BASE = ("Read", "Grep", "Glob")
-OWNER_TOOLS = ("Write", "Edit", "Bash", "NotebookEdit", "WebFetch", "mcp__jira__*")
+OWNER_TOOLS = ("Write", "Edit", "Bash", "NotebookEdit", "WebFetch", "mcp__jira__*", "mcp__gmail__*")
+# 위임 턴은 소유자 도구가 아니라 채널 operator 와 같은 프로필 operator_tools 를 받는다 (A9)
+OPERATOR_GRANT = ("Write", "Edit", "Bash", "NotebookEdit", "WebFetch", "mcp__jira__create_issue")
 
 PROFILE = {
     "name": "guchi",
@@ -54,7 +56,7 @@ def policy(tmp_path: Path, rows: object | None, channels: dict | None = None) ->
 
 def tools(pol: AccessPolicy) -> ToolPolicy:
     return ToolPolicy(BASE, OWNER_TOOLS, channel_tools=pol.channel_tools_for,
-                      operator_full=pol.operator_full_for)
+                      operator_level=pol.operator_level, operator_tools=OPERATOR_GRANT)
 
 
 class TestLedger:
@@ -108,13 +110,14 @@ class TestControllerPrincipal:
         assert p.trust is TrustLevel.GENERAL
         assert p.is_controller and not p.delegated
         assert pol.accepts_request(pol.principal_for("C_UNREG", CTRL, "2.0"))
-        assert tools(pol).tool_list_for(p) == BASE
+        assert tools(pol).tool_list_for(p, asker_is_bot=True) == BASE
+        assert pol.operator_level(p, is_bot=True) == ""
 
     def test_원장에_ts_가_없으면_GENERAL_조회_도구다(self, tmp_path: Path) -> None:
         pol = policy(tmp_path, [row(message_ts="9.9")])
         p = pol.principal_for("C1", CTRL, "2.0")
         assert p.trust is TrustLevel.GENERAL and not p.delegated
-        assert tools(pol).tool_list_for(p) == BASE
+        assert tools(pol).tool_list_for(p, asker_is_bot=True) == BASE
 
     def test_원장에_있고_TTL_안이면_위임_도구를_받는다(self, tmp_path: Path) -> None:
         pol = policy(tmp_path, [row()])
@@ -124,14 +127,18 @@ class TestControllerPrincipal:
         assert p.trust is TrustLevel.GENERAL
         assert pol.is_full_authority(pol.principal_for("D1", CTRL, "2.0")) is False
         assert pol.model_for(p) == "s"
-        got = tools(pol).tool_list_for(p)
-        assert "WebFetch" in got and "mcp__jira__*" in got
+        got = tools(pol).tool_list_for(p, asker_is_bot=True)
+        assert "WebFetch" in got and "mcp__jira__create_issue" in got
+        # 소유자 서버 와일드카드(메일, 지라 전체)는 위임 턴에도 가지 않는다
+        assert "mcp__jira__*" not in got and "mcp__gmail__*" not in got
         # 맨 실행 도구는 operator_full 채널에서만 열린다
         assert not {"Bash", "Edit", "Write", "NotebookEdit"} & set(got)
+        # 봇이어도 원장이 보증한 메시지는 실행 턴이다
+        assert tools(pol).lookups_for(p, asker_is_bot=True) == ()
 
     def test_operator_full_채널의_위임은_맨_실행_도구까지_받는다(self, tmp_path: Path) -> None:
         pol = policy(tmp_path, [row()], {"C1": {"operator_full": True}})
-        got = tools(pol).tool_list_for(pol.principal_for("C1", CTRL, "2.0"))
+        got = tools(pol).tool_list_for(pol.principal_for("C1", CTRL, "2.0"), asker_is_bot=True)
         assert {"Bash", "Edit", "Write"} <= set(got)
 
     def test_controller_가_아닌_사람은_원장에_있어도_위임이_아니다(self, tmp_path: Path) -> None:

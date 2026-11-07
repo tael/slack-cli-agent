@@ -23,6 +23,21 @@
   "usage_check_command": [],
   "settings": {
     "request_timeout_sec": 900,
-    "max_concurrent": 10
+    "max_concurrent": 10,
+    "readonly_tools": [
+      "WebFetch",
+      "WebSearch",
+      "mcp__snowflake__run_snowflake_query",
+      "mcp__metabase__execute_query",
+      "mcp__metabase__get_card",
+      "mcp__jira__jira_search",
+      "mcp__jira__jira_get_issue",
+      "mcp__slack__slack_search",
+      "mcp__slack__slack_thread_replies",
+      "mcp__notion__notion-search",
+      "mcp__notion__notion-fetch",
+      "Bash(~/slack-cli-agent/wrappers/git_read.sh:*)",
+      "Bash(~/slack-cli-agent/wrappers/gh_read.sh:*)"
+    ]
   }
 }

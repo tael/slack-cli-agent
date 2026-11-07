@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -388,7 +388,7 @@ class AskerSection(PromptSection):
     exchange needs to avoid waking the other bot on every sentence.
     """
 
-    def __init__(self, peer_bot_ids: Sequence[str] = ()) -> None:
+    def __init__(self, peer_bot_ids: Iterable[str] = ()) -> None:
         # Sibling bots the owner may tell this bot to talk to (profile
         # controller_user_ids). bot.py:2069-2077 names the peer in the owner note.
         self._peer_bot_ids = tuple(sorted(peer_bot_ids))
@@ -627,9 +627,27 @@ class AttachmentSection(PromptSection):
 
     def render(self, ctx: CompositionContext) -> str:
         lines = ["", "", "이 말에 파일이 붙어 있다."]
+        heard = False
+        others = False
         for f in ctx.files:
             lines.append(f"- {f.get('name')} ({f.get('mimetype')}) : {f.get('local_path')}")
-        if ctx.files:
+            # 음성은 첨부 저장 단계에서 받아썼다(G6, bot.py:6864-6882 이식).
+            if f.get("transcript"):
+                lines.append(f"  - 받아쓴 말 : {f['transcript']}")
+                heard = True
+            elif f.get("transcript_error"):
+                lines.append(f"  - 받아쓰기 실패 : {f['transcript_error']}")
+                heard = True
+            else:
+                others = True
+        if heard:
+            lines.append(
+                "음성 클립은 말을 건 사람이 소리로 한 말이다. "
+                "받아쓴 말을 그 사람의 요청으로 보고 답한다. 음성 파일은 열지 않는다. "
+                "답 첫 줄에 '> 들은 말 : <받아쓴 말>' 한 줄을 둔다. "
+                "받아쓰기에 실패했으면 실패 사유를 그대로 적고 내용을 짐작하지 않는다."
+            )
+        if others:
             lines.append(
                 "그 경로를 열어 내용을 직접 보고 답한다. 열어 보지 않고 이름만으로 짐작하지 않는다."
             )

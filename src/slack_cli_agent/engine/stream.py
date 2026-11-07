@@ -47,6 +47,9 @@ def run_streaming(
     process = subprocess.Popen(
         cmd,
         cwd=cwd,
+        # Engine CLIs read stdin before the prompt argument; an inherited open
+        # stdin never gives EOF and the call hangs until timeout (H67).
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

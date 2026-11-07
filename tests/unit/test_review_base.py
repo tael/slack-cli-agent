@@ -46,7 +46,7 @@ class FakeAnswerFinder:
     def __init__(self, record: Mapping[str, Any] | None = None) -> None:
         self._record = record
 
-    def find(self, channel: str, thread_ts: str, text: str) -> Mapping[str, Any] | None:
+    def find(self, channel: str, thread_ts: str, text: str, msg_ts: str | None = None) -> Mapping[str, Any] | None:
         return self._record
 
 
@@ -178,8 +178,9 @@ _MISSING = object()
 
 
 def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, progress=None,
-             audit=None, owner_only_channels=frozenset({"TS"}), slow_reporter=None) -> Rig:
-    ledger = ReviewLedger(database)
+             audit=None, owner_only_channels=frozenset({"TS"}), slow_reporter=None,
+             slots=None, slot_wait_sec=None, now=None) -> Rig:
+    ledger = ReviewLedger(database, now)
     reactions = FakeReactions()
     publisher = FakePublisher()
     engine = FakeEngine(engine_responses or [_ok_response("요약===상세===상세내용")])
@@ -201,6 +202,8 @@ def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, prog
         progress=progress,
         audit=audit,
         slow_reporter=slow_reporter,
+        slots=slots,
+        slot_wait_sec=slot_wait_sec,
     )
     return Rig(ledger, reactions, publisher, engine, message_lookup, task, audit)
 
@@ -211,6 +214,119 @@ class Test중복실행방지:
         rig.ledger.complete("fake_kind", "C1", "1.1", by="U1")
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
         assert rig.engine.calls == []
+
+
+class FakeSlots:
+    """상한 대역. 잡은 수와 acquire 호출을 센다."""
+
+    def __init__(self, size: int) -> None:
+        self.free = size
+        self.acquired: list[float | None] = []
+        self.released = 0
+
+    def acquire(self, timeout: float | None = None) -> object | None:
+        self.acquired.append(timeout)
+        if self.free <= 0:
+            return None
+        self.free -= 1
+        return object()
+
+    def release(self, token: object) -> None:
+        self.released += 1
+        self.free += 1
+
+
+_대상 = ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True)
+
+
+class Test동시_실행_상한:
+    """원본은 키를 잡은 뒤에만 `_slots` 를 기다렸다 (bot.py:8993-8996).
+    거절되거나 이미 한 리액션은 자리를 기다리지도 잡지도 않는다 (A16)."""
+
+    def test_이미_한_대상은_자리를_기다리지_않는다(self, database) -> None:
+        slots = FakeSlots(0)
+        rig = make_rig(database, slots=slots, slot_wait_sec=900)
+        rig.ledger.complete("fake_kind", "C1", "1.1", by="U1")
+        rig.task.run(_대상)
+        assert slots.acquired == []
+
+    def test_진행_중인_대상의_반복_리액션도_자리를_기다리지_않는다(self, database) -> None:
+        slots = FakeSlots(0)
+        rig = make_rig(database, slots=slots, slot_wait_sec=900)
+        rig.ledger.begin("fake_kind", "C1", "1.1", by="U1")
+        rig.task.run(_대상)
+        assert slots.acquired == []
+
+    def test_꺼진_점검은_자리를_기다리지_않는다(self, database) -> None:
+        slots = FakeSlots(0)
+        rig = make_rig(database, slots=slots, owner_only_channels=frozenset())
+        rig.task.run(_대상)
+        assert slots.acquired == []
+
+    def test_자리가_안_나면_원장을_되돌리고_기록한다(self, database, caplog) -> None:
+        slots = FakeSlots(0)
+        rig = make_rig(database, slots=slots, slot_wait_sec=7)
+        with caplog.at_level(logging.WARNING):
+            rig.task.run(_대상)
+        assert slots.acquired == [7]
+        assert rig.engine.calls == []
+        assert rig.ledger.find("fake_kind", "C1", "1.1") is None
+        assert "점검을 시작할 자리가 없다" in caplog.text
+
+    def test_점검이_끝나면_자리를_돌려준다(self, database) -> None:
+        slots = FakeSlots(1)
+        rig = make_rig(database, slots=slots)
+        rig.task.run(_대상)
+        assert len(rig.engine.calls) == 1
+        assert (slots.free, slots.released) == (1, 1)
+
+    def test_점검이_실패해도_자리를_돌려준다(self, database) -> None:
+        class BrokenMessageLookup:
+            def find(self, channel: str, ts: str) -> Mapping[str, Any] | None:
+                raise RuntimeError("조회 중단")
+
+        slots = FakeSlots(1)
+        rig = make_rig(database, slots=slots)
+        rig.task._message_lookup = BrokenMessageLookup()
+        rig.task.run(_대상)
+        assert (slots.free, slots.released) == (1, 1)
+
+    def test_자리를_오래_기다려도_실행_중에는_진행_중으로_남는다(self, database) -> None:
+        """원장의 기준 시간은 실행 시간만 감안한다. 대기 시간이 실행 예산을 쓰면
+        긴 점검 도중 반복 리액션이 두 번째 점검을 실행한다."""
+        clock = [0.0]
+
+        class WaitingSlots(FakeSlots):
+            def acquire(self, timeout: float | None = None) -> object | None:
+                clock[0] += 900
+                return super().acquire(timeout)
+
+        rig = make_rig(database, slots=WaitingSlots(1), slot_wait_sec=900,
+                       now=lambda: clock[0])
+        seen: list[bool] = []
+        inner = rig.engine.run
+
+        def slow_run(*args: Any, **kwargs: Any) -> EngineResponse:
+            clock[0] += 1000
+            seen.append(rig.ledger.is_reviewed("fake_kind", "C1", "1.1"))
+            return inner(*args, **kwargs)
+
+        rig.engine.run = slow_run  # type: ignore[method-assign]
+        rig.task.run(_대상)
+        assert seen == [True]
+
+    def test_자리_잡기가_예외를_내도_원장을_되돌리고_알린다(self, database) -> None:
+        class BrokenSlots(FakeSlots):
+            def acquire(self, timeout: float | None = None) -> object | None:
+                raise OSError("슬롯 디렉터리 쓰기 실패")
+
+        slots = BrokenSlots(1)
+        rig = make_rig(database, slots=slots, slot_wait_sec=7)
+        rig.task.run(_대상)
+        assert rig.engine.calls == []
+        assert rig.ledger.find("fake_kind", "C1", "1.1") is None
+        assert any("슬롯 디렉터리 쓰기 실패" in str(p) for p in rig.publisher.posts)
+        assert slots.released == 0
 
 
 class Test정상흐름:
@@ -647,3 +763,152 @@ class Test점검_기록의_모델_칸:
 
         [(_, fields)] = rig.audit.rows
         assert "model_actual" not in fields
+
+
+class 내용점검Task(FakeReviewTask):
+    """상세에 '끊김' 이 들어 있으면 문제 하나로 본다."""
+
+    def content_problems(self, detail: str) -> list[str]:
+        return [f"끊김 {detail.count('끊김')}건"] * min(detail.count("끊김"), 2)
+
+    def content_retry_prompt(self, problems: list[str]) -> str:
+        return "사슬을 이어 다시 써라 : " + "; ".join(problems)
+
+
+def _내용점검_rig(database, 응답들) -> Rig:
+    rig = make_rig(database, engine_responses=응답들)
+    rig.task.__class__ = 내용점검Task
+    return rig
+
+
+class Test내용점검과_1회_재작성:
+    """B8 — 5 Why 처럼 기계로 가릴 수 있는 결함은 한 번 다시 쓰게 하고,
+    그래도 남으면 경고 머리말과 감사 기록을 붙여 올린다."""
+
+    def test_통과하면_재작성하지_않는다(self, database) -> None:
+        rig = _내용점검_rig(database, [_ok_response("요약===상세===이어짐")])
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert len(rig.engine.calls) == 1
+        assert "점검을 통과하지 못했습니다" not in rig.publisher.posts[0][2]
+
+    def test_끊긴_상세는_같은_세션으로_1회_다시_쓰게_한다(self, database) -> None:
+        rig = _내용점검_rig(
+            database, [_ok_response("요약===상세===끊김"), _ok_response("새요약===상세===이어짐")]
+        )
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        prompt, session, resume = rig.engine.calls[1]
+        assert prompt == "사슬을 이어 다시 써라 : 끊김 1건"
+        assert (session, resume) == ("s1", True)
+        assert len(rig.engine.calls) == 2
+        summary_post, detail_post = rig.publisher.posts
+        assert "새요약" in summary_post[2]
+        assert "점검을 통과하지 못했습니다" not in summary_post[2]
+        assert detail_post[2] == "이어짐"
+        assert [f["attempt"] for k, f in rig.audit.rows if k == "review"] == ["main", "content_retry"]
+
+    def test_다시_써도_남으면_경고_머리말과_감사_기록을_남긴다(self, database) -> None:
+        rig = _내용점검_rig(
+            database, [_ok_response("요약===상세===끊김"), _ok_response("요약2===상세===끊김")]
+        )
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert len(rig.engine.calls) == 2
+        head = rig.publisher.posts[0][2]
+        assert "점검을 통과하지 못했습니다.\n- 끊김 1건" in head
+        # 나아지지 않은 재작성은 쓰지 않는다.
+        assert "요약2" not in head
+        [(_, fields)] = [(k, f) for k, f in rig.audit.rows if k == "review_check_failed"]
+        assert fields["review_kind"] == "fake_kind"
+        assert fields["problems"] == ["끊김 1건"]
+        assert recorded(rig.ledger, "fake_kind", "C1", "1.1").status == "완료"
+
+    def test_재작성이_더_나빠지면_원래_것을_올린다(self, database) -> None:
+        rig = _내용점검_rig(
+            database, [_ok_response("원요약===상세===끊김"), _ok_response("요약2===상세===끊김끊김")]
+        )
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert "원요약" in rig.publisher.posts[0][2]
+        assert rig.publisher.posts[1][2] == "끊김"
+
+    def test_세션_ID_가_없으면_재작성_없이_경고만_붙인다(self, database) -> None:
+        rig = _내용점검_rig(
+            database,
+            [EngineResponse(ok=True, body="요약===상세===끊김", session_id=None,
+                            model_actual=None, elapsed=1.0, turns=1, usage=None)],
+        )
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert len(rig.engine.calls) == 1
+        assert "점검을 통과하지 못했습니다" in rig.publisher.posts[0][2]
+
+
+_끊긴_5Why = (
+    "## 5 Why\n| 단계 | 물음 | 답 | 근거 |\n|---|---|---|---|\n"
+    "| Why 1 | 왜 답변이 틀렸나 | 답변이 틀렸다 | 대화록 |\n"
+    "| Why 2 | 왜 날씨가 흐렸나 | 구름이 많았다 | 미확인 |\n"
+    "| Why 3 | 왜 구름이 많았나 | 습도가 높았다 | 미확인 |\n\n## 근본원인\n알 수 없다.\n"
+)
+
+
+class 부검점검Task(FakeReviewTask):
+    """부검과 같은 점검 규칙을 쓴다. 절을 지운 재작성본은 받지 않는다."""
+
+    def content_problems(self, detail: str) -> list[str]:
+        from slack_cli_agent.review.five_why import check_five_why
+
+        return check_five_why(detail)
+
+    def rewrite_rejected(self, rewrite: str, original: str) -> bool:
+        from slack_cli_agent.review.five_why import five_why_dropped
+
+        return five_why_dropped(rewrite, original)
+
+    def content_retry_prompt(self, problems: list[str]) -> str:
+        return "다시 써라"
+
+
+class Test재작성본이_5Why_절을_지우는_경우:
+    """B8 보완 — 재작성본이 `## 5 Why` 절을 지우거나 제목을 바꾸면 문제 수가
+    줄어도 받지 않는다. 원본과 원본의 문제 목록으로 경고와 감사를 남긴다."""
+
+    def _run(self, database, 재작성_상세: str) -> Rig:
+        rig = make_rig(
+            database,
+            engine_responses=[
+                _ok_response("원요약===상세===" + _끊긴_5Why),
+                _ok_response("새요약===상세===" + 재작성_상세),
+            ],
+        )
+        rig.task.__class__ = 부검점검Task
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        return rig
+
+    def _원본을_올렸는지_본다(self, rig: Rig) -> None:
+        from slack_cli_agent.review.five_why import check_five_why
+
+        원본_문제 = check_five_why(_끊긴_5Why)
+        # 재작성본의 문제 1건보다 많아야 '문제 수가 줄었다' 는 조건이 성립한다.
+        assert len(원본_문제) >= 2
+        summary_post, detail_post = rig.publisher.posts
+        assert "원요약" in summary_post[2]
+        assert "새요약" not in summary_post[2]
+        assert detail_post[2] == _끊긴_5Why.strip()
+        assert "점검을 통과하지 못했습니다" in summary_post[2]
+        assert "절이 없다" not in summary_post[2]
+        failed = [f for k, f in rig.audit.rows if k == "review_check_failed"]
+        assert [f["problems"] for f in failed] == [원본_문제]
+
+    def test_절을_지우면_원본을_올린다(self, database) -> None:
+        self._원본을_올렸는지_본다(self._run(database, "## 근본원인\n알 수 없다.\n"))
+
+    def test_절_제목을_바꾸면_원본을_올린다(self, database) -> None:
+        self._원본을_올렸는지_본다(
+            self._run(database, _끊긴_5Why.replace("## 5 Why\n", "## 5 Why 분석\n", 1))
+        )
+
+    def test_제목만_남기고_표를_지우면_원본을_올린다(self, database) -> None:
+        self._원본을_올렸는지_본다(
+            self._run(database, "## 5 Why\n원인을 특정하지 못했다.\n\n## 근본원인\n알 수 없다.\n")
+        )
+
+    def test_Why_행을_줄이면_원본을_올린다(self, database) -> None:
+        두_행 = _끊긴_5Why.replace("| Why 3 | 왜 구름이 많았나 | 습도가 높았다 | 미확인 |\n", "")
+        self._원본을_올렸는지_본다(self._run(database, 두_행))

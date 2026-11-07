@@ -121,14 +121,18 @@ class TestAddresseeGuard:
         assert result.changed is False
         assert result.body == body
 
-    def test_wrong_target_is_stripped_and_disclosed(self) -> None:
-        """지운 것을 조용히 넘기지 않는다 — 본문에 무엇을 지웠는지 남긴다."""
+    def test_wrong_target_is_stripped_without_notice(self) -> None:
+        """지운 사실은 감사 기록(detail)에만 남기고 본문에 안내문을 붙이지 않는다 (B2).
+
+        마메치 guard_wrong_addressee 는 안내문 없이 지운다 (bot.py:5581).
+        """
         guard = AddresseeGuard()
         ctx = GuardContext(asker_id="U123", is_owner=False, owner_user_id="UOWNER")
         result = guard.apply("<@U999> 님 확인했습니다", ctx)
         assert result.changed is True
         assert result.detail["wrong_target"] == "U999"
-        assert result.body == "확인했습니다\n\n(다른 분을 부르는 첫머리를 지웠습니다.)"
+        assert result.body == "확인했습니다"
+        assert "첫머리를 지웠습니다" not in result.body
 
     def test_owner_calling_owner_id_is_untouched(self) -> None:
         """소유자가 자기 자신을 부르는 것은 예외로 허용된다."""
@@ -138,6 +142,63 @@ class TestAddresseeGuard:
         result = guard.apply(body, ctx)
         assert result.changed is False
         assert result.body == body
+
+    def test_peer_bot_at_head_is_kept(self) -> None:
+        """짝 봇(controller) 판정을 받은 대상은 부를 수 있다. 조회 실패 시에도 짝 봇을
+        봇으로 치는 판정은 조립(Application._is_bot_or_peer)이 넘긴다."""
+        guard = AddresseeGuard(is_bot=lambda uid: uid == "UPEER")
+        ctx = GuardContext(asker_id="U123", owner_user_id="UOWNER")
+        body = "<@UPEER> 이 건 같이 봐 주세요"
+        result = guard.apply(body, ctx)
+        assert result.changed is False
+        assert result.body == body
+
+    def test_any_bot_account_at_head_is_kept(self) -> None:
+        guard = AddresseeGuard(is_bot=lambda uid: uid == "UBOT")
+        ctx = GuardContext(asker_id="U123", owner_user_id="UOWNER")
+        body = "<@UBOT> 안부 전합니다"
+        result = guard.apply(body, ctx)
+        assert result.changed is False
+        assert result.body == body
+
+    def test_bot_lookup_error_is_treated_as_person(self) -> None:
+        def broken(_uid: str) -> bool:
+            raise RuntimeError("users_info 실패")
+
+        guard = AddresseeGuard(is_bot=broken)
+        ctx = GuardContext(asker_id="U123", owner_user_id="UOWNER")
+        result = guard.apply("<@U999> 확인했습니다", ctx)
+        assert result.changed is True
+        assert result.body == "확인했습니다"
+
+    def test_person_mentioned_in_request_is_kept(self) -> None:
+        """"A님 B님이랑 인사해" 처럼 요청이 직접 부른 사람은 부를 수 있다 (2026-10-15)."""
+        guard = AddresseeGuard(is_bot=lambda _uid: False)
+        ctx = GuardContext(
+            asker_id="U123", owner_user_id="UOWNER",
+            request_text="새로 오신 <@UA> 님 <@UB|비> 님이랑 인사해",
+        )
+        for target in ("UA", "UB"):
+            body = f"<@{target}> 님 반갑습니다"
+            result = guard.apply(body, ctx)
+            assert result.changed is False, target
+            assert result.body == body
+
+    def test_mention_inside_request_code_span_does_not_count(self) -> None:
+        """코드 예시 안의 멘션은 요청이 부른 것이 아니다. 예외 범위를 넓히지 않는다."""
+        guard = AddresseeGuard(is_bot=lambda _uid: False)
+        ctx = GuardContext(asker_id="U123", owner_user_id="UOWNER", request_text="이 형식 `<@UA>` 맞아?")
+        result = guard.apply("<@UA> 님 맞습니다", ctx)
+        assert result.changed is True
+        assert result.body == "맞습니다"
+
+    def test_unrelated_person_is_still_stripped_with_request_mentions(self) -> None:
+        guard = AddresseeGuard(is_bot=lambda uid: uid == "UPEER")
+        ctx = GuardContext(asker_id="U123", owner_user_id="UOWNER", request_text="<@UA> 한테 전해줘")
+        result = guard.apply("<@UZ> 님 확인했습니다", ctx)
+        assert result.changed is True
+        assert result.detail["wrong_target"] == "UZ"
+        assert result.body == "확인했습니다"
 
     def test_no_leading_mention_is_untouched(self) -> None:
         guard = AddresseeGuard()
@@ -200,6 +261,35 @@ class TestWatchPromiseGuard:
         assert result.body == "확인했습니다."
         assert result.detail["watch_desc"] == "dag_id=foo run_id=bar"
         assert result.rerun is None
+
+    def test_watch_needing_action_requests_rerun(self) -> None:
+        """2026-11-07 17:23 : 읽기 전용 확인 턴이 할 수 없는 ps, 테스트 요청을 감시에 넣었다."""
+        guard = WatchPromiseGuard()
+        body = (
+            "재기동 예약했습니다.\n\n[[WATCH: 재기동 뒤 ps 로 worker PID 교체를 확인하고 "
+            "실제 요청을 보내 상태줄이 뜨는지 확인]]"
+        )
+        result = guard.apply(body, GuardContext())
+        assert result.rerun is not None
+        assert result.rerun.reason == "watch_needs_action"
+        assert "watch_desc" not in result.detail
+
+    def test_watch_needing_action_registers_after_retry(self) -> None:
+        guard = WatchPromiseGuard()
+        body = "답.\n\n[[WATCH: [테스트] 요청으로 상태줄 확인]]"
+        result = guard.apply(body, GuardContext(is_rewrite_retry=True))
+        assert result.rerun is None
+        assert result.detail["watch_desc"] == "[테스트] 요청으로 상태줄 확인"
+
+    def test_readable_evidence_watch_is_registered(self) -> None:
+        guard = WatchPromiseGuard()
+        body = (
+            "답.\n\n[[WATCH: worker.pid 가 17:23 이후 값인지와 worker.err.log 에 "
+            "'에이전트 상태 설정 : status=processing' 이 찍혔는지 확인]]"
+        )
+        result = guard.apply(body, GuardContext())
+        assert result.rerun is None
+        assert result.detail["watch_desc"].startswith("worker.pid")
 
     def test_plain_answer_is_untouched(self) -> None:
         guard = WatchPromiseGuard()

@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import replace
 from typing import Any, ClassVar
@@ -109,6 +109,9 @@ class IngressService:
         # None means this caller has no shutdown flag to read, so no restart
         # notice goes out. The request is queued either way.
         is_shutting_down: Callable[[], bool] | None = None,
+        # Plugin event hooks (G1), registered after the core handlers so a
+        # plugin sees an event only once the core has taken it.
+        extra_handlers: Sequence[tuple[str, Callable[[Mapping[str, Any]], None]]] = (),
     ) -> None:
         self._listener = listener
         self._access = access
@@ -131,6 +134,7 @@ class IngressService:
         self._clock = time.monotonic
         self._assistant = assistant
         self._is_shutting_down = is_shutting_down
+        self._extra_handlers = tuple(extra_handlers)
 
     def register(self, gateway: SlackGateway) -> None:
         gateway.on("app_mention", self.handle_app_mention)
@@ -138,6 +142,8 @@ class IngressService:
         gateway.on("reaction_added", self.handle_reaction)
         if self._assistant is not None:
             gateway.on("assistant_thread_started", self.handle_assistant_thread_started)
+        for event_type, handler in self._extra_handlers:
+            gateway.on(event_type, handler)
 
     def handle_app_mention(self, event: Mapping[str, Any]) -> None:
         self._process(self._listener.from_app_mention(event), event, mentioned=True)
@@ -200,10 +206,10 @@ class IngressService:
 
             ctx = replace(ctx, text=self._strip_self_mention(ctx.text))
 
-            # bot.py:4973. Asked back instead of queued, so a mention with no
-            # request in it never costs an engine turn (sca-yb8q). Attachments
-            # do not count: the original checks the text before it saves them
-            # (bot.py:5075), so a file with no words is asked back too.
+            # bot.py:7705. Asked back instead of queued, so a mention with no
+            # request in it never costs an engine turn (sca-yb8q). A message
+            # with attachments is queued even with no words, as in the
+            # original since 2026-10-22 (voice memos, G6).
             if ctx.has_no_request:
                 self._reply(
                     ctx.channel, ctx.thread_ts, self._notices.render(NoticeKey.ASK_WHAT)

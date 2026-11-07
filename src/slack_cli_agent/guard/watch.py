@@ -85,14 +85,81 @@ def same_watch_target(a: str, b: str) -> bool:
         return False
     return len(ka & kb) / len(ka | kb) >= 0.5
 
+
+def distinct_watch_targets(a: str, b: str) -> bool:
+    """Whether two watch descriptions clearly name different things.
+
+    True only when both carry identifying tokens and share none -- two
+    different dag runs in one thread, say. Plain sentences, or one side
+    with no token, are not proof of a different target: 2026-11-06's
+    "old workers are gone" watch named no token at all and was about the
+    same restart as the pid-file watch before it.
+    """
+    ka, kb = _watch_target_keys(a), _watch_target_keys(b)
+    return bool(ka) and bool(kb) and not (ka & kb)
+
 # The model has repeatedly said "I'll keep an eye on it" / "I'll report back"
 # without the [[WATCH: ...]] tag, even with prompt guidance in place. Without
 # the tag nothing gets queued and no one actually follows up, so this is
 # caught in code instead of relying on the prompt alone.
+#
+# Vocabulary widened to bot.py:1632-1636 (2026-09-19): the 09-01 pattern was
+# lifted from two incidents' wording and missed half of the 36 untagged
+# promises in the audit log -- "결과가 나오면" as the condition and "올리다"
+# as the report verb were absent. The gap between the two groups is 60
+# characters on one line, so a condition and an unrelated verb in a later
+# paragraph don't pair up.
 PROMISE_WITHOUT_WATCH_RE = re.compile(
-    r"(지켜보|끝나면|완료되면|확인되면|반영되면|반영후|배포\s*후)"
-    r".{0,20}(보고|말씀|알려|다시\s*답)"
+    r"(지켜보|끝나면|완료되면|확인되면|반영되면|반영후|배포\s*후|결과가\s*나오"
+    r"|나오는\s*대로|돌고\s*있|들어오는\s*대로|회신이\s*(들어오|오)|나오면)"
+    r"[^\n]{0,60}?(보고|말씀|알려|다시\s*답|올리|공유|정리해|전달|내겠|드리겠)"
 )
+
+
+def _mask_quotes_and_code(text: str) -> str:
+    """Blanks `>` quote lines and fenced code, keeping every offset.
+
+    Matches bot.py:1639-1658's `_PromiseSearch._mask` (2026-10-16): wording
+    inside a quoted example is not the bot's own promise, and treating it as
+    one cut the reply mid-way and appended the fallback line. Spaces keep the
+    length, so a match position maps straight back onto the original text.
+    """
+    out: list[str] = []
+    in_code = False
+    for line in (text or "").split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            out.append(" " * len(line))
+        elif in_code or stripped.startswith(">"):
+            out.append(" " * len(line))
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def promise_search(text: str) -> re.Match[str] | None:
+    """PROMISE_WITHOUT_WATCH_RE over the reply with quotes and code blanked."""
+    return PROMISE_WITHOUT_WATCH_RE.search(_mask_quotes_and_code(text))
+
+
+PROMISE_FALLBACK_LINE = "확인이 더 필요하면 다시 말씀해 주세요."
+
+
+def cut_untagged_promise(body: str) -> str:
+    """Cuts the reply at its first untagged promise and appends the fallback.
+
+    Matches bot.py:8241-8255: used both when the rewrite still promises and
+    when the rewrite run itself failed or came back silent. The cut position
+    comes from the masked text, whose offsets equal the original's, so a
+    quoted example above the promise survives. No promise leaves the body
+    untouched.
+    """
+    cut = promise_search(body or "")
+    if not cut:
+        return body
+    trimmed = body[: cut.start()].rstrip()
+    return f"{trimmed}\n\n{PROMISE_FALLBACK_LINE}" if trimmed else PROMISE_FALLBACK_LINE
 
 
 def promise_without_watch_prompt(body: str) -> str:
@@ -111,7 +178,37 @@ def promise_without_watch_prompt(body: str) -> str:
         "을 붙인다.\n"
         "2. 지켜볼 대상이 없으면 지켜보겠다, 끝나면 보고하겠다는 말 자체를 빼고, "
         "지금까지 한 조치와 지금 상태만 말한 뒤 확인이 더 필요하면 다시 물어봐 "
-        "달라고 맺는다."
+        "달라고 맺는다.\n"
+        "내용을 새로 지어내지 않는다. 방금 쓴 것을 이 규칙에 맞춰 다시 담는다."
+    )
+
+
+# A watch check turn runs read-only (tool_list_for(readonly=True)): it can
+# read files, logs and Slack, but cannot run ps, send a test request or call
+# anything that acts. 2026-11-07 17:23 a reply put "check the worker PID
+# changed and send a request to see the status line" into a watch; the 17:41
+# check turn could do neither and handed both back to the owner. Prompt rules
+# had already said WATCH is for checking only (watch_note.md) and still the
+# tag went through, so the registration itself is stopped here.
+WATCH_NEEDS_ACTION_RE = re.compile(
+    r"(\bps\b|pgrep|프로세스\s*목록|\[테스트\]|테스트\s*(요청|메시지|질문)"
+    r"|요청을?\s*(보내|넣|날려)|(직접|실제로?)\s*(요청|실행|호출|보내)"
+    r"|실행해\s*(보|서)|돌려\s*(보|서))"
+)
+
+
+def watch_needs_action_prompt(body: str, desc: str) -> str:
+    return (
+        "방금 낸 답의 [[WATCH: ...]] 에 실행해야 확인되는 항목이 있다.\n"
+        f"감시 문장 : {desc}\n\n"
+        "감시 확인 턴은 읽기 전용이라 ps, 테스트 요청 보내기, 명령 실행을 하지 못한다. "
+        "그대로 등록하면 확인 턴은 그 항목을 미완료로 남기고 사람에게 넘긴다.\n\n"
+        f"방금 쓴 답 :\n{body}\n\n"
+        "아래 둘 중 하나로 다시 쓴다.\n"
+        "1. 이 턴에 실행할 수 있으면 지금 실행하고 결과를 답에 쓴다. 그 항목은 WATCH 에서 뺀다.\n"
+        "2. 이 턴이 끝난 뒤에만 생기는 결과면, 읽기만으로 판정할 증거로 감시 문장을 바꾼다. "
+        "예 : worker.pid 와 state.json started_at 이 어느 시각 이후인지, worker 로그에 "
+        "특정 문구가 찍혔는지, 슬랙 스레드에 어떤 답이 올라왔는지."
     )
 
 
@@ -131,26 +228,35 @@ class WatchPromiseGuard(OutputGuard):
         if m:
             desc = m.group("desc").strip()
             due = m.group("due") or ""
+            if WATCH_NEEDS_ACTION_RE.search(desc):
+                if not ctx.is_rewrite_retry:
+                    return GuardResult(
+                        body=body,
+                        changed=False,
+                        detail={"watch_needs_action": desc},
+                        rerun=RerunRequest(
+                            reason="watch_needs_action",
+                            rewrite_prompt=watch_needs_action_prompt(body, desc),
+                            guard_name=self.name,
+                        ),
+                    )
+                log.warning("실행이 필요한 감시가 재작성 뒤에도 남아 그대로 등록한다 : %s", desc)
             stripped = WATCH_RE.sub("", body).rstrip()
             return GuardResult(
                 body=stripped, changed=True, detail={"watch_desc": desc, "watch_due": due},
             )
 
-        if not PROMISE_WITHOUT_WATCH_RE.search(body or ""):
+        cut = promise_search(body or "")
+        if not cut:
             return GuardResult(body=body, changed=False)
 
         if ctx.is_rewrite_retry:
             # Still has an untagged promise after a retry. Don't send it as-is —
             # cut the promise text out and append the standard fallback line.
-            cut = PROMISE_WITHOUT_WATCH_RE.search(body)
-            trimmed = body[: cut.start()].rstrip() if cut else body
-            trimmed += (
-                "\n\n확인이 더 필요하면 다시 말씀해 주세요."
-                if trimmed
-                else "확인이 더 필요하면 다시 말씀해 주세요."
-            )
+            # The match comes from the masked text, whose offsets equal the
+            # original's, so a quoted example above the promise survives.
             return GuardResult(
-                body=trimmed,
+                body=cut_untagged_promise(body),
                 changed=True,
                 detail={"promise_without_watch_retry_failed": True},
             )

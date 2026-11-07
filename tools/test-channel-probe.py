@@ -235,22 +235,60 @@ def _clear_one(channel: str, ts: str, token: str) -> None:
         print(f"점검 흔적을 못 지웠다 : {channel} {ts} : {exc}", file=sys.stderr)
 
 
+def _profile(name: str) -> dict[str, Any]:
+    path = REPO / "profiles" / f"{name}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _state_dir_of(name: str) -> Path:
+    """봇의 상태 디렉터리. 프로필 state_dir 이 정본이고, 없을 때만 ~/.<이름> 이다.
+
+    ~/.<이름> 만 보던 때는 state_dir 을 다르게 둔 봇(예 : ~/.guchipachi-sca)의 토큰을
+    못 찾아 재기동 점검이 늘 "봇 토큰을 찾지 못했다" 로 끝났다(2026-11-06).
+    """
+    raw = str(_profile(name).get("state_dir") or "")
+    return Path(raw).expanduser() if raw else Path.home() / f".{name}"
+
+
 def _token_of(name: str) -> str:
-    token = read_bot_token(Path.home() / f".{name}")
+    token = read_bot_token(_state_dir_of(name))
     if not token:
-        raise SystemExit(f"{name} 의 봇 토큰을 찾지 못했다")
+        raise SystemExit(f"{name} 의 봇 토큰을 찾지 못했다 ({_state_dir_of(name)})")
     return token
+
+
+def _poster_dirs(target: str) -> list[Path]:
+    """멘션을 넣어 줄 후보 상태 디렉터리. 대상 프로필의 probe_poster_state_dirs 를 먼저,
+    그다음 같은 리포의 다른 프로필 state_dir 을 본다. 이름을 코드에 박지 않는다."""
+    dirs: list[Path] = []
+    for raw in _profile(target).get("probe_poster_state_dirs") or ():
+        dirs.append(Path(str(raw)).expanduser())
+    for path in sorted((REPO / "profiles").glob("*.json")):
+        other = path.stem
+        if other == target or other.startswith("example") or not NAME_PATTERN.match(other):
+            continue
+        dirs.append(_state_dir_of(other))
+    seen: set[Path] = set()
+    out: list[Path] = []
+    target_dir = _state_dir_of(target)
+    for d in dirs:
+        if d in seen or d == target_dir:
+            continue
+        seen.add(d)
+        out.append(d)
+    return out
 
 
 def _poster_token(target: str) -> str:
     """대상이 아닌 다른 봇의 토큰. 자기 자신을 멘션하면 자기 대화가 된다."""
-    for name in ("shinji", "rei", "asuka"):
-        if name == target:
-            continue
-        try:
-            return _token_of(name)
-        except SystemExit:
-            continue
+    for state_dir in _poster_dirs(target):
+        token = read_bot_token(state_dir)
+        if token:
+            return token
     raise SystemExit(f"{target} 말고 멘션을 넣어 줄 봇이 없다")
 
 
@@ -259,7 +297,7 @@ def main(argv: list[str]) -> None:
         print(__doc__)
         raise SystemExit(2)
     name, text = check_name(argv[1]), argv[2]
-    profile = json.loads((REPO / "profiles" / f"{name}.json").read_text(encoding="utf-8"))
+    profile = _profile(name)
     channel = target_channel(profile)
 
     bot_user_id = str(_post("auth.test", {}, _token_of(name))["user_id"])

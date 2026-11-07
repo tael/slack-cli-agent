@@ -35,6 +35,9 @@ gen() {
     <dict><key>$HOME/.$NAME/preflight-blocked/$role</key><false/></dict>
   </dict>
   <key>ThrottleInterval</key><integer>10</integer>
+  <!-- 기본값 20초가 지나면 launchd 가 KILL 한다. worker 는 TERM 뒤 진행 중 작업을
+       최대 330초 기다리고 run.sh 는 345초 뒤 KILL 한다. 그보다 길게 둔다 (H67). -->
+  <key>ExitTimeOut</key><integer>360</integer>
   <key>WorkingDirectory</key><string>$HOME/.$NAME</string>
   <key>StandardOutPath</key><string>$HOME/.$NAME/logs/$role.out.log</string>
   <key>StandardErrorPath</key><string>$HOME/.$NAME/logs/$role.err.log</string>

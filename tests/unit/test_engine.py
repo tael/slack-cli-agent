@@ -849,19 +849,22 @@ class TestCodexEngineBuildCommand:
 
     def test_쓰기_도구가_섞이면_프로필_값을_그대로_쓴다(self, tmp_path: Path) -> None:
         engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
-        cmd = engine.build_command(
-            request(resume=False, model="gpt-5.6-sol", tools=ToolSelection.allow(["Read", "Write"]))
-        )
+        cmd = engine.build_command(request(
+            resume=False, model="gpt-5.6-sol", trust_level=TrustLevel.OWNER,
+            tools=ToolSelection.allow(["Read", "Write"]),
+        ))
         assert 'sandbox_mode="danger-full-access"' in cmd
 
-    @pytest.mark.parametrize("trust_level", [TrustLevel.OWNER, TrustLevel.TRUSTED])
+    @pytest.mark.parametrize("trust_level", [TrustLevel.OWNER])
     def test_workspace_write_프로필의_소유자와_controller_턴은_쓰기를_유지한다(
         self, tmp_path: Path, trust_level: TrustLevel,
     ) -> None:
         """Fallback turns for the owner and configured controller carry write
         tools.  A read-only profile once overrode that authority after an
-        automatic engine switch, so pin both trust paths to the configured
-        workspace-write sandbox.
+        automatic engine switch, so pin the trust path to the configured
+        workspace-write sandbox. A controller is OWNER (AccessPolicy
+        principal_for); TRUSTED is a channel's trusted_users, a non-owner, and
+        runs read-only like mametchi's non-owner (A9 review).
         """
         engine = CodexEngine(
             codex_profile(tmp_path, options={"sandbox": "workspace-write", "network": True}),
@@ -967,21 +970,25 @@ class TestCodexEngineBuildCommand:
         assert "sandbox_workspace_write.network_access=true" not in cmd
         assert not any("WRITE_ENABLED" in tok for tok in cmd)
 
-    def test_맨_실행_도구를_받은_위임_턴은_프로필_샌드박스로_돈다(self, tmp_path: Path) -> None:
-        """operator_full 채널의 위임 턴은 Bash 를 받는다. 그때는 내리지 않는다."""
+    def test_맨_실행_도구를_받은_위임_턴도_read_only_다(self, tmp_path: Path) -> None:
+        """codex 비소유자 턴은 operator_full 과 무관하게 read-only 다 (A9 검토).
+        위임 턴도 trust 는 GENERAL 이라 같은 경계를 따른다."""
         engine = self._위임_codex(tmp_path)
         cmd = engine.build_command(request(
             resume=False, trust_level=TrustLevel.GENERAL, delegated=True,
             tools=ToolSelection.allow(["Read", "Bash", "mcp__jira__create_issue"]),
         ))
-        assert 'sandbox_mode="workspace-write"' in cmd
+        assert 'sandbox_mode="read-only"' in cmd
+        assert not any("WRITE_ENABLED" in tok for tok in cmd)
 
     def test_MCP_도구가_섞이면_내리지_않는다(self, tmp_path: Path) -> None:
         """READ_ONLY_TOOLS 는 내장 도구만 담는다. MCP 도구가 밖으로 쓰는지를
-        코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰)."""
+        코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰).
+        소유자 턴으로 본다 - 비소유자 턴은 operator_full 이 아니면 도구와
+        무관하게 read-only 다 (A9 검토)."""
         engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
         cmd = engine.build_command(request(
-            resume=False, model="gpt-5.6-sol",
+            resume=False, model="gpt-5.6-sol", trust_level=TrustLevel.OWNER,
             tools=ToolSelection.allow(["Read", "mcp__github__search_code"]),
         ))
         assert 'sandbox_mode="danger-full-access"' in cmd
@@ -1940,13 +1947,13 @@ class TestFallbackEngine:
         switcher.approve()
         return FallbackEngine(primary, secondary, switcher, runner), secondary
 
-    def test_소유자_요청은_2차에서도_소유자_모델을_받는다(self, tmp_path: Path) -> None:
-        """1차에서 등급을 올려 보낸 요청이 2차의 일반 모델로 떨어지면
-        그 등급이 조용히 사라진다(sca-14h). 엔진마다 모델명이 달라 1차 이름을
-        그대로 옮길 수는 없으므로 2차의 소유자 모델을 쓴다."""
+    def test_소유자_요청도_2차의_기본_모델을_받는다(self, tmp_path: Path) -> None:
+        """A13 부터 1차는 요청자와 무관하게 같은 모델로 돈다. 2차에서만
+        소유자를 소유자 모델로 올리면 등급별 모델이 다시 갈린다. 엔진마다
+        모델명이 달라 1차 이름은 옮길 수 없으므로 2차 기본 모델을 쓴다."""
         fallback, secondary = self._소유자모델폴백(tmp_path)
         fallback.run(request(model="claude-opus-5", trust_level=TrustLevel.OWNER))
-        assert [r.model for r in secondary.built] == ["gpt-5.6-pro"]
+        assert [r.model for r in secondary.built] == ["gpt-5.6-sol"]
 
     def test_일반_요청은_2차의_일반_모델을_받는다(self, tmp_path: Path) -> None:
         fallback, secondary = self._소유자모델폴백(tmp_path)

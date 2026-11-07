@@ -133,6 +133,12 @@ class StatePaths:
         return self.persona / "local"
 
     @property
+    def wiki(self) -> Path:
+        """Topic pages of domain facts. Only `index.md` is sent every turn; the
+        model opens a page itself when the topic matches (마메치 WIKI_DIR)."""
+        return self.persona / "wiki"
+
+    @property
     def skills(self) -> Path:
         """Bot-owned skill files, kept out of any engine's shared home directory.
 
@@ -183,6 +189,12 @@ class StatePaths:
 
     def engine_settings(self, engine_type: str) -> Path:
         return self.engine_dir / f"settings-{engine_type}.json"
+
+    @property
+    def apply_requests(self) -> tuple[Path, Path]:
+        """Restart request marker a turn leaves, and the name a supervisor
+        renames it to once it has picked it up (reliability/restart.py)."""
+        return (self.root / "apply-request", self.root / "apply-running")
 
     def pid_file(self, role: str) -> Path:
         """PID of a running service process, one file per role.

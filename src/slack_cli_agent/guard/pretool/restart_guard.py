@@ -88,10 +88,21 @@ def deny(reason: str) -> None:
     }, ensure_ascii=False))
 
 
+#: Marker body: epoch seconds, then this turn's "channel:ts" from TURN_ID. The
+#: second line is how the worker knows not to wait on or rerun this turn.
+_MARKER_BODY = "printf '%s\\n%s\\n' \"$(date +%s)\" \"$TURN_ID\""
+
+
 def _marker_hint() -> str:
     if _MARKER_PATH:
-        return f" 재기동이 필요하면 {_MARKER_PATH} 에 apply-request 마커만 남기고 턴을 끝낸다."
-    return " 재기동이 필요하면 apply-request 마커만 남기고 턴을 끝낸다 (supervisor 가 집는다)."
+        return (
+            f" 재기동이 필요하면 {_MARKER_BODY} > {_MARKER_PATH} 로"
+            " apply-request 마커만 남기고 턴을 끝낸다."
+        )
+    return (
+        f" 재기동이 필요하면 {_MARKER_BODY} 로 apply-request 마커만 남기고 턴을 끝낸다"
+        " (supervisor 가 집는다)."
+    )
 
 
 def _self_restart_reason(cmd: str) -> str | None:

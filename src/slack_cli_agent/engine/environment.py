@@ -38,6 +38,33 @@ from pathlib import Path
 
 from ..core.errors import ConfigError
 
+#: Fixed values that stop git and gh from waiting on a terminal (C11). A bot
+#: turn has no one at the keyboard: a credential prompt or a gh confirmation
+#: holds the process until the turn timeout kills it. Ported from mametchi's
+#: turn_budget_env (bot.py). Not credentials, so every engine gets them, and
+#: they overwrite whatever the parent process had.
+NON_INTERACTIVE_ENV: Mapping[str, str] = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GH_PROMPT_DISABLED": "1",
+    "CI": "1",
+}
+
+#: Seconds left at the end of a turn for writing the answer. Must equal
+#: guard/pretool/turn_budget.DEFAULT_WRAPUP_SEC; a test pins the two together.
+TURN_WRAPUP_SEC = 60
+
+#: Claude Code's MCP tool-call limit in ms when the parent sets none. Matches
+#: mametchi (bot.py MCP_TOOL_TIMEOUT 300000): slow Snowflake/CSV tools run up to
+#: 280 s inside, so the default would cut them off first.
+DEFAULT_MCP_TOOL_TIMEOUT_MS = "300000"
+
+
+def _turn_id(source_env: Mapping[str, str]) -> dict[str, str]:
+    """TURN_ID ("channel:ts") when the runner stamped one: a turn writes it as
+    the apply-request marker's second line (reliability/restart.py), the same
+    as mametchi apply.sh with MAMETCHI_TURN. Not a credential."""
+    return {"TURN_ID": source_env["TURN_ID"]} if source_env.get("TURN_ID") else {}
+
 
 class EngineEnvironmentPolicy(ABC):
     """Contract for choosing env vars for one engine.
@@ -100,6 +127,8 @@ class CodexEnvironmentPolicy(EngineEnvironmentPolicy):
             # they're running as — without this, they'd pick the wrong
             # bot's token and channel config.
             "BOT_PROFILE": self.profile_name,
+            **NON_INTERACTIVE_ENV,
+            **_turn_id(source_env),
         }
 
 
@@ -123,6 +152,8 @@ class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
             "LANG": source_env.get("LANG", "ko_KR.UTF-8"),
             "HOME": source_env.get("HOME", ""),
             "BOT_PROFILE": self.profile_name,
+            **NON_INTERACTIVE_ENV,
+            **_turn_id(source_env),
         }
 
 
@@ -156,6 +187,12 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # the same allowlist as everything else here.
         "TURN_DEADLINE",
         "TURN_DEADLINE_MONO",
+        # From turn_budget_env (C11): the wrap-up margin the PreToolUse guard
+        # subtracts, and Claude Code's own Bash timeout ceiling for this turn.
+        "TURN_WRAPUP_SEC",
+        "BASH_MAX_TIMEOUT_MS",
+        # MCP tool-call limit; defaulted below when the parent sets none.
+        "MCP_TOOL_TIMEOUT",
         "POST_CHANNEL",
         "ADVISOR_CHANNELS",
         "CODE_FIRST_CHANNELS",
@@ -165,6 +202,8 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         "SCA_FINISH_VERIFY_MODEL",
         # Set inside the nested verify claude so its own run never re-verifies.
         "SCA_VERIFY_NESTED",
+        # "channel:ts" of this turn, for the apply-request marker's second line.
+        "TURN_ID",
     })
 
     #: Empty on purpose: claude keeps its subscription credentials in the
@@ -181,6 +220,8 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         for key in self.ADDITIONAL_ALLOWED_VARS:
             if key in source_env:
                 env[key] = source_env[key]
+        env.setdefault("MCP_TOOL_TIMEOUT", DEFAULT_MCP_TOOL_TIMEOUT_MS)
+        env.update(NON_INTERACTIVE_ENV)
         return env
 
 
@@ -269,10 +310,17 @@ def turn_budget_env(
     carries both names through, so stamping them here is all the child needs to
     finish inside its budget rather than being killed mid-write at timeout.
 
+    TURN_WRAPUP_SEC and BASH_MAX_TIMEOUT_MS come from mametchi too (C11). A
+    single Bash call may not use the wrap-up margin, so Claude Code's Bash
+    ceiling is the budget minus that margin, floored at 60 s as in bot.py.
+
     A pure function (clocks are passed in, not read) so a test can assert the
     exact deadline without touching the wall or monotonic clock.
     """
+    usable = max(int(timeout_sec) - TURN_WRAPUP_SEC, 60)
     return {
         "TURN_DEADLINE": str(now_wall + timeout_sec),
         "TURN_DEADLINE_MONO": str(now_monotonic + timeout_sec),
+        "TURN_WRAPUP_SEC": str(TURN_WRAPUP_SEC),
+        "BASH_MAX_TIMEOUT_MS": str(usable * 1000),
     }

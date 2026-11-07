@@ -529,7 +529,7 @@ function renderStateTab(d){
       <div class="dim" style="margin-top:8px;font-size:11.5px">
         흐린 값은 채널 설정이 없어 전역 기본값을 쓴다는 뜻이다.
         이 봇의 모델 기본값은 ${esc(bot.default_model || "")},
-        소유자 대화는 ${esc(bot.owner_model || "")}, effort 기본값은 medium 이다.</div>
+        부검은 ${esc(bot.postmortem_model || "")}, effort 기본값은 medium 이다.</div>
       ${unlisted}</div>` +
     `<h2>응답성</h2>${respPanel}` +
     `<h2>신뢰성</h2>${relPanel}` +
@@ -594,7 +594,7 @@ function renderSettingsTab(){
       <label>엔진 타입</label><input type="text" id="f-eng-type">
       <label>엔진 실행 파일</label><input type="text" id="f-eng-binary">
       <label>엔진 모델</label><input type="text" id="f-eng-model">
-      <label>소유자용 모델</label><input type="text" id="f-eng-model_owner">
+      <label>부검 기본 모델 (model_owner, postmortem_model 이 비었을 때)</label><input type="text" id="f-eng-model_owner">
       <label>상태 디렉터리</label><input type="text" id="f-state_dir">
       <label>작업 디렉터리</label><input type="text" id="f-work_root">
       <label>소유자 (owner_user_id)</label><input type="text" id="f-owner_user_id">

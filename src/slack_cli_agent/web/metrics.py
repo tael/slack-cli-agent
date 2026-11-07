@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from ..auth.policy import DEFAULT_EFFORT
-from ..config.channel import ChannelConfig, ChannelRegistry
+from ..config.channel import ChannelConfig, ChannelRegistry, advisor_enabled
 from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
 from ..core.channel_kind import is_direct_message_channel
@@ -445,7 +445,9 @@ class MetricsCollector:
             "display_name": self._profile.display_name,
             "engine": engine.type,
             "default_model": engine.model,
-            "owner_model": engine.model_for_owner(),
+            # A13 부터 소유자 대화도 채널 model 이나 기본 model 로 돈다.
+            # model_owner 는 부검 기본값으로만 남아 있어 부검 모델을 보인다.
+            "postmortem_model": engine.model_for_postmortem(),
             "not_applicable": not_applicable,
         }
 
@@ -843,14 +845,15 @@ class MetricsCollector:
             conf = channels.get(channel)
             entries = [entry for _, entry in sorted(live.get(channel, []), key=lambda x: x[0])]
             dm = is_direct_message_channel(channel)
+            model = _explicit_model(conf)
             rows.append({
                 "channel": channel,
                 "name": conf.name if conf else channel,
                 "is_dm": dm,
                 "listed": conf is not None,
                 "mode": conf.mode if conf else "default",
-                "model": (conf.model if conf and conf.model else self._profile.primary_engine.model),
-                "model_inherited": not (conf and conf.model),
+                "model": model or self._profile.primary_engine.model,
+                "model_inherited": not model,
                 "effort": (conf.effort if conf and conf.effort else DEFAULT_EFFORT),
                 "effort_inherited": not (conf and conf.effort),
                 "answer_unaddressed": bool(conf and conf.answer_unaddressed),
@@ -936,3 +939,17 @@ class MetricsCollector:
             "models": block.get("models") or [],
             "scope": "이 노트북 기록만",
         }
+
+
+def _explicit_model(conf: ChannelConfig | None) -> str:
+    """The model the channel names itself, empty when it inherits the default.
+
+    Same order as AccessPolicy.model_for (A13): an advisor channel runs on its
+    executor, and an advisor without an executor falls back to the default,
+    not to the channel's model.
+    """
+    if conf is None:
+        return ""
+    if advisor_enabled(conf):
+        return str(conf.extra["advisor"].get("executor") or "")
+    return conf.model or ""

@@ -43,9 +43,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
-from ..auth.policy import OPERATOR_TOOLS
 from ..auth.principal import TrustLevel
-from ..auth.tools import SKILL_TOOL, is_read_only_tool
+from ..auth.tools import SKILL_TOOL
 from ..config.profile import EngineSpec, McpServerSpec
 from .base import (
     Engine,
@@ -103,7 +102,7 @@ def _codex_reads_only(tools: ToolSelection) -> bool:
     if tools.access is ToolAccess.FORBIDDEN:
         return True
     return tools.access is ToolAccess.ALLOWLIST and all(
-        is_read_only_tool(name) for name in tools.names if not _is_skill_grant(name)
+        tools.reads(name) for name in tools.names if not _is_skill_grant(name)
     )
 
 
@@ -111,23 +110,24 @@ def _codex_can_act(tools: ToolSelection) -> bool:
     return tools.can_act and not _codex_reads_only(tools)
 
 
-def _codex_withholds_shell(request: EngineRequest) -> bool:
-    """A delegated turn the name axis kept the bare execution tools from.
+def _non_owner_reads_only(request: EngineRequest) -> bool:
+    """A non-owner turn always runs read-only, operator_full channel included.
 
-    Outside an operator_full channel a delegated turn gets owner extras but
-    not Bash/Edit/Write/NotebookEdit (auth/tools.py). claude enforces that by
-    name and by the general settings deny. codex takes no tool names, so one
-    MCP write tool in the list would lift the sandbox to the profile's value
-    and the same turn could write through the shell. Read-only is the only
-    sandbox here that keeps the shell from writing.
+    codex enforces no allowlist and gets every profile MCP server, so a
+    non-owner turn under workspace-write with network and --approve-for-me
+    could send or delete mail, delete pods or click in the owner's browser
+    whatever its tool list said (A9 review). An operator_full exception for a
+    bare Bash/Edit/Write reopened the same hole, and channel extra_tools hand
+    that bare name to every non-owner in the channel, operators list or not.
+    mametchi pins a non-owner codex turn to read-only on is_owner alone
+    (bot_profile.codex_sandbox) with no operator_full exception; this matches
+    it. A read-only turn cannot call MCP tools at all (build_command).
+    An unrestricted selection means no tool policy is wired at all, which no
+    profile Application builds runs under; it keeps the profile sandbox.
     """
-    tools = request.tools
-    return (
-        request.delegated
-        and request.trust_level is not TrustLevel.OWNER
-        and tools.access is ToolAccess.ALLOWLIST
-        and not any(name in OPERATOR_TOOLS for name in tools.names)
-    )
+    if request.trust_level is TrustLevel.OWNER:
+        return False
+    return request.tools.access is ToolAccess.ALLOWLIST
 
 
 def _codex_mcp_config_args(
@@ -198,6 +198,9 @@ _SANDBOX_ISOLATION = {
 class CodexEngine(Engine):
     name = "codex"
     shell_always_attached = True
+    #: Only the first turn's developer_instructions stay fixed in the thread,
+    #: so only that turn's blocks are referenced later (C15).
+    dedups_resumed_instructions = True
 
     # developer_instructions is a separate field from the prompt. Isolation is
     # whatever options.sandbox says, which the default (danger-full-access)
@@ -243,7 +246,7 @@ class CodexEngine(Engine):
         allowlist would otherwise reach it as a sentence the model may
         ignore; the sandbox is the OS refusing the write (sca-f9k0).
         """
-        if _codex_reads_only(request.tools) or _codex_withholds_shell(request):
+        if _codex_reads_only(request.tools) or _non_owner_reads_only(request):
             return "read-only"
         return str(self.spec.options.get("sandbox", "danger-full-access"))
 
@@ -319,7 +322,7 @@ class CodexEngine(Engine):
         cmd += ["-c", f"model_reasoning_effort={self._toml_string(self.resolve_effort(request))}"]
         cmd += _codex_mcp_config_args(
             self.profile.mcp_servers,
-            can_act=_codex_can_act(request.tools) and not _codex_withholds_shell(request),
+            can_act=_codex_can_act(request.tools) and sandbox != "read-only",
             is_owner=request.trust_level is TrustLevel.OWNER,
             turn_context=request.turn_context,
         )
@@ -380,7 +383,7 @@ class CodexEngine(Engine):
         without the untrusted-input marker.
         """
         return (
-            request.system_prompt
+            self.instructions_for(request)
             + self.readable_paths_note(request.readable_dirs)
             + self.write_paths_note(request)
             + self.tool_ban_note(request)

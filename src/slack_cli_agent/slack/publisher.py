@@ -23,10 +23,17 @@ from typing import Any
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.channel_kind import is_direct_message_channel
 from slack_cli_agent.core.errors import SlackError
-from slack_cli_agent.core.markers import ELAPSED_MODEL_LINE
+from slack_cli_agent.core.markers import (
+    ELAPSED_MODEL_LINE,
+    split_leaked_tags,
+    strip_control_tags,
+)
+from slack_cli_agent.core.secrets import count_outbound_secrets, redact_outbound
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.render.blocks import BlockBuilder
+from slack_cli_agent.render.file_links import strip_file_permalinks
 from slack_cli_agent.render.markdown import MarkdownConverter
+from slack_cli_agent.render.notion_links import fix_notion_links
 from slack_cli_agent.render.splitter import (
     ContentSplitter,
     CsvFilePayload,
@@ -63,6 +70,18 @@ def _has_block_markup(text: str) -> bool:
         if stripped.startswith("|") and stripped.endswith("|"):
             return True
     return False
+
+
+@dataclass(frozen=True)
+class PostReceipt:
+    """Where a post landed: the thread it went under and each message's ts."""
+
+    parent_ts: str
+    message_ts: tuple[str, ...]
+    # The text that went up, after ```csv blocks became a file note. A format
+    # review rewrites the message from the stored body, and the original
+    # would put the csv back inline (B6 review).
+    body: str = ""
 
 
 @dataclass(frozen=True)
@@ -142,10 +161,90 @@ class MessagePublisher:
             body=part, note=note, text=self._blocks.preview(part or note), blocks=blocks
         )
 
+    def _redact(self, channel: str, thread_ts: str, text: str) -> str:
+        """Masks credentials before anything is sent (A17).
+
+        Runs ahead of csv extraction and splitting, so the uploaded file, every
+        chunk and the plain-text fallback all start from the masked body. The
+        audit row carries the count only, never the value.
+        """
+        found = count_outbound_secrets(text)
+        if not found:
+            return text
+        log.warning("게시 본문의 비밀값 %d 건을 가렸다 : 채널 %s", found, channel)
+        self._audit(
+            kind=IncidentKind.SECRET_REDACTED.value, channel=channel,
+            thread_ts=thread_ts or "", count=found,
+        )
+        return redact_outbound(text)
+
+    def _strip_control_tags(self, channel: str, thread_ts: str, text: str) -> str | None:
+        """Drops internal markers and records them. None when nothing but
+        markers was there, so an empty message is never posted."""
+        cleaned, leaked = strip_control_tags(text)
+        if not leaked:
+            return text
+        log.warning("내부 표식이 본문에 남아 있었다. 떼고 올린다 : %s", leaked)
+        # Same split as the main pipeline's _strip_publish_markers, so an
+        # invented marker lands under unknown_tag whichever path posted it.
+        known, unknown = split_leaked_tags(leaked)
+        if known:
+            self._audit(
+                kind=IncidentKind.CONTROL_TAG_LEAK.value, channel=channel,
+                thread_ts=thread_ts, tags=known,
+            )
+        if unknown:
+            self._audit(
+                kind=IncidentKind.UNKNOWN_TAG.value, channel=channel,
+                thread_ts=thread_ts, tags=unknown,
+            )
+        if not cleaned.strip():
+            self._audit(
+                kind=IncidentKind.EMPTY_AFTER_TAGS.value, channel=channel,
+                thread_ts=thread_ts, tags=leaked,
+            )
+            return None
+        return cleaned
+
+    def _strip_file_links(self, channel: str, thread_ts: str, text: str) -> str:
+        """Removes Slack file permalinks (D4). Slack re-attaches a linked file
+        to the message, so leaving the link posts the same file card twice.
+
+        When the body is nothing but file links, stripping would leave it empty
+        and the reply would silently vanish (post returns None, update raises).
+        A duplicated card beats no answer, so the links stay in that case.
+        The model footer (apply_elapsed_model_line) does not count as content:
+        a rich answer of one link plus that footer would otherwise post the
+        footer alone.
+        """
+        stripped = strip_file_permalinks(text)
+        if stripped != text and not ELAPSED_MODEL_LINE.sub("", stripped).strip():
+            log.info("본문이 파일 링크뿐이라 떼지 않았다 : %s", thread_ts)
+            return text
+        if stripped != text:
+            log.info("파일 permalink 를 본문에서 뗐다. 같은 파일이 두 번 붙는다 : %s", thread_ts)
+            self._audit(
+                kind=IncidentKind.FILE_PERMALINK_STRIPPED.value,
+                channel=channel, thread_ts=thread_ts,
+            )
+        return stripped
+
     def post(
         self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
     ) -> str | None:
+        """Posts and returns the thread parent ts (see post_receipt)."""
+        receipt = self.post_receipt(channel, thread_ts, text, rich, flat=flat)
+        return (receipt.parent_ts or None) if receipt is not None else None
+
+    def post_receipt(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> PostReceipt | None:
         """Posts using the channel's rendering mode.
+
+        The receipt keeps the thread parent apart from the ts of each message
+        actually posted. In a thread they differ: an answer's own ts is the
+        first chunk's, and recording the parent instead pointed a format
+        review of the parent at a later reply's body (B6 review).
 
         Rich channels get the markdown source verbatim in a markdown
         block; everything else gets it downgraded to mrkdwn. Channels
@@ -157,7 +256,20 @@ class MessagePublisher:
         the message can't be downloaded and opened in a spreadsheet. The body
         keeps a one-line note where the block was; the file is attached to the
         same thread once the text has posted.
+
+        Notion page links missing `p/` are fixed first, here rather than in
+        the guard pipeline, so every caller (watch reports, review results,
+        engine failure bodies) gets it (bot.py:6532).
         """
+        # Last gate before any send: watch reports, reviews and notices reach
+        # here without the main pipeline's marker pass, so one path forgetting
+        # to strip would leak the marker (B4, bot.py:6511-6530).
+        cleaned = self._strip_control_tags(channel, thread_ts, text)
+        if cleaned is None:
+            return None
+        text = self._redact(channel, thread_ts, cleaned)
+        text, _ = fix_notion_links(text)
+        text = self._strip_file_links(channel, thread_ts, text)
         text, csv_payloads = extract_csv_blocks(text)
         if rich:
             separated = self._verifier.separate_tables(text)
@@ -198,6 +310,7 @@ class MessagePublisher:
             else (thread_ts or None)
         )
         sent = 0
+        posted: list[str] = []
         # A rejected chunk can be replaced in place by smaller pieces, so this
         # walks a mutable list rather than the original chunks (sca-2k7).
         pending = list(chunks)
@@ -241,6 +354,7 @@ class MessagePublisher:
                         res = self._client.chat_postMessage(**plain)
                         sent += 1
                         idx += 1
+                        posted.append(res["ts"])
                         if parent_ts is None:
                             parent_ts = res["ts"]
                         continue
@@ -270,6 +384,7 @@ class MessagePublisher:
                 raise SlackError(str(exc)) from exc
             sent += 1
             idx += 1
+            posted.append(res["ts"])
             if parent_ts is None:
                 parent_ts = res["ts"]
 
@@ -279,7 +394,7 @@ class MessagePublisher:
                 total=len(text), sizes=[len(c) for c in pending],
             )
         self._upload_csv(channel, parent_ts, csv_payloads)
-        return parent_ts
+        return PostReceipt(parent_ts=parent_ts or "", message_ts=tuple(posted), body=text)
 
     def _upload_csv(
         self, channel: str, parent_ts: str | None, payloads: list[CsvFilePayload]
@@ -335,6 +450,14 @@ class MessagePublisher:
         Slack was given, so the caller can report what the message became
         ([] for a plain-text channel).
         """
+        cleaned = self._strip_control_tags(channel, ts, text)
+        if cleaned is None:
+            raise SlackError("교정본에 내부 표식만 있어 갱신하지 않았다")
+        text = self._redact(channel, ts, cleaned)
+        # Same Notion `p/` fix and file-link strip as post(), so a correction
+        # can't post a dead link or re-attach a file.
+        text, _ = fix_notion_links(text)
+        text = self._strip_file_links(channel, ts, text)
         if rich:
             body = self._verifier.separate_tables(text)
             chunks = self._splitter.split_for_blocks(body)

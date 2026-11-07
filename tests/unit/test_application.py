@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
 import sqlite3
 import sys
@@ -24,6 +25,7 @@ import pytest
 
 from slack_cli_agent.auth.policy import AccessExtension
 from slack_cli_agent.auth.principal import Principal, TrustLevel
+from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.application import Application
@@ -209,6 +211,19 @@ class TestStateSetup:
         profile = write_profile(tmp_path, settings={"없는키": 1})
         assert Application(profile, client).settings.max_concurrent == 10
 
+    def test_점검과_워커가_같은_동시_실행_상한을_쓴다(self, tmp_path: Path, client: FakeSlackClient) -> None:
+        """접수 프로세스의 점검이 워커 요청과 한 상한을 나눈다 (A16)."""
+        profile = write_profile(tmp_path, settings={"max_concurrent": 1})
+        ingress_app = Application(profile, client)
+        worker_app = Application(profile, client)
+        review = ingress_app.review_tasks()["dango"]._slots
+        requests = worker_app.worker()._slots
+        assert review is not None and requests is not None
+        held = review.acquire(timeout=0)
+        assert held is not None
+        assert requests.acquire(timeout=0) is None
+        review.release(held)
+
     def test_DB_스키마를_적용한다(self, app: Application) -> None:
         version = app.database.connect().execute("PRAGMA user_version").fetchone()[0]
         assert int(version) > 0
@@ -236,13 +251,31 @@ class TestSingletons:
     def test_워커는_부를_때마다_새로_만든다(self, app: Application) -> None:
         assert app.worker("w1") is not app.worker("w2")
 
+    def test_재기동_요청자는_소유자_판정과_같은_기준이다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """요청자는 OWNER 판정만 인정한다. 컨트롤러는 A7 부터 GENERAL 이라
+        소유자 도구를 받지 않으므로 재기동 요청자도 아니다."""
+        app = Application(write_profile(tmp_path, controller_user_ids=["U_PEER"]), client)
+        requester_ok = app.worker("w1")._requester_ok
+        assert requester_ok is not None
+
+        def 판정(user: str) -> bool:
+            return requester_ok(RequestContext(channel="C1", user=user, ts="1.0", thread_ts="1.0", text=""))
+
+        assert 판정("U_OWNER") is True
+        assert 판정("U_PEER") is False
+        assert 판정("U_OTHER") is False
+        assert 판정("") is False
+
 
 class TestWiring:
     def test_접수기가_게이트웨이에_핸들러_세_종류를_등록한다(self, app: Application) -> None:
         gateway = app.gateway()
         app.ingress().register(gateway)
         assert gateway.handler_count("app_mention") == 1
-        assert gateway.handler_count("message") == 1
+        # 코어 처리기와 입장 환영 훅 (G2)
+        assert gateway.handler_count("message") == 2
         assert gateway.handler_count("reaction_added") == 1
 
     def test_접수기에_미등록_채널_소유자_호출이_배선된다(self, app: Application) -> None:
@@ -425,6 +458,57 @@ class TestReviewReactions:
         assert isinstance(표시, ReviewProgressPort), 표시
         assert isinstance(표시, ReviewProgressDisplay), 표시
 
+    def test_부검만_부검_모델로_돈다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """마메치 model_for(postmortem=True) 는 프로필 postmortem_model 을 쓴다.
+        디버그 추적과 서식 점검은 model_for(TROUBLESHOOT_CHANNEL) 이라 보고
+        채널 model 이 없으면 기본 model 이다. 소유자용 모델이 아니다
+        (bot.py 9220, 9480)."""
+        binary = tmp_path / "bin" / "fake-engine"
+        profile = write_profile(tmp_path, primary_engine={
+            "type": "claude", "binary": str(binary), "model": "model-a",
+            "model_owner": "model-big", "postmortem_model": "model-deep",
+        })
+        tasks = Application(profile, client).review_tasks()
+        assert tasks["dango"]._engine.model == "model-deep"
+        assert tasks["brain"]._engine.model == "model-a"
+        assert tasks["pencil2"]._engine.model == "model-a"
+
+    def test_디버그와_서식_점검은_보고_채널_모델을_따른다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        binary = tmp_path / "bin" / "fake-engine"
+        profile = write_profile(tmp_path, primary_engine={
+            "type": "claude", "binary": str(binary), "model": "model-a",
+            "model_owner": "model-big",
+        })
+        ChannelRegistry(profile.paths.channels).update("C_TROUBLE", {"model": "model-ch"})
+        tasks = Application(profile, client).review_tasks()
+        assert tasks["brain"]._engine.model == "model-ch"
+        assert tasks["pencil2"]._engine.model == "model-ch"
+        assert tasks["dango"]._engine.model == "model-big"
+
+    def test_점검_모델은_채널_설정을_고치면_재기동_없이_바뀐다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """review_tasks() 는 처음 부를 때 캐시된다. 모델을 생성 시점에 정하면
+        channels.json 을 고쳐도 점검만 재기동 전까지 옛 모델로 돈다. 마메치
+        run_claude 는 호출할 때마다 model_for 를 부른다."""
+        binary = tmp_path / "bin" / "fake-engine"
+        profile = write_profile(tmp_path, primary_engine={
+            "type": "claude", "binary": str(binary), "model": "model-a",
+        })
+        app = Application(profile, client)
+        tasks = app.review_tasks()
+        assert tasks["brain"]._engine.model == "model-a"
+        ChannelRegistry(profile.paths.channels).update("C_TROUBLE", {"model": "model-ch"})
+        bumped = time.time() + 5
+        os.utime(profile.paths.channels, (bumped, bumped))
+        assert app.review_tasks() is tasks
+        assert tasks["brain"]._engine.model == "model-ch"
+        assert tasks["pencil2"]._engine.model == "model-ch"
+
     def test_점검_셋_모두에_감사가_연결된다(self, app: Application) -> None:
         """한 종류만 연결하면 그 종류 말고는 소요 기록이 안 남는다(sca-fy5)."""
         for task in app.review_tasks().values():
@@ -480,8 +564,9 @@ class TestReviewReactions:
         target = ReviewTarget(
             channel="C_ONE", ts="1.0", by_user="U_OWNER", channel_name="하나", rich=True
         )
+        # 교정 명령은 원문 기록이 있을 때만 준다. 없으면 알림 미리보기로 덮어쓴다(B6).
         프롬프트 = app.review_tasks()["pencil2"].build_prompt(
-            target, transcript="", flagged="답변", question=""
+            target, transcript="", flagged="답변", question="", record={"answer": "답변"}
         )
         assert f"{명령} --channel C_ONE --update 1.0" in 프롬프트
 
@@ -572,6 +657,50 @@ class TestReviewReactions:
             monkeypatch.setattr(task, "run", lambda _t, 이름=이모지: 불린것.append(이름))
         app.on_reaction("dango", "D9", "1.0", by_user)
         return 불린것
+
+    def test_상한이_차도_권한_없는_리액션은_바로_거절되고_자리를_안_잡는다(
+        self,
+        tmp_path: Path,
+        client: FakeSlackClient,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """자리를 잡은 뒤 권한을 보면 거절될 리액션이 request_timeout_sec 동안
+        스레드와 자리를 붙든다. 원본은 키를 잡은 뒤에만 기다렸다 (A16).
+        접수 경로 전체를 태운다. on_reaction 만 부르면 접수에서 자리를 잡는
+        결함을 못 본다."""
+        import time
+
+        from slack_cli_agent.core.spawn import InlineTaskSpawner
+
+        profile = write_profile(
+            tmp_path, settings={"max_concurrent": 1, "request_timeout_sec": 3}
+        )
+        app = self._점검채널앱(profile, client)
+        monkeypatch.setattr(
+            client, "auth_test", lambda **_: {"ok": True, "user_id": "U_BOT", "bot_id": "B_BOT"}
+        )
+        ingress = app.ingress()
+        ingress._spawn = InlineTaskSpawner()
+        pool = app.concurrency_slots()
+        held = pool.acquire(timeout=0)
+        assert held is not None
+        try:
+            started = time.monotonic()
+            with caplog.at_level(logging.INFO):
+                ingress.handle_reaction(
+                    {
+                        "reaction": "dango",
+                        "item": {"type": "message", "channel": "C_ONE", "ts": "1.0"},
+                        "item_user": "U_BOT",
+                        "user": "U_STRANGER",
+                    }
+                )
+            assert time.monotonic() - started < 1.0
+            assert "점검 권한이 없다" in caplog.text
+            assert "점검을 시작할 자리가 없다" not in caplog.text
+        finally:
+            pool.release(held)
 
     def test_거른_사실을_로그에_남긴다(
         self,
@@ -892,6 +1021,25 @@ class Test지울문구가드연결:
         )
         result = app._guards().run("본문입니다\n— 안내가 켜져 있습니다", GuardContext())
         assert "안내가 켜져" not in result.body
+
+
+class Test비유교정가드연결:
+    """비유 교정 가드가 조립에 들어가고 채널의 잡담 판정을 매 요청 읽는가 (B9)."""
+
+    def test_가드가_파이프라인에_들어간다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.guard.figurative import FigurativeGuard
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        assert any(isinstance(g, FigurativeGuard) for g in app._guards()._guards)
+
+    def test_기본값은_꺼져_있어_본문을_바꾸지_않는다(self, tmp_path: Path) -> None:
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        body = "이번 배치는 정산 파이프라인과 맞닿은 지점에서 실패했습니다. " * 3
+        assert app._guards().run(body, GuardContext(channel="C1")).body == body
+
+    def test_미등록_채널은_업무_채널(self, tmp_path: Path) -> None:
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        assert app._is_chat_channel("C_NONE") is False
 
 
 class Test함께있는사람연결:
@@ -2336,6 +2484,68 @@ class Test봇멘션가드연결:
         assert "<@U0TAEL>" in result.body
 
 
+class Test수신자가드_예외_조립:
+    """첫머리 멘션 예외(짝 봇, 봇 계정, 요청 본문 멘션)가 조립에서도 성립하는가 (B2)."""
+
+    def test_요청이_부른_사람은_첫머리에_남고_안내문이_없다(self, tmp_path: Path) -> None:
+        client = FakeSlackClient()
+        client.users_info = lambda **kw: {  # type: ignore[method-assign]
+            "user": {"id": kw.get("user"), "is_bot": False, "profile": {"real_name": "홍길동"}}
+        }
+        app = Application.from_profile(write_profile(tmp_path), client=client)
+        ctx = GuardContext(asker_id="U0ASK", request_text="<@U0NEW> 님께 인사해 줘")
+
+        result = app._guards().run("<@U0NEW> 님 반갑습니다", ctx)
+
+        assert result.body == "<@U0NEW> 님 반갑습니다"
+
+    def test_엉뚱한_사람은_지우되_안내문을_붙이지_않는다(self, tmp_path: Path) -> None:
+        client = FakeSlackClient()
+        client.users_info = lambda **kw: {  # type: ignore[method-assign]
+            "user": {"id": kw.get("user"), "is_bot": False, "profile": {"real_name": "홍길동"}}
+        }
+        app = Application.from_profile(write_profile(tmp_path), client=client)
+
+        result = app._guards().run("<@U0ELSE> 님 확인했습니다", GuardContext(asker_id="U0ASK"))
+
+        assert result.body == "확인했습니다"
+
+    def test_짝_봇_조회가_실패해도_봇_멘션_허용_없는_채널에서는_이름으로_바뀐다(
+        self, tmp_path: Path,
+    ) -> None:
+        """짝 봇 예외가 BotMentionGuard 의 채널 판정을 건너뛰지 않는다. 조회 실패로
+        짝 봇을 사람으로 읽으면 bot_mentions 가 없는 채널에서 멘션이 살아 나가
+        서로 깨우는 고리가 열린다."""
+        client = FakeSlackClient()
+
+        def broken(**_kw: Any) -> dict[str, Any]:
+            raise RuntimeError("users_info 실패")
+
+        client.users_info = broken  # type: ignore[method-assign]
+        app = Application.from_profile(
+            write_profile(tmp_path, controller_user_ids=["U0PEER"]), client=client,
+        )
+
+        result = app._guards().run("<@U0PEER> 이 건 같이 봐 주세요", GuardContext(asker_id="U0ASK"))
+
+        assert "<@U0PEER>" not in result.body
+        assert "첫머리를 지웠" not in result.body
+
+    def test_짝_봇은_조회가_실패해도_봇으로_판정한다(self, tmp_path: Path) -> None:
+        client = FakeSlackClient()
+
+        def broken(**_kw: Any) -> dict[str, Any]:
+            raise RuntimeError("users_info 실패")
+
+        client.users_info = broken  # type: ignore[method-assign]
+        app = Application.from_profile(
+            write_profile(tmp_path, controller_user_ids=["U0PEER"]), client=client,
+        )
+
+        assert app._is_bot_or_peer("U0PEER") is True
+        assert app._is_bot_or_peer("U0HUMAN") is False
+
+
 class Test점검느린보고연결:
     """점검 경로에도 느린 실행 보고가 붙는가 (sca-xck).
 
@@ -2489,3 +2699,30 @@ class Test노출금지자리표조립:
         assert "<<AIRFLOW_CTL>>" not in text
         assert f"제어 도구 : {Path('~/bin/airflow_ctl.sh').expanduser()} <명령>" in text
         application.close()
+
+
+class Test관리명령응답_flat:
+    """B3: flat_reply 채널은 답이 채널 최상위에 오른다. 관리 명령 응답만 스레드로
+    가면 같은 채널 안에서 답의 위치가 갈린다(마메치 post_reply 는 모든 게시에
+    flat_reply 를 적용한다, bot.py:6565)."""
+
+    def _app(self, profile: Profile, client: FakeSlackClient, flat: bool) -> Application:
+        profile.paths.root.mkdir(parents=True, exist_ok=True)
+        profile.paths.channels.write_text(
+            json.dumps({"C_FEED": {"name": "피드", "flat_reply": flat}}), encoding="utf-8"
+        )
+        return Application(profile, client)
+
+    def test_flat_채널이면_스레드없이_올린다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        self._app(profile, client, True)._reply("C_FEED", "1.1", "완료")
+        posted = [kw for name, kw in client.calls if name == "chat_postMessage"]
+        assert posted and "thread_ts" not in posted[0]
+
+    def test_일반_채널이면_스레드로_올린다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        self._app(profile, client, False)._reply("C_FEED", "1.1", "완료")
+        posted = [kw for name, kw in client.calls if name == "chat_postMessage"]
+        assert posted and posted[0].get("thread_ts") == "1.1"

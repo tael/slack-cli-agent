@@ -31,8 +31,19 @@ class HistoryReader(Protocol):
     ) -> list[Mapping[str, Any]]:
         """Reads a thread's messages (including the parent) in order.
 
-        Returns an empty list on failure — a single unreadable thread
-        shouldn't force the whole catch-up run into an unknown state.
+        Returns at most `limit` messages from the first page, and an empty
+        list on failure.
+        """
+
+    def read_full_thread(
+        self, channel: str, thread_ts: str, page_size: int
+    ) -> list[Mapping[str, Any]] | None:
+        """Reads every page of a thread (including the parent) in order.
+
+        Returns None when any page fails or the thread runs past the page
+        cap. A truncated thread can be missing the bot's latest replies,
+        and an empty list would read as "nothing missed", so the caller
+        must treat None as "couldn't tell".
         """
 
 

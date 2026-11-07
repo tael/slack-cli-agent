@@ -228,3 +228,65 @@ class Test엔진무관_전달:
             )
         )
         assert any(마크 in part for part in cmd)
+
+
+class Test소유자세션읽기:
+    """D5 : 봇이 초대되지 않은 비공개 대화 링크는 봇 토큰으로 읽히지 않는다.
+    소유자 턴에서만 소유자 사용자 세션으로 한 번 더 읽는다(마메치
+    linked_thread_context, 2026-11-03 요기요_법인영업 링크 사례).
+    비소유자 턴에서는 사용자 세션을 부르지 않는다. 부르면 소유자만 볼 수 있는
+    대화가 비소유자 답에 실린다."""
+
+    def _reader(self, bot: dict[str, str], owner: dict[str, str]):
+        bot_t, owner_t = 기록대역(bot), 기록대역(owner)
+        reader = LinkedThreadReader(
+            transcript=bot_t,
+            channel_name=lambda channel: "",
+            owner_transcript=owner_t,
+            owner_channel_name=lambda channel: {"C0EXAMPLE01": "비공개-소통"}.get(channel, ""),
+        )
+        return reader, bot_t, owner_t
+
+    def test_소유자_턴은_봇이_못_읽은_링크를_사용자_세션으로_읽는다(self):
+        reader, _, owner_t = self._reader({}, {"C0EXAMPLE01": "[10:00 김]\n할증 요청"})
+        assert reader.of(MSG, self_channel="C099", as_owner=True) == (
+            LinkedThread(name="비공개-소통", body="[10:00 김]\n할증 요청", read_ok=True),
+        )
+        assert owner_t.calls == [("C0EXAMPLE01", "1788253544.408049")]
+
+    def test_비소유자_턴은_사용자_세션을_부르지_않는다(self):
+        reader, _, owner_t = self._reader({}, {"C0EXAMPLE01": "할증 요청"})
+        assert reader.of(MSG, self_channel="C099") == (
+            LinkedThread(name="C0EXAMPLE01", body="", read_ok=False),
+        )
+        assert reader.of(MSG, self_channel="C099", as_owner=False)[0].read_ok is False
+        assert owner_t.calls == []
+
+    def test_비소유자_턴은_첨부_미리보기_폴백만_쓴다(self):
+        reader, _, owner_t = self._reader({}, {"C0EXAMPLE01": "전체 대화"})
+        att = [{"is_msg_unfurl": True, "from_url": MSG, "text": "미리보기 한 건"}]
+        assert reader.of(MSG, self_channel="C099", attachments=att)[0].body == "미리보기 한 건"
+        assert owner_t.calls == []
+
+    def test_봇이_읽으면_소유자_턴이어도_사용자_세션을_부르지_않는다(self):
+        reader, _, owner_t = self._reader({"C0EXAMPLE01": "봇 본문"}, {"C0EXAMPLE01": "x"})
+        assert reader.of(MSG, self_channel="C099", as_owner=True)[0].body == "봇 본문"
+        assert owner_t.calls == []
+
+    def test_사용자_세션이_없으면_소유자_턴도_종전과_같다(self):
+        reader, _ = 리더({})
+        assert reader.of(MSG, self_channel="C099", as_owner=True) == (
+            LinkedThread(name="테스트", body="", read_ok=False),
+        )
+
+    def test_사용자_세션도_실패하면_첨부_폴백으로_간다(self):
+        reader, _, _ = self._reader({}, {})
+        att = [{"is_msg_unfurl": True, "from_url": MSG, "text": "미리보기"}]
+        assert reader.of(MSG, self_channel="C099", attachments=att, as_owner=True)[0].body == "미리보기"
+
+    def test_안내도_소유자_여부를_넘긴다(self):
+        reader, _, owner_t = self._reader({}, {"C0EXAMPLE01": "비공개 본문"})
+        note = LinkedThreadNote(reader)
+        assert "비공개 본문" not in note.of(MSG, self_channel="C099")
+        assert owner_t.calls == []
+        assert "비공개 본문" in note.of(MSG, self_channel="C099", as_owner=True)

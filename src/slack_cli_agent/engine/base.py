@@ -26,6 +26,7 @@ from .footprint import (
     PayloadFootprint,
     utf8_bytes,
 )
+from .instruction_replay import InstructionLedger
 from .tool_selection import ToolAccess, ToolSelection
 
 if TYPE_CHECKING:
@@ -502,9 +503,45 @@ class Engine(ABC):
     #: moves along that ladder, so a CLI-only name would need a rename step.
     supported_efforts: ClassVar[tuple[str, ...]] = EFFORT_LEVELS
 
+    #: Whether a resumed turn re-sends instructions the session already has
+    #: (C15). Only the engines that fold instructions into the resumed prompt
+    #: turn this on; claude passes them on their own argument.
+    dedups_resumed_instructions: ClassVar[bool] = False
+    #: Whether a resumed turn's instructions count as delivered. codex keeps
+    #: only the first turn's developer_instructions fixed in the session; a
+    #: resumed prompt can be compacted away, so it never counts there.
+    records_resumed_instructions: ClassVar[bool] = False
+    #: Referenced resumed turns in a row before one goes out in full again.
+    #: None never refreshes.
+    instruction_refresh_after: ClassVar[int | None] = None
+
     def __init__(self, profile: Profile, settings: RuntimeSettings) -> None:
         self.profile = profile
         self.settings = settings
+        self._instruction_ledger = InstructionLedger(refresh_after=self.instruction_refresh_after)
+
+    def instructions_for(self, request: EngineRequest) -> str:
+        """The instruction text this turn actually sends.
+
+        A resumed turn swaps blocks the session already received, byte for
+        byte, for a reference (C15). Everything else goes out as composed."""
+        if not (request.resume and self.dedups_resumed_instructions):
+            return request.system_prompt
+        return self._instruction_ledger.reduce(request.session_id, request.system_prompt)
+
+    def note_delivered(self, request: EngineRequest, response: EngineResponse) -> None:
+        """Records what a finished turn put in its session. The runner calls
+        this after every attempt. Only a successful one adds blocks, since a
+        failed call may never have reached the model; any attempt still moves
+        the latest version per heading, since it may have."""
+        if not self.dedups_resumed_instructions:
+            return
+        referenced = self.instructions_for(request) != request.system_prompt
+        delivered = response.ok and (not request.resume or self.records_resumed_instructions)
+        session_id = self.session_id_from(response) or request.session_id
+        self._instruction_ledger.record(
+            session_id, request.system_prompt, delivered=delivered, referenced=referenced
+        )
 
     @property
     def spec(self) -> EngineSpec:
@@ -590,6 +627,9 @@ class Engine(ABC):
         # 이 아닌 한 줄을 내서 bad_json 으로 떨어진다.
         if response.ok or not self.AUTH_FAILURE_MARKERS:
             return None
+        status = self.AUTH_FAILURE_API_STATUS
+        if status is not None and self._api_error_status(response) == status:
+            return self.AUTH_FAILURE_NOTE
         text = self._failure_text(response).lower()
         if not any(marker.lower() in text for marker in self.AUTH_FAILURE_MARKERS):
             return None
@@ -601,6 +641,17 @@ class Engine(ABC):
 
     #: 감지했을 때 사람에게 낼 한 줄. 다시 로그인하는 법이 엔진마다 다르다.
     AUTH_FAILURE_NOTE: ClassVar[str] = ""
+
+    #: CLI 자신의 API 호출이 낸 상태 코드 중 로그인 만료를 뜻하는 값 (C7).
+    #: 문구가 아니라 구조화된 필드라 도구·MCP 서버 출력과 섞이지 않는 엔진만
+    #: 댄다. None 이면 상태 코드로 판정하지 않는다.
+    AUTH_FAILURE_API_STATUS: ClassVar[int | None] = None
+
+    def _api_error_status(self, response: EngineResponse) -> int | None:
+        """CLI 자신의 API 오류 상태 코드. 담는 자리는 엔진이 정한다."""
+        raw = response.raw if isinstance(response.raw, Mapping) else {}
+        value = raw.get("api_error_status")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
 
     @staticmethod
     def _failure_text(response: EngineResponse) -> str:
@@ -773,7 +824,7 @@ class Engine(ABC):
         An engine that folds them into the prompt overrides this (sca-ygd).
         """
         return PayloadFootprint(
-            instruction_bytes=utf8_bytes(request.system_prompt),
+            instruction_bytes=utf8_bytes(self.instructions_for(request)),
             user_prompt_bytes=utf8_bytes(request.prompt),
             adapter_added_bytes=utf8_bytes(
                 self.readable_paths_note(request.readable_dirs)

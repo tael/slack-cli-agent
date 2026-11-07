@@ -37,9 +37,11 @@ from slack_cli_agent.guard.watch import WatchPromiseGuard
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.prompt.sections import SILENT_MARK
 from slack_cli_agent.reliability.watchresult import WatchResultReader
+from slack_cli_agent.render.splitter import extract_csv_blocks
 from slack_cli_agent.session.manager import SessionManager
 from slack_cli_agent.session.ports import SessionKey, SessionRecord
 from slack_cli_agent.slack.policy import addresses_someone_else
+from slack_cli_agent.slack.publisher import PostReceipt
 
 # 대역
 
@@ -186,8 +188,16 @@ class FakeEngineRunner:
 
 
 class FakePublisher:
-    def __init__(self, posted_ts: str = "1700000000.000001") -> None:
+    def __init__(
+        self,
+        posted_ts: str = "1700000000.000001",
+        message_ts: tuple[str, ...] = ("1700000000.000900",),
+    ) -> None:
+        # posted_ts is the thread parent the real MessagePublisher.post hands
+        # back; message_ts is what each chunk actually got. They differ in a
+        # thread, and keeping them equal here hid the B6 answer_ts bug.
         self._posted_ts = posted_ts
+        self._message_ts = message_ts
         self.posted: list[dict[str, Any]] = []
 
     def apply_elapsed_model_line(self, body: str, model: str, rich: bool) -> str:
@@ -201,6 +211,17 @@ class FakePublisher:
             "rich": rich, "flat": flat,
         })
         return self._posted_ts
+
+    def post_receipt(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> PostReceipt | None:
+        parent = self.post(channel, thread_ts, text, rich, flat=flat)
+        if not parent:
+            return None
+        # The real publisher pulls ```csv blocks out before posting; the
+        # receipt carries the text that actually went up.
+        posted_body, _ = extract_csv_blocks(text)
+        return PostReceipt(parent_ts=parent, message_ts=self._message_ts, body=posted_body)
 
 
 class FakeAuditLog:
@@ -348,6 +369,7 @@ def build_pipeline(
     late_addendum: Any = None,
     origin_alive: Any = None,
     tool_post_merger: Any = None,
+    generated_images: Any = None,
     consumption: Any = None,
     watch_queue: Any = None,
     response_archive: Any = None,
@@ -358,6 +380,7 @@ def build_pipeline(
     awaiting: Any = None,
     default_workdir: Path | None = None,
     light_workdir: Path | None = None,
+    transcriber: Any = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -396,6 +419,8 @@ def build_pipeline(
         extra_kwargs["origin_alive"] = origin_alive
     if tool_post_merger is not None:
         extra_kwargs["tool_post_merger"] = tool_post_merger
+    if generated_images is not None:
+        extra_kwargs["generated_images"] = generated_images
     if consumption is not None:
         extra_kwargs["consumption"] = consumption
     if watch_queue is not None:
@@ -414,6 +439,8 @@ def build_pipeline(
         extra_kwargs["awaiting"] = awaiting
     if light_workdir is not None:
         extra_kwargs["light_workdir"] = light_workdir
+    if transcriber is not None:
+        extra_kwargs["transcriber"] = transcriber
     extra_kwargs.setdefault(
         "watch_results",
         WatchResultReader((tmp_path or Path("/tmp")) / ".watch-out"),
@@ -526,6 +553,39 @@ class Test엔진성공:
 
         assert len(deps["audit"].records) == 1
         assert deps["audit"].records[0]["ok"] is True
+
+    def test_게시한_답의_원문과_게시ts를_감사에_남긴다(self, tmp_path: Path) -> None:
+        """서식 점검이 리치 채널 알림 미리보기 대신 원문으로 교정하려면 기록이 필요하다(B6)."""
+        pipeline, deps = build_pipeline(responses=[ok_response(body="| 표 |\n|---|")], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(text="질문입니다"))
+
+        rec = deps["audit"].records[0]
+        assert rec["answer"] == deps["publisher"].posted[0]["text"]
+        assert rec["answer_ts"] == deps["publisher"]._message_ts[0]
+        assert rec["question"] == "질문입니다"
+
+    def test_csv_블록은_빼고_실제로_올린_본문을_기록한다(self, tmp_path: Path) -> None:
+        """게시는 csv 블록을 파일로 빼고 안내 한 줄만 남긴다. 기록이 블록을 품으면
+        서식 점검의 --update 가 csv 를 메시지에 되살린다(B6 검토 case2)."""
+        body = "결과입니다\n\n```csv\na,b\n1,2\n```"
+        pipeline, deps = build_pipeline(responses=[ok_response(body=body)], tmp_path=tmp_path)
+        pipeline.handle(make_ctx())
+
+        rec = deps["audit"].records[0]
+        assert "a,b" not in rec["answer"]
+        assert "csv_1.csv" in rec["answer"]
+
+    def test_답ts는_스레드_부모가_아니라_첫_조각_ts다(self, tmp_path: Path) -> None:
+        """스레드 부모 ts 를 답 ts 로 남기면 부모를 지목한 서식 점검이 후속 답
+        기록을 골라 부모를 그 본문으로 덮는다(B6 검토 case1)."""
+        pub = FakePublisher(posted_ts="1000.000000", message_ts=("1300.000100", "1300.000200"))
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path, publisher=pub)
+        outcome = pipeline.handle(make_ctx())
+
+        rec = deps["audit"].records[0]
+        assert outcome.posted_ts == "1000.000000"
+        assert rec["answer_ts"] == "1300.000100"
+        assert rec["answer_parts"] == ["1300.000100", "1300.000200"]
 
     def test_처리중_표식만_달고_최종_표식은_워커에_맡긴다(self, tmp_path: Path) -> None:
         """최종 표식은 워커가 단다. 둘 다 달면 슬랙 호출이 겹치고 감시 표식이
@@ -987,6 +1047,18 @@ class Test가드사건기록:
 
         assert not any(i["kind"] == IncidentKind.WRONG_ADDRESSEE for i in deps["audit"].incidents)
 
+    def test_요청이_부른_사람은_지우지도_기록하지도_않는다(self, tmp_path: Path) -> None:
+        """파이프라인이 요청 본문을 가드에 넘긴다 (B2)."""
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="<@UOTHER> 님 안녕하세요")],
+            guards=[AddresseeGuard()],
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(text="<@UOTHER> 님께 인사 전해 줘"))
+
+        assert not any(i["kind"] == IncidentKind.WRONG_ADDRESSEE for i in deps["audit"].incidents)
+        assert any("<@UOTHER>" in p["text"] for p in deps["publisher"].posted)
+
     def test_재작성이_앞_답보다_크게_짧으면_rewrite_loss로_기록된다(self, tmp_path: Path) -> None:
         long_first = "본문 " * 100
         checker = Fake늦은추가말("새 말", "1700000009.000000")
@@ -999,6 +1071,22 @@ class Test가드사건기록:
         pipeline.handle(make_ctx())
 
         assert any(i["kind"] == IncidentKind.REWRITE_LOSS for i in deps["audit"].incidents)
+
+
+    def test_비유_교정은_figurative_fix로_기록된다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.guard.figurative import FigurativeGuard
+
+        body = "이번 배치는 정산 파이프라인과 맞닿은 지점에서 실패했습니다. " * 3
+        fixed = body.replace("맞닿은", "연결된")
+        settings = RuntimeSettings().override({"figurative_check": True})
+        guard = FigurativeGuard(settings, is_chat=lambda _c: False,
+                                corrector=lambda text, *, work: {"changed": True, "text": fixed})
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body)], guards=[guard], tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert any(i["kind"] == IncidentKind.FIGURATIVE_FIX for i in deps["audit"].incidents)
 
 
 class Test화자표시이름:
@@ -1433,6 +1521,41 @@ class Test첨부파일:
         assert parts["composer"].contexts[0].missed_files == 0
 
 
+class Test음성_첨부는_워커에서_받아쓴다:
+    """접수(소켓 핸들러)에서 받아쓰면 클립마다 최대 180초 동안 접수 표식과
+    뒤 이벤트가 밀린다. 마메치처럼 큐에서 꺼낸 뒤 받아쓴다(G6 검토)."""
+
+    def test_처리_표식_뒤에_받아쓴_말을_프롬프트_맥락에_싣는다(self) -> None:
+        reactions = FakeReactions()
+        order: list[list[tuple[str, str, str]]] = []
+
+        def fake(path: str) -> tuple[str | None, str]:
+            order.append(list(reactions.events))
+            return "회의 잡아 줘", ""
+
+        files = (
+            {"name": "voice.m4a", "mimetype": "audio/mp4", "local_path": "/a/voice.m4a"},
+            {"name": "a.png", "mimetype": "image/png", "local_path": "/a/a.png"},
+        )
+        pipeline, parts = build_pipeline(
+            responses=[ok_response()], reactions=reactions, transcriber=fake,
+        )
+        pipeline.handle(make_ctx(files=files))
+
+        voice, photo = parts["composer"].contexts[0].files
+        assert voice["transcript"] == "회의 잡아 줘"
+        assert "transcript" not in photo
+        # 받아쓰기 전에 처리 표식이 이미 달렸다
+        assert len(order) == 1 and order[0][0][0] == "processing"
+
+    def test_받아쓰기기가_없으면_실패_사유를_싣는다(self) -> None:
+        files = ({"name": "voice.m4a", "mimetype": "audio/mp4", "local_path": "/a/voice.m4a"},)
+        pipeline, parts = build_pipeline(responses=[ok_response()])
+        pipeline.handle(make_ctx(files=files))
+        voice = parts["composer"].contexts[0].files[0]
+        assert "받아쓰기 엔진이 설정되지 않았다" in voice["transcript_error"]
+
+
 class Test첨부_디렉터리는_해당_파일의_자리로만_열린다:
     """attach_dir 전체를 readable_dirs 에 넣으면 한 요청의 엔진이 그 뿌리를
     나열해 다른 대화의 첨부까지 본다. 파이프라인은 이번 요청이 실제로 받은
@@ -1465,13 +1588,13 @@ class Test링크된스레드:
     def test_링크된_스레드를_요청_프롬프트에_붙인다(self) -> None:
         pipeline, parts = build_pipeline(
             responses=[ok_response()],
-            linked_threads=lambda text, self_channel, attachments: "----- 링크된 스레드 : 테스트 -----",
+            linked_threads=lambda text, self_channel, attachments, as_owner: "----- 링크된 스레드 : 테스트 -----",
         )
         pipeline.handle(make_ctx())
         assert "----- 링크된 스레드 : 테스트 -----" in parts["runner"].calls[0].prompt
 
     def test_조회가_예외를_내도_요청을_막지_않는다(self) -> None:
-        def 터진다(text: str, self_channel: str, attachments: Any) -> str:
+        def 터진다(text: str, self_channel: str, attachments: Any, as_owner: bool) -> str:
             raise RuntimeError("조회 실패")
 
         pipeline, parts = build_pipeline(responses=[ok_response()], linked_threads=터진다)
@@ -1483,7 +1606,7 @@ class Test링크된스레드:
         미리보기 첨부로 본문을 복원할 수 있도록 콜백에 그대로 전달한다."""
         받은: dict[str, Any] = {}
 
-        def 기록(text: str, self_channel: str, attachments: Any) -> str:
+        def 기록(text: str, self_channel: str, attachments: Any, as_owner: bool) -> str:
             받은["attachments"] = attachments
             return ""
 
@@ -1496,6 +1619,23 @@ class Test링크된스레드:
         pipeline, parts = build_pipeline(responses=[ok_response()])
         pipeline.handle(make_ctx())
         assert "링크된 스레드" not in parts["runner"].calls[0].prompt
+
+    @pytest.mark.parametrize(
+        ("user", "expected"),
+        [("UOWNER", True), ("U_OTHER", False), ("", False)],
+    )
+    def test_소유자_턴만_사용자_세션_읽기를_켠다(self, user: str, expected: bool) -> None:
+        """D5 : 사용자 세션 읽기는 프로필 owner_user_id 본인 턴에서만 켠다.
+        controller_user_ids 는 GENERAL 이고 소유자 개인 세션을 쓰지 않는다."""
+        받은: list[bool] = []
+
+        def 기록(text: str, self_channel: str, attachments: Any, as_owner: bool) -> str:
+            받은.append(as_owner)
+            return ""
+
+        pipeline, _ = build_pipeline(responses=[ok_response()], linked_threads=기록)
+        pipeline.handle(make_ctx(user=user))
+        assert 받은 == [expected]
 
 
 class Test가벼운맥락채널:
@@ -1949,6 +2089,87 @@ class Test감시등록:
 
         assert [맥락.watch_run_id for 맥락 in deps["composer"].contexts] == ["첫", "둘"]
         assert 큐.enqueued[0]["run_id"] == "둘"
+
+    @staticmethod
+    def _띄운_흔적(tmp_path: Path, run_id: str) -> None:
+        자리 = tmp_path / ".watch-out"
+        자리.mkdir(exist_ok=True)
+        (자리 / f"{run_id}.out").write_text("", encoding="utf-8")
+
+    def test_세션_리셋_전_시도가_띄운_작업을_감시한다(self, tmp_path: Path) -> None:
+        """새 세션은 첫 시도가 띄운 작업을 모른다. 재시도 이름만 보면 첫 시도의
+        결과 파일은 아무도 읽지 않는다 (C14)."""
+        큐 = Fake감시큐()
+        self._띄운_흔적(tmp_path, "첫")
+        번호 = iter(["첫", "둘"])
+        pipeline, _deps = build_pipeline(
+            responses=[fail_response("nonzero_exit"), ok_response(body="진행 중입니다")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+            new_run_id=lambda: next(번호),
+        )
+        outcome = pipeline.handle(make_ctx())
+
+        assert [작업["run_id"] for 작업 in 큐.enqueued] == ["첫"]
+        assert outcome.watching is True
+
+    def test_세션_리셋_뒤_태그만_있으면_첫_시도_결과_파일로_등록한다(
+        self, tmp_path: Path,
+    ) -> None:
+        """재시도가 아무것도 띄우지 않고 태그만 남기면, 재시도 이름의 결과
+        파일은 끝내 생기지 않아 확인 턴이 NOT_LAUNCHED 만 읽는다."""
+        큐 = Fake감시큐()
+        self._띄운_흔적(tmp_path, "첫")
+        번호 = iter(["첫", "둘"])
+        pipeline, _deps = build_pipeline(
+            responses=[fail_response("nonzero_exit"), ok_response(body="네\n\n[[WATCH: 작업]]")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+            new_run_id=lambda: next(번호),
+        )
+        pipeline.handle(make_ctx())
+
+        assert 큐.enqueued[0]["run_id"] == "첫"
+        assert 큐.enqueued[0]["condition"] == "작업"
+
+    def test_세션_리셋_재시도_프롬프트에_앞선_작업을_알린다(self, tmp_path: Path) -> None:
+        """새 세션이 같은 작업을 다시 띄우면 DAG 트리거 같은 작업이 두 번 실행된다."""
+        self._띄운_흔적(tmp_path, "첫")
+        번호 = iter(["첫", "둘"])
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("nonzero_exit"), ok_response()],
+            tmp_path=tmp_path, new_run_id=lambda: next(번호),
+        )
+        pipeline.handle(make_ctx())
+
+        첫_프롬프트, 재시도_프롬프트 = (호출.prompt for 호출 in deps["runner"].calls)
+        결과_파일 = str(tmp_path / ".watch-out" / "첫.out")
+        assert 결과_파일 not in 첫_프롬프트
+        assert 결과_파일 in 재시도_프롬프트
+        assert "다시 시작하지" in 재시도_프롬프트
+
+    def test_세션_리셋_전_시도가_띄운_것이_없으면_알리지_않는다(self, tmp_path: Path) -> None:
+        번호 = iter(["첫", "둘"])
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("nonzero_exit"), ok_response()],
+            tmp_path=tmp_path, new_run_id=lambda: next(번호),
+        )
+        pipeline.handle(make_ctx())
+
+        assert "다시 시작하지" not in deps["runner"].calls[1].prompt
+
+    def test_재시도도_띄웠으면_재시도_결과_파일을_감시한다(self, tmp_path: Path) -> None:
+        """안내에도 재시도가 다시 띄웠으면 새 결과 파일이 이번 답의 근거다."""
+        큐 = Fake감시큐()
+        self._띄운_흔적(tmp_path, "첫")
+        self._띄운_흔적(tmp_path, "둘")
+        번호 = iter(["첫", "둘"])
+        pipeline, _deps = build_pipeline(
+            responses=[fail_response("nonzero_exit"), ok_response(body="띄웠습니다")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+            new_run_id=lambda: next(번호),
+        )
+        pipeline.handle(make_ctx())
+
+        assert [작업["run_id"] for 작업 in 큐.enqueued] == ["둘"]
 
     def test_기본_생성기는_요청마다_다른_값을_낸다(self, tmp_path: Path) -> None:
         """주입한 값의 전달만 보면 기본 생성기가 상수로 회귀해도 안 걸린다."""
@@ -2412,8 +2633,13 @@ class _도구정책:
     def __init__(self, tools: tuple[str, ...]) -> None:
         self._tools = tools
 
-    def tool_list_for(self, principal: Any, *, prompt: str, skills_enabled: bool) -> tuple[str, ...]:
+    def tool_list_for(
+        self, principal: Any, *, prompt: str, skills_enabled: bool, asker_is_bot: bool = False
+    ) -> tuple[str, ...]:
         return self._tools
+
+    def lookups_for(self, principal: Any, *, asker_is_bot: bool = False) -> tuple[str, ...]:
+        return ()
 
 
 class Test실행_보장_요구를_세운다:

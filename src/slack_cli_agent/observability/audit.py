@@ -34,6 +34,10 @@ class IncidentKind(StrEnum):
     #: One engine call made by a review task. Baseline traffic like REQUEST;
     #: its elapsed value is what timeout decisions are read from.
     REVIEW = "review"
+    #: A review posted although its content check still failed after the one
+    #: rewrite (B8, mametchi audit kind postmortem_five_why). `problems`
+    #: lists what the check found; the report header carries the same list.
+    REVIEW_CHECK_FAILED = "review_check_failed"
     #: One round of the watch queue touching one job. Baseline traffic:
     #: checks/last_run only hold current state, so without this there is no
     #: record that a watch ever ran (sca-j3d).
@@ -56,9 +60,15 @@ class IncidentKind(StrEnum):
     #: (J14, bot.py:6316 snippet_failed). The raw csv is re-posted inline so
     #: the data isn't lost; this records that the file attachment didn't land.
     CSV_UPLOAD_FAILED = "csv_upload_failed"
+    #: A Slack file permalink was removed from an outgoing body (D4,
+    #: bot.py:6494 file_permalink_stripped). Slack re-attaches any linked
+    #: file to the message, so the link would post the same file card twice.
+    FILE_PERMALINK_STRIPPED = "file_permalink_stripped"
     LATE_ADDENDUM = "late_addendum"
     WRONG_ADDRESSEE = "wrong_addressee"
     REWRITE_LOSS = "rewrite_loss"
+    #: A reply the figurative guard rewrote before posting (B9).
+    FIGURATIVE_FIX = "figurative_fix"
     #: A rich chat.update came back stored as rich_text only, while the body
     #: carried a heading/table/divider that Slack renders as its own block
     #: (J7, mametchi post_rich.py verify + separate_blocks). A 200 from
@@ -66,14 +76,25 @@ class IncidentKind(StrEnum):
     REWRITE_UNCONVERTED = "rewrite_unconverted"
     SILENT = "silent"
     #: A reply arrived without a `[[RECIPIENT:...]]` tag while recipient
-    #: enforcement was on, so its body was withheld and only a notice posted
-    #: (J11/D3, bot.py:7872 missing_recipient). Records the block; the
-    #: snippet field holds the withheld body's head for troubleshooting.
+    #: enforcement was on (J11/D3, bot.py:8097 missing_recipient). The body is
+    #: held while the tag alone is re-asked; the snippet field holds its head
+    #: for troubleshooting.
     MISSING_RECIPIENT = "missing_recipient"
+    #: How the tool-less re-ask for a missing tag went (B1, bot.py:8106
+    #: missing_recipient_retry): `recovered` False means the turn ended
+    #: silent with neither the body nor a notice posted.
+    MISSING_RECIPIENT_RETRY = "missing_recipient_retry"
     #: An undeclared `[[...]]` marker line dropped before publish
     #: (strip_unknown_tags, bot.py:1561's UNKNOWN_TAG_LINE_RE). Logged
     #: rather than silently eaten so an invented marker surfaces.
     UNKNOWN_TAG = "unknown_tag"
+    #: A declared marker line (`[[NOWATCH]]`, `[[WATCH_DONE]]`, a mid-body
+    #: `[[RECIPIENT:...]]` ...) still in the body at publish time, so its own
+    #: handler missed it; dropped and logged (B4, bot.py:6521 control_tag_leak).
+    CONTROL_TAG_LEAK = "control_tag_leak"
+    #: Nothing but markers was left once they were dropped, so nothing was
+    #: posted (B4, bot.py:6526 empty_after_tags).
+    EMPTY_AFTER_TAGS = "empty_after_tags"
     #: One published reply's watch disposition, as a `verdict` field:
     #: "watch" (a follow-up watch was registered), "nowatch" (the model
     #: ended with `[[NOWATCH]]` to say none was needed), or "missing"
@@ -93,6 +114,24 @@ class IncidentKind(StrEnum):
     #: Rewriting the tool's file message failed; the answer was posted as a
     #: separate reply instead, so it still reaches the thread.
     TOOL_POST_MERGE_FAILED = "tool_post_merge_failed"
+    #: Someone other than the owner mentioned or invited the bot in an
+    #: unregistered channel. `user` is who, `notified` whether the owner was
+    #: called this time or the cooldown held it (bot.py:7431). Baseline traffic.
+    UNREGISTERED_MENTION = "unregistered_mention"
+    UNREGISTERED_INVITE = "unregistered_invite"
+    #: Credential-shaped strings were masked out of a reply before it was
+    #: posted (A17). `count` says how many; the value itself is never kept.
+    SECRET_REDACTED = "secret_redacted"
+    #: The turn rendered a Mermaid PNG without posting it, so it was rerun
+    #: once in the same session to post (D1, mametchi render_without_post).
+    #: `recovered` says whether that rerun posted successfully; `rerun` is
+    #: False on a fallback-engine turn, which cannot resume the session.
+    RENDER_WITHOUT_POST = "render_without_post"
+    #: A codex turn made pictures and called no posting tool, so the code
+    #: uploaded them to the thread (D2, mametchi generated_image_autopost).
+    #: `files` names them; the _FAILED kind carries `error` instead.
+    GENERATED_IMAGE_AUTOPOST = "generated_image_autopost"
+    GENERATED_IMAGE_AUTOPOST_FAILED = "generated_image_autopost_failed"
 
     def __str__(self) -> str:
         return self.value
@@ -101,6 +140,7 @@ class IncidentKind(StrEnum):
 REQUEST_KIND = IncidentKind.REQUEST.value
 PAYLOAD_KIND = IncidentKind.PAYLOAD.value
 REVIEW_KIND = IncidentKind.REVIEW.value
+REVIEW_CHECK_FAILED_KIND = IncidentKind.REVIEW_CHECK_FAILED.value
 WATCH_CHECKED_KIND = IncidentKind.WATCH_CHECKED.value
 WATCH_FINISHED_KIND = IncidentKind.WATCH_FINISHED.value
 WATCH_ABANDONED_KIND = IncidentKind.WATCH_ABANDONED.value
@@ -118,6 +158,9 @@ BASELINE_KINDS: tuple[IncidentKind, ...] = (
     # — counting it among incidents would swamp the real ones. metrics.py
     # reads these out separately for the NOWATCH 판정률 (J9).
     IncidentKind.WATCH_VERDICT,
+    # A refused attempt the bot answered by calling the owner, not a fault.
+    IncidentKind.UNREGISTERED_MENTION,
+    IncidentKind.UNREGISTERED_INVITE,
 )
 #: Read by metrics.py as well -- a kind that is baseline here must not be
 #: tallied as an incident there.

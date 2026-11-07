@@ -29,6 +29,10 @@ class RequestContext:
     queued_at: float | None = None
     first_reaction_at: float | None = None
     is_direct_message: bool = False
+    #: The event carried a bot_id. The operator check reads this rather than a
+    #: users_info lookup, which reads a failed call as "a person" (A9 review;
+    #: mametchi bot.py:7855 is_bot=bool(event.get("bot_id"))).
+    from_bot: bool = False
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @property
@@ -41,10 +45,12 @@ class RequestContext:
 
         Both the socket path and catch-up ask this before queueing; written
         twice, one side would be fixed and the other left behind (sca-zct1).
-        Attachments do not count — the original checks the text before it
-        saves them (bot.py:5075).
+        A message with attachments is a request even with no words: a voice
+        memo usually arrives with empty text or a mention only. The original
+        has accepted these since 2026-10-22 (bot.py:7705,
+        `if not text and not event.get("files")`).
         """
-        return not self.text.strip()
+        return not self.text.strip() and not self.files
 
     def marked_late(self) -> RequestContext:
         return replace(self, late=True)

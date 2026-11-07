@@ -500,6 +500,9 @@ class WorkerCommand(PreflightGatedServiceCommand):
             # Recorded so a state-file reader can tell a shutting-down process
             # from a dead one.
             on_shutdown_start=lambda inflight: app.mark_shutting_down(),
+            # The turn that asked for this restart is waited on for its grace
+            # only, or the restart and that turn wait on each other.
+            discount=getattr(worker, "restart_requester_discount", None),
         )
         shutdown.register()
         # One file per worker id, so two workers (or a worker and the ingress)

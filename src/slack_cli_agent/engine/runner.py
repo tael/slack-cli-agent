@@ -23,9 +23,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..auth.principal import TrustLevel
 from ..config.settings import RuntimeSettings
 from ..core.errors import ConfigError
+from ..core.secrets import redact
 from ..core.timezones import KST
 from ..observability.progress_hook import append_tool
 from ..session.manager import AUTH_FAILURE_REASON, CAPABILITY_UNMET_REASON
@@ -74,6 +74,19 @@ TAIL_CHARS = 800
 #: 모델 폴백 재시도에 최소로 필요한 남은 시간(초). 이보다 적게 남았으면 다음
 #: 모델을 돌리지 않는다 - 시작하자마자 또 끊겨 슬롯만 축낸다 (B17).
 MODEL_RETRY_MIN_SEC = 60
+
+
+#: How much of a nonzero-exit run's output to keep. A CLI that exits early
+#: writes why at the top - usage, a config error, a stack trace - so the head
+#: is what a human reads, not the tail (C8, bot.py 의 stdout 앞 2000자와 같은 폭).
+HEAD_CHARS = 2000
+
+
+def head_chars(text: str | None, limit: int = HEAD_CHARS) -> str:
+    """First `limit` characters of `text`; empty for None/empty."""
+    if not text:
+        return ""
+    return text[:limit]
 
 
 def tail_chars(text: str | None, limit: int = TAIL_CHARS) -> str:
@@ -334,6 +347,20 @@ class EngineRunner:
                     response, elapsed=wall_elapsed, elapsed_source=ElapsedSource.RUNNER
                 )
             last = response
+            if completed.returncode != 0:
+                # 종료코드만으로는 왜 실패했는지 알 수 없다. 원문은 로그-세이프
+                # 경계를 지켜 FailureDetail 엔 넣지 않고 앞 2KB 만 로그로 남긴다 (C8).
+                log.warning(
+                    "엔진 %s 가 종료코드 %d 로 끝났습니다 (%s). 출력(앞 %d자)"
+                    " stdout=%r stderr=%r",
+                    engine.name, completed.returncode,
+                    response.failure_reason or "실패 사유 없음", HEAD_CHARS,
+                    redact(head_chars(_as_text(completed.stdout))),
+                    redact(head_chars(_as_text(completed.stderr))),
+                )
+            # C15 — 성공한 턴이 세션에 실은 지침을 적어 둔다. 다음 재개 턴은
+            # 그중 바뀌지 않은 블록을 다시 싣지 않는다.
+            engine.note_delivered(attempt, response)
             # 모델 하나의 장애이고, 도구가 안 돌았고, 다음 모델이 남았으면 넘어간다.
             # 도구가 이미 돈 턴을 다시 돌리면 같은 쓰기가 두 번 난다.
             if (not response.ok and not is_last
@@ -599,6 +626,8 @@ class EngineRunner:
         return subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
             env=dict(env) if env is not None else None, check=False,
+            # Same reason as run_streaming: an inherited stdin can hang the CLI.
+            stdin=subprocess.DEVNULL,
         )
 
 
@@ -898,19 +927,17 @@ class FallbackEngine(Engine):
         """Handles this turn on the approved fallback engine.
 
         A different engine can't continue a session, so this opens a
-        new one. Model naming also differs per engine, so it uses the
-        secondary's own configured model -- the owner grade included, or
-        the owner's request would quietly drop to the secondary's general
-        model (sca-14h). A channel's explicitly named model can't carry
-        over at all; engine model names don't correspond.
+        new one. Model naming also differs per engine, so a channel's model
+        can't carry over; every requester gets the secondary's default model.
+        The owner is not raised to the secondary's owner model any more: the
+        primary picks one model for every requester (A13, 김태일 2026-10-22),
+        and raising only here split the grades again (supersedes sca-14h).
         """
         self._active = self.secondary
-        owner = request.trust_level is TrustLevel.OWNER
-        model = self.secondary.spec.model_for_owner() if owner else None
         fallback_request = EngineRequest(
             prompt=request.prompt, system_prompt=request.system_prompt,
             session_id=None, resume=False,
-            model=model, effort=request.effort,
+            model=None, effort=request.effort,
             workdir=request.workdir, readable_dirs=request.readable_dirs,
             tools=request.tools, trust_level=request.trust_level,
             # codex and gemini are the engines that read input_mark_for, so

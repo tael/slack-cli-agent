@@ -12,6 +12,7 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from ..config.channel import advisor_enabled, is_channel_operator
 from ..core.channel_kind import is_direct_message_channel
 from .principal import Principal, TrustLevel
 
@@ -38,6 +39,10 @@ DEFAULT_EFFORT = "medium"
 #: settings-layer deny must step aside for a name this method already let
 #: through -- one flag, one set of names, both axes.
 OPERATOR_TOOLS: frozenset[str] = frozenset({"Bash", "Edit", "Write", "NotebookEdit"})
+
+#: operator_level results. Empty means not an operator.
+OPERATOR = "operator"
+OPERATOR_FULL = "operator_full"
 
 
 class AccessExtension(ABC):  # noqa: B024 — 확장점이다. 기본이 no-op 이라 강제할 메서드가 없다
@@ -69,8 +74,9 @@ class AccessPolicy:
         only if the channel's trusted_users lists them.
 
         controller_user_ids are accepted (accepts_request) but not promoted:
-        a controller is OWNER-equivalent only through the delegation ledger,
-        and even then it gets the delegated tool set, not owner trust. With
+        a controller acts only for a message the delegation ledger vouches
+        for, and then it gets the channel operator's tool set
+        (operator_level), not owner trust. With
         no ledger configured every controller turn is plain GENERAL.
         """
         is_dm = is_direct_message_channel(channel)
@@ -128,13 +134,21 @@ class AccessPolicy:
         return self.is_full_authority(principal)
 
     def model_for(self, principal: Principal) -> str:
-        """Model to use. The owner always gets the owner model regardless of channel."""
-        if principal.trust is TrustLevel.OWNER:
-            return self._profile.primary_engine.model_for_owner()
+        """Model to use, the same for every requester (mametchi model_for,
+        bot.py). An advisor channel runs on its executor model, then the
+        channel's model, then the engine default. The owner is not forced to
+        the owner model any more: that ran chat channels on the big model and
+        kept a channel's model from reaching the owner (김태일, 2026-10-22).
+        Reviews pick their own model (review/engine_adapter.py)."""
         config = self._channels.get(principal.channel)
+        default = self._profile.primary_engine.model
+        if config is not None and advisor_enabled(config):
+            # Same as bot.py advisor_executor: an empty executor falls back
+            # to the default model, not to the channel's model.
+            return str(config.extra["advisor"].get("executor") or default)
         if config and config.model:
             return config.model
-        return self._profile.primary_engine.model
+        return default
 
     def effort_for(self, principal: Principal, prompt: str) -> str:
         """'ultrathink' in the prompt bumps effort to high. Otherwise uses
@@ -164,8 +178,11 @@ class AccessPolicy:
         return self._channel_flag(principal.channel, "full_authority")
 
     def channel_tools_for(self, principal: Principal) -> tuple[str, ...]:
-        """Extra tools this channel grants this user. The owner is left out —
-        owner tools already cover it, same as the original (bot.py:110).
+        """Extra tools this channel grants this user: `extra_tools` for every
+        turn, then -- for a non-owner only -- the user's `user_tools` and the
+        airflow_ctl wrapper when `airflow_admins` lists them (mametchi
+        channel_extra_tools, is_airflow_admin). The owner gets only
+        `extra_tools`: owner tools already cover the rest (bot.py:110).
 
         A bare entry in OPERATOR_TOOLS (Bash, Edit, Write, NotebookEdit) only
         reaches a non-owner when the channel's `operator_full` is on. Without
@@ -178,19 +195,40 @@ class AccessPolicy:
         grant like `Bash(ops_ctl.sh:*)` is a different string from `Bash` and
         is never dropped here.
         """
-        if principal.trust is TrustLevel.OWNER:
-            return ()
         config = self._channels.get(principal.channel)
         if not config:
             return ()
-        names = tuple(config.user_tools.get(principal.user_id, ()))
+        if principal.trust is TrustLevel.OWNER:
+            return config.extra_tools
+        names = list(config.user_tools.get(principal.user_id, ()))
+        names += config.extra_tools
+        ctl = self._profile.airflow_ctl
+        if ctl is not None and principal.user_id and principal.user_id in config.airflow_admins:
+            names.append(f"Bash({ctl}:*)")
+        names = list(dict.fromkeys(names))
         if config.operator_full:
-            return names
+            return tuple(names)
         return tuple(name for name in names if name not in OPERATOR_TOOLS)
 
-    def operator_full_for(self, principal: Principal) -> bool:
-        """Whether this channel lets a non-owner hold the bare OPERATOR_TOOLS."""
-        return self._channel_flag(principal.channel, "operator_full")
+    def operator_level(self, principal: Principal, *, is_bot: bool = False) -> str:
+        """OPERATOR_FULL, OPERATOR or "" for a non-owner in this channel.
+
+        A user the channel's `operators` names (or anyone, under "*") may make
+        the bot act: ToolPolicy hands them the profile's operator tools, holding
+        the bare write tools back unless the channel is `operator_full` (mametchi
+        build_command can_act / full_op). A bot is never an operator by the
+        list; a controller bot is one only for a message the delegation ledger
+        vouches for (mametchi bot.py:7855 operator=bool(delegated) or
+        is_operator). The owner needs no level -- owner tools already apply.
+        """
+        if principal.trust is TrustLevel.OWNER:
+            return ""
+        config = self._channels.get(principal.channel)
+        if not principal.delegated and not is_channel_operator(
+            config, principal.user_id, is_bot=is_bot,
+        ):
+            return ""
+        return OPERATOR_FULL if config and config.operator_full else OPERATOR
 
     def _is_channel_trusted(self, channel: str, user: str) -> bool:
         config = self._channels.get(channel)

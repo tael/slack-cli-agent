@@ -69,6 +69,7 @@ KNOWN_KEYS = frozenset(
         "light_context", "rich", "chat",
         "progress", "bot_mentions", "code_first",
         "user_tools", "tool_enforcement",
+        "operators", "airflow_admins", "extra_tools",
     }
 )
 """Channel-setting keys the core reads. Org-specific keys (like org_admins)
@@ -76,20 +77,17 @@ aren't here — plugins read those from `extra`.
 
 I82 — disposition of mametchi channels.json keys that are *not* core fields:
 
-* ``operators`` / ``advisor`` / ``airflow_admins`` — role and routing keys.
-  The role *judgement* is common, but the user-ID lists and advisor model
-  belong to the org, so they stay in ``extra`` for a plugin to read (same
-  boundary as ``user_tools``, sca-ww4). The core reads them only through
-  advisor_enabled / airflow_admins / is_channel_operator below, to decide
-  which prompt sections apply and which channel IDs go into the engine's
-  ADVISOR_CHANNELS env.
+* ``advisor`` — routing key. The advisor model belongs to the org, so it
+  stays in ``extra``; the core reads it only through advisor_enabled below.
+* ``operators`` / ``airflow_admins`` / ``extra_tools`` — promoted to core
+  fields (A9): they now decide the turn's tool list (auth/policy.py), so a
+  bad value must be caught by preflight rather than read silently.
 * ``broadcast`` — a per-channel flag an org's post MCP reads (mametchi
   mermaid_render.py) to allow posting into the channel body, not just a
   thread; ``extra`` only.
 * ``shadow_source`` — the paired source channel a shadow/mirror channel
-  mirrors (mametchi shadow_source_api); ``extra`` only.
-* ``extra_tools`` — channel-wide blanket tool list (A25). Captured in
-  ``extra`` today; promoting it to a core field is tracked separately.
+  mirrors (mametchi shadow_source_api); ``extra`` only. shadow/service.py
+  reads it, and ``shadow_judge`` beside it, to run shadow evaluation (G4).
 * ``mention_only`` — *not* a replacement key: answering only mentions is the
   core default (``answer_unaddressed`` and ``answer_top_level`` both off), so
   this is absorbed by the default rather than needing its own field.
@@ -161,6 +159,16 @@ class ChannelConfig:
     after being open 2026-10-02~10-14). Scoped grants like
     `Bash(ops_ctl.sh:*)` are unaffected either way -- only the bare tool name
     needs this flag."""
+    operators: frozenset[str] = frozenset()
+    """Users who may make this bot act here (mametchi operators). A non-owner
+    listed here, or anyone when it holds ``"*"``, gets the profile's
+    operator_tools minus the bare write tools (``operator_full`` returns
+    those). A bot never counts."""
+    airflow_admins: frozenset[str] = frozenset()
+    """Users who get the profile's airflow_ctl wrapper as a scoped Bash grant."""
+    extra_tools: tuple[str, ...] = ()
+    """Tools every turn in this channel gets, owner included (mametchi
+    extra_tools). A bare write tool still needs ``operator_full`` for a non-owner."""
     skills: bool = False
     light_context: bool = False
     rich: bool = DEFAULT_RICH
@@ -234,6 +242,9 @@ class ChannelConfig:
             disclose_mechanism=bool(data.get("disclose_mechanism", False)),
             full_authority=bool(data.get("full_authority", False)),
             operator_full=bool(data.get("operator_full", False)),
+            operators=_id_set(data.get("operators")),
+            airflow_admins=_id_set(data.get("airflow_admins")),
+            extra_tools=_tool_names(data.get("extra_tools")),
             skills=bool(data.get("skills", False)),
             light_context=bool(data.get("light_context", False)),
             rich=bool(data.get("rich", DEFAULT_RICH)),
@@ -287,22 +298,36 @@ def advisor_enabled(config: ChannelConfig | None) -> bool:
     return config is not None and isinstance(config.extra.get("advisor"), Mapping)
 
 
+def _id_set(raw: Any) -> frozenset[str]:
+    """A list of user IDs; anything that isn't a list reads as nobody."""
+    if not isinstance(raw, (list, tuple)):
+        return frozenset()
+    return frozenset(str(u) for u in raw if str(u).strip())
+
+
+def _tool_names(raw: Any) -> tuple[str, ...]:
+    """A list of tool names; non-strings and blanks are dropped (mametchi
+    channel_extra_tools), and a non-list reads as none."""
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(t.strip() for t in raw if isinstance(t, str) and t.strip())
+
+
 def airflow_admins(config: ChannelConfig | None) -> frozenset[str]:
-    """Slack user IDs the channel lists under ``airflow_admins`` (``extra``).
+    """Slack user IDs the channel lists under ``airflow_admins``.
     Unlisted channels give nobody the Airflow role (mametchi authz.airflow_admins)."""
     if config is None:
         return frozenset()
-    return frozenset(str(u) for u in (config.extra.get("airflow_admins") or ()))
+    return config.airflow_admins
 
 
 def is_channel_operator(config: ChannelConfig | None, user: str, *, is_bot: bool = False) -> bool:
-    """True when the channel's ``operators`` list (``extra``) names the user or
+    """True when the channel's ``operators`` list names the user or
     holds ``"*"``. A bot is never an operator: letting a bot's mention open the
     operator path erases the permission boundary (mametchi authz.is_operator)."""
     if config is None or is_bot or not user:
         return False
-    listed = {str(u) for u in (config.extra.get("operators") or ())}
-    return "*" in listed or user in listed
+    return "*" in config.operators or user in config.operators
 
 
 class ChannelRegistry:

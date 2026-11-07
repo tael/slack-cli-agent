@@ -27,7 +27,7 @@ from ..admin.defaults import default_admin_commands
 from ..admin.router import AdminRouter
 from ..auth.delegation import DelegationLedger
 from ..auth.execution_policy import ExecutionPolicy
-from ..auth.policy import AccessPolicy
+from ..auth.policy import DEFAULT_EFFORT, AccessPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelConfig, ChannelRegistry, channel_is_rich
@@ -53,6 +53,7 @@ from ..engine.transcript import (
 )
 from ..guard.base import OutputGuard
 from ..guard.dropline import ConfiguredLineDropGuard
+from ..guard.figurative import FigurativeGuard, is_chat_channel
 from ..guard.mentions import (
     AddresseeGuard,
     BotMentionGuard,
@@ -87,6 +88,7 @@ from ..observability.slow_report import (
 )
 from ..observability.state_snapshot import StateSnapshotBuilder, StateSnapshotWriter
 from ..plugin.base import BotPlugin
+from ..plugin.hooks import background_runners, event_callbacks
 from ..plugin.loader import PluginLoader
 from ..prompt.composer import PromptComposer, SystemPromptComposer
 from ..prompt.knowledge import KnowledgeLoader
@@ -116,17 +118,19 @@ from ..prompt.sections import (
     TrustedSection,
     WatchSection,
 )
-from ..reliability.catchup import CatchupService
+from ..reliability.catchup import CatchupService, RetryStatus, StuckCause
 from ..reliability.connection import ConnectionCatchupCoordinator
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
 from ..reliability.outage import NetworkOutageEscalation, OutageTracker
+from ..reliability.restart import ApplyRequestWatch
 from ..reliability.pending_report import PendingReportStore, assemble_recovery_report
 from ..reliability.startup import StartupCatchup
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
 from ..reliability.watchresult import WatchOutcome, WatchResultReader
 from ..reliability.watchrunner import (
     WatchJobChecker,
+    watch_already_reported_prompt,
     watch_check_prompt,
     watch_supersede_prompt,
 )
@@ -145,13 +149,16 @@ from ..review.trace import DebugTraceTask
 from ..session.awaiting import SqliteAwaitingStore
 from ..session.manager import SessionManager
 from ..session.store import SqliteSessionStore
+from ..shadow.service import ShadowPlugin, ShadowService, TurnResult, shadow_pairs, tool_calls_in
+from ..shadow.store import ShadowStore
 from ..slack.assistant import DEFAULT_GREETING, AssistantPanel
 from ..slack.attachments import AttachmentStore, DownloadResult
 from ..slack.channel_names import ChannelNameResolver
-from ..slack.credentials import CredentialResolver, resolver_for
+from ..slack.credentials import CredentialResolver, owner_session_client, resolver_for
 from ..slack.download import HttpDownloader
 from ..slack.gate import ResponseGate
 from ..slack.gateway import SlackGateway
+from ..slack.generated_images import SlackGeneratedImagePoster
 from ..slack.history import HistoryReader
 from ..slack.history_port import SlackHistoryPort
 from ..slack.identity import BotIdentity, SlackBotIdentity
@@ -165,6 +172,7 @@ from ..slack.owner_only_audit import OwnerOnlyChannelAudit
 from ..slack.participants import ThreadParticipants
 from ..slack.progress import (
     FallbackProgressSink,
+    SlackAgentStatusProgressSink,
     SlackProgressSink,
     SlackTaskCardProgressSink,
 )
@@ -185,10 +193,14 @@ from ..slack.review_ports import (
 from ..slack.roster import RosterBuilder
 from ..slack.thread_activity import SlackThreadActivity
 from ..slack.tool_post import SlackToolPostMerger
+from ..slack.transcribe import Transcriber
 from ..slack.transcript import TranscriptBuilder
 from ..storage.admin_claims import AdminClaims
 from ..storage.connection_epochs import SqliteConnectionEpochs
 from ..storage.database import Database
+from ..welcome.plugin import WelcomePlugin
+from ..welcome.service import WelcomeService
+from ..welcome.store import WelcomeStore
 from .access import RequestAccess
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
@@ -198,6 +210,7 @@ from .lifecycle import InflightCounter, InflightRegistry
 from .periodic import PeriodicRunner
 from .pipeline import RequestPipeline, _domain_applies
 from .services import ServiceGroup
+from .slots import ConcurrencySlots, FileSlots
 from .spawn import ThreadTaskSpawner
 from .sweeplog import SweepLog
 from .timezones import KST
@@ -232,6 +245,31 @@ def mode_prompt_names(modes: Sequence[str] = KNOWN_MODES) -> dict[str, str]:
     return {mode: f"PROMPT_{mode.upper()}" for mode in modes}
 
 
+
+def _stuck_cause_text(status: RetryStatus) -> str:
+    """Explains, per cause, why catch-up for a channel can't finish.
+
+    The alert used to always blame an empty channel history, which was
+    wrong once an unreadable long thread also kept a channel on the retry
+    list (PR #124): the owner would look for a Slack outage that wasn't there.
+    """
+    if status.cause == StuckCause.UNREADABLE_THREAD:
+        return (
+            f"긴 스레드 {status.unreadable_threads}개를 끝까지 읽지 못했습니다.\n"
+            "중간 페이지를 읽다 실패했거나 읽을 수 있는 페이지 수 한도를 넘었습니다.\n"
+            "그 스레드에서 답을 기다리는 요청이 있어도 잡히지 않습니다.\n"
+            "끝까지 읽은 나머지 스레드는 이번 점검에 반영했습니다."
+        )
+    if status.cause == StuckCause.UNKNOWN_IDENTITY:
+        return (
+            "봇 자신의 사용자 정보를 확인하지 못해 부름 여부를 판정하지 못합니다.\n"
+            "그 채널에서 답을 기다리는 요청이 있어도 잡히지 않습니다."
+        )
+    return (
+        "슬랙이 채널 기록을 계속 빈 목록으로 돌려줍니다.\n"
+        "그 채널에서 답을 기다리는 요청이 있어도 잡히지 않습니다."
+    )
+
 class Application:
     """Builds and wires every component that makes up one bot."""
 
@@ -247,9 +285,13 @@ class Application:
         transcript_readers: TranscriptReaderRegistry | None = None,
         token_provider: Any = None,
         clock: Callable[[], float] = time.monotonic,
+        owner_client: Any = None,
     ) -> None:
         self._profile = profile
         self._client = client
+        # 소유자 사용자 세션 클라이언트. 소유자 턴의 링크 선읽기에만 쓴다(D5).
+        self._owner_client = owner_client
+        self._owner_channel_name_resolver: ChannelNameResolver | None = None
         # injected so tests can control identity-refresh timing
         self._clock = clock
         profile.paths.ensure()
@@ -282,6 +324,9 @@ class Application:
         self._user_namer: UserNamer | None = None
         self._group_names = UserGroupNameResolver(client)
         self._bot_users = BotUserResolver(client)
+        # One bot-to-bot cap for the listener and catch-up (C3, C19); two
+        # counters would let catch-up answer a mention the live path capped.
+        self._peer_exchange = PeerExchangeLimiter()
         self._channel_name_resolver: ChannelNameResolver | None = None
         self._usage_check_run = run_command
         self._notices = NoticeCatalog()
@@ -313,6 +358,9 @@ class Application:
         self._reactions: ReactionMarker | None = None
         self._publisher: MessagePublisher | None = None
         self._review_tasks: dict[str, ReviewTask] | None = None
+        self._welcome: WelcomePlugin | None = None
+        self._welcome_service: WelcomeService | None = None
+        self._welcome_caller: ReviewEngineCaller | None = None
         self._identity: SlackBotIdentity | None = None
         self._roster_builder: RosterBuilder | None = None
         self._roster_refresher: PeriodicRunner | None = None
@@ -368,6 +416,8 @@ class Application:
 
             client = WebClient(token=resolver.bot_token())
         kwargs.setdefault("token_provider", resolver.bot_token)
+        if "owner_client" not in kwargs:
+            kwargs["owner_client"] = owner_session_client(resolver)
         return cls(profile, client, **kwargs)
 
     def bot_token(self) -> str:
@@ -521,8 +571,10 @@ class Application:
                 self._settings.owner_tools,
                 extensions,
                 channel_tools=self.access_policy.channel_tools_for,
-                operator_full=self.access_policy.operator_full_for,
                 always_skills=self._settings.always_skills or ALWAYS_SKILLS,
+                operator_level=self.access_policy.operator_level,
+                operator_tools=self._settings.operator_tools,
+                readonly_tools=self._settings.readonly_tools,
             )
         return self._tool_policy
 
@@ -568,6 +620,7 @@ class Application:
             domain_file=self._profile.domain_file, learned_dir=paths.learned,
             local_dir=paths.local,
             always_skills=self._settings.always_skills or ALWAYS_SKILLS,
+            wiki_dir=paths.wiki,
         )
         return SystemPromptComposer(
             library, knowledge, self._prompt_sections(),
@@ -580,21 +633,35 @@ class Application:
         config = self._channels.get(channel)
         return bool(config and config.bot_mentions)
 
+    def _is_chat_channel(self, channel: str) -> bool:
+        """Read per request, like `_bot_mentions_allowed`."""
+        return is_chat_channel(self._channels.get(channel))
+
+    def _is_bot_or_peer(self, user_id: str) -> bool:
+        """A controller is a bot even when users_info fails. Both mention
+        guards read this one verdict, so a peer that AddresseeGuard keeps at
+        the head has already been through BotMentionGuard's channel check (B2)."""
+        return user_id in self._profile.controller_user_ids or self._bot_users.is_bot(user_id)
+
     def _guards(self) -> GuardPipeline:
         guards: list[OutputGuard] = [
             PlainMentionGuard(),
-            # Before AddresseeGuard so a bot mention at the head is turned
-            # into a name here rather than cut with a note meant for people.
+            # Before AddresseeGuard: in a channel without `bot_mentions` a bot
+            # mention at the head becomes a name here, so AddresseeGuard's
+            # bot exception never lets one through that this guard would cut.
             BotMentionGuard(
-                is_bot=self._bot_users.is_bot,
+                is_bot=self._is_bot_or_peer,
                 display_name=self._names.resolve,
                 allowed_in=self._bot_mentions_allowed,
             ),
-            AddresseeGuard(),
+            AddresseeGuard(is_bot=self._is_bot_or_peer),
             WatchPromiseGuard(),
             RewriteLossGuard(self._settings),
             # safe to always include — a no-op when the drop-line list is empty
             ConfiguredLineDropGuard(self._settings),
+            # Last of the built-ins so it sees the body the other guards
+            # settled on; a no-op unless `figurative_check` is on.
+            FigurativeGuard(self._settings, is_chat=self._is_chat_channel),
         ]
         guards.extend(g for p in self._plugins for g in p.output_guards())
         return GuardPipeline(guards)
@@ -648,15 +715,20 @@ class Application:
         if self._progress is None:
             self._progress = ProgressCoordinator(
                 settings=self._settings,
+                # 2026-11-07 김태일 지시 : 진행 카드 대신 마메치처럼 "앱이 작업 중"
+                # 상태 표시만 쓴다. 상태가 거부되면 카드, 카드도 거부되면 줄 표시로 내려간다.
                 sink_factory=lambda channel, thread_ts, _user: FallbackProgressSink(
-                    # 끝난 카드가 "작업 완료" 로 답 위에 남아 답이 두 개처럼 읽혔다
-                    # (2026-09-30 DE에이전트 시험). 끝나면 지워 스레드에 답만 남긴다.
-                    lambda: SlackTaskCardProgressSink(
-                        self._client, channel, thread_ts, self._profile.display_name,
-                        keep_on_close=False,
-                    ),
-                    lambda: SlackProgressSink(
-                        self._client, channel, thread_ts, self._profile.display_name,
+                    lambda: SlackAgentStatusProgressSink(self._client, channel, thread_ts),
+                    lambda: FallbackProgressSink(
+                        # 끝난 카드가 "작업 완료" 로 답 위에 남아 답이 두 개처럼 읽혔다
+                        # (2026-09-30 DE에이전트 시험). 끝나면 지워 스레드에 답만 남긴다.
+                        lambda: SlackTaskCardProgressSink(
+                            self._client, channel, thread_ts, self._profile.display_name,
+                            keep_on_close=False,
+                        ),
+                        lambda: SlackProgressSink(
+                            self._client, channel, thread_ts, self._profile.display_name,
+                        ),
                     ),
                 ),
                 log_dir=self._profile.paths.progress,
@@ -681,9 +753,9 @@ class Application:
             )
         return self._user_namer
 
-    def _transcript_builder(self) -> TranscriptBuilder:
+    def _transcript_builder(self, client: Any = None) -> TranscriptBuilder:
         return TranscriptBuilder(
-            client=self._client,
+            client=self._client if client is None else client,
             settings=self._settings,
             notices=self._notices,
             name_resolver=self.user_namer(),
@@ -722,11 +794,21 @@ class Application:
         """Reuses _transcript_builder so a linked thread is formatted exactly
         like the current one — a second formatter here would drift.
         """
+        owner_transcript = owner_names = None
+        if self._owner_client is not None:
+            owner_transcript = self._transcript_builder(self._owner_client)
+            if self._owner_channel_name_resolver is None:
+                self._owner_channel_name_resolver = ChannelNameResolver(
+                    self._owner_client, self._channel_display_name
+                )
+            owner_names = self._owner_channel_name_resolver
         return LinkedThreadNote(
             LinkedThreadReader(
                 self._transcript_builder(),
                 self._channel_names(),
                 max_links=self._settings.linked_thread_max,
+                owner_transcript=owner_transcript,
+                owner_channel_name=owner_names,
             )
         )
 
@@ -742,7 +824,11 @@ class Application:
         return self._channel_name_resolver
 
     def _history_port(self) -> SlackHistoryPort:
-        return SlackHistoryPort(HistoryReader(self._client, self._settings), self._client)
+        return SlackHistoryPort(
+            HistoryReader(self._client, self._settings),
+            self._client,
+            max_pages=self._settings.history_max_pages,
+        )
 
     def queue(self) -> SqliteJobQueue:
         if self._queue is None:
@@ -786,8 +872,8 @@ class Application:
                 # built lazily rather than as a field — eagerly building it here would
                 # look up the bot user ID, making assembly alone call out to Slack
                 participants=lambda channel, thread_ts: self._participants().of(channel, thread_ts),
-                linked_threads=lambda text, channel, attachments: self._linked_threads().of(
-                    text, channel, attachments
+                linked_threads=lambda text, channel, attachments, as_owner: (
+                    self._linked_threads().of(text, channel, attachments, as_owner=as_owner)
                 ),
                 late_addendum=self._late_addendum(),
                 origin_alive=SlackOriginAliveChecker(self._client),
@@ -797,6 +883,10 @@ class Application:
                     update=lambda channel, ts, text, rich: self.publisher().update(
                         channel, ts, text, rich
                     ),
+                    audit=self.audit().record,
+                ),
+                generated_images=SlackGeneratedImagePoster(
+                    self._client, codex_home_for=self._codex_home_for,
                     audit=self.audit().record,
                 ),
                 consumption=self.consumption,
@@ -810,6 +900,8 @@ class Application:
                 # short approval ("좋아") arriving hours later still reads as an
                 # answer and not a stray reaction — see session/awaiting.py.
                 awaiting=SqliteAwaitingStore(self._database),
+                # 워커에서 받아쓴다. 접수 경로에서 돌면 소켓 핸들러가 밀린다(G6).
+                transcriber=Transcriber(),
             )
         return self._pipeline
 
@@ -1066,6 +1158,13 @@ class Application:
             # report posting, and both would reach the channel.
             thread_activity=self.thread_activity(),
             run_supersede_check=self._run_watch_supersede_check,
+            # The already-reported verdict, in its own tool-less turn: the
+            # thread text is not the registrant's, so it stays out of the
+            # check turn that has read tools (C6 review).
+            run_reported_check=self._run_watch_reported_check,
+            # A question deleted between registration and report would leave
+            # the report in a thread that is no longer the asker's (C6).
+            origin_alive=SlackOriginAliveChecker(self._client),
         )
 
     def watch_result_cleanup_runner(self) -> PeriodicRunner:
@@ -1084,10 +1183,18 @@ class Application:
         )
         self._watch_result_log.record(removed)
 
-    def watch_runner(self) -> PeriodicRunner:
-        # without this runner, watch jobs get registered but never checked
+    def watch_runner(self, hold: Callable[[], bool] | None = None) -> PeriodicRunner:
+        # without this runner, watch jobs get registered but never checked.
+        # `hold` skips a tick: a check is an engine turn outside the claim
+        # loop, and one started after an apply request is cut by the restart.
+        check = self.watch_checker().check_once
+
+        def tick() -> None:
+            if hold is None or not hold():
+                check()
+
         return PeriodicRunner(
-            self.watch_checker().check_once,
+            tick,
             self._settings.watch_check_interval_sec,
             name="watch_jobs",
         )
@@ -1174,9 +1281,12 @@ class Application:
             # to start new work, which watch_check_prompt forbids (sca-ejy).
             watch_check=True,
         ))
-        watch_tools = ToolSelection.from_names(self.tool_policy().tool_list_for(
-            principal, prompt=prompt, readonly=True, skills_enabled=False,
-        ))
+        watch_tools = ToolSelection.from_names(
+            self.tool_policy().tool_list_for(
+                principal, prompt=prompt, readonly=True, skills_enabled=False,
+            ),
+            lookups=self.tool_policy().lookups_for(principal, readonly=True),
+        )
         return self.engine_invoker.invoke(EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
@@ -1211,6 +1321,20 @@ class Application:
         tools for that reason, which also keeps it from starting new work the
         way `watch_check_prompt` forbids for the check turn next to it.
         """
+        return self._run_watch_verdict(
+            job, watch_supersede_prompt(job.condition, transcript, draft),
+            f"watch-supersede-{job.id}-{job.run_id}",
+        )
+
+    def _run_watch_reported_check(self, job: WatchJob, transcript: str) -> EngineResponse:
+        """The already-reported verdict before a check, tool-less for the same
+        reason as the duplicate check: the transcript is anyone's text."""
+        return self._run_watch_verdict(
+            job, watch_already_reported_prompt(job.condition, transcript),
+            f"watch-reported-{job.id}-{job.run_id}",
+        )
+
+    def _run_watch_verdict(self, job: WatchJob, prompt: str, request_id: str) -> EngineResponse:
         principal = Principal(
             user_id=self._profile.owner_user_id if job.trust is TrustLevel.OWNER else "",
             channel=job.channel,
@@ -1219,7 +1343,6 @@ class Application:
         )
         config = self._channels.get(job.channel)
         workdir = _watch_workdir(job, config, self._profile.work_root)
-        prompt = watch_supersede_prompt(job.condition, transcript, draft)
         system_prompt = self._composer().compose(CompositionContext(
             principal=principal,
             prompt=prompt,
@@ -1240,13 +1363,15 @@ class Application:
             session_id=None,
             resume=False,
             model=self.access_policy.model_for(principal),
-            effort=self.access_policy.effort_for(principal, prompt),
+            # The condition, not the prompt: the prompt carries thread text,
+            # and a participant's "ultrathink" would raise the effort.
+            effort=self.access_policy.effort_for(principal, job.condition),
             workdir=workdir,
             tools=no_tools,
             requirements=self.execution_policy.requirements_for(
                 config=config, tools=no_tools,
             ),
-            request_id=f"watch-supersede-{job.id}-{job.run_id}",
+            request_id=request_id,
             readable_dirs=self.readable_dirs,
             trust_level=job.trust,
         ), CallOrigin.BACKGROUND)
@@ -1298,13 +1423,107 @@ class Application:
                 settings=self._settings,
                 identity=self.identity,
                 attachments=self.attachments(),
+                # The listener's C16/C17 checks use this lookup too (C3).
+                is_bot=self._bot_users.is_bot,
+                bot_user_of=self._bot_users.user_of_bot,
+                peer_limiter=self._peer_exchange,
             )
         return self._catchup_service
+
+    def concurrency_slots(self) -> ConcurrencySlots:
+        """The one cap the worker's requests and the reviews share
+        (A16). Each call opens its own handle; the lock files are what is
+        shared, so the ingress and worker processes see the same pool."""
+        return FileSlots(self._profile.paths.root / "slots", self._settings.max_concurrent)
+
+    def plugin_job_runners(self, process: str) -> list[PeriodicRunner]:
+        """Plugin background jobs for one process (G1). An engine-calling
+        job waits for the same slots as requests and reviews, at most as
+        long as one request may run."""
+        return background_runners(
+            self._hook_plugins(),
+            process,
+            self.concurrency_slots(),
+            self._settings.request_timeout_sec,
+        )
+
+    def shadow_runners(self) -> list[PeriodicRunner]:
+        """Shadow evaluation (G4): mirrors questions from each channel's
+        `shadow_source` into it and answers them blind. Its engine turns wait
+        for the same slots as requests, like a plugin job."""
+        owner = self._owner_client
+
+        def source_api(method: str, **params: Any) -> Any:
+            return owner.api_call(method, params=params).data
+
+        def post(channel: str, thread_ts: str | None, text: str) -> str | None:
+            rich = channel_is_rich(self._channels.get(channel))
+            return self.publisher().post(channel, thread_ts or "", text, rich)
+
+        def judge_enabled(channel: str) -> bool:
+            config = self._channels.get(channel)
+            return bool(config and config.extra.get("shadow_judge"))
+
+        service = ShadowService(
+            store=ShadowStore(self._database),
+            source_api=source_api if owner is not None else None,
+            post=post,
+            run_turn=self._shadow_turn,
+            pairs=lambda: shadow_pairs(self._channels.all()),
+            judge_enabled=judge_enabled,
+            name_of=self.user_namer(),
+            audit=self.audit().record,
+            requests_path=self._profile.paths.root / "shadow_requests.json",
+            bot_name=self._profile.display_name,
+            is_self=lambda m: bool(m.get("user")) and m.get("user") == self.identity.user_id,
+            max_parallel=self._settings.max_concurrent,
+        )
+        return background_runners(
+            [ShadowPlugin(service)], "worker", self.concurrency_slots(), self._settings.request_timeout_sec,
+        )
+
+    def _shadow_turn(self, prompt: str, channel: str, request_id: str) -> TurnResult:
+        """A read-only turn for someone who is not the owner: the question's
+        author is a stranger in the source channel, and the answer must not
+        reach what only the owner may see."""
+        principal = Principal(user_id="", channel=channel, trust=TrustLevel.GENERAL, is_direct_message=False)
+        config = self._channels.get(channel)
+        system_prompt = self._composer().compose(CompositionContext(
+            principal=principal,
+            prompt=prompt,
+            channel_mode=config.mode if config else "default",
+            channel_slug=slug_for(channel, config),
+            is_rich=channel_is_rich(config),
+            chat_level=config.chat if config else "normal",
+        ))
+        tools = ToolSelection.from_names(self.tool_policy().tool_list_for(principal, prompt=prompt, readonly=True))
+        response = self.engine_invoker.invoke(EngineRequest(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            session_id=None,
+            resume=False,
+            model=self.access_policy.model_for(principal),
+            # Not the prompt: it carries the source question and thread replies,
+            # and a third party's "ultrathink" would raise the effort.
+            effort=self.access_policy.effort_for(principal, ""),
+            workdir=self._profile.work_root,
+            tools=tools,
+            requirements=self.execution_policy.requirements_for(config=config, tools=tools),
+            request_id=request_id,
+            readable_dirs=self.readable_dirs,
+            trust_level=TrustLevel.GENERAL,
+        ), CallOrigin.BACKGROUND)
+        calls = None
+        if response.ok and response.session_id:
+            reader: Any = self.transcript_reader(response.engine)
+            find = getattr(reader, "find_transcript_path", None) or getattr(reader, "transcript_path", None)
+            calls = tool_calls_in(find(response.session_id) if find else None)
+        return TurnResult(ok=response.ok, body=response.body, tool_calls=calls)
 
     def worker(self, worker_id: str = "worker") -> Worker:
         # unlike the other components here, a new Worker is created on every
         # call — worker_id must differ per process
-        return Worker(
+        worker = Worker(
             queue=self.queue(),
             handler=self.pipeline(),
             heartbeat=WorkerHeartbeat(self.queue(), self._settings),
@@ -1317,12 +1536,69 @@ class Application:
             # reclaim picks the mark from this (sca-o1e).
             watch_jobs=self.watch_jobs(),
             admin=self._admin_admission(),
+            slots=self.concurrency_slots(),
         )
+        # A marker from before this process started was for the restart
+        # that produced it; following it again would loop.
+        # Only an OWNER turn can be the requester the marker names; any other
+        # turn that could write it must not get someone's request completed.
+        # OWNER is the access policy's verdict. controller_user_ids are GENERAL
+        # (A7): a delegated controller turn gets operator tools, not the
+        # owner's, so it is not a restart requester either.
+        policy = self.access_policy
+        worker.watch_restart_requests(
+            ApplyRequestWatch(
+                paths=self._profile.paths.apply_requests, started_at=time.time()
+            ).pending,
+            requester_ok=lambda context: policy.principal_for(context.channel, context.user).trust
+            is TrustLevel.OWNER,
+        )
+        return worker
 
     def _admin_router(self) -> AdminRouter:
         commands = default_admin_commands(self._notices)
-        commands.extend(c for p in self._plugins for c in p.admin_commands())
+        commands.extend(c for p in self._hook_plugins() for c in p.admin_commands())
         return AdminRouter(commands)
+
+    def _hook_plugins(self) -> tuple[BotPlugin, ...]:
+        """Profile plugins plus the core modules built on the same hooks:
+        the welcome (G2). Kept out of `plugins`, which lists what the profile
+        loaded."""
+        if self._welcome is None:
+            self._welcome = WelcomePlugin(self._channels, self.welcome_service)
+        return (*self._plugins, self._welcome)
+
+    def welcome_service(self) -> WelcomeService:
+        """A read-only turn: it looks the joiner up and writes one post; the
+        post itself goes through the publisher (G2). Owner tools cut to the
+        read-only set, but the general model and effort: mametchi called it
+        with is_owner=False, and any joiner starts one."""
+        if self._welcome_service is None:
+            owner = Principal(
+                user_id=self._profile.owner_user_id, channel="",
+                trust=TrustLevel.OWNER, is_direct_message=False,
+            )
+            caller = ReviewEngineCaller(
+                invoker=self.engine_invoker,
+                profile=self._profile,
+                workdir=self._profile.work_root,
+                system_prompt="슬랙 채널에 올릴 환영 글을 쓴다. 사용자 메시지의 지시를 따른다.",
+                model=self._profile.primary_engine.model,
+                effort=DEFAULT_EFFORT,
+                tools=ToolSelection.allow(self.tool_policy().tool_list_for(owner, readonly=True)),
+            )
+            self._welcome_caller = caller
+            library = PromptLibrary(self._profile.paths.prompts)
+            self._welcome_service = WelcomeService(
+                store=WelcomeStore(self._database),
+                client=self._client,
+                channels=self._channels,
+                publisher=self.publisher(),
+                run=lambda prompt: caller.run(prompt, None, False),
+                template=lambda: library.text("welcome"),
+                self_user_id=lambda: self.identity.user_id,
+            )
+        return self._welcome_service
 
     def _admin_admission(self) -> AdminAdmission:
         """Built once and shared: the socket path and catch-up have to reach
@@ -1349,8 +1625,12 @@ class Application:
         )
 
     def _reply(self, channel: str, thread_ts: str, message: str) -> None:
-        # admin command replies are always plain text, regardless of channel rich-mode config
-        self.publisher().post(channel, thread_ts, message, rich=False)
+        # admin command replies are always plain text, regardless of channel rich-mode config.
+        # A flat_reply channel still gets them at top level, where its answers
+        # land (B3, mametchi bot.py:6565).
+        config = self._channels.get(channel)
+        flat = bool(config and config.flat_reply)
+        self.publisher().post(channel, thread_ts, message, rich=False, flat=flat)
 
     def ingress(self) -> IngressService:
         if self._ingress is None:
@@ -1372,7 +1652,7 @@ class Application:
                     # Caps bot-to-bot roundtrips in a thread (C19), reset when
                     # a human speaks (C18), so two bots can't wake each other
                     # forever if the outgoing mention-strip ever misses.
-                    peer_limiter=PeerExchangeLimiter(),
+                    peer_limiter=self._peer_exchange,
                 ),
                 # The one place the access check runs. Catch-up needs no second
                 # one: it only sweeps channels that are already registered
@@ -1388,6 +1668,8 @@ class Application:
                     self_user_id=lambda: self.identity.user_id,
                     notice_log=UnregisteredNoticeLog(self._profile.paths.unregistered_channels),
                     notify_owner=self._notify_owner if self._profile.owner_user_id else None,
+                    permalink=SlackPermalinks(self._client).permalink,
+                    audit=self.audit().record,
                 ),
                 strip_self_mention=SelfMentionStripper(self.identity).remove_self,
                 dedup=DeduplicationTracker(),
@@ -1401,6 +1683,14 @@ class Application:
                 spawn=ThreadTaskSpawner(),
                 notices=self._notices,
                 is_shutting_down=lambda: self._shutting_down,
+                extra_handlers=event_callbacks(
+                    self._hook_plugins(),
+                    ThreadTaskSpawner(),
+                    self.concurrency_slots(),
+                    self._settings.request_timeout_sec,
+                    policy=self.access_policy,
+                    self_user_id=lambda: self.identity.user_id,
+                ),
                 # The handler runs on one of slack-sdk's ten pool threads, so a
                 # long lock wait here delays every event behind it (sca-9l1).
                 lock_budget=lambda: self.database.latency_budget(
@@ -1467,6 +1757,10 @@ class Application:
                 "publisher": ReviewPublisher(self.publisher()),
                 "troubleshoot_channel": self._profile.troubleshoot_channel,
                 "owner_only_channels": self._settings.owner_only_channels,
+                # 워커 요청과 같은 상한(A16). 권한·원장 판정을 지난 점검만
+                # 자리를 기다린다. 거절된 리액션은 자리를 잡지 않는다.
+                "slots": self.concurrency_slots(),
+                "slot_wait_sec": self._settings.request_timeout_sec,
                 # 점검은 몇 분이 걸린다. 표시가 없으면 도는 것과 죽은 것이
                 # 사용자에게 같아 보인다(sca-tfd).
                 "progress": ReviewProgressDisplay(self.progress(), self._channels),
@@ -1543,16 +1837,16 @@ class Application:
         _run_debug_trace, _run_format_review).
         """
         paths = self._profile.paths
+        channel = self._profile.troubleshoot_channel
+        principal = Principal(
+            user_id=self._profile.owner_user_id,
+            channel=channel,
+            trust=TrustLevel.OWNER,
+            is_direct_message=is_direct_message_channel(channel),
+        )
 
         def system_prompt(prompt: str) -> str:
-            channel = self._profile.troubleshoot_channel
             config = self._channels.get(channel)
-            principal = Principal(
-                user_id=self._profile.owner_user_id,
-                channel=channel,
-                trust=TrustLevel.OWNER,
-                is_direct_message=is_direct_message_channel(channel),
-            )
             return self._composer().compose(CompositionContext(
                 principal=principal,
                 # The review prompt carries the transcript; its words pick the
@@ -1585,6 +1879,17 @@ class Application:
             workdir=self._profile.work_root,
             system_prompt=system_prompt,
             readable_dirs=(paths.persona, paths.prompts),
+            # 부검만 전용 모델이다 (마메치 model_for postmortem=True). 디버그
+            # 추적과 서식 점검은 보고 채널의 일반 규칙(어드바이저 실행자, 채널
+            # model, 기본 model)을 따른다. 마메치 run_claude 가 이 둘을
+            # model_for(TROUBLESHOOT_CHANNEL, is_owner) 로 고르는 것과 같다.
+            # 호출할 때마다 고른다. review_tasks() 가 캐시되므로 값으로 넘기면
+            # 보고 채널 model 이나 advisor.executor 수정이 재기동 전까지
+            # 점검에만 반영되지 않는다.
+            model=(
+                self._profile.primary_engine.model_for_postmortem if postmortem
+                else lambda: self.access_policy.model_for(principal)
+            ),
         )
 
     def on_reaction(self, emoji: str, channel: str, ts: str, by_user: str) -> None:
@@ -1596,8 +1901,9 @@ class Application:
         if task is None:
             return
         # The original bot.py had no permission check here (bot.py:6144), but a
-        # review runs on the owner's model at medium effort or higher, so anyone
-        # adding the emoji repeatedly spends that. Owner and the channel's
+        # review runs at medium effort or higher (postmortem on the postmortem
+        # model, trace and format review on the report channel's model_for), so
+        # anyone adding the emoji repeatedly spends that. Owner and the channel's
         # trusted_users only (사용자 결정 2026-09-18, sca-cg9).
         # `accepts_request` on top of that: trust alone let a DM entry in the
         # channel file hand a non-owner a conversation a normal request would
@@ -1636,6 +1942,16 @@ class Application:
             reader = self._transcript_readers.create(name, self._profile.work_root, spec=spec)
             self._transcript_reader_cache[name] = reader
         return reader
+
+    def _codex_home_for(self, engine: str) -> Path | None:
+        """CODEX_HOME of the slot that answered, None for a non-codex engine.
+
+        A spec without home_dir runs codex under its own default, ~/.codex.
+        """
+        spec = self._engine_spec_for(engine)
+        if spec is None or spec.type != "codex":
+            return None
+        return spec.home_dir if spec.home_dir is not None else Path.home() / ".codex"
 
     def _engine_spec_for(self, engine: str) -> EngineSpec | None:
         """None for a name in neither slot. The registry then hands back an empty
@@ -1992,8 +2308,7 @@ class Application:
                 "*캐치업을 오래 마치지 못하고 있습니다*\n\n"
                 f"- 채널 : {status.channel}\n"
                 f"- {status.stuck_sec / 60:.0f}분째입니다\n\n"
-                "슬랙이 채널 기록을 계속 빈 목록으로 돌려줍니다.\n"
-                "그 채널에서 답을 기다리는 요청이 있어도 잡히지 않습니다."
+                f"{_stuck_cause_text(status)}"
             )
 
     def ingress_services(self, restart: Callable[[str], None]) -> ServiceGroup:
@@ -2011,6 +2326,7 @@ class Application:
                 self.attachment_cleanup_runner(),
                 self.pending_report_runner(),
                 self.stale_review_runner(),
+                *self.plugin_job_runners("ingress"),
             ],
             name="ingress",
             watch_interval_sec=self._settings.service_watch_interval_sec,
@@ -2022,7 +2338,7 @@ class Application:
         return ServiceGroup(
             [
                 self.state_snapshot_runner(),
-                self.watch_runner(),
+                self.watch_runner(hold=worker.holding_claims),
                 self.watch_result_cleanup_runner(),
                 self.job_purge_runner(),
                 self.epoch_purge_runner(),
@@ -2034,6 +2350,8 @@ class Application:
                 self.pending_report_runner(),
                 self.learning_batch_runner(),
                 self.stale_reclaim_runner(worker),
+                *self.shadow_runners(),
+                *self.plugin_job_runners("worker"),
             ],
             name="worker",
             watch_interval_sec=self._settings.service_watch_interval_sec,

@@ -376,3 +376,49 @@ class Test점검_흔적을_남기지_않는다:
         monkeypatch.setattr(probe, "_post", 가짜게시)
         probe.clear_probe("C1", "1.1", ["2.2"], probe.DONE, "poster", "target")
         assert 쓴토큰 == [("2.2", "target"), ("1.1", "poster")]
+
+
+class Test상태_디렉터리는_프로필을_따른다:
+    """2026-11-06 : ~/.<이름> 만 보던 때 state_dir 이 다른 봇은 늘 토큰을 못 찾았다."""
+
+    def _repo(self, tmp_path, monkeypatch, profiles):
+        import json
+        (tmp_path / "profiles").mkdir()
+        for name, data in profiles.items():
+            (tmp_path / "profiles" / f"{name}.json").write_text(json.dumps(data), encoding="utf-8")
+        monkeypatch.setattr(probe, "REPO", tmp_path)
+
+    def _token_dir(self, path, token):
+        path.mkdir(parents=True)
+        (path / ".slack_bot_token").write_text(token, encoding="utf-8")
+
+    def test_프로필_state_dir_에서_토큰을_읽는다(self, tmp_path, monkeypatch) -> None:
+        state = tmp_path / "state-a"
+        self._token_dir(state, "xoxb-a")
+        self._repo(tmp_path, monkeypatch, {"alpha": {"state_dir": str(state)}})
+        assert probe._token_of("alpha") == "xoxb-a"
+
+    def test_state_dir_이_없으면_홈의_점_이름을_본다(self, tmp_path, monkeypatch) -> None:
+        self._repo(tmp_path, monkeypatch, {})
+        monkeypatch.setattr(probe.Path, "home", classmethod(lambda cls: tmp_path))
+        self._token_dir(tmp_path / ".beta", "xoxb-b")
+        assert probe._token_of("beta") == "xoxb-b"
+
+    def test_멘션_봇은_지정_후보를_먼저_쓰고_자기는_뺀다(self, tmp_path, monkeypatch) -> None:
+        mine, extra, other = tmp_path / "mine", tmp_path / "extra", tmp_path / "other"
+        for d, tok in ((mine, "xoxb-mine"), (extra, "xoxb-extra"), (other, "xoxb-other")):
+            self._token_dir(d, tok)
+        self._repo(tmp_path, monkeypatch, {
+            "alpha": {"state_dir": str(mine), "probe_poster_state_dirs": [str(extra)]},
+            "gamma": {"state_dir": str(other)},
+        })
+        assert probe._poster_token("alpha") == "xoxb-extra"
+
+    def test_지정_후보가_없으면_다른_프로필을_쓴다(self, tmp_path, monkeypatch) -> None:
+        mine, other = tmp_path / "mine", tmp_path / "other"
+        self._token_dir(mine, "xoxb-mine")
+        self._token_dir(other, "xoxb-other")
+        self._repo(tmp_path, monkeypatch, {
+            "alpha": {"state_dir": str(mine)}, "gamma": {"state_dir": str(other)},
+        })
+        assert probe._poster_token("alpha") == "xoxb-other"

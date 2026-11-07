@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from slack_cli_agent.engine.base import EngineResponse
-from slack_cli_agent.observability.audit import REVIEW_KIND
+from slack_cli_agent.observability.audit import REVIEW_CHECK_FAILED_KIND, REVIEW_KIND
 from slack_cli_agent.observability.slow_report import SlowRequestMeta
 from slack_cli_agent.render.table import as_table
 from slack_cli_agent.review.ledger import ReviewLedger
@@ -80,7 +80,9 @@ class TranscriptPort(Protocol):
 
 @runtime_checkable
 class AnswerRecordFinderPort(Protocol):
-    def find(self, channel: str, thread_ts: str, text: str) -> Mapping[str, Any] | None: ...
+    def find(
+        self, channel: str, thread_ts: str, text: str, msg_ts: str | None = None
+    ) -> Mapping[str, Any] | None: ...
 
 
 @runtime_checkable
@@ -141,6 +143,17 @@ class ReviewAuditPort(Protocol):
 
 
 @runtime_checkable
+class ReviewSlotsPort(Protocol):
+    """core.slots.ConcurrencySlots' shape: the one cap the worker's requests
+    and the reviews share, as bot.py's one `_slots` did (bot.py:1166, A16).
+    acquire returns None when no slot came free within `timeout`."""
+
+    def acquire(self, timeout: float | None = None) -> object | None: ...
+
+    def release(self, token: object) -> None: ...
+
+
+@runtime_checkable
 class ReviewProgressPort(Protocol):
     """Shows that the review is running, for the length of the engine call.
 
@@ -186,7 +199,17 @@ class ReviewTask(ABC):
         progress: ReviewProgressPort | None = None,
         audit: ReviewAuditPort | None = None,
         slow_reporter: SlowReportPort | None = None,
+        # None runs the review uncapped. Taken in run() only after the
+        # owner-only and ledger checks, as the original took `_slots` only
+        # after its key claim (bot.py:8993-8996): a refused or repeated
+        # reaction must not wait for, or hold, a slot.
+        slots: ReviewSlotsPort | None = None,
+        # How long to wait for a slot before giving up, as the original's
+        # `_slots.acquire(timeout=TIMEOUT_SEC)`. None waits without end.
+        slot_wait_sec: float | None = None,
     ) -> None:
+        self._slots = slots
+        self._slot_wait_sec = slot_wait_sec
         self._ledger = ledger
         self._message_lookup = message_lookup
         self._transcript = transcript
@@ -215,6 +238,12 @@ class ReviewTask(ABC):
 
     @abstractmethod
     def build_prompt(self, target: ReviewTarget, *, transcript: str, flagged: str, question: str) -> str: ...
+
+    def prompt_extras(self, record: Mapping[str, Any] | None) -> dict[str, Any]:
+        """Extra build_prompt keywords a subclass needs from the run record.
+        Default none, so tasks that read only the flagged text keep their
+        signature."""
+        return {}
 
     @abstractmethod
     def header_title(self, target: ReviewTarget) -> str: ...
@@ -254,6 +283,30 @@ class ReviewTask(ABC):
         """
         raise NotImplementedError
 
+    def content_problems(self, detail: str) -> list[str]:
+        """Mechanical problems in the detail part, as sentences. Empty passes.
+
+        A kind that checks its content (postmortem's 5 Why chain) overrides
+        this; a non-empty result gets one rewrite request, and what still
+        fails is posted with a warning header and an audit row.
+        """
+        return []
+
+    def rewrite_rejected(self, rewrite: str, original: str) -> bool:
+        """True when the rewrite removed what `content_problems` checks in
+        the original (a postmortem's 5 Why section or its Why rows). Such a
+        rewrite is never taken, however few problems it counts: the first
+        answer and its problems are posted instead."""
+        return False
+
+    def content_retry_prompt(self, problems: list[str]) -> str:
+        """Rewrite request for `content_problems`. Same resume rule as
+        `missing_split_prompt`: the session already holds the previous output."""
+        raise NotImplementedError
+
+    def content_warning(self, problems: list[str]) -> str:
+        return "점검을 통과하지 못했습니다.\n" + "\n".join(f"- {p}" for p in problems) + "\n\n"
+
     # Each review kind has its own stopped/failure wording (retry hints reference a
     # different emoji per kind).
     def stopped_title(self) -> str:
@@ -270,8 +323,26 @@ class ReviewTask(ABC):
             return
         if self._ledger.is_reviewed(self.log_name, target.channel, target.ts):
             return
+        # Claimed before the slot wait, as the original did, so a repeat
+        # reaction during the wait is refused by is_reviewed at once.
         self._ledger.begin(self.log_name, target.channel, target.ts, by=target.by_user)
+        token: object | None = None
         try:
+            if self._slots is not None:
+                token = self._slots.acquire(timeout=self._slot_wait_sec)
+                if token is None:
+                    self._ledger.drop(self.log_name, target.channel, target.ts)
+                    log.warning(
+                        "점검을 시작할 자리가 없다. 넘긴다 : %s %s:%s",
+                        self.log_name, target.channel, target.ts,
+                    )
+                    return
+                # The ledger's stale limit covers the run only. Restart the clock
+                # here so the wait does not eat into it and let a repeat reaction
+                # start a second review mid-run.
+                self._ledger.begin(
+                    self.log_name, target.channel, target.ts, by=target.by_user
+                )
             self._execute(target)
         except Exception as exc:  # noqa: BLE001 — any failure must roll back the ledger and notify
             self._ledger.drop(self.log_name, target.channel, target.ts)
@@ -283,6 +354,9 @@ class ReviewTask(ABC):
                 f"사유 : {exc}\n\n{self.retry_hint()}",
                 rich=True,
             )
+        finally:
+            if self._slots is not None and token is not None:
+                self._slots.release(token)
 
     @contextmanager
     def _progress_display(self, target: ReviewTarget, thread_ts: str) -> Iterator[Path | None]:
@@ -339,6 +413,21 @@ class ReviewTask(ABC):
         except Exception as exc:  # noqa: BLE001 - see docstring
             log.warning("점검 실행 기록을 남기지 못했다 : %s", exc)
 
+    def _record_check_failed(self, target: ReviewTarget, problems: list[str]) -> None:
+        """Best effort, like `_record_run`."""
+        if self._audit is None:
+            return
+        try:
+            self._audit.record(
+                REVIEW_CHECK_FAILED_KIND,
+                channel=target.channel,
+                target_ts=target.ts,
+                review_kind=self.log_name,
+                problems=problems,
+            )
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            log.warning("점검 미통과 기록을 남기지 못했다 : %s", exc)
+
     def _report_if_slow(
         self,
         target: ReviewTarget,
@@ -391,10 +480,13 @@ class ReviewTask(ABC):
         thread_ts = msg.get("thread_ts") or target.ts
         flagged = (msg.get("text") or "").strip()
         transcript = self._transcript.transcript(target.channel, thread_ts)
-        record = self._answer_finder.find(target.channel, thread_ts, flagged)
+        record = self._answer_finder.find(target.channel, thread_ts, flagged, msg_ts=target.ts)
         question = (record or {}).get("question") or ""
 
-        prompt = self.build_prompt(target, transcript=transcript, flagged=flagged, question=question)
+        prompt = self.build_prompt(
+            target, transcript=transcript, flagged=flagged, question=question,
+            **self.prompt_extras(record),
+        )
         # None: the engine that runs this mints the ID in its own format.
         # Minting a UUID here happened to work only because all three CLIs
         # accept one today (sca-k6s).
@@ -419,6 +511,7 @@ class ReviewTask(ABC):
             return
 
         body = response.body
+        session_id = response.session_id
         marker = self.split_marker()
         if marker not in body and self.retry_on_missing_split() and response.session_id:
             # Resume the session the engine actually used. Without an ID there
@@ -435,11 +528,34 @@ class ReviewTask(ABC):
             )
             if retry.ok and marker in retry.body:
                 body = retry.body
+                session_id = retry.session_id or session_id
 
         if marker in body:
             summary, detail = body.split(marker, 1)
         else:
             summary, detail = body, ""
+
+        problems = self.content_problems(detail)
+        if problems and session_id:
+            log.warning("%s 내용 점검 미통과, 다시 쓰게 한다 : %s %s", self.log_name, request_id, problems)
+            fix_started, fix_mono = time.time(), time.monotonic()
+            fix = self._engine.run(self.content_retry_prompt(problems), session_id, True, None, request_id)
+            self._record_run(target, fix, attempt="content_retry")
+            self._report_if_slow(target, fix, flagged, fix_started, time.monotonic() - fix_mono, resume=True)
+            if fix.ok and marker in fix.body:
+                summary2, detail2 = fix.body.split(marker, 1)
+                if self.rewrite_rejected(detail2, detail):
+                    log.warning("%s 재작성본이 점검 대상을 지워 원래 것을 올린다 : %s", self.log_name, request_id)
+                else:
+                    problems2 = self.content_problems(detail2)
+                    # A rewrite can come back worse; take it only when it found fewer problems.
+                    if len(problems2) < len(problems):
+                        summary, detail, problems = summary2, detail2, problems2
+        if problems:
+            # Posting a failed check silently would make the check pointless.
+            log.error("%s 내용 점검을 통과하지 못한 채 게시한다 : %s", self.log_name, request_id)
+            self._record_check_failed(target, problems)
+            header += self.content_warning(problems)
 
         parent = self._publisher.post(self._troubleshoot_channel, None, header + summary.strip(), rich=True)
         if detail.strip():

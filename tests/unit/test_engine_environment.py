@@ -20,6 +20,7 @@ from slack_cli_agent.engine.environment import (
     GeminiEnvironmentPolicy,
     create_environment_policy,
     registry,
+    TURN_WRAPUP_SEC,
     turn_budget_env,
 )
 
@@ -405,9 +406,25 @@ class TestTurnBudgetEnv:
         assert env["TURN_DEADLINE"] == str(1000.0 + 900.0)
         assert env["TURN_DEADLINE_MONO"] == str(50.0 + 900.0)
 
-    def test_두_이름만_만든다(self) -> None:
+    def test_만드는_이름은_마감_정리여유_Bash상한이다(self) -> None:
         env = turn_budget_env(60.0, now_wall=0.0, now_monotonic=0.0)
-        assert set(env) == {"TURN_DEADLINE", "TURN_DEADLINE_MONO"}
+        assert set(env) == {
+            "TURN_DEADLINE", "TURN_DEADLINE_MONO", "TURN_WRAPUP_SEC", "BASH_MAX_TIMEOUT_MS",
+        }
+
+    def test_Bash_상한은_제한에서_정리여유를_뺀_밀리초다(self) -> None:
+        # 마메치 bot.py turn_budget_env 와 같은 값: max(timeout - 60, 60) * 1000.
+        env = turn_budget_env(900.0, now_wall=0.0, now_monotonic=0.0)
+        assert env["TURN_WRAPUP_SEC"] == str(TURN_WRAPUP_SEC) == "60"
+        assert env["BASH_MAX_TIMEOUT_MS"] == "840000"
+
+    def test_짧은_턴에도_Bash_상한은_60초_아래로_내려가지_않는다(self) -> None:
+        env = turn_budget_env(30.0, now_wall=0.0, now_monotonic=0.0)
+        assert env["BASH_MAX_TIMEOUT_MS"] == "60000"
+
+    def test_정리여유는_PreToolUse_가드_기본값과_같다(self) -> None:
+        from slack_cli_agent.guard.pretool.turn_budget import DEFAULT_WRAPUP_SEC
+        assert TURN_WRAPUP_SEC == DEFAULT_WRAPUP_SEC
 
     def test_값은_time_left_가_읽을_수_있는_문자열이다(self) -> None:
         # 훅들이 float(env[...]) 로 되읽으므로 왕복이 가능해야 한다.
@@ -423,3 +440,45 @@ class TestTurnBudgetEnv:
         env = policy.build({"PATH": "/bin", **budget})
         assert env["TURN_DEADLINE"] == budget["TURN_DEADLINE"]
         assert env["TURN_DEADLINE_MONO"] == budget["TURN_DEADLINE_MONO"]
+        assert env["TURN_WRAPUP_SEC"] == budget["TURN_WRAPUP_SEC"]
+        assert env["BASH_MAX_TIMEOUT_MS"] == budget["BASH_MAX_TIMEOUT_MS"]
+
+
+_NON_INTERACTIVE = {"GIT_TERMINAL_PROMPT": "0", "GH_PROMPT_DISABLED": "1", "CI": "1"}
+
+
+class TestNonInteractiveEnv:
+    """git·gh 가 자격증명이나 확인 질문으로 입력을 기다려 턴이 멈추지 않게 한다 (C11).
+
+    마메치 bot.py turn_budget_env 가 넘기던 세 값을 세 엔진 모두에 고정값으로 준다.
+    부모 환경에 다른 값이 있어도 덮어쓴다.
+    """
+
+    @pytest.mark.parametrize(
+        "policy_cls", [ClaudeEnvironmentPolicy, CodexEnvironmentPolicy, GeminiEnvironmentPolicy],
+    )
+    def test_세_엔진_모두_비대화형_값을_넘긴다(self, policy_cls) -> None:
+        env = policy_cls(profile_name="봇A").build({"PATH": "/bin"})
+        assert {k: env[k] for k in _NON_INTERACTIVE} == _NON_INTERACTIVE
+
+    @pytest.mark.parametrize(
+        "policy_cls", [ClaudeEnvironmentPolicy, CodexEnvironmentPolicy, GeminiEnvironmentPolicy],
+    )
+    def test_부모_환경의_대화형_값을_덮어쓴다(self, policy_cls) -> None:
+        source = {"PATH": "/bin", "GIT_TERMINAL_PROMPT": "1", "GH_PROMPT_DISABLED": "", "CI": "0"}
+        env = policy_cls(profile_name="봇A").build(source)
+        assert {k: env[k] for k in _NON_INTERACTIVE} == _NON_INTERACTIVE
+
+    def test_claude_MCP_도구_상한_기본값은_300초다(self) -> None:
+        env = ClaudeEnvironmentPolicy(profile_name="봇A").build({"PATH": "/bin"})
+        assert env["MCP_TOOL_TIMEOUT"] == "300000"
+
+    def test_claude_MCP_도구_상한은_부모_값이_있으면_그것을_쓴다(self) -> None:
+        env = ClaudeEnvironmentPolicy(profile_name="봇A").build(
+            {"PATH": "/bin", "MCP_TOOL_TIMEOUT": "120000"})
+        assert env["MCP_TOOL_TIMEOUT"] == "120000"
+
+    def test_비대화형_값은_자격증명_제외를_흔들지_않는다(self) -> None:
+        env = ClaudeEnvironmentPolicy(profile_name="봇A").build(_rich_source_env())
+        assert "SLACK_BOT_TOKEN" not in env
+        assert "ANTHROPIC_API_KEY" not in env

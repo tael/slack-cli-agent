@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard
+from slack_cli_agent.slack.message_kind import HUMAN_SUBTYPES
 
 ADDRESSED_AT_HEAD = re.compile(r"^\s*<@([A-Z0-9]+)>\s*(?:님|씨)?[,.!\s]*")
 
@@ -110,11 +111,41 @@ class AddresseeGuard(OutputGuard):
     this but both depend on the model complying, so this checks it in code.
 
     Only the leading mention is checked — a mention mid-body could be a
-    draft or a quote, so it's left alone. When it strips a mention, it
-    leaves a note in the body rather than silently editing.
+    draft or a quote, so it's left alone. A stripped mention is reported in
+    `detail` for the audit log; the body gets no note (mametchi bot.py:5581
+    `guard_wrong_addressee` strips silently, B2).
+
+    Two more heads are kept, as in the original (B2):
+
+    - any bot account, the peer bot included (Application passes a verdict
+      that counts controllers as bots even when users_info fails). The
+      mistake this prevents is pinging the wrong person; a bot mention is how
+      one bot hands work to another, and BotMentionGuard (which runs first
+      with the same verdict) already decides per channel whether a bot may
+      be mentioned at all;
+    - anyone the request text itself mentions outside code spans. "Greet
+      <@A> and <@B>" makes calling A and B the instruction; the asker has
+      already notified them (2026-10-15 sandbox-rnd 17:35).
     """
 
     name: ClassVar[str] = "wrong_addressee"
+
+    def __init__(self, is_bot: Callable[[str], bool] | None = None) -> None:
+        self._is_bot = is_bot
+
+    def _bot(self, user_id: str) -> bool:
+        if self._is_bot is None:
+            return False
+        try:
+            return bool(self._is_bot(user_id))
+        except Exception:  # noqa: BLE001 - an unreadable verdict counts as a person
+            return False
+
+    @staticmethod
+    def _requested(user_id: str, request_text: str) -> bool:
+        if not request_text or "<@" not in request_text:
+            return False
+        return user_id in ANY_MENTION.findall(CODE_SPANS.sub("", request_text))
 
     @staticmethod
     def _guard_wrong_addressee(
@@ -135,7 +166,8 @@ class AddresseeGuard(OutputGuard):
         )
         if wrong is None:
             return GuardResult(body=body, changed=False)
-        fixed = fixed + "\n\n(다른 분을 부르는 첫머리를 지웠습니다.)"
+        if self._bot(wrong) or self._requested(wrong, ctx.request_text):
+            return GuardResult(body=body, changed=False)
         return GuardResult(body=fixed, changed=True, detail={"wrong_target": wrong})
 
 
@@ -212,14 +244,6 @@ class BotMentionGuard(OutputGuard):
         return GuardResult(
             body=INNER_RUN_OF_SPACES.sub(" ", out), changed=True, detail={"targets": targets}
         )
-
-
-#: Subtypes a message keeps counting as a human turn despite carrying one,
-#: for the purposes of figuring out who a thread's last address was aimed
-#: at. Mirrors `slack.message_kind.HUMAN_SUBTYPES` plus `thread_broadcast`
-#: (bot.py:4165, 2026-11-01) — a reply also sent to the channel is still the
-#: same person talking, not a new kind of event.
-HUMAN_SUBTYPES = frozenset({"file_share", "thread_broadcast"})
 
 
 def calls_other_bot(is_bot: Callable[[str], bool], self_id: str, text: str) -> bool:

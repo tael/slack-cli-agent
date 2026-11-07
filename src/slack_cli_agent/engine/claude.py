@@ -146,6 +146,30 @@ def _mcp_denials(names: tuple[str, ...], servers: Iterable[str]) -> list[str]:
     return [f"{MCP_PREFIX}{server}__*" for server in sorted(servers) if server not in allowed]
 
 
+def _lift_scoped_denials(settings: dict[str, Any], names: Iterable[str]) -> dict[str, Any]:
+    """Drop a bare deny entry the allowlist narrows with a scoped grant.
+
+    general's overlay denies the bare "Bash", and deny wins over allow, so an
+    airflow_admins `Bash(<airflow_ctl>:*)` or a channel's scoped Bash grant was
+    refused on this engine (A9 review). mametchi removed the same deny on
+    2026-10-02 for that reason (bot.py build_command). The bare name stays out
+    of the allowlist, and dontAsk refuses any call no allow entry matches, so
+    only the scoped form opens. Only Bash is lifted: that is the tool the
+    scoped grants exist for, and the other deny entries are left as they are.
+    """
+    scoped = {"Bash"} & {
+        name.split("(", 1)[0] for name in names if "(" in name and name.endswith(")")
+    }
+    permissions = settings.get("permissions")
+    if not scoped or not isinstance(permissions, Mapping):
+        return settings
+    deny = permissions.get("deny")
+    if not isinstance(deny, list) or not scoped & set(deny):
+        return settings
+    kept = [entry for entry in deny if entry not in scoped]
+    return {**settings, "permissions": {**permissions, "deny": kept}}
+
+
 def _open_mcp_servers(names: tuple[str, ...], servers: Iterable[str]) -> set[str]:
     """The servers left open, tools the allowlist never named included."""
     return {
@@ -489,6 +513,7 @@ class ClaudeEngine(Engine):
             paths.engine_settings(self.name),
             paths.engine_settings(f"{self.name}.{level}"),
         )
+        merged = _lift_scoped_denials(merged, request.tools.names)
         if request.progress_log is not None:
             merged = merge_settings(merged, progress_hook_settings(request.progress_log))
         # Always on, regardless of progress_log: these are engine built-ins,
@@ -517,11 +542,34 @@ class ClaudeEngine(Engine):
     #: 문구는 좁게 잡는다. 'invalid api key' 나 'not logged in' 같은 조각은
     #: gh·aws 같은 도구도 내므로, 그것으로 판정하면 CLI 로그인은 멀쩡한데
     #: 1차가 통째로 내려간다.
+    #: 2026-11-07 마메치 운영 로그의 만료 401 239줄은 모두 'Failed to
+    #: authenticate. API Error: 401 OAuth access token has expired.' 였다. 같은
+    #: 상태를 만료·폐기 문구만으로 내는 응답도 잡도록 OAuth 문구 둘을 더한다.
+    #: 'OAuth' 로 시작하는 전체 구절이라 gh·aws 의 짧은 인증 오류와 겹치지 않는다.
     AUTH_FAILURE_MARKERS: ClassVar[tuple[str, ...]] = (
         "Please run /login",
         "Failed to authenticate.",
+        "OAuth access token has expired",
+        "OAuth token has been revoked",
     )
     AUTH_FAILURE_NOTE = "claude 로그인이 풀렸다. claude 에서 /login 으로 다시 로그인해야 한다."
+    #: result 이벤트의 api_error_status 는 claude 자신의 API 호출 결과다. MCP
+    #: 서버의 401 은 이 필드에 오지 않으므로 문구 없이 401 만 와도 만료로 본다.
+    AUTH_FAILURE_API_STATUS: ClassVar[int | None] = 401
+
+    def _api_error_status(self, response: EngineResponse) -> int | None:
+        """is_error 경로는 raw 에 필드가 있고, 종료코드가 0 이 아니면 stdout 의
+        result 이벤트에 있다 (2026-11-07 운영 로그는 종료코드 1 이었다)."""
+        found = super()._api_error_status(response)
+        if found is not None:
+            return found
+        raw = response.raw if isinstance(response.raw, Mapping) else {}
+        stdout = raw.get("stdout")
+        payload = self._result_event(stdout) if isinstance(stdout, str) and stdout else None
+        if payload is None:
+            return None
+        value = payload.get("api_error_status")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
 
     def new_session_id(self) -> str:
         return str(uuid.uuid4())

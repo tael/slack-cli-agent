@@ -3,17 +3,18 @@
 마커 파싱과 멘션 강제 자체는 test_bot_interaction.py(RecipientResolver)가,
 표식 제거 배선은 test_pipeline_publish_markers.py가 본다. 여기서는 게시 직전
 파이프라인이 수신자를 실제로 해석해 (1) 봇 수신자에 첫머리 멘션을 강제하고
-(2) require_recipient 플래그가 켜졌을 때 표식 없는 답을 게시하지 않고 안내만
-올리는지(J11)를 본다. bot.py:7860-7907 take_recipient_tag + NOTICE_NO_RECIPIENT.
+(2) require_recipient 가 켜졌을 때 표식 없는 답에 표식만 한 번 다시 받고, 그래도
+없으면 침묵하는지(B1)를 본다. bot.py:8085-8133 missing_recipient 재요청.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from test_pipeline import build_pipeline, make_ctx, ok_response
+from test_pipeline import build_pipeline, fail_response, make_ctx, ok_response
 
-from slack_cli_agent.core.pipeline import NOTICE_NO_RECIPIENT
+from slack_cli_agent.core.markers import missing_recipient_prompt
+from slack_cli_agent.engine.tool_selection import ToolAccess
 
 
 def _is_bot(bots: set[str]):
@@ -86,51 +87,197 @@ class Test봇_수신자_멘션강제:
         assert "<@" not in posted
 
 
-class Test미표식_차단_J11:
-    def test_플래그_켜고_표식없으면_본문대신_안내만_올린다(self, tmp_path: Path) -> None:
+class Test미표식_재요청_B1:
+    """표식 없는 답은 본문을 코드가 들고 표식만 한 번 다시 받는다 (B1, bot.py:8085-8133).
+
+    재요청은 도구 없이(no_act) 같은 세션을 이어 돌린다. 앞 턴의 지라 등록이나
+    발송을 되풀이하지 않게 하는 장치다. 그래도 표식이 없으면 본문도 안내문도
+    올리지 않고 침묵하며 감사에 남긴다.
+    """
+
+    def test_표식없으면_도구없이_표식만_다시_받아_원본문을_게시한다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(
-            responses=[ok_response(body="표식 없는 답입니다.")],
+            responses=[
+                ok_response(body="표식 없는 답입니다."),
+                ok_response(body="[[RECIPIENT:ASKER]]"),
+            ],
             require_recipient=True,
             tmp_path=tmp_path,
         )
         outcome = pipeline.handle(make_ctx())
+        calls = deps["runner"].calls
+        assert len(calls) == 2
+        retry = calls[1]
+        assert retry.prompt == missing_recipient_prompt()
+        assert retry.resume is True
+        assert retry.session_id in (calls[0].session_id, "sess-1")
+        assert retry.tools.access is ToolAccess.FORBIDDEN
         posted = [p["text"] for p in deps["publisher"].posted]
-        assert posted == [NOTICE_NO_RECIPIENT]
-        assert "표식 없는 답입니다." not in NOTICE_NO_RECIPIENT
+        assert posted == ["표식 없는 답입니다."]
+        assert outcome.silent is False
+        retry_rows = [i for i in deps["audit"].incidents if i["kind"] == "missing_recipient_retry"]
+        assert len(retry_rows) == 1
+        assert retry_rows[0]["recovered"] is True
+
+    def test_재요청이_본문을_바꿔와도_원본문만_게시한다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[
+                ok_response(body="원래 답입니다."),
+                ok_response(body="새로 쓴 다른 답입니다.\n[[RECIPIENT:OWNER]]"),
+            ],
+            require_recipient=True,
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+        assert [p["text"] for p in deps["publisher"].posted] == ["원래 답입니다."]
+
+    def test_재요청에도_표식없으면_침묵하고_감사에_남긴다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[
+                ok_response(body="표식 없는 답입니다."),
+                ok_response(body="여전히 표식이 없습니다."),
+            ],
+            require_recipient=True,
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx())
+        assert len(deps["runner"].calls) == 2
+        assert deps["publisher"].posted == []
         assert outcome.ok is True
+        assert outcome.silent is True
         kinds = [i["kind"] for i in deps["audit"].incidents]
         assert "missing_recipient" in kinds
+        retry_rows = [i for i in deps["audit"].incidents if i["kind"] == "missing_recipient_retry"]
+        assert retry_rows and retry_rows[0]["recovered"] is False
 
-    def test_플래그_켜도_표식_있으면_정상_게시(self, tmp_path: Path) -> None:
+    def test_재요청이_두_수신자를_섞으면_침묵한다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[
+                ok_response(body="표식 없는 답입니다."),
+                ok_response(body="[[RECIPIENT:ASKER]]\n[[RECIPIENT:OWNER]]"),
+            ],
+            require_recipient=True,
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx())
+        assert deps["publisher"].posted == []
+        assert outcome.silent is True
+
+    def test_재요청이_침묵을_고르면_침묵한다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[
+                ok_response(body="표식 없는 답입니다."),
+                ok_response(body="[[침묵]]"),
+            ],
+            require_recipient=True,
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx())
+        assert deps["publisher"].posted == []
+        assert outcome.silent is True
+
+    def test_재요청_엔진이_실패하면_침묵한다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="표식 없는 답입니다."), fail_response()],
+            require_recipient=True,
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx())
+        assert deps["publisher"].posted == []
+        assert outcome.silent is True
+        assert outcome.ok is True
+
+    def test_flat_채널도_안내문_없이_침묵한다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.config.channel import ChannelConfig
+
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="표식 없는 답입니다."), ok_response(body="표식 없음")],
+            require_recipient=True,
+            channels={"C1": ChannelConfig(channel_id="C1", name="피드", flat_reply=True)},
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx(channel="C1"))
+        assert deps["publisher"].posted == []
+
+    def test_표식_있으면_재요청하지_않는다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(
             responses=[ok_response(body="보고드립니다.\n[[RECIPIENT:OWNER]]")],
             require_recipient=True,
             tmp_path=tmp_path,
         )
         pipeline.handle(make_ctx())
+        assert len(deps["runner"].calls) == 1
         assert deps["publisher"].posted[0]["text"] == "보고드립니다."
 
-    def test_플래그_꺼지면_표식없어도_게시한다(self, tmp_path: Path) -> None:
-        # 기본값. owner/asker 설정이 없으면 "그냥 게시"로 degrade, 침묵으로 가지 않는다.
+    def test_플래그_꺼지면_표식없어도_재요청없이_게시한다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(
             responses=[ok_response(body="표식 없는 답입니다.")],
             tmp_path=tmp_path,
         )
         pipeline.handle(make_ctx())
+        assert len(deps["runner"].calls) == 1
         assert deps["publisher"].posted[0]["text"] == "표식 없는 답입니다."
         kinds = [i["kind"] for i in deps["audit"].incidents]
         assert "missing_recipient" not in kinds
 
-    def test_봇아닌_ID의_BOT표식은_미해석이라_차단된다(self, tmp_path: Path) -> None:
-        # BOT:ID 인데 그 ID 가 봇이 아니면 엉뚱한 멘션 대신 미해석(None)으로 본다.
+    def test_재요청의_BOT표식이_봇이_아니면_침묵한다(self, tmp_path: Path) -> None:
+        # BOT:ID 인데 그 ID 가 봇이 아니면 미해석(None)이다. 엉뚱한 멘션을 달지 않는다.
         pipeline, deps = build_pipeline(
-            responses=[ok_response(body="검토했습니다.\n[[RECIPIENT:BOT:UHUMAN]]")],
+            responses=[
+                ok_response(body="검토했습니다.\n[[RECIPIENT:BOT:UHUMAN]]"),
+                ok_response(body="[[RECIPIENT:BOT:UHUMAN]]"),
+            ],
+            asker_is_bot=_is_bot(set()),
+            require_recipient=True,
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx())
+        assert deps["publisher"].posted == []
+        assert outcome.silent is True
+
+    def test_재요청의_BOT표식이면_그_봇_멘션을_강제한다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[
+                ok_response(body="검토했습니다."),
+                ok_response(body="[[RECIPIENT:BOT:UBOT]]"),
+            ],
+            asker_is_bot=_is_bot({"UBOT"}),
+            require_recipient=True,
+            tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+        assert deps["publisher"].posted[0]["text"] == "<@UBOT> 검토했습니다."
+
+
+    def test_미해석_표식을_지우고_재요청_표식을_쓴다(self, tmp_path: Path) -> None:
+        # 첫 답의 BOT:UHUMAN 이 남아 있으면 재요청이 고른 OWNER 대신 그것을 다시 읽는다.
+        pipeline, deps = build_pipeline(
+            responses=[
+                ok_response(body="검토했습니다.\n[[RECIPIENT:BOT:UHUMAN]]"),
+                ok_response(body="[[RECIPIENT:OWNER]]"),
+            ],
             asker_is_bot=_is_bot(set()),
             require_recipient=True,
             tmp_path=tmp_path,
         )
         pipeline.handle(make_ctx())
-        assert deps["publisher"].posted[0]["text"] == NOTICE_NO_RECIPIENT
+        assert [p["text"] for p in deps["publisher"].posted] == ["검토했습니다."]
+
+    def test_대체엔진_턴이면_재요청하지_않고_침묵한다(self, tmp_path: Path) -> None:
+        # 대체 엔진은 매번 새 세션이라 방금 답을 모른다. 표식을 고르게 할 수 없다.
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        pipeline, deps = build_pipeline(
+            responses=[replace(ok_response(body="표식 없는 답입니다."), engine="codex")],
+            require_recipient=True,
+            tmp_path=tmp_path,
+        )
+        pipeline._engine.secondary = SimpleNamespace(name="codex")
+        outcome = pipeline.handle(make_ctx())
+        assert len(deps["runner"].calls) == 1
+        assert deps["publisher"].posted == []
+        assert outcome.silent is True
 
 
 class TestApplication배선_J11:
@@ -148,11 +295,21 @@ class TestApplication배선_J11:
         app = Application(profile, FakeSlackClient())
         assert app.pipeline()._require_recipient is True
 
-    def test_설정이_없으면_파이프라인도_꺼짐이다(self, tmp_path: Path) -> None:
+    def test_설정이_없으면_파이프라인은_켜짐이다(self, tmp_path: Path) -> None:
+        # B1: 페르소나가 표식을 항상 요구하므로(RECIPIENT_RULE) 기본값은 켜짐이다.
         from test_application import FakeSlackClient, write_profile
 
         from slack_cli_agent.core.application import Application
 
         profile = write_profile(tmp_path)
+        app = Application(profile, FakeSlackClient())
+        assert app.pipeline()._require_recipient is True
+
+    def test_설정으로_끌_수_있다(self, tmp_path: Path) -> None:
+        from test_application import FakeSlackClient, write_profile
+
+        from slack_cli_agent.core.application import Application
+
+        profile = write_profile(tmp_path, settings={"require_recipient": False})
         app = Application(profile, FakeSlackClient())
         assert app.pipeline()._require_recipient is False

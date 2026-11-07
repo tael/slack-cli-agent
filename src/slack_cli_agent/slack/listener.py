@@ -15,6 +15,8 @@ Whether an unaddressed thread reply gets answered is decided by
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -26,10 +28,14 @@ from slack_cli_agent.guard.mentions import (
     talking_to_peer,
 )
 from slack_cli_agent.session.awaiting import AwaitingPort
+from slack_cli_agent.slack.blocks import event_body
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import BotIdentity
-from slack_cli_agent.slack.message_kind import MessageKind
+from slack_cli_agent.slack.message_kind import HUMAN_SUBTYPES, MessageKind
+from slack_cli_agent.slack.names import DEFAULT_BOT_RETRY_INTERVAL_SEC
 from slack_cli_agent.slack.policy import ResponsePolicy, ThreadState
+
+log = logging.getLogger(__name__)
 
 
 class EventListener:
@@ -57,6 +63,10 @@ class EventListener:
         # caps the exchange here, and the only brake on a loop is the
         # outgoing BotMentionGuard stripping the asker's mention (sca-c4m).
         peer_limiter: PeerExchangeLimiter | None = None,
+        # How long a bot_id whose bots.info lookup failed twice in a row
+        # stays un-retried (C5). Same interval as BotUserResolver.
+        clock: Callable[[], float] = time.monotonic,
+        bot_user_retry_interval_sec: float = DEFAULT_BOT_RETRY_INTERVAL_SEC,
     ) -> None:
         self._client = client
         self._channels = channel_registry
@@ -74,6 +84,9 @@ class EventListener:
         # decision, kept out of this class so it can vary per channel.
         self._policy = ResponsePolicy(gate)
         self._bot_users: dict[str, str] = {}
+        self._bot_user_failed_at: dict[str, float] = {}
+        self._clock = clock
+        self._bot_user_retry_interval_sec = bot_user_retry_interval_sec
         self._is_bot = is_bot or (lambda _user_id: False)
 
     def _bot_user_id(self, bot_id: str) -> str:
@@ -81,18 +94,33 @@ class EventListener:
 
         A bot that posts with chat:write.customize arrives with bot_id and no
         user field, so a controller listed in controller_user_ids was treated
-        as a stranger. bots.info maps the bot_id back to its user. A failed
-        lookup stays empty, which keeps the old, stricter behavior.
+        as a stranger. bots.info maps the bot_id back to its user.
+
+        An empty user drops the asker mention from the reply, so the bot that
+        called never sees the answer (C5, bot.py:4371 bot_user_id_of). A
+        failure is therefore asked once more on the spot, and if that fails
+        too it is throttled, not cached: the next event after the retry
+        interval asks again. A resolved user is cached for the process.
         """
         if not bot_id:
             return ""
-        if bot_id not in self._bot_users:
+        if bot_id in self._bot_users:
+            return self._bot_users[bot_id]
+        last = self._bot_user_failed_at.get(bot_id)
+        if last is not None and self._clock() - last < self._bot_user_retry_interval_sec:
+            return ""
+        for _attempt in range(2):
             try:
                 info = self._client.bots_info(bot=bot_id)
-                self._bot_users[bot_id] = str((info.get("bot") or {}).get("user_id") or "")
-            except Exception:  # noqa: BLE001 - a lookup failure (including rate limiting) means no user
-                return ""
-        return self._bot_users[bot_id]
+            except Exception as exc:  # noqa: BLE001 - a lookup failure (including rate limiting) is retried, not raised
+                log.warning("봇 사용자 ID 조회 실패 : %s : %s", bot_id, exc)
+                continue
+            user_id = str((info.get("bot") or {}).get("user_id") or "")
+            self._bot_users[bot_id] = user_id
+            self._bot_user_failed_at.pop(bot_id, None)
+            return user_id
+        self._bot_user_failed_at[bot_id] = self._clock()
+        return ""
 
     def _context_from_event(
         self, event: Mapping[str, Any], *, unaddressed: bool, is_dm: bool
@@ -103,11 +131,16 @@ class EventListener:
             user=event.get("user") or self._bot_user_id(event.get("bot_id") or ""),
             ts=ts,
             thread_ts=event.get("thread_ts") or ts,
-            text=event.get("text") or "",
+            # A peer bot's rich post carries only a one-line notification
+            # preview in `text`; its tables and lists are in the blocks (C2,
+            # bot.py swaps in event_body for a bot sender). A human's `text` is
+            # the whole message with its formatting, so it is kept as is.
+            text=(event_body(event) if event.get("bot_id") else event.get("text")) or "",
             files=tuple(event.get("files") or ()),
             unfurl_attachments=tuple(event.get("attachments") or ()),
             unaddressed=unaddressed,
             is_direct_message=is_dm,
+            from_bot=bool(event.get("bot_id")),
         )
 
     def from_app_mention(self, event: Mapping[str, Any]) -> RequestContext | None:
@@ -125,7 +158,9 @@ class EventListener:
         # exactly the kind of loop C19's cap exists to stop from running
         # away in the first place.
         if event.get("bot_id"):
-            if not self._identity.is_mentioned(event.get("text") or ""):
+            # The body, not just `text`: a rich post's `text` is only its
+            # notification preview, and the mention may sit in its blocks (C1).
+            if not self._identity.is_mentioned(event_body(event)):
                 return None
             # A peer named this bot: count the turn and stop once the thread's
             # bot-to-bot exchange has gone past its cap (C19). Counting here,
@@ -180,7 +215,36 @@ class EventListener:
         root_self = bool(msgs) and msgs[0].get("ts") == thread_ts and self._identity.is_self(msgs[0])
         return joined, asked, peer_talk, root_self
 
+    #: Subtypes a bot's own post can carry and still be a request. Edits,
+    #: deletions and join notices are not; only these pass for a bot.
+    _BOT_POST_SUBTYPES = frozenset({"bot_message"})
+
+    def _named_only_in_blocks(self, event: Mapping[str, Any]) -> bool:
+        """Whether this bot is named in the message's blocks but not in its
+        `text` (C1).
+
+        Slack derives app_mention from `text`, so a rich post whose mention
+        sits only in its blocks raises no app_mention, and the request was
+        never taken. A mention in `text` is left to app_mention, so the same
+        message is not taken twice.
+        """
+        if not event.get("blocks") or self._identity.is_self(event):
+            return False
+        if event.get("bot_id"):
+            subtype = event.get("subtype")
+            if subtype and subtype not in self._BOT_POST_SUBTYPES | HUMAN_SUBTYPES:
+                return False
+        elif not self._kind.is_human(event):
+            return False
+        return not self._identity.is_mentioned(
+            event.get("text") or ""
+        ) and self._identity.is_mentioned(event_body(event))
+
     def from_message(self, event: Mapping[str, Any]) -> RequestContext | None:
+        if event.get("channel_type") != "im" and self._named_only_in_blocks(event):
+            # Taken as the mention it is, through the same checks app_mention
+            # gets, including the bot-to-bot cap (C19) and its reset (C18).
+            return self.from_app_mention(event)
         if not self._kind.is_human(event):
             return None
 
