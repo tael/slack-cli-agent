@@ -83,12 +83,54 @@ def test_resolve_caches_lookup_across_calls() -> None:
     assert client.call_count == 1
 
 
-def test_resolve_failure_returns_empty_and_is_cached() -> None:
+def test_resolve_failure_returns_empty_and_is_not_retried_at_once() -> None:
     client = _FakeSlackClient({})
     resolver = DisplayNameResolver(client)
 
     assert resolver.resolve("U_UNKNOWN") == ""
     assert resolver.resolve("U_UNKNOWN") == ""
+    assert client.call_count == 1
+
+
+def test_이름_조회_실패는_간격을_두고_다시_묻는다() -> None:
+    """한 번의 users.info 실패를 빈 이름으로 굳혀 두면 그 화자는 프로세스가
+    사는 내내 ID 로만 나온다. 봇이 화자이면 어느 봇이 말했는지 지시문에서
+    가려지지 않는다(B10). 간격 안에서는 다시 묻지 않는다."""
+    client = _FakeSlackClient({})
+    시각 = {"값": 0.0}
+    resolver = DisplayNameResolver(client, clock=lambda: 시각["값"], retry_interval_sec=60.0)
+
+    assert resolver.resolve("U0REI") == ""
+    assert resolver.resolve("U0REI") == ""
+    assert client.call_count == 1
+
+    client._profiles["U0REI"] = _profile(real_name="구치파치")
+    시각["값"] = 61.0
+
+    assert resolver.resolve("U0REI") == "구치파치"
+    assert resolver.name_table()["구치파치"] == "U0REI"
+
+
+def test_이름_조회_성공은_간격이_지나도_다시_묻지_않는다() -> None:
+    client = _FakeSlackClient({"U0REI": _profile(real_name="구치파치")})
+    시각 = {"값": 0.0}
+    resolver = DisplayNameResolver(client, clock=lambda: 시각["값"], retry_interval_sec=60.0)
+
+    resolver.resolve("U0REI")
+    시각["값"] = 6000.0
+    resolver.resolve("U0REI")
+
+    assert client.call_count == 1
+
+
+def test_이름이_빈_성공_응답은_실패가_아니라_캐시한다() -> None:
+    client = _FakeSlackClient({"U0EMPTY": _profile()})
+    시각 = {"값": 0.0}
+    resolver = DisplayNameResolver(client, clock=lambda: 시각["값"], retry_interval_sec=60.0)
+
+    assert resolver.resolve("U0EMPTY") == ""
+    시각["값"] = 6000.0
+    assert resolver.resolve("U0EMPTY") == ""
     assert client.call_count == 1
 
 

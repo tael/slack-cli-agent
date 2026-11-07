@@ -1,7 +1,9 @@
 """Resolves a Slack user ID to a human-readable display name.
 
-Lookup failures are cached too, as an empty string — the original's
-choice not to keep retrying a user that already failed.
+A failed lookup is not cached as a name, only throttled. The original
+(bot.py:4035 asker_display_name) cached the failure as an empty string for
+the life of the process, so one transient users.info error left that
+speaker -- often another bot -- shown by raw ID from then on (B10).
 """
 
 from __future__ import annotations
@@ -16,21 +18,41 @@ log = logging.getLogger(__name__)
 #: How long a failed users.info lookup stays un-retried for that user.
 DEFAULT_BOT_RETRY_INTERVAL_SEC = 60.0
 
+#: The same for a display-name lookup.
+DEFAULT_NAME_RETRY_INTERVAL_SEC = 60.0
+
 #: How long a failed usergroups.list call stays un-retried.
 DEFAULT_GROUP_RETRY_INTERVAL_SEC = 300.0
 
 
 class DisplayNameResolver:
-    def __init__(self, client: Any) -> None:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        retry_interval_sec: float = DEFAULT_NAME_RETRY_INTERVAL_SEC,
+    ) -> None:
         self._client = client
+        self._clock = clock
+        self._retry_interval_sec = retry_interval_sec
         self._cache: dict[str, str] = {}
+        self._failed_at: dict[str, float] = {}
         self._name_to_id: dict[str, str] = {}
 
     def resolve(self, user_id: str) -> str:
         if not user_id:
             return ""
         if user_id not in self._cache:
-            self._cache[user_id] = self._lookup(user_id)
+            last = self._failed_at.get(user_id)
+            if last is not None and self._clock() - last < self._retry_interval_sec:
+                return ""
+            looked_up = self._lookup(user_id)
+            if looked_up is None:
+                self._failed_at[user_id] = self._clock()
+                return ""
+            self._failed_at.pop(user_id, None)
+            self._cache[user_id] = looked_up
         name = self._cache[user_id]
         if name:
             self._name_to_id.setdefault(name, user_id)
@@ -41,7 +63,8 @@ class DisplayNameResolver:
                 self._name_to_id.setdefault(head, user_id)
         return name
 
-    def _lookup(self, user_id: str) -> str:
+    def _lookup(self, user_id: str) -> str | None:
+        """None means the lookup itself failed; "" is a user with no name set."""
         try:
             info = self._client.users_info(user=user_id)
             profile = info["user"].get("profile") or {}
@@ -51,8 +74,9 @@ class DisplayNameResolver:
                 or info["user"].get("name")
                 or ""
             )
-        except Exception:  # noqa: BLE001 - a failed lookup falls back to an empty string, not a raised error
-            return ""
+        except Exception as exc:  # noqa: BLE001 - a failed lookup is retried later, not raised
+            log.warning("사용자 이름 조회 실패, 나중에 다시 묻는다 : %s : %s", user_id, exc)
+            return None
 
     def __call__(self, user_id: str) -> str:
         return self.resolve(user_id)
