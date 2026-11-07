@@ -162,6 +162,15 @@ TRUNCATION_NOTICE = "\n\n(제한 시간에 걸려 답이 여기서 끊겼습니�
 class GeminiEngine(Engine):
     name = "gemini"
     shell_always_attached = True
+    #: agy carries instructions in the prompt on every turn, so a resumed
+    #: turn's blocks are in the conversation as much as the first one's (C15).
+    dedups_resumed_instructions = True
+    records_resumed_instructions = True
+    #: Unmeasured: whether agy compacts a long conversation is not known, and
+    #: its usage reads 0, so there is no signal to watch. Sending everything
+    #: again every few resumes bounds how long a reference can point at text
+    #: that compaction dropped.
+    instruction_refresh_after = 3
 
     #: agy rejects xhigh/max with `invalid --effort` (docs/agy-실측.md 3).
     #: Engine.resolve_effort brings the caller's value down into this set.
@@ -233,7 +242,7 @@ class GeminiEngine(Engine):
         cmd += ["--print-timeout", f"{timeout_sec}s"]
 
         prompt = (
-            request.system_prompt
+            self.instructions_for(request)
             + self.readable_paths_note(request.readable_dirs)
             + self.write_paths_note(request)
             + self.tool_ban_note(request)
