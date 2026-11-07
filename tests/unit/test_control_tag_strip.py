@@ -144,6 +144,22 @@ class Test맨끝_WATCH_오삭제_방지:
         assert text == "본문입니다."
         assert sorted(dropped) == sorted(["[[NOWATCH]]", "[[WATCH: 첫 줄\n둘째 줄]]"])
 
+    def test_결론과_같은_줄_맨끝_WATCH_도_뗀다(self) -> None:
+        text, dropped = strip_control_tags("결론이다. [[WATCH: 배치 끝]]")
+        assert text == "결론이다."
+        assert dropped == ["[[WATCH: 배치 끝]]"]
+
+    def test_같은_줄_맨끝_WATCH_앞의_문장_속_언급은_남긴다(self) -> None:
+        body = "예시는 [[WATCH: 가]] 처럼 쓴다.\n결론이다. [[WATCH@2026-11-10: 나\n둘째 줄]]"
+        text, dropped = strip_control_tags(body)
+        assert text == "예시는 [[WATCH: 가]] 처럼 쓴다.\n결론이다."
+        assert dropped == ["[[WATCH@2026-11-10: 나\n둘째 줄]]"]
+
+    def test_같은_줄_맨끝_WATCH_와_NOWATCH_줄이_함께_와도_뗀다(self) -> None:
+        text, dropped = strip_control_tags("결론이다. [[WATCH: 배치 끝]]\n[[NOWATCH]]")
+        assert text == "결론이다."
+        assert sorted(dropped) == sorted(["[[NOWATCH]]", "[[WATCH: 배치 끝]]"])
+
 
 class Test게시_관문_감사_종류:
     def test_미선언_표식은_unknown_tag_로_기록한다(

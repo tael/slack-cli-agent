@@ -262,13 +262,15 @@ _CONTROL_TAG_LINE_RE = re.compile(
 
 # A trailing `[[WATCH: ...]]` may span several lines, so the line pass below
 # can't see it. Same shape as guard/watch.py's WATCH_RE (kept here so core
-# doesn't import guard), narrowed after PR #108 review: the tag has to start
-# its own line and hold no other `[[`/`]]`. Unanchored, the lazy body ran from
-# a mid-sentence mention all the way to a later marker and ate the lines in
-# between. It is matched only after the line pass, so a trailing [[NOWATCH]]
-# line is already gone and can't stretch the match.
+# doesn't import guard), narrowed after PR #108 review: the body may hold no
+# other `[[`/`]]`. Without that, the lazy body ran from a mid-sentence mention
+# all the way to a later marker and ate the lines in between. With it, only
+# the last WATCH can reach `]]\s*\Z`, so the tag may still sit at the end of
+# the conclusion's line, as bot.py's WATCH_RE allows. It is matched only after
+# the line pass, so a trailing [[NOWATCH]] line is already gone and can't
+# stretch the match.
 _TRAILING_WATCH_RE = re.compile(
-    r"(?:\A|\n)[ \t]*(\[\[WATCH(?:@\d{4}-\d{2}-\d{2})?:(?:(?!\[\[|\]\]).)+?\]\])\s*\Z",
+    r"(\[\[WATCH(?:@\d{4}-\d{2}-\d{2})?:(?:(?!\[\[|\]\]).)+?\]\])\s*\Z",
     re.DOTALL,
 )
 
