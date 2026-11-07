@@ -23,6 +23,7 @@ import hashlib
 import re
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass, field
 
 #: Blocks at or under this size are always sent in full.
 MIN_REFERENCED_BLOCK_BYTES = 1024
@@ -56,22 +57,54 @@ def block_id(block: str) -> str:
     return hashlib.sha256(block.encode("utf-8")).hexdigest()[:16]
 
 
+def heading_of(block: str) -> str:
+    """The block's first line: the only name the model can match a reference to."""
+    return block.lstrip("\n").split("\n", 1)[0].strip()[:80]
+
+
 def reference_for(block: str) -> str:
     """Names the block by its first line: the model never saw the id, only the
     text, so the heading is what lets it find the block it already has."""
-    heading = block.lstrip("\n").split("\n", 1)[0].strip()[:80]
     return (
-        f"[지침 블록 「{heading}」 ({block_id(block)}) : 이 대화에서 앞서 받은 같은 "
+        f"[지침 블록 「{heading_of(block)}」 ({block_id(block)}) : 이 대화에서 앞서 받은 같은 "
         f"블록과 내용이 같아 다시 싣지 않는다. 앞서 받은 그 블록을 그대로 따른다.]\n\n"
     )
+
+
+@dataclass
+class _Session:
+    #: Blocks that reached the session in full and stay there.
+    known: set[str] = field(default_factory=set)
+    #: heading -> id of the version the session saw last under it, None when
+    #: one text carried two versions. A heading is the only key the model has,
+    #: so a block is referenced only while it is the latest version under its
+    #: heading. Prompt library sections have no ``# `` line, so the owner and
+    #: non-owner notes ride in whatever block precedes them and that block
+    #: changes with the asker within one thread.
+    latest: dict[str, str | None] = field(default_factory=dict)
+    #: Resumed turns sent with references since the last full send.
+    referenced_turns: int = 0
+
+
+def _versions(text: str) -> dict[str, str | None]:
+    out: dict[str, str | None] = {}
+    for block in split_blocks(text):
+        heading = heading_of(block)
+        out[heading] = block_id(block) if heading not in out else None
+    return out
 
 
 class InstructionLedger:
     """Which instruction blocks each session has already received."""
 
-    def __init__(self, max_sessions: int = MAX_SESSIONS) -> None:
+    def __init__(
+        self, max_sessions: int = MAX_SESSIONS, refresh_after: int | None = None
+    ) -> None:
         self._max_sessions = max_sessions
-        self._sessions: OrderedDict[str, set[str]] = OrderedDict()
+        #: After this many referenced turns in a row the next one goes out in
+        #: full. None never refreshes.
+        self._refresh_after = refresh_after
+        self._sessions: OrderedDict[str, _Session] = OrderedDict()
         self._lock = threading.Lock()
 
     def reduce(self, session_id: str | None, text: str) -> str:
@@ -82,24 +115,53 @@ class InstructionLedger:
         if not session_id or not text:
             return text
         with self._lock:
-            known = set(self._sessions.get(session_id, ()))
-        if not known:
-            return text
-        return "".join(
-            reference_for(block)
-            if len(block.encode("utf-8")) > MIN_REFERENCED_BLOCK_BYTES and block_id(block) in known
-            else block
-            for block in split_blocks(text)
-        )
+            state = self._sessions.get(session_id)
+            if state is None or not state.known:
+                return text
+            if self._refresh_after is not None and state.referenced_turns >= self._refresh_after:
+                return text
+            known = set(state.known)
+            latest = dict(state.latest)
+        here = _versions(text)
+        out = []
+        for block in split_blocks(text):
+            bid = block_id(block)
+            heading = heading_of(block)
+            reusable = (
+                len(block.encode("utf-8")) > MIN_REFERENCED_BLOCK_BYTES
+                and bid in known
+                and latest.get(heading) == bid
+                and here.get(heading) == bid
+            )
+            out.append(reference_for(block) if reusable else block)
+        return "".join(out)
 
-    def record(self, session_id: str | None, text: str) -> None:
-        """Called once a turn carrying ``text`` in full finished successfully."""
+    def record(
+        self,
+        session_id: str | None,
+        text: str,
+        *,
+        delivered: bool = True,
+        referenced: bool = False,
+    ) -> None:
+        """Called after a turn carrying ``text`` went out.
+
+        ``delivered`` says its blocks now stay in the session; a failed turn
+        or one whose prompt may be compacted only moves the latest version per
+        heading, which can stop a reference but never start one.
+        ``referenced`` says the turn went out reduced."""
         if not session_id or not text:
             return
-        ids = {block_id(block) for block in split_blocks(text)}
+        versions = _versions(text)
         with self._lock:
-            known = self._sessions.pop(session_id, set())
-            known |= ids
-            self._sessions[session_id] = known
+            state = self._sessions.pop(session_id, None) or _Session()
+            if delivered:
+                state.known |= {block_id(block) for block in split_blocks(text)}
+            state.latest.update(versions)
+            if referenced:
+                state.referenced_turns += 1
+            elif delivered:
+                state.referenced_turns = 0
+            self._sessions[session_id] = state
             while len(self._sessions) > self._max_sessions:
                 self._sessions.popitem(last=False)

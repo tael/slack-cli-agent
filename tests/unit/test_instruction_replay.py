@@ -167,3 +167,84 @@ class Test실행기가_기록한다:
         assert "정산 마감은" in 첫
         assert "정산 마감은" not in 다음
         assert utf8_bytes(다음) * 3 <= utf8_bytes(첫)
+
+
+def 경계지침(소유자: bool) -> str:
+    """프롬프트 라이브러리 섹션에는 `# ` 제목이 없어 소유자 안내가 앞 블록에 붙는다."""
+    안내 = "지금 말을 건 사람은 소유자 본인이다." if 소유자 else "지금 말을 건 사람은 소유자가 아니다."
+    명단 = "# 계정 핸들과 사람 이름\n\n" + "- U0000 : 김태일\n" * 120 + "\n" + 안내 + "\n\n"
+    return 페르소나 + 지식 + 명단
+
+
+class Test질문자가_바뀌는_스레드:
+    """비소유자, 소유자, 비소유자 순서로 같은 스레드에 말을 걸면 세 번째 턴의
+    경계 블록은 참조로 바뀌면 안 된다. 같은 제목 아래 마지막으로 받은 것이
+    소유자 판이라 모델은 참조를 소유자 판으로 읽는다."""
+
+    def _턴들(self, 엔진, sid: str) -> list[str]:
+        def 보낼것(req) -> str:
+            cmd = 엔진.build_command(req)
+            return cmd[cmd.index("-p") + 1] if "-p" in cmd else cmd[-1] + " ".join(cmd)
+
+        보낸 = []
+        첫 = request(resume=False, session_id=sid, system_prompt=경계지침(False), model="m")
+        보낸.append(보낼것(첫))
+        엔진.note_delivered(첫, 성공(sid))
+        for 소유자 in (True, False):
+            req = request(resume=True, session_id=sid, system_prompt=경계지침(소유자), model="m")
+            보낸.append(보낼것(req))
+            엔진.note_delivered(req, 성공(sid))
+        return 보낸
+
+    def test_코덱스_세번째_턴에_비소유자_경계가_실린다(self, tmp_path: Path) -> None:
+        보낸 = self._턴들(CodexEngine(codex_profile(tmp_path), SETTINGS), "T1")
+        assert "소유자가 아니다" in 보낸[2]
+        assert "「# 계정 핸들과 사람 이름」" not in 보낸[2]
+
+    def test_제미나이_세번째_턴에_비소유자_경계가_실린다(self, tmp_path: Path) -> None:
+        보낸 = self._턴들(GeminiEngine(gemini_profile(tmp_path), SETTINGS), "C1")
+        assert "소유자가 아니다" in 보낸[2]
+        assert "「# 계정 핸들과 사람 이름」" not in 보낸[2]
+
+    def test_반대_순서에서도_소유자_턴을_좁히지_않는다(self) -> None:
+        원장 = InstructionLedger()
+        원장.record("T1", 경계지침(True))
+        원장.record("T1", 경계지침(False), delivered=False)
+        줄인것 = 원장.reduce("T1", 경계지침(True))
+        assert "소유자 본인이다" in 줄인것
+        assert "정산 마감은" not in 줄인것
+
+    def test_같은_판이_이어지면_다시_참조한다(self) -> None:
+        원장 = InstructionLedger()
+        원장.record("T1", 경계지침(False))
+        assert "「# 계정 핸들과 사람 이름」" in 원장.reduce("T1", 경계지침(False))
+
+    def test_실패한_시도도_최신판을_바꾼다(self) -> None:
+        """실패한 호출도 모델에 닿았을 수 있다. 참조를 막는 방향으로만 쓴다."""
+        원장 = InstructionLedger()
+        원장.record("T1", 경계지침(False))
+        원장.record("T1", 경계지침(True), delivered=False)
+        assert "소유자가 아니다" in 원장.reduce("T1", 경계지침(False))
+
+
+class Test제미나이_주기적_전체전송:
+    def test_참조한_재개턴이_이어지면_전체를_다시_싣는다(self, tmp_path: Path) -> None:
+        """agy 가 긴 대화를 압축하는지 측정하지 못했다. 참조가 이어지는 길이를 묶는다."""
+        엔진 = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
+        엔진.note_delivered(첫턴("C1"), 성공("C1"))
+        보낸 = []
+        for _ in range(엔진.instruction_refresh_after + 2):
+            req = 재개("C1")
+            cmd = 엔진.build_command(req)
+            보낸.append("정산 마감은" in cmd[cmd.index("-p") + 1])
+            엔진.note_delivered(req, 성공("C1"))
+        n = 엔진.instruction_refresh_after
+        assert 보낸 == [False] * n + [True, False]
+
+    def test_코덱스는_주기적으로_다시_싣지_않는다(self, tmp_path: Path) -> None:
+        엔진 = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        엔진.note_delivered(첫턴(), 성공("T1"))
+        for _ in range(6):
+            req = 재개()
+            assert "정산 마감은" not in 엔진.build_command(req)[-1]
+            엔진.note_delivered(req, 성공("T1"))

@@ -496,11 +496,14 @@ class Engine(ABC):
     #: only the first turn's developer_instructions fixed in the session; a
     #: resumed prompt can be compacted away, so it never counts there.
     records_resumed_instructions: ClassVar[bool] = False
+    #: Referenced resumed turns in a row before one goes out in full again.
+    #: None never refreshes.
+    instruction_refresh_after: ClassVar[int | None] = None
 
     def __init__(self, profile: Profile, settings: RuntimeSettings) -> None:
         self.profile = profile
         self.settings = settings
-        self._instruction_ledger = InstructionLedger()
+        self._instruction_ledger = InstructionLedger(refresh_after=self.instruction_refresh_after)
 
     def instructions_for(self, request: EngineRequest) -> str:
         """The instruction text this turn actually sends.
@@ -513,14 +516,17 @@ class Engine(ABC):
 
     def note_delivered(self, request: EngineRequest, response: EngineResponse) -> None:
         """Records what a finished turn put in its session. The runner calls
-        this after every attempt; only a successful one counts, since a failed
-        call may never have reached the model."""
-        if not (self.dedups_resumed_instructions and response.ok):
+        this after every attempt. Only a successful one adds blocks, since a
+        failed call may never have reached the model; any attempt still moves
+        the latest version per heading, since it may have."""
+        if not self.dedups_resumed_instructions:
             return
-        if request.resume and not self.records_resumed_instructions:
-            return
+        referenced = self.instructions_for(request) != request.system_prompt
+        delivered = response.ok and (not request.resume or self.records_resumed_instructions)
         session_id = self.session_id_from(response) or request.session_id
-        self._instruction_ledger.record(session_id, request.system_prompt)
+        self._instruction_ledger.record(
+            session_id, request.system_prompt, delivered=delivered, referenced=referenced
+        )
 
     @property
     def spec(self) -> EngineSpec:

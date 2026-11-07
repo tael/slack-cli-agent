@@ -166,6 +166,11 @@ class GeminiEngine(Engine):
     #: turn's blocks are in the conversation as much as the first one's (C15).
     dedups_resumed_instructions = True
     records_resumed_instructions = True
+    #: Unmeasured: whether agy compacts a long conversation is not known, and
+    #: its usage reads 0, so there is no signal to watch. Sending everything
+    #: again every few resumes bounds how long a reference can point at text
+    #: that compaction dropped.
+    instruction_refresh_after = 3
 
     #: agy rejects xhigh/max with `invalid --effort` (docs/agy-실측.md 3).
     #: Engine.resolve_effort brings the caller's value down into this set.
