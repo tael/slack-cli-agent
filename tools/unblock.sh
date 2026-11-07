@@ -1,16 +1,17 @@
 #!/bin/bash
 # 기동 차단 표식을 지우고 그 역할을 다시 띄운다.
 #
-#   tools/unblock.sh <이름> [worker|ingress]
+#   tools/unblock.sh <이름> [worker|ingress|supervisor]
 #
-# 역할을 안 주면 둘 다 본다. 설정 오류를 고친 뒤 이것을 부른다.
+# 역할을 안 주면 worker, ingress 를 본다. 감독은 supervisor 로 따로 준다.
+# 설정 오류를 고친 뒤 이것을 부른다.
 #
 # 표식이 있으면 launchd 의 KeepAlive 조건이 거짓이라 스스로는 안 뜬다.
 # kickstart 는 그 조건을 무시하므로 반드시 표식을 먼저 지운다 - 순서가
 # 바뀌면 다시 78 로 끝나고 표식만 새로 생긴다.
 set -e
 NAME=$1
-[ -z "$NAME" ] && { sed -n '2,9p' "$0"; exit 2; }
+[ -z "$NAME" ] && { sed -n '2,10p' "$0"; exit 2; }
 ROLES=${2:-"worker ingress"}
 D="$HOME/.$NAME"
 
