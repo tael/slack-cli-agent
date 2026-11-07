@@ -634,6 +634,54 @@ class Test링크된스레드채널명:
         assert len(조회) == 1
 
 
+class _비공개막힘(FakeSlackClient):
+    """봇이 초대되지 않은 비공개 채널처럼 스레드 조회가 실패한다."""
+
+    def conversations_replies(self, **kwargs: Any) -> dict[str, Any]:
+        self._record("conversations_replies", **kwargs)
+        raise RuntimeError("channel_not_found")
+
+
+class _소유자세션(FakeSlackClient):
+    def conversations_replies(self, **kwargs: Any) -> dict[str, Any]:
+        self._record("conversations_replies", **kwargs)
+        return {"messages": [{"ts": "1788253544.408049", "user": "U9", "text": "비공개 할증 요청"}]}
+
+
+class Test소유자세션링크읽기조립:
+    """D5 : owner_client 를 받은 조립이 소유자 턴에서만 그 클라이언트로 링크를 읽는가."""
+
+    LINK = "https://example.slack.com/archives/C0EXAMPLE01/p1788253544408049"
+
+    def test_소유자_턴은_사용자_세션으로_읽는다(self, profile: Profile) -> None:
+        owner = _소유자세션()
+        app = Application(profile, _비공개막힘(), owner_client=owner)
+        note = app._linked_threads().of(self.LINK, as_owner=True)
+        assert "비공개 할증 요청" in note
+        assert any(c[0] == "conversations_replies" for c in owner.calls)
+
+    def test_비소유자_턴은_사용자_세션을_부르지_않는다(self, profile: Profile) -> None:
+        owner = _소유자세션()
+        app = Application(profile, _비공개막힘(), owner_client=owner)
+        note = app._linked_threads().of(self.LINK)
+        assert "비공개 할증 요청" not in note
+        assert "읽지 못했다" in note
+        assert owner.calls == []
+
+    def test_파이프라인은_비소유자_턴에_사용자_세션을_쓰지_않는다(self, profile: Profile) -> None:
+        owner = _소유자세션()
+        app = Application(profile, _비공개막힘(), owner_client=owner)
+        hook = app.pipeline()._linked_threads
+        assert hook is not None
+        assert "비공개 할증 요청" not in hook(self.LINK, "C099", (), False)
+        assert owner.calls == []
+        assert "비공개 할증 요청" in hook(self.LINK, "C099", (), True)
+
+    def test_사용자_세션이_없으면_소유자_턴도_봇_토큰만_쓴다(self, profile: Profile) -> None:
+        app = Application(profile, _비공개막힘())
+        assert "읽지 못했다" in app._linked_threads().of(self.LINK, as_owner=True)
+
+
 class Test사용량확인실행기:
     """운영자가 건 사용량 확인 명령이 주기로 도는가.
 

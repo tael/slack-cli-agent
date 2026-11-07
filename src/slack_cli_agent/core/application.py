@@ -147,7 +147,7 @@ from ..session.store import SqliteSessionStore
 from ..slack.assistant import DEFAULT_GREETING, AssistantPanel
 from ..slack.attachments import AttachmentStore, DownloadResult
 from ..slack.channel_names import ChannelNameResolver
-from ..slack.credentials import CredentialResolver, resolver_for
+from ..slack.credentials import CredentialResolver, owner_session_client, resolver_for
 from ..slack.download import HttpDownloader
 from ..slack.gate import ResponseGate
 from ..slack.gateway import SlackGateway
@@ -248,9 +248,13 @@ class Application:
         transcript_readers: TranscriptReaderRegistry | None = None,
         token_provider: Any = None,
         clock: Callable[[], float] = time.monotonic,
+        owner_client: Any = None,
     ) -> None:
         self._profile = profile
         self._client = client
+        # 소유자 사용자 세션 클라이언트. 소유자 턴의 링크 선읽기에만 쓴다(D5).
+        self._owner_client = owner_client
+        self._owner_channel_name_resolver: ChannelNameResolver | None = None
         # injected so tests can control identity-refresh timing
         self._clock = clock
         profile.paths.ensure()
@@ -369,6 +373,8 @@ class Application:
 
             client = WebClient(token=resolver.bot_token())
         kwargs.setdefault("token_provider", resolver.bot_token)
+        if "owner_client" not in kwargs:
+            kwargs["owner_client"] = owner_session_client(resolver)
         return cls(profile, client, **kwargs)
 
     def bot_token(self) -> str:
@@ -675,9 +681,9 @@ class Application:
             )
         return self._user_namer
 
-    def _transcript_builder(self) -> TranscriptBuilder:
+    def _transcript_builder(self, client: Any = None) -> TranscriptBuilder:
         return TranscriptBuilder(
-            client=self._client,
+            client=self._client if client is None else client,
             settings=self._settings,
             notices=self._notices,
             name_resolver=self.user_namer(),
@@ -716,11 +722,21 @@ class Application:
         """Reuses _transcript_builder so a linked thread is formatted exactly
         like the current one — a second formatter here would drift.
         """
+        owner_transcript = owner_names = None
+        if self._owner_client is not None:
+            owner_transcript = self._transcript_builder(self._owner_client)
+            if self._owner_channel_name_resolver is None:
+                self._owner_channel_name_resolver = ChannelNameResolver(
+                    self._owner_client, self._channel_display_name
+                )
+            owner_names = self._owner_channel_name_resolver
         return LinkedThreadNote(
             LinkedThreadReader(
                 self._transcript_builder(),
                 self._channel_names(),
                 max_links=self._settings.linked_thread_max,
+                owner_transcript=owner_transcript,
+                owner_channel_name=owner_names,
             )
         )
 
@@ -780,8 +796,8 @@ class Application:
                 # built lazily rather than as a field — eagerly building it here would
                 # look up the bot user ID, making assembly alone call out to Slack
                 participants=lambda channel, thread_ts: self._participants().of(channel, thread_ts),
-                linked_threads=lambda text, channel, attachments: self._linked_threads().of(
-                    text, channel, attachments
+                linked_threads=lambda text, channel, attachments, as_owner: (
+                    self._linked_threads().of(text, channel, attachments, as_owner=as_owner)
                 ),
                 late_addendum=self._late_addendum(),
                 origin_alive=SlackOriginAliveChecker(self._client),

@@ -809,3 +809,40 @@ class Test명령_안내:
         args = parser.parse_args(["--profile", "봇", "--profile-dir", str(tmp_path)])
         assert command.execute(args, io.StringIO()) == 0
         assert 받은 == ["파일앱"]
+
+
+class Test소유자세션클라이언트:
+    """D5 : 사용자 토큰과 쿠키로 소유자 세션 클라이언트를 만든다. 없으면 None 이다."""
+
+    def _resolver(self, tmp_path, env):
+        from slack_cli_agent.slack.credentials import CredentialResolver
+
+        return CredentialResolver(
+            default_path=tmp_path / "없는파일.json", configured_path=None, env=env
+        )
+
+    def test_사용자_토큰이_없으면_만들지_않는다(self, tmp_path):
+        from slack_cli_agent.slack.credentials import owner_session_client
+
+        assert owner_session_client(self._resolver(tmp_path, {})) is None
+
+    def test_토큰과_쿠키를_함께_싣는다(self, tmp_path):
+        from slack_cli_agent.slack.credentials import owner_session_client
+
+        client = owner_session_client(
+            self._resolver(tmp_path, {"SLACK_USER_TOKEN": "xoxc-1", "SLACK_USER_COOKIE": "xoxd-2"})
+        )
+        assert client.token == "xoxc-1"
+        assert client.headers["Cookie"] == "d=xoxd-2"
+
+    def test_자격_파일의_user_cookie_를_읽는다(self, tmp_path):
+        import json as _json
+        import os as _os
+
+        from slack_cli_agent.slack.credentials import CredentialResolver
+
+        path = tmp_path / "credentials.json"
+        path.write_text(_json.dumps({"bot_token": "xoxb-1", "user_token": "xoxc-1", "user_cookie": "xoxd-2"}))
+        _os.chmod(path, 0o600)
+        resolver = CredentialResolver(default_path=path, configured_path=None, env={})
+        assert resolver.user_cookie() == "xoxd-2"

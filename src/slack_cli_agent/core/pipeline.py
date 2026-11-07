@@ -152,7 +152,7 @@ class RequestPipeline:
         slow_reporter: SlowRequestReporter | None = None,
         # Optional to avoid an extra Slack lookup where it's not needed.
         participants: Callable[[str, str], tuple[tuple[str, str], ...]] | None = None,
-        linked_threads: Callable[[str, str, Sequence[Mapping[str, Any]]], str] | None = None,
+        linked_threads: Callable[[str, str, Sequence[Mapping[str, Any]], bool], str] | None = None,
         # Optional to avoid an extra Slack lookup where it's not needed.
         late_addendum: LateAddendumChecker | None = None,
         # Confirms the question message is still in its thread right before the
@@ -655,7 +655,15 @@ class RequestPipeline:
             # The event's own unfurl attachments ride along so a link into a
             # channel the bot can't read is still recovered from the preview
             # the sharer's message already carries (C39).
-            return self._linked_threads(ctx.text, ctx.channel, ctx.unfurl_attachments)
+            # The last argument turns on the owner's own Slack session for a
+            # link the bot cannot read. Only the profile owner's turn gets it:
+            # controller_user_ids share OWNER trust but not the owner's
+            # session, and a non-owner turn would carry a private
+            # conversation only the owner can see into its answer (D5).
+            as_owner = bool(self._owner_user_id) and ctx.user == self._owner_user_id
+            return self._linked_threads(
+                ctx.text, ctx.channel, ctx.unfurl_attachments, as_owner
+            )
         except Exception as exc:  # noqa: BLE001 — a lookup failure must not block the reply, just omit this from the prompt
             log.warning("링크된 스레드를 읽지 못했다 : %s", exc)
             return ""

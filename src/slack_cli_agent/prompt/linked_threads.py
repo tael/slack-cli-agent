@@ -43,10 +43,12 @@ class LinkedThreadNote:
         text: str,
         self_channel: str = "",
         attachments: Sequence[Mapping[str, Any]] = (),
+        *,
+        as_owner: bool = False,
     ) -> str:
         blocks = [
             self._block(linked)
-            for linked in self._reader.of(text, self_channel, attachments)
+            for linked in self._reader.of(text, self_channel, attachments, as_owner=as_owner)
         ]
         if not blocks:
             return ""

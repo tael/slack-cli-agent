@@ -1465,13 +1465,13 @@ class Test링크된스레드:
     def test_링크된_스레드를_요청_프롬프트에_붙인다(self) -> None:
         pipeline, parts = build_pipeline(
             responses=[ok_response()],
-            linked_threads=lambda text, self_channel, attachments: "----- 링크된 스레드 : 테스트 -----",
+            linked_threads=lambda text, self_channel, attachments, as_owner: "----- 링크된 스레드 : 테스트 -----",
         )
         pipeline.handle(make_ctx())
         assert "----- 링크된 스레드 : 테스트 -----" in parts["runner"].calls[0].prompt
 
     def test_조회가_예외를_내도_요청을_막지_않는다(self) -> None:
-        def 터진다(text: str, self_channel: str, attachments: Any) -> str:
+        def 터진다(text: str, self_channel: str, attachments: Any, as_owner: bool) -> str:
             raise RuntimeError("조회 실패")
 
         pipeline, parts = build_pipeline(responses=[ok_response()], linked_threads=터진다)
@@ -1483,7 +1483,7 @@ class Test링크된스레드:
         미리보기 첨부로 본문을 복원할 수 있도록 콜백에 그대로 전달한다."""
         받은: dict[str, Any] = {}
 
-        def 기록(text: str, self_channel: str, attachments: Any) -> str:
+        def 기록(text: str, self_channel: str, attachments: Any, as_owner: bool) -> str:
             받은["attachments"] = attachments
             return ""
 
@@ -1496,6 +1496,23 @@ class Test링크된스레드:
         pipeline, parts = build_pipeline(responses=[ok_response()])
         pipeline.handle(make_ctx())
         assert "링크된 스레드" not in parts["runner"].calls[0].prompt
+
+    @pytest.mark.parametrize(
+        ("user", "expected"),
+        [("UOWNER", True), ("U_OTHER", False), ("", False)],
+    )
+    def test_소유자_턴만_사용자_세션_읽기를_켠다(self, user: str, expected: bool) -> None:
+        """D5 : 사용자 세션 읽기는 프로필 owner_user_id 본인 턴에서만 켠다.
+        controller_user_ids 도 OWNER 등급이지만 소유자 개인 세션을 쓰지 않는다."""
+        받은: list[bool] = []
+
+        def 기록(text: str, self_channel: str, attachments: Any, as_owner: bool) -> str:
+            받은.append(as_owner)
+            return ""
+
+        pipeline, _ = build_pipeline(responses=[ok_response()], linked_threads=기록)
+        pipeline.handle(make_ctx(user=user))
+        assert 받은 == [expected]
 
 
 class Test가벼운맥락채널:
