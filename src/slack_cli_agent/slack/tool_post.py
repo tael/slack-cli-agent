@@ -42,9 +42,14 @@ REPLIES_LIMIT = 200
 @runtime_checkable
 class ToolPostMerger(Protocol):
     def merge(
-        self, channel: str, thread_ts: str, since: float, body: str, rich: bool
+        self, channel: str, thread_ts: str, since: float, body: str, rich: bool,
+        target_ts: str | None = None,
     ) -> str | None:
-        """Returns the ts the answer was written into, or None to post as usual."""
+        """Returns the ts the answer was written into, or None to post as usual.
+
+        ``target_ts`` names the file message when the caller posted it and
+        knows where it landed; the thread is read only without it.
+        """
         ...
 
 
@@ -88,9 +93,10 @@ class SlackToolPostMerger:
         return found
 
     def merge(
-        self, channel: str, thread_ts: str, since: float, body: str, rich: bool
+        self, channel: str, thread_ts: str, since: float, body: str, rich: bool,
+        target_ts: str | None = None,
     ) -> str | None:
-        ts = self.find(channel, thread_ts, since)
+        ts = target_ts or self.find(channel, thread_ts, since)
         if ts is None:
             return None
         try:
