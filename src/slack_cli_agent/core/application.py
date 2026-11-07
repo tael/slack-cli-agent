@@ -1483,7 +1483,9 @@ class Application:
             session_id=None,
             resume=False,
             model=self.access_policy.model_for(principal),
-            effort=self.access_policy.effort_for(principal, prompt),
+            # Not the prompt: it carries the source question and thread replies,
+            # and a third party's "ultrathink" would raise the effort.
+            effort=self.access_policy.effort_for(principal, ""),
             workdir=self._profile.work_root,
             tools=tools,
             requirements=self.execution_policy.requirements_for(config=config, tools=tools),

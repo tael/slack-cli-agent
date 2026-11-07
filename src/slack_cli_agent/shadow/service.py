@@ -209,8 +209,11 @@ class ShadowService:
             return None
         if prev and int(prev.get("attempts", 0)) >= MAX_ATTEMPTS:
             return None
+        # Counted here, before the link and the turn, so a link that cannot be
+        # posted, a turn that raises or a process killed mid-turn still reaches
+        # MAX_ATTEMPTS (bot.py shadow_prepare).
         item = self._store.update(source, ts, target=target, status="posting",
-                                  attempts=int(prev.get("attempts", 0)),
+                                  attempts=int(prev.get("attempts", 0)) + 1,
                                   created_at=prev.get("created_at", self._now()))
         if not item.get("root_ts"):
             # A link already posted is reused on a retry, so no orphan link is left.
@@ -238,8 +241,14 @@ class ShadowService:
             asked_at=datetime.fromtimestamp(float(ts), KST), files=msg.get("files") or (),
         )
         with engine():
-            result = self._run_turn(prompt, target, f"shadow-{source}-{ts}")
-        attempts = int(item.get("attempts", 0)) + 1
+            try:
+                result = self._run_turn(prompt, target, f"shadow-{source}-{ts}")
+            except SlotUnavailable:
+                raise
+            except Exception:  # a crashed turn counts as a failed attempt
+                log.exception("그림자 답 턴 실패 : %s %s", source, ts)
+                result = TurnResult(ok=False, body="", tool_calls=None)
+        attempts = int(item.get("attempts", 0))
         answer, _ = take_recipient_tag(result.body or "")
         ok = result.ok and bool(answer.strip())
         violations = blind_violations(result.tool_calls or (), source, ts) if ok else []
@@ -266,13 +275,18 @@ class ShadowService:
             if (item.get("target") not in pairs or item.get("status") not in ("posting", "failed")
                     or int(item.get("attempts", 0)) >= MAX_ATTEMPTS):
                 continue
-            resp = self._api("conversations.history", channel=item["source"],  # type: ignore[misc]
-                             latest=item["ts"], inclusive="true", limit=1)
-            msg = (resp.get("messages") or [None])[0]
-            if msg and msg.get("ts") == item["ts"]:
-                prepared = self._prepare(item["target"], item["source"], msg)
-                if prepared is not None:
-                    self._guarded(self._answer, msg, prepared, engine)
+            # Per item: a source the session cannot read any more must not
+            # stop the polls and verdicts after it in the same round.
+            self._guarded(self._retry_one, item, engine)
+
+    def _retry_one(self, item: Mapping[str, Any], engine: EngineSlot) -> None:
+        resp = self._api("conversations.history", channel=item["source"],  # type: ignore[misc]
+                         latest=item["ts"], inclusive="true", limit=1)
+        msg = (resp.get("messages") or [None])[0]
+        if msg and msg.get("ts") == item["ts"]:
+            prepared = self._prepare(item["target"], item["source"], msg)
+            if prepared is not None:
+                self._guarded(self._answer, msg, prepared, engine)
 
     def is_due(self, item: Mapping[str, Any]) -> bool:
         now = datetime.fromtimestamp(self._now(), KST)

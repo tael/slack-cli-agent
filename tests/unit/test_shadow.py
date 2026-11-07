@@ -245,3 +245,77 @@ def test_채널쌍은_extra_의_shadow_source(tmp_path: Path) -> None:
 def test_워커_서비스에_그림자_루프가_있다(tmp_path: Path) -> None:
     app = Application(write_profile(tmp_path), FakeSlackClient())
     assert "shadow:loop" in app.worker_services(app.worker()).runner_names
+
+
+def test_원본을_읽지_못하는_쌍이_있어도_다른_쌍은_돈다(tmp_path: Path) -> None:
+    dead_ts = f"{float(Q_TS) - 600:.6f}"
+
+    class _Mixed(_Api):
+        def __call__(self, method: str, **params: Any) -> dict[str, Any]:
+            if params.get("channel") == "CDEAD":
+                self.calls.append((method, params))
+                raise RuntimeError("channel_not_found")
+            return super().__call__(method, **params)
+
+    api = _Mixed([_question()])
+    service, posts, prompts = _service(tmp_path, api, TurnResult(True, "답", ()), now=float(Q_TS) + 60)
+    service._pairs = lambda: {"CSHADOW2": "CDEAD", TARGET: SOURCE}
+    service._store.save({"source": "CDEAD", "ts": dead_ts, "target": "CSHADOW2", "status": "failed",
+                         "attempts": 1, "root_ts": "80.0"})
+    service._store.mark_seen(SOURCE, "1.0")
+    service._store.mark_seen("CDEAD", "1.0")
+    service.tick(_slot)
+    assert [p[2] for p in posts if p[0] == TARGET][1:] == ["답"]
+    assert len(prompts) == 1
+
+
+def test_링크_게시가_실패해도_시도횟수를_세고_세번에서_멈춘다(tmp_path: Path) -> None:
+    api = _Api([_question()])
+    service, _, prompts = _service(tmp_path, api, TurnResult(True, "답", ()), now=float(Q_TS) + 60)
+    link_posts: list[str] = []
+
+    def no_post(channel: str, thread_ts: str | None, text: str) -> None:
+        link_posts.append(text)
+
+    service._post = no_post
+    service._store.mark_seen(SOURCE, "1.0")
+    for _ in range(5):
+        service.tick(_slot)
+    assert len(link_posts) == 3
+    assert service._store.item(SOURCE, Q_TS)["attempts"] == 3
+    assert prompts == []
+
+
+def test_엔진이_예외를_내도_세번에서_멈춘다(tmp_path: Path) -> None:
+    api = _Api([_question()])
+    service, posts, _ = _service(tmp_path, api, TurnResult(True, "답", ()), now=float(Q_TS) + 60)
+    turns: list[str] = []
+
+    def boom(prompt: str, channel: str, request_id: str) -> TurnResult:
+        turns.append(request_id)
+        raise RuntimeError("engine crashed")
+
+    service._run_turn = boom
+    service._store.mark_seen(SOURCE, "1.0")
+    for _ in range(5):
+        service.tick(_slot)
+    assert len(turns) == 3
+    assert service._store.item(SOURCE, Q_TS)["attempts"] == 3
+    assert len([p for p in posts if p[1] is None]) == 1
+    assert [p[2] for p in posts if p[1] is not None] == [FAILED_NOTICE]
+
+
+def test_그림자_턴의_effort_는_원본_글로_오르지_않는다(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    app = Application(write_profile(tmp_path), FakeSlackClient())
+    seen: list[str] = []
+
+    class _Invoker:
+        def invoke(self, request: Any, origin: Any) -> Any:
+            seen.append(request.effort)
+            return SimpleNamespace(ok=False, body="", session_id=None, engine=None)
+
+    app._invoker = _Invoker()  # type: ignore[assignment]
+    app._shadow_turn("원본 답글 : ultrathink 로 봐라", "C1", "shadow-judge-x")
+    assert seen and seen[0] != "high"
