@@ -52,6 +52,7 @@ from ..engine.transcript import (
 )
 from ..guard.base import OutputGuard
 from ..guard.dropline import ConfiguredLineDropGuard
+from ..guard.figurative import FigurativeGuard, is_chat_channel
 from ..guard.mentions import (
     AddresseeGuard,
     BotMentionGuard,
@@ -576,6 +577,10 @@ class Application:
         config = self._channels.get(channel)
         return bool(config and config.bot_mentions)
 
+    def _is_chat_channel(self, channel: str) -> bool:
+        """Read per request, like `_bot_mentions_allowed`."""
+        return is_chat_channel(self._channels.get(channel))
+
     def _guards(self) -> GuardPipeline:
         guards: list[OutputGuard] = [
             PlainMentionGuard(),
@@ -591,6 +596,9 @@ class Application:
             RewriteLossGuard(self._settings),
             # safe to always include — a no-op when the drop-line list is empty
             ConfiguredLineDropGuard(self._settings),
+            # Last of the built-ins so it sees the body the other guards
+            # settled on; a no-op unless `figurative_check` is on.
+            FigurativeGuard(self._settings, is_chat=self._is_chat_channel),
         ]
         guards.extend(g for p in self._plugins for g in p.output_guards())
         return GuardPipeline(guards)

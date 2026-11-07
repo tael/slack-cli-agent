@@ -59,6 +59,8 @@ class IncidentKind(StrEnum):
     LATE_ADDENDUM = "late_addendum"
     WRONG_ADDRESSEE = "wrong_addressee"
     REWRITE_LOSS = "rewrite_loss"
+    #: A reply the figurative guard rewrote before posting (B9).
+    FIGURATIVE_FIX = "figurative_fix"
     #: A rich chat.update came back stored as rich_text only, while the body
     #: carried a heading/table/divider that Slack renders as its own block
     #: (J7, mametchi post_rich.py verify + separate_blocks). A 200 from

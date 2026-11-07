@@ -1001,6 +1001,22 @@ class Test가드사건기록:
         assert any(i["kind"] == IncidentKind.REWRITE_LOSS for i in deps["audit"].incidents)
 
 
+    def test_비유_교정은_figurative_fix로_기록된다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.guard.figurative import FigurativeGuard
+
+        body = "이번 배치는 정산 파이프라인과 맞닿은 지점에서 실패했습니다. " * 3
+        fixed = body.replace("맞닿은", "연결된")
+        settings = RuntimeSettings().override({"figurative_check": True})
+        guard = FigurativeGuard(settings, is_chat=lambda _c: False,
+                                corrector=lambda text, *, work: {"changed": True, "text": fixed})
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body)], guards=[guard], tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        assert any(i["kind"] == IncidentKind.FIGURATIVE_FIX for i in deps["audit"].incidents)
+
+
 class Test화자표시이름:
     def test_name_resolver가_돌려준_이름이_asker_name에_들어간다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(

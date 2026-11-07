@@ -38,6 +38,7 @@ from ..engine.base import (
 from ..engine.runner import EngineInvoker
 from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
+from ..guard.figurative import FigurativeGuard
 from ..guard.mentions import AddresseeGuard, RecipientResolver
 from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
@@ -848,6 +849,12 @@ class RequestPipeline:
             self._audit.record(
                 IncidentKind.REWRITE_LOSS.value, channel=ctx.channel, thread_ts=ctx.thread_ts,
                 before_chars=loss.get("before_chars"), after_chars=loss.get("after_chars"),
+            )
+        fig = details.get(FigurativeGuard.name)
+        if fig:
+            self._audit.record(
+                IncidentKind.FIGURATIVE_FIX.value, channel=ctx.channel, thread_ts=ctx.thread_ts,
+                mode=fig.get("mode"), fixes=fig.get("fixes"),
             )
 
     def _apply_ask_tag(self, body: str, ctx: RequestContext) -> str:
