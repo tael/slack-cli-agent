@@ -39,11 +39,15 @@ class DelegationLedger:
         *,
         self_user_id: Callable[[], str],
         own_name: str,
+        delegator: str,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._path = path
         self._self_user_id = self_user_id
         self._own_name = own_name
+        #: The only `by` accepted, as mametchi lookup accepts only
+        #: by == DELEGATOR. Another bot's row in the same file is not ours.
+        self._delegator = delegator
         self._clock = clock
 
     def lookup(self, channel: str, message_ts: str) -> Mapping[str, Any] | None:
@@ -60,10 +64,11 @@ class DelegationLedger:
     def _matches(
         self, row: Mapping[str, Any], channel: str, message_ts: str, me: str, now: float
     ) -> bool:
-        by = row.get("by")
         # A row this bot would have written itself is not a delegation to it:
         # a delegated turn must not be able to extend its own clearance.
-        if not isinstance(by, str) or not by or by == self._own_name:
+        if not self._delegator or self._delegator == self._own_name:
+            return False
+        if row.get("by") != self._delegator:
             return False
         if row.get("channel") != channel or row.get("message_ts") != message_ts:
             return False

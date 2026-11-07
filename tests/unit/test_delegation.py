@@ -22,6 +22,7 @@ OWNER_TOOLS = ("Write", "Edit", "Bash", "NotebookEdit", "WebFetch", "mcp__jira__
 
 PROFILE = {
     "name": "guchi",
+    "delegation_by": "mametchi",
     "primary_engine": {"type": "claude", "binary": "claude", "model": "s", "model_owner": "o"},
     "owner_user_id": OWNER,
     "controller_user_ids": [CTRL],
@@ -41,7 +42,8 @@ def row(**over: object) -> dict:
 def ledger(tmp_path: Path, rows: object, me: str = ME) -> DelegationLedger:
     path = tmp_path / "delegations.json"
     path.write_text(json.dumps(rows), encoding="utf-8")
-    return DelegationLedger(path, self_user_id=lambda: me, own_name="guchi", clock=lambda: NOW)
+    return DelegationLedger(path, self_user_id=lambda: me, own_name="guchi",
+                            delegator="mametchi", clock=lambda: NOW)
 
 
 def policy(tmp_path: Path, rows: object | None, channels: dict | None = None) -> AccessPolicy:
@@ -73,14 +75,28 @@ class TestLedger:
     def test_자기_이름으로_적힌_행은_위임이_아니다(self, tmp_path: Path) -> None:
         assert ledger(tmp_path, [row(by="guchi"), row(by="")]).lookup("C1", "2.0") is None
 
+    def test_지정한_위임자가_적은_행만_위임이다(self, tmp_path: Path) -> None:
+        """마메치 delegation.lookup 은 by == DELEGATOR 만 받는다. 자기 이름만
+        거르면 같은 파일에 다른 봇이 적은 행도 위임으로 받는다."""
+        assert ledger(tmp_path, [row(by="other_bot")]).lookup("C1", "2.0") is None
+
+    def test_위임자가_자기_이름이면_위임이_아니다(self, tmp_path: Path) -> None:
+        path = tmp_path / "d.json"
+        path.write_text(json.dumps([row(by="guchi")]), encoding="utf-8")
+        led = DelegationLedger(path, self_user_id=lambda: ME, own_name="guchi",
+                               delegator="guchi", clock=lambda: NOW)
+        assert led.lookup("C1", "2.0") is None
+
     def test_자기_ID를_모르면_위임이_아니다(self, tmp_path: Path) -> None:
         assert ledger(tmp_path, [row()], me="").lookup("C1", "2.0") is None
 
     def test_파일이_없거나_깨지면_위임이_아니다(self, tmp_path: Path) -> None:
-        led = DelegationLedger(tmp_path / "none.json", self_user_id=lambda: ME, own_name="g")
+        led = DelegationLedger(tmp_path / "none.json", self_user_id=lambda: ME, own_name="g",
+                               delegator="mametchi")
         assert led.lookup("C1", "2.0") is None
         (tmp_path / "bad.json").write_text("{", encoding="utf-8")
-        led = DelegationLedger(tmp_path / "bad.json", self_user_id=lambda: ME, own_name="g")
+        led = DelegationLedger(tmp_path / "bad.json", self_user_id=lambda: ME, own_name="g",
+                               delegator="mametchi")
         assert led.lookup("C1", "2.0") is None
         assert ledger(tmp_path, {"not": "list"}).lookup("C1", "2.0") is None
 
@@ -135,6 +151,18 @@ class TestProfileKey:
 
     def test_키가_없으면_None_이다(self) -> None:
         assert Profile.from_dict(PROFILE).delegation_ledger is None
+
+    def test_위임자_이름을_읽는다(self) -> None:
+        assert Profile.from_dict(PROFILE).delegation_by == "mametchi"
+
+    def test_원장만_있고_위임자가_없으면_거부한다(self) -> None:
+        import pytest
+
+        from slack_cli_agent.config.profile import ConfigError
+
+        data = {k: v for k, v in PROFILE.items() if k != "delegation_by"}
+        with pytest.raises(ConfigError):
+            Profile.from_dict({**data, "delegation_ledger": "~/x/delegations.json"})
 
 
 class TestInputMark:

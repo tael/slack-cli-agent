@@ -394,6 +394,16 @@ class TestAskerSection_봇_3분기:
         plain = AskerSection().render(_ctx(asker_is_bot=True, asker_id="U0PEER"))
         assert "실행 권한은 소유자의 지시에서만" in plain
 
+    def test_봇_판정이_빠져도_위임_턴은_위임_안내를_받는다(self) -> None:
+        """bots_info 조회가 실패하면 asker_is_bot 이 거짓이 된다. 위임 턴이
+        실행 도구를 받은 채 범위 제한 안내 없이 사람 화자 안내를 받으면 안 된다."""
+        ctx = _ctx(asker_is_bot=False, asker_id="U0PEER", principal=Principal(
+            user_id="U0PEER", channel="C1", trust=TrustLevel.GENERAL, is_direct_message=False,
+            is_controller=True, delegated=True,
+        ))
+        note = AskerSection().render(ctx)
+        assert "위임 원장" in note and "삭제, 원격 반영, 외부 발송" in note
+
     def test_사람이_물으면_기존과_같다(self) -> None:
         ctx = _ctx(asker_is_bot=False, asker_name="홍길동", asker_id="U1")
         note = AskerSection().render(ctx)

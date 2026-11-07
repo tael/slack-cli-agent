@@ -421,7 +421,10 @@ class AskerSection(PromptSection):
                 + bots
                 + library.text("DIRECTION_NOTE")
             )
-        if ctx.asker_is_bot:
+        # A delegated turn is a controller bot by construction. Keyed on the
+        # bots_info lookup alone, a failed lookup would hand a turn that holds
+        # execution tools the human note without the scope limits.
+        if ctx.asker_is_bot or ctx.principal.delegated:
             return self._bot_asker_note(ctx)
         who = ctx.asker_name or "소유자가 아닌 다른 사람"
         note = (

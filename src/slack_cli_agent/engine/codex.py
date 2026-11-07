@@ -43,6 +43,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ..auth.policy import OPERATOR_TOOLS
 from ..auth.principal import TrustLevel
 from ..auth.tools import SKILL_TOOL, is_read_only_tool
 from ..config.profile import EngineSpec, McpServerSpec
@@ -108,6 +109,25 @@ def _codex_reads_only(tools: ToolSelection) -> bool:
 
 def _codex_can_act(tools: ToolSelection) -> bool:
     return tools.can_act and not _codex_reads_only(tools)
+
+
+def _codex_withholds_shell(request: EngineRequest) -> bool:
+    """A delegated turn the name axis kept the bare execution tools from.
+
+    Outside an operator_full channel a delegated turn gets owner extras but
+    not Bash/Edit/Write/NotebookEdit (auth/tools.py). claude enforces that by
+    name and by the general settings deny. codex takes no tool names, so one
+    MCP write tool in the list would lift the sandbox to the profile's value
+    and the same turn could write through the shell. Read-only is the only
+    sandbox here that keeps the shell from writing.
+    """
+    tools = request.tools
+    return (
+        request.delegated
+        and request.trust_level is not TrustLevel.OWNER
+        and tools.access is ToolAccess.ALLOWLIST
+        and not any(name in OPERATOR_TOOLS for name in tools.names)
+    )
 
 
 def _codex_mcp_config_args(
@@ -223,7 +243,7 @@ class CodexEngine(Engine):
         allowlist would otherwise reach it as a sentence the model may
         ignore; the sandbox is the OS refusing the write (sca-f9k0).
         """
-        if _codex_reads_only(request.tools):
+        if _codex_reads_only(request.tools) or _codex_withholds_shell(request):
             return "read-only"
         return str(self.spec.options.get("sandbox", "danger-full-access"))
 
@@ -299,7 +319,7 @@ class CodexEngine(Engine):
         cmd += ["-c", f"model_reasoning_effort={self._toml_string(self.resolve_effort(request))}"]
         cmd += _codex_mcp_config_args(
             self.profile.mcp_servers,
-            can_act=_codex_can_act(request.tools),
+            can_act=_codex_can_act(request.tools) and not _codex_withholds_shell(request),
             is_owner=request.trust_level is TrustLevel.OWNER,
             turn_context=request.turn_context,
         )

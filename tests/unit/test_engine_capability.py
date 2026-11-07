@@ -402,6 +402,22 @@ class Test폴백은_요청의_요구를_그대로_넘긴다:
             폴백._run_secondary(request(requirements=요구))
         assert 받은[0].requirements == 요구
 
+    def test_이차로_넘길_때_위임_표지를_버리지_않는다(self, tmp_path: Path) -> None:
+        """위임 입력 표식은 input_mark_for 를 쓰는 codex 와 gemini 에서만
+        쓰인다. 그 엔진으로 넘어가는 경로에서 delegated 가 빠지면 도구와 위임
+        안내는 그대로인데 입력은 자료로 읽으라는 표식을 받는다."""
+        폴백, _ = self._폴백(tmp_path)
+        받은: list[Any] = []
+
+        def 받아둔다(engine: Any, req: Any) -> Any:
+            받은.append(req)
+            raise _그만()
+
+        폴백.runner.run = 받아둔다  # type: ignore[assignment,method-assign]
+        with pytest.raises(_그만):
+            폴백._run_secondary(request(delegated=True))
+        assert 받은[0].delegated is True
+
     def test_이차가_요구를_못_맞추면_실행하지_않는다(self, tmp_path: Path) -> None:
         """gemini 의 도구 제한은 NONE 이다. 정확한 허용 목록을 요구한 요청이
         폴백에서 그냥 도는 것이 이 이슈의 실제 피해다."""

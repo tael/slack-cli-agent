@@ -45,9 +45,10 @@ class OwnerOnlyChannelAudit:
     ) -> None:
         self._channels = tuple(channels)
         self._owner_user_id = owner_user_id
-        # 소유자와 같은 최고 권한을 받는 controller 도 내부인이다. 이들은 소유자
-        # 전용 채널의 정당한 멤버이므로 유출로 세지 않는다 — AccessPolicy 가
-        # controller 를 owner 와 같은 TrustLevel.OWNER 로 묶는 것과 결을 맞춘다.
+        # controller 봇도 내부인이다. 소유자가 함께 돌리는 봇이라 소유자 전용
+        # 채널의 정당한 멤버이므로 유출로 세지 않는다. 권한 등급과는 무관하다.
+        # AccessPolicy 는 controller 를 GENERAL 로 두고 위임 원장에 있는 턴만
+        # 위임 도구를 준다 (auth/delegation.py).
         self._insiders = frozenset((owner_user_id, *controller_user_ids))
         self._list_members = list_members
         self._is_bot = is_bot

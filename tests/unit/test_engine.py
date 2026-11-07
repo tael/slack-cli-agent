@@ -940,6 +940,42 @@ class TestCodexEngineBuildCommand:
         assert not any("WRITE_ENABLED" in tok for tok in cmd)
         assert engine.blocks_outbound_writes(요청)
 
+    def _위임_codex(self, tmp_path: Path) -> CodexEngine:
+        profile = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            fallback={"type": "codex", "binary": "codex", "model": "gpt-5.6-sol",
+                      "options": {"sandbox": "workspace-write", "network": True}},
+            tmp_path=tmp_path,
+            mcp_servers={"jira": {"command": "jira-mcp",
+                                  "turn_env": {"WRITE_ENABLED": "can_act"}}},
+        )
+        return CodexEngine(profile, SETTINGS)
+
+    def test_맨_실행_도구_없는_위임_턴은_read_only_로_돈다(self, tmp_path: Path) -> None:
+        """operator_full 이 꺼진 채널의 위임 턴은 Bash/Edit/Write 를 받지 않는다.
+        codex 는 도구 이름을 받지 않으므로 MCP 쓰기 도구 하나로 프로필
+        샌드박스가 열리면 같은 턴이 셸로 쓴다. claude 의 general deny 와 맞춘다."""
+        engine = self._위임_codex(tmp_path)
+        요청 = request(
+            resume=False, trust_level=TrustLevel.GENERAL, delegated=True,
+            tools=ToolSelection.allow(["Read", "Grep", "mcp__jira__create_issue"]),
+        )
+        cmd = engine.build_command(요청)
+
+        assert 'sandbox_mode="read-only"' in cmd
+        assert "--approve-for-me" not in cmd
+        assert "sandbox_workspace_write.network_access=true" not in cmd
+        assert not any("WRITE_ENABLED" in tok for tok in cmd)
+
+    def test_맨_실행_도구를_받은_위임_턴은_프로필_샌드박스로_돈다(self, tmp_path: Path) -> None:
+        """operator_full 채널의 위임 턴은 Bash 를 받는다. 그때는 내리지 않는다."""
+        engine = self._위임_codex(tmp_path)
+        cmd = engine.build_command(request(
+            resume=False, trust_level=TrustLevel.GENERAL, delegated=True,
+            tools=ToolSelection.allow(["Read", "Bash", "mcp__jira__create_issue"]),
+        ))
+        assert 'sandbox_mode="workspace-write"' in cmd
+
     def test_MCP_도구가_섞이면_내리지_않는다(self, tmp_path: Path) -> None:
         """READ_ONLY_TOOLS 는 내장 도구만 담는다. MCP 도구가 밖으로 쓰는지를
         코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰)."""

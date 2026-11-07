@@ -485,6 +485,7 @@ class Application:
                     ledger_path,
                     self_user_id=lambda: self.identity.user_id,
                     own_name=self._profile.name,
+                    delegator=self._profile.delegation_by,
                 )
                 if ledger_path is not None else None
             )
