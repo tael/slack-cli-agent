@@ -711,6 +711,144 @@ class WebCommand(CliCommand):
         return 0
 
 
+def _kickstart(label: str) -> bool:
+    import subprocess
+
+    # A hung kickstart (worker drain, stuck launchd) or a missing launchctl is
+    # a failed kickstart: the supervisor then judges by PID and reports it.
+    try:
+        done = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=420,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logging.getLogger(__name__).warning("launchctl kickstart 실행 실패 : %s (%s)", label, exc)
+        return False
+    return done.returncode == 0
+
+
+def _run_rollback(argv: list[str]) -> bool:
+    import subprocess
+
+    # A hung or missing rollback command is a failed rollback, so the supervisor
+    # still reports while nothing is serving.
+    try:
+        done = subprocess.run(argv, stdin=subprocess.DEVNULL, timeout=600, check=False)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logging.getLogger(__name__).warning("rollback 명령 실행 실패 : %s (%s)", argv, exc)
+        return False
+    return done.returncode == 0
+
+
+def _pid_alive(pid: str) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except (ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _owner_dm_sender(profile: Profile) -> Callable[[str], object]:
+    """Posts with the bot token from outside the bot process."""
+
+    def send(text: str) -> None:
+        from slack_sdk import WebClient  # lazy import, like the application
+
+        client = WebClient(token=resolver_for(profile).bot_token())
+        channel = profile.owner_dm
+        if not channel:
+            opened = client.conversations_open(users=profile.owner_user_id)
+            channel = str((opened.get("channel") or {}).get("id") or "")
+        if not channel:
+            raise AgentError("소유자 DM 방을 찾지 못했다")
+        client.chat_postMessage(channel=channel, text=text)
+
+    return send
+
+
+def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
+    import shlex
+    import time
+
+    from .reliability.supervisor import ApplySupervisor, Service, active_reviews
+
+    paths = profile.paths
+    request, running = paths.apply_requests
+    rollback = None
+    if args.rollback_command:
+        argv = shlex.split(args.rollback_command)
+
+        def rollback() -> bool:
+            return _run_rollback(argv)
+
+    return ApplySupervisor(
+        request_path=request,
+        running_path=running,
+        services=[
+            Service(f"{profile.launch_label}.{role}", paths.pid_file(role))
+            for role in ("worker", "ingress")
+        ],
+        kickstart=_kickstart,
+        alive=_pid_alive,
+        notify=_owner_dm_sender(profile),
+        busy=lambda: active_reviews(paths.database, now=time.time()),
+        rollback=rollback,
+    )
+
+
+class SuperviseCommand(ProfileAwareCommand):
+    """Carries out apply requests from outside any turn's sandbox (H2).
+
+    Runs as its own launchd job (tools/register-launchd.sh <name> supervisor),
+    not inside the worker: a kickstart from a turn's descendant is refused by
+    the sandbox, and the worker can't restart itself while it drains.
+    """
+
+    name: ClassVar[str] = "supervise"
+    help: ClassVar[str] = "재기동 요청 표식을 집어 봇을 재기동하고 결과를 소유자 DM 으로 알린다"
+
+    def __init__(
+        self,
+        supervisor_factory: Callable[[Profile, argparse.Namespace], Any] | None = None,
+        signal_register: SignalRegister = signal.signal,
+    ) -> None:
+        self._factory = supervisor_factory or _default_supervisor
+        self._signal_register = signal_register
+
+    def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--once", action="store_true", help="한 번만 확인하고 끝난다")
+        parser.add_argument("--interval", type=float, default=5.0, help="확인 간격(초)")
+        parser.add_argument(
+            "--rollback-command",
+            default=None,
+            help="재기동 뒤 아무 프로세스도 안 돌 때 실행할 되돌리기 명령. 없으면 되돌리지 않는다",
+        )
+
+    def execute_with_profile(
+        self, profile: Profile, args: argparse.Namespace, stdout: TextIO
+    ) -> int:
+        supervisor = self._factory(profile, args)
+        if args.once:
+            outcome = supervisor.tick()
+            print(f"결과 : {outcome or '할 일 없음'}", file=stdout)
+            return 0
+        stopping = {"flag": False}
+
+        def stop(signum: int, frame: object) -> None:
+            stopping["flag"] = True
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            self._signal_register(sig, stop)
+        supervisor.run_forever(lambda: stopping["flag"], args.interval)
+        return 0
+
+
 DEFAULT_COMMANDS: tuple[CliCommand, ...] = (
     InitCommand(),
     PreflightCommand(),
@@ -721,6 +859,7 @@ DEFAULT_COMMANDS: tuple[CliCommand, ...] = (
     LearnCommand(),
     RewriteCommand(),
     WebCommand(),
+    SuperviseCommand(),
 )
 
 

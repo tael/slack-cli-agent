@@ -75,8 +75,14 @@ set -e
 # 표식은 launchd 가 부르는 역할에만 남긴다. 사람이 `run.sh preflight` 로
 # 상태를 보다 78 이 나온 것까지 표식으로 만들면, 점검했다는 이유로 봇이
 # 안 뜬다.
+#
+# 첫 인자는 slack-cli-agent 명령 이름이다. 표식 이름은 launchd 역할 이름으로
+# 맞춘다 - plist 의 PathState 와 tools/unblock.sh 가 역할 이름으로 보기
+# 때문이다. 감독은 역할이 supervisor, 명령이 supervise 라 그대로 쓰면 표식이
+# 감시하지 않는 자리에 생겨 10초마다 다시 뜬다 (H2 검토).
 case "$ROLE" in
   worker|ingress) ;;
+  supervise) ROLE=supervisor ;;
   *) exit "$CODE" ;;
 esac
 

@@ -303,3 +303,140 @@ class Test등록이_실패하면_그렇게_끝난다:
         결과 = self._돌린다(tmp_path)
         assert "등록되지 않았다" in 결과.stderr
         assert "testbot.ingress" in 결과.stderr
+
+
+class Test감독_등록:
+    """감독(supervisor)만 붙일 때 도는 ingress, worker 를 내리지 않는다 (H2)."""
+
+    def _돌린다(
+        self, tmp_path: Path, *역할: str, state_dir: Path | None = None
+    ) -> tuple[subprocess.CompletedProcess[str], str]:
+        (tmp_path / "Library" / "LaunchAgents").mkdir(parents=True, exist_ok=True)
+        bin_dir = tmp_path / "가짜bin"
+        bin_dir.mkdir(exist_ok=True)
+        가짜 = bin_dir / "launchctl"
+        가짜.write_text(
+            "#!/bin/bash\n"
+            'echo "$1 $2" >> "$HOME/launchctl.log"\n'
+            '[ "$1" = print ] && exit 113\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        가짜.chmod(0o755)
+        env = dict(
+            os.environ,
+            HOME=str(tmp_path),
+            PATH=f"{bin_dir}:{os.environ['PATH']}",
+            REGISTER_SETTLE_SEC="0",
+        )
+        if state_dir is not None:
+            env["STATE_DIR"] = str(state_dir)
+        결과 = subprocess.run(
+            ["/bin/bash", str(등록기), "testbot", *역할],
+            capture_output=True, text=True, timeout=60, env=env,
+        )
+        기록 = tmp_path / "launchctl.log"
+        return 결과, 기록.read_text(encoding="utf-8") if 기록.exists() else ""
+
+    def test_supervisor_만_주면_그것만_등록한다(self, tmp_path: Path) -> None:
+        결과, 기록 = self._돌린다(tmp_path, "supervisor")
+        assert 결과.returncode == 0, 결과.stderr
+        agents = tmp_path / "Library" / "LaunchAgents"
+        assert sorted(p.name for p in agents.iterdir()) == ["local.testbot.supervisor.plist"]
+        assert "worker" not in 기록 and "ingress" not in 기록
+        plist = plistlib.loads((agents / "local.testbot.supervisor.plist").read_bytes())
+        assert plist["Label"] == "local.testbot.supervisor"
+
+    @pytest.mark.parametrize("role", ["supervisor", "worker", "ingress"])
+    def test_plist_인자가_CLI_파서를_통과한다(self, tmp_path: Path, role: str) -> None:
+        """run.sh 는 받은 인자를 그대로 slack-cli-agent 에 넘긴다. 역할 이름과
+        명령 이름이 어긋나면 argparse 가 2 로 끝나고 launchd 가 10초마다 다시
+        띄운다. plist 와 파서를 따로 시험하면 이 어긋남이 안 잡힌다."""
+        from slack_cli_agent.cli import SlackCliAgent
+
+        결과, _ = self._돌린다(tmp_path, role)
+        assert 결과.returncode == 0, 결과.stderr
+        plist = plistlib.loads(
+            (tmp_path / f"Library/LaunchAgents/local.testbot.{role}.plist").read_bytes()
+        )
+        넘길인자 = plist["ProgramArguments"][2:]
+        args = SlackCliAgent().build_parser().parse_args([*넘길인자, "--profile", "testbot"])
+        기대 = {"supervisor": "supervise"}.get(role, role)
+        assert args.command == 기대
+
+    def test_STATE_DIR_로_상태_디렉터리를_바꾼다(self, tmp_path: Path) -> None:
+        sd = tmp_path / ".testbot-sca"
+        결과, _ = self._돌린다(tmp_path, "supervisor", state_dir=sd)
+        assert 결과.returncode == 0, 결과.stderr
+        plist = plistlib.loads(
+            (tmp_path / "Library/LaunchAgents/local.testbot.supervisor.plist").read_bytes()
+        )
+        assert plist["ProgramArguments"][1] == f"{sd}/run.sh"
+        assert plist["WorkingDirectory"] == str(sd)
+        assert plist["StandardErrorPath"] == f"{sd}/logs/supervisor.err.log"
+
+    def test_모르는_역할은_아무것도_건드리지_않고_실패한다(self, tmp_path: Path) -> None:
+        결과, 기록 = self._돌린다(tmp_path, "superviser")
+        assert 결과.returncode == 2
+        assert 기록 == ""
+
+
+class Test감독_차단표식:
+    """감독이 설정 오류(78)로 끝나면 남긴 표식이 그 plist 의 PathState 와 같은
+    경로여야 재기동이 멈춘다. 역할 이름(supervisor)과 명령 이름(supervise)이
+    갈려, run.sh 가 첫 인자로 표식을 만들면 PathState 가 감시하지 않는 자리에
+    생기고 launchd 가 10초마다 다시 띄운다."""
+
+    @pytest.mark.parametrize("role", ["supervisor", "worker", "ingress"])
+    def test_78_종료_표식이_PathState_경로와_같다(self, tmp_path: Path, role: str) -> None:
+        결과, _ = Test감독_등록()._돌린다(tmp_path, role)
+        assert 결과.returncode == 0, 결과.stderr
+        plist = plistlib.loads(
+            (tmp_path / f"Library/LaunchAgents/local.testbot.{role}.plist").read_bytes()
+        )
+        run_sh = Path(plist["ProgramArguments"][1])
+        봇자리 = run_sh.parent
+        (봇자리 / "venv" / "bin").mkdir(parents=True)
+        cli = 봇자리 / "venv" / "bin" / "slack-cli-agent"
+        cli.write_text("#!/bin/bash\nexit 78\n", encoding="utf-8")
+        cli.chmod(0o755)
+        run_sh.write_text(
+            (REPO / "tools" / "templates" / "run.sh").read_text(encoding="utf-8")
+            .replace("__NAME__", "testbot")
+            .replace("__DISPLAY__", "시험봇")
+            .replace("__REPO__", str(REPO)),
+            encoding="utf-8",
+        )
+        실행 = subprocess.run(
+            plist["ProgramArguments"], capture_output=True, text=True, timeout=30,
+            env=dict(os.environ, HOME=str(tmp_path), CAFFEINATE="/nonexistent"),
+        )
+        assert 실행.returncode == 78, 실행.stderr
+        (감시경로,) = plist["KeepAlive"]["PathState"]
+        assert Path(감시경로).is_file()
+        assert sorted(p.name for p in (봇자리 / "preflight-blocked").iterdir()) == [role]
+        # 표식이 가리키는 로그가 plist 가 실제로 쓰는 로그여야 원인을 찾는다.
+        assert Path(plist["StandardErrorPath"]).name in Path(감시경로).read_text(encoding="utf-8")
+
+    def test_unblock_이_supervisor_표식을_지우고_그_레이블을_띄운다(
+        self, tmp_path: Path
+    ) -> None:
+        봇자리 = tmp_path / ".testbot"
+        (봇자리 / "preflight-blocked").mkdir(parents=True)
+        (봇자리 / "preflight-blocked" / "supervisor").write_text("x", encoding="utf-8")
+        bin_dir = tmp_path / "가짜bin"
+        bin_dir.mkdir()
+        (bin_dir / "launchctl").write_text(
+            '#!/bin/bash\necho "$@" >> "$HOME/launchctl.log"\n', encoding="utf-8"
+        )
+        (bin_dir / "launchctl").chmod(0o755)
+        결과 = subprocess.run(
+            ["/bin/bash", str(REPO / "tools" / "unblock.sh"), "testbot", "supervisor"],
+            capture_output=True, text=True, timeout=30,
+            env=dict(os.environ, HOME=str(tmp_path), PATH=f"{bin_dir}:{os.environ['PATH']}"),
+        )
+        assert 결과.returncode == 0, 결과.stderr
+        assert not (봇자리 / "preflight-blocked" / "supervisor").exists()
+        assert "local.testbot.supervisor" in (tmp_path / "launchctl.log").read_text(
+            encoding="utf-8"
+        )
