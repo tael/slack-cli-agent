@@ -52,6 +52,20 @@ class TestEngineSpec:
         )
         assert spec.model_for_owner() == "big"
 
+    def test_부검_모델이_없으면_소유자용_모델을_쓴다(self) -> None:
+        spec = EngineSpec.from_dict(
+            {"type": "claude", "binary": "c", "model": "m", "model_owner": "big"}
+        )
+        assert spec.model_for_postmortem() == "big"
+
+    def test_부검_모델이_있으면_그것을_쓴다(self) -> None:
+        """마메치 bot_profile.postmortem_model 과 같은 규칙이다."""
+        spec = EngineSpec.from_dict(
+            {"type": "claude", "binary": "c", "model": "m", "model_owner": "big",
+             "postmortem_model": "deep"}
+        )
+        assert spec.model_for_postmortem() == "deep"
+
     def test_필수_항목이_없으면_설정_오류다(self) -> None:
         with pytest.raises(ConfigError, match="model"):
             EngineSpec.from_dict({"type": "claude", "binary": "c"})

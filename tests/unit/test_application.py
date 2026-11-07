@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
 import sqlite3
 import sys
@@ -24,6 +25,7 @@ import pytest
 
 from slack_cli_agent.auth.policy import AccessExtension
 from slack_cli_agent.auth.principal import Principal, TrustLevel
+from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.application import Application
@@ -454,6 +456,57 @@ class TestReviewReactions:
         표시 = task._progress
         assert isinstance(표시, ReviewProgressPort), 표시
         assert isinstance(표시, ReviewProgressDisplay), 표시
+
+    def test_부검만_부검_모델로_돈다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """마메치 model_for(postmortem=True) 는 프로필 postmortem_model 을 쓴다.
+        디버그 추적과 서식 점검은 model_for(TROUBLESHOOT_CHANNEL) 이라 보고
+        채널 model 이 없으면 기본 model 이다. 소유자용 모델이 아니다
+        (bot.py 9220, 9480)."""
+        binary = tmp_path / "bin" / "fake-engine"
+        profile = write_profile(tmp_path, primary_engine={
+            "type": "claude", "binary": str(binary), "model": "model-a",
+            "model_owner": "model-big", "postmortem_model": "model-deep",
+        })
+        tasks = Application(profile, client).review_tasks()
+        assert tasks["dango"]._engine.model == "model-deep"
+        assert tasks["brain"]._engine.model == "model-a"
+        assert tasks["pencil2"]._engine.model == "model-a"
+
+    def test_디버그와_서식_점검은_보고_채널_모델을_따른다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        binary = tmp_path / "bin" / "fake-engine"
+        profile = write_profile(tmp_path, primary_engine={
+            "type": "claude", "binary": str(binary), "model": "model-a",
+            "model_owner": "model-big",
+        })
+        ChannelRegistry(profile.paths.channels).update("C_TROUBLE", {"model": "model-ch"})
+        tasks = Application(profile, client).review_tasks()
+        assert tasks["brain"]._engine.model == "model-ch"
+        assert tasks["pencil2"]._engine.model == "model-ch"
+        assert tasks["dango"]._engine.model == "model-big"
+
+    def test_점검_모델은_채널_설정을_고치면_재기동_없이_바뀐다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """review_tasks() 는 처음 부를 때 캐시된다. 모델을 생성 시점에 정하면
+        channels.json 을 고쳐도 점검만 재기동 전까지 옛 모델로 돈다. 마메치
+        run_claude 는 호출할 때마다 model_for 를 부른다."""
+        binary = tmp_path / "bin" / "fake-engine"
+        profile = write_profile(tmp_path, primary_engine={
+            "type": "claude", "binary": str(binary), "model": "model-a",
+        })
+        app = Application(profile, client)
+        tasks = app.review_tasks()
+        assert tasks["brain"]._engine.model == "model-a"
+        ChannelRegistry(profile.paths.channels).update("C_TROUBLE", {"model": "model-ch"})
+        bumped = time.time() + 5
+        os.utime(profile.paths.channels, (bumped, bumped))
+        assert app.review_tasks() is tasks
+        assert tasks["brain"]._engine.model == "model-ch"
+        assert tasks["pencil2"]._engine.model == "model-ch"
 
     def test_점검_셋_모두에_감사가_연결된다(self, app: Application) -> None:
         """한 종류만 연결하면 그 종류 말고는 소요 기록이 안 남는다(sca-fy5)."""

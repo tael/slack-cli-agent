@@ -183,12 +183,14 @@ class TestEngineRequest조립:
 
 
 class Test기본값:
-    def test_model과effort를안주면소유자수준기본값을쓴다(self) -> None:
+    def test_model을안주면기본모델과소유자effort하한을쓴다(self) -> None:
+        """A13 부터 소유자에게 큰 모델을 강제하지 않는다. 점검 모델은
+        호출부(application.py)가 정하고, 안 정하면 기본 model 이다."""
         profile = make_profile()
         caller, invoker = make_caller(profile=profile)
         caller.run("프롬프트", "세션1", False)
         request = invoker.calls[0]
-        assert request.model == profile.primary_engine.model_for_owner()
+        assert request.model == profile.primary_engine.model
         assert request.effort == OWNER_EFFORT_MIN
 
     def test_model과effort를생성자에서받으면그값을쓴다(self) -> None:
@@ -257,7 +259,7 @@ class Test요청_모델이_실행기에서_호출자까지_온다:
     여기서는 실물 실행기를 거쳐 응답에 요청 모델이 실려 오는지를 본다
     (코덱스 리뷰 지적, sca-cr2b)."""
 
-    def test_소유자_모델이_응답에_실려_온다(self, tmp_path: Path) -> None:
+    def test_요청_모델이_응답에_실려_온다(self, tmp_path: Path) -> None:
         from test_engine import FakeCompleted, 통과정책
 
         engine = FakeEngine(make_profile(), RuntimeSettings())
@@ -273,7 +275,9 @@ class Test요청_모델이_실행기에서_호출자까지_온다:
             subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(stdout="", returncode=0),
             environment_policy=통과정책(),
         )
-        caller, _ = make_caller(invoker=DirectInvoker(runner, engine), workdir=tmp_path)
+        caller, _ = make_caller(
+            invoker=DirectInvoker(runner, engine), workdir=tmp_path, model="opus"
+        )
 
         response = caller.run("프롬프트", None, False)
 

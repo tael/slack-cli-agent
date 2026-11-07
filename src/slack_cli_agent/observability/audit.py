@@ -60,6 +60,10 @@ class IncidentKind(StrEnum):
     #: (J14, bot.py:6316 snippet_failed). The raw csv is re-posted inline so
     #: the data isn't lost; this records that the file attachment didn't land.
     CSV_UPLOAD_FAILED = "csv_upload_failed"
+    #: A Slack file permalink was removed from an outgoing body (D4,
+    #: bot.py:6494 file_permalink_stripped). Slack re-attaches any linked
+    #: file to the message, so the link would post the same file card twice.
+    FILE_PERMALINK_STRIPPED = "file_permalink_stripped"
     LATE_ADDENDUM = "late_addendum"
     WRONG_ADDRESSEE = "wrong_addressee"
     REWRITE_LOSS = "rewrite_loss"

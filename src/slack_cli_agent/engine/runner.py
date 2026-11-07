@@ -23,7 +23,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..auth.principal import TrustLevel
 from ..config.settings import RuntimeSettings
 from ..core.errors import ConfigError
 from ..core.secrets import redact
@@ -928,19 +927,17 @@ class FallbackEngine(Engine):
         """Handles this turn on the approved fallback engine.
 
         A different engine can't continue a session, so this opens a
-        new one. Model naming also differs per engine, so it uses the
-        secondary's own configured model -- the owner grade included, or
-        the owner's request would quietly drop to the secondary's general
-        model (sca-14h). A channel's explicitly named model can't carry
-        over at all; engine model names don't correspond.
+        new one. Model naming also differs per engine, so a channel's model
+        can't carry over; every requester gets the secondary's default model.
+        The owner is not raised to the secondary's owner model any more: the
+        primary picks one model for every requester (A13, 김태일 2026-10-22),
+        and raising only here split the grades again (supersedes sca-14h).
         """
         self._active = self.secondary
-        owner = request.trust_level is TrustLevel.OWNER
-        model = self.secondary.spec.model_for_owner() if owner else None
         fallback_request = EngineRequest(
             prompt=request.prompt, system_prompt=request.system_prompt,
             session_id=None, resume=False,
-            model=model, effort=request.effort,
+            model=None, effort=request.effort,
             workdir=request.workdir, readable_dirs=request.readable_dirs,
             tools=request.tools, trust_level=request.trust_level,
             # The boundary the caller asked for does not stop applying because

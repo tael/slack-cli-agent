@@ -11,7 +11,7 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from ..config.channel import is_channel_operator
+from ..config.channel import advisor_enabled, is_channel_operator
 from ..core.channel_kind import is_direct_message_channel
 from .principal import Principal, TrustLevel
 
@@ -104,13 +104,21 @@ class AccessPolicy:
         return self.is_full_authority(principal)
 
     def model_for(self, principal: Principal) -> str:
-        """Model to use. The owner always gets the owner model regardless of channel."""
-        if principal.trust is TrustLevel.OWNER:
-            return self._profile.primary_engine.model_for_owner()
+        """Model to use, the same for every requester (mametchi model_for,
+        bot.py). An advisor channel runs on its executor model, then the
+        channel's model, then the engine default. The owner is not forced to
+        the owner model any more: that ran chat channels on the big model and
+        kept a channel's model from reaching the owner (김태일, 2026-10-22).
+        Reviews pick their own model (review/engine_adapter.py)."""
         config = self._channels.get(principal.channel)
+        default = self._profile.primary_engine.model
+        if config is not None and advisor_enabled(config):
+            # Same as bot.py advisor_executor: an empty executor falls back
+            # to the default model, not to the channel's model.
+            return str(config.extra["advisor"].get("executor") or default)
         if config and config.model:
             return config.model
-        return self._profile.primary_engine.model
+        return default
 
     def effort_for(self, principal: Principal, prompt: str) -> str:
         """'ultrathink' in the prompt bumps effort to high. Otherwise uses
