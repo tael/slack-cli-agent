@@ -89,10 +89,17 @@ class LinkedThreadReader:
                 continue
             read = self._read_of(self._transcript, link.channel, link.thread_ts)
             name = self._name_of(self._channel_name, link.channel)
-            if not read.read_ok and as_owner and self._owner_transcript is not None:
-                read = self._read_of(self._owner_transcript, link.channel, link.thread_ts)
-                if read.read_ok and name == link.channel and self._owner_channel_name:
-                    name = self._name_of(self._owner_channel_name, link.channel)
+            if not read.read_ok and as_owner:
+                if self._owner_transcript is None:
+                    # 꺼진 이유가 로그에 없으면 실측 실패를 추적하지 못한다(D5).
+                    log.warning(
+                        "소유자 턴이지만 소유자 세션이 설정되지 않아 다시 읽지 않았다 : %s",
+                        link.channel,
+                    )
+                else:
+                    read = self._read_of(self._owner_transcript, link.channel, link.thread_ts)
+                    if read.read_ok and name == link.channel and self._owner_channel_name:
+                        name = self._name_of(self._owner_channel_name, link.channel)
             body, read_ok = read.body, read.read_ok
             if not read_ok:
                 fallback = self._attachment_fallback(link, attachments)

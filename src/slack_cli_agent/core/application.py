@@ -424,7 +424,9 @@ class Application:
             client = WebClient(token=resolver.bot_token())
         kwargs.setdefault("token_provider", resolver.bot_token)
         if "owner_client" not in kwargs:
-            kwargs["owner_client"] = owner_session_client(resolver)
+            kwargs["owner_client"] = owner_session_client(
+                resolver, owner_user_id=profile.owner_user_id
+            )
         return cls(profile, client, **kwargs)
 
     def bot_token(self) -> str:

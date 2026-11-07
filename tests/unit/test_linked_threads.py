@@ -290,3 +290,28 @@ class Test소유자세션읽기:
         assert "비공개 본문" not in note.of(MSG, self_channel="C099")
         assert owner_t.calls == []
         assert "비공개 본문" in note.of(MSG, self_channel="C099", as_owner=True)
+
+
+class _실패대화록:
+    def read_thread(self, channel, thread_ts, before_ts):
+        return TranscriptRead(body="", read_ok=False)
+
+
+def test_소유자_턴인데_소유자_세션이_없으면_그_사실을_로그에_남긴다(caplog):
+    """D5 : 다시 읽지 않은 이유가 로그에 없어 실측 실패를 추적하지 못했다."""
+    import logging
+
+    reader = LinkedThreadReader(_실패대화록(), channel_name=lambda c: c)
+    with caplog.at_level(logging.WARNING):
+        out = reader.of("https://x.slack.com/archives/C0PRIV0001/p1788253544408049", as_owner=True)
+    assert out[0].read_ok is False
+    assert any("소유자 세션" in r.getMessage() for r in caplog.records)
+
+
+def test_비소유자_턴은_소유자_세션_부재를_로그에_남기지_않는다(caplog):
+    import logging
+
+    reader = LinkedThreadReader(_실패대화록(), channel_name=lambda c: c)
+    with caplog.at_level(logging.WARNING):
+        reader.of("https://x.slack.com/archives/C0PRIV0001/p1788253544408049")
+    assert not any("소유자 세션" in r.getMessage() for r in caplog.records)

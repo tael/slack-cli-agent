@@ -880,3 +880,64 @@ class Test접수의_잠금예산:
         백오프 = sum(ingress._enqueue_retry_wait_sec * (n + 1) for n in range(시도 - 1))
         상한 = 대기 + 백오프
         assert 상한 <= 1.5, f"접수 경로 상한이 {상한:.2f}초다"
+
+
+class Test소유자세션설정누락:
+    """D5 실측 : #114 머지 뒤에도 소유자 턴이 비초대 비공개 링크를 읽지 못했다.
+    운영 자격 파일에 user_token 이 없어 소유자 세션이 꺼진 채로 떴는데, 그 사실이
+    로그 어디에도 남지 않았다. 꺼진 이유를 기동 시점에 남긴다."""
+
+    def test_소유자는_있는데_사용자_토큰이_없으면_경고를_남긴다(
+        self, profile: Profile, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from slack_cli_agent.slack.credentials import CredentialResolver
+
+        resolver = CredentialResolver(
+            default_path=profile.paths.root / "없는파일.json", configured_path=None, env={}
+        )
+        with caplog.at_level(logging.WARNING):
+            app = Application.from_profile(profile, client=FakeSlackClient(), resolver=resolver)
+        assert app._owner_client is None
+        assert any("user_token" in r.getMessage() for r in caplog.records)
+
+    def test_xoxc_토큰에_쿠키가_없으면_소유자_세션을_만들지_않는다(
+        self, profile: Profile, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from slack_cli_agent.slack.credentials import CredentialResolver
+
+        resolver = CredentialResolver(
+            default_path=profile.paths.root / "없는파일.json", configured_path=None,
+            env={"SLACK_USER_TOKEN": "xoxc-1"},
+        )
+        with caplog.at_level(logging.WARNING):
+            app = Application.from_profile(profile, client=FakeSlackClient(), resolver=resolver)
+        assert app._owner_client is None
+        assert any("user_cookie" in r.getMessage() for r in caplog.records)
+
+    def test_자격_파일의_토큰과_쿠키로_소유자_턴만_비공개_링크를_읽는다(
+        self, profile: Profile, tmp_path: Path
+    ) -> None:
+        """#114 가 정한 출처(자격 파일 user_token, user_cookie)에서 조립까지 이어지는가."""
+        import json as _json
+        import os as _os
+
+        from slack_cli_agent.slack.credentials import CredentialResolver
+
+        path = tmp_path / "credentials.json"
+        path.write_text(_json.dumps({
+            "bot_token": "xoxb-1", "user_token": "xoxc-1", "user_cookie": "xoxd-2",
+        }))
+        _os.chmod(path, 0o600)
+        resolver = CredentialResolver(default_path=path, configured_path=None, env={})
+        app = Application.from_profile(profile, client=_비공개막힘(), resolver=resolver)
+        owner = app._owner_client
+        assert owner is not None
+        assert owner.token == "xoxc-1"
+        assert owner.headers["Cookie"] == "d=xoxd-2"
+        # 실제 WebClient 대신 가짜로 바꿔 경로만 본다.
+        app._owner_client = _소유자세션()
+        hook = app.pipeline()._linked_threads
+        assert hook is not None
+        assert "비공개 할증 요청" not in hook(Test소유자세션링크읽기조립.LINK, "C099", (), False)
+        assert app._owner_client.calls == []
+        assert "비공개 할증 요청" in hook(Test소유자세션링크읽기조립.LINK, "C099", (), True)

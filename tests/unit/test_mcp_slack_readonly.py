@@ -172,6 +172,107 @@ class Test메시지_재구성:
         assert out["blocks_text"] == "블록 본문"
 
 
+def _by_method(responses: dict[tuple[str, str], dict]):
+    """(method, token) 으로 응답을 고르는 가짜 호출. 부른 순서를 남긴다."""
+    calls: list[tuple[str, str]] = []
+
+    def _fn(method: str, params: dict, token: str) -> dict:
+        calls.append((method, token))
+        return responses.get((method, token), {"ok": False, "error": "unexpected_call"})
+
+    return _fn, calls
+
+
+class Test비공개_채널_사용자_세션_경계:
+    """D5 : 봇이 초대되지 않은 비공개 채널은 소유자 턴에서만 사용자 세션으로 읽는다.
+    비소유자 턴에 열면 소유자만 볼 수 있는 대화가 그 사람의 답에 실린다.
+    개인 대화(DM, 그룹 DM)는 어느 턴에서도 열지 않는다."""
+
+    def _responses(self, channel: dict) -> dict[tuple[str, str], dict]:
+        return {
+            ("conversations.replies", "봇토큰"): {"ok": False, "error": "channel_not_found"},
+            ("conversations.info", "사용자토큰"): {"ok": True, "channel": channel},
+            ("conversations.replies", "사용자토큰"): {"ok": True, "messages": [{"ts": "1.1", "text": "비공개 본문"}]},
+        }
+
+    def test_비소유자_턴은_비공개_채널을_사용자_토큰으로_읽지_않는다(self) -> None:
+        call, calls = _by_method(self._responses({"is_private": True}))
+        result = lookup_message(call, "G1", "1.1", bot_token="봇토큰", user_token="사용자토큰")
+        assert result.ok is False
+        assert result.message is None
+        assert ("conversations.replies", "사용자토큰") not in calls
+        assert "소유자" in result.reason
+
+    def test_소유자_턴은_비공개_채널을_사용자_토큰으로_읽는다(self) -> None:
+        call, calls = _by_method(self._responses({"is_private": True}))
+        result = lookup_message(
+            call, "G1", "1.1", bot_token="봇토큰", user_token="사용자토큰", owner_turn=True
+        )
+        assert calls[-1] == ("conversations.replies", "사용자토큰")
+        assert result.ok is True
+        assert result.used_user_token is True
+        assert result.message == {"ts": "1.1", "text": "비공개 본문"}
+
+    @pytest.mark.parametrize("flag", ["is_im", "is_mpim"])
+    @pytest.mark.parametrize("owner_turn", [False, True])
+    def test_개인_대화는_어느_턴에서도_읽지_않는다(self, flag: str, owner_turn: bool) -> None:
+        call, calls = _by_method(self._responses({flag: True, "is_private": True}))
+        result = lookup_message(
+            call, "D1", "1.1", bot_token="봇토큰", user_token="사용자토큰", owner_turn=owner_turn
+        )
+        assert result.ok is False
+        assert ("conversations.replies", "사용자토큰") not in calls
+
+    @pytest.mark.parametrize("owner_turn", [False, True])
+    def test_채널_종류를_확인하지_못하면_사용자_토큰으로_읽지_않는다(self, owner_turn: bool) -> None:
+        responses = self._responses({})
+        responses[("conversations.info", "사용자토큰")] = {"ok": False, "error": "channel_not_found"}
+        call, calls = _by_method(responses)
+        result = lookup_message(
+            call, "G1", "1.1", bot_token="봇토큰", user_token="사용자토큰", owner_turn=owner_turn
+        )
+        assert result.ok is False
+        assert ("conversations.replies", "사용자토큰") not in calls
+
+    def test_도구_호출은_소유자_턴_환경변수를_따른다(self) -> None:
+        call, _ = _by_method(self._responses({"is_private": True}))
+        args = {"channel": "G1", "ts": "1.1"}
+        out = handle_lookup(args, call=call, bot_token="봇토큰", user_token="사용자토큰")
+        assert "error" in out
+        out = handle_lookup(
+            args, call=call, bot_token="봇토큰", user_token="사용자토큰", owner_turn=True
+        )
+        assert out["text"] == "비공개 본문"
+
+    def test_소유자_턴_판정은_환경변수가_1_일_때만_참이다(self) -> None:
+        from slack_cli_agent.mcp.slack_readonly import OWNER_TURN_ENV, owner_turn_from
+
+        assert owner_turn_from({OWNER_TURN_ENV: "1"}) is True
+        assert owner_turn_from({}) is False
+        assert owner_turn_from({OWNER_TURN_ENV: "0"}) is False
+        assert owner_turn_from({OWNER_TURN_ENV: "true"}) is False
+
+    def test_사용자_토큰_호출에는_d_쿠키를_싣는다(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """xoxc 세션 토큰은 d 쿠키 없이 invalid_auth 다. 봇 토큰 호출에는 싣지 않는다."""
+        import io
+        import json as _json
+
+        from slack_cli_agent.mcp import slack_readonly
+
+        sent: list[dict[str, str]] = []
+
+        def _urlopen(req, timeout):
+            sent.append(dict(req.header_items()))
+            return io.BytesIO(_json.dumps({"ok": True}).encode())
+
+        monkeypatch.setattr(slack_readonly.urllib.request, "urlopen", _urlopen)
+        call = slack_readonly._default_caller(user_token="xoxc-1", user_cookie="xoxd-2")
+        call("conversations.info", {"channel": "G1"}, "xoxc-1")
+        call("conversations.info", {"channel": "G1"}, "xoxb-1")
+        assert sent[0].get("Cookie") == "d=xoxd-2"
+        assert "Cookie" not in sent[1]
+
+
 class Test조회_토큰_선택:
     """lookup_message() — 봇 토큰이 막히면 사용자 토큰으로, 그것도 없으면
     사유를 남기고 물러선다 (gaps.md C40)."""
@@ -194,15 +295,19 @@ class Test조회_토큰_선택:
         assert calls == [("conversations.replies", "봇토큰")]
 
     def test_미초대_공개채널은_사용자_토큰으로_재조회한다(self) -> None:
-        call, calls = self._call({
-            "봇토큰": {"ok": False, "error": "not_in_channel"},
-            "사용자토큰": {"ok": True, "messages": [{"ts": "1.1", "text": "본문"}]},
+        call, calls = _by_method({
+            ("conversations.replies", "봇토큰"): {"ok": False, "error": "not_in_channel"},
+            ("conversations.info", "사용자토큰"): {"ok": True, "channel": {"is_private": False}},
+            ("conversations.replies", "사용자토큰"): {"ok": True, "messages": [{"ts": "1.1", "text": "본문"}]},
         })
         result = lookup_message(call, "C1", "1.1", bot_token="봇토큰", user_token="사용자토큰")
         assert result.ok is True
         assert result.used_user_token is True
-        assert [m for m, _ in calls] == ["conversations.replies", "conversations.replies"]
-        assert [t for _, t in calls] == ["봇토큰", "사용자토큰"]
+        assert calls == [
+            ("conversations.replies", "봇토큰"),
+            ("conversations.info", "사용자토큰"),
+            ("conversations.replies", "사용자토큰"),
+        ]
 
     def test_사용자_토큰_미설정이면_사유를_남기고_물러선다(self) -> None:
         call, calls = self._call({"봇토큰": {"ok": False, "error": "not_in_channel"}})
