@@ -196,7 +196,13 @@ class ApplySupervisor:
     def _restart(self) -> bool:
         before = {s.label: read_pid(s.pid_path) for s in self._services}
         for service in self._services:
-            if not self._kickstart(service.label):
+            try:
+                kicked = self._kickstart(service.label)
+            except Exception:
+                # Raising here would skip _report and drop the request silently.
+                log.exception("kickstart 예외 : %s", service.label)
+                kicked = False
+            if not kicked:
                 log.warning("kickstart 실패 : %s", service.label)
         deadline = self._now() + self._timeout
         while True:

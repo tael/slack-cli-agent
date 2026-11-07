@@ -260,3 +260,35 @@ def test_supervise_명령이_등록돼_있고_once_로_한_번_돈다(tmp_path: 
     assert calls == ["tick"]
     assert "할 일 없음" in out.getvalue()
     assert "supervise" in SlackCliAgent().command_names()
+
+
+def test_kickstart가_예외를_내도_표식을_정리하고_실패를_알린다(tmp_path: Path) -> None:
+    import subprocess
+
+    env = 가짜환경(tmp_path)
+    env.표식(age=20)
+
+    def 멈춤(label: str) -> bool:
+        env.kick.append(label)
+        raise subprocess.TimeoutExpired(cmd="launchctl", timeout=420)
+
+    assert env.supervisor(kickstart=멈춤).tick() == "failed_running"
+    assert not (tmp_path / "apply-running").exists()
+    assert len(env.dm) == 1 and "재기동 실패" in env.dm[0]
+
+
+def test_launchctl_kickstart가_시간초과나_실행불가면_False를_돌린다(monkeypatch) -> None:
+    import subprocess
+
+    from slack_cli_agent import cli
+
+    def 시간초과(*args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(cmd="launchctl", timeout=420)
+
+    def 없음(*args: object, **kwargs: object) -> object:
+        raise FileNotFoundError("launchctl")
+
+    monkeypatch.setattr(subprocess, "run", 시간초과)
+    assert cli._kickstart("local.t.worker") is False
+    monkeypatch.setattr(subprocess, "run", 없음)
+    assert cli._kickstart("local.t.worker") is False

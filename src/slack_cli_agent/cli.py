@@ -714,14 +714,20 @@ class WebCommand(CliCommand):
 def _kickstart(label: str) -> bool:
     import subprocess
 
-    done = subprocess.run(
-        ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=420,
-        check=False,
-    )
+    # A hung kickstart (worker drain, stuck launchd) or a missing launchctl is
+    # a failed kickstart: the supervisor then judges by PID and reports it.
+    try:
+        done = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=420,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logging.getLogger(__name__).warning("launchctl kickstart 실행 실패 : %s (%s)", label, exc)
+        return False
     return done.returncode == 0
 
 
