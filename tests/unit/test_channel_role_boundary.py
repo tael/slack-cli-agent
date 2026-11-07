@@ -2,8 +2,10 @@
 
 - operator 는 소유자 도구 전체가 아니라 프로필이 명시한 operator_tools 만 받는다
   (마메치 OWNER_EXTRA_TOOLS). 서버 와일드카드와 브라우저 조작 도구는 비소유자에게 가지 않는다
-- codex 로 도는 비소유자 턴은 operator_full 이 아니면 read-only 샌드박스다
-  (마메치 bot_profile.codex_sandbox 의 is_owner 키)
+- codex 로 도는 비소유자 턴은 operator_full 채널에서도 read-only 샌드박스다
+  (마메치 bot_profile.codex_sandbox 는 is_owner 만 본다. operator_full 예외가 없다)
+- 서버 단위 허가는 표기와 무관하게 거른다. 맨 서버 이름('gmail'), 'mcp__kubernetes',
+  'mcp__browser__*' 가 모두 서버 와일드카드다
 - 봇 판정은 이벤트의 bot_id 로 한다. users_info 조회 실패와 무관하다 (bot.py:7855)
 - claude 경로에서 범위를 좁힌 Bash 허가는 general 덧씌움의 맨 Bash deny 에 막히지 않는다
 """
@@ -91,6 +93,25 @@ class Test운영자는_명시목록만_받는다:
         assert "mcp__browser__browser_snapshot" in 붙은것
         assert "mcp__browser__browser_evaluate" in _list(policy, "C1", OWNER)
 
+    def test_서버_단위_허가는_표기가_달라도_operator에게_가지_않는다(self, tmp_path: Path) -> None:
+        policy = _policy(tmp_path, {"C1": {"operators": [OP], "operator_full": True}})
+        tools = ToolPolicy(
+            BASE, PROFILE_OWNER_TOOLS,
+            channel_tools=policy.channel_tools_for, operator_level=policy.operator_level,
+            operator_tools=("gmail", "mcp__kubernetes", "mcp__browser__browser_*", "mcp__*",
+                            "mcp__slack__slack_post_message", "Bash"),
+        )
+        붙은것 = tools.tool_list_for(policy.principal_for("C1", OP))
+        assert 붙은것 == ("Read", "Grep", "mcp__slack__slack_post_message", "Bash")
+
+    def test_채널_extra_tools의_브라우저_서버_허가도_비소유자에게_빠진다(self, tmp_path: Path) -> None:
+        extra = ["browser", "mcp__browser", "mcp__browser__*", "mcp__playwright__*", "mcp__*",
+                 "mcp__browser__browser_snapshot"]
+        policy = _policy(tmp_path, {"C1": {"extra_tools": extra}})
+        붙은것 = _list(policy, "C1", "U_ANY")
+        assert 붙은것 == ("Read", "Grep", "mcp__browser__browser_snapshot")
+        assert set(extra) <= set(_list(policy, "C1", OWNER))
+
     def test_Application이_operator_tools_설정을_정책에_넘긴다(self, tmp_path: Path) -> None:
         from test_application import FakeSlackClient, write_profile
 
@@ -125,9 +146,28 @@ class Test대체엔진_codex_샌드박스:
             assert "--approve-for-me" not in cmd
             assert "sandbox_workspace_write.network_access=true" not in cmd
 
-    def test_operator_full_비소유자와_소유자는_프로필_샌드박스다(self, tmp_path: Path) -> None:
-        assert 'sandbox_mode="workspace-write"' in self._cmd(
-            tmp_path, TrustLevel.GENERAL, ["Read", "Bash", "mcp__slack__slack_post_message"])
+    def test_operator_full_채널의_비소유자도_read_only다(self, tmp_path: Path) -> None:
+        # codex 는 허용목록을 강제하지 않고 프로필 MCP 서버를 모두 넘긴다. workspace-write 와
+        # --approve-for-me 로 가면 gmail 발송, pods_delete, browser click 이 열린다.
+        for trust, names in ((TrustLevel.GENERAL, ["Read", "Bash", "mcp__slack__slack_post_message"]),
+                             (TrustLevel.GENERAL, ["Read", "Grep", "Bash"]),
+                             (TrustLevel.TRUSTED, ["Read", "Edit", "Write", "Bash"])):
+            cmd = self._cmd(tmp_path, trust, names)
+            assert 'sandbox_mode="read-only"' in cmd, names
+            assert "--approve-for-me" not in cmd
+            assert "sandbox_workspace_write.network_access=true" not in cmd
+
+    def test_명단_밖_사용자가_operator_full_채널_extra_tools로_Bash를_받아도_read_only다(
+        self, tmp_path: Path,
+    ) -> None:
+        policy = _policy(tmp_path, {"C1": {"operator_full": True, "extra_tools": ["Bash"]}})
+        names = list(_list(policy, "C1", "U_STRANGER"))
+        assert "Bash" in names  # 도구 목록은 그대로다. 막는 것은 샌드박스다
+        cmd = self._cmd(tmp_path, TrustLevel.GENERAL, names)
+        assert 'sandbox_mode="read-only"' in cmd
+        assert "--approve-for-me" not in cmd
+
+    def test_소유자는_프로필_샌드박스다(self, tmp_path: Path) -> None:
         assert 'sandbox_mode="workspace-write"' in self._cmd(
             tmp_path, TrustLevel.OWNER, ["Read", "mcp__slack__slack_post_message"])
 

@@ -71,18 +71,49 @@ BROWSER_ACTION_TOOLS: frozenset[str] = frozenset({
 })
 
 
+#: Server-name fragments that mark a browser server. A server-wide grant on
+#: one of these carries every browser action with it.
+_BROWSER_SERVER_MARKS: tuple[str, ...] = ("browser", "playwright")
+
+
+def _granted_server(name: str) -> str | None:
+    """The server a server-wide grant opens, or None for a single tool.
+
+    Every spelling the engines read as a whole server counts: mcp__<s>__*,
+    a tool pattern such as mcp__<s>__browser_*, mcp__<s> with no tool part,
+    mcp__* (every server, returned as "*"), and a bare server name such as
+    "gmail" -- engine/claude.py widens that to mcp__<s>__* and codex reads
+    profile names that way (A9 review: only the first form was caught).
+    Built-in tools are PascalCase and scoped grants carry "(", so neither is
+    taken for a server.
+    """
+    if "(" in name:
+        return None
+    if name.startswith("mcp__"):
+        server, sep, tool = name[len("mcp__"):].partition("__")
+        if sep and tool and "*" not in tool:
+            return None
+        return server.rstrip("*") or "*"
+    if name.endswith("*") or name[:1].islower():
+        return name.rstrip("*") or "*"
+    return None
+
+
 def _is_server_wildcard(name: str) -> bool:
-    return name.startswith("mcp__") and name.endswith("*")
+    return _granted_server(name) is not None
 
 
 def _is_browser_action(name: str) -> bool:
+    server = _granted_server(name)
+    if server is not None:
+        return server == "*" or any(mark in server for mark in _BROWSER_SERVER_MARKS)
     return name.startswith("mcp__") and name.rsplit("__", 1)[-1] in BROWSER_ACTION_TOOLS
 
 
 def _non_owner_safe(names: Sequence[str]) -> list[str]:
     kept = [name for name in names if not _is_browser_action(name)]
     if len(kept) != len(names):
-        log.warning("비소유자 턴에서 뺀 브라우저 조작 도구 : %s",
+        log.warning("비소유자 턴에서 뺀 브라우저 조작 도구와 브라우저 서버 허가 : %s",
                     ", ".join(name for name in names if _is_browser_action(name)))
     return kept
 

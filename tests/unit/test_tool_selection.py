@@ -709,9 +709,14 @@ class Test허용문구가_실제_명령에_실린다:
         어긋남이 크게 드러난다."""
         from test_engine import request
 
+        from slack_cli_agent.auth.principal import TrustLevel
+
+        # 두 요청 모두 소유자다. codex 는 비소유자 허용목록 턴을 read-only 로 내려 (A9)
+        # developer_instructions 의 쓰기 경로 안내가 무제한 요청과 달라진다. 그 차이는
+        # 프롬프트 밖에 실리므로 여기서 비교하려는 바이트가 아니다.
         engine = self._엔진들(tmp_path)[자리]
-        실은것 = self._요청(resume=resume)
-        안실은것 = request(tools=ToolSelection.unrestricted(), resume=resume)
+        실은것 = self._요청(resume=resume, trust_level=TrustLevel.OWNER)
+        안실은것 = request(tools=ToolSelection.unrestricted(), resume=resume, trust_level=TrustLevel.OWNER)
         차이 = (engine.footprint_for(실은것).adapter_added_bytes
                 - engine.footprint_for(안실은것).adapter_added_bytes)
         보낸것 = engine.build_command(실은것)[-1]

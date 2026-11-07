@@ -43,7 +43,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
-from ..auth.policy import OPERATOR_TOOLS
 from ..auth.principal import TrustLevel
 from ..auth.tools import SKILL_TOOL, is_read_only_tool
 from ..config.profile import EngineSpec, McpServerSpec
@@ -112,22 +111,23 @@ def _codex_can_act(tools: ToolSelection) -> bool:
 
 
 def _non_owner_reads_only(request: EngineRequest) -> bool:
-    """A non-owner turn runs read-only unless the channel is operator_full.
+    """A non-owner turn always runs read-only, operator_full channel included.
 
-    codex enforces no allowlist, so a non-owner turn holding any write-capable
-    name (an operator's Slack post, an airflow wrapper, a channel extra tool)
-    reached workspace-write with network and --approve-for-me: shell writes,
-    outbound calls and every MCP server, without operator_full (A9 review).
-    mametchi pins a non-owner codex turn to read-only (bot_profile.codex_sandbox
-    is_owner key). A bare Bash/Edit/Write/NotebookEdit only reaches a
-    non-owner's list on an operator_full channel (auth/policy.py), so that is
-    the one case left to the profile -- the same signal engine/claude.py reads.
+    codex enforces no allowlist and gets every profile MCP server, so a
+    non-owner turn under workspace-write with network and --approve-for-me
+    could send or delete mail, delete pods or click in the owner's browser
+    whatever its tool list said (A9 review). An operator_full exception for a
+    bare Bash/Edit/Write reopened the same hole, and channel extra_tools hand
+    that bare name to every non-owner in the channel, operators list or not.
+    mametchi pins a non-owner codex turn to read-only on is_owner alone
+    (bot_profile.codex_sandbox) with no operator_full exception; this matches
+    it. A read-only turn cannot call MCP tools at all (build_command).
     An unrestricted selection means no tool policy is wired at all, which no
     profile Application builds runs under; it keeps the profile sandbox.
     """
-    if request.trust_level is TrustLevel.OWNER or request.tools.access is not ToolAccess.ALLOWLIST:
+    if request.trust_level is TrustLevel.OWNER:
         return False
-    return OPERATOR_TOOLS.isdisjoint(request.tools.names)
+    return request.tools.access is ToolAccess.ALLOWLIST
 
 
 def _codex_mcp_config_args(

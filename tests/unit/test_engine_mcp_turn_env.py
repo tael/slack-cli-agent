@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from slack_cli_agent.auth.principal import TrustLevel
 from slack_cli_agent.config.profile import McpServerSpec, Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.errors import ConfigError
@@ -85,10 +86,13 @@ def _profile(engine_type: str) -> Profile:
 
 def _command(engine_type: str, tools: ToolSelection, workdir: Path) -> str:
     engine = _ENGINES[engine_type](_profile(engine_type), RuntimeSettings())
+    # 소유자 턴이다. codex 는 비소유자 턴을 read-only 로 내려 행동 게이트를 빼므로 (A9),
+    # 게이트 배선을 보려면 행동할 수 있는 요청자로 둔다.
     request = EngineRequest(
         prompt="프롬프트", system_prompt="지침",
         session_id="11111111-1111-1111-1111-111111111111", resume=False,
         model="m", effort="medium", workdir=workdir, tools=tools,
+        trust_level=TrustLevel.OWNER,
     )
     engine.prepare(request)
     본문 = " ".join(engine.build_command(request))

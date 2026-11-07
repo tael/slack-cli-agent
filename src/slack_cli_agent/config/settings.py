@@ -185,7 +185,8 @@ class RuntimeSettings:
     # Tools a channel operator gets, named one by one (mametchi
     # OWNER_EXTRA_TOOLS). Not derived from owner_tools: that list names whole
     # servers, and an operator then got the owner's mail and cluster. Server
-    # wildcards and browser actions here are dropped. Empty by default, so an
+    # wildcards in any spelling (mcp__s__*, mcp__s, a bare server name) and
+    # browser actions here are dropped. Empty by default, so an
     # operator gets nothing until the profile names it.
     operator_tools: tuple[str, ...] = ()
 
