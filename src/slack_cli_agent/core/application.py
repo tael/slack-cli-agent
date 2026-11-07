@@ -1699,6 +1699,11 @@ class Application:
             workdir=self._profile.work_root,
             system_prompt=system_prompt,
             readable_dirs=(paths.persona, paths.prompts),
+            # 부검만 전용 모델이다 (마메치 model_for postmortem=True). 나머지
+            # 점검은 소유자용 모델 그대로다.
+            model=(
+                self._profile.primary_engine.model_for_postmortem() if postmortem else None
+            ),
         )
 
     def on_reaction(self, emoji: str, channel: str, ts: str, by_user: str) -> None:

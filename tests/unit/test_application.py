@@ -455,6 +455,21 @@ class TestReviewReactions:
         assert isinstance(표시, ReviewProgressPort), 표시
         assert isinstance(표시, ReviewProgressDisplay), 표시
 
+    def test_부검만_부검_모델로_돈다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """마메치 model_for(postmortem=True) 는 프로필 postmortem_model 을 쓴다.
+        디버그 추적과 서식 점검은 소유자용 모델 그대로다."""
+        binary = tmp_path / "bin" / "fake-engine"
+        profile = write_profile(tmp_path, primary_engine={
+            "type": "claude", "binary": str(binary), "model": "model-a",
+            "model_owner": "model-big", "postmortem_model": "model-deep",
+        })
+        tasks = Application(profile, client).review_tasks()
+        assert tasks["dango"]._engine.model == "model-deep"
+        assert tasks["brain"]._engine.model == "model-big"
+        assert tasks["pencil2"]._engine.model == "model-big"
+
     def test_점검_셋_모두에_감사가_연결된다(self, app: Application) -> None:
         """한 종류만 연결하면 그 종류 말고는 소요 기록이 안 남는다(sca-fy5)."""
         for task in app.review_tasks().values():
