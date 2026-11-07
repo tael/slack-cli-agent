@@ -104,6 +104,10 @@ class CompositionContext:
     #: Whoever spoke is on this channel's `operators` list (or it holds "*")
     #: and is not a bot (mametchi authz.is_operator). Drives AdvisorSection.
     operator: bool = False
+    #: The channel is `operator_full` and whoever spoke is its operator, so the
+    #: bare write tools reach this turn (A9). Picks OPERATOR_FULL_NOTE over
+    #: OPERATOR_NOTE (mametchi speaker_note, A11). Meaningless without operator.
+    operator_full: bool = False
     #: This channel's channels.json entry carries an `advisor` dict (mametchi
     #: advisor_executor, bot.py). Drives AdvisorSection.
     advisor_enabled: bool = False
@@ -265,12 +269,26 @@ class ChannelModeSection(PromptSection):
 
 
 class OwnerNoteSection(PromptSection):
+    """The speaker's note: owner, channel operator, or read-only.
+
+    A channel operator holds the act tools (A9). Telling them the turn is
+    read-only made the model refuse work its tools could do, so they get
+    OPERATOR_NOTE, or OPERATOR_FULL_NOTE on an operator_full channel (mametchi
+    build_system_prompt speaker_note, A11). An aside turn carries no act
+    tools, so it keeps the read-only note.
+    """
+
     def applies_to(self, ctx: CompositionContext) -> bool:
         return True
 
     def render(self, ctx: CompositionContext) -> str:
         keep = ("NEVER_DISCLOSE",) if ctx.may_disclose_mechanism else ()
-        name = "OWNER_NOTE" if ctx.is_owner else "NON_OWNER_NOTE"
+        if ctx.is_owner:
+            name = "OWNER_NOTE"
+        elif ctx.operator and not ctx.aside:
+            name = "OPERATOR_FULL_NOTE" if ctx.operator_full else "OPERATOR_NOTE"
+        else:
+            name = "NON_OWNER_NOTE"
         return ctx._library_or_raise().text(name, keep_slots=keep)
 
 
