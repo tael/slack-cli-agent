@@ -15,12 +15,14 @@ from typing import Any
 from ..config.settings import RuntimeSettings
 from ..core.context import RequestContext
 from ..core.result import Outcome
+from ..guard.mentions import calls_other_bot, talking_to_peer
 from ..observability.notices import NoticeCatalog
 from ..slack.attachments import AttachmentStore
+from ..slack.blocks import event_body
 from ..slack.gate import ResponseGate
 from ..slack.identity import BotIdentity
 from ..slack.mentions import SelfMentionStripper
-from ..slack.message_kind import MessageKind
+from ..slack.message_kind import HUMAN_SUBTYPES, MessageKind
 from ..slack.policy import addresses_someone_else
 from .ports import HistoryReader
 
@@ -72,8 +74,8 @@ def unanswered(
                 answered.add(pending.pop(0))
             prev_bot = True
             continue
-        if x.get("bot_id"):
-            continue  # another bot's message; not a human ask or our reply
+        if x.get("bot_id") and x.get("ts") not in waiting:
+            continue  # another bot's message; not an ask to us or our reply
         prev_bot = False
         if x.get("ts") in waiting:
             pending.append(x.get("ts"))
@@ -115,6 +117,7 @@ class CatchupService:
         now: Callable[[], float] = time.time,
         started_at: float | None = None,
         attachments: AttachmentStore | None = None,
+        is_bot: Callable[[str], bool] = lambda _user_id: False,
     ) -> None:
         self._history = history
         self._gate = gate
@@ -132,6 +135,28 @@ class CatchupService:
         # channel -> (first-failure time, attempt count)
         self._pending: dict[str, tuple[float, int]] = {}
         self._kind = MessageKind()
+        # Same lookup the listener's calls_other_bot/talking_to_peer use
+        # (C16, C17). The default treats nobody as a bot, which keeps the
+        # older behavior for a caller that doesn't wire it.
+        self._is_bot = is_bot
+
+    #: Subtypes a peer bot's request can carry (listener._BOT_POST_SUBTYPES).
+    _BOT_POST_SUBTYPES = frozenset({"bot_message"}) | HUMAN_SUBTYPES
+
+    def _peer_request(self, msg: Mapping[str, Any]) -> bool:
+        """Whether another bot named this bot in this message (C3).
+
+        The live path takes these through app_mention (C26). Catch-up used to
+        drop every bot-authored message, so a peer's call cut off by a restart
+        was never answered: no human is in that thread to ask again
+        (mametchi bot.py `addressed_by_bot`).
+        """
+        if not msg.get("bot_id") or self._identity.is_self(msg):
+            return False
+        subtype = msg.get("subtype")
+        if subtype and subtype not in self._BOT_POST_SUBTYPES:
+            return False
+        return self._identity.is_mentioned(event_body(msg))
 
     def find_missed(self, channel: str, window: float) -> Outcome[list[RequestContext]]:
         """Finds mentions that never got a reply, including thread replies."""
@@ -185,9 +210,12 @@ class CatchupService:
                 else:
                     asked_before[x.get("ts")] = pending_ask
             for m in thread:
-                if not self._kind.is_human(m):
+                peer = self._peer_request(m)
+                if not peer and not self._kind.is_human(m):
                     continue
-                text = m.get("text") or ""
+                # The body, not `text`: a rich post's `text` is only its
+                # notification preview, so a mention mid-body went unseen (C3).
+                text = event_body(m)
                 called = self._identity.is_mentioned(text)
                 bot_asked = asked_before.get(m.get("ts"), False)
                 # Same rule the live path applies in ResponsePolicy. Without
@@ -197,6 +225,23 @@ class CatchupService:
                     continue
                 if not called and not (
                     bot_in_thread and self._gate.worth_answering(text, bot_asked)
+                ):
+                    continue
+                # A message naming another bot anywhere is that bot's (C16),
+                # and so is an unnamed follow-up after a human last addressed
+                # another bot (C17). The live path skips both; without these
+                # the next catch-up round answered them right after a restart.
+                if not called and calls_other_bot(self._is_bot, self._identity.user_id, text):
+                    continue
+                if (
+                    not called
+                    and not bot_asked
+                    and talking_to_peer(
+                        thread,
+                        is_bot=self._is_bot,
+                        self_id=self._identity.user_id,
+                        upto_ts=str(m.get("ts") or ""),
+                    )
                 ):
                     continue
                 if float(m.get("ts", 0)) < oldest:
@@ -214,7 +259,7 @@ class CatchupService:
             for m in unanswered(
                 thread, asked, is_self=self._identity.is_self, is_notice=self._notices.is_notice
             ):
-                called = self._identity.is_mentioned(m.get("text") or "")
+                called = self._identity.is_mentioned(event_body(m))
                 candidates.append((m, thread_ts, called))
 
         missed: list[RequestContext] = []
@@ -229,7 +274,8 @@ class CatchupService:
                 user=m.get("user") or "",
                 ts=str(m.get("ts")),
                 thread_ts=str(thread_ts),
-                text=self._self_mention.remove_self(m.get("text") or ""),
+                # The whole body; a rich post's `text` is a one-line preview.
+                text=self._self_mention.remove_self(event_body(m)),
                 # Raw event files carried through untouched; downloading here
                 # would fetch every candidate's attachment even though only
                 # the thread's representative survives _pick_representatives

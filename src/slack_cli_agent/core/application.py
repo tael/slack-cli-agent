@@ -1354,6 +1354,8 @@ class Application:
                 settings=self._settings,
                 identity=self.identity,
                 attachments=self.attachments(),
+                # The listener's C16/C17 checks use this lookup too (C3).
+                is_bot=self._bot_users.is_bot,
             )
         return self._catchup_service
 
