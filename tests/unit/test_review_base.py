@@ -856,10 +856,10 @@ class 부검점검Task(FakeReviewTask):
 
         return check_five_why(detail)
 
-    def rewrite_rejected(self, detail: str) -> bool:
-        from slack_cli_agent.review.five_why import md_section
+    def rewrite_rejected(self, rewrite: str, original: str) -> bool:
+        from slack_cli_agent.review.five_why import five_why_dropped
 
-        return not md_section(detail, "5 Why").strip()
+        return five_why_dropped(rewrite, original)
 
     def content_retry_prompt(self, problems: list[str]) -> str:
         return "다시 써라"
@@ -903,3 +903,12 @@ class Test재작성본이_5Why_절을_지우는_경우:
         self._원본을_올렸는지_본다(
             self._run(database, _끊긴_5Why.replace("## 5 Why\n", "## 5 Why 분석\n", 1))
         )
+
+    def test_제목만_남기고_표를_지우면_원본을_올린다(self, database) -> None:
+        self._원본을_올렸는지_본다(
+            self._run(database, "## 5 Why\n원인을 특정하지 못했다.\n\n## 근본원인\n알 수 없다.\n")
+        )
+
+    def test_Why_행을_줄이면_원본을_올린다(self, database) -> None:
+        두_행 = _끊긴_5Why.replace("| Why 3 | 왜 구름이 많았나 | 습도가 높았다 | 미확인 |\n", "")
+        self._원본을_올렸는지_본다(self._run(database, 두_행))

@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from slack_cli_agent.review.base import ReviewTarget, ReviewTask, run_info_rows
-from slack_cli_agent.review.five_why import broken_five_why_prompt, check_five_why, md_section
+from slack_cli_agent.review.five_why import broken_five_why_prompt, check_five_why, five_why_dropped
 
 
 class PostmortemTask(ReviewTask):
@@ -39,10 +39,10 @@ class PostmortemTask(ReviewTask):
         # The prompt alone didn't keep the 5 Why a chain (mametchi 2026-09-22).
         return check_five_why(detail)
 
-    def rewrite_rejected(self, detail: str) -> bool:
-        # The first answer had a 5 Why section; a rewrite that drops or
-        # renames it would count fewer problems while hiding the table.
-        return not md_section(detail, "5 Why").strip()
+    def rewrite_rejected(self, rewrite: str, original: str) -> bool:
+        # A rewrite that drops the section, renames it, or keeps the heading
+        # over prose would count fewer problems while hiding the table.
+        return five_why_dropped(rewrite, original)
 
     def content_retry_prompt(self, problems: list[str]) -> str:
         return broken_five_why_prompt(problems, self.split_marker())

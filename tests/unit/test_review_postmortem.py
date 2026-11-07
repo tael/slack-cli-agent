@@ -117,9 +117,21 @@ class Test5Why점검:
 
     def test_재작성본에서_5_Why_절이_사라지면_받지_않는다(self) -> None:
         task = make_task()
-        assert task.rewrite_rejected("## 원인\n본문")
-        assert task.rewrite_rejected("## 5 Why 분석\n| Why 1 | a | b | c |\n")
-        assert not task.rewrite_rejected("## 5 Why\n| Why 1 | a | b | c |\n")
+        원본 = "## 5 Why\n| Why 1 | a | b | c |\n| Why 2 | d | e | f |\n"
+        assert task.rewrite_rejected("## 원인\n본문", 원본)
+        assert task.rewrite_rejected("## 5 Why 분석\n" + 원본.split("\n", 1)[1], 원본)
+        assert not task.rewrite_rejected(원본, 원본)
+
+    def test_재작성본이_제목만_남기고_표를_지우면_받지_않는다(self) -> None:
+        task = make_task()
+        원본 = "## 5 Why\n| Why 1 | a | b | c |\n| Why 2 | d | e | f |\n"
+        assert task.rewrite_rejected("## 5 Why\n원인을 특정하지 못했다.\n\n## 근본원인\n알 수 없다.", 원본)
+
+    def test_재작성본이_Why_행을_줄이면_받지_않는다(self) -> None:
+        task = make_task()
+        원본 = "## 5 Why\n| Why 1 | a | b | c |\n| Why 2 | d | e | f |\n| Why 3 | g | h | i |\n"
+        assert task.rewrite_rejected("## 5 Why\n| Why 1 | a | b | c |\n| Why 2 | d | e | f |\n", 원본)
+        assert not task.rewrite_rejected(원본 + "| Why 4 | j | k | l |\n", 원본)
 
     def test_재작성_요청은_부검_구분선을_쓴다(self) -> None:
         prompt = make_task().content_retry_prompt(["Why 2 의 근거 칸이 비어 있다."])

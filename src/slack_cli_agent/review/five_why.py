@@ -13,8 +13,9 @@ summarize Why 5. The depth of the argument is not judged here.
 Difference from mametchi: a detail without a `## 5 Why` section passes.
 The bundled postmortem_note.md has no 5 Why section; only a profile prompt
 that asks for one (guchipachi's does) opts into the check. A rewrite that
-drops or renames the section is not taken (`PostmortemTask.rewrite_rejected`):
-it would count fewer problems while hiding the table.
+drops or renames the section, or keeps the heading but loses Why rows, is
+not taken (`five_why_dropped`): it would count fewer problems while hiding
+the table.
 """
 
 from __future__ import annotations
@@ -82,12 +83,8 @@ def _overlap(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
-def check_five_why(detail: str) -> list[str]:
-    """Problems found in the detail's 5 Why chain, as sentences. Empty means pass."""
-    section = md_section(detail or "", "5 Why")
-    if not section.strip():
-        return []
-
+def _steps(section: str) -> list[tuple[int, str, str, str]]:
+    """Why rows of the section's table as (step, question, answer, evidence)."""
     steps: list[tuple[int, str, str, str]] = []
     for cells in _table_rows(section):
         if len(cells) < 4:
@@ -95,6 +92,29 @@ def check_five_why(detail: str) -> list[str]:
         m = _STEP_RE.match(cells[0].replace(" ", ""))
         if m:
             steps.append((int(m.group(1)), cells[1], cells[2], cells[3]))
+    return steps
+
+
+def five_why_dropped(rewrite: str, original: str) -> bool:
+    """True when a rewrite lost Why steps the original had.
+
+    `check_five_why` stops early under two steps, so a rewrite that keeps
+    the heading but replaces the table with prose counts one problem and
+    would beat an original with a real table. Distinct step numbers are
+    compared, at least two required.
+    """
+    kept = {n for n, _, _, _ in _steps(md_section(rewrite or "", "5 Why"))}
+    had = {n for n, _, _, _ in _steps(md_section(original or "", "5 Why"))}
+    return len(kept) < max(2, len(had))
+
+
+def check_five_why(detail: str) -> list[str]:
+    """Problems found in the detail's 5 Why chain, as sentences. Empty means pass."""
+    section = md_section(detail or "", "5 Why")
+    if not section.strip():
+        return []
+
+    steps = _steps(section)
 
     bad: list[str] = []
     got = [n for n, _, _, _ in steps]
