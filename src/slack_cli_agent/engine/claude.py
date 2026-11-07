@@ -171,6 +171,27 @@ def _lift_scoped_denials(settings: dict[str, Any], names: Iterable[str]) -> dict
     return {**settings, "permissions": {**permissions, "deny": kept}}
 
 
+def _deny_ledger_writes(settings: dict[str, Any], ledger: Path | None) -> dict[str, Any]:
+    """Deny the file tools on the delegation ledger for a non-owner turn.
+
+    The ledger is a JSON file owned by the same OS user, so the by check in
+    auth/delegation.py only stops an honest writer. A delegated turn in an
+    operator_full channel holds bare Write/Edit and could add a row naming
+    the next controller message, delegating to itself (A7 review). Bash is
+    not covered: an Edit/Write deny does not reach a shell redirect, and the
+    bare Bash an operator_full channel hands out is an unrestricted shell.
+    """
+    if ledger is None:
+        return settings
+    path = ledger.expanduser().resolve()
+    extra = [f"Edit(/{path})", f"Write(/{path})"]
+    permissions = settings.get("permissions")
+    permissions = dict(permissions) if isinstance(permissions, Mapping) else {}
+    deny = list(permissions.get("deny") or [])
+    permissions["deny"] = deny + [entry for entry in extra if entry not in deny]
+    return {**settings, "permissions": permissions}
+
+
 def _open_mcp_servers(names: tuple[str, ...], servers: Iterable[str]) -> set[str]:
     """The servers left open, tools the allowlist never named included."""
     return {
@@ -515,6 +536,8 @@ class ClaudeEngine(Engine):
             paths.engine_settings(f"{self.name}.{level}"),
         )
         merged = _lift_scoped_denials(merged, request.tools.names)
+        if request.trust_level is not TrustLevel.OWNER:
+            merged = _deny_ledger_writes(merged, self.profile.delegation_ledger)
         if request.progress_log is not None:
             merged = merge_settings(merged, progress_hook_settings(request.progress_log))
         # Always on, regardless of progress_log: these are engine built-ins,

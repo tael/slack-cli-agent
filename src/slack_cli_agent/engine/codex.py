@@ -119,9 +119,13 @@ def _non_owner_reads_only(request: EngineRequest) -> bool:
     whatever its tool list said (A9 review). An operator_full exception for a
     bare Bash/Edit/Write reopened the same hole, and channel extra_tools hand
     that bare name to every non-owner in the channel, operators list or not.
-    mametchi pins a non-owner codex turn to read-only on is_owner alone
-    (bot_profile.codex_sandbox) with no operator_full exception; this matches
-    it. A read-only turn cannot call MCP tools at all (build_command).
+    mametchi passes can_act = is_owner or operator to codex_sandbox
+    (bot.py:2797), and operator includes a delegated turn, so a delegated
+    codex turn there runs workspace-write with network. This engine keeps it
+    read-only on purpose -- codex still enforces no allowlist -- and tells the
+    model so (DELEGATED_READONLY_NOTE): the system prompt says a delegated
+    turn has execution tools. A read-only turn cannot call MCP tools at all
+    (build_command).
     An unrestricted selection means no tool policy is wired at all, which no
     profile Application builds runs under; it keeps the profile sandbox.
     """
@@ -365,8 +369,28 @@ class CodexEngine(Engine):
         Carries the allowlist wording too: codex has no tool argument, so this
         is the only place an ALLOWLIST request reaches the model (sca-f9k0).
         """
-        note = self.tool_ban_note(request) + self.tool_allow_note(request)
+        note = (
+            self.tool_ban_note(request) + self.tool_allow_note(request)
+            + self._delegated_readonly_note(request)
+        )
         return f"{note}{input_mark_for(request)}" if note else ""
+
+    #: The system prompt tells a delegated turn it has execution tools
+    #: (prompt/sections.py AskerSection). On codex the turn runs read-only
+    #: (_non_owner_reads_only), so without this the model takes the work on
+    #: and then fails at the first write (A7 review).
+    DELEGATED_READONLY_NOTE = (
+        "\n\n[제약] 이번 위임 턴은 대체 엔진에서 읽기 전용으로 돈다. 위 지침에 "
+        "실행 도구가 붙어 있다고 적혀 있어도 이 턴에는 없다. 파일을 고치거나 "
+        "만들지 않고, 바깥에 쓰는 도구도 부르지 않는다. 넘겨받은 일 중 실행이 "
+        "필요한 단계는 하겠다고 답하지 않고, 실행하지 못한 할 일로 적어 넘긴 봇에게 "
+        "돌려준다.\n"
+    )
+
+    def _delegated_readonly_note(self, request: EngineRequest) -> str:
+        if not request.delegated or self._sandbox_for(request) != "read-only":
+            return ""
+        return self.DELEGATED_READONLY_NOTE
 
     def _resume_prompt(self, request: EngineRequest) -> str:
         """Carries this turn's instructions in the prompt on a resumed turn.
@@ -388,6 +412,7 @@ class CodexEngine(Engine):
             + self.write_paths_note(request)
             + self.tool_ban_note(request)
             + self.tool_allow_note(request)
+            + self._delegated_readonly_note(request)
             + input_mark_for(request)
             + request.prompt
         )
