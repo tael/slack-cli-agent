@@ -11,6 +11,7 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from ..config.channel import is_channel_operator
 from ..core.channel_kind import is_direct_message_channel
 from .principal import Principal, TrustLevel
 
@@ -34,6 +35,10 @@ DEFAULT_EFFORT = "medium"
 #: settings-layer deny must step aside for a name this method already let
 #: through -- one flag, one set of names, both axes.
 OPERATOR_TOOLS: frozenset[str] = frozenset({"Bash", "Edit", "Write", "NotebookEdit"})
+
+#: operator_level results. Empty means not an operator.
+OPERATOR = "operator"
+OPERATOR_FULL = "operator_full"
 
 
 class AccessExtension(ABC):  # noqa: B024 — 확장점이다. 기본이 no-op 이라 강제할 메서드가 없다
@@ -135,8 +140,11 @@ class AccessPolicy:
         return self._channel_flag(principal.channel, "full_authority")
 
     def channel_tools_for(self, principal: Principal) -> tuple[str, ...]:
-        """Extra tools this channel grants this user. The owner is left out —
-        owner tools already cover it, same as the original (bot.py:110).
+        """Extra tools this channel grants this user: `extra_tools` for every
+        turn, then -- for a non-owner only -- the user's `user_tools` and the
+        airflow_ctl wrapper when `airflow_admins` lists them (mametchi
+        channel_extra_tools, is_airflow_admin). The owner gets only
+        `extra_tools`: owner tools already cover the rest (bot.py:110).
 
         A bare entry in OPERATOR_TOOLS (Bash, Edit, Write, NotebookEdit) only
         reaches a non-owner when the channel's `operator_full` is on. Without
@@ -149,15 +157,36 @@ class AccessPolicy:
         grant like `Bash(ops_ctl.sh:*)` is a different string from `Bash` and
         is never dropped here.
         """
-        if principal.trust is TrustLevel.OWNER:
-            return ()
         config = self._channels.get(principal.channel)
         if not config:
             return ()
-        names = tuple(config.user_tools.get(principal.user_id, ()))
+        if principal.trust is TrustLevel.OWNER:
+            return config.extra_tools
+        names = list(config.user_tools.get(principal.user_id, ()))
+        names += config.extra_tools
+        ctl = self._profile.airflow_ctl
+        if ctl is not None and principal.user_id and principal.user_id in config.airflow_admins:
+            names.append(f"Bash({ctl}:*)")
+        names = list(dict.fromkeys(names))
         if config.operator_full:
-            return names
+            return tuple(names)
         return tuple(name for name in names if name not in OPERATOR_TOOLS)
+
+    def operator_level(self, principal: Principal, *, is_bot: bool = False) -> str:
+        """OPERATOR_FULL, OPERATOR or "" for a non-owner in this channel.
+
+        A user the channel's `operators` names (or anyone, under "*") may make
+        the bot act: ToolPolicy hands them the owner tools, holding the bare
+        write tools back unless the channel is `operator_full` (mametchi
+        build_command can_act / full_op). A bot is never an operator, and the
+        owner needs no level -- owner tools already apply.
+        """
+        if principal.trust is TrustLevel.OWNER:
+            return ""
+        config = self._channels.get(principal.channel)
+        if not is_channel_operator(config, principal.user_id, is_bot=is_bot):
+            return ""
+        return OPERATOR_FULL if config and config.operator_full else OPERATOR
 
     def _is_channel_trusted(self, channel: str, user: str) -> bool:
         config = self._channels.get(channel)

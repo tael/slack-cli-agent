@@ -518,6 +518,8 @@ class Application:
                 extensions,
                 channel_tools=self.access_policy.channel_tools_for,
                 always_skills=self._settings.always_skills or ALWAYS_SKILLS,
+                operator_level=self.access_policy.operator_level,
+                owner_only_tools=self._settings.owner_only_tools,
             )
         return self._tool_policy
 

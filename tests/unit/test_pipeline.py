@@ -2510,7 +2510,9 @@ class _도구정책:
     def __init__(self, tools: tuple[str, ...]) -> None:
         self._tools = tools
 
-    def tool_list_for(self, principal: Any, *, prompt: str, skills_enabled: bool) -> tuple[str, ...]:
+    def tool_list_for(
+        self, principal: Any, *, prompt: str, skills_enabled: bool, asker_is_bot: bool = False
+    ) -> tuple[str, ...]:
         return self._tools
 
 

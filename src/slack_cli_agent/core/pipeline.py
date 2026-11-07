@@ -329,8 +329,12 @@ class RequestPipeline:
     ) -> ToolSelection:
         if self._tool_policy is None:
             return ToolSelection.unrestricted()
+        # The bot check only matters off the owner path: operators never
+        # names a bot, and the lookup is a Slack call (mametchi authz.is_operator).
+        is_bot = principal.trust is not TrustLevel.OWNER and self._asker_is_bot(principal.user_id)
         return ToolSelection.from_names(self._tool_policy.tool_list_for(
             principal, prompt=prompt, skills_enabled=bool(config and config.skills),
+            asker_is_bot=is_bot,
         ))
 
     def _progress_session(self, ctx: RequestContext, log_path: Path | None) -> AbstractContextManager[None]:

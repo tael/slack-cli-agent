@@ -1,9 +1,11 @@
 """Decides which tools a request gets.
 
     readonly (postmortem/debug trace)   known read-only tools only
-    owner                                base + owner extras
+    owner                                base + owner extras + channel extra_tools
+    channel operator (operators)         base + owner extras minus owner_only_tools,
+                                         bare Bash/Edit/Write only if operator_full
     an extension applies                 base + whatever the extension adds
-    the channel lists the user           base + that user's extra tools
+    the channel lists the user           base + user_tools, extra_tools, airflow wrapper
     otherwise                            base tools only
 
 Read-only by default. Skill is appended last, and only when the request
@@ -15,7 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 
-from .policy import AccessExtension
+from .policy import OPERATOR_FULL, OPERATOR_TOOLS, AccessExtension
 from .principal import Principal, TrustLevel
 
 SKILL_TOOL = "Skill"
@@ -71,12 +73,16 @@ class ToolPolicy:
         extensions: Sequence[AccessExtension] = (),
         channel_tools: Callable[[Principal], Sequence[str]] | None = None,
         always_skills: Sequence[str] = (),
+        operator_level: Callable[..., str] | None = None,
+        owner_only_tools: Sequence[str] = (),
     ) -> None:
         self._base_tools = tuple(base_tools)
         self._owner_tools = tuple(owner_tools)
         self._extensions = tuple(extensions)
         self._channel_tools = channel_tools
         self._always_skills = tuple(always_skills)
+        self._operator_level = operator_level
+        self._owner_only_tools = frozenset(owner_only_tools)
 
     def tool_list_for(
         self,
@@ -86,6 +92,7 @@ class ToolPolicy:
         readonly: bool = False,
         aside: bool = False,
         skills_enabled: bool = False,
+        asker_is_bot: bool = False,
     ) -> tuple[str, ...]:
         if readonly:
             # Skill is left off as well -- it can run anything, which is the
@@ -93,12 +100,16 @@ class ToolPolicy:
             # this principal would get on a normal turn: guchipachi keeps its
             # MCP servers under owner_tools, so base_tools alone gave a watch
             # check no Slack at all (2026-11-06, watch job 22).
-            granted = self.tool_list_for(principal, prompt=prompt)
+            granted = self.tool_list_for(principal, prompt=prompt, asker_is_bot=asker_is_bot)
             return self._readonly_tools(granted)
         tools: list[str] = list(self._base_tools)
         if principal.trust is TrustLevel.OWNER:
             tools += self._owner_tools
+            if self._channel_tools is not None:
+                tools += [t for t in self._channel_tools(principal) if t not in tools]
         else:
+            if not aside:
+                tools += [t for t in self._operator_tools(principal, asker_is_bot) if t not in tools]
             for ext in self._extensions:
                 if ext.applies(principal, prompt):
                     tools += list(ext.extra_tools(principal))
@@ -118,6 +129,24 @@ class ToolPolicy:
                 if grant not in tools:
                     tools.append(grant)
         return tuple(tools)
+
+    def _operator_tools(self, principal: Principal, is_bot: bool) -> tuple[str, ...]:
+        """Owner tools a channel operator gets (mametchi build_command can_act).
+
+        The bare write tools stay back unless the channel is operator_full --
+        the same flag engine/claude.py reads to lift its settings deny -- and
+        owner_only_tools (an ACCOUNTADMIN query server, say) never go.
+        """
+        if self._operator_level is None:
+            return ()
+        level = self._operator_level(principal, is_bot=is_bot)
+        if not level:
+            return ()
+        return tuple(
+            name for name in self._owner_tools
+            if name not in self._owner_only_tools
+            and (level == OPERATOR_FULL or name not in OPERATOR_TOOLS)
+        )
 
     def _readonly_tools(self, granted: Sequence[str] = ()) -> tuple[str, ...]:
         kept = tuple(name for name in self._base_tools if name in READ_ONLY_TOOLS)

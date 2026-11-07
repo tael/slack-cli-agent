@@ -182,6 +182,10 @@ class RuntimeSettings:
     # write declares it in its profile rather than in code.
     base_tools: tuple[str, ...] = ("Read", "Grep", "Glob")
     owner_tools: tuple[str, ...] = ()
+    # Owner tools a channel operator never gets, by the exact name owner_tools
+    # uses -- a write-capable query server keyed as ACCOUNTADMIN, say
+    # (mametchi SNOWFLAKE_RW_TOOL, bot.py build_command). Empty by default.
+    owner_only_tools: tuple[str, ...] = ()
 
     # Skills granted on every ordinary turn as `Skill(<name>)` entries, even in
     # a channel with skills disabled -- a read-only query skill a bot should
