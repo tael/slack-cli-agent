@@ -464,6 +464,43 @@ class TestFindMissed:
 
         assert [m.ts for m in outcome.value()] == ["99005.0"]
 
+    def test_채널에도_보낸_스레드_답글은_한_번만_찾는다(self) -> None:
+        """thread_broadcast 답글은 채널 기록과 스레드 답글 양쪽에 같은 ts 로
+        나온다. (channel, ts) 로 한 번만 받고 thread_ts 는 부모 글을 가리킨다."""
+        broadcast = {
+            "ts": "99005.0",
+            "thread_ts": "99000.0",
+            "subtype": "thread_broadcast",
+            "user": "U1",
+            "text": "<@U_BOT> 채널에도 보낸 질문",
+        }
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {
+                        "ts": "99000.0",
+                        "thread_ts": "99000.0",
+                        "reply_count": 1,
+                        "latest_reply": "99005.0",
+                        "user": "U1",
+                        "text": "부모 글",
+                    },
+                    dict(broadcast),
+                ]
+            },
+            threads={
+                "99000.0": [
+                    {"ts": "99000.0", "user": "U1", "text": "부모 글"},
+                    dict(broadcast),
+                ]
+            },
+        )
+        service = make_service(history)
+
+        missed = service.find_missed("C1", window=3600).value()
+
+        assert [(m.ts, m.thread_ts) for m in missed] == [("99005.0", "99000.0")]
+
     def test_직접_안_불러도_답한_스레드_계속은_unaddressed_다(self) -> None:
         """listener.py:113 의 from_message 는 같은 조건(멘션 없이 봇이 낀
         스레드에서 이어진 말)에 unaddressed=True 를 매긴다. find_missed 가

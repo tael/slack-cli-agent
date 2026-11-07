@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from slack_cli_agent.guard.base import GuardContext, GuardResult, OutputGuard
+from slack_cli_agent.slack.message_kind import HUMAN_SUBTYPES
 
 ADDRESSED_AT_HEAD = re.compile(r"^\s*<@([A-Z0-9]+)>\s*(?:님|씨)?[,.!\s]*")
 
@@ -212,14 +213,6 @@ class BotMentionGuard(OutputGuard):
         return GuardResult(
             body=INNER_RUN_OF_SPACES.sub(" ", out), changed=True, detail={"targets": targets}
         )
-
-
-#: Subtypes a message keeps counting as a human turn despite carrying one,
-#: for the purposes of figuring out who a thread's last address was aimed
-#: at. Mirrors `slack.message_kind.HUMAN_SUBTYPES` plus `thread_broadcast`
-#: (bot.py:4165, 2026-11-01) — a reply also sent to the channel is still the
-#: same person talking, not a new kind of event.
-HUMAN_SUBTYPES = frozenset({"file_share", "thread_broadcast"})
 
 
 def calls_other_bot(is_bot: Callable[[str], bool], self_id: str, text: str) -> bool:
