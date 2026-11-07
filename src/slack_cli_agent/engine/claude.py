@@ -53,6 +53,7 @@ from .base import (
     EngineRequest,
     EngineResponse,
     FailureDetail,
+    ModelUsage,
     Usage,
     UsageLimit,
 )
@@ -586,9 +587,14 @@ class ClaudeEngine(Engine):
                     failure_reason="usage_limit",
                     failure_detail=FailureDetail(exit_code=returncode, code=limit.source),
                 )
+            # A run that exited nonzero after spending tokens still prints its
+            # result event (2026-11-07 운영 로그, 종료코드 1). Its per-model
+            # table is kept so the spend reaches the audit row (A14).
+            failed_event = self._result_event(stdout) if stdout else None
             return EngineResponse(
                 ok=False, body="처리에 실패했습니다.", session_id=None, model_actual=None,
                 elapsed=0.0, turns=None, usage=None,
+                model_usage=_model_usage(failed_event) if failed_event is not None else None,
                 raw={"stdout": stdout, "stderr": stderr, "returncode": returncode},
                 failure_reason="nonzero_exit", failure_detail=FailureDetail(exit_code=returncode),
             )
@@ -606,6 +612,7 @@ class ClaudeEngine(Engine):
         model_actual = _actual_model(payload)
         turns = payload.get("num_turns")
         usage = Usage.from_native(payload.get("usage"), _USAGE_KEY_MAP)
+        model_usage = _model_usage(payload)
         elapsed, elapsed_source = self._elapsed_from_payload(payload)
 
         if payload.get("is_error"):
@@ -623,7 +630,8 @@ class ClaudeEngine(Engine):
                 raw["usage_limit"] = {"detail": text_limit.detail, "source": text_limit.source}
             return EngineResponse(
                 ok=False, body=body, session_id=session_id, model_actual=model_actual,
-                elapsed=elapsed, turns=turns, usage=usage, raw=raw, failure_reason=reason,
+                elapsed=elapsed, turns=turns, usage=usage, model_usage=model_usage,
+                raw=raw, failure_reason=reason,
                 failure_detail=FailureDetail(code=subtype), elapsed_source=elapsed_source,
                 # Only the limit notice is written for the person who asked; the
                 # generic failure text adds nothing to the failure mark (sca-5sc).
@@ -635,6 +643,7 @@ class ClaudeEngine(Engine):
             return EngineResponse(
                 ok=False, body="응답이 비어 있습니다.", session_id=session_id,
                 model_actual=model_actual, elapsed=elapsed, turns=turns, usage=usage,
+                model_usage=model_usage,
                 raw=dict(payload), failure_reason="empty_response",
                 failure_detail=FailureDetail(
                     exit_code=returncode, stdout_chars=len(stdout),
@@ -644,8 +653,8 @@ class ClaudeEngine(Engine):
             )
         return EngineResponse(
             ok=True, body=body, session_id=session_id, model_actual=model_actual,
-            elapsed=elapsed, turns=turns, usage=usage, raw=dict(payload), failure_reason=None,
-            elapsed_source=elapsed_source,
+            elapsed=elapsed, turns=turns, usage=usage, model_usage=model_usage,
+            raw=dict(payload), failure_reason=None, elapsed_source=elapsed_source,
         )
 
     @staticmethod
@@ -733,6 +742,47 @@ class ClaudeEngine(Engine):
         else:
             return None
         return UsageLimit(detail=result.strip(), source=source)
+
+
+#: modelUsage row keys (camelCase, confirmed 2026-10-16 in mametchi
+#: compact_model_usage) to the common Usage vocabulary.
+_MODEL_USAGE_KEY_MAP: Mapping[str, str] = {
+    "input_tokens": "inputTokens",
+    "output_tokens": "outputTokens",
+    "cache_creation_tokens": "cacheCreationInputTokens",
+    "cache_read_tokens": "cacheReadInputTokens",
+}
+
+
+def _model_usage(payload: Mapping[str, Any]) -> dict[str, ModelUsage] | None:
+    """The result event's modelUsage table, every model kept (A14).
+
+    _actual_model keeps one model; the advisor and subagent models that ran
+    beside it are only visible here, so the whole table is carried to the
+    audit record. A row that is not a mapping is skipped, a non-numeric
+    value reads as 0, and a missing costUSD stays None rather than 0.
+    """
+    table = payload.get("modelUsage")
+    if not isinstance(table, Mapping) or not table:
+        return None
+    out: dict[str, ModelUsage] = {}
+    for model, row in table.items():
+        if not isinstance(row, Mapping):
+            continue
+        counts = {
+            field_name: _int_or_zero(row.get(native))
+            for field_name, native in _MODEL_USAGE_KEY_MAP.items()
+        }
+        cost = row.get("costUSD")
+        cost_usd = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
+        out[str(model)] = ModelUsage(**counts, cost_usd=cost_usd)
+    return out or None
+
+
+def _int_or_zero(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(value)
 
 
 def _actual_model(payload: Mapping[str, Any]) -> str | None:

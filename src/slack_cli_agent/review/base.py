@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
-from slack_cli_agent.engine.base import EngineResponse
+from slack_cli_agent.engine.base import EngineResponse, engine_usage_audit_fields
 from slack_cli_agent.observability.audit import REVIEW_CHECK_FAILED_KIND, REVIEW_KIND
 from slack_cli_agent.observability.slow_report import SlowRequestMeta
 from slack_cli_agent.render.table import as_table
@@ -395,6 +395,9 @@ class ReviewTask(ABC):
         extra: dict[str, Any] = {}
         if response.model_actual:
             extra["model_actual"] = response.model_actual
+        # A review is an engine call that spends tokens too, often on the
+        # postmortem model; without these the per-model rollup misses it (A14).
+        extra.update(engine_usage_audit_fields(response))
         try:
             self._audit.record(
                 REVIEW_KIND,

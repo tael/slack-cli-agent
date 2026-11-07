@@ -1265,3 +1265,60 @@ class Test전송량_행이_깨져도_집계가_선다:
         ])
         assert 결과["replayed_count"] == 1
         assert 결과["replayed_instruction_bytes_total"] == 100
+
+
+class Test모델별_비용:
+    """A14 : 웹 콘솔 지표에 모델별 토큰과 엔진이 보고한 비용."""
+
+    @staticmethod
+    def _table(sonnet: tuple[int, float], opus: tuple[int, float]) -> dict[str, object]:
+        def row(out: int, cost: float) -> dict[str, object]:
+            return {"input_tokens": 1, "output_tokens": out, "cache_creation_tokens": 0,
+                    "cache_read_tokens": 0, "cost_usd": cost}
+        return {"claude-sonnet-5-5": row(*sonnet), "claude-opus-5-5": row(*opus)}
+
+    def _insert(self, db: Database, at: float, kind: str, table: dict[str, object],
+                session: str = "sid") -> None:
+        insert_incident(db, kind=kind, at=at, channel="C1",
+                        session_id=session, model_usage=table)
+
+    def test_요청과_점검을_모델별로_합산한다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        now = 1_800_000_000.0
+        self._insert(db, now - 300, REQUEST_KIND, self._table((100, 0.1), (50, 0.5)))
+        self._insert(db, now - 200, REQUEST_KIND, self._table((160, 0.16), (90, 0.9)))
+        self._insert(db, now - 100, "review", self._table((0, 0.0), (40, 0.4)), session="rv")
+        db.close()
+
+        result = MetricsCollector(profile, now=lambda: now).collect(days=7)
+        usage = result["usage"]
+        by = {m["model"]: m for m in usage["by_model_usage"]}
+        assert by["claude-sonnet-5-5"]["output_tokens"] == 160
+        assert by["claude-opus-5-5"]["output_tokens"] == 130
+        assert by["claude-opus-5-5"]["cost_usd"] == pytest.approx(1.3)
+        assert usage["cost_total_usd"] == pytest.approx(1.46)
+        assert usage["cost_by_kind"] == {"request": pytest.approx(1.06), "review": pytest.approx(0.4)}
+        assert "usage.cost_total_usd" not in result["bot"]["not_applicable"]
+
+    def test_창_앞의_행을_빼서_창_안의_몫만_센다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        now = 1_800_000_000.0
+        self._insert(db, now - 10 * 86400, REQUEST_KIND, self._table((100, 1.0), (0, 0.0)))
+        self._insert(db, now - 100, REQUEST_KIND, self._table((130, 1.3), (0, 0.0)))
+        db.close()
+
+        usage = MetricsCollector(profile, now=lambda: now).collect(days=7)["usage"]
+        assert usage["cost_total_usd"] == pytest.approx(0.3)
+
+    def test_모델별_기록이_없으면_비용은_미계측이다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=900.0, channel="C1")
+        db.close()
+
+        result = MetricsCollector(profile, now=lambda: 1_000.0).collect(days=7)
+        assert result["usage"]["cost_total_usd"] is None
+        assert result["usage"]["by_model_usage"] == []
+        assert "usage.cost_total_usd" in result["bot"]["not_applicable"]

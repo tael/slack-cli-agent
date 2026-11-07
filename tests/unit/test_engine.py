@@ -3308,3 +3308,51 @@ class Test보장_조회는_MCP_서버를_밝혀야_한다:
         profile = claude_profile(tmp_path)
         보장 = ClaudeEngine.configured_capabilities(profile.primary_engine, {})
         assert 보장.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+
+
+class Test모델별_사용량_표를_보존한다:
+    """A14 : model_actual 은 모델 하나만 남겨, 조언자로 부른 모델의 토큰과
+    비용이 감사 기록에서 사라졌다. 표 전체를 응답에 싣는다."""
+
+    def _payload(self, **extra: Any) -> dict[str, Any]:
+        return {"result": "답", "session_id": "s1", "is_error": False, **extra}
+
+    def test_조언자_모델까지_모든_행과_비용을_싣는다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = self._payload(modelUsage={
+            "claude-sonnet-5-5": {"inputTokens": 10, "outputTokens": 200,
+                                  "cacheReadInputTokens": 3000,
+                                  "cacheCreationInputTokens": 40, "costUSD": 0.12},
+            "claude-opus-5-5": {"inputTokens": 5, "outputTokens": 900, "costUSD": 1.5},
+        })
+        table = engine.parse(json.dumps(payload), "", 0).model_usage
+        assert table is not None
+        assert set(table) == {"claude-sonnet-5-5", "claude-opus-5-5"}
+        sonnet = table["claude-sonnet-5-5"]
+        assert (sonnet.input_tokens, sonnet.output_tokens, sonnet.cache_read_tokens,
+                sonnet.cache_creation_tokens, sonnet.cost_usd) == (10, 200, 3000, 40, 0.12)
+        assert table["claude-opus-5-5"].cost_usd == 1.5
+
+    def test_비용이_없으면_0_이_아니라_None_이다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = self._payload(modelUsage={"m": {"outputTokens": "x", "costUSD": "?"}})
+        row = engine.parse(json.dumps(payload), "", 0).model_usage["m"]
+        assert row.output_tokens == 0
+        assert row.cost_usd is None
+
+    def test_표가_없으면_None_이다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        assert engine.parse(json.dumps(self._payload()), "", 0).model_usage is None
+        bad = self._payload(modelUsage={"a": None})
+        assert engine.parse(json.dumps(bad), "", 0).model_usage is None
+
+    def test_실패한_실행도_싣는다(self, tmp_path: Path) -> None:
+        """실패한 턴도 토큰을 쓴다 (sca-3g3a 와 같은 이유)."""
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = {"is_error": True, "subtype": "error_max_turns", "session_id": "s1",
+                   "modelUsage": {"m": {"outputTokens": 7, "costUSD": 0.01}}}
+        resp = engine.parse(json.dumps(payload), "", 1)
+        assert resp.ok is False
+        assert resp.model_usage["m"].output_tokens == 7
+        empty = engine.parse(json.dumps(self._payload(result="", modelUsage={"m": {}})), "", 0)
+        assert empty.ok is False and "m" in empty.model_usage

@@ -319,3 +319,55 @@ class Test학습도_같은_호출부품을_쓴다:
         assert outcome.ok
         assert len(secondary.built_requests) == 1
         assert primary.built_requests == []
+
+
+class Test학습_분석도_모델별_사용량을_남긴다:
+    """A14 : 야간 학습 배치의 엔진 호출도 모델별 집계에 들어가야 한다."""
+
+    class _호출기:
+        def __init__(self, response: EngineResponse) -> None:
+            self.response = response
+
+        def invoke(self, request: EngineRequest, origin: Any = None) -> EngineResponse:
+            return self.response
+
+    def _응답(self, model_usage) -> EngineResponse:
+        return EngineResponse(
+            ok=True, body=json.loads(analysis_stdout())["result"], session_id="s-learn",
+            model_actual=None, elapsed=0.0, turns=None, usage=None, raw={},
+            engine="claude", model_usage=model_usage,
+        )
+
+    def test_모델별_표를_비용_행으로_남긴다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.engine.base import MODEL_USAGE_KEY, ModelUsage
+        from slack_cli_agent.observability.audit import ENGINE_SPEND_KIND
+
+        감사 = 기록감사()
+        analyzer = ProposalAnalyzer(
+            self._호출기(self._응답({"claude-opus-4": ModelUsage(output_tokens=11, cost_usd=0.2)})),
+            model="m", effort="low", workdir=tmp_path, bot_name="봇", audit=감사.record,
+        )
+        assert analyzer.analyze_channel("2026-09-14", "공지", "기록 본문", []).ok
+        [(kind, 행)] = 감사.기록
+        assert kind == ENGINE_SPEND_KIND
+        assert 행["purpose"] == "learning_analysis"
+        assert 행[MODEL_USAGE_KEY]["claude-opus-4"]["output_tokens"] == 11
+        assert 행["session_id"] == "s-learn"
+
+    def test_표가_없으면_남기지_않는다(self, tmp_path: Path) -> None:
+        감사 = 기록감사()
+        analyzer = ProposalAnalyzer(
+            self._호출기(self._응답(None)),
+            model="m", effort="low", workdir=tmp_path, bot_name="봇", audit=감사.record,
+        )
+        analyzer.analyze_channel("2026-09-14", "공지", "기록 본문", [])
+        assert 감사.기록 == []
+
+    def test_운영_조립은_감사_기록기를_넘긴다(self, tmp_path: Path) -> None:
+        from test_application import FakeSlackClient, write_profile
+
+        from slack_cli_agent.core.application import Application
+
+        app = Application(write_profile(tmp_path), FakeSlackClient())
+        analyzer = app.learning_batch()._builder._analyzer  # type: ignore[attr-defined]
+        assert analyzer._audit is not None

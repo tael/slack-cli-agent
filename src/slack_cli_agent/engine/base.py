@@ -356,6 +356,71 @@ class FailureDetail:
 NO_DETAIL = FailureDetail()
 
 
+MODEL_USAGE_KEY = "model_usage"
+"""Name the per-model usage table is written under in the audit record.
+Writers (pipeline, review, watch) and the metrics rollup share it (A14)."""
+
+MODEL_USAGE_SESSION_KEY = "model_usage_session"
+"""The session a request row's table counts, written beside it when the
+request row's own session_id may name another session (A14)."""
+
+
+@dataclass(frozen=True)
+class ModelUsage:
+    """One model's row of an engine's per-model usage table (A14).
+
+    The Claude CLI result event carries ``modelUsage``: one entry per model
+    that spent tokens in the run, including the advisor and subagent models
+    the main ``usage`` leaves out, each with the CLI's own ``costUSD``. The
+    cost is the engine's figure, not one computed here from a price table.
+
+    The values are cumulative over the session, not this run alone: on a
+    resumed session each row is the previous row plus this run (confirmed
+    2026-11-07 on mametchi audit.jsonl, session cf194f7f output 4573 → 14775
+    → 42849 while the run's own usage was 4573, 10202, 8528). Summing rows
+    therefore over-counts; the metrics rollup takes per-session differences.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
+    #: None when the engine gave no cost for this model, which is not $0.
+    cost_usd: float | None = None
+
+    def as_audit_dict(self) -> dict[str, Any]:
+        record: dict[str, Any] = {name: getattr(self, name) for name in USAGE_FIELDS}
+        if self.cost_usd is not None:
+            record["cost_usd"] = self.cost_usd
+        return record
+
+
+def model_usage_audit(table: Mapping[str, ModelUsage] | None) -> dict[str, Any] | None:
+    """JSON-safe form of a per-model usage table, or None when there is none."""
+    if not table:
+        return None
+    return {model: row.as_audit_dict() for model, row in table.items()}
+
+
+def engine_usage_audit_fields(response: EngineResponse) -> dict[str, Any]:
+    """Usage fields for an audit row of an engine call outside the request
+    pipeline (review, watch check), A14.
+
+    `session_id` goes with the table because the table is session-cumulative:
+    the rollup needs it to subtract the session's previous row. Keys whose
+    value is unknown are left out, as model_actual is.
+    """
+    fields: dict[str, Any] = {}
+    if response.usage is not None:
+        fields["usage"] = response.usage.as_audit_dict()
+    table = model_usage_audit(response.model_usage)
+    if table:
+        fields[MODEL_USAGE_KEY] = table
+        if response.session_id:
+            fields["session_id"] = response.session_id
+    return fields
+
+
 @dataclass(frozen=True)
 class UsageLimit:
     detail: str
@@ -396,6 +461,10 @@ class EngineResponse:
     # it in, so a fallback answer carries the secondary's name rather than the
     # primary's — reporting needs it to pick the matching transcript format.
     engine: str = ""
+    #: Per-model usage as the engine reported it, session-cumulative (see
+    #: ModelUsage). None when the engine has no such table (codex, gemini)
+    #: or the run ended before one was written.
+    model_usage: Mapping[str, ModelUsage] | None = None
 
     def __post_init__(self) -> None:
         # Type annotations alone stop nobody at runtime, and this field is what

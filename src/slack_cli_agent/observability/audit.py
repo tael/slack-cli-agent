@@ -44,6 +44,11 @@ class IncidentKind(StrEnum):
     WATCH_CHECKED = "watch_checked"
     #: A watch that reported and left the queue. Baseline traffic.
     WATCH_FINISHED = "watch_finished"
+    #: The spend of an engine call whose outcome has no row of its own: the
+    #: watch's tool-less "already reported" and "superseded" verdicts. Carries
+    #: `purpose`, the engine, and the usage fields so the per-model rollup
+    #: counts it (A14). Baseline traffic.
+    ENGINE_SPEND = "engine_spend"
     #: A watch dropped on the age limit without its work ever finishing.
     WATCH_ABANDONED = "watch_abandoned"
     #: A tool name the progress label table has no entry for, so the step
@@ -144,6 +149,7 @@ REVIEW_CHECK_FAILED_KIND = IncidentKind.REVIEW_CHECK_FAILED.value
 WATCH_CHECKED_KIND = IncidentKind.WATCH_CHECKED.value
 WATCH_FINISHED_KIND = IncidentKind.WATCH_FINISHED.value
 WATCH_ABANDONED_KIND = IncidentKind.WATCH_ABANDONED.value
+ENGINE_SPEND_KIND = IncidentKind.ENGINE_SPEND.value
 
 # Kinds that count as an "incident" for the reliability/quality rollups —
 # REQUEST is excluded since it's the baseline traffic, not an incident.
@@ -154,6 +160,7 @@ BASELINE_KINDS: tuple[IncidentKind, ...] = (
     IncidentKind.REVIEW,
     IncidentKind.WATCH_CHECKED,
     IncidentKind.WATCH_FINISHED,
+    IncidentKind.ENGINE_SPEND,
     # One row per published reply carrying its watch disposition, not a fault
     # — counting it among incidents would swamp the real ones. metrics.py
     # reads these out separately for the NOWATCH 판정률 (J9).

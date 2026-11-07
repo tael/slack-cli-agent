@@ -75,6 +75,7 @@ from ..learning.render import ProposalRenderer
 from ..learning.schedule import DailyBatchSchedule
 from ..observability.app_snapshot import ApplicationSnapshotSource
 from ..observability.audit import AuditLog
+from ..observability.model_cost import record_engine_spend
 from ..observability.notices import NoticeCatalog
 from ..observability.progress import ProgressCoordinator
 from ..observability.response_archive import ResponseArchive
@@ -123,8 +124,8 @@ from ..reliability.connection import ConnectionCatchupCoordinator
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
 from ..reliability.outage import NetworkOutageEscalation, OutageTracker
-from ..reliability.restart import ApplyRequestWatch
 from ..reliability.pending_report import PendingReportStore, assemble_recovery_report
+from ..reliability.restart import ApplyRequestWatch
 from ..reliability.startup import StartupCatchup
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
 from ..reliability.watchresult import WatchOutcome, WatchResultReader
@@ -930,6 +931,7 @@ class Application:
                 effort=self._settings.learning_effort,
                 workdir=self._profile.work_root,
                 bot_name=self._profile.display_name,
+                audit=self.audit().record,
             )
             self._learning_batch = LearningBatch(
                 archives=archive,
@@ -1517,6 +1519,9 @@ class Application:
             readable_dirs=self.readable_dirs,
             trust_level=TrustLevel.GENERAL,
         ), CallOrigin.BACKGROUND)
+        # Shadow answers and judgements spend tokens with no request row of
+        # their own; the per-model rollup reads this one instead (A14).
+        record_engine_spend(self.audit().record, response, purpose="shadow_turn", channel=channel)
         calls = None
         if response.ok and response.session_id:
             reader: Any = self.transcript_reader(response.engine)
