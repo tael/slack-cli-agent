@@ -12,6 +12,12 @@ from pathlib import Path
 # without this marker are always loaded.
 WHEN_MARK = "<!-- when:"
 
+#: The wiki index the knowledge mirror writes into `knowledge/` for a loader
+#: that could not read `wiki/index.md` itself. Once the loader reads the index,
+#: this copy would put the same text in the prompt twice, so it is skipped
+#: whenever the index itself is there (H5).
+WIKI_INDEX_MIRROR = "_위키목차.md"
+
 _SKIPPED_HEADER = (
     "# 지금 싣지 않은 주제별 지식\n\n"
     "아래 파일은 이번 요청 낱말과 맞지 않아 싣지 않았다.\n"
@@ -70,6 +76,7 @@ class KnowledgeLoader:
         learned_dir: Path | None = None,
         local_dir: Path | None = None,
         always_skills: Collection[str] = (),
+        wiki_dir: Path | None = None,
     ) -> None:
         self._persona_file = persona_file
         self._knowledge_dir = knowledge_dir
@@ -88,6 +95,10 @@ class KnowledgeLoader:
         # A trigger match is one way in; standing clearance named here is
         # another, and the two don't cancel each other out.
         self._always_skills = frozenset(always_skills)
+        # None means this bot keeps no wiki. When set, `index.md` here loads on
+        # every turn regardless of `when:` words, after common knowledge and
+        # before the channel file; the pages it lists are opened by the model.
+        self._wiki_dir = wiki_dir
 
     def persona_text(self, include_domain: bool = False) -> str:
         parts: list[str] = []
@@ -135,7 +146,11 @@ class KnowledgeLoader:
         place that knows where documents come from and how they are labelled.
         """
         skipped: list[Path] = []
-        documents = list(self._from_dir(self._knowledge_dir, channel_slug, prompt, skipped))
+        wiki = self._wiki_index()
+        documents = list(self._from_dir(
+            self._knowledge_dir, channel_slug, prompt, skipped,
+            after_common=wiki, skip_names={WIKI_INDEX_MIRROR} if wiki else frozenset(),
+        ))
         learned = (
             self._from_dir(self._learned_dir, channel_slug, prompt, skipped)
             if self._learned_dir is not None
@@ -157,13 +172,36 @@ class KnowledgeLoader:
             return []
         return [KnowledgeDocument(path=local_file, text=_LOCAL_HEADER + text)]
 
+    def _wiki_index(self) -> list[KnowledgeDocument]:
+        """The wiki index with `~/` paths spelled out. Read takes absolute paths
+        only, so a `~/.<bot>/persona/wiki/<page>.md` left as written is a page
+        the model cannot open (마메치 load_persona 의 replace 대응)."""
+        if self._wiki_dir is None:
+            return []
+        index = self._wiki_dir / "index.md"
+        text = _read_or_none(index)
+        if text is None:
+            return []
+        home = Path.home()
+        try:
+            tilde = "~/" + str(self._wiki_dir.relative_to(home))
+        except ValueError:
+            tilde = None
+        if tilde is not None:
+            text = text.replace(tilde, str(self._wiki_dir))
+        return [KnowledgeDocument(path=index, text=text)]
+
     def _from_dir(
         self, directory: Path, channel_slug: str, prompt: str, skipped: list[Path],
+        after_common: Sequence[KnowledgeDocument] = (),
+        skip_names: Collection[str] = frozenset(),
     ) -> list[KnowledgeDocument]:
         parts: list[KnowledgeDocument] = []
         low = (prompt or "").lower()
         if directory.is_dir():
             for common in sorted(directory.glob("_*.md")):
+                if common.name in skip_names:
+                    continue
                 text = common.read_text(encoding="utf-8")
                 triggers = self._triggers(text)
                 always = common.stem.lstrip("_") in self._always_skills
@@ -171,6 +209,7 @@ class KnowledgeLoader:
                     skipped.append(common)
                     continue
                 parts.append(KnowledgeDocument(path=common, text=text))
+        parts.extend(after_common)
         if channel_slug:
             channel_file = directory / f"{channel_slug}.md"
             channel_text = _read_or_none(channel_file)
