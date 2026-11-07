@@ -305,6 +305,31 @@ def test_엔진이_예외를_내도_세번에서_멈춘다(tmp_path: Path) -> No
     assert [p[2] for p in posts if p[1] is not None] == [FAILED_NOTICE]
 
 
+def test_자리를_얻지_못한_회차는_시도횟수를_쓰지_않는다(tmp_path: Path) -> None:
+    from slack_cli_agent.plugin.hooks import SlotUnavailable
+
+    @contextmanager
+    def _busy() -> Iterator[None]:
+        raise SlotUnavailable("no slot")
+        yield  # pragma: no cover
+
+    api = _Api([_question()])
+    service, posts, prompts = _service(tmp_path, api, TurnResult(True, "답", ()), now=float(Q_TS) + 60)
+    service._store.mark_seen(SOURCE, "1.0")
+    for _ in range(3):
+        try:
+            service.tick(_busy)
+        except SlotUnavailable:
+            pass
+    item = service._store.item(SOURCE, Q_TS)
+    assert item["attempts"] == 0
+    assert item["status"] == "posting"
+    service.tick(_slot)
+    assert len(prompts) == 1
+    assert [p[2] for p in posts] == [posts[0][2], "답"]
+    assert service._store.item(SOURCE, Q_TS)["attempts"] == 1
+
+
 def test_그림자_턴의_effort_는_원본_글로_오르지_않는다(tmp_path: Path) -> None:
     from types import SimpleNamespace
 

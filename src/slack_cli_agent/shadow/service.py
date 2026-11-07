@@ -240,15 +240,22 @@ class ShadowService:
             author=self._name_of(str(msg["user"])) if msg.get("user") else "확인 불가",
             asked_at=datetime.fromtimestamp(float(ts), KST), files=msg.get("files") or (),
         )
-        with engine():
-            try:
-                result = self._run_turn(prompt, target, f"shadow-{source}-{ts}")
-            except SlotUnavailable:
-                raise
-            except Exception:  # a crashed turn counts as a failed attempt
-                log.exception("그림자 답 턴 실패 : %s %s", source, ts)
-                result = TurnResult(ok=False, body="", tool_calls=None)
         attempts = int(item.get("attempts", 0))
+        try:
+            with engine():
+                try:
+                    result = self._run_turn(prompt, target, f"shadow-{source}-{ts}")
+                except SlotUnavailable:
+                    raise
+                except Exception:  # a crashed turn counts as a failed attempt
+                    log.exception("그림자 답 턴 실패 : %s %s", source, ts)
+                    result = TurnResult(ok=False, body="", tool_calls=None)
+        except SlotUnavailable:
+            # No turn ran: give back the attempt _prepare counted, so a busy or
+            # stopping worker cannot spend all three and leave the item stuck
+            # at "posting" with no answer and no notice. The link stays.
+            self._store.update(source, ts, attempts=max(attempts - 1, 0))
+            raise
         answer, _ = take_recipient_tag(result.body or "")
         ok = result.ok and bool(answer.strip())
         violations = blind_violations(result.tool_calls or (), source, ts) if ok else []
