@@ -495,8 +495,23 @@ class RequestPipeline:
         else:
             scope = config.session_scope if config else SessionScope.THREAD.value
 
+        # Worked out once: the note tells the model which tier it runs as and
+        # the audit row keeps the same value, so the dashboard reads what the
+        # turn ran as rather than re-deriving it from a config that may have
+        # changed since (A12, mametchi bot.py:7967).
+        tier = turn_tier(
+            principal, config,
+            full_authority=self._access.is_full_authority(principal),
+            delegated=principal.delegated,
+            is_bot=principal.trust is not TrustLevel.OWNER
+            and (ctx.from_bot or self._asker_is_bot(ctx.user)),
+        ).value
+
         key = self._session_key(ctx, scope)
-        decision = self._sessions.resolve(key, engine=self._engine.name)
+        # The tier decides resumption too: a resumed session keeps the
+        # instructions of the turn that opened it, so a delegated, bot or
+        # non-owner turn must not pick up an owner's session (session/manager.py).
+        decision = self._sessions.resolve(key, engine=self._engine.name, tier=tier)
 
         # Minted before the turn so the prompt can name the exact result file.
         # Leaving the name to the engine lets two watches share one file, and
@@ -509,17 +524,6 @@ class RequestPipeline:
 
         prompt = self._build_prompt(ctx, scope, decision)
         tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
-        # Worked out once: the note tells the model which tier it runs as and
-        # the audit row keeps the same value, so the dashboard reads what the
-        # turn ran as rather than re-deriving it from a config that may have
-        # changed since (A12, mametchi bot.py:7967).
-        tier = turn_tier(
-            principal, config,
-            full_authority=self._access.is_full_authority(principal),
-            delegated=principal.delegated,
-            is_bot=principal.trust is not TrustLevel.OWNER
-            and (ctx.from_bot or self._asker_is_bot(ctx.user)),
-        ).value
 
         progress_log = (
             self._progress.log_path_for(config, ctx.channel, ctx.ts)
@@ -590,7 +594,7 @@ class RequestPipeline:
             if not response.ok and self._sessions.should_retry_with_new_session(
                 response.failure_reason or ""
             ):
-                decision = self._sessions.reset(key, engine=self._engine.name)
+                decision = self._sessions.reset(key, engine=self._engine.name, tier=tier)
                 context_reset = True
                 prompt = self._build_prompt(ctx, scope, decision)
                 # A fresh name: the first attempt may already have launched the

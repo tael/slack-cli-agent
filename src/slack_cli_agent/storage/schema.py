@@ -279,6 +279,15 @@ blind answer and verdict. A file rewritten whole by parallel answer threads
 lost rows; a row per question does not."""
 
 
+V13_SESSION_TIER_SQL = """
+ALTER TABLE sessions ADD COLUMN tier TEXT NOT NULL DEFAULT '';
+"""
+"""The speaker tier of the turn that opened a session. A resumed engine
+session keeps that turn's instructions, so a turn of another tier opens a new
+session instead (session/manager.py). Existing rows get '' and are not
+resumed by a turn that names its tier."""
+
+
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
@@ -292,6 +301,7 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (10, "감시 작업에 기한 추가", _statements(V10_WATCH_JOB_DUE_AT_SQL)),
     (11, "답 대기 중인 스레드 표시 추가", _statements(V11_AWAITING_REPLY_SQL)),
     (12, "그림자 평가 상태 추가", _statements(V12_SHADOW_SQL)),
+    (13, "세션에 연 턴의 화자 등급 추가", _statements(V13_SESSION_TIER_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

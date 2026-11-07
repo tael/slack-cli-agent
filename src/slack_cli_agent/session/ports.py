@@ -36,6 +36,12 @@ class SessionRecord:
     # once widened it's never narrowed back. Defaults to "" so callers that
     # don't care can ignore it.
     model: str = ""
+    # The speaker tier (auth/policy.turn_tier) of the turn that opened the
+    # session. A resumed engine session keeps the opening turn's instructions:
+    # claude 2.1.319 ignores --append-system-prompt on --resume, and codex
+    # keeps the first turn's instructions in context. So a turn of another
+    # tier must not resume it. "" is a row written before this column existed.
+    tier: str = ""
 
 
 @runtime_checkable
