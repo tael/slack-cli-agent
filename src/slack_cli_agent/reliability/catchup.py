@@ -200,9 +200,15 @@ class CatchupService:
                 latest = float(msg.get("latest_reply") or ts or 0)
                 if latest < oldest:
                     continue
-                thread = self._history.read_thread(channel, thread_ts, 50)
-                if not thread:
+                full = self._history.read_full_thread(channel, thread_ts, 50)
+                if full is None:
+                    # A truncated thread may be missing the bot's latest
+                    # reply, and skipping it would read as "nothing missed"
+                    # and drop the channel from retry.
+                    return Outcome.unknown("스레드를 끝까지 읽지 못해 판정 불가")
+                if not full:
                     continue
+                thread = full
             else:
                 if float(ts or 0) < oldest:
                     continue

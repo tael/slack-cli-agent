@@ -190,14 +190,28 @@ class PagedRepliesClient(FakeWebClient):
         return resp
 
 
-def test_read_thread_follows_next_cursor_to_the_last_page() -> None:
-    """50건을 넘는 스레드는 다음 페이지에 최근 답글이 있다. 끝 페이지까지 읽는다."""
+def test_read_thread_reads_one_page_with_limit_as_total_cap() -> None:
+    """요청 경로(참가자, 추가 메시지, 반응 수집)는 페이지를 넘기지 않는다."""
     pages = [[{"ts": f"{p}.{i}"} for i in range(2)] for p in range(3)]
     client = PagedRepliesClient(pages)
     port = _make_port(client)
 
     result = port.read_thread("C123", "1700000000.000000", 2)
 
+    assert [m["ts"] for m in result] == ["0.0", "0.1"]
+    assert len(client.replies_calls) == 1
+    assert "cursor" not in client.replies_calls[0]
+
+
+def test_read_full_thread_follows_next_cursor_to_the_last_page() -> None:
+    """50건을 넘는 스레드는 다음 페이지에 최근 답글이 있다. 끝 페이지까지 읽는다."""
+    pages = [[{"ts": f"{p}.{i}"} for i in range(2)] for p in range(3)]
+    client = PagedRepliesClient(pages)
+    port = _make_port(client)
+
+    result = port.read_full_thread("C123", "1700000000.000000", 2)
+
+    assert result is not None
     assert [m["ts"] for m in result] == ["0.0", "0.1", "1.0", "1.1", "2.0", "2.1"]
     assert len(client.replies_calls) == 3
     assert "cursor" not in client.replies_calls[0]
@@ -205,9 +219,22 @@ def test_read_thread_follows_next_cursor_to_the_last_page() -> None:
     assert all(c["limit"] == 2 for c in client.replies_calls)
 
 
-def test_read_thread_returns_empty_when_a_later_page_fails() -> None:
-    """뒤 페이지가 실패하면 앞 페이지만 돌려주지 않는다. 봇 답글이 빠진
-    스레드를 미응답으로 오판하지 않도록 판정 불가와 같은 빈 목록을 낸다."""
+def test_read_full_thread_drops_parent_repeated_on_later_pages() -> None:
+    """뒤 페이지 맨 앞에 부모 메시지가 다시 오면 한 번만 남긴다."""
+    parent = {"ts": "1700000000.000000", "user": "U1"}
+    pages = [[parent, {"ts": "1.0"}], [parent, {"ts": "2.0"}]]
+    client = PagedRepliesClient(pages)
+    port = _make_port(client)
+
+    result = port.read_full_thread("C123", "1700000000.000000", 2)
+
+    assert result is not None
+    assert [m["ts"] for m in result] == ["1700000000.000000", "1.0", "2.0"]
+
+
+def test_read_full_thread_returns_none_when_a_later_page_fails() -> None:
+    """뒤 페이지가 실패하면 앞 페이지만 돌려주지 않는다. 빈 목록과 구분되는
+    None 을 내 호출자가 판정 불가로 처리하게 한다."""
 
     class FailsOnSecondPage(PagedRepliesClient):
         def conversations_replies(self, **kwargs: Any) -> dict[str, Any]:
@@ -218,10 +245,10 @@ def test_read_thread_returns_empty_when_a_later_page_fails() -> None:
     client = FailsOnSecondPage([[{"ts": "1.0"}], [{"ts": "2.0"}]])
     port = _make_port(client)
 
-    assert port.read_thread("C123", "1700000000.000000", 1) == []
+    assert port.read_full_thread("C123", "1700000000.000000", 1) is None
 
 
-def test_read_thread_returns_empty_when_page_cap_is_hit() -> None:
+def test_read_full_thread_returns_none_when_page_cap_is_hit() -> None:
     """페이지 상한에서 끊기면 최근 답글이 빠진다. 잘린 스레드를 내지 않는다."""
     pages = [[{"ts": f"{p}.0"}] for p in range(5)]
     client = PagedRepliesClient(pages)
@@ -229,5 +256,5 @@ def test_read_thread_returns_empty_when_page_cap_is_hit() -> None:
     reader = HistoryReader(client, settings, clock=lambda: 0.0, sleep=lambda _s: None)
     port = SlackHistoryPort(reader, client, max_pages=3)
 
-    assert port.read_thread("C123", "1700000000.000000", 1) == []
+    assert port.read_full_thread("C123", "1700000000.000000", 1) is None
     assert len(client.replies_calls) == 3

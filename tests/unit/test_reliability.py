@@ -173,7 +173,8 @@ class FakeHistoryReader:
     """`HistoryReader` 대역. 채널별 응답을 미리 등록해 둔다."""
 
     history: dict[str, list[Mapping[str, Any]] | None] = field(default_factory=dict)
-    threads: dict[str, list[Mapping[str, Any]]] = field(default_factory=dict)
+    #: None 이면 그 스레드를 끝까지 읽지 못한 것이다.
+    threads: dict[str, list[Mapping[str, Any]] | None] = field(default_factory=dict)
     history_calls: list[tuple[str, float, int]] = field(default_factory=list)
 
     def read_history(self, channel, oldest, limit):
@@ -181,6 +182,9 @@ class FakeHistoryReader:
         return self.history.get(channel)
 
     def read_thread(self, channel, thread_ts, limit):
+        return (self.threads.get(thread_ts) or [])[:limit]
+
+    def read_full_thread(self, channel, thread_ts, page_size):
         return self.threads.get(thread_ts, [])
 
 
@@ -390,6 +394,25 @@ class TestFindMissed:
         report = service.sweep(["C1"], window=3600)
 
         assert report.unchecked_channels == ["C1"]
+
+    def test_스레드를_끝까지_못_읽으면_판정_불가로_다시_볼_목록에_남는다(self) -> None:
+        """뒤 페이지 실패나 페이지 상한은 "놓친 요청 없음" 이 아니다.
+
+        건너뛰면 그 회차가 재시도 목록에서 빠져 긴 스레드의 부름을 회수하지
+        못한다.
+        """
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "98000.0", "user": "U1", "text": "<@U_BOT> 질문", "reply_count": 600},
+                ]
+            },
+            threads={"98000.0": None},
+        )
+        service = make_service(history)
+
+        assert service.find_missed("C1", window=3600).kind is OutcomeKind.UNKNOWN
+        assert service.sweep(["C1"], window=3600).unchecked_channels == ["C1"]
 
     def test_이미_답변_표식이_있으면_빠진다(self) -> None:
         history = FakeHistoryReader(
