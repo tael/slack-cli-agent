@@ -13,6 +13,7 @@ from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.core.access import RequestAccess
 from slack_cli_agent.core.unregistered import UnregisteredNoticeLog
+from slack_cli_agent.observability.audit import BASELINE_KIND_VALUES, IncidentKind
 from slack_cli_agent.observability.notices import NoticeCatalog
 
 OWNER = "U_OWNER"
@@ -50,6 +51,7 @@ def make_access(
     registered: dict | None = None,
     dms: list[str] | None = None,
     permalink=None,
+    audits: list[dict] | None = None,
 ) -> RequestAccess:
     profile = make_profile(tmp_path, owner)
     path = tmp_path / "channels.json"
@@ -71,6 +73,7 @@ def make_access(
         notice_log=UnregisteredNoticeLog(tmp_path / "unreg.json", clock=clock or Clock()),
         notify_owner=(lambda text: dms.append(text) or True) if dms is not None else None,
         permalink=permalink,
+        audit=(lambda kind, **f: audits.append({"kind": str(kind), **f})) if audits is not None else None,
     )
 
 
@@ -279,3 +282,119 @@ class TestOwnerDirectMessagePermalink:
         access.call_owner("CNEW", "U_X", "1.1", "mention")
         assert "스레드 :" not in dms[0]
         assert "\n\n" not in dms[0]
+
+
+class Test사람별_시도_기록:
+    """원본 record_unregistered_attempt (bot.py:7385) 와 unregistered_context
+    (bot.py:7404). DM 답 생성이 어느 채널 이야기인지 알도록 사람별로 남긴다."""
+
+    def test_시도를_사람별로_채널_이름과_함께_남긴다(self, tmp_path: Path) -> None:
+        access = make_access(tmp_path, [])
+        access.call_owner("C1", "U1", "1.0", "mention")
+        access.call_owner("C2", "U2", "2.0", "invite")
+
+        data = json.loads((tmp_path / "unreg.json").read_text(encoding="utf-8"))
+        assert [r["channel"] for r in data["attempts"]["U1"]] == ["C1"]
+        assert data["attempts"]["U1"][0]["name"] == "이름-C1"
+        assert data["attempts"]["U2"][0]["kind"] == "invite"
+        assert set(data["notified"]) == {"C1", "C2"}
+
+    def test_간격_안의_시도도_기록한다(self, tmp_path: Path) -> None:
+        access = make_access(tmp_path, [])
+        access.call_owner("C1", "U1", "1.0", "mention")
+        access.call_owner("C1", "U2", "1.1", "mention")
+
+        data = json.loads((tmp_path / "unreg.json").read_text(encoding="utf-8"))
+        assert "U2" in data["attempts"]
+
+    def test_같은_채널은_최근_시도_하나만_남긴다(self, tmp_path: Path) -> None:
+        clock = Clock()
+        access = make_access(tmp_path, [], clock)
+        access.call_owner("C1", "U1", "1.0", "mention")
+        clock.now += 60
+        access.call_owner("C1", "U1", "1.1", "invite")
+
+        rows = json.loads((tmp_path / "unreg.json").read_text(encoding="utf-8"))["attempts"]["U1"]
+        assert [(r["channel"], r["kind"]) for r in rows] == [("C1", "invite")]
+
+    def test_사흘이_지난_시도와_열_건_넘는_시도는_버린다(self, tmp_path: Path) -> None:
+        clock = Clock()
+        access = make_access(tmp_path, [], clock)
+        access.call_owner("COLD", "U1", "0.1", "mention")
+        clock.now += 3 * 86400
+        for i in range(12):
+            access.call_owner(f"C{i}", "U1", "1.0", "mention")
+
+        rows = json.loads((tmp_path / "unreg.json").read_text(encoding="utf-8"))["attempts"]["U1"]
+        assert [r["channel"] for r in rows] == [f"C{i}" for i in range(2, 12)]
+
+    def test_기존_파일의_시도_기록을_지우지_않는다(self, tmp_path: Path) -> None:
+        path = tmp_path / "unreg.json"
+        path.write_text(json.dumps({"notified": {}, "attempts": {"U9": [
+            {"channel": "C9", "name": "옛채널", "kind": "mention", "at": 999_000.0}]}}), encoding="utf-8")
+        log = UnregisteredNoticeLog(path, clock=Clock())
+
+        assert log.due("C1") is True
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["attempts"]["U9"][0]["channel"] == "C9"
+
+    def test_DM_답_생성에_붙일_최근_채널_목록을_만든다(self, tmp_path: Path) -> None:
+        access = make_access(tmp_path, [])
+        access.call_owner("C1", "U1", "1.0", "mention")
+
+        text = access.recent_unregistered_context("U1")
+        assert text.startswith("<recent_channels>\n")
+        assert "<#C1> 이름 이름-C1" in text and "멘션" in text
+        assert text.endswith("</recent_channels>\n")
+        assert access.recent_unregistered_context("U_NONE") == ""
+        assert access.recent_unregistered_context("") == ""
+
+    def test_그새_등록된_채널은_목록에서_뺀다(self, tmp_path: Path) -> None:
+        access = make_access(tmp_path, [])
+        access.call_owner("C1", "U1", "1.0", "mention")
+        access._channels.register("C1", "이름-C1")
+
+        assert access.recent_unregistered_context("U1") == ""
+
+    def test_사흘_지난_시도는_목록에서_뺀다(self, tmp_path: Path) -> None:
+        clock = Clock()
+        access = make_access(tmp_path, [], clock)
+        access.call_owner("C1", "U1", "1.0", "mention")
+        clock.now += 3 * 86400
+
+        assert access.recent_unregistered_context("U1") == ""
+
+
+class Test시도_감사_기록:
+    def test_시도마다_kind_와_호출_여부를_감사에_남긴다(self, tmp_path: Path) -> None:
+        audits: list[dict] = []
+        access = make_access(tmp_path, [], audits=audits)
+        access.call_owner("C1", "U1", "1.0", "mention")
+        access.call_owner("C1", "U2", "1.1", "invite")
+
+        assert audits == [
+            {"kind": "unregistered_mention", "channel": "C1", "user": "U1", "notified": True},
+            {"kind": "unregistered_invite", "channel": "C1", "user": "U2", "notified": False},
+        ]
+
+    def test_등록_채널과_소유자_시도는_감사하지_않는다(self, tmp_path: Path) -> None:
+        audits: list[dict] = []
+        access = make_access(tmp_path, [], audits=audits)
+        access.call_owner("CREG", "U1", "1.0", "mention")
+        access.call_owner("C1", OWNER, "1.0", "mention")
+        access.call_owner("D1", "U1", "1.0", "mention")
+
+        assert audits == []
+
+    def test_감사_실패가_안내를_막지_않는다(self, tmp_path: Path) -> None:
+        replies: list[tuple[str, str, str]] = []
+        access = make_access(tmp_path, replies, audits=[])
+        access._audit = lambda kind, **f: (_ for _ in ()).throw(RuntimeError("db"))
+        access.call_owner("C1", "U1", "1.0", "mention")
+
+        assert len(replies) == 1
+
+    def test_시도_kind_는_장애_집계에서_뺀다(self) -> None:
+        assert IncidentKind.UNREGISTERED_MENTION.value == "unregistered_mention"
+        assert IncidentKind.UNREGISTERED_INVITE.value == "unregistered_invite"
+        assert {"unregistered_mention", "unregistered_invite"} <= BASELINE_KIND_VALUES

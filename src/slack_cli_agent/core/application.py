@@ -1394,6 +1394,7 @@ class Application:
                     notice_log=UnregisteredNoticeLog(self._profile.paths.unregistered_channels),
                     notify_owner=self._notify_owner if self._profile.owner_user_id else None,
                     permalink=SlackPermalinks(self._client).permalink,
+                    audit=self.audit().record,
                 ),
                 strip_self_mention=SelfMentionStripper(self.identity).remove_self,
                 dedup=DeduplicationTracker(),

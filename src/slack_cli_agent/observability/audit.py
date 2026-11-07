@@ -93,6 +93,11 @@ class IncidentKind(StrEnum):
     #: Rewriting the tool's file message failed; the answer was posted as a
     #: separate reply instead, so it still reaches the thread.
     TOOL_POST_MERGE_FAILED = "tool_post_merge_failed"
+    #: Someone other than the owner mentioned or invited the bot in an
+    #: unregistered channel. `user` is who, `notified` whether the owner was
+    #: called this time or the cooldown held it (bot.py:7431). Baseline traffic.
+    UNREGISTERED_MENTION = "unregistered_mention"
+    UNREGISTERED_INVITE = "unregistered_invite"
 
     def __str__(self) -> str:
         return self.value
@@ -118,6 +123,9 @@ BASELINE_KINDS: tuple[IncidentKind, ...] = (
     # — counting it among incidents would swamp the real ones. metrics.py
     # reads these out separately for the NOWATCH 판정률 (J9).
     IncidentKind.WATCH_VERDICT,
+    # A refused attempt the bot answered by calling the owner, not a fault.
+    IncidentKind.UNREGISTERED_MENTION,
+    IncidentKind.UNREGISTERED_INVITE,
 )
 #: Read by metrics.py as well -- a kind that is baseline here must not be
 #: tallied as an incident there.

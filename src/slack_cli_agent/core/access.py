@@ -12,7 +12,10 @@ with the registration and the notice, which need Slack.
 Someone other than the owner who calls or invites the bot in an unregistered
 channel gets the owner called in that channel (`call_owner`, ported from the
 original's notify_unregistered_channel, 2026-11-05). Before that a refusal
-there was silent and the caller took the bot for broken.
+there was silent and the caller took the bot for broken. Every such attempt is
+kept per person (for a later DM reply) and written to the audit log as
+`unregistered_<kind>` with whether the owner was called, as the original did
+(bot.py:7430-7431).
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from typing import Any, Literal
 from ..auth.policy import AccessPolicy
 from ..auth.principal import TrustLevel
 from ..config.channel import ChannelRegistry
+from ..observability.audit import IncidentKind
 from ..observability.notices import NoticeCatalog, NoticeKey
 from .channel_kind import is_direct_message_channel
 from .unregistered import UnregisteredNoticeLog
@@ -36,6 +40,13 @@ ChannelName = Callable[[str], str]
 # (channel, ts) -> permalink, "" when Slack gives none
 Permalink = Callable[[str, str], str]
 AttemptKind = Literal["mention", "invite"]
+# (kind, **fields), the shape of AuditLog.record.
+AuditCallback = Callable[..., None]
+
+_ATTEMPT_AUDIT_KIND: dict[str, IncidentKind] = {
+    "mention": IncidentKind.UNREGISTERED_MENTION,
+    "invite": IncidentKind.UNREGISTERED_INVITE,
+}
 
 
 class RequestAccess:
@@ -55,6 +66,8 @@ class RequestAccess:
         notify_owner: Callable[[str], bool] | None = None,
         # None leaves the thread link out of the owner's DM.
         permalink: Permalink | None = None,
+        # None writes no audit row for an attempt.
+        audit: AuditCallback | None = None,
     ) -> None:
         self._policy = policy
         self._channels = channels
@@ -67,6 +80,7 @@ class RequestAccess:
         self._notice_log = notice_log
         self._notify_owner = notify_owner
         self._permalink = permalink
+        self._audit = audit
 
     def allows(self, channel: str, user: str) -> bool:
         """The check itself says nothing; a mention in an unregistered channel
@@ -112,7 +126,9 @@ class RequestAccess:
             return
         if user and self._policy.principal_for(channel, user).trust is TrustLevel.OWNER:
             return
-        if not self._notice_log.due(channel):
+        due = self._notice_log.record(channel, user, kind, self._channel_name(channel))
+        self._record_attempt(kind, channel, user, due)
+        if not due:
             log.info("미등록 채널 %s 시도(%s). 최근에 소유자를 불러 기록만 남긴다", channel, kind)
             return
         if kind == "invite":
@@ -162,3 +178,18 @@ class RequestAccess:
             log.warning("미등록 채널 스레드 링크를 얻지 못했다 : %s", exc)
             return ""
         return f"- 스레드 : {link}\n" if link else ""
+
+    def recent_unregistered_context(self, user: str) -> str:
+        """Unregistered channels `user` recently called the bot in, as the
+        `<recent_channels>` block for a DM reply. Empty when there are none."""
+        if self._notice_log is None:
+            return ""
+        return self._notice_log.recent_context(user, self._channels.is_registered)
+
+    def _record_attempt(self, kind: AttemptKind, channel: str, user: str, notified: bool) -> None:
+        if self._audit is None:
+            return
+        try:
+            self._audit(_ATTEMPT_AUDIT_KIND[kind], channel=channel, user=user, notified=notified)
+        except Exception as exc:  # noqa: BLE001 - a lost audit row must not lose the notice
+            log.warning("미등록 채널 시도를 감사 기록에 남기지 못했다 : %s : %s", channel, exc)
