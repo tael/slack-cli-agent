@@ -109,3 +109,20 @@ def test_redaction_runs_before_file_link_strip(method: str) -> None:
         IncidentKind.SECRET_REDACTED.value,
         IncidentKind.FILE_PERMALINK_STRIPPED.value,
     ]
+
+
+@pytest.mark.parametrize("rich", [True, False], ids=["rich", "plain"])
+def test_link_only_body_keeps_link_instead_of_posting_nothing(rich: bool) -> None:
+    """링크만 있는 답을 떼면 본문이 비어 아무것도 안 올라간다. 그때는 링크를 남긴다."""
+    client, audits = FakeClient(), []
+    ts = make_publisher(client, audits).post("C1", "1.0", f"<{FILE_URL}>", rich)
+    assert ts
+    assert "/files/" in client.sent_text()
+    assert audits == []
+
+
+def test_link_only_correction_keeps_link() -> None:
+    client, audits = FakeClient(), []
+    make_publisher(client, audits).update("C1", "1.0", FILE_URL, False)
+    assert "/files/" in client.sent_text()
+    assert audits == []

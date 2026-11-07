@@ -208,8 +208,16 @@ class MessagePublisher:
 
     def _strip_file_links(self, channel: str, thread_ts: str, text: str) -> str:
         """Removes Slack file permalinks (D4). Slack re-attaches a linked file
-        to the message, so leaving the link posts the same file card twice."""
+        to the message, so leaving the link posts the same file card twice.
+
+        When the body is nothing but file links, stripping would leave it empty
+        and the reply would silently vanish (post returns None, update raises).
+        A duplicated card beats no answer, so the links stay in that case.
+        """
         stripped = strip_file_permalinks(text)
+        if stripped != text and not stripped.strip():
+            log.info("본문이 파일 링크뿐이라 떼지 않았다 : %s", thread_ts)
+            return text
         if stripped != text:
             log.info("파일 permalink 를 본문에서 뗐다. 같은 파일이 두 번 붙는다 : %s", thread_ts)
             self._audit(
