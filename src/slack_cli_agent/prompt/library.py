@@ -22,12 +22,33 @@ class PromptLibrary:
         prompts_dir: Path,
         placeholders: Mapping[str, str] | None = None,
         defaults_dir: Path | None = None,
+        file_placeholders: Collection[str] = (),
     ) -> None:
         self._dir = prompts_dir
         self._defaults_dir = defaults_dir if defaults_dir is not None else PACKAGE_DEFAULTS_DIR
         self._placeholders = dict(placeholders or {})
+        # Slots whose value is the prompt file of the same name, read on each
+        # call like every other prompt so an edit applies without a restart.
+        # A missing file raises: a guard slot left unfilled would drop the guard.
+        self._file_placeholders = tuple(file_placeholders)
 
     def text(self, name: str, keep_slots: Collection[str] = ()) -> str:
+        text = self._fill(self._read(name), keep_slots)
+        for key in self._file_placeholders:
+            slot = f"<<{key}>>"
+            if key in keep_slots or slot not in text:
+                continue
+            text = text.replace(slot, self._fill(self._read(key), keep_slots))
+        return text
+
+    def _fill(self, text: str, keep_slots: Collection[str]) -> str:
+        for key, value in self._placeholders.items():
+            if key in keep_slots:
+                continue
+            text = text.replace(f"<<{key}>>", value)
+        return text
+
+    def _read(self, name: str) -> str:
         filename = f"{name.lower()}.md"
         path = self._dir / filename
         if not path.is_file():
@@ -38,9 +59,4 @@ class PromptLibrary:
             raise MissingPromptError(f"프롬프트 파일을 읽지 못했다: {path}") from exc
         if not raw.strip():
             raise MissingPromptError(f"프롬프트 파일이 비어 있다: {path}")
-        text = raw
-        for key, value in self._placeholders.items():
-            if key in keep_slots:
-                continue
-            text = text.replace(f"<<{key}>>", value)
-        return text
+        return raw

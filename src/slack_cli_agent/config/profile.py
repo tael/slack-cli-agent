@@ -35,7 +35,7 @@ KNOWN_KEYS = frozenset(
         "state_dir", "work_root", "data_dir", "attach_dir", "launch_label",
         "owner_user_id", "controller_user_ids", "troubleshoot_channel", "owner_dm", "credentials_file",
         "plugins", "usage_check_command", "agent_greeting", "agent_prompts",
-        "settings", "mcp_servers", "domain_file", "light_workdir", "peer",
+        "settings", "mcp_servers", "domain_file", "light_workdir", "airflow_ctl", "peer",
     }
 )
 """Top-level keys `from_dict` reads. Anything else is dropped, so a mistyped
@@ -305,6 +305,10 @@ class Profile:
     # the profile; None leaves light_context inert and every turn uses the full
     # work directory.
     light_workdir: Path | None = None
+    # Path to the Airflow control script that fills <<AIRFLOW_CTL>> in the
+    # Airflow note. Org-specific, so it lives in the profile. None leaves the
+    # slot unfilled, which only matters to a bot whose prompts use it.
+    airflow_ctl: Path | None = None
     # A sibling bot this one can revive on the owner's word. None means there is
     # no peer, and the revival guidance is left out of the prompt entirely
     # (PeerRecoverySection). Org-specific locations, so it lives in the profile.
@@ -433,6 +437,10 @@ class Profile:
             light_workdir=(
                 Path(str(data["light_workdir"])).expanduser()
                 if data.get("light_workdir") else None
+            ),
+            airflow_ctl=(
+                Path(str(data["airflow_ctl"])).expanduser()
+                if data.get("airflow_ctl") else None
             ),
             plugins=tuple(data.get("plugins") or ()),
             usage_check_command=tuple(str(part) for part in (data.get("usage_check_command") or ())),

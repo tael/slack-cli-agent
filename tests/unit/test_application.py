@@ -23,6 +23,7 @@ from typing import Any, cast
 import pytest
 
 from slack_cli_agent.auth.policy import AccessExtension
+from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.application import Application
@@ -2316,3 +2317,64 @@ class Test읽기범위는_첨부_디렉터리_전체를_안_담는다:
         app = Application.from_profile(write_profile(tmp_path), client=client)
         assert app._profile.attach_dir not in app.readable_dirs
         app.close()
+
+
+class Test노출금지자리표조립:
+    """애플리케이션이 엔진에 넘기는 최종 지침에 자리표 원문이 남지 않는다.
+
+    부품 시험은 PromptLibrary 에 자리표 값을 직접 주입해 통과한다. 조립이
+    그 값을 넘기지 않으면 일반 사용자 지침에 `<<NEVER_DISCLOSE>>` 원문이
+    남고 노출 금지 가드가 통째로 빠진다 (마메치 bot.py prompt_text 는 세
+    자리표를 채운다).
+    """
+
+    STRANGER = Principal(
+        user_id="U_STRANGER", channel="C1", trust=TrustLevel.GENERAL,
+        is_direct_message=False,
+    )
+    OWNER_DM = Principal(
+        user_id="U_OWNER", channel="D1", trust=TrustLevel.OWNER, is_direct_message=True,
+    )
+
+    def test_일반_사용자_지침에_노출금지_가드가_채워진다(self, app: Application) -> None:
+        text = app._composer().compose(
+            CompositionContext(principal=self.STRANGER, channel_mode="chat"),
+        )
+        assert "<<NEVER_DISCLOSE>>" not in text
+        guard = app._composer()._library.text("NEVER_DISCLOSE")
+        assert guard.strip() and guard.strip() in text
+
+    def test_상태_디렉터리의_노출금지_문구가_우선한다(self, app: Application) -> None:
+        prompts = app.profile.paths.prompts
+        prompts.mkdir(parents=True, exist_ok=True)
+        (prompts / "never_disclose.md").write_text("운영자 노출금지 문구", encoding="utf-8")
+        text = app._composer().compose(
+            CompositionContext(principal=self.STRANGER, channel_mode="chat"),
+        )
+        assert "운영자 노출금지 문구" in text
+        assert "<<NEVER_DISCLOSE>>" not in text
+
+    def test_최고권한_자리에서는_노출금지_가드가_빠진다(self, app: Application) -> None:
+        text = app._composer().compose(
+            CompositionContext(principal=self.OWNER_DM, channel_mode="private"),
+        )
+        guard = app._composer()._library.text("NEVER_DISCLOSE")
+        assert "<<NEVER_DISCLOSE>>" not in text
+        assert guard.strip() not in text
+
+    def test_airflow_안내에_프로필의_제어도구_경로가_채워진다(
+        self, tmp_path: Path, client: FakeSlackClient,
+    ) -> None:
+        profile = write_profile(tmp_path, airflow_ctl="~/bin/airflow_ctl.sh")
+        prompts = profile.paths.prompts
+        prompts.mkdir(parents=True, exist_ok=True)
+        (prompts / "airflow_note.md").write_text(
+            "제어 도구 : <<AIRFLOW_CTL>> <명령>", encoding="utf-8",
+        )
+        application = Application(profile, client)
+        text = application._composer().compose(CompositionContext(
+            principal=self.STRANGER, channel_mode="chat", airflow_admin=True,
+        ))
+        assert "<<AIRFLOW_CTL>>" not in text
+        assert f"제어 도구 : {Path('~/bin/airflow_ctl.sh').expanduser()} <명령>" in text
+        application.close()
