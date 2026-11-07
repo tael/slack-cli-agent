@@ -68,6 +68,18 @@ def _has_block_markup(text: str) -> bool:
 
 
 @dataclass(frozen=True)
+class PostReceipt:
+    """Where a post landed: the thread it went under and each message's ts."""
+
+    parent_ts: str
+    message_ts: tuple[str, ...]
+    # The text that went up, after ```csv blocks became a file note. A format
+    # review rewrites the message from the stored body, and the original
+    # would put the csv back inline (B6 review).
+    body: str = ""
+
+
+@dataclass(frozen=True)
 class RichPayload:
     """One chunk rendered for a rich channel.
 
@@ -164,7 +176,19 @@ class MessagePublisher:
     def post(
         self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
     ) -> str | None:
+        """Posts and returns the thread parent ts (see post_receipt)."""
+        receipt = self.post_receipt(channel, thread_ts, text, rich, flat=flat)
+        return (receipt.parent_ts or None) if receipt is not None else None
+
+    def post_receipt(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> PostReceipt | None:
         """Posts using the channel's rendering mode.
+
+        The receipt keeps the thread parent apart from the ts of each message
+        actually posted. In a thread they differ: an answer's own ts is the
+        first chunk's, and recording the parent instead pointed a format
+        review of the parent at a later reply's body (B6 review).
 
         Rich channels get the markdown source verbatim in a markdown
         block; everything else gets it downgraded to mrkdwn. Channels
@@ -223,6 +247,7 @@ class MessagePublisher:
             else (thread_ts or None)
         )
         sent = 0
+        posted: list[str] = []
         # A rejected chunk can be replaced in place by smaller pieces, so this
         # walks a mutable list rather than the original chunks (sca-2k7).
         pending = list(chunks)
@@ -266,6 +291,7 @@ class MessagePublisher:
                         res = self._client.chat_postMessage(**plain)
                         sent += 1
                         idx += 1
+                        posted.append(res["ts"])
                         if parent_ts is None:
                             parent_ts = res["ts"]
                         continue
@@ -295,6 +321,7 @@ class MessagePublisher:
                 raise SlackError(str(exc)) from exc
             sent += 1
             idx += 1
+            posted.append(res["ts"])
             if parent_ts is None:
                 parent_ts = res["ts"]
 
@@ -304,7 +331,7 @@ class MessagePublisher:
                 total=len(text), sizes=[len(c) for c in pending],
             )
         self._upload_csv(channel, parent_ts, csv_payloads)
-        return parent_ts
+        return PostReceipt(parent_ts=parent_ts or "", message_ts=tuple(posted), body=text)
 
     def _upload_csv(
         self, channel: str, parent_ts: str | None, payloads: list[CsvFilePayload]

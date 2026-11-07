@@ -10,7 +10,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -582,6 +582,10 @@ class RequestPipeline:
             )
             return HandleOutcome(ok=True)
         posted_ts = ""
+        answer_parts: tuple[str, ...] = ()
+        # What the posted message holds. The merger writes the body as is; the
+        # publisher turns ```csv blocks into a file note first.
+        posted_body = body
         # A file the engine posted itself already sits in the thread as a
         # reply. Writing the answer over it keeps one reply holding both the
         # file and the answer. flat replies go to the channel, not the thread
@@ -590,13 +594,24 @@ class RequestPipeline:
             posted_ts = self._tool_post_merger.merge(
                 ctx.channel, ctx.thread_ts, start, body, rich,
             ) or ""
+            # The merged answer is the tool's reply itself, one message.
+            answer_parts = (posted_ts,) if posted_ts else ()
         if not posted_ts:
-            posted_ts = self._publisher.post(ctx.channel, ctx.thread_ts, body, rich, flat=flat) or ""
+            receipt = self._publisher.post_receipt(ctx.channel, ctx.thread_ts, body, rich, flat=flat)
+            posted_ts = receipt.parent_ts if receipt is not None else ""
+            answer_parts = receipt.message_ts if receipt is not None else ()
+            if receipt is not None and receipt.body:
+                posted_body = receipt.body
         self._archive_response(ctx, body, response, elapsed)
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
-                     truncated=_truncated(response), context_reset=context_reset)
+                     truncated=_truncated(response), context_reset=context_reset,
+                     # The format review rewrites a message from this body: on a
+                     # rich channel Slack only hands back the notification
+                     # preview, and without the stored body it must not
+                     # rewrite at all (review/records.py, B6).
+                     answer=_AnswerFields(body=posted_body, question=ctx.text, parts=answer_parts))
         watch_run_id = self._watch_run_id(run_id, earlier_run_id)
         watch_desc = watch_desc or self._watch_desc_for_launched(workdir, watch_run_id)
         watching = bool(watch_desc) and self._register_watch(
@@ -1102,8 +1117,19 @@ class RequestPipeline:
         # in a row marks when the count started -- a window with no key at all
         # is "before this was instrumented", not "no resets".
         context_reset: bool = False,
+        answer: _AnswerFields | None = None,
     ) -> None:
         extra: dict[str, Any] = {CONTEXT_RESET_RAW_KEY: context_reset}
+        if answer is not None:
+            extra["answer"] = answer.body
+            extra["question"] = answer.question
+            # The answer's own message ts, not the thread parent post()
+            # returns: matching on the parent picked a later reply's record
+            # when the parent itself was flagged (B6 review). Every chunk is
+            # kept so a review of a later chunk knows it is only a part.
+            if answer.parts:
+                extra["answer_ts"] = answer.parts[0]
+                extra["answer_parts"] = list(answer.parts)
         if truncated is not None:
             extra[TRUNCATED_RAW_KEY] = truncated
         if model_actual:
@@ -1177,6 +1203,15 @@ class RequestPipeline:
 
 
 
+
+
+@dataclass(frozen=True)
+class _AnswerFields:
+    """What a posted reply leaves in its audit row for the review paths."""
+
+    body: str
+    question: str
+    parts: tuple[str, ...]
 
 
 def _truncated(response: EngineResponse) -> bool:

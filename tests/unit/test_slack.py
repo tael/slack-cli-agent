@@ -337,6 +337,51 @@ class TestMessagePublisher:
         assert kwargs["thread_ts"] == "100.0"
         assert "blocks" not in kwargs
 
+    def test_게시_영수증은_스레드_부모가_아니라_올린_메시지_ts_를_담는다(
+        self, settings, markdown, verifier, block_builder
+    ) -> None:
+        """서식 점검은 지목한 메시지 ts 로 답 기록을 찾는다. 스레드 부모 ts 를
+        답 ts 로 남기면 부모를 지목했을 때 다른 답 기록이 골라진다(B6 검토)."""
+
+        class 두조각(ContentSplitter):
+            def chunk(self, text: str, size: int | None = None) -> list[str]:
+                return ["앞 조각", "뒤 조각"]
+
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        client.queue_post({"ts": "222.000000"})
+        pub = make_publisher(
+            client, settings, markdown, 두조각(settings, block_builder), verifier, block_builder
+        )
+        receipt = pub.post_receipt("C1", "100.0", "본문", rich=False)
+        assert receipt is not None
+        assert receipt.parent_ts == "100.0"
+        assert receipt.message_ts == ("111.000000", "222.000000")
+
+    def test_게시_영수증은_csv_를_뺀_실제_게시_본문을_담는다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        """서식 점검은 기록된 본문으로 메시지를 덮는다. csv 블록이 남은 원문을
+        기록하면 교정이 파일로 뺀 csv 를 메시지에 되살린다(B6 검토 case2)."""
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        receipt = pub.post_receipt("C1", "100.0", "표\n\n```csv\na,b\n1,2\n```", rich=True)
+        assert receipt is not None
+        assert "a,b" not in receipt.body
+        assert "csv_1.csv" in receipt.body
+
+    def test_DM_게시_영수증의_첫_메시지는_스레드_부모와_같다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        receipt = pub.post_receipt("D1", "100.0", "안녕", rich=False)
+        assert receipt is not None
+        assert receipt.parent_ts == "111.000000"
+        assert receipt.message_ts == ("111.000000",)
+
     def test_스레드_없이_채널에_올리면_첫_조각의_ts_를_돌려준다(
         self, settings, markdown, splitter, verifier, block_builder
     ) -> None:

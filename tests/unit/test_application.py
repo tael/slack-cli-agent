@@ -493,8 +493,9 @@ class TestReviewReactions:
         target = ReviewTarget(
             channel="C_ONE", ts="1.0", by_user="U_OWNER", channel_name="하나", rich=True
         )
+        # 교정 명령은 원문 기록이 있을 때만 준다. 없으면 알림 미리보기로 덮어쓴다(B6).
         프롬프트 = app.review_tasks()["pencil2"].build_prompt(
-            target, transcript="", flagged="답변", question=""
+            target, transcript="", flagged="답변", question="", record={"answer": "답변"}
         )
         assert f"{명령} --channel C_ONE --update 1.0" in 프롬프트
 

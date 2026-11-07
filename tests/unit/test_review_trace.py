@@ -92,7 +92,7 @@ class _FakeTranscript:
 
 
 class _FakeAnswerFinder:
-    def find(self, channel: str, thread_ts: str, text: str):
+    def find(self, channel: str, thread_ts: str, text: str, msg_ts: str | None = None):
         return None
 
 

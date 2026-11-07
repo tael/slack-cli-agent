@@ -37,9 +37,11 @@ from slack_cli_agent.guard.watch import WatchPromiseGuard
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.prompt.sections import SILENT_MARK
 from slack_cli_agent.reliability.watchresult import WatchResultReader
+from slack_cli_agent.render.splitter import extract_csv_blocks
 from slack_cli_agent.session.manager import SessionManager
 from slack_cli_agent.session.ports import SessionKey, SessionRecord
 from slack_cli_agent.slack.policy import addresses_someone_else
+from slack_cli_agent.slack.publisher import PostReceipt
 
 # 대역
 
@@ -186,8 +188,16 @@ class FakeEngineRunner:
 
 
 class FakePublisher:
-    def __init__(self, posted_ts: str = "1700000000.000001") -> None:
+    def __init__(
+        self,
+        posted_ts: str = "1700000000.000001",
+        message_ts: tuple[str, ...] = ("1700000000.000900",),
+    ) -> None:
+        # posted_ts is the thread parent the real MessagePublisher.post hands
+        # back; message_ts is what each chunk actually got. They differ in a
+        # thread, and keeping them equal here hid the B6 answer_ts bug.
         self._posted_ts = posted_ts
+        self._message_ts = message_ts
         self.posted: list[dict[str, Any]] = []
 
     def apply_elapsed_model_line(self, body: str, model: str, rich: bool) -> str:
@@ -201,6 +211,17 @@ class FakePublisher:
             "rich": rich, "flat": flat,
         })
         return self._posted_ts
+
+    def post_receipt(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> PostReceipt | None:
+        parent = self.post(channel, thread_ts, text, rich, flat=flat)
+        if not parent:
+            return None
+        # The real publisher pulls ```csv blocks out before posting; the
+        # receipt carries the text that actually went up.
+        posted_body, _ = extract_csv_blocks(text)
+        return PostReceipt(parent_ts=parent, message_ts=self._message_ts, body=posted_body)
 
 
 class FakeAuditLog:
@@ -529,6 +550,39 @@ class Test엔진성공:
 
         assert len(deps["audit"].records) == 1
         assert deps["audit"].records[0]["ok"] is True
+
+    def test_게시한_답의_원문과_게시ts를_감사에_남긴다(self, tmp_path: Path) -> None:
+        """서식 점검이 리치 채널 알림 미리보기 대신 원문으로 교정하려면 기록이 필요하다(B6)."""
+        pipeline, deps = build_pipeline(responses=[ok_response(body="| 표 |\n|---|")], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(text="질문입니다"))
+
+        rec = deps["audit"].records[0]
+        assert rec["answer"] == deps["publisher"].posted[0]["text"]
+        assert rec["answer_ts"] == deps["publisher"]._message_ts[0]
+        assert rec["question"] == "질문입니다"
+
+    def test_csv_블록은_빼고_실제로_올린_본문을_기록한다(self, tmp_path: Path) -> None:
+        """게시는 csv 블록을 파일로 빼고 안내 한 줄만 남긴다. 기록이 블록을 품으면
+        서식 점검의 --update 가 csv 를 메시지에 되살린다(B6 검토 case2)."""
+        body = "결과입니다\n\n```csv\na,b\n1,2\n```"
+        pipeline, deps = build_pipeline(responses=[ok_response(body=body)], tmp_path=tmp_path)
+        pipeline.handle(make_ctx())
+
+        rec = deps["audit"].records[0]
+        assert "a,b" not in rec["answer"]
+        assert "csv_1.csv" in rec["answer"]
+
+    def test_답ts는_스레드_부모가_아니라_첫_조각_ts다(self, tmp_path: Path) -> None:
+        """스레드 부모 ts 를 답 ts 로 남기면 부모를 지목한 서식 점검이 후속 답
+        기록을 골라 부모를 그 본문으로 덮는다(B6 검토 case1)."""
+        pub = FakePublisher(posted_ts="1000.000000", message_ts=("1300.000100", "1300.000200"))
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path, publisher=pub)
+        outcome = pipeline.handle(make_ctx())
+
+        rec = deps["audit"].records[0]
+        assert outcome.posted_ts == "1000.000000"
+        assert rec["answer_ts"] == "1300.000100"
+        assert rec["answer_parts"] == ["1300.000100", "1300.000200"]
 
     def test_처리중_표식만_달고_최종_표식은_워커에_맡긴다(self, tmp_path: Path) -> None:
         """최종 표식은 워커가 단다. 둘 다 달면 슬랙 호출이 겹치고 감시 표식이
