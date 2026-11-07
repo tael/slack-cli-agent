@@ -490,6 +490,7 @@ class Test위임_원장_쓰기_차단:
             "troubleshoot_channel": "C1", "state_dir": str(tmp_path / "state"),
             "delegation_ledger": str(tmp_path / "delegations.json"),
             "delegation_by": "mametchi",
+            "delegation_record": str(tmp_path / "record.json"),
         }
         profile = Profile.from_dict(data)
         TestClaudeEngineBuildCommand.기본_settings를_쓴다(profile, {"permissions": {"deny": ["공통"]}})
@@ -506,6 +507,19 @@ class Test위임_원장_쓰기_차단:
         assert f"Edit(/{원장})" in deny
         assert f"Write(/{원장})" in deny
         assert "공통" in deny
+
+    def test_비소유자_턴은_이_봇이_쓰는_위임_기록_쓰기도_거부받는다(self, tmp_path: Path) -> None:
+        """delegation_record 는 짝 봇이 읽는 원장이다. 비소유자 턴이 여기에 줄을
+        넣으면 짝 봇에 위임을 위조한다 (A8 이후 진입 경로)."""
+        engine = self._엔진(tmp_path)
+        cmd = engine.build_command(request(
+            trust_level=TrustLevel.GENERAL, delegated=True,
+            tools=ToolSelection.allow(["Read", "Bash", "Write", "Edit"]),
+        ))
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        기록 = (tmp_path / "record.json").resolve()
+        assert f"Edit(/{기록})" in deny
+        assert f"Write(/{기록})" in deny
 
     def test_소유자_턴은_원장_차단을_받지_않는다(self, tmp_path: Path) -> None:
         engine = self._엔진(tmp_path)
