@@ -97,6 +97,10 @@ def _codex_reads_only(tools: ToolSelection) -> bool:
     Counted as a write tool, it turned a read-only turn into workspace-write
     with network and --approve-for-me (W1).
     """
+    # A turn with no tools at all reads nothing either; left to the profile
+    # sandbox it ran workspace-write with network and --approve-for-me.
+    if tools.access is ToolAccess.FORBIDDEN:
+        return True
     return tools.access is ToolAccess.ALLOWLIST and all(
         is_read_only_tool(name) for name in tools.names if not _is_skill_grant(name)
     )

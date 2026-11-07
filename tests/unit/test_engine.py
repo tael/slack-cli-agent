@@ -922,6 +922,29 @@ class TestCodexEngineBuildCommand:
 
         assert not any("WRITE_ENABLED" in tok for tok in cmd)
 
+    def test_도구_금지_턴은_read_only_로_돈다(self, tmp_path: Path) -> None:
+        """감시 중복 판정 턴처럼 도구를 하나도 쓰지 않는 턴이다. 허용 목록이
+        아니라는 이유로 프로필 샌드박스를 받으면 workspace-write, 통신,
+        자동 승인이 열린다."""
+        profile = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            fallback={"type": "codex", "binary": "codex", "model": "gpt-5.6-sol",
+                      "options": {"sandbox": "workspace-write", "network": True}},
+            tmp_path=tmp_path,
+            mcp_servers={"jira": {"command": "jira-mcp",
+                                  "turn_env": {"WRITE_ENABLED": "can_act"}}},
+        )
+        engine = CodexEngine(profile, SETTINGS)
+        요청 = request(resume=False, trust_level=TrustLevel.GENERAL,
+                     tools=ToolSelection.forbid_all())
+        cmd = engine.build_command(요청)
+
+        assert 'sandbox_mode="read-only"' in cmd
+        assert "sandbox_workspace_write.network_access=true" not in cmd
+        assert "--approve-for-me" not in cmd
+        assert not any("WRITE_ENABLED" in tok for tok in cmd)
+        assert engine.blocks_outbound_writes(요청)
+
     def test_MCP_도구가_섞이면_내리지_않는다(self, tmp_path: Path) -> None:
         """READ_ONLY_TOOLS 는 내장 도구만 담는다. MCP 도구가 밖으로 쓰는지를
         코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰)."""

@@ -1211,7 +1211,9 @@ class Application:
             # start new work, which this judgment turn has no business doing.
             watch_check=True,
         ))
-        no_tools = ToolSelection.from_names([])
+        # forbid_all, not from_names([]): no names means unrestricted, which
+        # handed a non-owner job's thread to a turn with every tool open.
+        no_tools = ToolSelection.forbid_all()
         return self.engine_invoker.invoke(EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
