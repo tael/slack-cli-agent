@@ -14,10 +14,26 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .attachments import unfurl_matches
+from .blocks import block_text
 from .permalinks import SlackLink, parse_slack_links
 from .transcript import TranscriptRead
 
 log = logging.getLogger(__name__)
+
+
+def _unfurl_body(attachment: Mapping[str, Any]) -> str:
+    """An unfurled message's body: its blocks flattened, else the preview.
+
+    Slack puts the shared message's blocks either on the attachment itself or
+    under `message_blocks[].message.blocks`; both are read before `text`.
+    """
+    blocks: list[Any] = list(attachment.get("blocks") or [])
+    for mb in attachment.get("message_blocks") or ():
+        if isinstance(mb, Mapping):
+            blocks.extend((mb.get("message") or {}).get("blocks") or [])
+    parts = [p for p in (block_text(b) for b in blocks) if p]
+    body = "\n".join(parts).strip()
+    return body or str(attachment.get("text") or attachment.get("fallback") or "")
 
 
 class ThreadTranscript(Protocol):
@@ -90,7 +106,9 @@ class LinkedThreadReader:
         for a in attachments or ():
             if not unfurl_matches(a, link.channel, link.thread_ts):
                 continue
-            body = a.get("text") or a.get("fallback") or ""
+            # A rich message's unfurl keeps its full body in blocks and only a
+            # preview in `text` (C2, bot.py unfurled_message_blocks).
+            body = _unfurl_body(a)
             if body:
                 return body
         return ""

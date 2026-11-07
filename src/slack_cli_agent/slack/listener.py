@@ -104,7 +104,11 @@ class EventListener:
             user=event.get("user") or self._bot_user_id(event.get("bot_id") or ""),
             ts=ts,
             thread_ts=event.get("thread_ts") or ts,
-            text=event.get("text") or "",
+            # A peer bot's rich post carries only a one-line notification
+            # preview in `text`; its tables and lists are in the blocks (C2,
+            # bot.py swaps in event_body for a bot sender). A human's `text` is
+            # the whole message with its formatting, so it is kept as is.
+            text=(event_body(event) if event.get("bot_id") else event.get("text")) or "",
             files=tuple(event.get("files") or ()),
             unfurl_attachments=tuple(event.get("attachments") or ()),
             unaddressed=unaddressed,
