@@ -590,6 +590,34 @@ class Test재기동요청_워커_유예:
         assert discount == 1
         assert pending == []
 
+    def test_메인_스레드가_잠금을_쥔_채_신호를_받아도_차감_판정이_멈추지_않는다(self, database) -> None:
+        """TERM 처리기는 메인 스레드에서 돈다. 메인 스레드가 holding_claims 등으로
+        워커 잠금을 쥔 구간에 신호가 오면 처리기가 같은 잠금을 다시 잡는다.
+        재진입이 안 되는 잠금이면 SIGKILL 까지 멈춘다."""
+        import threading
+
+        from test_worker import make_worker
+
+        from slack_cli_agent.reliability.restart import ApplyRequest
+
+        worker, _q, _c = make_worker(database=database)
+        worker.watch_restart_requests(
+            lambda: ApplyRequest(requested_at=_지금(), turn_id="C1:5.0"),
+            requester_grace_sec=0.0,
+        )
+        결과: list[int] = []
+
+        def 신호_처리기_흉내() -> None:
+            # 같은 스레드에서 잠금을 쥔 채 처리기가 끼어든 상황을 만든다.
+            with worker._lock:
+                결과.append(worker.restart_requester_discount(1.0))
+
+        t = threading.Thread(target=신호_처리기_흉내, daemon=True)
+        t.start()
+        t.join(timeout=2)
+        assert not t.is_alive(), "처리기가 자기 스레드가 쥔 잠금을 기다리며 멈췄다"
+        assert 결과 == [0]
+
     def test_주입이_없으면_보류도_차감도_없다(self, database) -> None:
         from test_worker import make_worker
 
