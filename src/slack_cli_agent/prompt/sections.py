@@ -299,7 +299,20 @@ class PeerRecoverySection(PromptSection):
             return ""
         name = peer.display_name
         state = peer.state_dir
-        label = peer.launch_label
+        labels = peer.launch_labels()
+        pids = ", ".join(str(p) for p in peer.resolved_pid_files())
+        logs = (
+            ", ".join(str(p) for p in peer.log_files)
+            if peer.log_files
+            else "launchctl 플리스트가 가리키는 stderr"
+        )
+        kick = " / ".join(f"launchctl kickstart -k gui/$(id -u)/{lb}" for lb in labels)
+        restart = (
+            f"- 재기동 : {peer.restart_command} 를 쓴다. 자기 프로세스가 아니라 교착에 빠지지 않는다.\n"
+            f"- 등록만 되살릴 때 : {kick}"
+            if peer.restart_command
+            else f"- 재기동 : {kick}. 자기 프로세스가 아니라 교착에 빠지지 않는다."
+        )
         lines = [
             "\n\n# 짝 봇을 되살리는 자리\n",
             f"짝 봇 {name} 가 내려가면 스스로 알리지 못한다. 사람이 이 봇에 물을 때,",
@@ -308,21 +321,19 @@ class PeerRecoverySection(PromptSection):
             f"- 작업 디렉터리 : {peer.work_root} (읽기)\n",
             f"{name} 가 답하지 않는다고 하면 아래 순서로 본다.",
             (
-                f"- 상태 : launchctl print gui/$(id -u)/{label}.worker 와 {label}.ingress 의 state 를"
-                " 먼저 본다. not running 이면 로그·토큰보다 기동부터 한다."
+                "- 상태 : "
+                + " 와 ".join(f"launchctl print gui/$(id -u)/{lb} " for lb in labels).rstrip()
+                + " 의 state 를 먼저 본다. not running 이면 로그·토큰보다 기동부터 한다."
             ),
             (
-                f"- 프로세스 : 그 출력의 pid 를 {state}/worker.pid, {state}/ingress.pid 와 맞춘다."
+                f"- 프로세스 : 그 출력의 pid 를 {pids} 와 맞춘다."
                 " ps·pgrep 은 샌드박스가 막고, 두 봇이 같은 코드를 돌려 가려지지도 않는다."
             ),
             (
-                "- 로그 : launchctl 플리스트가 가리키는 stderr 를 파일 수정 시각과 함께 본다."
+                f"- 로그 : {logs} 를 파일 수정 시각과 함께 본다."
                 " 오래된 스택 추적을 지금 원인으로 인용하지 않는다."
             ),
-            (
-                f"- 재기동 : launchctl kickstart -k gui/$(id -u)/{label}.worker (필요하면"
-                f" {label}.ingress 도). 자기 프로세스가 아니라 교착에 빠지지 않는다."
-            ),
+            restart,
             f"\n{name} 의 코드와 설정을 고치는 것은 별개다. 되살리라고만 한 이상 상대 자리에 쓰지 않는다.",
         ]
         return "\n".join(lines)

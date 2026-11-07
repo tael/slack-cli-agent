@@ -19,6 +19,18 @@
   "owner_user_id": "U00000000",
   "controller_user_ids": [],
   "troubleshoot_channel": "C00000000",
+  "_comment_peer": "짝 봇 되살리기 안내(소유자 턴 전용). services 를 생략하면 sca 배치(<label>.worker, <label>.ingress, <service>.pid)다. bot.py 같은 단일 잡 봇은 services 를 [] 로 두고 pid_files, log_files(state_dir 기준 상대 경로 가능), restart_command 를 적는다.",
+  "peer": {
+    "name": "sibling",
+    "display_name": "짝봇",
+    "state_dir": "~/.sibling-bot",
+    "work_root": "/Users/Shared/sibling-work",
+    "launch_label": "local.sibling-bot",
+    "services": [],
+    "pid_files": ["bot.pid"],
+    "log_files": ["logs/stderr.log"],
+    "restart_command": "BOT_PROFILE=sibling ~/sibling-bot/restart.sh"
+  },
   "plugins": [],
   "usage_check_command": [],
   "settings": {
