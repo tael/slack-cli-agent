@@ -91,8 +91,11 @@ I82 — disposition of mametchi channels.json keys that are *not* core fields:
 * ``mention_only`` — *not* a replacement key: answering only mentions is the
   core default (``answer_unaddressed`` and ``answer_top_level`` both off), so
   this is absorbed by the default rather than needing its own field.
-* ``added_at`` / ``join`` — bookkeeping metadata the join flow writes, never
+* ``added_at`` — bookkeeping metadata the join flow writes, never
   behaviour; harmless in ``extra``.
+* ``join`` — ``true`` makes the bot call conversations.join on the channel at
+  every start (mametchi join_registered_channels); ``extra`` only.
+  reliability/channel_join.py reads it (G3).
 """
 
 #: How hard an engine must enforce this channel's tool list. `audited` lets an

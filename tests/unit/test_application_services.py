@@ -82,6 +82,7 @@ RUNNER_ARGS: dict[str, Any] = {
     "pending_report_runner": lambda app: (),
     "stale_review_runner": lambda app: (),
     "learning_batch_runner": lambda app: (),
+    "channel_join_runner": lambda app: (),
 }
 
 
@@ -118,6 +119,7 @@ class Test묶음구성:
             "attachment_cleanup",
             "pending_report",
             "stale_review",
+            "channel_join",
         }
 
     def test_워커_묶음은_상태기록과_감시와_정리와_캐치업을_띄운다(self, app: Application) -> None:
