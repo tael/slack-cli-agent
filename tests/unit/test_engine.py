@@ -477,6 +477,57 @@ class TestClaudeEngineBuildCommand:
         ]
 
 
+class Test위임_원장_쓰기_차단:
+    """위임 원장은 같은 OS 사용자 소유의 JSON 이라 by 판정은 정직한 기록자만
+    거른다. operator_full 채널의 위임 턴이 맨 Write 로 원장에 줄을 넣으면
+    다음 controller 메시지를 스스로 위임으로 만든다 (A7 검토)."""
+
+    @staticmethod
+    def _엔진(tmp_path: Path) -> Any:
+        primary = {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"}
+        data: dict[str, Any] = {
+            "name": "example", "primary_engine": primary, "owner_user_id": "U1",
+            "troubleshoot_channel": "C1", "state_dir": str(tmp_path / "state"),
+            "delegation_ledger": str(tmp_path / "delegations.json"),
+            "delegation_by": "mametchi",
+            "delegation_record": str(tmp_path / "record.json"),
+        }
+        profile = Profile.from_dict(data)
+        TestClaudeEngineBuildCommand.기본_settings를_쓴다(profile, {"permissions": {"deny": ["공통"]}})
+        return ClaudeEngine(profile, SETTINGS)
+
+    def test_비소유자_턴은_원장_파일_쓰기를_거부받는다(self, tmp_path: Path) -> None:
+        engine = self._엔진(tmp_path)
+        cmd = engine.build_command(request(
+            trust_level=TrustLevel.GENERAL, delegated=True,
+            tools=ToolSelection.allow(["Read", "Bash", "Write", "Edit"]),
+        ))
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        원장 = (tmp_path / "delegations.json").resolve()
+        assert f"Edit(/{원장})" in deny
+        assert f"Write(/{원장})" in deny
+        assert "공통" in deny
+
+    def test_비소유자_턴은_이_봇이_쓰는_위임_기록_쓰기도_거부받는다(self, tmp_path: Path) -> None:
+        """delegation_record 는 짝 봇이 읽는 원장이다. 비소유자 턴이 여기에 줄을
+        넣으면 짝 봇에 위임을 위조한다 (A8 이후 진입 경로)."""
+        engine = self._엔진(tmp_path)
+        cmd = engine.build_command(request(
+            trust_level=TrustLevel.GENERAL, delegated=True,
+            tools=ToolSelection.allow(["Read", "Bash", "Write", "Edit"]),
+        ))
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        기록 = (tmp_path / "record.json").resolve()
+        assert f"Edit(/{기록})" in deny
+        assert f"Write(/{기록})" in deny
+
+    def test_소유자_턴은_원장_차단을_받지_않는다(self, tmp_path: Path) -> None:
+        engine = self._엔진(tmp_path)
+        cmd = engine.build_command(request(trust_level=TrustLevel.OWNER))
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        assert deny == ["공통"]
+
+
 class Test오너전권_설정_덧씌움:
     """gaps_D 3절 — operator_full 채널 비오너에게 Bash/Edit 를 실제로 허용하려면
     auth/tools.py 의 이름 축만으로는 안 되고 engine/claude.py 의 --settings
@@ -969,10 +1020,14 @@ class TestCodexEngineBuildCommand:
         assert "--approve-for-me" not in cmd
         assert "sandbox_workspace_write.network_access=true" not in cmd
         assert not any("WRITE_ENABLED" in tok for tok in cmd)
+        assert CodexEngine.DELEGATED_READONLY_NOTE in cmd[-1]
 
     def test_맨_실행_도구를_받은_위임_턴도_read_only_다(self, tmp_path: Path) -> None:
         """codex 비소유자 턴은 operator_full 과 무관하게 read-only 다 (A9 검토).
-        위임 턴도 trust 는 GENERAL 이라 같은 경계를 따른다."""
+        위임 턴도 trust 는 GENERAL 이라 같은 경계를 따른다. 시스템 프롬프트는
+        위임 턴에 실행 도구가 붙었다고 적으므로, codex 로 넘어온 위임 턴은
+        실행 도구가 없다는 안내를 받아야 한다. 안내가 없으면 하겠다고 답한 뒤
+        쓰기에서 실패한다 (A7 검토)."""
         engine = self._위임_codex(tmp_path)
         cmd = engine.build_command(request(
             resume=False, trust_level=TrustLevel.GENERAL, delegated=True,
@@ -980,6 +1035,23 @@ class TestCodexEngineBuildCommand:
         ))
         assert 'sandbox_mode="read-only"' in cmd
         assert not any("WRITE_ENABLED" in tok for tok in cmd)
+        assert CodexEngine.DELEGATED_READONLY_NOTE in cmd[-1]
+
+    def test_재개한_위임_턴에도_읽기_전용_안내가_붙는다(self, tmp_path: Path) -> None:
+        engine = self._위임_codex(tmp_path)
+        cmd = engine.build_command(request(
+            resume=True, trust_level=TrustLevel.GENERAL, delegated=True,
+            tools=ToolSelection.allow(["Read", "Bash"]),
+        ))
+        assert CodexEngine.DELEGATED_READONLY_NOTE in cmd[-1]
+
+    def test_위임이_아닌_비소유자_턴에는_위임_안내가_없다(self, tmp_path: Path) -> None:
+        engine = self._위임_codex(tmp_path)
+        cmd = engine.build_command(request(
+            resume=False, trust_level=TrustLevel.GENERAL,
+            tools=ToolSelection.allow(["Read", "Bash"]),
+        ))
+        assert CodexEngine.DELEGATED_READONLY_NOTE not in cmd[-1]
 
     def test_MCP_도구가_섞이면_내리지_않는다(self, tmp_path: Path) -> None:
         """READ_ONLY_TOOLS 는 내장 도구만 담는다. MCP 도구가 밖으로 쓰는지를
