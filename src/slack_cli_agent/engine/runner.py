@@ -162,8 +162,11 @@ def switch_dm_body(*, bot_name: str, from_engine: str, to_engine: str,
             f"- 전환 확인 : {to_engine} 가 응답합니다",
             "",
             f"이 요청부터 {to_engine} 로 답합니다. {from_engine} 가 돌아오면 자동으로 되돌립니다.",
-            "쓰지 않으려면 `엔진 거부` 를 보내주세요.",
         ]
+        if reason == AUTH_FAILURE_REASON:
+            # 로그인 만료는 기다려도 풀리지 않는다. 사람이 할 일을 적는다.
+            lines.append(f"{from_engine} 는 다시 로그인하거나 토큰을 다시 발급해야 돌아옵니다.")
+        lines.append("쓰지 않으려면 `엔진 거부` 를 보내주세요.")
     elif probe_ok:
         lines += [
             f"- 전환 확인 : {to_engine} 가 응답합니다",
@@ -812,7 +815,13 @@ class FallbackEngine(Engine):
             return self._announce_switch(response)
         auth_failure = self.primary.detect_auth_failure(response)
         if auth_failure is not None:
-            self._begin_switch(request, EngineSwitcher.AUTH_FAILURE, auth_failure)
+            # 로그인 만료도 한도와 같이 바로 2차로 답한다 (2026-11-07 김태일 지시).
+            # 승인 대기로 두면 2026-11-07 07:49-15:44 처럼 2차가 확인 요청에 답하는데도
+            # 모든 요청이 안내문으로 끝난다. 다시 로그인하는 일은 소유자 DM 이 알린다.
+            state = self._begin_switch(request, EngineSwitcher.AUTH_FAILURE, auth_failure,
+                                       auto_approve=True)
+            if state.get("approval") == "approved":
+                return self._run_secondary(request)
             return self._announce_switch(response)
         return response
 
