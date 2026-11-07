@@ -139,3 +139,88 @@ class Test응답의_어느_자리든_본다:
     def test_자리마다_같게_본다(self, 엔진들, 자리: str) -> None:
         응답 = 실패(failure_reason="is_error", raw={자리: "Please run /login"})
         assert 엔진들["claude"].detect_auth_failure(응답) is not None
+
+
+class Test클로드_API_상태코드_401:
+    """claude 는 로그인 만료를 result 의 api_error_status 401 로도 알린다 (C7).
+
+    2026-11-07 07:50-15:40 마메치 로그의 401 239줄은 모두 'Failed to
+    authenticate.' 를 함께 냈으나, 문구 없이 상태 코드만 오는 응답도 같은
+    상태다. 이 필드는 CLI 자신의 API 호출 결과라 MCP 서버의 401 과 섞이지
+    않는다.
+    """
+
+    #: 2026-11-07 마메치 운영 로그의 실제 result 이벤트에서 키만 추렸다.
+    운영결과: ClassVar[dict[str, object]] = {
+        "type": "result", "subtype": "success", "is_error": True,
+        "api_error_status": 401, "terminal_reason": "api_error",
+        "result": "Failed to authenticate. API Error: 401 OAuth access token has expired. "
+                  "Re-authenticate to continue.",
+        "session_id": "43d62be6-01cb-4f91-ae13-1305a8c47434",
+    }
+
+    def test_운영_만료_결과는_계속_탐지한다(self, 엔진들) -> None:
+        import json
+
+        claude = 엔진들["claude"]
+        응답 = claude.parse(json.dumps(self.운영결과), "", 1)
+        assert claude.detect_auth_failure(응답) is not None
+        응답 = claude.parse(json.dumps(self.운영결과), "", 0)
+        assert claude.detect_auth_failure(응답) is not None
+
+    def test_문구_없이_401_만_와도_탐지한다(self, 엔진들) -> None:
+        import json
+
+        claude = 엔진들["claude"]
+        결과 = {**self.운영결과, "result": "API Error: 401 token expired"}
+        for 종료코드 in (0, 1):
+            응답 = claude.parse(json.dumps(결과), "", 종료코드)
+            assert claude.detect_auth_failure(응답) is not None, 종료코드
+
+    def test_401_이_아닌_상태코드는_인증_실패가_아니다(self, 엔진들) -> None:
+        import json
+
+        claude = 엔진들["claude"]
+        결과 = {**self.운영결과, "api_error_status": 500, "result": "API Error: 500 overloaded"}
+        for 종료코드 in (0, 1):
+            응답 = claude.parse(json.dumps(결과), "", 종료코드)
+            assert claude.detect_auth_failure(응답) is None, 종료코드
+
+    def test_다른_엔진은_401_필드로_판정하지_않는다(self, 엔진들) -> None:
+        for 이름 in ("codex", "gemini"):
+            응답 = 실패(raw={"api_error_status": 401, "stderr": "boom"})
+            assert 엔진들[이름].detect_auth_failure(응답) is None, 이름
+
+    @pytest.mark.parametrize("문구", [
+        "OAuth token has been revoked. Please run /login",
+        "API Error: 401 OAuth access token has expired.",
+        "OAuth token has been revoked.",
+    ])
+    def test_OAuth_만료_폐기_문구를_탐지한다(self, 엔진들, 문구: str) -> None:
+        응답 = 실패(failure_reason="is_error", raw={"result": 문구})
+        assert 엔진들["claude"].detect_auth_failure(응답) is not None
+
+
+class Test토큰_부재도_전환_계기다:
+    """마메치는 CLAUDE_CODE_OAUTH_TOKEN 이 없으면 no_oauth_token 으로 전환한다.
+
+    여기서는 키체인 로그인도 쓰므로 토큰 변수가 없다는 것만으로 실패시키지
+    않는다. 토큰도 키체인 로그인도 없으면 CLI 가 'Not logged in · Please run
+    /login' 을 내고 (2026-09-15 실측, environment.py), 그것이 로그인 만료와 같은
+    계기로 잡혀야 2차로 넘어간다.
+    """
+
+    def test_로그인_없음_결과가_인증_실패로_잡힌다(self, 엔진들) -> None:
+        import json
+
+        claude = 엔진들["claude"]
+        결과 = {"type": "result", "subtype": "success", "is_error": True,
+                "result": "Not logged in · Please run /login"}
+        for 종료코드 in (0, 1):
+            응답 = claude.parse(json.dumps(결과), "", 종료코드)
+            assert claude.detect_auth_failure(응답) is not None, 종료코드
+
+    def test_JSON_아닌_로그인_없음_출력도_잡힌다(self, 엔진들) -> None:
+        claude = 엔진들["claude"]
+        응답 = claude.parse("Not logged in · Please run /login\n", "", 1)
+        assert claude.detect_auth_failure(응답) is not None
