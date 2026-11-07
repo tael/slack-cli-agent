@@ -26,6 +26,8 @@ from ..slack.message_kind import HUMAN_SUBTYPES, MessageKind
 from ..slack.policy import addresses_someone_else
 from .ports import HistoryReader
 
+_UNKNOWN_IDENTITY_REASON = "봇 신원을 몰라 부름 판정 불가"
+
 # Marks the bot puts on a message once it's answered or decided not to.
 SILENT_MARK_EMOJI = "zipper_mouth_face"
 DONE_EMOJI: frozenset[str] = frozenset({"white_check_mark", SILENT_MARK_EMOJI})
@@ -94,6 +96,17 @@ class CatchupReport:
     """Channels whose history couldn't be confirmed this round."""
 
 
+class StuckCause:
+    """Why a channel stayed on the retry list, so the owner alert can say so."""
+
+    EMPTY_HISTORY = "empty_history"
+    """Slack kept returning an empty channel history."""
+    UNKNOWN_IDENTITY = "unknown_identity"
+    """The bot's own identity is unknown, so mentions can't be judged."""
+    UNREADABLE_THREAD = "unreadable_thread"
+    """Some thread couldn't be read to its last page (failed page or page cap)."""
+
+
 @dataclass(frozen=True)
 class RetryStatus:
     """Status `retry_pending` returns for one channel."""
@@ -102,6 +115,10 @@ class RetryStatus:
     stuck_sec: float
     alert: bool
     missed: tuple[RequestContext, ...] = ()
+    cause: str = StuckCause.EMPTY_HISTORY
+    """One of StuckCause; picks the owner alert's explanation."""
+    unreadable_threads: int = 0
+    """Threads left undecided this round when cause is UNREADABLE_THREAD."""
 
 
 class CatchupService:
@@ -193,7 +210,7 @@ class CatchupService:
             # Without identity we can't judge what counts as a mention. Returning
             # an empty list here would look the same as "nothing missed" and this
             # round would drop out of retry, so the gap never gets recovered.
-            return Outcome.unknown("봇 신원을 몰라 부름 판정 불가"), 0
+            return Outcome.unknown(_UNKNOWN_IDENTITY_REASON), 0
 
         now = self._now()
         oldest = now - window
@@ -439,12 +456,20 @@ class CatchupService:
                     self._pending.pop(ch, None)
                 else:
                     self._queue_retry([ch])
+                if outcome.is_found:
+                    cause = StuckCause.UNREADABLE_THREAD
+                elif outcome.reason == _UNKNOWN_IDENTITY_REASON:
+                    cause = StuckCause.UNKNOWN_IDENTITY
+                else:
+                    cause = StuckCause.EMPTY_HISTORY
                 statuses.append(
                     RetryStatus(
                         channel=ch,
                         stuck_sec=stuck,
                         alert=stuck >= CATCHUP_ALERT_AFTER_SEC,
                         missed=tuple(representatives),
+                        cause=cause,
+                        unreadable_threads=undecided,
                     )
                 )
                 continue

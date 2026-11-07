@@ -19,6 +19,7 @@ from identity_support import fake_identity
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.result import OutcomeKind
+from slack_cli_agent.reliability.catchup import StuckCause
 from slack_cli_agent.observability.notices import NoticeCatalog
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import SlackBotIdentity
@@ -461,6 +462,8 @@ class TestFindMissed:
         assert len(statuses) == 1
         assert [m.ts for m in statuses[0].missed] == ["99000.0"]
         assert statuses[0].alert is False
+        assert statuses[0].cause == StuckCause.UNREADABLE_THREAD
+        assert statuses[0].unreadable_threads == 1
         # 못 읽은 스레드가 남아 있으니 다음 회차에 다시 본다.
         assert "C1" in service._pending  # type: ignore[attr-defined]
 
@@ -748,6 +751,33 @@ class TestRetryPending:
         assert len(statuses) == 1
         assert statuses[0].channel == "C1"
         assert [m.ts for m in statuses[0].missed] == ["800.0"]
+
+    def test_기록이_계속_비면_빈_기록을_사유로_남긴다(self) -> None:
+        """소유자 알림이 막힌 사유를 맞게 설명하려면 사유가 상태에 실려야 한다."""
+        history = FakeHistoryReader(history={"C1": None})
+        now = 1000.0
+        service = make_service(history, now=now)
+        service.sweep(["C1"], window=3600)
+        service._now = lambda: now + 31  # type: ignore[attr-defined]
+
+        statuses = service.retry_pending()
+
+        assert [(s.cause, s.unreadable_threads) for s in statuses] == [(StuckCause.EMPTY_HISTORY, 0)]
+
+    def test_신원을_모르면_신원_미확인을_사유로_남긴다(self) -> None:
+        class 조회실패:
+            def auth_test(self, **kwargs):
+                raise RuntimeError("슬랙에 못 닿는다")
+
+        history = FakeHistoryReader(history={"C1": []})
+        now = 1000.0
+        service = make_service(history, now=now, identity=SlackBotIdentity(조회실패()))
+        service.sweep(["C1"], window=3600)
+        service._now = lambda: now + 31  # type: ignore[attr-defined]
+
+        statuses = service.retry_pending()
+
+        assert [s.cause for s in statuses] == [StuckCause.UNKNOWN_IDENTITY]
 
 
 # health.py — SocketErrorWatch, HealthMonitor
