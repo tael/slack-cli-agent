@@ -359,6 +359,9 @@ class EngineRunner:
                     redact(head_chars(_as_text(completed.stdout))),
                     redact(head_chars(_as_text(completed.stderr))),
                 )
+            # C15 — 성공한 턴이 세션에 실은 지침을 적어 둔다. 다음 재개 턴은
+            # 그중 바뀌지 않은 블록을 다시 싣지 않는다.
+            engine.note_delivered(attempt, response)
             # 모델 하나의 장애이고, 도구가 안 돌았고, 다음 모델이 남았으면 넘어간다.
             # 도구가 이미 돈 턴을 다시 돌리면 같은 쓰기가 두 번 난다.
             if (not response.ok and not is_last

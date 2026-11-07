@@ -178,6 +178,9 @@ _SANDBOX_ISOLATION = {
 class CodexEngine(Engine):
     name = "codex"
     shell_always_attached = True
+    #: Only the first turn's developer_instructions stay fixed in the thread,
+    #: so only that turn's blocks are referenced later (C15).
+    dedups_resumed_instructions = True
 
     # developer_instructions is a separate field from the prompt. Isolation is
     # whatever options.sandbox says, which the default (danger-full-access)
@@ -360,7 +363,7 @@ class CodexEngine(Engine):
         without the untrusted-input marker.
         """
         return (
-            request.system_prompt
+            self.instructions_for(request)
             + self.readable_paths_note(request.readable_dirs)
             + self.write_paths_note(request)
             + self.tool_ban_note(request)
