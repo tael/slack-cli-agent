@@ -812,6 +812,21 @@ class Test채널별_행:
         assert rows["C1"]["name"] == "일번 채널"
         assert rows["C9"]["listed"] is False
 
+    def test_어드바이저_채널은_실행자_모델을_보인다(self, tmp_path: Path) -> None:
+        """A13 부터 advisor 채널은 모든 요청이 실행자 모델로 돈다. 표의 model
+        칸이 channel model 을 보이면 실제 실행 모델과 다르다."""
+        profile = make_profile(tmp_path)
+        registry = ChannelRegistry(profile.paths.channels)
+        registry.update("C1", {"name": "조언방", "model": "m-ch",
+                               "advisor": {"executor": "m-exec"}})
+        registry.update("C2", {"name": "빈조언", "advisor": {}})
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        rows = {r["channel"]: r for r in collector.collect(days=7)["channels"]}
+        assert rows["C1"]["model"] == "m-exec"
+        assert rows["C1"]["model_inherited"] is False
+        assert rows["C2"]["model"] == profile.primary_engine.model
+        assert rows["C2"]["model_inherited"] is True
+
     def test_대기줄_건수는_jobs_표에서_읽는다(self, tmp_path: Path) -> None:
         profile = make_profile(tmp_path)
         db = open_db(profile)

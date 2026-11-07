@@ -1657,16 +1657,16 @@ class Application:
         _run_debug_trace, _run_format_review).
         """
         paths = self._profile.paths
+        channel = self._profile.troubleshoot_channel
+        principal = Principal(
+            user_id=self._profile.owner_user_id,
+            channel=channel,
+            trust=TrustLevel.OWNER,
+            is_direct_message=is_direct_message_channel(channel),
+        )
 
         def system_prompt(prompt: str) -> str:
-            channel = self._profile.troubleshoot_channel
             config = self._channels.get(channel)
-            principal = Principal(
-                user_id=self._profile.owner_user_id,
-                channel=channel,
-                trust=TrustLevel.OWNER,
-                is_direct_message=is_direct_message_channel(channel),
-            )
             return self._composer().compose(CompositionContext(
                 principal=principal,
                 # The review prompt carries the transcript; its words pick the
@@ -1699,10 +1699,13 @@ class Application:
             workdir=self._profile.work_root,
             system_prompt=system_prompt,
             readable_dirs=(paths.persona, paths.prompts),
-            # 부검만 전용 모델이다 (마메치 model_for postmortem=True). 나머지
-            # 점검은 소유자용 모델 그대로다.
+            # 부검만 전용 모델이다 (마메치 model_for postmortem=True). 디버그
+            # 추적과 서식 점검은 보고 채널의 일반 규칙(어드바이저 실행자, 채널
+            # model, 기본 model)을 따른다. 마메치 run_claude 가 이 둘을
+            # model_for(TROUBLESHOOT_CHANNEL, is_owner) 로 고르는 것과 같다.
             model=(
-                self._profile.primary_engine.model_for_postmortem() if postmortem else None
+                self._profile.primary_engine.model_for_postmortem() if postmortem
+                else self.access_policy.model_for(principal)
             ),
         )
 

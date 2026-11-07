@@ -484,7 +484,9 @@ class TestOwnerSettingsInertCheck:
         result = check.run(PreflightContext(profile=profile))
         assert result.ok is True
 
-    def test_소유자용_모델과_다른_채널_모델은_경고를_낸다(self, tmp_path: Path) -> None:
+    def test_채널_모델은_소유자에게도_적용되므로_경고하지_않는다(self, tmp_path: Path) -> None:
+        """A13 부터 AccessPolicy.model_for 가 소유자에게도 채널 model 을 쓴다.
+        이 값을 무시되는 설정으로 경고하면 반대 의미로 읽힌다."""
         profile = make_profile(
             tmp_path,
             primary_engine={
@@ -494,13 +496,13 @@ class TestOwnerSettingsInertCheck:
                 "model_owner": "opus",
             },
         )
-        write_channels(profile, {"C1": {"name": "잡담방", "model": "haiku"}})
+        write_channels(profile, {
+            "C1": {"name": "잡담방", "model": "haiku"},
+            "C2": {"name": "조언방", "advisor": {"executor": "haiku"}},
+        })
         check = OwnerSettingsInertCheck()
         result = check.run(PreflightContext(profile=profile))
-        assert result.ok is False
-        assert result.fatal is False
-        assert "잡담방" in result.detail
-        assert "haiku" in result.detail
+        assert result.ok is True
 
     def test_effort가_소유자_하한보다_낮으면_경고를_낸다(self, tmp_path: Path) -> None:
         profile = make_profile(tmp_path)
@@ -519,8 +521,9 @@ class TestOwnerSettingsInertCheck:
         assert result.ok is True
 
     def test_codex_엔진에서도_경고를_낸다(self, tmp_path: Path) -> None:
-        """AccessPolicy 는 엔진 종류와 무관하게 소유자의 채널 model 과 낮은
-        effort 를 무시한다. 엔진별 예외를 두면 그 봇만 경고가 사라진다."""
+        """AccessPolicy 는 엔진 종류와 무관하게 소유자의 낮은 effort 를
+        무시한다. 엔진별 예외를 두면 그 봇만 경고가 사라진다. 채널 model 은
+        소유자에게도 적용되므로 경고 대상이 아니다."""
         profile = make_profile(
             tmp_path,
             primary_engine={"type": "codex", "binary": "python3", "model": "m"},
@@ -529,7 +532,7 @@ class TestOwnerSettingsInertCheck:
         check = OwnerSettingsInertCheck()
         result = check.run(PreflightContext(profile=profile))
         assert result.ok is False
-        assert "haiku" in result.detail
+        assert "haiku" not in result.detail
         assert "low" in result.detail
 
 

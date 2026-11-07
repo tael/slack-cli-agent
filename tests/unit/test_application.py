@@ -24,6 +24,7 @@ import pytest
 
 from slack_cli_agent.auth.policy import AccessExtension
 from slack_cli_agent.auth.principal import Principal, TrustLevel
+from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.application import Application
@@ -459,7 +460,9 @@ class TestReviewReactions:
         self, tmp_path: Path, client: FakeSlackClient
     ) -> None:
         """마메치 model_for(postmortem=True) 는 프로필 postmortem_model 을 쓴다.
-        디버그 추적과 서식 점검은 소유자용 모델 그대로다."""
+        디버그 추적과 서식 점검은 model_for(TROUBLESHOOT_CHANNEL) 이라 보고
+        채널 model 이 없으면 기본 model 이다. 소유자용 모델이 아니다
+        (bot.py 9220, 9480)."""
         binary = tmp_path / "bin" / "fake-engine"
         profile = write_profile(tmp_path, primary_engine={
             "type": "claude", "binary": str(binary), "model": "model-a",
@@ -467,8 +470,22 @@ class TestReviewReactions:
         })
         tasks = Application(profile, client).review_tasks()
         assert tasks["dango"]._engine.model == "model-deep"
-        assert tasks["brain"]._engine.model == "model-big"
-        assert tasks["pencil2"]._engine.model == "model-big"
+        assert tasks["brain"]._engine.model == "model-a"
+        assert tasks["pencil2"]._engine.model == "model-a"
+
+    def test_디버그와_서식_점검은_보고_채널_모델을_따른다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        binary = tmp_path / "bin" / "fake-engine"
+        profile = write_profile(tmp_path, primary_engine={
+            "type": "claude", "binary": str(binary), "model": "model-a",
+            "model_owner": "model-big",
+        })
+        ChannelRegistry(profile.paths.channels).update("C_TROUBLE", {"model": "model-ch"})
+        tasks = Application(profile, client).review_tasks()
+        assert tasks["brain"]._engine.model == "model-ch"
+        assert tasks["pencil2"]._engine.model == "model-ch"
+        assert tasks["dango"]._engine.model == "model-big"
 
     def test_점검_셋_모두에_감사가_연결된다(self, app: Application) -> None:
         """한 종류만 연결하면 그 종류 말고는 소요 기록이 안 남는다(sca-fy5)."""

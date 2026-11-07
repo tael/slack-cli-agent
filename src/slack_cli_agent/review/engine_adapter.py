@@ -38,7 +38,8 @@ class ReviewEngineCaller:
         self._workdir = workdir
         self._system_prompt = system_prompt
         self._readable_dirs = tuple(readable_dirs)
-        self._model = model or profile.primary_engine.model_for_owner()
+        # 소유자에게 큰 모델을 강제하지 않는다 (A13). 점검별 모델은 호출부가 정한다.
+        self._model = model or profile.primary_engine.model
         self._effort = effort or OWNER_EFFORT_MIN
         self._tools = tools or ToolSelection.unrestricted()
         self._execution_policy = ExecutionPolicy()
