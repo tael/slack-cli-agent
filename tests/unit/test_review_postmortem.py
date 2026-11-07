@@ -102,3 +102,24 @@ class Test구분선없을때재시도프롬프트:
             "구분선 앞에는 요약을, 뒤에는 상세를 둔다.\n"
             "내용을 새로 지어내지 않는다. 방금 쓴 것을 형식에 맞춰 다시 담는다."
         )
+
+
+class Test5Why점검:
+    """B8 — 부검은 5 Why 사슬을 기계로 점검한다."""
+
+    def test_끊긴_5_Why_를_문제로_돌려준다(self) -> None:
+        task = make_task()
+        detail = "## 5 Why\n| 단계 | 물음 | 답 | 근거 |\n|---|---|---|---|\n| Why 1 | 왜 | 그냥 | |\n"
+        assert task.content_problems(detail)
+
+    def test_5_Why_절이_없으면_문제가_없다(self) -> None:
+        assert make_task().content_problems("## 원인\n본문") == []
+
+    def test_재작성_요청은_부검_구분선을_쓴다(self) -> None:
+        prompt = make_task().content_retry_prompt(["Why 2 의 근거 칸이 비어 있다."])
+        assert "===상세===" in prompt
+        assert "5 Why 가 사슬로 이어지지 않는다" in prompt
+
+    def test_경고_머리말은_5_Why_미통과를_밝힌다(self) -> None:
+        warning = make_task().content_warning(["가", "나"])
+        assert warning.startswith("5 Why 점검을 통과하지 못했습니다.\n- 가\n- 나")

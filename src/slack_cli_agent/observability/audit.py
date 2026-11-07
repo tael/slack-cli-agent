@@ -34,6 +34,10 @@ class IncidentKind(StrEnum):
     #: One engine call made by a review task. Baseline traffic like REQUEST;
     #: its elapsed value is what timeout decisions are read from.
     REVIEW = "review"
+    #: A review posted although its content check still failed after the one
+    #: rewrite (B8, mametchi audit kind postmortem_five_why). `problems`
+    #: lists what the check found; the report header carries the same list.
+    REVIEW_CHECK_FAILED = "review_check_failed"
     #: One round of the watch queue touching one job. Baseline traffic:
     #: checks/last_run only hold current state, so without this there is no
     #: record that a watch ever ran (sca-j3d).
@@ -109,6 +113,7 @@ class IncidentKind(StrEnum):
 REQUEST_KIND = IncidentKind.REQUEST.value
 PAYLOAD_KIND = IncidentKind.PAYLOAD.value
 REVIEW_KIND = IncidentKind.REVIEW.value
+REVIEW_CHECK_FAILED_KIND = IncidentKind.REVIEW_CHECK_FAILED.value
 WATCH_CHECKED_KIND = IncidentKind.WATCH_CHECKED.value
 WATCH_FINISHED_KIND = IncidentKind.WATCH_FINISHED.value
 WATCH_ABANDONED_KIND = IncidentKind.WATCH_ABANDONED.value

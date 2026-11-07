@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from slack_cli_agent.engine.base import EngineResponse
-from slack_cli_agent.observability.audit import REVIEW_KIND
+from slack_cli_agent.observability.audit import REVIEW_CHECK_FAILED_KIND, REVIEW_KIND
 from slack_cli_agent.observability.slow_report import SlowRequestMeta
 from slack_cli_agent.render.table import as_table
 from slack_cli_agent.review.ledger import ReviewLedger
@@ -275,6 +275,23 @@ class ReviewTask(ABC):
         """
         raise NotImplementedError
 
+    def content_problems(self, detail: str) -> list[str]:
+        """Mechanical problems in the detail part, as sentences. Empty passes.
+
+        A kind that checks its content (postmortem's 5 Why chain) overrides
+        this; a non-empty result gets one rewrite request, and what still
+        fails is posted with a warning header and an audit row.
+        """
+        return []
+
+    def content_retry_prompt(self, problems: list[str]) -> str:
+        """Rewrite request for `content_problems`. Same resume rule as
+        `missing_split_prompt`: the session already holds the previous output."""
+        raise NotImplementedError
+
+    def content_warning(self, problems: list[str]) -> str:
+        return "점검을 통과하지 못했습니다.\n" + "\n".join(f"- {p}" for p in problems) + "\n\n"
+
     # Each review kind has its own stopped/failure wording (retry hints reference a
     # different emoji per kind).
     def stopped_title(self) -> str:
@@ -381,6 +398,21 @@ class ReviewTask(ABC):
         except Exception as exc:  # noqa: BLE001 - see docstring
             log.warning("점검 실행 기록을 남기지 못했다 : %s", exc)
 
+    def _record_check_failed(self, target: ReviewTarget, problems: list[str]) -> None:
+        """Best effort, like `_record_run`."""
+        if self._audit is None:
+            return
+        try:
+            self._audit.record(
+                REVIEW_CHECK_FAILED_KIND,
+                channel=target.channel,
+                target_ts=target.ts,
+                review_kind=self.log_name,
+                problems=problems,
+            )
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            log.warning("점검 미통과 기록을 남기지 못했다 : %s", exc)
+
     def _report_if_slow(
         self,
         target: ReviewTarget,
@@ -461,6 +493,7 @@ class ReviewTask(ABC):
             return
 
         body = response.body
+        session_id = response.session_id
         marker = self.split_marker()
         if marker not in body and self.retry_on_missing_split() and response.session_id:
             # Resume the session the engine actually used. Without an ID there
@@ -477,11 +510,31 @@ class ReviewTask(ABC):
             )
             if retry.ok and marker in retry.body:
                 body = retry.body
+                session_id = retry.session_id or session_id
 
         if marker in body:
             summary, detail = body.split(marker, 1)
         else:
             summary, detail = body, ""
+
+        problems = self.content_problems(detail)
+        if problems and session_id:
+            log.warning("%s 내용 점검 미통과, 다시 쓰게 한다 : %s %s", self.log_name, request_id, problems)
+            fix_started, fix_mono = time.time(), time.monotonic()
+            fix = self._engine.run(self.content_retry_prompt(problems), session_id, True, None, request_id)
+            self._record_run(target, fix, attempt="content_retry")
+            self._report_if_slow(target, fix, flagged, fix_started, time.monotonic() - fix_mono, resume=True)
+            if fix.ok and marker in fix.body:
+                summary2, detail2 = fix.body.split(marker, 1)
+                problems2 = self.content_problems(detail2)
+                # A rewrite can come back worse; take it only when it found fewer problems.
+                if len(problems2) < len(problems):
+                    summary, detail, problems = summary2, detail2, problems2
+        if problems:
+            # Posting a failed check silently would make the check pointless.
+            log.error("%s 내용 점검을 통과하지 못한 채 게시한다 : %s", self.log_name, request_id)
+            self._record_check_failed(target, problems)
+            header += self.content_warning(problems)
 
         parent = self._publisher.post(self._troubleshoot_channel, None, header + summary.strip(), rich=True)
         if detail.strip():

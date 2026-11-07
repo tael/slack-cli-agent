@@ -763,3 +763,78 @@ class Test점검_기록의_모델_칸:
 
         [(_, fields)] = rig.audit.rows
         assert "model_actual" not in fields
+
+
+class 내용점검Task(FakeReviewTask):
+    """상세에 '끊김' 이 들어 있으면 문제 하나로 본다."""
+
+    def content_problems(self, detail: str) -> list[str]:
+        return [f"끊김 {detail.count('끊김')}건"] * min(detail.count("끊김"), 2)
+
+    def content_retry_prompt(self, problems: list[str]) -> str:
+        return "사슬을 이어 다시 써라 : " + "; ".join(problems)
+
+
+def _내용점검_rig(database, 응답들) -> Rig:
+    rig = make_rig(database, engine_responses=응답들)
+    rig.task.__class__ = 내용점검Task
+    return rig
+
+
+class Test내용점검과_1회_재작성:
+    """B8 — 5 Why 처럼 기계로 가릴 수 있는 결함은 한 번 다시 쓰게 하고,
+    그래도 남으면 경고 머리말과 감사 기록을 붙여 올린다."""
+
+    def test_통과하면_재작성하지_않는다(self, database) -> None:
+        rig = _내용점검_rig(database, [_ok_response("요약===상세===이어짐")])
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert len(rig.engine.calls) == 1
+        assert "점검을 통과하지 못했습니다" not in rig.publisher.posts[0][2]
+
+    def test_끊긴_상세는_같은_세션으로_1회_다시_쓰게_한다(self, database) -> None:
+        rig = _내용점검_rig(
+            database, [_ok_response("요약===상세===끊김"), _ok_response("새요약===상세===이어짐")]
+        )
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        prompt, session, resume = rig.engine.calls[1]
+        assert prompt == "사슬을 이어 다시 써라 : 끊김 1건"
+        assert (session, resume) == ("s1", True)
+        assert len(rig.engine.calls) == 2
+        summary_post, detail_post = rig.publisher.posts
+        assert "새요약" in summary_post[2]
+        assert "점검을 통과하지 못했습니다" not in summary_post[2]
+        assert detail_post[2] == "이어짐"
+        assert [f["attempt"] for k, f in rig.audit.rows if k == "review"] == ["main", "content_retry"]
+
+    def test_다시_써도_남으면_경고_머리말과_감사_기록을_남긴다(self, database) -> None:
+        rig = _내용점검_rig(
+            database, [_ok_response("요약===상세===끊김"), _ok_response("요약2===상세===끊김")]
+        )
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert len(rig.engine.calls) == 2
+        head = rig.publisher.posts[0][2]
+        assert "점검을 통과하지 못했습니다.\n- 끊김 1건" in head
+        # 나아지지 않은 재작성은 쓰지 않는다.
+        assert "요약2" not in head
+        [(_, fields)] = [(k, f) for k, f in rig.audit.rows if k == "review_check_failed"]
+        assert fields["review_kind"] == "fake_kind"
+        assert fields["problems"] == ["끊김 1건"]
+        assert recorded(rig.ledger, "fake_kind", "C1", "1.1").status == "완료"
+
+    def test_재작성이_더_나빠지면_원래_것을_올린다(self, database) -> None:
+        rig = _내용점검_rig(
+            database, [_ok_response("원요약===상세===끊김"), _ok_response("요약2===상세===끊김끊김")]
+        )
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert "원요약" in rig.publisher.posts[0][2]
+        assert rig.publisher.posts[1][2] == "끊김"
+
+    def test_세션_ID_가_없으면_재작성_없이_경고만_붙인다(self, database) -> None:
+        rig = _내용점검_rig(
+            database,
+            [EngineResponse(ok=True, body="요약===상세===끊김", session_id=None,
+                            model_actual=None, elapsed=1.0, turns=1, usage=None)],
+        )
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        assert len(rig.engine.calls) == 1
+        assert "점검을 통과하지 못했습니다" in rig.publisher.posts[0][2]

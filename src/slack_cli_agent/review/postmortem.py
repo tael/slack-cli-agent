@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from slack_cli_agent.review.base import ReviewTarget, ReviewTask, run_info_rows
+from slack_cli_agent.review.five_why import broken_five_why_prompt, check_five_why
 
 
 class PostmortemTask(ReviewTask):
@@ -33,6 +34,16 @@ class PostmortemTask(ReviewTask):
             "구분선 앞에는 요약을, 뒤에는 상세를 둔다.\n"
             "내용을 새로 지어내지 않는다. 방금 쓴 것을 형식에 맞춰 다시 담는다."
         )
+
+    def content_problems(self, detail: str) -> list[str]:
+        # The prompt alone didn't keep the 5 Why a chain (mametchi 2026-09-22).
+        return check_five_why(detail)
+
+    def content_retry_prompt(self, problems: list[str]) -> str:
+        return broken_five_why_prompt(problems, self.split_marker())
+
+    def content_warning(self, problems: list[str]) -> str:
+        return "5 Why 점검을 통과하지 못했습니다.\n" + "\n".join(f"- {p}" for p in problems) + "\n\n"
 
     def build_prompt(self, target: ReviewTarget, *, transcript: str, flagged: str, question: str) -> str:
         return (
