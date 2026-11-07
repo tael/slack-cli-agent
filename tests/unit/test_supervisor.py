@@ -292,3 +292,37 @@ def test_launchctl_kickstart가_시간초과나_실행불가면_False를_돌린�
     assert cli._kickstart("local.t.worker") is False
     monkeypatch.setattr(subprocess, "run", 없음)
     assert cli._kickstart("local.t.worker") is False
+
+
+def test_되돌리기가_예외를_내도_표식을_정리하고_실패를_알린다(tmp_path: Path) -> None:
+    env = 가짜환경(tmp_path)
+    env.교체함 = False
+    env.표식(age=20)
+
+    def 없는_명령() -> bool:
+        raise FileNotFoundError("rollback.sh")
+
+    assert env.supervisor(rollback=없는_명령).tick() == "rollback_failed"
+    assert not (tmp_path / "apply-running").exists()
+    assert len(env.dm) == 1 and "되돌려도 기동하지 못했" in env.dm[0]
+
+
+def test_되돌리기_명령이_시간초과나_실행불가면_False를_돌린다(monkeypatch) -> None:
+    import subprocess
+
+    from slack_cli_agent import cli
+
+    받은: dict[str, object] = {}
+
+    def 시간초과(*args: object, **kwargs: object) -> object:
+        받은.update(kwargs)
+        raise subprocess.TimeoutExpired(cmd="rollback.sh", timeout=1)
+
+    def 없음(*args: object, **kwargs: object) -> object:
+        raise FileNotFoundError("rollback.sh")
+
+    monkeypatch.setattr(subprocess, "run", 시간초과)
+    assert cli._run_rollback(["rollback.sh"]) is False
+    assert isinstance(받은.get("timeout"), (int, float))
+    monkeypatch.setattr(subprocess, "run", 없음)
+    assert cli._run_rollback(["rollback.sh"]) is False

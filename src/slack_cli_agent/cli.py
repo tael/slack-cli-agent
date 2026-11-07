@@ -731,6 +731,19 @@ def _kickstart(label: str) -> bool:
     return done.returncode == 0
 
 
+def _run_rollback(argv: list[str]) -> bool:
+    import subprocess
+
+    # A hung or missing rollback command is a failed rollback, so the supervisor
+    # still reports while nothing is serving.
+    try:
+        done = subprocess.run(argv, stdin=subprocess.DEVNULL, timeout=600, check=False)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logging.getLogger(__name__).warning("rollback 명령 실행 실패 : %s (%s)", argv, exc)
+        return False
+    return done.returncode == 0
+
+
 def _pid_alive(pid: str) -> bool:
     try:
         os.kill(int(pid), 0)
@@ -761,7 +774,6 @@ def _owner_dm_sender(profile: Profile) -> Callable[[str], object]:
 
 def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
     import shlex
-    import subprocess
     import time
 
     from .reliability.supervisor import ApplySupervisor, Service, active_reviews
@@ -773,7 +785,7 @@ def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
         argv = shlex.split(args.rollback_command)
 
         def rollback() -> bool:
-            return subprocess.run(argv, stdin=subprocess.DEVNULL, check=False).returncode == 0
+            return _run_rollback(argv)
 
     return ApplySupervisor(
         request_path=request,

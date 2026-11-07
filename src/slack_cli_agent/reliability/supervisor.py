@@ -229,7 +229,13 @@ class ApplySupervisor:
             return "failed_running"
         if self._rollback is None:
             return "failed_down"
-        if not self._rollback():
+        try:
+            rolled = self._rollback()
+        except Exception:
+            # Same as kickstart: raising here would skip _report while the bot is down.
+            log.exception("rollback 예외")
+            rolled = False
+        if not rolled:
             return "rollback_failed"
         return "rolled_back" if self._restart() else "rollback_failed"
 
