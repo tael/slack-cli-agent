@@ -86,7 +86,8 @@ I82 — disposition of mametchi channels.json keys that are *not* core fields:
   mermaid_render.py) to allow posting into the channel body, not just a
   thread; ``extra`` only.
 * ``shadow_source`` — the paired source channel a shadow/mirror channel
-  mirrors (mametchi shadow_source_api); ``extra`` only.
+  mirrors (mametchi shadow_source_api); ``extra`` only. shadow/service.py
+  reads it, and ``shadow_judge`` beside it, to run shadow evaluation (G4).
 * ``mention_only`` — *not* a replacement key: answering only mentions is the
   core default (``answer_unaddressed`` and ``answer_top_level`` both off), so
   this is absorbed by the default rather than needing its own field.

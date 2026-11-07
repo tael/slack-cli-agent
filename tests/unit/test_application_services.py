@@ -136,6 +136,7 @@ class Test묶음구성:
             "learning_batch",
             "stale_reclaim",
             "welcome:retro",
+            "shadow:loop",
         }
 
     def test_정체_작업_회수는_주기로_돈다(self, app: Application) -> None:
