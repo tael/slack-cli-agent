@@ -30,6 +30,7 @@ rather than as an answer.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
 from collections.abc import Callable, Sequence
@@ -240,17 +241,27 @@ class SlackAgentStatusProgressSink:
         if not self._on:
             return
         self._on = False
-        try:
+        # A status left on is worse reported than raised; _set already logged it.
+        with contextlib.suppress(Exception):
             self._set("active")
-        except Exception as exc:  # noqa: BLE001 - a status left on is worse reported than raised
-            log.debug("에이전트 상태 해제 실패 : %s:%s, %s", self._channel, self._thread_ts, exc)
 
     def _set(self, status: str) -> None:
-        self._client.api_call("agents.sessions.setStatus", json={
-            "channel_id": self._channel,
-            "thread_ts": self._thread_ts,
-            "status": status,
-        })
+        # Logged both ways at INFO (2026-11-07): success left no trace, so a
+        # read-only watch check could not tell whether the status line ever
+        # showed after PR 98, and the check was handed back to a person.
+        try:
+            self._client.api_call("agents.sessions.setStatus", json={
+                "channel_id": self._channel,
+                "thread_ts": self._thread_ts,
+                "status": status,
+            })
+        except Exception as exc:
+            log.warning(
+                "에이전트 상태 설정 실패 : status=%s %s:%s %s",
+                status, self._channel, self._thread_ts, exc,
+            )
+            raise
+        log.info("에이전트 상태 설정 : status=%s %s:%s", status, self._channel, self._thread_ts)
 
 
 class ProgressStreamUnavailable(RuntimeError):
