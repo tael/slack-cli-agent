@@ -70,3 +70,18 @@ def test_재작성_요청은_항목과_구분선을_담는다() -> None:
     prompt = broken_five_why_prompt(["Why 2 의 근거 칸이 비어 있다."], "===상세===")
     assert "- Why 2 의 근거 칸이 비어 있다." in prompt
     assert "`===상세===` 구분선도 그대로 둔다" in prompt
+
+
+def test_required_이면_5_Why_절이_없을_때_문제로_센다() -> None:
+    """재작성본이 절을 지우면 점검을 통과한 것처럼 올라가면 안 된다 (마메치와 같다)."""
+    assert check_five_why("## 원인\n본문", required=True) == ["상세에 `## 5 Why` 절이 없다."]
+
+
+def test_required_이면_절_제목을_바꿔도_문제로_센다() -> None:
+    바꾼_표 = 끊긴_표.replace("## 5 Why\n", "## 5 Why 분석\n", 1)
+    assert check_five_why(바꾼_표, required=True) == ["상세에 `## 5 Why` 절이 없다."]
+
+
+def test_required_여도_절이_있으면_같은_판정을_한다() -> None:
+    assert check_five_why(이어진_표, required=True) == []
+    assert check_five_why(끊긴_표, required=True) == check_five_why(끊긴_표)

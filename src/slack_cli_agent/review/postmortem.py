@@ -39,6 +39,10 @@ class PostmortemTask(ReviewTask):
         # The prompt alone didn't keep the 5 Why a chain (mametchi 2026-09-22).
         return check_five_why(detail)
 
+    def rewrite_problems(self, detail: str) -> list[str]:
+        # The first answer had a 5 Why section; a rewrite without one fails.
+        return check_five_why(detail, required=True)
+
     def content_retry_prompt(self, problems: list[str]) -> str:
         return broken_five_why_prompt(problems, self.split_marker())
 

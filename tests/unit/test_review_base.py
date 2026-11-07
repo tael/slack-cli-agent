@@ -838,3 +838,59 @@ class Test내용점검과_1회_재작성:
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
         assert len(rig.engine.calls) == 1
         assert "점검을 통과하지 못했습니다" in rig.publisher.posts[0][2]
+
+
+_끊긴_5Why = (
+    "## 5 Why\n| 단계 | 물음 | 답 | 근거 |\n|---|---|---|---|\n"
+    "| Why 1 | 왜 답변이 틀렸나 | 답변이 틀렸다 | 대화록 |\n"
+    "| Why 2 | 왜 날씨가 흐렸나 | 구름이 많았다 | 미확인 |\n"
+    "| Why 3 | 왜 구름이 많았나 | 습도가 높았다 | 미확인 |\n\n## 근본원인\n알 수 없다.\n"
+)
+
+
+class 부검점검Task(FakeReviewTask):
+    """부검과 같은 점검 규칙을 쓴다. 재작성본은 rewrite_problems 로 센다."""
+
+    def content_problems(self, detail: str) -> list[str]:
+        from slack_cli_agent.review.five_why import check_five_why
+
+        return check_five_why(detail)
+
+    def rewrite_problems(self, detail: str) -> list[str]:
+        from slack_cli_agent.review.five_why import check_five_why
+
+        return check_five_why(detail, required=True)
+
+    def content_retry_prompt(self, problems: list[str]) -> str:
+        return "다시 써라"
+
+
+class Test재작성본이_5Why_절을_지우는_경우:
+    """B8 보완 — 재작성본이 `## 5 Why` 절을 지우거나 제목을 바꿔도
+    경고 머리말과 review_check_failed 감사 기록 없이 올라가지 않는다."""
+
+    def _run(self, database, 재작성_상세: str) -> Rig:
+        rig = make_rig(
+            database,
+            engine_responses=[
+                _ok_response("원요약===상세===" + _끊긴_5Why),
+                _ok_response("새요약===상세===" + 재작성_상세),
+            ],
+        )
+        rig.task.__class__ = 부검점검Task
+        rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
+        return rig
+
+    def test_절을_지우면_경고와_감사를_남긴다(self, database) -> None:
+        rig = self._run(database, "## 근본원인\n알 수 없다.\n")
+        head = rig.publisher.posts[0][2]
+        assert "점검을 통과하지 못했습니다" in head
+        assert "상세에 `## 5 Why` 절이 없다." in head
+        failed = [f for k, f in rig.audit.rows if k == "review_check_failed"]
+        assert len(failed) == 1
+
+    def test_절_제목을_바꾸면_경고와_감사를_남긴다(self, database) -> None:
+        rig = self._run(database, _끊긴_5Why.replace("## 5 Why\n", "## 5 Why 분석\n", 1))
+        head = rig.publisher.posts[0][2]
+        assert "점검을 통과하지 못했습니다" in head
+        assert [k for k, _ in rig.audit.rows].count("review_check_failed") == 1
