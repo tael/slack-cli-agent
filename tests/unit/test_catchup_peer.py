@@ -301,3 +301,30 @@ def test_앱_캐치업이_재기동_전_이름_바꾼_봇_호명을_접수한다
 
     assert [(c.ts, c.user) for c in report.missed] == [(asked["ts"], "UPEERBOT")]
     assert report.missed[0].extra.get("bot_id") == "B_PEER"
+
+
+def test_상한에_걸린_스레드에서도_사람의_이름_없는_요청은_버리지_않는다() -> None:
+    """실시간 from_message 는 스레드에 사람이 말하면 호명 여부와 관계없이
+    상한을 새로 센다(C18). 상한 도달 → 사람의 이름 없는 질문 → 봇 호명 순서가
+    캐치업으로 들어와도 실시간과 같이 답해야 한다. 수정 전에는 묶음 전체가
+    버려져 사람 질문이 누가 다시 부를 때까지 미응답으로 남았다."""
+    limiter = PeerExchangeLimiter(limit=1)
+    limiter.allowed("97000.0")
+    limiter.allowed("97000.0")
+    thread = [
+        {"ts": "97000.0", "user": "U1", "text": "<@U_BOT> 처음", "reactions": [{"name": "white_check_mark"}]},
+        {"ts": "97500.0", "bot_id": "B_BOT", "user": "U_BOT", "text": "답했습니다"},
+        {"ts": "98000.0", "user": "U1", "text": "그럼 원인은 무엇인가요?"},
+        _nameless_peer("99000.0", thread_ts="97000.0"),
+    ]
+    history = _History(history={"C1": [{**thread[0], "reply_count": 3}]}, threads={"97000.0": thread})
+    service = _service(history, peer_limiter=limiter)
+
+    found = service.find_missed("C1", 3600).value()
+    assert [c.ts for c in found] == ["98000.0", "99000.0"]
+    assert found[0].unaddressed is True
+
+    report = service.sweep(["C1"], 3600)
+
+    # 대표의 답이 스레드 전체 맥락을 싣으므로 사람 질문도 함께 답을 받는다.
+    assert [c.ts for c in report.missed] == ["99000.0"]

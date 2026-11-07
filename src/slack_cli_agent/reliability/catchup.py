@@ -364,15 +364,17 @@ class CatchupService:
     def _peer_turn_allowed(self, items: list[RequestContext]) -> bool:
         """Applies the live path's bot-to-bot cap to one thread's backlog.
 
-        A human naming the bot starts the count over (C18), and the peer
-        request about to be answered counts one turn (C19), in that order,
-        as listener.from_app_mention does. Only the representative counts:
-        it is the one turn actually answered.
+        Any human candidate starts the count over (C18), named or not, as
+        listener.from_message resets on every human thread turn; narrowing
+        it to named turns would drop the human's own unnamed question along
+        with the capped peer request. The peer request about to be answered
+        then counts one turn (C19). Only the representative counts: it is
+        the one turn actually answered.
         """
         if self._peer_limiter is None:
             return True
         thread = items[-1].thread_ts
-        if any(not c.extra.get("bot_id") and not c.unaddressed for c in items):
+        if any(not c.extra.get("bot_id") for c in items):
             self._peer_limiter.reset(thread)
         if not items[-1].extra.get("bot_id"):
             return True
