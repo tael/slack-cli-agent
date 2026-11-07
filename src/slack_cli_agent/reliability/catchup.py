@@ -15,7 +15,7 @@ from typing import Any
 from ..config.settings import RuntimeSettings
 from ..core.context import RequestContext
 from ..core.result import Outcome
-from ..guard.mentions import calls_other_bot, talking_to_peer
+from ..guard.mentions import PeerExchangeLimiter, calls_other_bot, talking_to_peer
 from ..observability.notices import NoticeCatalog
 from ..slack.attachments import AttachmentStore
 from ..slack.blocks import event_body
@@ -118,6 +118,8 @@ class CatchupService:
         started_at: float | None = None,
         attachments: AttachmentStore | None = None,
         is_bot: Callable[[str], bool] = lambda _user_id: False,
+        bot_user_of: Callable[[str], str] = lambda _bot_id: "",
+        peer_limiter: PeerExchangeLimiter | None = None,
     ) -> None:
         self._history = history
         self._gate = gate
@@ -139,6 +141,15 @@ class CatchupService:
         # (C16, C17). The default treats nobody as a bot, which keeps the
         # older behavior for a caller that doesn't wire it.
         self._is_bot = is_bot
+        # bots.info lookup for a bot_id-only post, the same correction the
+        # live path makes (listener._bot_user_id). Without it a recovered peer
+        # request had an empty asker: no controller trust, asker_is_bot False,
+        # and AddresseeGuard stripping the mention the peer needs (C3).
+        self._bot_user_of = bot_user_of
+        # The listener's bot-to-bot cap (C19), shared. A peer mention the live
+        # path dropped over the cap gets no mark, so without this the next
+        # catch-up answered it anyway (mametchi bot.py peer_turn_allowed).
+        self._peer_limiter = peer_limiter
 
     #: Subtypes a peer bot's request can carry (listener._BOT_POST_SUBTYPES).
     _BOT_POST_SUBTYPES = frozenset({"bot_message"}) | HUMAN_SUBTYPES
@@ -269,9 +280,10 @@ class CatchupService:
             if key in seen:
                 continue
             seen.add(key)
+            bot_id = str(m.get("bot_id") or "")
             recovered = RequestContext(
                 channel=channel,
-                user=m.get("user") or "",
+                user=m.get("user") or self._bot_user_of(bot_id),
                 ts=str(m.get("ts")),
                 thread_ts=str(thread_ts),
                 # The whole body; a rich post's `text` is a one-line preview.
@@ -288,6 +300,9 @@ class CatchupService:
                 # never applies to a recovered continuation (코덱스 8차
                 # 리뷰, sca-f6ii).
                 unaddressed=not called,
+                # Marks a peer's request so the bot-to-bot cap can count it
+                # in _pick_representatives, as bot.py keeps bot_id (C3).
+                extra={"bot_id": bot_id} if bot_id else {},
             )
             # The socket path asks back instead of queueing this (sca-yb8q);
             # without the same judgment here the call costs an engine turn
@@ -339,9 +354,29 @@ class CatchupService:
         rest: list[RequestContext] = []
         for items in groups.values():
             items.sort(key=lambda c: float(c.ts))
+            if not self._peer_turn_allowed(items):
+                rest.extend(items)
+                continue
             representatives.append(self._with_attachments(items[-1]).marked_late())
             rest.extend(items[:-1])
         return representatives, rest
+
+    def _peer_turn_allowed(self, items: list[RequestContext]) -> bool:
+        """Applies the live path's bot-to-bot cap to one thread's backlog.
+
+        A human naming the bot starts the count over (C18), and the peer
+        request about to be answered counts one turn (C19), in that order,
+        as listener.from_app_mention does. Only the representative counts:
+        it is the one turn actually answered.
+        """
+        if self._peer_limiter is None:
+            return True
+        thread = items[-1].thread_ts
+        if any(not c.extra.get("bot_id") and not c.unaddressed for c in items):
+            self._peer_limiter.reset(thread)
+        if not items[-1].extra.get("bot_id"):
+            return True
+        return self._peer_limiter.allowed(thread)
 
     def _with_attachments(self, ctx: RequestContext) -> RequestContext:
         """Downloads attachments only for the representative a thread group
