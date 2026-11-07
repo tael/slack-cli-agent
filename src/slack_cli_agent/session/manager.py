@@ -69,17 +69,26 @@ class SessionManager:
         self._now = now
         self._new_session_id = new_session_id
 
-    def resolve(self, key: SessionKey, engine: str) -> SessionDecision:
+    def resolve(self, key: SessionKey, engine: str, tier: str = "") -> SessionDecision:
         """Decide whether this conversation has a session to resume.
 
-        No record, expired TTL, or an engine mismatch (passing another
-        engine's session ID through would break resumption) all start a new
+        No record, expired TTL, an engine mismatch (passing another
+        engine's session ID through would break resumption), or a speaker
+        tier other than the one that opened the session all start a new
         session with a full rebuild. Otherwise resume: TTL is renewed and
         last-seen becomes `after_ts`.
+
+        The tier check exists because a resumed session keeps the opening
+        turn's instructions. claude 2.1.319 drops --append-system-prompt on
+        --resume: the delegated turn of session 4efce5d9 (2026-11-07) sent
+        the owner turn's system text unchanged, OWNER_NOTE included. A turn
+        of another tier would run under those. The full rebuild reads the
+        thread back from Slack, so the conversation still carries. An empty
+        `tier` skips the check, for callers that have no speaker.
         """
         now = self._now()
         record = self._store.get(key)
-        if record is not None and self._is_valid(record, key.scope, now, engine):
+        if record is not None and self._is_valid(record, key.scope, now, engine, tier):
             self._store.put(self._renew(record, now))
             return SessionDecision(
                 session_id=record.session_id,
@@ -87,11 +96,11 @@ class SessionManager:
                 rebuild_full=False,
                 after_ts=record.last_seen_ts or None,
             )
-        return self._start_new(key, engine, now)
+        return self._start_new(key, engine, now, tier)
 
-    def reset(self, key: SessionKey, engine: str) -> SessionDecision:
+    def reset(self, key: SessionKey, engine: str, tier: str = "") -> SessionDecision:
         """Force a fresh session for a conversation whose continuity broke."""
-        return self._start_new(key, engine, self._now())
+        return self._start_new(key, engine, self._now(), tier)
 
     def adopt_engine_session(
         self, key: SessionKey, expected_session_id: str, engine: str, actual_session_id: str
@@ -115,9 +124,13 @@ class SessionManager:
         return failure_reason not in NO_RETRY_REASONS
 
     def _is_valid(
-        self, record: SessionRecord, scope: str, now: float, engine: str
+        self, record: SessionRecord, scope: str, now: float, engine: str, tier: str = ""
     ) -> bool:
         if record.engine != engine:
+            return False
+        # A row from before the tier column holds "", which no tier matches:
+        # which instructions that session opened with is unknown.
+        if tier and record.tier != tier:
             return False
         ttl = self._ttl_seconds(scope)
         return (now - record.updated_at) < ttl
@@ -130,7 +143,9 @@ class SessionManager:
     def _renew(self, record: SessionRecord, now: float) -> SessionRecord:
         return replace(record, updated_at=now)
 
-    def _start_new(self, key: SessionKey, engine: str, now: float) -> SessionDecision:
+    def _start_new(
+        self, key: SessionKey, engine: str, now: float, tier: str = ""
+    ) -> SessionDecision:
         session_id = self._new_session_id()
         self._store.put(SessionRecord(
             scope=key.scope,
@@ -140,6 +155,7 @@ class SessionManager:
             created_at=now,
             last_seen_ts="",
             updated_at=now,
+            tier=tier,
         ))
         return SessionDecision(
             session_id=session_id, resume=False, rebuild_full=True, after_ts=None,

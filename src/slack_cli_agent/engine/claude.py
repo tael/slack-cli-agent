@@ -2,8 +2,12 @@
 
 Paths go through --add-dir. We mint the session ID and pass it via
 --session-id; continuing turns pass the same value via --resume. The
-system prompt is resent every turn via --append-system-prompt — Claude
-refreshes it each turn, so nothing has to ride on the turn prompt.
+system prompt goes every turn via --append-system-prompt, but claude 2.1.319
+does not apply it on --resume: the resumed request carries the system text of
+the turn that opened the session (measured 2026-11-07, live session 4efce5d9
+and a CLI probe that swapped the value between two turns). So a turn whose
+instructions differ in kind -- another speaker tier -- must not resume;
+session/manager.py opens a new session for it.
 
 MCP servers (sca-kos.2): claude --help documents "--mcp-config <configs...>
 Load MCP servers from JSON files or strings (space-separated)", so the
