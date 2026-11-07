@@ -148,6 +148,8 @@ from ..review.trace import DebugTraceTask
 from ..session.awaiting import SqliteAwaitingStore
 from ..session.manager import SessionManager
 from ..session.store import SqliteSessionStore
+from ..shadow.service import ShadowPlugin, ShadowService, TurnResult, shadow_pairs, tool_calls_in
+from ..shadow.store import ShadowStore
 from ..slack.assistant import DEFAULT_GREETING, AssistantPanel
 from ..slack.attachments import AttachmentStore, DownloadResult
 from ..slack.channel_names import ChannelNameResolver
@@ -1425,6 +1427,77 @@ class Application:
             self._settings.request_timeout_sec,
         )
 
+    def shadow_runners(self) -> list[PeriodicRunner]:
+        """Shadow evaluation (G4): mirrors questions from each channel's
+        `shadow_source` into it and answers them blind. Its engine turns wait
+        for the same slots as requests, like a plugin job."""
+        owner = self._owner_client
+
+        def source_api(method: str, **params: Any) -> Any:
+            return owner.api_call(method, params=params).data
+
+        def post(channel: str, thread_ts: str | None, text: str) -> str | None:
+            rich = channel_is_rich(self._channels.get(channel))
+            return self.publisher().post(channel, thread_ts or "", text, rich)
+
+        def judge_enabled(channel: str) -> bool:
+            config = self._channels.get(channel)
+            return bool(config and config.extra.get("shadow_judge"))
+
+        service = ShadowService(
+            store=ShadowStore(self._database),
+            source_api=source_api if owner is not None else None,
+            post=post,
+            run_turn=self._shadow_turn,
+            pairs=lambda: shadow_pairs(self._channels.all()),
+            judge_enabled=judge_enabled,
+            name_of=self.user_namer(),
+            audit=self.audit().record,
+            requests_path=self._profile.paths.root / "shadow_requests.json",
+            bot_name=self._profile.display_name,
+            is_self=lambda m: bool(m.get("user")) and m.get("user") == self.identity.user_id,
+            max_parallel=self._settings.max_concurrent,
+        )
+        return background_runners(
+            [ShadowPlugin(service)], "worker", self.concurrency_slots(), self._settings.request_timeout_sec,
+        )
+
+    def _shadow_turn(self, prompt: str, channel: str, request_id: str) -> TurnResult:
+        """A read-only turn for someone who is not the owner: the question's
+        author is a stranger in the source channel, and the answer must not
+        reach what only the owner may see."""
+        principal = Principal(user_id="", channel=channel, trust=TrustLevel.GENERAL, is_direct_message=False)
+        config = self._channels.get(channel)
+        system_prompt = self._composer().compose(CompositionContext(
+            principal=principal,
+            prompt=prompt,
+            channel_mode=config.mode if config else "default",
+            channel_slug=slug_for(channel, config),
+            is_rich=channel_is_rich(config),
+            chat_level=config.chat if config else "normal",
+        ))
+        tools = ToolSelection.from_names(self.tool_policy().tool_list_for(principal, prompt=prompt, readonly=True))
+        response = self.engine_invoker.invoke(EngineRequest(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            session_id=None,
+            resume=False,
+            model=self.access_policy.model_for(principal),
+            effort=self.access_policy.effort_for(principal, prompt),
+            workdir=self._profile.work_root,
+            tools=tools,
+            requirements=self.execution_policy.requirements_for(config=config, tools=tools),
+            request_id=request_id,
+            readable_dirs=self.readable_dirs,
+            trust_level=TrustLevel.GENERAL,
+        ), CallOrigin.BACKGROUND)
+        calls = None
+        if response.ok and response.session_id:
+            reader: Any = self.transcript_reader(response.engine)
+            find = getattr(reader, "find_transcript_path", None) or getattr(reader, "transcript_path", None)
+            calls = tool_calls_in(find(response.session_id) if find else None)
+        return TurnResult(ok=response.ok, body=response.body, tool_calls=calls)
+
     def worker(self, worker_id: str = "worker") -> Worker:
         # unlike the other components here, a new Worker is created on every
         # call — worker_id must differ per process
@@ -2254,6 +2327,7 @@ class Application:
                 self.pending_report_runner(),
                 self.learning_batch_runner(),
                 self.stale_reclaim_runner(worker),
+                *self.shadow_runners(),
                 *self.plugin_job_runners("worker"),
             ],
             name="worker",
