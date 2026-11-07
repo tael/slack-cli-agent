@@ -126,6 +126,7 @@ from ..reliability.watchjobs import WatchJob, WatchJobQueue
 from ..reliability.watchresult import WatchOutcome, WatchResultReader
 from ..reliability.watchrunner import (
     WatchJobChecker,
+    watch_already_reported_prompt,
     watch_check_prompt,
     watch_supersede_prompt,
 )
@@ -1076,6 +1077,13 @@ class Application:
             # report posting, and both would reach the channel.
             thread_activity=self.thread_activity(),
             run_supersede_check=self._run_watch_supersede_check,
+            # The already-reported verdict, in its own tool-less turn: the
+            # thread text is not the registrant's, so it stays out of the
+            # check turn that has read tools (C6 review).
+            run_reported_check=self._run_watch_reported_check,
+            # A question deleted between registration and report would leave
+            # the report in a thread that is no longer the asker's (C6).
+            origin_alive=SlackOriginAliveChecker(self._client),
         )
 
     def watch_result_cleanup_runner(self) -> PeriodicRunner:
@@ -1221,6 +1229,20 @@ class Application:
         tools for that reason, which also keeps it from starting new work the
         way `watch_check_prompt` forbids for the check turn next to it.
         """
+        return self._run_watch_verdict(
+            job, watch_supersede_prompt(job.condition, transcript, draft),
+            f"watch-supersede-{job.id}-{job.run_id}",
+        )
+
+    def _run_watch_reported_check(self, job: WatchJob, transcript: str) -> EngineResponse:
+        """The already-reported verdict before a check, tool-less for the same
+        reason as the duplicate check: the transcript is anyone's text."""
+        return self._run_watch_verdict(
+            job, watch_already_reported_prompt(job.condition, transcript),
+            f"watch-reported-{job.id}-{job.run_id}",
+        )
+
+    def _run_watch_verdict(self, job: WatchJob, prompt: str, request_id: str) -> EngineResponse:
         principal = Principal(
             user_id=self._profile.owner_user_id if job.trust is TrustLevel.OWNER else "",
             channel=job.channel,
@@ -1229,7 +1251,6 @@ class Application:
         )
         config = self._channels.get(job.channel)
         workdir = _watch_workdir(job, config, self._profile.work_root)
-        prompt = watch_supersede_prompt(job.condition, transcript, draft)
         system_prompt = self._composer().compose(CompositionContext(
             principal=principal,
             prompt=prompt,
@@ -1250,13 +1271,15 @@ class Application:
             session_id=None,
             resume=False,
             model=self.access_policy.model_for(principal),
-            effort=self.access_policy.effort_for(principal, prompt),
+            # The condition, not the prompt: the prompt carries thread text,
+            # and a participant's "ultrathink" would raise the effort.
+            effort=self.access_policy.effort_for(principal, job.condition),
             workdir=workdir,
             tools=no_tools,
             requirements=self.execution_policy.requirements_for(
                 config=config, tools=no_tools,
             ),
-            request_id=f"watch-supersede-{job.id}-{job.run_id}",
+            request_id=request_id,
             readable_dirs=self.readable_dirs,
             trust_level=job.trust,
         ), CallOrigin.BACKGROUND)
