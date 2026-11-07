@@ -78,4 +78,4 @@ class Test받아들이는_subtype_목록은_한_벌이다:
     def test_마메치와_같은_목록이다(self) -> None:
         from slack_cli_agent.slack.message_kind import HUMAN_SUBTYPES
 
-        assert HUMAN_SUBTYPES == frozenset({"file_share", "thread_broadcast"})
+        assert frozenset({"file_share", "thread_broadcast"}) == HUMAN_SUBTYPES

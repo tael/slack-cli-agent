@@ -215,8 +215,6 @@ class BotMentionGuard(OutputGuard):
         )
 
 
-
-
 def calls_other_bot(is_bot: Callable[[str], bool], self_id: str, text: str) -> bool:
     """Whether a message names only other bots, not this one (C16).
 

@@ -1051,6 +1051,28 @@ class TestEventListener:
         assert ctx is not None
         assert ctx.unaddressed is True
 
+    def test_채널에도_보낸_스레드_답글도_봇이_낀_스레드면_받는다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        """"채널에도 보내기" 로 올린 답글은 subtype thread_broadcast 가 붙는다.
+        멘션이 없어도 봇이 낀 스레드의 이어진 말이면 일반 답글과 같이 받는다."""
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text(
+            '{"C1": {"answer_unaddressed": true}}', encoding="utf-8"
+        )
+        registry = ChannelRegistry(channels_file)
+        client = FakeWebClient()
+        client.set_replies_response({
+            "messages": [{"user": "U_BOT", "text": "지금 반영할까요?"}]
+        })
+        listener = EventListener(client, registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
+                 "subtype": "thread_broadcast", "text": "네"}
+        ctx = listener.from_message(event)
+        assert ctx is not None
+        assert ctx.thread_ts == "1.0"
+        assert ctx.unaddressed is True
+
     def test_표식만으로_물은_뒤_온_짧은_승인도_영속_플래그로_받는다(
         self, gate: ResponseGate, tmp_path: Path
     ) -> None:
