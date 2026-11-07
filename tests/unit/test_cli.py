@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 import json
 import signal
@@ -1461,13 +1462,32 @@ class Test웹서버계약:
     시험 전부가 통과한 채로 서버가 기동 직후 예외로 끝났다.
     """
 
+    @staticmethod
+    def _빠진_멤버(target: object) -> list[str]:
+        """ServerLike 멤버 중 target 에 없는 이름.
+
+        isinstance 를 쓰지 않는다. 3.11 의 runtime_checkable 은 hasattr 로
+        속성을 읽어, 기동 전에 예외를 내는 port 속성을 없는 것으로 본다.
+        getattr_static 은 속성을 실행하지 않으므로 판과 무관하게 같다.
+        """
+        members = [n for n in vars(ServerLike) if not n.startswith("_")]
+        assert members, "ServerLike 멤버를 읽지 못했다"
+        missing = []
+        for name in members:
+            try:
+                inspect.getattr_static(target, name)
+            except AttributeError:
+                missing.append(name)
+        return missing
+
     def test_실물_서버가_명령이_부르는_계약을_만족한다(self, tmp_path: Path) -> None:
         from slack_cli_agent.web.server import WebServer
 
         server = WebServer(port=0, router=None)  # type: ignore[arg-type]  # 계약만 본다
-        assert isinstance(server, ServerLike)
+        assert self._빠진_멤버(server) == []
 
     def test_대역도_같은_계약을_만족한다(self) -> None:
+        assert self._빠진_멤버(FakeWebServer()) == []
         assert isinstance(FakeWebServer(), ServerLike)
 
 
