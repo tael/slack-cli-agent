@@ -1950,6 +1950,87 @@ class Test감시등록:
         assert [맥락.watch_run_id for 맥락 in deps["composer"].contexts] == ["첫", "둘"]
         assert 큐.enqueued[0]["run_id"] == "둘"
 
+    @staticmethod
+    def _띄운_흔적(tmp_path: Path, run_id: str) -> None:
+        자리 = tmp_path / ".watch-out"
+        자리.mkdir(exist_ok=True)
+        (자리 / f"{run_id}.out").write_text("", encoding="utf-8")
+
+    def test_세션_리셋_전_시도가_띄운_작업을_감시한다(self, tmp_path: Path) -> None:
+        """새 세션은 첫 시도가 띄운 작업을 모른다. 재시도 이름만 보면 첫 시도의
+        결과 파일은 아무도 읽지 않는다 (C14)."""
+        큐 = Fake감시큐()
+        self._띄운_흔적(tmp_path, "첫")
+        번호 = iter(["첫", "둘"])
+        pipeline, _deps = build_pipeline(
+            responses=[fail_response("nonzero_exit"), ok_response(body="진행 중입니다")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+            new_run_id=lambda: next(번호),
+        )
+        outcome = pipeline.handle(make_ctx())
+
+        assert [작업["run_id"] for 작업 in 큐.enqueued] == ["첫"]
+        assert outcome.watching is True
+
+    def test_세션_리셋_뒤_태그만_있으면_첫_시도_결과_파일로_등록한다(
+        self, tmp_path: Path,
+    ) -> None:
+        """재시도가 아무것도 띄우지 않고 태그만 남기면, 재시도 이름의 결과
+        파일은 끝내 생기지 않아 확인 턴이 NOT_LAUNCHED 만 읽는다."""
+        큐 = Fake감시큐()
+        self._띄운_흔적(tmp_path, "첫")
+        번호 = iter(["첫", "둘"])
+        pipeline, _deps = build_pipeline(
+            responses=[fail_response("nonzero_exit"), ok_response(body="네\n\n[[WATCH: 작업]]")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+            new_run_id=lambda: next(번호),
+        )
+        pipeline.handle(make_ctx())
+
+        assert 큐.enqueued[0]["run_id"] == "첫"
+        assert 큐.enqueued[0]["condition"] == "작업"
+
+    def test_세션_리셋_재시도_프롬프트에_앞선_작업을_알린다(self, tmp_path: Path) -> None:
+        """새 세션이 같은 작업을 다시 띄우면 DAG 트리거 같은 작업이 두 번 실행된다."""
+        self._띄운_흔적(tmp_path, "첫")
+        번호 = iter(["첫", "둘"])
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("nonzero_exit"), ok_response()],
+            tmp_path=tmp_path, new_run_id=lambda: next(번호),
+        )
+        pipeline.handle(make_ctx())
+
+        첫_프롬프트, 재시도_프롬프트 = (호출.prompt for 호출 in deps["runner"].calls)
+        결과_파일 = str(tmp_path / ".watch-out" / "첫.out")
+        assert 결과_파일 not in 첫_프롬프트
+        assert 결과_파일 in 재시도_프롬프트
+        assert "다시 시작하지" in 재시도_프롬프트
+
+    def test_세션_리셋_전_시도가_띄운_것이_없으면_알리지_않는다(self, tmp_path: Path) -> None:
+        번호 = iter(["첫", "둘"])
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("nonzero_exit"), ok_response()],
+            tmp_path=tmp_path, new_run_id=lambda: next(번호),
+        )
+        pipeline.handle(make_ctx())
+
+        assert "다시 시작하지" not in deps["runner"].calls[1].prompt
+
+    def test_재시도도_띄웠으면_재시도_결과_파일을_감시한다(self, tmp_path: Path) -> None:
+        """안내에도 재시도가 다시 띄웠으면 새 결과 파일이 이번 답의 근거다."""
+        큐 = Fake감시큐()
+        self._띄운_흔적(tmp_path, "첫")
+        self._띄운_흔적(tmp_path, "둘")
+        번호 = iter(["첫", "둘"])
+        pipeline, _deps = build_pipeline(
+            responses=[fail_response("nonzero_exit"), ok_response(body="띄웠습니다")],
+            guards=[WatchPromiseGuard()], watch_queue=큐, tmp_path=tmp_path,
+            new_run_id=lambda: next(번호),
+        )
+        pipeline.handle(make_ctx())
+
+        assert [작업["run_id"] for 작업 in 큐.enqueued] == ["둘"]
+
     def test_기본_생성기는_요청마다_다른_값을_낸다(self, tmp_path: Path) -> None:
         """주입한 값의 전달만 보면 기본 생성기가 상수로 회귀해도 안 걸린다."""
         큐 = Fake감시큐()
