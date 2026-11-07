@@ -31,6 +31,7 @@ from slack_cli_agent.core.markers import (
 from slack_cli_agent.core.secrets import count_outbound_secrets, redact_outbound
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.render.blocks import BlockBuilder
+from slack_cli_agent.render.file_links import strip_file_permalinks
 from slack_cli_agent.render.markdown import MarkdownConverter
 from slack_cli_agent.render.notion_links import fix_notion_links
 from slack_cli_agent.render.splitter import (
@@ -205,6 +206,18 @@ class MessagePublisher:
             return None
         return cleaned
 
+    def _strip_file_links(self, channel: str, thread_ts: str, text: str) -> str:
+        """Removes Slack file permalinks (D4). Slack re-attaches a linked file
+        to the message, so leaving the link posts the same file card twice."""
+        stripped = strip_file_permalinks(text)
+        if stripped != text:
+            log.info("파일 permalink 를 본문에서 뗐다. 같은 파일이 두 번 붙는다 : %s", thread_ts)
+            self._audit(
+                kind=IncidentKind.FILE_PERMALINK_STRIPPED.value,
+                channel=channel, thread_ts=thread_ts,
+            )
+        return stripped
+
     def post(
         self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
     ) -> str | None:
@@ -245,6 +258,7 @@ class MessagePublisher:
             return None
         text = self._redact(channel, thread_ts, cleaned)
         text, _ = fix_notion_links(text)
+        text = self._strip_file_links(channel, thread_ts, text)
         text, csv_payloads = extract_csv_blocks(text)
         if rich:
             separated = self._verifier.separate_tables(text)
@@ -429,8 +443,10 @@ class MessagePublisher:
         if cleaned is None:
             raise SlackError("교정본에 내부 표식만 있어 갱신하지 않았다")
         text = self._redact(channel, ts, cleaned)
-        # Same Notion `p/` fix as post(), so a correction can't post a dead link.
+        # Same Notion `p/` fix and file-link strip as post(), so a correction
+        # can't post a dead link or re-attach a file.
         text, _ = fix_notion_links(text)
+        text = self._strip_file_links(channel, ts, text)
         if rich:
             body = self._verifier.separate_tables(text)
             chunks = self._splitter.split_for_blocks(body)
