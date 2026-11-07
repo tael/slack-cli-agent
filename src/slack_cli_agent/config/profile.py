@@ -124,7 +124,10 @@ class McpServerSpec:
     #: gate); `is_owner` sets the var to "1" on an owner turn and drops it
     #: otherwise (the owner override that lifts a guard); `channel` sets the var
     #: to this turn's opaque channel token and drops it when the token is empty
-    #: (the per-channel render guard). The var names and the servers are
+    #: (the per-channel render guard); `turn_id` sets the var to this turn's
+    #: "channel:ts" and drops it when absent (C10: a server's audit row names
+    #: the request that called it -- Codex hands MCP servers none of its own
+    #: env, so TURN_ID never reaches them otherwise). The var names and the servers are
     #: organization config; the gating is the common skeleton for mametchi's
     #: per-turn WRITE_ENABLED, MAMETCHI_POST_ANY, and MAMETCHI_POST_CHANNEL env.
     turn_env: Mapping[str, str] = field(default_factory=dict)
@@ -141,7 +144,7 @@ class McpServerSpec:
     #: opaque per-turn channel token the caller supplies through
     #: EngineRequest.turn_context.
     _TURN_ENV_KEYS: ClassVar[frozenset[str]] = frozenset(
-        {"can_act", "is_owner", "channel"}
+        {"can_act", "is_owner", "channel", "turn_id"}
     )
 
     @classmethod

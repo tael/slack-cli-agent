@@ -133,6 +133,32 @@ OUTCOME_DOWNGRADED = "downgraded"
 OUTCOME_BLOCKED = "blocked"
 
 
+#: TURN_ID for a call made outside a Slack turn, same as mametchi's
+#: MAMETCHI_TURN=unknown (bot.py), which restart.ApplyRequest reads as no turn.
+UNKNOWN_TURN_ID = "unknown"
+
+
+def _with_default_turn_id(request: EngineRequest) -> EngineRequest:
+    """Give a request without a turn key one, so helper wrappers and MCP
+    servers still record which call ran them (C10).
+
+    Watch, review and learning calls build their EngineRequest without the
+    pipeline's TURN_ID; their audit rows then read the same empty turn as a
+    person's terminal call. The request_id (watch-<id>-<run_id> and the like)
+    names the call; "unknown" is left for a request with none. A caller's own
+    TURN_ID or turn_context turn_id is never replaced."""
+    turn = request.engine_env.get("TURN_ID") or request.turn_context.get("turn_id")
+    if not turn:
+        turn = request.request_id or UNKNOWN_TURN_ID
+    engine_env = request.engine_env
+    turn_context = request.turn_context
+    if not engine_env.get("TURN_ID"):
+        engine_env = {**engine_env, "TURN_ID": turn}
+    if not turn_context.get("turn_id"):
+        turn_context = {**turn_context, "turn_id": turn}
+    return dataclasses.replace(request, engine_env=engine_env, turn_context=turn_context)
+
+
 def _outcome(unmet: Sequence[str], downgraded: Sequence[str]) -> str:
     if not unmet:
         return OUTCOME_COMPATIBLE
@@ -279,6 +305,7 @@ class EngineRunner:
         # Set before build_command: an engine that passes its own limit to the
         # CLI has to name the one enforced here (sca-ocie).
         request = dataclasses.replace(request, timeout_sec=timeout)
+        request = _with_default_turn_id(request)
         self._record_payload(engine, request)
         base_source = self._source_env if self._source_env is not None else os.environ
         # Stamp the turn deadline so the child engine's Stop hook and Bash
@@ -956,6 +983,11 @@ class FallbackEngine(Engine):
             # The same reason in the audit: this is the next attempt at one
             # request, not a second request (sca-4ol).
             request_id=request.request_id,
+            # Per-turn facts are the same turn's on either engine: dropping them
+            # lost TURN_ID, the Stop hook's channel sets and the MCP turn_env
+            # tokens for every turn served by the fallback (C10).
+            turn_context=request.turn_context,
+            engine_env=request.engine_env,
         )
         return self.runner.run(self.secondary, fallback_request)
 

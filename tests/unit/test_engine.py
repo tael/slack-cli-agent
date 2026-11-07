@@ -1693,7 +1693,11 @@ class TestEngineRunner:
         assert resp.body == "답변"
         assert calls[0][0] == ["fake-bin", "안녕"]
         # timeout_sec 은 실행기가 채운다 - 그 값이 실제로 적용되는 제한이다 (sca-ocie).
-        assert engine.built == [request(timeout_sec=SETTINGS.request_timeout_sec)]
+        # 턴 밖 호출에는 턴키가 없어 "unknown" 이 채워진다 (C10).
+        assert engine.built == [request(
+            timeout_sec=SETTINGS.request_timeout_sec,
+            engine_env={"TURN_ID": "unknown"}, turn_context={"turn_id": "unknown"},
+        )]
 
     def test_자식_환경에_턴_마감시각을_싣는다(self, tmp_path: Path) -> None:
         """A28 — Stop 훅·Bash 가드가 남은 턴 시간을 읽도록 실행기가 자식

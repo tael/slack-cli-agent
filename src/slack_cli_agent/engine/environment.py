@@ -32,6 +32,8 @@ directly, so tests aren't coupled to the real process environment.
 
 from __future__ import annotations
 
+import re
+
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
@@ -59,11 +61,51 @@ TURN_WRAPUP_SEC = 60
 DEFAULT_MCP_TOOL_TIMEOUT_MS = "300000"
 
 
-def _turn_id(source_env: Mapping[str, str]) -> dict[str, str]:
-    """TURN_ID ("channel:ts") when the runner stamped one: a turn writes it as
-    the apply-request marker's second line (reliability/restart.py), the same
-    as mametchi apply.sh with MAMETCHI_TURN. Not a credential."""
-    return {"TURN_ID": source_env["TURN_ID"]} if source_env.get("TURN_ID") else {}
+#: Comma-separated extra names the turn ID is also exported under, read from
+#: the bot process's own environment (the profile's run.sh). Helper scripts
+#: written for another runtime read the turn key under their own name --
+#: mametchi's mb_card.py writes MAMETCHI_TURN into its audit row -- and would
+#: otherwise log an empty turn (C10). The list itself is not passed on.
+TURN_ID_ALIASES_ENV = "SCA_TURN_ID_ALIASES"
+
+_ALIAS_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+
+#: Names an alias may never take even when the policy left them unset: the
+#: fixed base env and engine homes (build() sets CODEX_HOME/HOME after
+#: _base_env). Everything else the policy fills is protected by
+#: _with_turn_id() reading the env it already built.
+_RESERVED_ALIAS_NAMES = frozenset({
+    "PATH", "LANG", "HOME", "USER", "SHELL", "BOT_PROFILE", "TURN_ID",
+    "CODEX_HOME", "TMPDIR",
+})
+
+
+def _with_turn_id(
+    env: dict[str, str],
+    source_env: Mapping[str, str],
+    guarded: frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    """Add TURN_ID ("channel:ts") when the runner stamped one: a turn writes it
+    as the apply-request marker's second line (reliability/restart.py), the
+    same as mametchi apply.sh with MAMETCHI_TURN. Not a credential.
+
+    Each valid name in SCA_TURN_ID_ALIASES gets the same value, so a wrapper
+    launched from the engine's shell finds the turn under the name it reads.
+    An alias never replaces a name the policy owns: anything already in env,
+    NON_INTERACTIVE_ENV, or `guarded` (the policy's allowlist, which covers
+    guard vars that are unset this turn -- an empty SCA_VERIFY_NESTED is what
+    keeps the Stop hook's model verify on). Invalid or owned names are skipped
+    rather than failing the turn."""
+    turn = source_env.get("TURN_ID")
+    if not turn:
+        return env
+    owned = set(env) | set(NON_INTERACTIVE_ENV) | guarded | _RESERVED_ALIAS_NAMES
+    env["TURN_ID"] = turn
+    for name in (source_env.get(TURN_ID_ALIASES_ENV) or "").split(","):
+        name = name.strip()
+        if name and _ALIAS_NAME_RE.fullmatch(name) and name not in owned:
+            env[name] = turn
+    return env
 
 
 class EngineEnvironmentPolicy(ABC):
@@ -119,7 +161,7 @@ class CodexEnvironmentPolicy(EngineEnvironmentPolicy):
         # leaks that path into this bot's process even though CODEX_HOME
         # is correctly overridden below by build().
         home = str(self.home_dir) if self.home_dir is not None else source_env.get("HOME", "")
-        return {
+        return _with_turn_id({
             "PATH": source_env.get("PATH", "/usr/bin:/bin"),
             "LANG": source_env.get("LANG", "ko_KR.UTF-8"),
             "HOME": home,
@@ -128,8 +170,7 @@ class CodexEnvironmentPolicy(EngineEnvironmentPolicy):
             # bot's token and channel config.
             "BOT_PROFILE": self.profile_name,
             **NON_INTERACTIVE_ENV,
-            **_turn_id(source_env),
-        }
+        }, source_env, _GUARD_VAR_NAMES)
 
 
 class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
@@ -147,14 +188,13 @@ class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
     CREDENTIAL_FILES = ((_AGY_TOKEN, _AGY_TOKEN),)
 
     def _base_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
-        return {
+        return _with_turn_id({
             "PATH": source_env.get("PATH", "/usr/bin:/bin"),
             "LANG": source_env.get("LANG", "ko_KR.UTF-8"),
             "HOME": source_env.get("HOME", ""),
             "BOT_PROFILE": self.profile_name,
             **NON_INTERACTIVE_ENV,
-            **_turn_id(source_env),
-        }
+        }, source_env, _GUARD_VAR_NAMES)
 
 
 def _account_file_token(source_env: Mapping[str, str]) -> str | None:
@@ -235,8 +275,7 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         "SCA_FINISH_VERIFY_MODEL",
         # Set inside the nested verify claude so its own run never re-verifies.
         "SCA_VERIFY_NESTED",
-        # "channel:ts" of this turn, for the apply-request marker's second line.
-        "TURN_ID",
+        # TURN_ID ("channel:ts") and its aliases go through _with_turn_id().
     })
 
     #: Empty on purpose: claude keeps its subscription credentials in the
@@ -258,7 +297,13 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
             env["CLAUDE_CODE_OAUTH_TOKEN"] = account_token
         env.setdefault("MCP_TOOL_TIMEOUT", DEFAULT_MCP_TOOL_TIMEOUT_MS)
         env.update(NON_INTERACTIVE_ENV)
-        return env
+        return _with_turn_id(env, source_env, self.ADDITIONAL_ALLOWED_VARS)
+
+
+#: Guard and turn-fact var names the built-in hooks read (finish_review,
+#: turn_budget). Codex and Gemini do not pass them through, but an alias must
+#: not mint one there either: the names mean the same thing to any hook.
+_GUARD_VAR_NAMES = ClaudeEnvironmentPolicy.ADDITIONAL_ALLOWED_VARS
 
 
 class EngineEnvironmentPolicyRegistry:
