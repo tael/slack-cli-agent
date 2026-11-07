@@ -33,6 +33,8 @@ log = logging.getLogger(__name__)
 # (channel, thread_ts, body)
 ReplyCallback = Callable[[str, str, str], None]
 ChannelName = Callable[[str], str]
+# (channel, ts) -> permalink, "" when Slack gives none
+Permalink = Callable[[str, str], str]
 AttemptKind = Literal["mention", "invite"]
 
 
@@ -51,6 +53,8 @@ class RequestAccess:
         notice_log: UnregisteredNoticeLog | None = None,
         # Slack does not notify a non-member mentioned in a private channel.
         notify_owner: Callable[[str], bool] | None = None,
+        # None leaves the thread link out of the owner's DM.
+        permalink: Permalink | None = None,
     ) -> None:
         self._policy = policy
         self._channels = channels
@@ -62,6 +66,7 @@ class RequestAccess:
         self._self_user_id = self_user_id
         self._notice_log = notice_log
         self._notify_owner = notify_owner
+        self._permalink = permalink
 
     def allows(self, channel: str, user: str) -> bool:
         """The check itself says nothing; a mention in an unregistered channel
@@ -138,8 +143,22 @@ class RequestAccess:
             name=self._channel_name(channel),
             bot=self._bot_name,
             action="초대했습니다" if kind == "invite" else "불렀습니다",
+            thread=self._thread_line(channel, thread_ts),
         )
         try:
             self._notify_owner(text)
         except Exception as exc:  # noqa: BLE001 - a failed DM must not break event handling
             log.warning("소유자에게 미등록 채널 알림을 보내지 못했다 : %s", exc)
+
+    def _thread_line(self, channel: str, thread_ts: str) -> str:
+        """The owner's DM line pointing at the thread, so the owner need not
+        look for it (bot.py notify_unregistered_channel). An invite has no
+        thread, and a failed lookup only drops the line."""
+        if not thread_ts or self._permalink is None:
+            return ""
+        try:
+            link = self._permalink(channel, thread_ts)
+        except Exception as exc:  # noqa: BLE001 - the link is optional; the DM still goes out
+            log.warning("미등록 채널 스레드 링크를 얻지 못했다 : %s", exc)
+            return ""
+        return f"- 스레드 : {link}\n" if link else ""
