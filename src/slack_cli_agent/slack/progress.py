@@ -1,7 +1,10 @@
 """Shows progress as one Slack message while the engine runs.
 
-Three implementations, picked at runtime rather than by config:
+Four implementations, picked at runtime rather than by config:
 
+- SlackAgentStatusProgressSink turns on Slack's agent status ("<앱> 앱이
+  작업 중") and off again. Nothing is posted to the thread. This is what
+  the bot uses first (2026-11-07, matching mametchi).
 - SlackTaskCardProgressSink posts a task_card block and rewrites it with
   chat.update. The card carries the current step as its title and the
   finished steps as a bulleted list, and it ends as a complete card that
@@ -199,6 +202,55 @@ class SlackTaskCardProgressSink:
             "status": status,
             "details": _task_card_details(self._lines),
         }
+
+
+class SlackAgentStatusProgressSink:
+    """One request's progress shown as Slack's agent status, "<앱> 앱이 작업 중".
+
+    Puts nothing in the thread: agents.sessions.setStatus turns on the
+    status line Slack draws under the thread and turns it off again, so
+    the thread ends up holding the answer alone without a delete. Same
+    display the mametchi bot uses (2026-09-18), adopted here at the
+    owner's request on 2026-11-07 after comparing the two side by side.
+
+    The status takes only Slack's own values (active, processing,
+    suspended, closed); a free-text step label comes back as
+    invalid_arguments (mametchi measurement 2026-09-18), so append() is a
+    no-op and the step lines are not shown. Needs the app's agent feature;
+    a workspace without it raises on open() and FallbackProgressSink drops
+    to the task card.
+    """
+
+    def __init__(self, client: Any, channel: str, thread_ts: str) -> None:
+        if not thread_ts:
+            raise ProgressStreamUnavailable(f"상태를 걸 스레드가 없다 : {channel}")
+        self._client = client
+        self._channel = channel
+        self._thread_ts = thread_ts
+        self._on = False
+
+    def open(self, text: str) -> None:
+        self._set("processing")
+        self._on = True
+
+    def append(self, lines: Sequence[str]) -> None:
+        return None
+
+    def close(self) -> None:
+        if not self._on:
+            return
+        self._on = False
+        try:
+            self._set("active")
+        except Exception as exc:  # noqa: BLE001 - a status left on is worse reported than raised
+            log.debug("에이전트 상태 해제 실패 : %s:%s, %s", self._channel, self._thread_ts, exc)
+
+    def _set(self, status: str) -> None:
+        self._client.api_call("agents.sessions.setStatus", json={
+            "channel_id": self._channel,
+            "thread_ts": self._thread_ts,
+            "status": status,
+        })
 
 
 class ProgressStreamUnavailable(RuntimeError):

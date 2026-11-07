@@ -530,3 +530,53 @@ class TestFallbackProgressSink:
         sink.open(START_TEXT)
         assert client.started == []
         assert client.posted[0]["text"] == START_TEXT
+
+
+# 2026-11-07 : 마메치처럼 "앱이 작업 중" 상태 표시를 먼저 쓴다.
+class _StatusClient:
+    def __init__(self, fail: bool = False) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.fail = fail
+
+    def api_call(self, method: str, json: dict) -> dict:
+        self.calls.append((method, json))
+        if self.fail:
+            raise RuntimeError("invalid_arguments")
+        return {"ok": True}
+
+
+def test_agent_status_sink_turns_status_on_and_off_without_posting() -> None:
+    from slack_cli_agent.slack.progress import SlackAgentStatusProgressSink
+
+    client = _StatusClient()
+    sink = SlackAgentStatusProgressSink(client, "C1", "111.1")
+    sink.open("확인하는 중")
+    sink.append(["파일 읽는 중"])
+    sink.close()
+    sink.close()
+    assert [c[1]["status"] for c in client.calls] == ["processing", "active"]
+    assert all(c[0] == "agents.sessions.setStatus" for c in client.calls)
+    assert client.calls[0][1] == {"channel_id": "C1", "thread_ts": "111.1", "status": "processing"}
+
+
+def test_agent_status_sink_needs_thread() -> None:
+    from slack_cli_agent.slack.progress import SlackAgentStatusProgressSink
+
+    with pytest.raises(ProgressStreamUnavailable):
+        SlackAgentStatusProgressSink(_StatusClient(), "D1", "")
+
+
+def test_agent_status_rejected_falls_back() -> None:
+    from slack_cli_agent.slack.progress import SlackAgentStatusProgressSink
+
+    backup = FakeSink()
+    sink = FallbackProgressSink(
+        lambda: SlackAgentStatusProgressSink(_StatusClient(fail=True), "C1", "111.1"),
+        lambda: backup,
+    )
+    sink.open("확인하는 중")
+    sink.append(["파일 읽는 중"])
+    sink.close()
+    assert backup.opened == ["확인하는 중"]
+    assert backup.lines == ["파일 읽는 중"]
+    assert backup.closed == 1
