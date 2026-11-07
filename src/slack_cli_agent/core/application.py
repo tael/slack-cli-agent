@@ -164,6 +164,7 @@ from ..slack.owner_only_audit import OwnerOnlyChannelAudit
 from ..slack.participants import ThreadParticipants
 from ..slack.progress import (
     FallbackProgressSink,
+    SlackAgentStatusProgressSink,
     SlackProgressSink,
     SlackTaskCardProgressSink,
 )
@@ -635,15 +636,20 @@ class Application:
         if self._progress is None:
             self._progress = ProgressCoordinator(
                 settings=self._settings,
+                # 2026-11-07 김태일 지시 : 진행 카드 대신 마메치처럼 "앱이 작업 중"
+                # 상태 표시만 쓴다. 상태가 거부되면 카드, 카드도 거부되면 줄 표시로 내려간다.
                 sink_factory=lambda channel, thread_ts, _user: FallbackProgressSink(
-                    # 끝난 카드가 "작업 완료" 로 답 위에 남아 답이 두 개처럼 읽혔다
-                    # (2026-09-30 DE에이전트 시험). 끝나면 지워 스레드에 답만 남긴다.
-                    lambda: SlackTaskCardProgressSink(
-                        self._client, channel, thread_ts, self._profile.display_name,
-                        keep_on_close=False,
-                    ),
-                    lambda: SlackProgressSink(
-                        self._client, channel, thread_ts, self._profile.display_name,
+                    lambda: SlackAgentStatusProgressSink(self._client, channel, thread_ts),
+                    lambda: FallbackProgressSink(
+                        # 끝난 카드가 "작업 완료" 로 답 위에 남아 답이 두 개처럼 읽혔다
+                        # (2026-09-30 DE에이전트 시험). 끝나면 지워 스레드에 답만 남긴다.
+                        lambda: SlackTaskCardProgressSink(
+                            self._client, channel, thread_ts, self._profile.display_name,
+                            keep_on_close=False,
+                        ),
+                        lambda: SlackProgressSink(
+                            self._client, channel, thread_ts, self._profile.display_name,
+                        ),
                     ),
                 ),
                 log_dir=self._profile.paths.progress,
