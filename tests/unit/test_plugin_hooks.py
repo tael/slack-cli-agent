@@ -319,8 +319,8 @@ def test_자리가_찬_채_이벤트가_몰려도_대기는_상한까지만_쌓�
     gateway = _wire([hook], slots, spawn, wait_sec=5, max_pending=3)
     for i in range(20):
         gateway.dispatch("message", {"channel": "C1", "user": "U1", "ts": f"{i}.0"})
-    assert len(spawn.names) == 3
-    assert len(dropped) == 17
+    assert spawn.names.count("sample:h") == 3
+    assert _wait_until(lambda: len(dropped) == 17)
     slots.release(held)
     assert _wait_until(lambda: len(ran) == 3)
 
@@ -360,3 +360,110 @@ def test_애플리케이션이_플러그인_작업을_프로세스별_서비스�
     gateway = SlackGateway(client=None)
     app.ingress().register(gateway)
     assert gateway.handler_count("member_joined_channel") == 1
+
+
+def test_리액션은_item_채널로_판정하고_요청자_채널을_채운다() -> None:
+    seen: list[HookEvent] = []
+    gateway = _wire([EventHandler(event_type="reaction_added", name="r", handle=seen.append)], ThreadSlots(1))
+    for user, ts in (("U1", "1.0"), ("U0", "2.0")):
+        gateway.dispatch(
+            "reaction_added",
+            {
+                "user": user,
+                "reaction": "eyes",
+                "item": {"type": "message", "channel": "C1", "ts": "9.0"},
+                "event_ts": ts,
+            },
+        )
+    gateway.dispatch(
+        "reaction_added",
+        {
+            "user": "U1",
+            "reaction": "eyes",
+            "item": {"type": "message", "channel": "C9", "ts": "9.0"},
+            "event_ts": "3.0",
+        },
+    )
+    assert [(c.principal.user_id, c.principal.channel) for c in seen] == [("U1", "C1"), ("U0", "C1")]
+
+
+def test_하위_객체에_채널이_있는_이벤트도_채널을_읽는다() -> None:
+    seen: list[HookEvent] = []
+    gateway = _wire(
+        [
+            EventHandler(event_type="assistant_thread_started", name="a", handle=seen.append),
+            EventHandler(event_type="channel_created", name="c", handle=seen.append, audience="all"),
+        ],
+        ThreadSlots(1),
+    )
+    gateway.dispatch(
+        "assistant_thread_started",
+        {"assistant_thread": {"user_id": "U0", "channel_id": "D1", "thread_ts": "1.0"}, "event_ts": "1.0"},
+    )
+    gateway.dispatch("channel_created", {"channel": {"id": "C7", "creator": "U1"}, "event_ts": "2.0"})
+    assert [(c.principal.user_id, c.principal.channel) for c in seen] == [("U0", "D1"), ("U1", "C7")]
+
+
+def test_대기_초과_통지는_소켓_스레드를_막지_않는다() -> None:
+    slots = ThreadSlots(1)
+    held = slots.acquire(timeout=0)
+    release = threading.Event()
+    notified: list[str] = []
+
+    def slow_notice(call: HookEvent) -> None:
+        release.wait(5)
+        notified.append(call.event["ts"])
+
+    def handle(call: HookEvent) -> None:
+        with call.engine():
+            pass
+
+    hook = EventHandler(event_type="message", name="h", handle=handle, on_unavailable=slow_notice)
+    gateway = _wire([hook], slots, _CountingSpawner(), wait_sec=5, max_pending=1)
+    started = time.time()
+    for i in range(4):
+        gateway.dispatch("message", {"channel": "C1", "user": "U1", "ts": f"{i}.0"})
+    assert time.time() - started < 1
+    release.set()
+    assert _wait_until(lambda: sorted(notified) == ["1.0", "2.0", "3.0"])
+    slots.release(held)
+
+
+def test_종료_중이면_자리를_기다리지_않고_실패_통지한다() -> None:
+    slots = ThreadSlots(1)
+    held = slots.acquire(timeout=0)
+    dropped: list[HookEvent] = []
+
+    def handle(call: HookEvent) -> None:
+        with call.engine():
+            pytest.fail("자리 없이 실행됐다")
+
+    hook = EventHandler(event_type="message", name="h", handle=handle, on_unavailable=dropped.append)
+    gateway = SlackGateway(client=None)
+    for event_type, callback in event_callbacks(
+        [_Plugin(handlers=[hook])], InlineTaskSpawner(), slots, 900, policy=_Policy(), stopping=lambda: True
+    ):
+        gateway.on(event_type, callback)
+    started = time.time()
+    gateway.dispatch("message", {"channel": "C1", "user": "U1", "ts": "1.0"})
+    assert time.time() - started < 1
+    assert [c.event["ts"] for c in dropped] == ["1.0"]
+    slots.release(held)
+
+
+def test_애플리케이션_종료_표시가_이벤트_훅_대기에_전달된다(tmp_path: Path) -> None:
+    dropped: list[HookEvent] = []
+
+    def handle(call: HookEvent) -> None:
+        with call.engine():
+            pytest.fail("종료 중에 엔진 구간에 들어갔다")
+
+    hook = EventHandler(
+        event_type="member_joined_channel", name="h", handle=handle, audience="all", on_unavailable=dropped.append
+    )
+    app = Application(write_profile(tmp_path), FakeSlackClient(), plugins=[_Plugin(handlers=[hook])])
+    gateway = SlackGateway(client=None)
+    app.ingress().register(gateway)
+    app.mark_shutting_down()
+    gateway.dispatch("member_joined_channel", {"channel": "C5", "user": "U1", "event_ts": "1.0"})
+    assert _wait_until(lambda: len(dropped) == 1)

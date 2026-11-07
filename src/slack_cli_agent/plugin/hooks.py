@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
@@ -91,8 +92,10 @@ class EventHandler:
     # for someone joining); the hook then gets their GENERAL principal.
     audience: Literal["allowed", "all"] = "allowed"
     # Called when an accepted event could not run (no slot in time, too many
-    # pending). There is no later round for an event, so this is the place
-    # to tell the user or record it for a retry.
+    # pending, ingress stopping). There is no later round for an event, so
+    # this is the place to tell the user or record it for a retry. It runs
+    # off the socket thread, one call at a time per hook, so it may post or
+    # write; a burst of more than `max_notices` waiting calls is only logged.
     on_unavailable: Callable[[HookEvent], None] | None = None
 
 
@@ -175,22 +178,53 @@ def event_callbacks(
     policy: _Policy,
     self_user_id: Callable[[], str] = lambda: "",
     max_pending: int = 16,
+    max_notices: int = 256,
+    stopping: Callable[[], bool] = lambda: False,
 ) -> list[tuple[str, Callable[[Mapping[str, Any]], None]]]:
     """(event type, callback) pairs for SlackGateway.on.
 
     An event that passes the gate goes to `spawn`, so a hook waiting for a
     slot does not hold the socket thread. At most `max_pending` such events
     run or wait at once per hook; past that `on_unavailable` is told, so a
-    burst cannot grow threads without bound.
+    burst cannot grow threads without bound. `stopping` ends a slot wait
+    early, so an event waiting when the ingress stops is reported through
+    `on_unavailable` rather than lost with its daemon thread.
     """
-    engine = engine_slot(slots, wait_sec)
+    engine = engine_slot(slots, wait_sec, stopping=stopping)
     callbacks: list[tuple[str, Callable[[Mapping[str, Any]], None]]] = []
     for plugin in plugins:
         for hook in plugin.event_handlers():
             name = _full_name(plugin, hook.name)
             gate = _Gate(hook, policy, self_user_id)
-            callbacks.append((hook.event_type, _spawning(name, hook, gate, spawn, engine, max_pending)))
+            callbacks.append((hook.event_type, _spawning(name, hook, gate, spawn, engine, max_pending, max_notices)))
     return callbacks
+
+
+def _id(value: Any) -> str:
+    # channel and user are strings in most events and objects in a few
+    # (channel_created's channel, user_change's user).
+    if isinstance(value, Mapping):
+        return str(value.get("id") or "")
+    return str(value or "")
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _locate(event: Mapping[str, Any]) -> tuple[str, str]:
+    """(channel, user) wherever the event type keeps them: top level for
+    messages and joins, `item` for reactions (as the core listener reads
+    them), `assistant_thread` for the assistant panel, `channel.id` and
+    `channel.creator` for channel_created."""
+    item = _mapping(event.get("item"))
+    thread = _mapping(event.get("assistant_thread"))
+    raw_channel = event.get("channel")
+    channel = _id(raw_channel) or _id(item.get("channel")) or _id(thread.get("channel_id"))
+    user = _id(event.get("user")) or _id(thread.get("user_id"))
+    if not user and isinstance(raw_channel, Mapping):
+        user = _id(raw_channel.get("creator"))
+    return channel, user
 
 
 class _Gate:
@@ -205,12 +239,12 @@ class _Gate:
         self._dedup = DeduplicationTracker()
 
     def principal(self, event: Mapping[str, Any]) -> Principal | None:
-        user = str(event.get("user") or "")
+        channel, user = _locate(event)
         if event.get("bot_id") or (user and user == self._self_user_id()):
             return None
         if not self._hook.accepts(event):
             return None
-        principal = self._policy.principal_for(str(event.get("channel") or ""), user)
+        principal = self._policy.principal_for(channel, user)
         if self._hook.audience == "allowed" and not self._policy.accepts_request(principal):
             return None
         key = str(event.get("ts") or event.get("event_ts") or "")
@@ -226,17 +260,47 @@ def _spawning(
     spawn: TaskSpawner,
     engine: EngineSlot,
     max_pending: int,
+    max_notices: int,
 ) -> Callable[[Mapping[str, Any]], None]:
     pending = threading.BoundedSemaphore(max(1, max_pending))
+    notices: deque[HookEvent] = deque()
+    lock = threading.Lock()
+    draining = [False]
+
+    def drain() -> None:
+        # One drainer per hook at a time: a burst of refusals costs one
+        # thread, not one per event.
+        while True:
+            with lock:
+                if not notices:
+                    draining[0] = False
+                    return
+                call = notices.popleft()
+            try:
+                hook.on_unavailable(call)  # type: ignore[misc]
+            except Exception:
+                log.exception("훅 실패 통지 실패 : %s", name)
 
     def unavailable(call: HookEvent, reason: str) -> None:
         log.error("훅 이벤트를 실행하지 못했다 : %s : %s : %s", name, reason, call.event.get("ts"))
         if hook.on_unavailable is None:
             return
+        # Never on the caller's thread: past max_pending the caller is the
+        # socket thread, at the moment events are already backing up.
+        with lock:
+            if len(notices) >= max(1, max_notices):
+                log.error("통지 대기 %d건 초과로 통지를 생략한다 : %s : %s", max_notices, name, call.event.get("ts"))
+                return
+            notices.append(call)
+            if draining[0]:
+                return
+            draining[0] = True
         try:
-            hook.on_unavailable(call)
+            spawn.spawn(f"{name}:unavailable", drain)
         except Exception:
-            log.exception("훅 실패 통지 실패 : %s", name)
+            with lock:
+                draining[0] = False
+            log.exception("훅 실패 통지 스레드를 띄우지 못했다 : %s", name)
 
     def on_event(event: Mapping[str, Any]) -> None:
         principal = gate.principal(event)
