@@ -146,16 +146,41 @@ class ApplySupervisor:
         except OSError:
             return None
 
+    def _changed_age(self, path: Path) -> float | None:
+        """Time since the file was last written, renamed or touched.
+
+        A rename keeps st_mtime, so a request another supervisor (mametchi
+        watchdog.py) has just moved into apply-running still carries the
+        request's age, which after a long review deferral exceeds the TTL.
+        The rename does update st_ctime, so the newer of the two is used.
+        """
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        return self._now() - max(st.st_mtime, st.st_ctime)
+
+    def _abandoned(self) -> bool:
+        age = self._changed_age(self._running)
+        return age is not None and age > self._ttl
+
     def _due(self) -> bool:
-        running = self._age(self._running)
-        if running is not None:
-            return running > self._ttl
+        if self._running.exists():
+            return self._abandoned()
         request = self._age(self._request)
         return request is not None and request >= self._grace
 
     def _claim(self) -> ApplyRequest | None:
-        """Renames atomically so two passes can't run the same restart."""
-        if self._age(self._running) is None:
+        """Renames atomically so two passes can't run the same restart.
+
+        apply-running can appear between _due and here (another supervisor
+        took the request while _busy ran). It is taken over only when it is
+        still abandoned at this point; otherwise it is someone else's restart.
+        """
+        if self._running.exists():
+            if not self._abandoned():
+                return None
+        else:
             try:
                 self._request.replace(self._running)
             except OSError:

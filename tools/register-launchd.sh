@@ -5,8 +5,8 @@
 #   tools/register-launchd.sh <이름> [역할...]
 #
 # 역할을 안 주면 ingress 와 worker 를 등록한다. supervisor 는 재기동 요청
-# 표식을 집어 재기동하는 감독(slack-cli-agent supervise)이다. 이미 도는 봇에
-# 감독만 붙일 때는 역할로 supervisor 하나만 준다. 그러면 ingress 와 worker 는
+# 표식을 집어 재기동하는 감독이다(실행 명령은 slack-cli-agent supervise).
+# 이미 도는 봇에 감독만 붙일 때는 역할로 supervisor 하나만 준다. 그러면 ingress 와 worker 는
 # bootout 되지 않는다. 상태 디렉터리가 ~/.<이름> 이 아니면 STATE_DIR 로 준다.
 #
 # 웹 콘솔은 여기서 안 띄운다. 콘솔은 모든 봇을 함께 보여주므로 봇에 매면
@@ -26,7 +26,10 @@ SD=${STATE_DIR:-$HOME/.$NAME}
 mkdir -p ~/Library/LaunchAgents "$SD/logs"
 
 gen() {
-  local role=$1 extra=$2
+  local role=$1 extra=$2 cmd=$1
+  # 역할 이름은 레이블과 로그 이름이고, run.sh 는 마지막 인자를 그대로
+  # slack-cli-agent 명령으로 넘긴다. 감독의 명령 이름은 supervise 다.
+  [ "$role" = supervisor ] && cmd=supervise
   cat > ~/Library/LaunchAgents/local.$NAME.$role.plist <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -34,7 +37,7 @@ gen() {
 <dict>
   <key>Label</key><string>local.$NAME.$role</string>
   <key>ProgramArguments</key>
-  <array><string>/bin/bash</string><string>$SD/run.sh</string><string>$role</string>$extra</array>
+  <array><string>/bin/bash</string><string>$SD/run.sh</string><string>$cmd</string>$extra</array>
   <key>RunAtLoad</key><true/>
   <!-- KeepAlive 를 참으로 두면 설정 오류로 못 뜨는 봇이 ThrottleInterval
        주기로 영원히 재기동한다. 표식이 없을 때만 살려 두어 설정 오류는 한 번

@@ -345,8 +345,24 @@ class Test감독_등록:
         assert sorted(p.name for p in agents.iterdir()) == ["local.testbot.supervisor.plist"]
         assert "worker" not in 기록 and "ingress" not in 기록
         plist = plistlib.loads((agents / "local.testbot.supervisor.plist").read_bytes())
-        assert plist["ProgramArguments"][-1] == "supervisor"
         assert plist["Label"] == "local.testbot.supervisor"
+
+    @pytest.mark.parametrize("role", ["supervisor", "worker", "ingress"])
+    def test_plist_인자가_CLI_파서를_통과한다(self, tmp_path: Path, role: str) -> None:
+        """run.sh 는 받은 인자를 그대로 slack-cli-agent 에 넘긴다. 역할 이름과
+        명령 이름이 어긋나면 argparse 가 2 로 끝나고 launchd 가 10초마다 다시
+        띄운다. plist 와 파서를 따로 시험하면 이 어긋남이 안 잡힌다."""
+        from slack_cli_agent.cli import SlackCliAgent
+
+        결과, _ = self._돌린다(tmp_path, role)
+        assert 결과.returncode == 0, 결과.stderr
+        plist = plistlib.loads(
+            (tmp_path / f"Library/LaunchAgents/local.testbot.{role}.plist").read_bytes()
+        )
+        넘길인자 = plist["ProgramArguments"][2:]
+        args = SlackCliAgent().build_parser().parse_args([*넘길인자, "--profile", "testbot"])
+        기대 = {"supervisor": "supervise"}.get(role, role)
+        assert args.command == 기대
 
     def test_STATE_DIR_로_상태_디렉터리를_바꾼다(self, tmp_path: Path) -> None:
         sd = tmp_path / ".testbot-sca"

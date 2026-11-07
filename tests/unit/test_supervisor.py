@@ -142,13 +142,39 @@ def test_진행_중_점검이_있으면_미룬다(tmp_path: Path) -> None:
 
 
 def test_끊긴_실행은_TTL_뒤_다시_집는다(tmp_path: Path) -> None:
+    import time
+
     env = 가짜환경(tmp_path)
     running = tmp_path / "apply-running"
     running.write_text(f"{int(env.t)}\n")
+    # ctime 은 되돌릴 수 없어 시계를 앞으로 보낸다. 마지막 변경이 1000초 전이다.
+    env.t = time.time() + 1000
     os.utime(running, (env.t - 10, env.t - 10))
     assert env.supervisor(run_ttl_sec=900).tick() is None
     os.utime(running, (env.t - 1000, env.t - 1000))
     assert env.supervisor(run_ttl_sec=900).tick() == "restarted"
+
+
+def test_다른_감독이_먼저_옮긴_실행은_집지_않는다(tmp_path: Path) -> None:
+    """마메치 watchdog 이 _due 와 _claim 사이에 apply-request 를 apply-running
+    으로 옮기면, 그 파일은 남의 재기동이다. 집으면 한 요청으로 두 번 재기동한다.
+
+    rename 은 mtime 을 그대로 두므로 오래 미뤄진 요청은 mtime 만 보면 TTL 을
+    넘은 것처럼 보인다. 옮긴 시각은 ctime 에 남는다.
+    """
+    import time
+
+    env = 가짜환경(tmp_path)
+    env.t = time.time()
+    env.표식(age=1000)
+
+    def 그사이_옮김() -> int:
+        os.replace(tmp_path / "apply-request", tmp_path / "apply-running")
+        return 0
+
+    assert env.supervisor(busy=그사이_옮김, run_ttl_sec=900).tick() is None
+    assert env.kick == []
+    assert (tmp_path / "apply-running").exists()
 
 
 def test_재기동_중에_들어온_새_표식은_지우지_않는다(tmp_path: Path) -> None:
