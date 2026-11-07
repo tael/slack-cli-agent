@@ -19,8 +19,8 @@ from identity_support import fake_identity
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.result import OutcomeKind
-from slack_cli_agent.reliability.catchup import StuckCause
 from slack_cli_agent.observability.notices import NoticeCatalog
+from slack_cli_agent.reliability.catchup import StuckCause
 from slack_cli_agent.slack.gate import ResponseGate
 from slack_cli_agent.slack.identity import SlackBotIdentity
 
