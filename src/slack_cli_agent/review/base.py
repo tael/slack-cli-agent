@@ -80,7 +80,9 @@ class TranscriptPort(Protocol):
 
 @runtime_checkable
 class AnswerRecordFinderPort(Protocol):
-    def find(self, channel: str, thread_ts: str, text: str) -> Mapping[str, Any] | None: ...
+    def find(
+        self, channel: str, thread_ts: str, text: str, msg_ts: str | None = None
+    ) -> Mapping[str, Any] | None: ...
 
 
 @runtime_checkable
@@ -236,6 +238,12 @@ class ReviewTask(ABC):
 
     @abstractmethod
     def build_prompt(self, target: ReviewTarget, *, transcript: str, flagged: str, question: str) -> str: ...
+
+    def prompt_extras(self, record: Mapping[str, Any] | None) -> dict[str, Any]:
+        """Extra build_prompt keywords a subclass needs from the run record.
+        Default none, so tasks that read only the flagged text keep their
+        signature."""
+        return {}
 
     @abstractmethod
     def header_title(self, target: ReviewTarget) -> str: ...
@@ -472,10 +480,13 @@ class ReviewTask(ABC):
         thread_ts = msg.get("thread_ts") or target.ts
         flagged = (msg.get("text") or "").strip()
         transcript = self._transcript.transcript(target.channel, thread_ts)
-        record = self._answer_finder.find(target.channel, thread_ts, flagged)
+        record = self._answer_finder.find(target.channel, thread_ts, flagged, msg_ts=target.ts)
         question = (record or {}).get("question") or ""
 
-        prompt = self.build_prompt(target, transcript=transcript, flagged=flagged, question=question)
+        prompt = self.build_prompt(
+            target, transcript=transcript, flagged=flagged, question=question,
+            **self.prompt_extras(record),
+        )
         # None: the engine that runs this mints the ID in its own format.
         # Minting a UUID here happened to work only because all three CLIs
         # accept one today (sca-k6s).

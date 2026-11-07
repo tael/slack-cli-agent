@@ -46,7 +46,7 @@ class FakeAnswerFinder:
     def __init__(self, record: Mapping[str, Any] | None = None) -> None:
         self._record = record
 
-    def find(self, channel: str, thread_ts: str, text: str) -> Mapping[str, Any] | None:
+    def find(self, channel: str, thread_ts: str, text: str, msg_ts: str | None = None) -> Mapping[str, Any] | None:
         return self._record
 
 

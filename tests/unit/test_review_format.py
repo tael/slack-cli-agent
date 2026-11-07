@@ -52,12 +52,48 @@ class Test프롬프트:
     def test_리치채널표기를담는다(self) -> None:
         task = make_task()
         target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
-        prompt = task.build_prompt(target, transcript="", flagged="답변", question="")
+        prompt = task.build_prompt(
+            target, transcript="", flagged="답변", question="", record={"answer": "답변"}
+        )
         assert "리치" in prompt
         assert "내용이 맞았는지 틀렸는지는 보지 않는다" in prompt
         assert "/prompts" in prompt
         assert "/persona" in prompt
         assert "/venv/bin/python -m slack_cli_agent.cli rewrite --profile example --channel C1 --update 1.1" in prompt
+
+    def test_원문기록이없으면교정명령을주지않는다(self) -> None:
+        """기록이 없으면 본문은 알림 미리보기 한 줄이다. 그걸로 --update 하면 본문이 지워진다."""
+        task = make_task()
+        target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
+        prompt = task.build_prompt(target, transcript="", flagged="미리보기", question="", record=None)
+        assert "--update" not in prompt
+        assert "원 메시지를 고치지 않는다" in prompt
+
+    def test_원문기록이있으면기록answer로교정한다(self) -> None:
+        task = make_task()
+        target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
+        record = {"answer": "| 표 | 원문 |\n|---|---|\n| a | b |"}
+        prompt = task.build_prompt(target, transcript="", flagged="미리보기", question="", record=record)
+        assert "| 표 | 원문 |" in prompt
+        assert "미리보기" not in prompt.split("===== 지목한 답변 원문 =====")[1].split("===== 답변 끝")[0]
+        assert "--channel C1 --update 1.1" in prompt
+
+    def test_여러조각으로나간답이면교정명령을주지않는다(self) -> None:
+        """조각 하나에 답 전체 교정본을 쓰면 첫 조각 내용이 겹치고 스레드가 무너진다."""
+        task = make_task()
+        target = ReviewTarget(channel="C1", ts="1.2", by_user="U1", channel_name="회의방", rich=True)
+        record = {"answer": "긴 답 전체", "answer_ts": "1.1", "answer_parts": ["1.1", "1.2"]}
+        prompt = task.build_prompt(target, transcript="", flagged="미리보기", question="", record=record)
+        assert "--update" not in prompt
+        assert "긴 답 전체" in prompt
+        assert "2개 메시지" in prompt
+
+    def test_한조각답은교정명령을준다(self) -> None:
+        task = make_task()
+        target = ReviewTarget(channel="C1", ts="1.1", by_user="U1", channel_name="회의방", rich=True)
+        record = {"answer": "짧은 답", "answer_ts": "1.1", "answer_parts": ["1.1"]}
+        prompt = task.build_prompt(target, transcript="", flagged="미리보기", question="", record=record)
+        assert "--channel C1 --update 1.1" in prompt
 
     def test_평문채널표기를담는다(self) -> None:
         task = make_task()
