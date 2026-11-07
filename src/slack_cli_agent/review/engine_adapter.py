@@ -28,7 +28,7 @@ class ReviewEngineCaller:
         invoker: EngineInvoker,
         profile: Profile,
         workdir: Path,
-        system_prompt: str | Callable[[], str],
+        system_prompt: str | Callable[[str], str],
         readable_dirs: Sequence[Path] = (),
         model: str | None = None,
         effort: str | None = None,
@@ -57,9 +57,11 @@ class ReviewEngineCaller:
     ) -> EngineResponse:
         # A callable is composed per call, so an edit to the persona or the
         # prompt files reaches the next review without a restart, as it does
-        # for a normal request.
+        # for a normal request. It gets the review prompt so topic knowledge
+        # is chosen by the reviewed conversation's words.
         system_prompt = (
-            self._system_prompt() if callable(self._system_prompt) else self._system_prompt
+            self._system_prompt(prompt) if callable(self._system_prompt)
+            else self._system_prompt
         )
         request = EngineRequest(
             prompt=prompt,

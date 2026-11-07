@@ -195,7 +195,7 @@ from .errors import AgentError
 from .ingress import IngressService
 from .lifecycle import InflightCounter, InflightRegistry
 from .periodic import PeriodicRunner
-from .pipeline import RequestPipeline
+from .pipeline import RequestPipeline, _domain_applies
 from .services import ServiceGroup
 from .spawn import ThreadTaskSpawner
 from .sweeplog import SweepLog
@@ -1522,7 +1522,7 @@ class Application:
         """
         paths = self._profile.paths
 
-        def system_prompt() -> str:
+        def system_prompt(prompt: str) -> str:
             channel = self._profile.troubleshoot_channel
             config = self._channels.get(channel)
             principal = Principal(
@@ -1533,13 +1533,24 @@ class Application:
             )
             return self._composer().compose(CompositionContext(
                 principal=principal,
-                prompt="",
+                # The review prompt carries the transcript; its words pick the
+                # topic knowledge, as bot.py load_persona did with the prompt.
+                prompt=prompt,
                 channel_mode=config.mode if config else "default",
                 channel_slug=slug_for(channel, config),
-                channel=channel,
+                # channel is left empty on purpose: a review turn has no thread
+                # of its own, so ThreadCoordsSection would print an empty
+                # thread_ts and an upload would land at the channel top level.
+                # bot.py added thread_coords only on the normal reply path.
                 is_rich=channel_is_rich(config),
                 chat_level=config.chat if config else "normal",
                 authority_granted=self.access_policy.is_full_authority(principal),
+                # Same rule as an owner turn on the normal path (pipeline.py
+                # _compose_system_prompt), so a review sees the domain facts
+                # the reviewed conversation saw.
+                include_domain=_domain_applies(
+                    config.workdir if config else None, Path.home()
+                ),
                 postmortem=postmortem,
                 debug_trace=debug_trace,
                 format_review=format_review,

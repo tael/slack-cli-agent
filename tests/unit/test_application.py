@@ -1686,6 +1686,78 @@ class Test폴백엔진연결:
                     assert 다른지침 not in 시스템, (이모지, 다른이모지)
         application.close()
 
+    @staticmethod
+    def _점검_시스템지침(application: Application, prompt: str) -> dict[str, str]:
+        from slack_cli_agent.engine.base import EngineRequest, EngineResponse
+
+        class 기록기:
+            def __init__(self) -> None:
+                self.받은: list[EngineRequest] = []
+
+            def invoke(self, request: EngineRequest, origin: Any = None) -> EngineResponse:
+                self.받은.append(request)
+                return EngineResponse(
+                    ok=True, body="", session_id="s", model_actual=None,
+                    elapsed=0.0, turns=None, usage=None,
+                )
+
+        결과: dict[str, str] = {}
+        for 이모지, task in application.review_tasks().items():
+            기록 = 기록기()
+            task._engine._invoker = 기록
+            task._engine.run(prompt, None, False)
+            결과[이모지] = 기록.받은[0].system_prompt
+        return 결과
+
+    def test_점검_시스템_지침에_대화_좌표_줄이_없다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        """원본 bot.py 는 thread_coords 를 평소 답변 경로(bot.py:7863)에만 붙였다.
+        점검 턴은 thread_ts 가 없어 "thread_ts=" 로 빈 좌표가 실리고, 엔진이 그
+        값을 업로드 도구에 넘기면 파일이 점검 스레드가 아니라 채널 최상위로 간다."""
+        application = Application(profile, client)
+        for 이모지, 시스템 in self._점검_시스템지침(application, "점검").items():
+            assert "이 대화의 좌표" not in 시스템, 이모지
+        application.close()
+
+    def test_점검_시스템_지침이_점검_프롬프트로_주제별_지식을_싣는다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        """원본 load_persona 는 점검 프롬프트(대화 원문 포함)의 낱말로 주제별
+        지식을 골랐다. 빈 프롬프트로 조립하면 대화 주제의 지식이 빠진다."""
+        profile.paths.knowledge.mkdir(parents=True, exist_ok=True)
+        (profile.paths.knowledge / "_airflow.md").write_text(
+            "<!-- when: 에어플로우 -->\n에어플로우 주제 지식 원문", encoding="utf-8"
+        )
+        application = Application(profile, client)
+        for 이모지, 시스템 in self._점검_시스템지침(
+            application, "대화 원문 : 에어플로우 DAG 가 실패했다"
+        ).items():
+            assert "에어플로우 주제 지식 원문" in 시스템, 이모지
+        application.close()
+
+    def test_점검_시스템_지침이_평소_경로와_같은_규칙으로_도메인_파일을_싣는다(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory,
+        client: FakeSlackClient,
+    ) -> None:
+        """평소 소유자 턴은 채널 workdir 이 홈 밖 저장소면 도메인 파일을 싣는다
+        (pipeline._domain_applies). 같은 채널 대화의 부검이 그 사실을 못 보면
+        안 된다. 원본 bot.py 도 소유자 턴은 WORKDIR 이라 domain=True 였다."""
+        domain = tmp_path / "DOMAIN.md"
+        domain.write_text("사내 도메인 사실 원문", encoding="utf-8")
+        profile = write_profile(tmp_path, domain_file=str(domain))
+        # The home is isolated to tmp_path, so the repo must sit outside it.
+        repo = tmp_path_factory.mktemp("repo")
+        profile.paths.root.mkdir(parents=True, exist_ok=True)
+        profile.paths.channels.write_text(
+            json.dumps({"C_TROUBLE": {"name": "트러블", "workdir": str(repo)}}),
+            encoding="utf-8",
+        )
+        application = Application(profile, client)
+        for 이모지, 시스템 in self._점검_시스템지침(application, "점검").items():
+            assert "사내 도메인 사실 원문" in 시스템, 이모지
+        application.close()
+
 
     def test_한도소진부터_2차_실행까지_조립_전체가_이어진다(
         self, tmp_path: Path, client: FakeSlackClient
