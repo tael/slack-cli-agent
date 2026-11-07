@@ -540,8 +540,14 @@ class Application:
 
     def _composer(self) -> PromptComposer:
         paths = self._profile.paths
+        placeholders = {"OWNER_MENTION": f"<@{self._profile.owner_user_id}>"}
+        # The Airflow control tool is an org-specific path, so it comes from
+        # the profile (mametchi bot.py prompt_text fills the same slot).
+        if self._profile.airflow_ctl is not None:
+            placeholders["AIRFLOW_CTL"] = str(self._profile.airflow_ctl)
         library = PromptLibrary(
-            paths.prompts, placeholders={"OWNER_MENTION": f"<@{self._profile.owner_user_id}>"}
+            paths.prompts, placeholders=placeholders,
+            file_placeholders=("NEVER_DISCLOSE",),
         )
         knowledge = KnowledgeLoader(
             paths.persona / "PERSONA.md", paths.knowledge,
