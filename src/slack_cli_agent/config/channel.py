@@ -160,9 +160,9 @@ class ChannelConfig:
     needs this flag."""
     operators: frozenset[str] = frozenset()
     """Users who may make this bot act here (mametchi operators). A non-owner
-    listed here, or anyone when it holds ``"*"``, gets the owner tools minus
-    the bare write tools (``operator_full`` returns those) and minus the
-    profile's owner_only_tools. A bot never counts."""
+    listed here, or anyone when it holds ``"*"``, gets the profile's
+    operator_tools minus the bare write tools (``operator_full`` returns
+    those). A bot never counts."""
     airflow_admins: frozenset[str] = frozenset()
     """Users who get the profile's airflow_ctl wrapper as a scoped Bash grant."""
     extra_tools: tuple[str, ...] = ()

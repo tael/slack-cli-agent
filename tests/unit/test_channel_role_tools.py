@@ -1,11 +1,11 @@
 """A9 — 채널 역할 키(operators, operator_full, airflow_admins, extra_tools)를 도구 축에 연결한다.
 
 기준은 마메치 bot.py build_command 의 분기다.
-- operators 채널의 비소유자는 소유자 도구를 받되 맨 Bash·Edit·Write·NotebookEdit 는 빠진다
+- operators 채널의 비소유자는 프로필의 operator_tools 를 받되 맨 Bash·Edit·Write·NotebookEdit 는 빠진다
 - operator_full 채널의 operator 에게만 그 맨 이름이 돌아온다
 - airflow_admins 에 적힌 사람은 airflow 래퍼 Bash 하나를 받는다
 - extra_tools 는 그 채널의 턴에 그대로 붙는다
-- 봇은 operator 가 되지 않는다. owner_only_tools 는 operator 에게 가지 않는다
+- 봇은 operator 가 되지 않는다. operator_tools 에 없는 소유자 도구는 operator 에게 가지 않는다
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ CTL = "/opt/bot/airflow_ctl.sh"
 
 BASE = ("Read", "Grep")
 OWNER_TOOLS = ("Bash", "Edit", "Write", "WebFetch", "mcp__notion__*", "mcp__snowflake-rw__*")
+OPERATOR_TOOLS = ("Bash", "Edit", "Write", "WebFetch", "mcp__notion__notion-create-pages")
 
 
 def _policy(tmp_path: Path, channels: dict, *, airflow_ctl: str | None = CTL) -> AccessPolicy:
@@ -46,7 +47,7 @@ def _tools(policy: AccessPolicy) -> ToolPolicy:
         BASE, OWNER_TOOLS,
         channel_tools=policy.channel_tools_for,
         operator_level=policy.operator_level,
-        owner_only_tools=("mcp__snowflake-rw__*",),
+        operator_tools=OPERATOR_TOOLS,
     )
 
 
@@ -70,20 +71,20 @@ class Test운영자도구:
     def test_operators_비소유자는_맨_쓰기도구를_뺀_소유자도구를_받는다(self, tmp_path: Path) -> None:
         policy = _policy(tmp_path, {"C1": {"operators": [OP]}})
         붙은것 = _list(policy, "C1", OP)
-        assert "WebFetch" in 붙은것 and "mcp__notion__*" in 붙은것
+        assert "WebFetch" in 붙은것 and "mcp__notion__notion-create-pages" in 붙은것
         assert not {"Bash", "Edit", "Write"} & set(붙은것)
 
     def test_operator_full_채널에서만_맨_Bash_Edit_Write가_붙는다(self, tmp_path: Path) -> None:
         policy = _policy(tmp_path, {"C1": {"operators": [OP], "operator_full": True}})
         assert {"Bash", "Edit", "Write"} <= set(_list(policy, "C1", OP))
 
-    def test_owner_only_도구는_operator_full에도_가지_않는다(self, tmp_path: Path) -> None:
+    def test_operator_tools에_없는_소유자도구는_operator_full에도_가지_않는다(self, tmp_path: Path) -> None:
         policy = _policy(tmp_path, {"C1": {"operators": ["*"], "operator_full": True}})
         assert "mcp__snowflake-rw__*" not in _list(policy, "C1", OP)
 
     def test_별표는_모두를_operator로_연다(self, tmp_path: Path) -> None:
         policy = _policy(tmp_path, {"C1": {"operators": ["*"]}})
-        assert "mcp__notion__*" in _list(policy, "C1", OTHER)
+        assert "mcp__notion__notion-create-pages" in _list(policy, "C1", OTHER)
 
     def test_명단에_없는_사람과_다른_채널은_기본도구뿐이다(self, tmp_path: Path) -> None:
         policy = _policy(tmp_path, {"C1": {"operators": [OP]}, "C2": {}})
@@ -101,7 +102,7 @@ class Test운영자도구:
     def test_읽기전용_턴에는_쓰기도구가_남지_않는다(self, tmp_path: Path) -> None:
         policy = _policy(tmp_path, {"C1": {"operators": [OP], "operator_full": True}})
         붙은것 = _list(policy, "C1", OP, readonly=True)
-        assert not {"Bash", "Edit", "Write", "mcp__notion__*"} & set(붙은것)
+        assert not {"Bash", "Edit", "Write", "mcp__notion__notion-create-pages"} & set(붙은것)
 
 
 class TestAirflow관리자:

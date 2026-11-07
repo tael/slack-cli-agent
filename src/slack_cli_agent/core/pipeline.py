@@ -325,13 +325,18 @@ class RequestPipeline:
         return tuple(dirs)
 
     def _tools(
-        self, principal: Principal, prompt: str, config: ChannelConfig | None
+        self, principal: Principal, prompt: str, config: ChannelConfig | None,
+        *, from_bot: bool = False,
     ) -> ToolSelection:
         if self._tool_policy is None:
             return ToolSelection.unrestricted()
         # The bot check only matters off the owner path: operators never
-        # names a bot, and the lookup is a Slack call (mametchi authz.is_operator).
-        is_bot = principal.trust is not TrustLevel.OWNER and self._asker_is_bot(principal.user_id)
+        # names a bot (mametchi authz.is_operator). The event's bot_id decides
+        # first; the users_info lookup reads a failed call as "a person", so
+        # it only adds a bot the event did not mark (bot.py:7855).
+        is_bot = principal.trust is not TrustLevel.OWNER and (
+            from_bot or self._asker_is_bot(principal.user_id)
+        )
         return ToolSelection.from_names(self._tool_policy.tool_list_for(
             principal, prompt=prompt, skills_enabled=bool(config and config.skills),
             asker_is_bot=is_bot,
@@ -399,7 +404,7 @@ class RequestPipeline:
             self._progress.log_path_for(config, ctx.channel, ctx.ts)
             if self._progress is not None else None
         )
-        tools = self._tools(principal, ctx.text, config)
+        tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
         request = EngineRequest(
             prompt=prompt,
             system_prompt=system_prompt,
@@ -684,7 +689,7 @@ class RequestPipeline:
     ) -> tuple[str, dict[str, Any]]:
         is_owner = principal.trust is TrustLevel.OWNER
         asker_name = "" if is_owner else (self._name_resolver(ctx.user) or ctx.user)
-        asker_is_bot = False if is_owner else self._asker_is_bot(ctx.user)
+        asker_is_bot = False if is_owner else (ctx.from_bot or self._asker_is_bot(ctx.user))
         config = self._channels.get(ctx.channel)
         composition_ctx = CompositionContext(
             principal=principal,

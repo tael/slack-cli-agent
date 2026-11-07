@@ -2,8 +2,8 @@
 
     readonly (postmortem/debug trace)   known read-only tools only
     owner                                base + owner extras + channel extra_tools
-    channel operator (operators)         base + owner extras minus owner_only_tools,
-                                         bare Bash/Edit/Write only if operator_full
+    channel operator (operators)         base + the profile's operator_tools (no server
+                                         wildcard), bare Bash/Edit/Write only if operator_full
     an extension applies                 base + whatever the extension adds
     the channel lists the user           base + user_tools, extra_tools, airflow wrapper
     otherwise                            base tools only
@@ -59,6 +59,34 @@ def is_read_only_tool(name: str) -> bool:
     return name in READ_ONLY_TOOLS or name in READ_ONLY_MCP_TOOLS
 
 
+#: Browser tools that act on a page rather than read it. The browser profile
+#: keeps the owner's logins, so a non-owner never gets these, whatever a
+#: profile or channel lists (A9 review: mametchi's non-owner click/type/evaluate
+#: was a defect left behind, not a feature to carry over).
+BROWSER_ACTION_TOOLS: frozenset[str] = frozenset({
+    "browser_click", "browser_type", "browser_evaluate", "browser_fill_form",
+    "browser_press_key", "browser_select_option", "browser_drag", "browser_drop",
+    "browser_file_upload", "browser_handle_dialog", "browser_hover",
+    "browser_run_code_unsafe",
+})
+
+
+def _is_server_wildcard(name: str) -> bool:
+    return name.startswith("mcp__") and name.endswith("*")
+
+
+def _is_browser_action(name: str) -> bool:
+    return name.startswith("mcp__") and name.rsplit("__", 1)[-1] in BROWSER_ACTION_TOOLS
+
+
+def _non_owner_safe(names: Sequence[str]) -> list[str]:
+    kept = [name for name in names if not _is_browser_action(name)]
+    if len(kept) != len(names):
+        log.warning("비소유자 턴에서 뺀 브라우저 조작 도구 : %s",
+                    ", ".join(name for name in names if _is_browser_action(name)))
+    return kept
+
+
 def _granted_by(name: str, base_tools: Sequence[str]) -> bool:
     """Whether the profile's base tools already grant this MCP tool."""
     server = name.rsplit("__", 1)[0]
@@ -74,7 +102,7 @@ class ToolPolicy:
         channel_tools: Callable[[Principal], Sequence[str]] | None = None,
         always_skills: Sequence[str] = (),
         operator_level: Callable[..., str] | None = None,
-        owner_only_tools: Sequence[str] = (),
+        operator_tools: Sequence[str] = (),
     ) -> None:
         self._base_tools = tuple(base_tools)
         self._owner_tools = tuple(owner_tools)
@@ -82,7 +110,7 @@ class ToolPolicy:
         self._channel_tools = channel_tools
         self._always_skills = tuple(always_skills)
         self._operator_level = operator_level
-        self._owner_only_tools = frozenset(owner_only_tools)
+        self._operator_grant = tuple(operator_tools)
 
     def tool_list_for(
         self,
@@ -115,7 +143,8 @@ class ToolPolicy:
                     tools += list(ext.extra_tools(principal))
             if self._channel_tools is not None:
                 tools += [
-                    tool for tool in self._channel_tools(principal) if tool not in tools
+                    tool for tool in _non_owner_safe(self._channel_tools(principal))
+                    if tool not in tools
                 ]
         if not aside and skills_enabled:
             tools.append(SKILL_TOOL)
@@ -131,20 +160,28 @@ class ToolPolicy:
         return tuple(tools)
 
     def _operator_tools(self, principal: Principal, is_bot: bool) -> tuple[str, ...]:
-        """Owner tools a channel operator gets (mametchi build_command can_act).
+        """The profile's operator_tools for a channel operator (mametchi
+        OWNER_EXTRA_TOOLS, build_command can_act).
 
-        The bare write tools stay back unless the channel is operator_full --
-        the same flag engine/claude.py reads to lift its settings deny -- and
-        owner_only_tools (an ACCOUNTADMIN query server, say) never go.
+        An explicit list rather than owner_tools: owner_tools names whole
+        servers (mcp__gmail__*, mcp__kubernetes__*), and handing those to an
+        operator opened the owner's mail and cluster to anyone a channel lists
+        (A9 review). A server wildcard is dropped here even when the profile
+        writes one, and so is a browser action. The bare write tools stay back
+        unless the channel is operator_full -- the same flag engine/claude.py
+        reads to lift its settings deny.
         """
-        if self._operator_level is None:
+        if self._operator_level is None or not self._operator_grant:
             return ()
         level = self._operator_level(principal, is_bot=is_bot)
         if not level:
             return ()
+        wildcards = [name for name in self._operator_grant if _is_server_wildcard(name)]
+        if wildcards:
+            log.warning("operator_tools 의 서버 와일드카드는 붙이지 않는다 : %s", ", ".join(wildcards))
         return tuple(
-            name for name in self._owner_tools
-            if name not in self._owner_only_tools
+            name for name in _non_owner_safe(self._operator_grant)
+            if not _is_server_wildcard(name)
             and (level == OPERATOR_FULL or name not in OPERATOR_TOOLS)
         )
 

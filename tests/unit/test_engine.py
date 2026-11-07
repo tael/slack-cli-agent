@@ -947,10 +947,12 @@ class TestCodexEngineBuildCommand:
 
     def test_MCP_도구가_섞이면_내리지_않는다(self, tmp_path: Path) -> None:
         """READ_ONLY_TOOLS 는 내장 도구만 담는다. MCP 도구가 밖으로 쓰는지를
-        코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰)."""
+        코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰).
+        소유자 턴으로 본다 - 비소유자 턴은 operator_full 이 아니면 도구와
+        무관하게 read-only 다 (A9 검토)."""
         engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
         cmd = engine.build_command(request(
-            resume=False, model="gpt-5.6-sol",
+            resume=False, model="gpt-5.6-sol", trust_level=TrustLevel.OWNER,
             tools=ToolSelection.allow(["Read", "mcp__github__search_code"]),
         ))
         assert 'sandbox_mode="danger-full-access"' in cmd
