@@ -560,9 +560,16 @@ def _undefined_name_lines(tree: ast.AST) -> dict[str, int]:
 
 
 #: Modules the long-running commands import only after the gate has passed.
-#: `cli._default_application` pulls in `core.application` lazily, and with it
-#: the Slack SDK and the rest of the core.
-CORE_BOOT_MODULES: tuple[str, ...] = ("slack_cli_agent.core.application",)
+#: `cli._default_application` pulls in `core.application` lazily. That module
+#: does not import the Slack SDK at module level: `Application.from_profile`
+#: imports `slack_sdk.WebClient` and the ingress connector imports
+#: `slack_sdk.socket_mode` inside the call, so both are listed explicitly.
+CORE_BOOT_MODULES: tuple[str, ...] = (
+    "slack_cli_agent.core.application",
+    "slack_sdk",
+    "slack_sdk.socket_mode",
+    "slack_sdk.socket_mode.response",
+)
 
 
 class CoreImportCheck(PreflightCheck):
