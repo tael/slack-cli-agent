@@ -951,6 +951,25 @@ class Test지울문구가드연결:
         assert "안내가 켜져" not in result.body
 
 
+class Test비유교정가드연결:
+    """비유 교정 가드가 조립에 들어가고 채널의 잡담 판정을 매 요청 읽는가 (B9)."""
+
+    def test_가드가_파이프라인에_들어간다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.guard.figurative import FigurativeGuard
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        assert any(isinstance(g, FigurativeGuard) for g in app._guards()._guards)
+
+    def test_기본값은_꺼져_있어_본문을_바꾸지_않는다(self, tmp_path: Path) -> None:
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        body = "이번 배치는 정산 파이프라인과 맞닿은 지점에서 실패했습니다. " * 3
+        assert app._guards().run(body, GuardContext(channel="C1")).body == body
+
+    def test_미등록_채널은_업무_채널(self, tmp_path: Path) -> None:
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        assert app._is_chat_channel("C_NONE") is False
+
+
 class Test함께있는사람연결:
     """참여자 추출기와 프롬프트 섹션이 조립에 들어가는가."""
 

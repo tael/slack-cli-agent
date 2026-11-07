@@ -100,6 +100,15 @@ class RuntimeSettings:
     late_rewrite_min_ratio: float = 0.6
     late_rewrite_min_chars: int = 200
 
+    #: B9: a separate model rewrites figurative wording before posting
+    #: (bot.py:8162-8176). Off by default because it adds one model call per
+    #: reply; a profile turns it on. Work-channel replies shorter than
+    #: figurative_min_chars are skipped, chat-channel replies never are.
+    figurative_check: bool = False
+    figurative_min_chars: int = 80
+    figurative_model: str = "sonnet"
+    figurative_timeout_sec: float = 45
+
     progress_tick_sec: float = 3
     progress_idle_sec: float = 45
 
