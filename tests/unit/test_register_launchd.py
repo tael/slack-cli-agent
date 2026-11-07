@@ -303,3 +303,63 @@ class Test등록이_실패하면_그렇게_끝난다:
         결과 = self._돌린다(tmp_path)
         assert "등록되지 않았다" in 결과.stderr
         assert "testbot.ingress" in 결과.stderr
+
+
+class Test감독_등록:
+    """감독(supervisor)만 붙일 때 도는 ingress, worker 를 내리지 않는다 (H2)."""
+
+    def _돌린다(
+        self, tmp_path: Path, *역할: str, state_dir: Path | None = None
+    ) -> tuple[subprocess.CompletedProcess[str], str]:
+        (tmp_path / "Library" / "LaunchAgents").mkdir(parents=True, exist_ok=True)
+        bin_dir = tmp_path / "가짜bin"
+        bin_dir.mkdir(exist_ok=True)
+        가짜 = bin_dir / "launchctl"
+        가짜.write_text(
+            "#!/bin/bash\n"
+            'echo "$1 $2" >> "$HOME/launchctl.log"\n'
+            '[ "$1" = print ] && exit 113\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        가짜.chmod(0o755)
+        env = dict(
+            os.environ,
+            HOME=str(tmp_path),
+            PATH=f"{bin_dir}:{os.environ['PATH']}",
+            REGISTER_SETTLE_SEC="0",
+        )
+        if state_dir is not None:
+            env["STATE_DIR"] = str(state_dir)
+        결과 = subprocess.run(
+            ["/bin/bash", str(등록기), "testbot", *역할],
+            capture_output=True, text=True, timeout=60, env=env,
+        )
+        기록 = tmp_path / "launchctl.log"
+        return 결과, 기록.read_text(encoding="utf-8") if 기록.exists() else ""
+
+    def test_supervisor_만_주면_그것만_등록한다(self, tmp_path: Path) -> None:
+        결과, 기록 = self._돌린다(tmp_path, "supervisor")
+        assert 결과.returncode == 0, 결과.stderr
+        agents = tmp_path / "Library" / "LaunchAgents"
+        assert sorted(p.name for p in agents.iterdir()) == ["local.testbot.supervisor.plist"]
+        assert "worker" not in 기록 and "ingress" not in 기록
+        plist = plistlib.loads((agents / "local.testbot.supervisor.plist").read_bytes())
+        assert plist["ProgramArguments"][-1] == "supervisor"
+        assert plist["Label"] == "local.testbot.supervisor"
+
+    def test_STATE_DIR_로_상태_디렉터리를_바꾼다(self, tmp_path: Path) -> None:
+        sd = tmp_path / ".testbot-sca"
+        결과, _ = self._돌린다(tmp_path, "supervisor", state_dir=sd)
+        assert 결과.returncode == 0, 결과.stderr
+        plist = plistlib.loads(
+            (tmp_path / "Library/LaunchAgents/local.testbot.supervisor.plist").read_bytes()
+        )
+        assert plist["ProgramArguments"][1] == f"{sd}/run.sh"
+        assert plist["WorkingDirectory"] == str(sd)
+        assert plist["StandardErrorPath"] == f"{sd}/logs/supervisor.err.log"
+
+    def test_모르는_역할은_아무것도_건드리지_않고_실패한다(self, tmp_path: Path) -> None:
+        결과, 기록 = self._돌린다(tmp_path, "superviser")
+        assert 결과.returncode == 2
+        assert 기록 == ""
