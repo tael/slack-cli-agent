@@ -36,6 +36,7 @@ KNOWN_KEYS = frozenset(
         "owner_user_id", "controller_user_ids", "troubleshoot_channel", "owner_dm", "credentials_file",
         "plugins", "usage_check_command", "agent_greeting", "agent_prompts",
         "settings", "mcp_servers", "domain_file", "light_workdir", "airflow_ctl", "peer",
+        "delegation_ledger",
     }
 )
 """Top-level keys `from_dict` reads. Anything else is dropped, so a mistyped
@@ -277,9 +278,12 @@ class Profile:
     owner_user_id: str
     troubleshoot_channel: str
     owner_dm: str = ""
-    #: Other Slack users (usually another bot) that act with the owner's
-    #: authority. Empty means only owner_user_id is the owner.
+    #: Bot accounts whose requests this bot accepts. Acceptance only: their
+    #: turns are GENERAL unless delegation_ledger vouches for the message.
     controller_user_ids: frozenset[str] = frozenset()
+    #: The delegating bot's ledger file (mametchi ~/.mametchi/delegations.json
+    #: format), read only. None means no controller turn is ever delegated.
+    delegation_ledger: Path | None = None
     plugins: tuple[str, ...] = ()
     #: Operator-supplied usage check command. Empty means the check is off.
     usage_check_command: tuple[str, ...] = ()
@@ -441,6 +445,10 @@ class Profile:
             airflow_ctl=(
                 Path(str(data["airflow_ctl"])).expanduser()
                 if data.get("airflow_ctl") else None
+            ),
+            delegation_ledger=(
+                Path(str(data["delegation_ledger"])).expanduser()
+                if data.get("delegation_ledger") else None
             ),
             plugins=tuple(data.get("plugins") or ()),
             usage_check_command=tuple(str(part) for part in (data.get("usage_check_command") or ())),

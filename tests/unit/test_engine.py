@@ -463,19 +463,14 @@ class TestClaudeEngineBuildCommand:
         )
         assert json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"] == ["공통"]
 
-    def test_컨트롤러도_소유자_덧씌움을_받는다(self, tmp_path: Path) -> None:
-        """R0 — controller_user_ids 는 OWNER 와 완전 동급이다. principal_for 가
-        이미 trust=OWNER 로 판정하므로(auth/policy.py), _settings_value 가
-        읽는 request.trust_level 도 그 값 그대로 "owner" 수준을 고른다 — 여기
-        말고 다른 분기가 없는지 확인하는 회귀 시험이다."""
+    def test_OWNER_요청은_소유자_덧씌움을_받는다(self, tmp_path: Path) -> None:
+        """_settings_value 는 request.trust_level 만 읽는다. controller 봇은
+        A7 이후 OWNER 로 오지 않는다 (auth/policy.py)."""
         profile = claude_profile(tmp_path)
         self.기본_settings를_쓴다(profile, {"permissions": {"deny": ["공통"]}})
         self.덧씌움을_쓴다(profile, "owner", {"permissions": {"deny": ["소유자전용"]}})
         engine = ClaudeEngine(profile, SETTINGS)
 
-        # 컨트롤러(마메치) 는 principal_for 단계에서 이미 TrustLevel.OWNER 로
-        # 판정되어 넘어온다 — engine 계층은 owner 와 controller 를 구분할 수
-        # 없고, 구분해서도 안 된다(R0).
         cmd = engine.build_command(request(trust_level=TrustLevel.OWNER))
         assert json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"] == [
             "공통", "소유자전용",

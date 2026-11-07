@@ -105,8 +105,10 @@ class RequestAccess:
             return
         if self._channels.is_registered(channel):
             return
-        if user and self._policy.principal_for(channel, user).trust is TrustLevel.OWNER:
-            return
+        if user:
+            principal = self._policy.principal_for(channel, user)
+            if principal.trust is TrustLevel.OWNER or principal.is_controller:
+                return
         if not self._notice_log.due(channel):
             log.info("미등록 채널 %s 시도(%s). 최근에 소유자를 불러 기록만 남긴다", channel, kind)
             return

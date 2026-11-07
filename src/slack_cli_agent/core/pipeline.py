@@ -345,7 +345,7 @@ class RequestPipeline:
         mono_start = self._monotonic()
         self._mark_processing(ctx)
 
-        principal = self._access.principal_for(ctx.channel, ctx.user)
+        principal = self._access.principal_for(ctx.channel, ctx.user, ctx.ts)
         model = self._access.model_for(principal)
         effort = self._access.effort_for(principal, ctx.text)
 
@@ -410,6 +410,7 @@ class RequestPipeline:
             ),
             readable_dirs=self._readable_dirs + self._attachment_dirs(ctx),
             trust_level=principal.trust,
+            delegated=principal.delegated,
             progress_log=progress_log,
             request_id=request_id,
             budget_report=budget_report,

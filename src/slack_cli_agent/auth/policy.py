@@ -7,6 +7,7 @@ point; plugins implement the actual logic.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
@@ -17,6 +18,9 @@ from .principal import Principal, TrustLevel
 if TYPE_CHECKING:
     from ..config.channel import ChannelRegistry
     from ..config.profile import Profile
+    from .delegation import DelegationLedger
+
+log = logging.getLogger(__name__)
 
 # Lower means shallower thinking. A channel's effort value is a ceiling for
 # other users, not a floor for the owner — an owner request never drops
@@ -53,22 +57,47 @@ class AccessPolicy:
         profile: Profile,
         channels: ChannelRegistry,
         extensions: Sequence[AccessExtension] = (),
+        delegation: DelegationLedger | None = None,
     ) -> None:
         self._profile = profile
         self._channels = channels
         self._extensions = tuple(extensions)
+        self._delegation = delegation
 
-    def principal_for(self, channel: str, user: str) -> Principal:
-        """Owner and controller_user_ids are OWNER regardless of channel.
-        Everyone else is TRUSTED only if the channel's trusted_users lists them."""
+    def principal_for(self, channel: str, user: str, message_ts: str = "") -> Principal:
+        """The owner is OWNER regardless of channel. Everyone else is TRUSTED
+        only if the channel's trusted_users lists them.
+
+        controller_user_ids are accepted (accepts_request) but not promoted:
+        a controller is OWNER-equivalent only through the delegation ledger,
+        and even then it gets the delegated tool set, not owner trust. With
+        no ledger configured every controller turn is plain GENERAL.
+        """
         is_dm = is_direct_message_channel(channel)
-        if user and (user == self._profile.owner_user_id or user in self._profile.controller_user_ids):
+        is_controller = bool(user) and user in self._profile.controller_user_ids
+        if user and user == self._profile.owner_user_id:
             trust = TrustLevel.OWNER
         elif user and self._is_channel_trusted(channel, user):
             trust = TrustLevel.TRUSTED
         else:
             trust = TrustLevel.GENERAL
-        return Principal(user_id=user, channel=channel, trust=trust, is_direct_message=is_dm)
+        delegated = is_controller and self._is_delegated(channel, message_ts)
+        return Principal(
+            user_id=user, channel=channel, trust=trust, is_direct_message=is_dm,
+            is_controller=is_controller, delegated=delegated,
+        )
+
+    def _is_delegated(self, channel: str, message_ts: str) -> bool:
+        if self._delegation is None or not message_ts:
+            return False
+        try:
+            found = self._delegation.lookup(channel, message_ts)
+        except Exception:  # a broken ledger must close, not open, the turn
+            log.exception("위임 원장 판정에 실패해 위임 없음으로 본다 : %s", message_ts)
+            return False
+        if found is not None:
+            log.info("위임 원장에 있는 요청이라 위임 도구를 붙인다 : %s : %s", channel, message_ts)
+        return found is not None
 
     def accepts_request(self, principal: Principal) -> bool:
         """Whether this conversation gets an answer at all (bot.py:3695).
@@ -78,7 +107,7 @@ class AccessPolicy:
         the owner, which is stricter than the original -- there `user` and
         `OWNER_USER_ID` both being empty would have passed.
         """
-        if principal.trust is TrustLevel.OWNER:
+        if principal.trust is TrustLevel.OWNER or principal.is_controller:
             return True
         if principal.is_direct_message:
             return False
@@ -126,8 +155,8 @@ class AccessPolicy:
     def is_full_authority(self, principal: Principal) -> bool:
         """True in the owner's own DM, or in a channel that opted into
         `full_authority` -- a channel the owner runs as their own console. Only
-        the owner (which includes controller_user_ids) ever gets it; the flag
-        does nothing for anyone else."""
+        the owner ever gets it -- not a controller bot, delegated or not; the
+        flag does nothing for anyone else."""
         if principal.trust is not TrustLevel.OWNER:
             return False
         if principal.is_direct_message:
@@ -158,6 +187,10 @@ class AccessPolicy:
         if config.operator_full:
             return names
         return tuple(name for name in names if name not in OPERATOR_TOOLS)
+
+    def operator_full_for(self, principal: Principal) -> bool:
+        """Whether this channel lets a non-owner hold the bare OPERATOR_TOOLS."""
+        return self._channel_flag(principal.channel, "operator_full")
 
     def _is_channel_trusted(self, channel: str, user: str) -> bool:
         config = self._channels.get(channel)

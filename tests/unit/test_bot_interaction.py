@@ -381,6 +381,19 @@ class TestAskerSection_봇_3분기:
         assert "<@U0PEER>" in note
         assert "상한" in note  # 왕복 상한이 있다는 안내
 
+    def test_위임_원장에_있는_봇_요청은_실행_범위를_알린다(self) -> None:
+        """A7. 원장이 보증한 턴에 '실행 권한은 소유자 지시에서만' 을 그대로 두면
+        실행 도구를 받고도 거부한다. 원장 없는 봇 턴은 그 문구를 유지한다."""
+        delegated = _ctx(asker_is_bot=True, asker_id="U0PEER", principal=Principal(
+            user_id="U0PEER", channel="C1", trust=TrustLevel.GENERAL, is_direct_message=False,
+            is_controller=True, delegated=True,
+        ))
+        note = AskerSection().render(delegated)
+        assert "위임 원장" in note and "맡은 범위만" in note
+        assert "실행 권한은 소유자의 지시에서만" not in note
+        plain = AskerSection().render(_ctx(asker_is_bot=True, asker_id="U0PEER"))
+        assert "실행 권한은 소유자의 지시에서만" in plain
+
     def test_사람이_물으면_기존과_같다(self) -> None:
         ctx = _ctx(asker_is_bot=False, asker_name="홍길동", asker_id="U1")
         note = AskerSection().render(ctx)

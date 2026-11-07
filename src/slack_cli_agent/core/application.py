@@ -25,6 +25,7 @@ from ..admin.admission import AdminAdmission
 from ..admin.command import AdminContext
 from ..admin.defaults import default_admin_commands
 from ..admin.router import AdminRouter
+from ..auth.delegation import DelegationLedger
 from ..auth.execution_policy import ExecutionPolicy
 from ..auth.policy import AccessPolicy
 from ..auth.principal import Principal, TrustLevel
@@ -478,7 +479,18 @@ class Application:
     def access_policy(self) -> AccessPolicy:
         if self._access_policy is None:
             extensions = [e for p in self._plugins for e in p.access_extensions()]
-            self._access_policy = AccessPolicy(self._profile, self._channels, extensions)
+            ledger_path = self._profile.delegation_ledger
+            delegation = (
+                DelegationLedger(
+                    ledger_path,
+                    self_user_id=lambda: self.identity.user_id,
+                    own_name=self._profile.name,
+                )
+                if ledger_path is not None else None
+            )
+            self._access_policy = AccessPolicy(
+                self._profile, self._channels, extensions, delegation=delegation,
+            )
         return self._access_policy
 
     @property
@@ -508,6 +520,7 @@ class Application:
                 self._settings.owner_tools,
                 extensions,
                 channel_tools=self.access_policy.channel_tools_for,
+                operator_full=self.access_policy.operator_full_for,
                 always_skills=self._settings.always_skills or ALWAYS_SKILLS,
             )
         return self._tool_policy

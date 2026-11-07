@@ -2,6 +2,8 @@
 
     readonly (postmortem/debug trace)   known read-only tools only
     owner                                base + owner extras
+    delegated controller turn            base + owner extras, bare Bash/Edit/
+                                         Write/NotebookEdit only if operator_full
     an extension applies                 base + whatever the extension adds
     the channel lists the user           base + that user's extra tools
     otherwise                            base tools only
@@ -15,7 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 
-from .policy import AccessExtension
+from .policy import OPERATOR_TOOLS, AccessExtension
 from .principal import Principal, TrustLevel
 
 SKILL_TOOL = "Skill"
@@ -71,7 +73,9 @@ class ToolPolicy:
         extensions: Sequence[AccessExtension] = (),
         channel_tools: Callable[[Principal], Sequence[str]] | None = None,
         always_skills: Sequence[str] = (),
+        operator_full: Callable[[Principal], bool] | None = None,
     ) -> None:
+        self._operator_full = operator_full
         self._base_tools = tuple(base_tools)
         self._owner_tools = tuple(owner_tools)
         self._extensions = tuple(extensions)
@@ -99,6 +103,8 @@ class ToolPolicy:
         if principal.trust is TrustLevel.OWNER:
             tools += self._owner_tools
         else:
+            if principal.delegated:
+                tools += self._delegated_tools(principal, tools)
             for ext in self._extensions:
                 if ext.applies(principal, prompt):
                     tools += list(ext.extra_tools(principal))
@@ -118,6 +124,16 @@ class ToolPolicy:
                 if grant not in tools:
                     tools.append(grant)
         return tuple(tools)
+
+    def _delegated_tools(self, principal: Principal, held: Sequence[str]) -> list[str]:
+        """Owner extras for a turn the delegation ledger vouches for, gated
+        the way a channel operator is (mametchi bot.py:2321): the bare
+        execution tools only where the channel has operator_full on."""
+        full = self._operator_full is not None and self._operator_full(principal)
+        return [
+            name for name in self._owner_tools
+            if name not in held and (full or name not in OPERATOR_TOOLS)
+        ]
 
     def _readonly_tools(self, granted: Sequence[str] = ()) -> tuple[str, ...]:
         kept = tuple(name for name in self._base_tools if name in READ_ONLY_TOOLS)

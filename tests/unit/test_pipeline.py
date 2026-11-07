@@ -48,7 +48,7 @@ class FakeAccessPolicy:
     def __init__(self, owner_user_id: str = "UOWNER") -> None:
         self._owner_user_id = owner_user_id
 
-    def principal_for(self, channel: str, user: str) -> Principal:
+    def principal_for(self, channel: str, user: str, message_ts: str = "") -> Principal:
         trust = TrustLevel.OWNER if user == self._owner_user_id else TrustLevel.GENERAL
         return Principal(
             user_id=user, channel=channel, trust=trust,

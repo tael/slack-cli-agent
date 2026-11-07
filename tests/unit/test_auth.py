@@ -64,12 +64,14 @@ class TestPrincipalFor:
         principal = policy.principal_for("C1", STRANGER)
         assert principal.trust is TrustLevel.GENERAL
 
-    def test_controller_user_ids에_있으면_채널과_무관하게_OWNER다(self, tmp_path: Path) -> None:
-        """다른 봇이 이 봇을 소유자 대신 부리는 경로다. 소유자와 같은 축이라
-        채널 설정의 trusted_users 와 무관하다."""
+    def test_controller_user_ids는_접수만_하고_OWNER로_올리지_않는다(self, tmp_path: Path) -> None:
+        """A7. 봇이 말을 거는 것만으로 소유자 권한이 열리면 안 된다. 실행 도구는
+        위임 원장이 정한다 (test_delegation.py)."""
         profile = Profile.from_dict({**MINIMAL_PROFILE, "controller_user_ids": ["U_CTRL"]})
         policy = AccessPolicy(profile, make_channels(tmp_path / "c.json", {}))
-        assert policy.principal_for("C1", "U_CTRL").trust is TrustLevel.OWNER
+        ctrl = policy.principal_for("C1", "U_CTRL")
+        assert ctrl.trust is TrustLevel.GENERAL and ctrl.is_controller
+        assert policy.accepts_request(ctrl) is True
         assert policy.principal_for("C1", STRANGER).trust is TrustLevel.GENERAL
 
     def test_controller_user_ids가_없으면_소유자만_OWNER다(self, tmp_path: Path) -> None:
@@ -131,16 +133,14 @@ class TestFullAuthorityAndMechanism:
         assert policy.is_full_authority(principal) is False
         assert policy.may_see_usage(principal) is False
 
-    def test_컨트롤러도_full_authority_채널에서_최고권한이다(self, tmp_path: Path) -> None:
-        """R0: 마메치(컨트롤러) 를 김태일(소유자) 과 같은 등급으로 — 내부정보
-        공개·사용현황·자기설정까지. controller_user_ids 는 OWNER 라 같은 축이다."""
+    def test_컨트롤러는_full_authority_채널에서도_최고권한이_아니다(self, tmp_path: Path) -> None:
+        """A7: controller_user_ids 는 접수 목록이다. 최고권한은 소유자에게만 간다."""
         profile = Profile.from_dict({**MINIMAL_PROFILE, "controller_user_ids": ["U_CTRL"]})
         channels = make_channels(tmp_path / "c.json", {"C1": {"full_authority": True}})
         policy = AccessPolicy(profile, channels)
         principal = policy.principal_for("C1", "U_CTRL")
-        assert policy.is_full_authority(principal) is True
-        assert policy.may_disclose_mechanism(principal) is True
-        assert policy.may_see_usage(principal) is True
+        assert policy.is_full_authority(principal) is False
+        assert policy.may_see_usage(principal) is False
 
 
 class TestModelFor:
