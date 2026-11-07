@@ -178,7 +178,8 @@ _MISSING = object()
 
 
 def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, progress=None,
-             audit=None, owner_only_channels=frozenset({"TS"}), slow_reporter=None) -> Rig:
+             audit=None, owner_only_channels=frozenset({"TS"}), slow_reporter=None,
+             slots=None, slot_wait_sec=None) -> Rig:
     ledger = ReviewLedger(database)
     reactions = FakeReactions()
     publisher = FakePublisher()
@@ -201,6 +202,8 @@ def make_rig(database, *, msg=_MISSING, engine_responses=None, record=None, prog
         progress=progress,
         audit=audit,
         slow_reporter=slow_reporter,
+        slots=slots,
+        slot_wait_sec=slot_wait_sec,
     )
     return Rig(ledger, reactions, publisher, engine, message_lookup, task, audit)
 
@@ -211,6 +214,82 @@ class Test중복실행방지:
         rig.ledger.complete("fake_kind", "C1", "1.1", by="U1")
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
         assert rig.engine.calls == []
+
+
+class FakeSlots:
+    """상한 대역. 잡은 수와 acquire 호출을 센다."""
+
+    def __init__(self, size: int) -> None:
+        self.free = size
+        self.acquired: list[float | None] = []
+        self.released = 0
+
+    def acquire(self, timeout: float | None = None) -> object | None:
+        self.acquired.append(timeout)
+        if self.free <= 0:
+            return None
+        self.free -= 1
+        return object()
+
+    def release(self, token: object) -> None:
+        self.released += 1
+        self.free += 1
+
+
+_대상 = ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True)
+
+
+class Test동시_실행_상한:
+    """원본은 키를 잡은 뒤에만 `_slots` 를 기다렸다 (bot.py:8993-8996).
+    거절되거나 이미 한 리액션은 자리를 기다리지도 잡지도 않는다 (A16)."""
+
+    def test_이미_한_대상은_자리를_기다리지_않는다(self, database) -> None:
+        slots = FakeSlots(0)
+        rig = make_rig(database, slots=slots, slot_wait_sec=900)
+        rig.ledger.complete("fake_kind", "C1", "1.1", by="U1")
+        rig.task.run(_대상)
+        assert slots.acquired == []
+
+    def test_진행_중인_대상의_반복_리액션도_자리를_기다리지_않는다(self, database) -> None:
+        slots = FakeSlots(0)
+        rig = make_rig(database, slots=slots, slot_wait_sec=900)
+        rig.ledger.begin("fake_kind", "C1", "1.1", by="U1")
+        rig.task.run(_대상)
+        assert slots.acquired == []
+
+    def test_꺼진_점검은_자리를_기다리지_않는다(self, database) -> None:
+        slots = FakeSlots(0)
+        rig = make_rig(database, slots=slots, owner_only_channels=frozenset())
+        rig.task.run(_대상)
+        assert slots.acquired == []
+
+    def test_자리가_안_나면_원장을_되돌리고_기록한다(self, database, caplog) -> None:
+        slots = FakeSlots(0)
+        rig = make_rig(database, slots=slots, slot_wait_sec=7)
+        with caplog.at_level(logging.WARNING):
+            rig.task.run(_대상)
+        assert slots.acquired == [7]
+        assert rig.engine.calls == []
+        assert rig.ledger.find("fake_kind", "C1", "1.1") is None
+        assert "점검을 시작할 자리가 없다" in caplog.text
+
+    def test_점검이_끝나면_자리를_돌려준다(self, database) -> None:
+        slots = FakeSlots(1)
+        rig = make_rig(database, slots=slots)
+        rig.task.run(_대상)
+        assert len(rig.engine.calls) == 1
+        assert (slots.free, slots.released) == (1, 1)
+
+    def test_점검이_실패해도_자리를_돌려준다(self, database) -> None:
+        class BrokenMessageLookup:
+            def find(self, channel: str, ts: str) -> Mapping[str, Any] | None:
+                raise RuntimeError("조회 중단")
+
+        slots = FakeSlots(1)
+        rig = make_rig(database, slots=slots)
+        rig.task._message_lookup = BrokenMessageLookup()
+        rig.task.run(_대상)
+        assert (slots.free, slots.released) == (1, 1)
 
 
 class Test정상흐름:

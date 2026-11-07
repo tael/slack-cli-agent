@@ -25,8 +25,7 @@ from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.core.access import RequestAccess
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ingress import IngressService
-from slack_cli_agent.core.slots import ConcurrencySlots, ThreadSlots
-from slack_cli_agent.core.spawn import InlineTaskSpawner, TaskSpawner, ThreadTaskSpawner
+from slack_cli_agent.core.spawn import InlineTaskSpawner, TaskSpawner
 from slack_cli_agent.core.unregistered import UnregisteredNoticeLog
 from slack_cli_agent.jobs.ports import Job, JobQueue, ReclaimResult
 from slack_cli_agent.observability.notices import NoticeCatalog, NoticeKey
@@ -202,9 +201,6 @@ def make_ingress(
     lock_budget: Any = None,
     channels: ChannelRegistry | None = None,
     is_shutting_down: Callable[[], bool] | None = None,
-    on_reaction: Callable[[str, str, str, str], None] | None = None,
-    review_slots: ConcurrencySlots | None = None,
-    review_slot_wait_sec: float | None = None,
 ) -> IngressService:
     profile = make_profile(tmp_path)
     channels = channels if channels is not None else make_channels(tmp_path)
@@ -224,7 +220,7 @@ def make_ingress(
     def reply(channel: str, thread_ts: str, text: str) -> None:
         reply_log.append((channel, thread_ts, text))
 
-    def record_reaction(emoji: str, channel: str, ts: str, by_user: str) -> None:
+    def on_reaction(emoji: str, channel: str, ts: str, by_user: str) -> None:
         reaction_log.append((emoji, channel, ts, by_user))
 
     return IngressService(
@@ -258,10 +254,8 @@ def make_ingress(
         ),
         reply=reply,
         allowed_reactions=frozenset({"dango"}),
-        on_reaction=on_reaction if on_reaction is not None else record_reaction,
+        on_reaction=on_reaction,
         spawn=spawn if spawn is not None else InlineTaskSpawner(),
-        review_slots=review_slots,
-        review_slot_wait_sec=review_slot_wait_sec,
         assistant=assistant,
         job_max_attempts=job_max_attempts,
         enqueue_attempts=enqueue_attempts,
@@ -625,97 +619,6 @@ class TestAdminCommand:
 
         assert queue.enqueued == []
         assert replies == [("C1", "1.0", "pong")]
-
-
-def reaction_event(ts: str = "1.0") -> dict:
-    return {
-        "reaction": "dango",
-        "item": {"type": "message", "channel": "C1", "ts": ts},
-        "item_user": "U_BOT",
-        "user": "U1",
-    }
-
-
-class Test점검_동시_실행_상한:
-    """원본은 부검·디버그·서식 점검을 요청과 같은 `_slots` 로 묶었다
-    (bot.py:1166). 이 패키지는 점검을 접수 스레드에서 상한 없이 돌렸다 (A16)."""
-
-    #: 결함이 있어도 시험이 멈추지 않게 하는 상한. 통과 경로는 닿지 않는다.
-    _마감초 = 5.0
-
-    def test_상한을_넘는_11번째_점검은_자리가_날_때까지_기다린다(
-        self, listener, admin_router, tmp_path
-    ) -> None:
-        import threading
-        import time
-
-        lock = threading.Lock()
-        gate = threading.Event()
-        started: list[str] = []
-        finished: list[str] = []
-
-        def review(emoji: str, channel: str, ts: str, by_user: str) -> None:
-            with lock:
-                started.append(ts)
-            gate.wait(self._마감초)
-            with lock:
-                finished.append(ts)
-
-        ingress = make_ingress(
-            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
-            tmp_path=tmp_path, spawn=ThreadTaskSpawner(), on_reaction=review,
-            review_slots=ThreadSlots(10),
-        )
-        for i in range(11):
-            ingress.handle_reaction(reaction_event(f"{i}.0"))
-
-        deadline = time.monotonic() + self._마감초
-        while len(started) < 10 and time.monotonic() < deadline:
-            time.sleep(0.01)
-        time.sleep(0.2)
-        assert len(started) == 10
-
-        gate.set()
-        deadline = time.monotonic() + self._마감초
-        while len(finished) < 11 and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert len(finished) == 11
-
-    def test_기다려도_자리가_안_나면_점검을_넘기고_기록한다(
-        self, listener, admin_router, tmp_path, caplog
-    ) -> None:
-        """원본도 상한 대기가 끝나면 부검을 넘긴다 (bot.py:8995)."""
-        slots = ThreadSlots(1)
-        held = slots.acquire()
-        reaction_seen: list[tuple[str, str, str, str]] = []
-        ingress = make_ingress(
-            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
-            tmp_path=tmp_path, reactions_seen=reaction_seen,
-            review_slots=slots, review_slot_wait_sec=0,
-        )
-        with caplog.at_level(logging.WARNING):
-            ingress.handle_reaction(reaction_event())
-
-        assert reaction_seen == []
-        assert "점검을 시작할 자리가 없다" in caplog.text
-        assert held is not None
-        slots.release(held)
-
-    def test_점검이_끝나면_자리를_돌려준다(self, listener, admin_router, tmp_path) -> None:
-        slots = ThreadSlots(1)
-
-        def boom(emoji: str, channel: str, ts: str, by_user: str) -> None:
-            raise RuntimeError("점검 실패")
-
-        ingress = make_ingress(
-            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
-            tmp_path=tmp_path, on_reaction=boom, review_slots=slots,
-        )
-        ingress.handle_reaction(reaction_event())
-
-        token = slots.acquire(timeout=0)
-        assert token is not None
-        slots.release(token)
 
 
 class TestReactionEvent:

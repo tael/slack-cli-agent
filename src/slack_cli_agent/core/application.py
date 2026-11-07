@@ -1289,7 +1289,7 @@ class Application:
         return self._catchup_service
 
     def concurrency_slots(self) -> ConcurrencySlots:
-        """The one cap the worker's requests and the ingress reviews share
+        """The one cap the worker's requests and the reviews share
         (A16). Each call opens its own handle; the lock files are what is
         shared, so the ingress and worker processes see the same pool."""
         return FileSlots(self._profile.paths.root / "slots", self._settings.max_concurrent)
@@ -1393,8 +1393,6 @@ class Application:
                 allowed_reactions=self.allowed_reactions(),
                 on_reaction=self.on_reaction,
                 spawn=ThreadTaskSpawner(),
-                review_slots=self.concurrency_slots(),
-                review_slot_wait_sec=self._settings.request_timeout_sec,
                 notices=self._notices,
                 is_shutting_down=lambda: self._shutting_down,
                 # The handler runs on one of slack-sdk's ten pool threads, so a
@@ -1463,6 +1461,10 @@ class Application:
                 "publisher": ReviewPublisher(self.publisher()),
                 "troubleshoot_channel": self._profile.troubleshoot_channel,
                 "owner_only_channels": self._settings.owner_only_channels,
+                # 워커 요청과 같은 상한(A16). 권한·원장 판정을 지난 점검만
+                # 자리를 기다린다. 거절된 리액션은 자리를 잡지 않는다.
+                "slots": self.concurrency_slots(),
+                "slot_wait_sec": self._settings.request_timeout_sec,
                 # 점검은 몇 분이 걸린다. 표시가 없으면 도는 것과 죽은 것이
                 # 사용자에게 같아 보인다(sca-tfd).
                 "progress": ReviewProgressDisplay(self.progress(), self._channels),

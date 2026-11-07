@@ -214,7 +214,7 @@ class TestStateSetup:
         profile = write_profile(tmp_path, settings={"max_concurrent": 1})
         ingress_app = Application(profile, client)
         worker_app = Application(profile, client)
-        review = ingress_app.ingress()._review_slots
+        review = ingress_app.review_tasks()["dango"]._slots
         requests = worker_app.worker()._slots
         assert review is not None and requests is not None
         held = review.acquire(timeout=0)
@@ -585,6 +585,50 @@ class TestReviewReactions:
             monkeypatch.setattr(task, "run", lambda _t, 이름=이모지: 불린것.append(이름))
         app.on_reaction("dango", "D9", "1.0", by_user)
         return 불린것
+
+    def test_상한이_차도_권한_없는_리액션은_바로_거절되고_자리를_안_잡는다(
+        self,
+        tmp_path: Path,
+        client: FakeSlackClient,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """자리를 잡은 뒤 권한을 보면 거절될 리액션이 request_timeout_sec 동안
+        스레드와 자리를 붙든다. 원본은 키를 잡은 뒤에만 기다렸다 (A16).
+        접수 경로 전체를 태운다. on_reaction 만 부르면 접수에서 자리를 잡는
+        결함을 못 본다."""
+        import time
+
+        from slack_cli_agent.core.spawn import InlineTaskSpawner
+
+        profile = write_profile(
+            tmp_path, settings={"max_concurrent": 1, "request_timeout_sec": 3}
+        )
+        app = self._점검채널앱(profile, client)
+        monkeypatch.setattr(
+            client, "auth_test", lambda **_: {"ok": True, "user_id": "U_BOT", "bot_id": "B_BOT"}
+        )
+        ingress = app.ingress()
+        ingress._spawn = InlineTaskSpawner()
+        pool = app.concurrency_slots()
+        held = pool.acquire(timeout=0)
+        assert held is not None
+        try:
+            started = time.monotonic()
+            with caplog.at_level(logging.INFO):
+                ingress.handle_reaction(
+                    {
+                        "reaction": "dango",
+                        "item": {"type": "message", "channel": "C_ONE", "ts": "1.0"},
+                        "item_user": "U_BOT",
+                        "user": "U_STRANGER",
+                    }
+                )
+            assert time.monotonic() - started < 1.0
+            assert "점검 권한이 없다" in caplog.text
+            assert "점검을 시작할 자리가 없다" not in caplog.text
+        finally:
+            pool.release(held)
 
     def test_거른_사실을_로그에_남긴다(
         self,
