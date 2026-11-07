@@ -1909,6 +1909,29 @@ class Application:
             )
             return tools, system_prompt(prompt, reviewer)
 
+        def owner_format_tools(prompt: str) -> ToolSelection:
+            """The owner's format review turn (B6).
+
+            Unrestricted names no tools to claude, and dontAsk then refused
+            Write, the rewrite Bash and every Slack lookup, so the correction
+            the prompt asks for never ran (#test-agent 1794048787.569739). The
+            owner's read-only tools plus what the fix itself needs: Write for
+            the correction file and the rewrite command, not a bare Bash. Each
+            is added only when the owner's own turn already has the bare tool,
+            so a profile that keeps Write or Bash from its owner does not get
+            them back through a reaction."""
+            policy = self.tool_policy()
+            owner_turn = policy.tool_list_for(principal, prompt=prompt)
+            names = list(policy.tool_list_for(principal, prompt=prompt, readonly=True))
+            for needs, grant in (
+                ("Write", "Write"), ("Bash", f"Bash({self.rewrite_command()}:*)"),
+            ):
+                if needs in owner_turn and grant not in names:
+                    names.append(grant)
+            return ToolSelection.from_names(
+                names, lookups=policy.lookups_for(principal, readonly=True),
+            )
+
         return ReviewEngineCaller(
             # passing the runner directly here would also skip fallback-switch handling
             invoker=self.engine_invoker,
@@ -1918,6 +1941,7 @@ class Application:
             # 2026-11-07 김태일 "권한막힌게 왜이렇게 많니". 부검 지시는 코드를 열어 보라는데
             # 코드 위치를 work_root 로 알려 주고 실제 코드 폴더는 읽기 경로에 없어 Read 가 거부됐다.
             scoped=scoped,
+            owner_tools=owner_format_tools if format_review else None,
             readable_dirs=(paths.persona, paths.prompts, _CODE_ROOT),
             # 부검만 전용 모델이다 (마메치 model_for postmortem=True). 디버그
             # 추적과 서식 점검은 보고 채널의 일반 규칙(어드바이저 실행자, 채널

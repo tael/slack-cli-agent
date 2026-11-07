@@ -35,6 +35,7 @@ class ReviewEngineCaller:
         effort: str | None = None,
         tools: ToolSelection | None = None,
         scoped: Callable[[Principal, str], tuple[ToolSelection, str]] | None = None,
+        owner_tools: Callable[[str], ToolSelection] | None = None,
     ) -> None:
         self._invoker = invoker
         self._workdir = workdir
@@ -50,6 +51,11 @@ class ReviewEngineCaller:
         # A non-owner's tools and system prompt, given the requester and the
         # review prompt. None means this caller has no non-owner turn at all.
         self._scoped = scoped
+        # The owner turn's tools, given the review prompt. None keeps `tools`.
+        # Unrestricted names nothing to claude, and its dontAsk mode then
+        # refuses every call that needs approval: Write, Bash and the Slack
+        # lookups all came back denied on an owner's format review (B6).
+        self._owner_tools = owner_tools
         self._execution_policy = ExecutionPolicy()
 
     @property
@@ -68,7 +74,7 @@ class ReviewEngineCaller:
         requester: Principal | None = None,
     ) -> EngineResponse:
         if requester is None or requester.trust is TrustLevel.OWNER:
-            tools = self._tools
+            tools = self._owner_tools(prompt) if self._owner_tools is not None else self._tools
             trust = TrustLevel.OWNER
             # A callable is composed per call, so an edit to the persona or the
             # prompt files reaches the next review without a restart, as it does
