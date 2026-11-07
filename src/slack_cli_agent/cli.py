@@ -500,6 +500,9 @@ class WorkerCommand(PreflightGatedServiceCommand):
             # Recorded so a state-file reader can tell a shutting-down process
             # from a dead one.
             on_shutdown_start=lambda inflight: app.mark_shutting_down(),
+            # The turn that asked for this restart is waited on for its grace
+            # only, or the restart and that turn wait on each other.
+            discount=getattr(worker, "restart_requester_discount", None),
         )
         shutdown.register()
         # One file per worker id, so two workers (or a worker and the ingress)
@@ -527,7 +530,9 @@ class WorkerCommand(PreflightGatedServiceCommand):
         finally:
             worker.shutdown()
             app.close()
-        return 0
+        # Nonzero after an apply-request drain so the log shows why it left;
+        # launchd's KeepAlive starts the new code either way.
+        return int(getattr(worker, "exit_code", 0))
 
 
 class LearnCommand(ProfileAwareCommand):

@@ -23,6 +23,7 @@ from ..jobs.heartbeat import WorkerHeartbeat
 from ..jobs.ports import Job, JobQueue, ReclaimResult
 from ..reliability.catchup import CatchupReport, RetryStatus
 from ..reliability.ports import CatchupPort
+from ..reliability.restart import APPLY_REQUESTER_GRACE_SEC, RESTART_EXIT_CODE, ApplyRequest
 from ..reliability.watchjobs import ActiveWatchPort
 from ..slack.reactions import ReactionMarker
 from .slots import ConcurrencySlots, SlotToken, ThreadSlots
@@ -82,6 +83,62 @@ class Worker:
         # Catch-up-representative key -> the requests it absorbed, so the same
         # reaction mark gets applied to them once the representative finishes.
         self._skip_groups: dict[tuple[str, str], list[RequestContext]] = {}
+        # None keeps the old behavior: no apply request is ever seen.
+        self._restart_request: Callable[[], ApplyRequest | None] | None = None
+        self._restart: ApplyRequest | None = None
+        self._requester_grace_sec = APPLY_REQUESTER_GRACE_SEC
+
+    def watch_restart_requests(
+        self,
+        pending: Callable[[], ApplyRequest | None],
+        requester_grace_sec: float = APPLY_REQUESTER_GRACE_SEC,
+    ) -> None:
+        """Polled before every claim. Once it returns a request the worker
+        claims nothing more, drains, and exits with RESTART_EXIT_CODE so
+        launchd brings up the new code (mametchi bot.py on_terminate)."""
+        self._restart_request = pending
+        self._requester_grace_sec = requester_grace_sec
+
+    @property
+    def exit_code(self) -> int:
+        return RESTART_EXIT_CODE if self._restart is not None else 0
+
+    def _restart_pending(self) -> bool:
+        if self._restart is None and self._restart_request is not None:
+            self._restart = self._restart_request()
+            if self._restart is not None:
+                log.warning("재기동 요청을 받아 새 작업을 집지 않는다 : %s", self._restart.turn_id)
+        return self._restart is not None
+
+    def _current_request(self) -> ApplyRequest | None:
+        """The request being drained for, or one that arrived since. A TERM
+        from the supervisor can land before the claim loop ever saw it."""
+        if self._restart is None and self._restart_request is not None:
+            return self._restart_request()
+        return self._restart
+
+    def _requester(self) -> tuple[str, str] | None:
+        request = self._current_request()
+        return request.requester() if request is not None else None
+
+    def _requester_job(self) -> Job | None:
+        """The running job whose turn wrote the apply request, if any."""
+        key = self._requester()
+        if key is None:
+            return None
+        with self._lock:
+            for job in self._running.values():
+                if (job.context.channel, job.context.ts) == key:
+                    return job
+        return None
+
+    def restart_requester_discount(self, waited: float) -> int:
+        """How many in-flight requests shutdown stops waiting for after
+        `waited` seconds: the requesting turn, once its grace is over. Waiting
+        on it longer is the deadlock the marker exists to avoid."""
+        if waited < self._requester_grace_sec:
+            return 0
+        return 1 if self._requester_job() is not None else 0
 
     @property
     def worker_id(self) -> str:
@@ -164,7 +221,7 @@ class Worker:
         # bot.py's semaphore.
         size = max(1, int(self._settings.max_concurrent))
         if size == 1 and self._slots is None:
-            while not should_stop():
+            while not should_stop() and not self._restart_pending():
                 if not self.run_once():
                     self._sleep(self._settings.queue_idle_sleep_sec)
             return
@@ -175,6 +232,9 @@ class Worker:
             # One should_stop call per turn, same as the single-slot loop: the
             # caller's flag is also what the tests step through. The wait is
             # bounded so a pool held by reviews still lets shutdown through.
+            if self._restart_pending():
+                self._drain_for_restart(running)
+                return
             token = free.acquire(timeout=self._settings.queue_idle_sleep_sec)
             if token is None:
                 continue
@@ -191,9 +251,26 @@ class Worker:
             running.append(thread)
             running = [t for t in running if t.is_alive()]
         # A job left mid-handling would keep its processing mark and be finished
-        # by nobody, so the loop does not return before its threads are done.
+        # by nobody, so the loop does not return before its threads are done --
+        # except the turn that asked for a restart, past its grace.
+        if self._requester() is not None:
+            self._drain_for_restart(running)
+            return
         for thread in running:
             thread.join()
+
+    def _drain_for_restart(self, running: list[threading.Thread]) -> None:
+        """Waits for in-flight handling, up to the shutdown grace. The
+        requesting turn is waited on only for its own grace; the rest it
+        leaves to shutdown(), which keeps it out of the queue."""
+        waited = 0.0
+        poll = 0.05
+        while waited < self._settings.shutdown_grace_sec:
+            alive = sum(1 for t in running if t.is_alive())
+            if alive - self.restart_requester_discount(waited) <= 0:
+                return
+            self._sleep(poll)
+            waited += poll
 
     def _process_and_release(
         self, job: Job, free: ConcurrencySlots, token: SlotToken
@@ -380,7 +457,17 @@ class Worker:
         with self._lock:
             running = list(self._running.values())
             self._running.clear()
+        requester = self._requester()
         for job in running:
+            if requester == (job.context.channel, job.context.ts):
+                # Requeued, the same turn would run again on the new process
+                # and write the marker again (restart loop). Its reply is
+                # already out; it only waited on the restart (mametchi bot.py
+                # drop_restart_dropped).
+                if self._queue.complete(job.id, True, "", lease=job.lease):
+                    self._markers.clear_processing(job.context.channel, job.context.ts)
+                    self._markers.mark_done(job.context.channel, job.context.ts)
+                continue
             if not self._queue.requeue(job.id, lease=job.lease):
                 continue
             self._markers.clear_processing(job.context.channel, job.context.ts)

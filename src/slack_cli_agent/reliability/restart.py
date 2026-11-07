@@ -25,12 +25,25 @@ missing PATH for a dependency lookup).
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+
+#: Exit code a worker returns after draining for an apply request. Distinct
+#: from run.sh's 78 (preflight block), which stops launchd from restarting;
+#: this one is EX_TEMPFAIL, so KeepAlive brings the worker straight back.
+RESTART_EXIT_CODE = 75
+
+#: How long a drain or shutdown still waits on the turn that wrote the
+#: marker. That turn is meant to end right after writing it; waiting longer
+#: turns into the deadlock the marker exists to avoid. mametchi bot.py
+#: APPLY_REQUESTER_GRACE_SEC, after 2026-10-16 15:21 burned the full 330s.
+APPLY_REQUESTER_GRACE_SEC = 30.0
 
 
 @dataclass(frozen=True)
@@ -47,6 +60,51 @@ class ApplyRequest:
         if self.turn_id:
             lines.append(self.turn_id)
         return "\n".join(lines) + "\n"
+
+    @classmethod
+    def parse(cls, text: str) -> ApplyRequest | None:
+        lines = text.splitlines()
+        try:
+            requested_at = float(lines[0].strip())
+        except (IndexError, ValueError):
+            return None
+        turn = lines[1].strip() if len(lines) > 1 else ""
+        # mametchi's apply.sh writes "unknown" when it ran outside a turn.
+        return cls(requested_at=requested_at, turn_id=turn if turn not in ("", "unknown") else None)
+
+    def requester(self) -> tuple[str, str] | None:
+        """(channel, ts) of the turn that asked, from a "channel:ts" turn id."""
+        if not self.turn_id or ":" not in self.turn_id:
+            return None
+        channel, _, ts = self.turn_id.partition(":")
+        return (channel, ts) if channel and ts else None
+
+
+class ApplyRequestWatch:
+    """Whether an apply request arrived since this process started.
+
+    Reads both names: the supervisor picks a request up by renaming it to
+    apply-running (mametchi bot.py apply_requester_key). A marker older than
+    the process is not this process's to act on: the restart it asked for has
+    already happened, and honoring it again would drain every new worker in
+    turn (restart loop).
+    """
+
+    def __init__(self, *, paths: Sequence[Path], started_at: float) -> None:
+        self._paths = tuple(paths)
+        # The marker's timestamp is whole seconds; compare at that resolution
+        # so a request written in the start second still counts.
+        self._since = math.floor(started_at)
+
+    def pending(self) -> ApplyRequest | None:
+        for path in self._paths:
+            try:
+                request = ApplyRequest.parse(path.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            if request is not None and request.requested_at >= self._since:
+                return request
+        return None
 
 
 class ApplyRequestWriter:

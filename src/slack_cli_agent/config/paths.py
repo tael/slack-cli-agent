@@ -190,6 +190,12 @@ class StatePaths:
     def engine_settings(self, engine_type: str) -> Path:
         return self.engine_dir / f"settings-{engine_type}.json"
 
+    @property
+    def apply_requests(self) -> tuple[Path, Path]:
+        """Restart request marker a turn leaves, and the name a supervisor
+        renames it to once it has picked it up (reliability/restart.py)."""
+        return (self.root / "apply-request", self.root / "apply-running")
+
     def pid_file(self, role: str) -> Path:
         """PID of a running service process, one file per role.
 

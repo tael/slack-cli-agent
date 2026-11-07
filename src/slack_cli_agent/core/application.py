@@ -121,6 +121,7 @@ from ..reliability.connection import ConnectionCatchupCoordinator
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
 from ..reliability.outage import NetworkOutageEscalation, OutageTracker
+from ..reliability.restart import ApplyRequestWatch
 from ..reliability.pending_report import PendingReportStore, assemble_recovery_report
 from ..reliability.startup import StartupCatchup
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
@@ -1353,7 +1354,7 @@ class Application:
     def worker(self, worker_id: str = "worker") -> Worker:
         # unlike the other components here, a new Worker is created on every
         # call — worker_id must differ per process
-        return Worker(
+        worker = Worker(
             queue=self.queue(),
             handler=self.pipeline(),
             heartbeat=WorkerHeartbeat(self.queue(), self._settings),
@@ -1368,6 +1369,14 @@ class Application:
             admin=self._admin_admission(),
             slots=self.concurrency_slots(),
         )
+        # A marker from before this process started was for the restart
+        # that produced it; following it again would loop.
+        worker.watch_restart_requests(
+            ApplyRequestWatch(
+                paths=self._profile.paths.apply_requests, started_at=time.time()
+            ).pending
+        )
+        return worker
 
     def _admin_router(self) -> AdminRouter:
         commands = default_admin_commands(self._notices)

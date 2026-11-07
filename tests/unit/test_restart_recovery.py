@@ -10,6 +10,7 @@ turn 의 Seatbelt 샌드박스는 launchctl kickstart 를 거부하므로, 봇 �
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from slack_cli_agent.reliability.outage import NetworkOutageEscalation, RealertGate
@@ -304,3 +305,204 @@ def test_pending_work와_JSON_직렬화가_서로_호환된다(tmp_path: Path) -
     raw = json.loads(path.read_text())
 
     assert raw == {"description": "점검", "started_at": 42.0}
+
+
+class Test재기동요청읽기:
+    """감시기가 집기 전(apply-request)과 집은 뒤(apply-running) 표식을 같은 형식으로 읽는다."""
+
+    def test_둘째줄의_턴을_채널과_ts로_나눈다(self) -> None:
+        from slack_cli_agent.reliability.restart import ApplyRequest
+
+        req = ApplyRequest.parse("1000\nC1:5.0\n")
+        assert req is not None and req.requested_at == 1000.0
+        assert req.requester() == ("C1", "5.0")
+
+    def test_unknown_이나_빈_턴은_요청자가_없다(self) -> None:
+        from slack_cli_agent.reliability.restart import ApplyRequest
+
+        assert ApplyRequest.parse("1000\nunknown\n").requester() is None  # type: ignore[union-attr]
+        assert ApplyRequest.parse("1000\n").requester() is None  # type: ignore[union-attr]
+
+    def test_첫줄이_시각이_아니면_요청이_아니다(self) -> None:
+        from slack_cli_agent.reliability.restart import ApplyRequest
+
+        assert ApplyRequest.parse("") is None
+        assert ApplyRequest.parse("abc\nC1:5.0\n") is None
+
+    def test_기동_전에_남은_표식은_무시한다(self, tmp_path: Path) -> None:
+        """새 프로세스가 이미 처리된 요청을 또 따르면 재기동이 되풀이된다."""
+        from slack_cli_agent.reliability.restart import ApplyRequestWatch
+
+        req_path = tmp_path / "apply-request"
+        ApplyRequestWriter(path=req_path, now=lambda: 999.0).write("C1:5.0")
+        watch = ApplyRequestWatch(paths=[req_path], started_at=1000.5)
+        assert watch.pending() is None
+        ApplyRequestWriter(path=req_path, now=lambda: 1000.9).write("C1:5.0")
+        assert watch.pending() is not None
+
+    def test_감시기가_집은_표식도_요청으로_본다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.reliability.restart import ApplyRequestWatch
+
+        running = tmp_path / "apply-running"
+        ApplyRequestWriter(path=running, now=lambda: 2000.0).write()
+        watch = ApplyRequestWatch(paths=[tmp_path / "apply-request", running], started_at=1000.0)
+        assert watch.pending() is not None
+
+
+class Test재기동요청_워커_유예:
+    """apply-request 표식이 있으면 새 작업을 집지 않고, 진행 중 작업이 끝나면
+    재기동 종료 코드로 나온다. 표식을 남긴 턴은 30초 뒤 기다리지 않고 다음
+    기동에서 다시 돌리지 않는다 (마메치 bot.py on_terminate)."""
+
+    def _worker(self, database, handler, request_box: list, max_concurrent: int = 2):
+        import time as _time
+
+        from test_worker import make_worker
+
+        from slack_cli_agent.config.settings import RuntimeSettings
+
+        # 유예와 종료 대기는 실제 시간으로 잰다. 요청한 턴의 유예만 짧게 줄인다.
+        worker, queue, client = make_worker(
+            database=database,
+            handler=handler,
+            settings=RuntimeSettings(
+                heartbeat_interval_sec=0.01, max_concurrent=max_concurrent,
+                queue_idle_sleep_sec=0.01, shutdown_grace_sec=3.0,
+            ),
+            sleep=_time.sleep,
+        )
+        worker.watch_restart_requests(
+            lambda: request_box[0] if request_box else None, requester_grace_sec=0.1
+        )
+        return worker, queue, client
+
+    def test_표식이_있으면_새_작업을_집지_않는다(self, database) -> None:
+        from test_worker import FakeHandler, ctx
+
+        from slack_cli_agent.reliability.restart import RESTART_EXIT_CODE, ApplyRequest
+
+        for slots in (1, 2):
+            handler = FakeHandler()
+            worker, queue, _ = self._worker(
+                database, handler, [ApplyRequest(requested_at=1.0)], max_concurrent=slots
+            )
+            queue.enqueue(ctx(f"{slots}.0", thread=f"t{slots}"))
+            worker.run_forever(lambda: False)
+            assert handler.received == []
+            assert worker.exit_code == RESTART_EXIT_CODE
+            assert f"{slots}.0" in [j.context.ts for j in queue.pending()]
+
+    def test_진행_중_작업이_끝난_뒤에_나온다(self, database) -> None:
+        import time as _time
+
+        from test_worker import ctx
+
+        from slack_cli_agent.core.ports import HandleOutcome
+        from slack_cli_agent.reliability.restart import RESTART_EXIT_CODE, ApplyRequest
+
+        box: list = []
+        끝: list[str] = []
+        holder: dict = {}
+
+        class 표식남기는핸들러:
+            def handle(self, context):
+                if context.ts == "1.0":
+                    box.append(ApplyRequest(requested_at=1.0, turn_id="C1:다른턴"))
+                    holder["queue"].enqueue(ctx("2.0", thread="t2"))
+                    _time.sleep(0.2)
+                끝.append(context.ts)
+                return HandleOutcome(ok=True)
+
+        worker, queue, _ = self._worker(database, 표식남기는핸들러(), box)
+        holder["queue"] = queue
+        queue.enqueue(ctx("1.0", thread="t1"))
+        worker.run_forever(lambda: False)
+        assert 끝 == ["1.0"]
+        assert worker.exit_code == RESTART_EXIT_CODE
+        assert [j.context.ts for j in queue.pending()] == ["2.0"]
+
+    def test_요청한_턴은_유예_뒤_기다리지_않고_다시_돌리지_않는다(self, database) -> None:
+        from test_worker import BlockingHandler, ctx
+
+        from slack_cli_agent.reliability.restart import ApplyRequest
+
+        handler = BlockingHandler()
+        box: list = []
+        worker, queue, client = self._worker(database, handler, box)
+        queue.enqueue(ctx("5.0", thread="t5"))
+        멈춤 = {"n": 0}
+
+        def should_stop() -> bool:
+            if handler.entered_event.is_set() and not box:
+                box.append(ApplyRequest(requested_at=1.0, turn_id="C1:5.0"))
+            멈춤["n"] += 1
+            return 멈춤["n"] > 100000
+
+        try:
+            worker.run_forever(should_stop)
+            # 막힌 채로 돌아왔다 : 요청한 턴을 끝까지 기다리지 않았다.
+            assert not handler.release_event.is_set()
+            assert worker.restart_requester_discount(0.0) == 0
+            assert worker.restart_requester_discount(0.1) == 1
+            worker.shutdown()
+            # 다시 큐로 돌리지 않는다. 돌리면 같은 턴이 또 재기동을 예약한다.
+            assert queue.pending() == []
+            assert ("add", "C1", "5.0", "hourglass") not in client.calls
+        finally:
+            handler.release()
+
+    def test_TERM_이_먼저_와도_요청한_턴을_기다리지_않고_다시_돌리지_않는다(self, database) -> None:
+        """감시기의 kickstart 가 워커가 표식을 보기 전에 닿는 경우다."""
+        from test_worker import BlockingHandler, ctx
+
+        from slack_cli_agent.reliability.restart import ApplyRequest
+
+        handler = BlockingHandler()
+        box: list = []
+        worker, queue, _client = self._worker(database, handler, box)
+        queue.enqueue(ctx("6.0", thread="t6"))
+
+        def should_stop() -> bool:
+            if handler.entered_event.is_set():
+                box.append(ApplyRequest(requested_at=1.0, turn_id="C1:6.0"))
+                return True
+            return False
+
+        try:
+            시작 = time.monotonic()
+            worker.run_forever(should_stop)
+            # 처리기는 5초 동안 막혀 있다. 유예 0.1초 뒤 돌아와야 한다.
+            assert time.monotonic() - 시작 < 2.0
+            assert worker.exit_code == 0
+            worker.shutdown()
+            assert queue.pending() == []
+        finally:
+            handler.release()
+
+    def test_주입이_없으면_종료_코드는_0이다(self, database) -> None:
+        from test_worker import make_worker
+
+        worker, _q, _c = make_worker(database=database)
+        assert worker.exit_code == 0
+        assert worker.restart_requester_discount(100.0) == 0
+
+
+def test_종료_대기는_요청한_턴을_빼고_센다() -> None:
+    """launchctl kickstart 의 TERM 도 요청한 턴을 330초 기다리지 않는다."""
+    from slack_cli_agent.core.lifecycle import GracefulShutdown, InflightCounter
+
+    counter = InflightCounter()
+    counter.enter()
+    waits: list[float] = []
+    완료: list[bool] = []
+    shutdown = GracefulShutdown(
+        counter,
+        330,
+        signal_register=lambda s, h: None,
+        sleep_fn=waits.append,
+        discount=lambda waited: 1 if waited >= 30 else 0,
+        on_shutdown_complete=lambda: 완료.append(True),
+    )
+    shutdown.trigger()
+    assert sum(waits) == 30
+    assert 완료 == [True]
