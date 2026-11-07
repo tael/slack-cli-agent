@@ -21,7 +21,7 @@ _BUNDLE = (
     "mcp__slack__slack_search",
     "mcp__browser__browser_navigate",
     "mcp__browser__browser_snapshot",
-    "Bash(/opt/wrap/git_read.sh:*)",
+    "Bash(~/wrap/git_read.sh:*)",
 )
 
 
@@ -59,12 +59,12 @@ def test_브라우저_조작과_와일드카드와_맨_쓰기도구는_빠진다
             "kubernetes",
             "mcp__browser",
             "Bash", "Edit", "Write", "NotebookEdit",
-            "Bash(/opt/wrap/git_read.sh:*)",
+            "Bash(~/wrap/git_read.sh:*)",
         ),
     )
     tools = policy.tool_list_for(_GEN)
     assert tools == (
-        "Read", "mcp__snowflake__run_snowflake_query", "Bash(/opt/wrap/git_read.sh:*)",
+        "Read", "mcp__snowflake__run_snowflake_query", "Bash(~/wrap/git_read.sh:*)",
     )
 
 
@@ -102,11 +102,11 @@ def test_범위_지정_Bash_는_경로를_적은_래퍼만_남긴다() -> None:
             "Bash(/bin/sh:*)", "Bash(/usr/bin/python3 -c:*)", "Bash(/usr/bin/env python3:*)",
             "Bash(*)", "Bash(/opt/*:*)", "Bash(~/w/../x/run.sh:*)",
             "Edit(/tmp/**)", "Write(/tmp/x)", "NotebookEdit(/tmp/x)",
-            "Bash(/opt/wrap/git_read.sh:*)", "Bash(~/w/mbs.sh sql:*)",
+            "Bash(~/wrap/git_read.sh:*)", "Bash(~/w/mbs.sh sql:*)",
         ),
     )
     assert policy.tool_list_for(_GEN) == (
-        "Read", "Bash(/opt/wrap/git_read.sh:*)", "Bash(~/w/mbs.sh sql:*)",
+        "Read", "Bash(~/wrap/git_read.sh:*)", "Bash(~/w/mbs.sh sql:*)",
     )
 
 
@@ -135,3 +135,29 @@ def test_배포_견본의_조회_묶음은_거르는_항목_없이_비소유자�
     tools = policy.tool_list_for(_GEN)
     assert all(name in tools for name in names)
     assert ToolSelection.from_names(tools, lookups=policy.lookups_for(_GEN)).can_act is False
+
+
+def test_범용_프로그램_경로와_홈_밖_경로는_래퍼가_아니다() -> None:
+    """경로만 적으면 통과하던 때는 /usr/bin/awk, /bin/ksh93 같은 범용 프로그램이
+    묶음에 남았다. awk system(), find -exec, sed -i, git 은 명령을 돌리거나 파일을
+    쓴다. 래퍼는 사용자 홈 아래 스크립트만 인정하고, 홈 안이라도 bin 디렉터리의
+    설치 프로그램과 셸 이름은 뺀다 (A10 재검토)."""
+    from pathlib import Path
+
+    home = str(Path.home())
+    policy = ToolPolicy(
+        base_tools=("Read",),
+        readonly_tools=(
+            "Bash(/usr/bin/awk:*)", "Bash(/usr/bin/find:*)", "Bash(/usr/bin/git:*)",
+            "Bash(/usr/bin/sed:*)", "Bash(/bin/ksh93:*)", "Bash(/opt/homebrew/bin/aws:*)",
+            "Bash(/usr/local/bin/python3.14:*)", "Bash(/opt/wrap/git_read.sh:*)",
+            "Bash(~/.local/bin/awk:*)", f"Bash({home}/.venv/bin/aws:*)",
+            "Bash(~/w/ksh93:*)", f"Bash({home}x/run.sh:*)",
+            f"Bash({home}/Projects/bot/git_read.sh:*)", "Bash(~/.claude/skills/kibana/kibana.sh:*)",
+        ),
+    )
+    assert policy.tool_list_for(_GEN) == (
+        "Read",
+        f"Bash({home}/Projects/bot/git_read.sh:*)",
+        "Bash(~/.claude/skills/kibana/kibana.sh:*)",
+    )

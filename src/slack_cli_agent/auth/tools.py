@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
 from .policy import OPERATOR_FULL, OPERATOR_TOOLS, AccessExtension
 from .principal import Principal, TrustLevel
@@ -130,22 +131,39 @@ def _granted_by(name: str, base_tools: Sequence[str]) -> bool:
 
 
 #: Commands a scoped Bash grant must not name: each runs whatever its
-#: arguments say, so Bash(<one of these>:*) is a bare shell under another name.
+#: arguments say or writes files, so Bash(<one of these>:*) is a bare shell
+#: under another name. Wrappers outside the home are refused by location;
+#: this list catches a copy of one of them placed under the home.
 _SHELL_RUNNERS: frozenset[str] = frozenset({
-    "sh", "bash", "zsh", "dash", "ksh", "fish", "env", "xargs", "sudo", "su",
-    "exec", "eval", "node", "perl", "ruby", "php", "osascript", "curl", "wget",
-    "ssh", "scp", "nc", "rm", "mv", "cp", "tee", "dd", "chmod", "chown",
+    "sh", "bash", "zsh", "dash", "ksh", "ksh93", "mksh", "csh", "tcsh", "fish",
+    "pwsh", "env", "xargs", "sudo", "su", "exec", "eval", "node", "perl", "ruby",
+    "php", "osascript", "curl", "wget", "ssh", "scp", "nc", "rm", "mv", "cp",
+    "tee", "dd", "chmod", "chown", "awk", "gawk", "find", "sed", "git", "aws",
 })
+
+#: Directory names that hold installed programs rather than wrapper scripts.
+_PROGRAM_DIRS: frozenset[str] = frozenset({"bin", "sbin", "libexec"})
+
+
+def _under_home(path: str) -> bool:
+    if path.startswith("~/"):
+        return True
+    home = str(Path.home()).rstrip("/")
+    return bool(home) and path.startswith(home + "/")
 
 
 def _is_read_wrapper(name: str) -> bool:
-    """Whether a scoped grant is Bash(<absolute or ~/ path to a wrapper>...).
+    """Whether a scoped grant is Bash(<path to a wrapper under the home>...).
 
     Bash(curl:*) or Bash(python3:*) passed the bare-name filter, and
     engine/claude.py then lifts the bare Bash deny for any scoped Bash grant,
-    so a non-owner turn ran that command (A10 review). A wrapper is named by
-    its path, as mametchi's READ_SHELL_TOOLS are; a bare command, a glob, a
-    ".." segment or an interpreter is not one. Any other scoped grant
+    so a non-owner turn ran that command (A10 review). A path alone was not
+    enough either: Bash(/usr/bin/awk:*), Bash(/bin/ksh93:*) and
+    Bash(/usr/bin/git:*) passed, and each runs commands or writes files (A10
+    re-review). So the check allows rather than blocks: a wrapper is a script
+    under the user's home, as mametchi's READ_SHELL_TOOLS are, not in a
+    bin/sbin/libexec directory, not named like a shell or general program,
+    with no glob, ".." segment or interpreter. Any other scoped grant
     (Edit(...), Write(...)) is not a lookup either.
     """
     tool, _, rest = name.partition("(")
@@ -155,11 +173,13 @@ def _is_read_wrapper(name: str) -> bool:
     if not command:
         return False
     path = command[0]
-    base = path.rsplit("/", 1)[-1]
+    parts = path.split("/")
+    base = parts[-1]
     return (
-        path.startswith(("/", "~/"))
+        _under_home(path)
         and "*" not in path
-        and ".." not in path.split("/")
+        and ".." not in parts
+        and not _PROGRAM_DIRS.intersection(parts[:-1])
         and base not in _SHELL_RUNNERS
         and not base.startswith("python")
     )

@@ -36,8 +36,8 @@
       "mcp__slack__slack_thread_replies",
       "mcp__notion__notion-search",
       "mcp__notion__notion-fetch",
-      "Bash(/opt/slack-cli-agent/wrappers/git_read.sh:*)",
-      "Bash(/opt/slack-cli-agent/wrappers/gh_read.sh:*)"
+      "Bash(~/slack-cli-agent/wrappers/git_read.sh:*)",
+      "Bash(~/slack-cli-agent/wrappers/gh_read.sh:*)"
     ]
   }
 }

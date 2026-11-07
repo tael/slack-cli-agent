@@ -22,7 +22,7 @@ from slack_cli_agent.engine.tool_selection import ToolSelection
 _BUNDLE = (
     "mcp__snowflake__run_snowflake_query",
     "mcp__metabase__execute_query",
-    "Bash(/opt/wrap/gh_read.sh:*)",
+    "Bash(~/wrap/gh_read.sh:*)",
 )
 
 
@@ -36,7 +36,7 @@ def test_묶음을_받은_일반_사용자_턴은_쓰기_턴이_아니다() -> N
     pipeline.handle(make_ctx(user="U1"))
 
     tools = parts["runner"].calls[0].tools
-    assert "Bash(/opt/wrap/gh_read.sh:*)" in tools.names
+    assert "Bash(~/wrap/gh_read.sh:*)" in tools.names
     assert tools.can_act is False
 
 
@@ -77,7 +77,7 @@ def test_읽기전용_턴의_묶음은_codex_를_read_only_로_둔다() -> None:
     selection = ToolSelection.from_names(
         policy.tool_list_for(owner, readonly=True), lookups=policy.lookups_for(owner, readonly=True),
     )
-    assert "Bash(/opt/wrap/gh_read.sh:*)" in selection.names
+    assert "Bash(~/wrap/gh_read.sh:*)" in selection.names
     assert selection.can_act is False
     assert _codex_reads_only(selection) is True
 
@@ -101,5 +101,5 @@ def test_감시_확인_턴은_묶음을_받고_쓰기_턴이_아니다(tmp_path,
         created_at=0.0, last_run=None, trust=TrustLevel.GENERAL,
     ), WatchOutcome.UNKNOWN)
 
-    assert "Bash(/opt/wrap/gh_read.sh:*)" in sent[0].tools.names
+    assert "Bash(~/wrap/gh_read.sh:*)" in sent[0].tools.names
     assert sent[0].tools.can_act is False
