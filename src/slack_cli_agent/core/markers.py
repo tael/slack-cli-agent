@@ -249,6 +249,83 @@ def strip_unknown_tags(text: str) -> tuple[str, list[str]]:
     return "\n".join(out).rstrip(), dropped
 
 
+# Every marker the engine-to-bot protocol defines, as a whole line. Matches
+# bot.py:1573-1576's `CONTROL_TAG_LINE_RE`, plus the two this repo also uses
+# (`[[침묵]]`, `[[WATCH_SUPERSEDED]]`). Unlike _KNOWN_TAG_LINE_RE, which exists
+# to *skip* these lines, this one exists to drop them.
+_CONTROL_TAG_LINE_RE = re.compile(
+    r"\A[ \t]*\[\[(?:ASK|NOWATCH|침묵|WATCH_DONE|WATCH_STILL|WATCH_SUPERSEDED"
+    r"|WATCH(?:@\d{4}-\d{2}-\d{2})?(?::.*)?"
+    r"|RECIPIENT:(?:OWNER|ASKER|BOT:[A-Z0-9]+))\]\][ \t]*\Z",
+    re.DOTALL,
+)
+
+# A trailing `[[WATCH: ...]]` may span several lines, so the line pass below
+# can't see it. Same shape as guard/watch.py's WATCH_RE (kept here so core
+# doesn't import guard), narrowed after PR #108 review: the body may hold no
+# other `[[`/`]]`. Without that, the lazy body ran from a mid-sentence mention
+# all the way to a later marker and ate the lines in between. With it, only
+# the last WATCH can reach `]]\s*\Z`, so the tag may still sit at the end of
+# the conclusion's line, as bot.py's WATCH_RE allows. It is matched only after
+# the line pass, so a trailing [[NOWATCH]] line is already gone and can't
+# stretch the match.
+_TRAILING_WATCH_RE = re.compile(
+    r"(\[\[WATCH(?:@\d{4}-\d{2}-\d{2})?:(?:(?!\[\[|\]\]).)+?\]\])\s*\Z",
+    re.DOTALL,
+)
+
+
+def _inside_open_fence(prefix: str) -> bool:
+    """True when `prefix` leaves a ``` fence open, i.e. what follows is code."""
+    return sum(1 for ln in prefix.split("\n") if ln.strip().startswith("```")) % 2 == 1
+
+
+def strip_control_tags(text: str) -> tuple[str, list[str]]:
+    """Drops every internal marker line before publish and returns what it
+    dropped, for the audit log (B4, bot.py:1586-1614 strip_control_tags).
+
+    Known markers are reported as-is, undeclared ones with an `unknown:`
+    prefix. Reaching this point means the marker's own handler didn't take
+    it (a WATCH here was never registered), so the caller records it as a
+    leak. Only whole-line markers outside fenced code count: a sentence that
+    names a marker, or a code block showing one, is content.
+    """
+    if not text or "[[" not in text:
+        return text, []
+    dropped: list[str] = []
+    out: list[str] = []
+    in_fence = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if not in_fence and _CONTROL_TAG_LINE_RE.match(line):
+            dropped.append(stripped)
+            continue
+        if not in_fence and _UNKNOWN_TAG_LINE_RE.match(line):
+            dropped.append("unknown:" + stripped)
+            continue
+        out.append(line)
+    rest = "\n".join(out)
+    m = _TRAILING_WATCH_RE.search(rest)
+    if m and not _inside_open_fence(rest[: m.start()]):
+        dropped.append(m.group(1))
+        rest = rest[: m.start()]
+    if not dropped:
+        return text, []
+    return rest.rstrip(), dropped
+
+
+def split_leaked_tags(dropped: list[str]) -> tuple[list[str], list[str]]:
+    """Splits strip_control_tags()'s report into (known, unknown) so the two
+    land under their own audit kinds."""
+    known = [t for t in dropped if not t.startswith("unknown:")]
+    unknown = [t for t in dropped if t.startswith("unknown:")]
+    return known, unknown
+
+
 __all__ = [
     "ASK_RE",
     "ASK_TAG",
@@ -262,6 +339,8 @@ __all__ = [
     "missing_recipient_prompt",
     "pick_recipient_tag",
     "resolve_recipient",
+    "split_leaked_tags",
+    "strip_control_tags",
     "strip_unknown_tags",
     "take_ask_tag",
     "take_nowatch_tag",

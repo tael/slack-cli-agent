@@ -23,7 +23,11 @@ from typing import Any
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.channel_kind import is_direct_message_channel
 from slack_cli_agent.core.errors import SlackError
-from slack_cli_agent.core.markers import ELAPSED_MODEL_LINE
+from slack_cli_agent.core.markers import (
+    ELAPSED_MODEL_LINE,
+    split_leaked_tags,
+    strip_control_tags,
+)
 from slack_cli_agent.core.secrets import count_outbound_secrets, redact_outbound
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.render.blocks import BlockBuilder
@@ -173,6 +177,34 @@ class MessagePublisher:
         )
         return redact_outbound(text)
 
+    def _strip_control_tags(self, channel: str, thread_ts: str, text: str) -> str | None:
+        """Drops internal markers and records them. None when nothing but
+        markers was there, so an empty message is never posted."""
+        cleaned, leaked = strip_control_tags(text)
+        if not leaked:
+            return text
+        log.warning("내부 표식이 본문에 남아 있었다. 떼고 올린다 : %s", leaked)
+        # Same split as the main pipeline's _strip_publish_markers, so an
+        # invented marker lands under unknown_tag whichever path posted it.
+        known, unknown = split_leaked_tags(leaked)
+        if known:
+            self._audit(
+                kind=IncidentKind.CONTROL_TAG_LEAK.value, channel=channel,
+                thread_ts=thread_ts, tags=known,
+            )
+        if unknown:
+            self._audit(
+                kind=IncidentKind.UNKNOWN_TAG.value, channel=channel,
+                thread_ts=thread_ts, tags=unknown,
+            )
+        if not cleaned.strip():
+            self._audit(
+                kind=IncidentKind.EMPTY_AFTER_TAGS.value, channel=channel,
+                thread_ts=thread_ts, tags=leaked,
+            )
+            return None
+        return cleaned
+
     def post(
         self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
     ) -> str | None:
@@ -205,7 +237,13 @@ class MessagePublisher:
         the guard pipeline, so every caller (watch reports, review results,
         engine failure bodies) gets it (bot.py:6532).
         """
-        text = self._redact(channel, thread_ts, text)
+        # Last gate before any send: watch reports, reviews and notices reach
+        # here without the main pipeline's marker pass, so one path forgetting
+        # to strip would leak the marker (B4, bot.py:6511-6530).
+        cleaned = self._strip_control_tags(channel, thread_ts, text)
+        if cleaned is None:
+            return None
+        text = self._redact(channel, thread_ts, cleaned)
         text, _ = fix_notion_links(text)
         text, csv_payloads = extract_csv_blocks(text)
         if rich:
@@ -387,7 +425,10 @@ class MessagePublisher:
         Slack was given, so the caller can report what the message became
         ([] for a plain-text channel).
         """
-        text = self._redact(channel, ts, text)
+        cleaned = self._strip_control_tags(channel, ts, text)
+        if cleaned is None:
+            raise SlackError("교정본에 내부 표식만 있어 갱신하지 않았다")
+        text = self._redact(channel, ts, cleaned)
         # Same Notion `p/` fix as post(), so a correction can't post a dead link.
         text, _ = fix_notion_links(text)
         if rich:

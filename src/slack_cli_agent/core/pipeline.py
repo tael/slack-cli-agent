@@ -64,7 +64,8 @@ from ..slack.transcript import CurrentMessage
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
 from .markers import (
-    strip_unknown_tags,
+    split_leaked_tags,
+    strip_control_tags,
     take_ask_tag,
     take_nowatch_tag,
 )
@@ -1010,22 +1011,32 @@ class RequestPipeline:
         return clean, False
 
     def _strip_publish_markers(self, body: str, ctx: RequestContext) -> str:
-        """Last body pass before publish: strips any undeclared `[[...]]`
-        marker line so it never reaches the channel (bot.py:1564-1592
-        strip_control_tags). B1's gaps J18.
+        """Last body pass before publish: strips every leftover `[[...]]`
+        marker line so it never reaches the channel (bot.py:1564-1614
+        strip_control_tags). B1's gaps J18, B4.
 
         Runs after the ASK/NOWATCH tags are taken and the RECIPIENT tag is
         resolved (`_resolve_recipient`), so those known markers are already
-        gone — what's left that still matches the unknown shape is genuinely
-        unrecognized and is logged, not silently eaten.
+        gone. A declared marker left over is a leak (`control_tag_leak`), an
+        undeclared one is `unknown_tag`; both are logged, not silently eaten.
         """
-        body, dropped = strip_unknown_tags(body)
-        if dropped:
+        body, dropped = strip_control_tags(body)
+        known, unknown = split_leaked_tags(dropped)
+        # A declared marker still here means its own handler missed it (B4):
+        # e.g. a mid-body RECIPIENT, or a WATCH_DONE outside a watch check.
+        if known:
+            self._audit.record(
+                IncidentKind.CONTROL_TAG_LEAK.value,
+                channel=ctx.channel,
+                thread_ts=ctx.thread_ts,
+                tags=known,
+            )
+        if unknown:
             self._audit.record(
                 IncidentKind.UNKNOWN_TAG.value,
                 channel=ctx.channel,
                 thread_ts=ctx.thread_ts,
-                tags=dropped,
+                tags=unknown,
             )
         return body
 
