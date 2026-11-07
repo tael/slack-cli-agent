@@ -369,6 +369,7 @@ def build_pipeline(
     late_addendum: Any = None,
     origin_alive: Any = None,
     tool_post_merger: Any = None,
+    generated_images: Any = None,
     consumption: Any = None,
     watch_queue: Any = None,
     response_archive: Any = None,
@@ -418,6 +419,8 @@ def build_pipeline(
         extra_kwargs["origin_alive"] = origin_alive
     if tool_post_merger is not None:
         extra_kwargs["tool_post_merger"] = tool_post_merger
+    if generated_images is not None:
+        extra_kwargs["generated_images"] = generated_images
     if consumption is not None:
         extra_kwargs["consumption"] = consumption
     if watch_queue is not None:

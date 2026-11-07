@@ -155,6 +155,7 @@ from ..slack.credentials import CredentialResolver, owner_session_client, resolv
 from ..slack.download import HttpDownloader
 from ..slack.gate import ResponseGate
 from ..slack.gateway import SlackGateway
+from ..slack.generated_images import SlackGeneratedImagePoster
 from ..slack.history import HistoryReader
 from ..slack.history_port import SlackHistoryPort
 from ..slack.identity import BotIdentity, SlackBotIdentity
@@ -854,6 +855,10 @@ class Application:
                     update=lambda channel, ts, text, rich: self.publisher().update(
                         channel, ts, text, rich
                     ),
+                    audit=self.audit().record,
+                ),
+                generated_images=SlackGeneratedImagePoster(
+                    self._client, codex_home_for=self._codex_home_for,
                     audit=self.audit().record,
                 ),
                 consumption=self.consumption,
@@ -1795,6 +1800,16 @@ class Application:
             reader = self._transcript_readers.create(name, self._profile.work_root, spec=spec)
             self._transcript_reader_cache[name] = reader
         return reader
+
+    def _codex_home_for(self, engine: str) -> Path | None:
+        """CODEX_HOME of the slot that answered, None for a non-codex engine.
+
+        A spec without home_dir runs codex under its own default, ~/.codex.
+        """
+        spec = self._engine_spec_for(engine)
+        if spec is None or spec.type != "codex":
+            return None
+        return spec.home_dir if spec.home_dir is not None else Path.home() / ".codex"
 
     def _engine_spec_for(self, engine: str) -> EngineSpec | None:
         """None for a name in neither slot. The registry then hands back an empty

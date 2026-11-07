@@ -56,6 +56,7 @@ from ..session.awaiting import AwaitingPort
 from ..session.manager import SessionDecision, SessionManager
 from ..session.ports import SessionKey, SessionScope
 from ..slack.gate import ResponseGate
+from ..slack.generated_images import NOTICE_IMAGE_UPLOAD_FAILED, GeneratedImagePoster
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
 from ..slack.mentions import MentionRenderer
 from ..slack.origin_alive import OriginAliveChecker
@@ -170,6 +171,10 @@ class RequestPipeline:
         # posted through a tool this turn, instead of a second reply
         # (2026-11-06 duplicate replies). None posts as before.
         tool_post_merger: ToolPostMerger | None = None,
+        # Uploads pictures a codex turn made and never posted (D2). The tool
+        # post merger then writes the answer over that file message. None
+        # leaves them on disk as before.
+        generated_images: GeneratedImagePoster | None = None,
         # Shared with the caller so both the late-addendum check and the queue see
         # the same consumed-messages record.
         consumption: ThreadConsumption | None = None,
@@ -240,6 +245,7 @@ class RequestPipeline:
         self._late_addendum = late_addendum
         self._origin_alive = origin_alive
         self._tool_post_merger = tool_post_merger
+        self._generated_images = generated_images
         self._consumption = consumption
         self._watch_queue = watch_queue
         self._tool_policy = tool_policy
@@ -571,6 +577,7 @@ class RequestPipeline:
         # After the markers are taken: the notice must not sit between the body
         # and a trailing tag the strip reads from the end.
         body = self._recover_unposted_render(body, ctx, request, decision, turn_calls)
+        body = self._post_generated_images(body, ctx, start, turn_calls, flat)
         body = self._publisher.apply_elapsed_model_line(body, model, rich)
         # Right before the post, confirm the question is still in its thread.
         # If the asker deleted it mid-turn, the intake coordinates now point at
@@ -896,6 +903,30 @@ class RequestPipeline:
         if posted:
             return body
         return f"{body.rstrip()}\n\n{NOTICE_UNPOSTED_RENDER}"
+
+    def _post_generated_images(
+        self,
+        body: str,
+        ctx: RequestContext,
+        since: float,
+        turn_calls: Sequence[EngineResponse],
+        flat: bool,
+    ) -> str:
+        # Codex's image generation leaves the picture on disk; the model
+        # doesn't always post it (D2). Uploaded before the answer, so the tool
+        # post merger finds the file message and the answer lands in it.
+        if self._generated_images is None:
+            return body
+        images = self._generated_images.pending(since, turn_calls)
+        if not images:
+            return body
+        # A deleted question gets no answer (C34), and no picture either.
+        if self._origin_alive is not None and self._origin_alive.alive(ctx.channel, ctx.ts) is False:
+            return body
+        thread_ts = None if flat else ctx.thread_ts
+        if self._generated_images.upload(ctx.channel, thread_ts, images):
+            return body
+        return f"{body.rstrip()}\n\n{NOTICE_IMAGE_UPLOAD_FAILED}"
 
     def _resumable(self, response: EngineResponse) -> bool:
         # A fallback turn ran on the secondary, which opens a fresh session on
