@@ -26,7 +26,7 @@ from ..admin.command import AdminContext
 from ..admin.defaults import default_admin_commands
 from ..admin.router import AdminRouter
 from ..auth.execution_policy import ExecutionPolicy
-from ..auth.policy import AccessPolicy
+from ..auth.policy import DEFAULT_EFFORT, AccessPolicy
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import ToolPolicy
 from ..config.channel import ChannelConfig, ChannelRegistry, channel_is_rich
@@ -356,6 +356,7 @@ class Application:
         self._review_tasks: dict[str, ReviewTask] | None = None
         self._welcome: WelcomePlugin | None = None
         self._welcome_service: WelcomeService | None = None
+        self._welcome_caller: ReviewEngineCaller | None = None
         self._identity: SlackBotIdentity | None = None
         self._roster_builder: RosterBuilder | None = None
         self._roster_refresher: PeriodicRunner | None = None
@@ -1467,8 +1468,10 @@ class Application:
         return (*self._plugins, self._welcome)
 
     def welcome_service(self) -> WelcomeService:
-        """A read-only owner-tier turn: it looks the joiner up and writes
-        one post; the post itself goes through the publisher (G2)."""
+        """A read-only turn: it looks the joiner up and writes one post; the
+        post itself goes through the publisher (G2). Owner tools cut to the
+        read-only set, but the general model and effort: mametchi called it
+        with is_owner=False, and any joiner starts one."""
         if self._welcome_service is None:
             owner = Principal(
                 user_id=self._profile.owner_user_id, channel="",
@@ -1479,8 +1482,11 @@ class Application:
                 profile=self._profile,
                 workdir=self._profile.work_root,
                 system_prompt="슬랙 채널에 올릴 환영 글을 쓴다. 사용자 메시지의 지시를 따른다.",
+                model=self._profile.primary_engine.model,
+                effort=DEFAULT_EFFORT,
                 tools=ToolSelection.allow(self.tool_policy().tool_list_for(owner, readonly=True)),
             )
+            self._welcome_caller = caller
             library = PromptLibrary(self._profile.paths.prompts)
             self._welcome_service = WelcomeService(
                 store=WelcomeStore(self._database),

@@ -16,8 +16,11 @@ from ..plugin.base import BotPlugin
 from ..plugin.hooks import BackgroundJob, EventHandler, HookEvent
 from .service import WelcomeService, _Channels, is_member_join, welcome_enabled
 
+# The channel is required. "환영 @사람" alone is how anyone greets a newcomer,
+# and the router answers a match it denies with a refusal instead of passing
+# it on, so a bare form would turn members' greetings into permission errors.
 _RETRO = re.compile(
-    r"^\s*환영(?:\s+<#(?P<channel>[CG][A-Z0-9]+)(?:\|[^>]*)?>)?(?P<users>(?:\s+<@[UW][A-Z0-9]+(?:\|[^>]*)?>)+)\s*$"
+    r"^\s*환영\s+<#(?P<channel>[CG][A-Z0-9]+)(?:\|[^>]*)?>(?P<users>(?:\s+<@[UW][A-Z0-9]+(?:\|[^>]*)?>)+)\s*$"
 )
 _USER = re.compile(r"<@([UW][A-Z0-9]+)")
 
@@ -28,7 +31,7 @@ class WelcomeCommand(AdminCommand):
     itself answers at once."""
 
     name: ClassVar[str] = "welcome"
-    usage: ClassVar[str] = "환영 [#채널] @사람"
+    usage: ClassVar[str] = "환영 #채널 @사람"
     description: ClassVar[str] = "입장 알림을 놓친 사람을 소급해 환영한다"
 
     def __init__(self, service: Callable[[], WelcomeService]) -> None:
@@ -41,7 +44,9 @@ class WelcomeCommand(AdminCommand):
         found = _RETRO.match(ctx.text)
         if found is None:
             return AdminResult(message="환영할 사람을 멘션으로 적어 주세요.", applied=False)
-        channel = found.group("channel") or ctx.channel
+        channel = found.group("channel")
+        if not welcome_enabled(ctx.channels.get(channel)):
+            return AdminResult(message=f"<#{channel}> 은 환영을 켜지 않은 채널이라 요청하지 않았다.", applied=False)
         users = _USER.findall(found.group("users"))
         store = self._service().store
         for user in users:

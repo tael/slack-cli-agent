@@ -117,6 +117,10 @@ class WelcomeService:
     def drain(self, engine: EngineSlot) -> None:
         """Welcomes everyone queued by the admin command or a missed slot."""
         while (pair := self.store.take_request()) is not None:
+            if not welcome_enabled(self._channels.get(pair[0])):
+                # Turned off after it was queued, or never a welcome channel.
+                log.info("환영을 켜지 않은 채널의 소급 요청을 버린다 : %s", pair)
+                continue
             try:
                 self.welcome(pair[0], pair[1], engine)
             except SlotUnavailable:

@@ -2,7 +2,7 @@
 
 channels.json 에 "welcome": true 인 채널에서만 입장 알림에 환영 글을 채널
 본문으로 한 번 올린다. 슬랙이 같은 입장을 두 번 보내도 한 번만 올린다.
-입장 알림을 놓친 사람은 소유자의 "환영 @사람" 명령으로 소급 환영한다.
+입장 알림을 놓친 사람은 소유자의 "환영 #채널 @사람" 명령으로 소급 환영한다.
 """
 
 from __future__ import annotations
@@ -16,12 +16,15 @@ import pytest
 from test_application import FakeSlackClient, write_profile
 
 from slack_cli_agent.admin.command import AdminContext
+from slack_cli_agent.admin.router import AdminRouter
+from slack_cli_agent.auth.policy import DEFAULT_EFFORT
 from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.config.channel import ChannelConfig
 from slack_cli_agent.core.application import Application
 from slack_cli_agent.core.slots import ThreadSlots
 from slack_cli_agent.core.spawn import InlineTaskSpawner
 from slack_cli_agent.engine.base import EngineResponse
+from slack_cli_agent.engine.tool_selection import ToolAccess
 from slack_cli_agent.plugin.hooks import SlotUnavailable, event_callbacks
 from slack_cli_agent.storage.database import Database
 from slack_cli_agent.welcome.plugin import WelcomeCommand, WelcomePlugin
@@ -191,37 +194,75 @@ def test_자리가_없으면_소급_대기열에_넣고_작업이_다시_환영�
     assert len(publisher.posts) == 1
 
 
+def _ctx(trust: TrustLevel, text: str, channels: Any) -> AdminContext:
+    principal = Principal(user_id="U_X", channel=CH, trust=trust, is_direct_message=False)
+    return AdminContext(principal=principal, channel=CH, thread_ts="", channels=channels,
+                        profile=None, text=text)  # type: ignore[arg-type]
+
+
 def test_소급_환영_명령은_소유자_전용이고_대기열에_넣는다(tmp_path: Path) -> None:
     service, _, _ = _service(tmp_path)
     (command,) = _plugin(service).admin_commands()
     assert isinstance(command, WelcomeCommand)
     assert command.required_trust is TrustLevel.OWNER
-    assert command.matches("환영 <@UAAA1> <@UBBB2|비>")
     assert command.matches("환영 <#CXXX1|잡담> <@UAAA1>")
     assert not command.matches("환영 인사 좀 써 줘 <@UAAA1>")
     assert not command.matches("환영")
 
-    owner = Principal(user_id="U_OWNER", channel=CH, trust=TrustLevel.OWNER, is_direct_message=False)
-    ctx = AdminContext(principal=owner, channel=CH, thread_ts="", channels=None, profile=None,  # type: ignore[arg-type]
-                       text="환영 <#CXXX1|잡담> <@UAAA1> <@UBBB2>")
-    result = command.execute(ctx)
+    channels = _Channels({"CXXX1": {"name": "잡담", "welcome": True}})
+    result = command.execute(_ctx(TrustLevel.OWNER, "환영 <#CXXX1|잡담> <@UAAA1> <@UBBB2>", channels))
     assert result.applied and "2명" in result.message
     assert service.store.take_request() == ("CXXX1", "UAAA1")
     assert service.store.take_request() == ("CXXX1", "UBBB2")
     assert service.store.take_request() is None
 
 
+def test_채널을_적지_않은_환영_인사는_관리_명령이_가로채지_않는다(tmp_path: Path) -> None:
+    # 일반 구성원이 새 사람에게 "환영 @사람" 으로 인사하면 권한 거절이 아니라
+    # 평소 요청으로 넘어가야 한다. 마메치에는 이 명령이 없었다.
+    service, _, _ = _service(tmp_path)
+    router = AdminRouter(_plugin(service).admin_commands())
+    ctx = _ctx(TrustLevel.GENERAL, "", _Channels({}))
+    assert router.dispatch("환영 <@UNEW1>", ctx) is None
+    assert router.dispatch("환영 <@UNEW1> <@UNEW2>", ctx) is None
+
+
+def test_환영을_켜지_않은_채널은_소급_환영을_받지_않는다(tmp_path: Path) -> None:
+    service, publisher, _ = _service(tmp_path)
+    (command,) = _plugin(service).admin_commands()
+    channels = _Channels({"COFF1": {"name": "업무"}})
+    result = command.execute(_ctx(TrustLevel.OWNER, "환영 <#COFF1> <@UAAA1>", channels))
+    assert not result.applied
+    assert service.store.take_request() is None
+    # 켜 둔 뒤 끈 채널에 남은 요청도 올리지 않는다
+    service.store.request("COFF1", "UAAA1")
+    service.store.request("D_OWNER", "UAAA1")
+    service.drain(_free)
+    assert publisher.posts == []
+
+
 def test_애플리케이션이_환영을_훅과_관리_명령으로_건다(tmp_path: Path) -> None:
-    app = Application(write_profile(tmp_path), FakeSlackClient(), plugins=[])
+    profile = write_profile(tmp_path)
+    app = Application(profile, FakeSlackClient(), plugins=[])
     assert app.plugins == ()
     names = {c.name for c in app._admin_router()._commands}
     assert "welcome" in names
     assert any(r.name == "welcome:retro" for r in app.plugin_job_runners("worker"))
     assert app.plugin_job_runners("ingress") == []
-    # 환영 턴은 읽기 전용 도구만 받는다. 쓰기 도구가 끼면 입장자 조회가 행동이 된다
-    caller_tools = app.tool_policy().tool_list_for(
-        Principal(user_id="UOWNER", channel="", trust=TrustLevel.OWNER, is_direct_message=False), readonly=True,
-    )
-    assert not {"Bash", "Edit", "Write"} & set(caller_tools)
     assert app.welcome_service() is app.welcome_service()
+    # 환영 턴이 실제로 받는 도구는 읽기 전용 목록이다. 아무 입장자가 여는 턴의
+    # 유일한 경계라서, 계산식이 아니라 호출자가 들고 있는 값을 본다
+    caller = app._welcome_caller
+    assert caller is not None
+    selection = caller._tools
+    assert selection.access is ToolAccess.ALLOWLIST
+    readonly = app.tool_policy().tool_list_for(
+        Principal(user_id=profile.owner_user_id, channel="", trust=TrustLevel.OWNER, is_direct_message=False),
+        readonly=True,
+    )
+    assert selection.names == tuple(readonly)
+    assert not {"Bash", "Edit", "Write"} & set(selection.names)
+    # 마메치는 is_owner=False 로 불러 일반 모델을 썼다 (bot.py process_welcome_requests)
+    assert caller.model == profile.primary_engine.model
+    assert caller.effort == DEFAULT_EFFORT
     assert "<<USER>>" in (Path(__file__).parents[2] / "src/slack_cli_agent/assets/prompts/welcome.md").read_text()
