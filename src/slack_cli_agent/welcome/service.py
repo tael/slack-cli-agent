@@ -14,6 +14,7 @@ from typing import Any, Protocol
 
 from ..config.channel import ChannelConfig, channel_is_rich
 from ..engine.base import EngineResponse
+from ..observability.audit import IncidentKind
 from ..plugin.hooks import EngineSlot, SlotUnavailable
 from ..prompt.sections import is_silent
 from .store import WelcomeStore
@@ -71,6 +72,8 @@ class WelcomeService:
         run: Callable[[str], EngineResponse],
         template: Callable[[], str],
         self_user_id: Callable[[], str],
+        # Writes welcome_posted / welcome_failed (G7, mametchi). None records nothing.
+        audit: Callable[..., None] | None = None,
     ) -> None:
         self.store = store
         self._client = client
@@ -79,6 +82,7 @@ class WelcomeService:
         self._run = run
         self._template = template
         self._self_user_id = self_user_id
+        self._audit = audit or (lambda *_a, **_k: None)
 
     def welcome(self, channel: str, user: str, engine: EngineSlot) -> str | None:
         """Posts one welcome; None when it was skipped or failed. A
@@ -102,6 +106,10 @@ class WelcomeService:
             if not response.ok or not body or is_silent(body):
                 log.warning("환영 글을 만들지 못했다 : %s:%s %s", channel, user, response.failure_reason)
                 self.store.release(channel, user)
+                self._audit(
+                    IncidentKind.WELCOME_FAILED.value, channel=channel, user=user,
+                    reason=str(response.failure_reason or "empty"),
+                )
                 return None
             posted = self._publisher.post(channel, "", body, channel_is_rich(config), flat=True)
         except BaseException:
@@ -110,8 +118,10 @@ class WelcomeService:
         if posted is None:
             log.warning("환영 글을 올리지 못했다 : %s:%s", channel, user)
             self.store.release(channel, user)
+            self._audit(IncidentKind.WELCOME_FAILED.value, channel=channel, user=user, reason="post")
             return None
         self.store.record(channel, user, example_line(body, name))
+        self._audit(IncidentKind.WELCOME_POSTED.value, channel=channel, user=user, length=len(body))
         return body
 
     def drain(self, engine: EngineSlot) -> None:

@@ -24,7 +24,11 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from slack_cli_agent.auth.principal import Principal
 from slack_cli_agent.engine.base import EngineResponse, engine_usage_audit_fields
-from slack_cli_agent.observability.audit import REVIEW_CHECK_FAILED_KIND, REVIEW_KIND
+from slack_cli_agent.observability.audit import (
+    REVIEW_CHECK_FAILED_KIND,
+    REVIEW_FORMAT_KIND,
+    REVIEW_KIND,
+)
 from slack_cli_agent.observability.slow_report import SlowRequestMeta
 from slack_cli_agent.render.table import as_table
 from slack_cli_agent.review.ledger import ReviewLedger
@@ -429,6 +433,18 @@ class ReviewTask(ABC):
         except Exception as exc:  # noqa: BLE001 - see docstring
             log.warning("점검 실행 기록을 남기지 못했다 : %s", exc)
 
+    def _record_format_missing(self, target: ReviewTarget) -> None:
+        """Best effort, like `_record_run`."""
+        if self._audit is None:
+            return
+        try:
+            self._audit.record(
+                REVIEW_FORMAT_KIND, channel=target.channel, target_ts=target.ts,
+                review_kind=self.log_name,
+            )
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            log.warning("점검 형식 기록을 남기지 못했다 : %s", exc)
+
     def _record_check_failed(self, target: ReviewTarget, problems: list[str]) -> None:
         """Best effort, like `_record_run`."""
         if self._audit is None:
@@ -554,6 +570,9 @@ class ReviewTask(ABC):
             summary, detail = body.split(marker, 1)
         else:
             summary, detail = body, ""
+            # Goes up whole, summary and detail in one message (G7, mametchi
+            # postmortem_format / debug_trace_format / format_review_format).
+            self._record_format_missing(target)
 
         problems = self.content_problems(detail)
         if problems and session_id:

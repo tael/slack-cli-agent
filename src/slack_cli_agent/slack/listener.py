@@ -22,6 +22,7 @@ from typing import Any
 
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.core.context import RequestContext
+from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.guard.mentions import (
     PeerExchangeLimiter,
     calls_other_bot,
@@ -67,12 +68,16 @@ class EventListener:
         # stays un-retried (C5). Same interval as BotUserResolver.
         clock: Callable[[], float] = time.monotonic,
         bot_user_retry_interval_sec: float = DEFAULT_BOT_RETRY_INTERVAL_SEC,
+        # Writes the peer-cap and skip rows (G7, mametchi peer_turn_limit,
+        # peer_skipped, gate_skipped). None records nothing.
+        audit: Callable[..., None] | None = None,
     ) -> None:
         self._client = client
         self._channels = channel_registry
         self._gate = gate
         self._awaiting = awaiting
         self._peer_limiter = peer_limiter
+        self._audit = audit or (lambda *_a, **_k: None)
         # Self-message detection and mention matching must use the
         # same identity source — holding it separately would let
         # wiring pass the value to only one and still pass unit tests.
@@ -169,12 +174,24 @@ class EventListener:
             if self._peer_limiter is not None and not self._peer_limiter.allowed(
                 self._thread_key(event)
             ):
+                self._audit(
+                    IncidentKind.PEER_TURN_LIMIT.value, channel=event.get("channel") or "",
+                    thread_ts=self._thread_key(event), message_ts=event.get("ts") or "",
+                )
                 return None
         elif self._peer_limiter is not None:
             # A human named this bot: the thread's bot-exchange count starts
             # over (C18), so a later peer turn is answered again.
             self._peer_limiter.reset(self._thread_key(event))
         return self._context_from_event(event, unaddressed=False, is_dm=False)
+
+    def _audit_skip(self, kind: IncidentKind, event: Mapping[str, Any], bot_asked: bool) -> None:
+        self._audit(
+            kind.value, channel=event.get("channel") or "",
+            thread_ts=str(event.get("thread_ts") or ""), user=event.get("user") or "",
+            message_ts=event.get("ts") or "", question=(event.get("text") or "")[:200],
+            bot_asked=bot_asked,
+        )
 
     @staticmethod
     def _thread_key(event: Mapping[str, Any]) -> str:
@@ -295,11 +312,16 @@ class EventListener:
         # with — a reply to this bot's own question still belongs to it even
         # if an earlier turn addressed a peer.
         if peer_talk and not bot_asked:
+            self._audit_skip(IncidentKind.PEER_SKIPPED, event, bot_asked)
             return None
         has_files = bool(event.get("files"))
         if not self._policy.answers(
             config, text, ThreadState(joined, bot_asked), has_files=has_files
         ):
+            # Only where the bot already spoke: elsewhere every passing
+            # remark in a registered channel would get a row.
+            if joined:
+                self._audit_skip(IncidentKind.GATE_SKIPPED, event, bot_asked)
             return None
 
         return self._context_from_event(event, unaddressed=True, is_dm=False)

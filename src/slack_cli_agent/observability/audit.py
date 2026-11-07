@@ -162,6 +162,40 @@ class IncidentKind(StrEnum):
     #: One daily DM report run (E8): `day`, `rows`, `ok`.
     DM_REPORT = "dm_report"
 
+    #: Plain-text `@name` mentions turned into real ones (mametchi
+    #: plain_mention). `names` lists who.
+    PLAIN_MENTION = "plain_mention"
+    #: A reply promised a follow-up without a `[[WATCH:]]` tag and was sent
+    #: back for one rewrite (mametchi promise_without_watch).
+    PROMISE_WITHOUT_WATCH = "promise_without_watch"
+    #: The rewrite still promised, or never came back: the promise was cut
+    #: and the fixed line appended (mametchi promise_without_watch_retry_failed).
+    PROMISE_WITHOUT_WATCH_RETRY_FAILED = "promise_without_watch_retry_failed"
+    #: The posted reply waits on the asker's decision (mametchi
+    #: awaiting_reply). `by` is "tag" or "pattern". Baseline.
+    AWAITING_REPLY = "awaiting_reply"
+    #: A thread's bot-to-bot exchange went past its cap (mametchi peer_turn_limit).
+    PEER_TURN_LIMIT = "peer_turn_limit"
+    #: An unaddressed message in a joined thread left to the peer bot a human
+    #: was talking to (mametchi peer_skipped). Baseline.
+    PEER_SKIPPED = "peer_skipped"
+    #: An unaddressed message in a joined thread the gate judged not worth an
+    #: answer (mametchi gate_skipped). Baseline.
+    GATE_SKIPPED = "gate_skipped"
+    #: Notion `p/` links rewritten before posting (mametchi notion_link_fixed).
+    NOTION_LINK_FIXED = "notion_link_fixed"
+    #: A review posted without its summary/detail split marker even after the
+    #: retry, so it went up whole (mametchi postmortem_format,
+    #: debug_trace_format, format_review_format). `review_kind` says which.
+    REVIEW_FORMAT = "review_format"
+    #: A welcome posted to a new member (mametchi welcome_posted). Baseline;
+    #: the _FAILED kind carries `reason`.
+    WELCOME_POSTED = "welcome_posted"
+    WELCOME_FAILED = "welcome_failed"
+    #: Shadow evaluation rows (G4, mametchi shadow_answered/shadow_judged). Baseline.
+    SHADOW_ANSWERED = "shadow_answered"
+    SHADOW_JUDGED = "shadow_judged"
+
     def __str__(self) -> str:
         return self.value
 
@@ -170,6 +204,7 @@ REQUEST_KIND = IncidentKind.REQUEST.value
 PAYLOAD_KIND = IncidentKind.PAYLOAD.value
 REVIEW_KIND = IncidentKind.REVIEW.value
 REVIEW_CHECK_FAILED_KIND = IncidentKind.REVIEW_CHECK_FAILED.value
+REVIEW_FORMAT_KIND = IncidentKind.REVIEW_FORMAT.value
 WATCH_CHECKED_KIND = IncidentKind.WATCH_CHECKED.value
 WATCH_FINISHED_KIND = IncidentKind.WATCH_FINISHED.value
 WATCH_ABANDONED_KIND = IncidentKind.WATCH_ABANDONED.value
@@ -199,6 +234,13 @@ BASELINE_KINDS: tuple[IncidentKind, ...] = (
     IncidentKind.DM_REPLY_CAPPED,
     IncidentKind.DM_PROBE,
     IncidentKind.DM_REPORT,
+    # Routine traffic the mametchi kinds map onto (G7), not faults.
+    IncidentKind.AWAITING_REPLY,
+    IncidentKind.PEER_SKIPPED,
+    IncidentKind.GATE_SKIPPED,
+    IncidentKind.WELCOME_POSTED,
+    IncidentKind.SHADOW_ANSWERED,
+    IncidentKind.SHADOW_JUDGED,
 )
 #: Read by metrics.py as well -- a kind that is baseline here must not be
 #: tallied as an incident there.
