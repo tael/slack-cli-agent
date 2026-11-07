@@ -190,17 +190,14 @@ class Test채널설정키가정식필드다:
         assert ChannelConfig.from_dict("C1", {"code_first": True}).extra == {}
 
     def test_조직역할키는extra로플러그인에넘어간다(self) -> None:
-        """I82 — mametchi channels.json 의 조직·역할 키(operators/advisor/
-        broadcast/extra_tools/airflow_admins/shadow_source)는 코어 필드가
-        아니라 `extra` 로 보존돼 플러그인이 읽는다. 역할 판정은 공통이지만 그
-        사용자 ID·도구 목록·대상 채널 값은 조직마다 달라 코어가 해석하지 않는다
-        (sca-ww4 user_tools 와 같은 경계). 값이 손실·변형 없이 그대로 남는지 잠근다."""
+        """I82 — mametchi channels.json 의 조직 키(advisor/broadcast/
+        shadow_source)는 코어 필드가 아니라 `extra` 로 보존돼 플러그인이 읽는다.
+        값이 손실·변형 없이 그대로 남는지 잠근다. operators/extra_tools/
+        airflow_admins 는 A9 에서 도구 목록을 정하게 돼 정식 필드로 올렸다
+        (test_channel_role_tools.py)."""
         org = {
-            "operators": ["U1", "U2"],
             "advisor": "opus",
             "broadcast": "C999",
-            "extra_tools": ["WebSearch"],
-            "airflow_admins": ["U3"],
             "shadow_source": "C888",
         }
         설정 = ChannelConfig.from_dict("C1", dict(org))

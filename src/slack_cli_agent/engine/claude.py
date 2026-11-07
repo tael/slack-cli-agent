@@ -146,6 +146,30 @@ def _mcp_denials(names: tuple[str, ...], servers: Iterable[str]) -> list[str]:
     return [f"{MCP_PREFIX}{server}__*" for server in sorted(servers) if server not in allowed]
 
 
+def _lift_scoped_denials(settings: dict[str, Any], names: Iterable[str]) -> dict[str, Any]:
+    """Drop a bare deny entry the allowlist narrows with a scoped grant.
+
+    general's overlay denies the bare "Bash", and deny wins over allow, so an
+    airflow_admins `Bash(<airflow_ctl>:*)` or a channel's scoped Bash grant was
+    refused on this engine (A9 review). mametchi removed the same deny on
+    2026-10-02 for that reason (bot.py build_command). The bare name stays out
+    of the allowlist, and dontAsk refuses any call no allow entry matches, so
+    only the scoped form opens. Only Bash is lifted: that is the tool the
+    scoped grants exist for, and the other deny entries are left as they are.
+    """
+    scoped = {"Bash"} & {
+        name.split("(", 1)[0] for name in names if "(" in name and name.endswith(")")
+    }
+    permissions = settings.get("permissions")
+    if not scoped or not isinstance(permissions, Mapping):
+        return settings
+    deny = permissions.get("deny")
+    if not isinstance(deny, list) or not scoped & set(deny):
+        return settings
+    kept = [entry for entry in deny if entry not in scoped]
+    return {**settings, "permissions": {**permissions, "deny": kept}}
+
+
 def _open_mcp_servers(names: tuple[str, ...], servers: Iterable[str]) -> set[str]:
     """The servers left open, tools the allowlist never named included."""
     return {
@@ -489,6 +513,7 @@ class ClaudeEngine(Engine):
             paths.engine_settings(self.name),
             paths.engine_settings(f"{self.name}.{level}"),
         )
+        merged = _lift_scoped_denials(merged, request.tools.names)
         if request.progress_log is not None:
             merged = merge_settings(merged, progress_hook_settings(request.progress_log))
         # Always on, regardless of progress_log: these are engine built-ins,

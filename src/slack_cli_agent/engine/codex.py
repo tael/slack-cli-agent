@@ -110,6 +110,26 @@ def _codex_can_act(tools: ToolSelection) -> bool:
     return tools.can_act and not _codex_reads_only(tools)
 
 
+def _non_owner_reads_only(request: EngineRequest) -> bool:
+    """A non-owner turn always runs read-only, operator_full channel included.
+
+    codex enforces no allowlist and gets every profile MCP server, so a
+    non-owner turn under workspace-write with network and --approve-for-me
+    could send or delete mail, delete pods or click in the owner's browser
+    whatever its tool list said (A9 review). An operator_full exception for a
+    bare Bash/Edit/Write reopened the same hole, and channel extra_tools hand
+    that bare name to every non-owner in the channel, operators list or not.
+    mametchi pins a non-owner codex turn to read-only on is_owner alone
+    (bot_profile.codex_sandbox) with no operator_full exception; this matches
+    it. A read-only turn cannot call MCP tools at all (build_command).
+    An unrestricted selection means no tool policy is wired at all, which no
+    profile Application builds runs under; it keeps the profile sandbox.
+    """
+    if request.trust_level is TrustLevel.OWNER:
+        return False
+    return request.tools.access is ToolAccess.ALLOWLIST
+
+
 def _codex_mcp_config_args(
     mcp_servers: Mapping[str, McpServerSpec],
     *,
@@ -226,7 +246,7 @@ class CodexEngine(Engine):
         allowlist would otherwise reach it as a sentence the model may
         ignore; the sandbox is the OS refusing the write (sca-f9k0).
         """
-        if _codex_reads_only(request.tools):
+        if _codex_reads_only(request.tools) or _non_owner_reads_only(request):
             return "read-only"
         return str(self.spec.options.get("sandbox", "danger-full-access"))
 
@@ -302,7 +322,7 @@ class CodexEngine(Engine):
         cmd += ["-c", f"model_reasoning_effort={self._toml_string(self.resolve_effort(request))}"]
         cmd += _codex_mcp_config_args(
             self.profile.mcp_servers,
-            can_act=_codex_can_act(request.tools),
+            can_act=_codex_can_act(request.tools) and sandbox != "read-only",
             is_owner=request.trust_level is TrustLevel.OWNER,
             turn_context=request.turn_context,
         )

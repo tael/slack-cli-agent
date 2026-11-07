@@ -109,6 +109,7 @@ class EventListener:
             unfurl_attachments=tuple(event.get("attachments") or ()),
             unaddressed=unaddressed,
             is_direct_message=is_dm,
+            from_bot=bool(event.get("bot_id")),
         )
 
     def from_app_mention(self, event: Mapping[str, Any]) -> RequestContext | None:

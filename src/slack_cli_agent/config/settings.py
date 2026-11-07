@@ -182,6 +182,13 @@ class RuntimeSettings:
     # write declares it in its profile rather than in code.
     base_tools: tuple[str, ...] = ("Read", "Grep", "Glob")
     owner_tools: tuple[str, ...] = ()
+    # Tools a channel operator gets, named one by one (mametchi
+    # OWNER_EXTRA_TOOLS). Not derived from owner_tools: that list names whole
+    # servers, and an operator then got the owner's mail and cluster. Server
+    # wildcards in any spelling (mcp__s__*, mcp__s, a bare server name) and
+    # browser actions here are dropped. Empty by default, so an
+    # operator gets nothing until the profile names it.
+    operator_tools: tuple[str, ...] = ()
 
     # Skills granted on every ordinary turn as `Skill(<name>)` entries, even in
     # a channel with skills disabled -- a read-only query skill a bot should

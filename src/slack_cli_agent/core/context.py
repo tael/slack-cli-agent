@@ -29,6 +29,10 @@ class RequestContext:
     queued_at: float | None = None
     first_reaction_at: float | None = None
     is_direct_message: bool = False
+    #: The event carried a bot_id. The operator check reads this rather than a
+    #: users_info lookup, which reads a failed call as "a person" (A9 review;
+    #: mametchi bot.py:7855 is_bot=bool(event.get("bot_id"))).
+    from_bot: bool = False
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @property

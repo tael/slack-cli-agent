@@ -854,19 +854,22 @@ class TestCodexEngineBuildCommand:
 
     def test_쓰기_도구가_섞이면_프로필_값을_그대로_쓴다(self, tmp_path: Path) -> None:
         engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
-        cmd = engine.build_command(
-            request(resume=False, model="gpt-5.6-sol", tools=ToolSelection.allow(["Read", "Write"]))
-        )
+        cmd = engine.build_command(request(
+            resume=False, model="gpt-5.6-sol", trust_level=TrustLevel.OWNER,
+            tools=ToolSelection.allow(["Read", "Write"]),
+        ))
         assert 'sandbox_mode="danger-full-access"' in cmd
 
-    @pytest.mark.parametrize("trust_level", [TrustLevel.OWNER, TrustLevel.TRUSTED])
+    @pytest.mark.parametrize("trust_level", [TrustLevel.OWNER])
     def test_workspace_write_프로필의_소유자와_controller_턴은_쓰기를_유지한다(
         self, tmp_path: Path, trust_level: TrustLevel,
     ) -> None:
         """Fallback turns for the owner and configured controller carry write
         tools.  A read-only profile once overrode that authority after an
-        automatic engine switch, so pin both trust paths to the configured
-        workspace-write sandbox.
+        automatic engine switch, so pin the trust path to the configured
+        workspace-write sandbox. A controller is OWNER (AccessPolicy
+        principal_for); TRUSTED is a channel's trusted_users, a non-owner, and
+        runs read-only like mametchi's non-owner (A9 review).
         """
         engine = CodexEngine(
             codex_profile(tmp_path, options={"sandbox": "workspace-write", "network": True}),
@@ -947,10 +950,12 @@ class TestCodexEngineBuildCommand:
 
     def test_MCP_도구가_섞이면_내리지_않는다(self, tmp_path: Path) -> None:
         """READ_ONLY_TOOLS 는 내장 도구만 담는다. MCP 도구가 밖으로 쓰는지를
-        코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰)."""
+        코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰).
+        소유자 턴으로 본다 - 비소유자 턴은 operator_full 이 아니면 도구와
+        무관하게 read-only 다 (A9 검토)."""
         engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
         cmd = engine.build_command(request(
-            resume=False, model="gpt-5.6-sol",
+            resume=False, model="gpt-5.6-sol", trust_level=TrustLevel.OWNER,
             tools=ToolSelection.allow(["Read", "mcp__github__search_code"]),
         ))
         assert 'sandbox_mode="danger-full-access"' in cmd
