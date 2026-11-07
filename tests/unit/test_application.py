@@ -2703,6 +2703,30 @@ class Test노출금지자리표조립:
         assert f"제어 도구 : {Path('~/bin/airflow_ctl.sh').expanduser()} <명령>" in text
         application.close()
 
+    def test_DM_응대_지침도_소유자_멘션_자리표를_채운다(
+        self, tmp_path: Path, client: FakeSlackClient,
+    ) -> None:
+        """비소유자 DM 지침(dm_reply_system)이 채널 지침과 같은 자리표 값을
+        쓴다. 구치파치 프로필의 sensitive_guard.md 는 거절 답에
+        `<<OWNER_MENTION>>` 을 적게 한다. 이 값이 비면 원문이 동료에게 간다."""
+        profile = write_profile(tmp_path, airflow_ctl="~/bin/airflow_ctl.sh")
+        prompts = profile.paths.prompts
+        prompts.mkdir(parents=True, exist_ok=True)
+        (prompts / "sensitive_guard.md").write_text(
+            "- 답변에 <<OWNER_MENTION>> 을 기재한다\n"
+            "  <<OWNER_MENTION>> 님께 확인 부탁드릴게요.\n",
+            encoding="utf-8",
+        )
+        (prompts / "never_disclose.md").write_text(
+            "노출 금지. 제어 도구 <<AIRFLOW_CTL>>", encoding="utf-8",
+        )
+        application = Application(profile, client)
+        text = application.dm_reply_system()
+        assert "<<" not in text
+        assert text.count("<@U_OWNER>") == 2
+        assert str(Path("~/bin/airflow_ctl.sh").expanduser()) in text
+        application.close()
+
 
 class Test관리명령응답_flat:
     """B3: flat_reply 채널은 답이 채널 최상위에 오른다. 관리 명령 응답만 스레드로

@@ -667,17 +667,22 @@ class Application:
         sections.extend(s for p in self._plugins for s in p.prompt_sections())
         return sections
 
-    def _composer(self) -> PromptComposer:
-        paths = self._profile.paths
+    def _prompt_library(self) -> PromptLibrary:
+        """The library every engine-facing guide reads, so a profile file's
+        slots are filled the same way on the channel and the DM path."""
         placeholders = {"OWNER_MENTION": f"<@{self._profile.owner_user_id}>"}
         # The Airflow control tool is an org-specific path, so it comes from
         # the profile (mametchi bot.py prompt_text fills the same slot).
         if self._profile.airflow_ctl is not None:
             placeholders["AIRFLOW_CTL"] = str(self._profile.airflow_ctl)
-        library = PromptLibrary(
-            paths.prompts, placeholders=placeholders,
+        return PromptLibrary(
+            self._profile.paths.prompts, placeholders=placeholders,
             file_placeholders=("NEVER_DISCLOSE",),
         )
+
+    def _composer(self) -> PromptComposer:
+        paths = self._profile.paths
+        library = self._prompt_library()
         knowledge = KnowledgeLoader(
             paths.persona / "PERSONA.md", paths.knowledge,
             domain_file=self._profile.domain_file, learned_dir=paths.learned,
@@ -1645,7 +1650,7 @@ class Application:
         guide = load_prompt(
             self._profile.paths.prompts, REPLY_FILE, DEFAULT_REPLY_SYSTEM, self._profile.display_name,
         )
-        library = PromptLibrary(self._profile.paths.prompts)
+        library = self._prompt_library()
         return "\n\n".join((
             guide, library.text("SENSITIVE_GUARD").strip(), library.text("NEVER_DISCLOSE").strip(),
         ))
