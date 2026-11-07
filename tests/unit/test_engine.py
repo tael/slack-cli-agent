@@ -1955,8 +1955,10 @@ class TestFallbackEngine:
     def test_전환을_시작한_첫_요청도_사람에게_답을_낸다(self, tmp_path: Path) -> None:
         """1차의 실패 응답은 기본이 비공개다. 그대로 돌려주면 전환을 만든 그
         요청만 아무 답도 없이 끝나 봇이 멈춘 것으로 보인다 (sca-3hh4).
-        두 번째 요청부터는 승인 대기 분기가 같은 문구를 낸다."""
-        fallback, _primary, _secondary, _switcher = self._인증실패_1차(tmp_path)
+        두 번째 요청부터는 승인 대기 분기가 같은 문구를 낸다.
+        2차가 답하면 자동 승인되어 2차 답이 나가므로, 2차도 못 쓰는 경우를 본다."""
+        fallback, _primary, _secondary, _switcher = self._인증실패_1차(
+            tmp_path, secondary_ok=False)
 
         resp = fallback.run(request())
 
@@ -2017,16 +2019,20 @@ class TestFallbackEngine:
 
     # -- 로그인 만료로 전환하는 경로 (2026-09-19 asuka 실측)
 
-    def _인증실패_1차(self, tmp_path: Path):
-        """1차가 종료코드 1 로 끝나고 그 실패가 로그인 만료인 경우."""
+    def _인증실패_1차(self, tmp_path: Path, secondary_ok: bool = True):
+        """1차가 종료코드 1 로 끝나고 그 실패가 로그인 만료인 경우.
+
+        secondary_ok=False 면 2차도 확인 요청에 답하지 않아 자동 승인되지 않는다.
+        """
         failed = EngineResponse(
             ok=False, body="Codex 실행에 실패했습니다.", session_id=None, model_actual=None,
             elapsed=0, turns=None, usage=None, failure_reason="nonzero_exit",
         )
-        probe_ok = EngineResponse(ok=True, body="OK", session_id=None, model_actual=None,
-                                  elapsed=0, turns=None, usage=None)
+        probe = EngineResponse(ok=secondary_ok, body="OK" if secondary_ok else "",
+                               session_id=None, model_actual=None,
+                               elapsed=0, turns=None, usage=None)
         fallback, primary, secondary, switcher = self._fallback(
-            tmp_path, primary_response=failed, secondary_response=probe_ok)
+            tmp_path, primary_response=failed, secondary_response=probe)
         primary.detect_auth_failure = (  # type: ignore[method-assign]
             lambda response: "codex 로그인이 풀렸다."
         )
@@ -2053,7 +2059,21 @@ class TestFallbackEngine:
         resp = fallback.run(request())
 
         assert switcher.reason() == EngineSwitcher.AUTH_FAILURE
-        assert resp.user_facing is True
+        assert switcher.is_approved() is True
+        assert resp.ok is True
+
+    def test_로그인이_풀리면_그_요청부터_2차로_답한다(self, tmp_path: Path) -> None:
+        """2026-11-07 claude 토큰 만료 때 2차가 확인에 답했는데도 승인 대기로 남아
+        07:49-15:44 동안 모든 요청이 안내문으로 끝났다. 한도와 같이 자동 승인한다."""
+        fallback, _primary, secondary, switcher = self._인증실패_1차(tmp_path)
+
+        resp = fallback.run(request())
+
+        assert switcher.reason() == EngineSwitcher.AUTH_FAILURE
+        assert switcher.is_approved() is True
+        assert resp.ok is True and resp.body == "OK"
+        # 확인 요청 1회와 실제 요청 1회
+        assert len(secondary.built) == 2
 
     def test_1차_로그인이_풀리면_전환_상태를_남긴다(self, tmp_path: Path) -> None:
         """한도가 아니어도 1차가 당분간 아무 요청도 못 받는 상태면 전환한다.
@@ -2067,8 +2087,10 @@ class TestFallbackEngine:
         assert switcher.reason() == EngineSwitcher.AUTH_FAILURE
 
     def test_로그인이_풀린_전환은_한도와_다른_안내를_낸다(self, tmp_path: Path) -> None:
-        """한도로 안내하면 기다리면 되는 것으로 읽혀 아무도 다시 로그인하지 않는다."""
-        fallback, _primary, _secondary, _switcher = self._인증실패_1차(tmp_path)
+        """한도로 안내하면 기다리면 되는 것으로 읽혀 아무도 다시 로그인하지 않는다.
+        2차도 못 써 승인되지 않은 경우의 안내문을 본다."""
+        fallback, _primary, _secondary, _switcher = self._인증실패_1차(
+            tmp_path, secondary_ok=False)
         fallback.run(request())
 
         resp = fallback.run(request())
