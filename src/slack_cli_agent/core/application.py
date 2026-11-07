@@ -52,7 +52,6 @@ from ..engine.transcript import (
 )
 from ..guard.base import OutputGuard
 from ..guard.dropline import ConfiguredLineDropGuard
-from ..guard.links import NotionLinkGuard
 from ..guard.mentions import (
     AddresseeGuard,
     BotMentionGuard,
@@ -584,8 +583,6 @@ class Application:
             RewriteLossGuard(self._settings),
             # safe to always include — a no-op when the drop-line list is empty
             ConfiguredLineDropGuard(self._settings),
-            # After the built-in rewrites so none of them reintroduces a dead Notion link.
-            NotionLinkGuard(),
         ]
         guards.extend(g for p in self._plugins for g in p.output_guards())
         return GuardPipeline(guards)
