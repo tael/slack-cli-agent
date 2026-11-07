@@ -88,20 +88,28 @@ def deny(reason: str) -> None:
     }, ensure_ascii=False))
 
 
-#: Marker body: epoch seconds, then this turn's "channel:ts" from TURN_ID. The
-#: second line is how the worker knows not to wait on or rerun this turn.
-_MARKER_BODY = "printf '%s\\n%s\\n' \"$(date +%s)\" \"$TURN_ID\""
+#: Marker body: epoch seconds, then this turn's "channel:ts" from TURN_ID, then
+#: the change summary. The second line is how the worker knows not to wait on
+#: or rerun this turn; the summary goes into the supervisor's completion DM
+#: (mametchi apply.sh's required note). The supervisor runs the check, so a
+#: turn never tests-and-restarts on its own (H3).
+_MARKER_BODY = "printf '%s\\n%s\\n%s\\n' \"$(date +%s)\" \"$TURN_ID\" \"<변경 요약>\""
+
+_NOTE_HINT = (
+    " <변경 요약> 1행은 무엇이 달라졌는지 제목이고, 이후 줄은 '- ' 불릿이다."
+    " 점검(pytest), 재기동, 실패 시 되돌리기, 결과 DM 은 supervisor 가 한다."
+)
 
 
 def _marker_hint() -> str:
     if _MARKER_PATH:
         return (
             f" 재기동이 필요하면 {_MARKER_BODY} > {_MARKER_PATH} 로"
-            " apply-request 마커만 남기고 턴을 끝낸다."
+            " apply-request 마커만 남기고 턴을 끝낸다." + _NOTE_HINT
         )
     return (
         f" 재기동이 필요하면 {_MARKER_BODY} 로 apply-request 마커만 남기고 턴을 끝낸다"
-        " (supervisor 가 집는다)."
+        " (supervisor 가 집는다)." + _NOTE_HINT
     )
 
 

@@ -747,6 +747,18 @@ class Application:
             )
         return self._gateway
 
+    def restart_guard_env(self) -> dict[str, str]:
+        """What the self-restart guard needs to send a turn to the marker (H3):
+        this profile's apply-request path and the launchd labels of its own
+        services. Without it the guard's hint carries no path to write to."""
+        request, _running = self._profile.paths.apply_requests
+        return {
+            "RESTART_GUARD_MARKER": str(request),
+            # The base label is a prefix of every service label, so a kill
+            # naming any of them (or the job family) is caught.
+            "RESTART_GUARD_LABELS": self._profile.launch_label,
+        }
+
     def reactions(self) -> ReactionMarker:
         if self._reactions is None:
             self._reactions = ReactionMarker(self._client)
@@ -970,6 +982,7 @@ class Application:
                 # short approval ("좋아") arriving hours later still reads as an
                 # answer and not a stray reaction — see session/awaiting.py.
                 awaiting=SqliteAwaitingStore(self._database),
+                restart_env=self.restart_guard_env(),
                 # 워커에서 받아쓴다. 접수 경로에서 돌면 소켓 핸들러가 밀린다(G6).
                 transcriber=Transcriber(),
                 # A8: this bot hands work to another bot through the ledger

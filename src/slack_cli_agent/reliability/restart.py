@@ -55,6 +55,9 @@ APPLY_REQUESTER_GRACE_SEC = 30.0
 class ApplyRequest:
     requested_at: float
     turn_id: str | None = None
+    #: What changed, from the third line on, carried into the completion DM
+    #: (mametchi apply.sh's apply-note.txt, merged into the marker here).
+    note: str = ""
 
     def render(self) -> str:
         # First line is the timestamp pending_apply ages against; the turn id,
@@ -62,8 +65,10 @@ class ApplyRequest:
         # when it later sees a shutdown signal (avoids the same deadlock the
         # marker exists to dodge).
         lines = [str(int(self.requested_at))]
-        if self.turn_id:
-            lines.append(self.turn_id)
+        if self.turn_id or self.note:
+            lines.append(self.turn_id or "unknown")
+        if self.note:
+            lines.append(self.note)
         return "\n".join(lines) + "\n"
 
     @classmethod
@@ -74,8 +79,13 @@ class ApplyRequest:
         except (IndexError, ValueError):
             return None
         turn = lines[1].strip() if len(lines) > 1 else ""
+        note = "\n".join(lines[2:]).strip()
         # mametchi's apply.sh writes "unknown" when it ran outside a turn.
-        return cls(requested_at=requested_at, turn_id=turn if turn not in ("", "unknown") else None)
+        return cls(
+            requested_at=requested_at,
+            turn_id=turn if turn not in ("", "unknown") else None,
+            note=note,
+        )
 
     def requester(self) -> tuple[str, str] | None:
         """(channel, ts) of the turn that asked, from a "channel:ts" turn id."""

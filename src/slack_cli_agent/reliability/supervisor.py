@@ -3,7 +3,8 @@
 A turn can't restart its own bot (reliability/restart.py), so it leaves an
 apply-request marker. This loop runs as its own launchd job, outside any
 turn's sandbox: it claims the marker by renaming it to apply-running,
-kickstarts every service, and judges success by PID replacement. When
+runs the pre-restart check if one is configured (H3, the py_compile and
+regression run mametchi apply.sh did inside the turn), kickstarts every service, and judges success by PID replacement. When
 nothing is left serving it runs the rollback step, if one is configured,
 and starts the services again. The outcome goes to the owner's DM.
 
@@ -35,6 +36,8 @@ APPLY_RUN_TTL_SEC = 900.0
 #: How long to wait for new PIDs. kickstart -k makes the worker drain in-flight
 #: work (up to 330s) before it exits, so this exceeds launchd's ExitTimeOut.
 CONFIRM_TIMEOUT_SEC = 400.0
+#: Lines of a failed check's output carried into the DM.
+CHECK_TAIL_LINES = 15
 #: An ingress restart also ends that process's review threads. A "진행" row
 #: newer than this defers the restart (watchdog.py SCA_REVIEW_ACTIVE_SEC).
 REVIEW_ACTIVE_SEC = 1800.0
@@ -90,6 +93,7 @@ class ApplySupervisor:
         notify: Callable[[str], object],
         busy: Callable[[], int] = lambda: 0,
         rollback: Callable[[], bool] | None = None,
+        check: Callable[[], tuple[bool, str]] | None = None,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         grace_sec: float = APPLY_REQUEST_GRACE_SEC,
@@ -105,6 +109,8 @@ class ApplySupervisor:
         self._notify = notify
         self._busy = busy
         self._rollback = rollback
+        self._check = check
+        self._check_tail = ""
         self._now = now
         self._sleep = sleep
         self._grace = grace_sec
@@ -124,7 +130,7 @@ class ApplySupervisor:
         if request is None:
             return None
         try:
-            outcome = self._apply()
+            outcome = "check_failed" if not self._checked() else self._apply()
         finally:
             # Only apply-running: a request written while this ran is the next
             # restart, and deleting it would drop it silently (apply-restart.sh).
@@ -222,6 +228,22 @@ class ApplySupervisor:
             (pid := read_pid(s.pid_path)) is not None and self._alive(pid) for s in self._services
         )
 
+    def _checked(self) -> bool:
+        """Runs the check before anything is restarted. A failure leaves the
+        running bot as it is: the new code has not been loaded yet."""
+        self._check_tail = ""
+        if self._check is None:
+            return True
+        try:
+            ok, output = self._check()
+        except Exception as exc:
+            # Raising here would skip _report and drop the request silently.
+            log.exception("재기동 전 점검 예외")
+            ok, output = False, f"점검을 실행하지 못했습니다 : {exc}"
+        if not ok:
+            self._check_tail = "\n".join(output.strip().splitlines()[-CHECK_TAIL_LINES:])
+        return ok
+
     def _apply(self) -> str:
         if self._restart():
             return "restarted"
@@ -242,6 +264,7 @@ class ApplySupervisor:
     def _report(self, outcome: str, request: ApplyRequest) -> None:
         stamp = time.strftime("%m-%d %H:%M:%S", time.localtime(self._now()))
         head = {
+            "check_failed": "점검 실패, 재기동하지 않았습니다",
             "restarted": "재기동 완료",
             "failed_running": "재기동 실패, 되돌리지 않았습니다",
             "failed_down": "재기동 실패, 되돌릴 수단이 없습니다",
@@ -249,6 +272,7 @@ class ApplySupervisor:
             "rollback_failed": "재기동 실패, 되돌려도 기동하지 못했습니다",
         }[outcome]
         detail = {
+            "check_failed": "기존 프로세스가 그대로 돌고 있습니다. 점검 출력 끝부분을 붙입니다",
             "restarted": "새 PID 로 교체를 확인했습니다",
             "failed_running": "PID 가 바뀌지 않았고 기존 프로세스가 계속 돌고 있습니다",
             "failed_down": "돌고 있는 프로세스가 없습니다. 직접 확인이 필요합니다",
@@ -258,6 +282,13 @@ class ApplySupervisor:
         lines = [f"*{head}*", f"- 시각 : {stamp}", f"- 상태 : {detail}"]
         if request.turn_id:
             lines.append(f"- 요청 턴 : {request.turn_id}")
+        if request.note:
+            first, _, rest = request.note.partition("\n")
+            lines.append(f"- 변경 : {first}")
+            if rest.strip():
+                lines.append(rest.strip())
+        if outcome == "check_failed" and self._check_tail:
+            lines.append(f"```\n{self._check_tail}\n```")
         try:
             self._notify("\n".join(lines))
         except Exception:
