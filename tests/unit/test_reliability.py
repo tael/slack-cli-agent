@@ -414,6 +414,56 @@ class TestFindMissed:
         assert service.find_missed("C1", window=3600).kind is OutcomeKind.UNKNOWN
         assert service.sweep(["C1"], window=3600).unchecked_channels == ["C1"]
 
+    def test_못_읽은_스레드가_있어도_같은_채널의_다른_부름은_회수한다(self) -> None:
+        """긴 스레드 하나를 못 읽었다고 채널 전체 회수를 버리지 않는다 (PR #124 검토).
+
+        못 읽은 스레드 때문에 채널은 재시도 목록에 남지만, 다른 스레드와
+        최상위 메시지의 미응답 부름은 이번 회차에 회수한다.
+        """
+        history = FakeHistoryReader(
+            history={
+                "C1": [
+                    {"ts": "98000.0", "user": "U1", "text": "<@U_BOT> 긴 스레드", "reply_count": 600},
+                    {"ts": "98500.0", "user": "U2", "text": "<@U_BOT> 다른 스레드", "reply_count": 1},
+                    {"ts": "99000.0", "user": "U3", "text": "<@U_BOT> 최상위 질문"},
+                ]
+            },
+            threads={
+                "98000.0": None,
+                "98500.0": [
+                    {"ts": "98500.0", "user": "U2", "text": "<@U_BOT> 다른 스레드"},
+                    {"ts": "98600.0", "user": "U2", "thread_ts": "98500.0", "text": "<@U_BOT> 아직 답 없나"},
+                ],
+            },
+        )
+        service = make_service(history)
+
+        report = service.sweep(["C1"], window=3600)
+
+        assert sorted(c.ts for c in report.missed) == ["98600.0", "99000.0"]
+        assert report.unchecked_channels == ["C1"]
+
+    def test_재시도에서도_못_읽은_스레드_밖의_부름은_회수한다(self) -> None:
+        history = FakeHistoryReader(history={"C1": None})
+        now = 100_000.0
+        service = make_service(history, now=now)
+        service.sweep(["C1"], window=3600)
+
+        history.history["C1"] = [
+            {"ts": "98000.0", "user": "U1", "text": "<@U_BOT> 긴 스레드", "reply_count": 600},
+            {"ts": "99000.0", "user": "U3", "text": "<@U_BOT> 최상위 질문"},
+        ]
+        history.threads["98000.0"] = None
+        service._now = lambda: now + 31  # type: ignore[attr-defined]
+
+        statuses = service.retry_pending()
+
+        assert len(statuses) == 1
+        assert [m.ts for m in statuses[0].missed] == ["99000.0"]
+        assert statuses[0].alert is False
+        # 못 읽은 스레드가 남아 있으니 다음 회차에 다시 본다.
+        assert "C1" in service._pending  # type: ignore[attr-defined]
+
     def test_이미_답변_표식이_있으면_빠진다(self) -> None:
         history = FakeHistoryReader(
             history={
