@@ -119,3 +119,127 @@ class Test파이프라인:
         pipeline.handle(make_ctx())
         assert len(parts["runner"].calls) == 1
         assert parts["publisher"].posted[-1]["text"] == "답"
+
+
+def failing(body: str, tools: list[str], errors: list[str]) -> EngineResponse:
+    resp = tooled(body, tools)
+    return EngineResponse(**{**resp.__dict__, "raw": {"tools": tools, "tool_errors": errors}})
+
+
+class Test실패한_호출:
+    """codex 는 status=failed 인 MCP 호출도 tools 에 넣고 tool_errors 에 다시 적는다."""
+
+    def test_게시가_거부됐으면_올린_것으로_보지_않는다(self) -> None:
+        resp = failing(
+            "x", ["mermaid.mermaid_render", "mermaid.mermaid_render_and_post"],
+            ["mermaid.mermaid_render_and_post : POST_CHANNEL 밖이다"],
+        )
+        assert not rendered_and_posted(resp)
+        assert rendered_without_posting(resp)
+
+    def test_같은_이름_두_번_중_한_번만_실패하면_올린_것이다(self) -> None:
+        resp = failing(
+            "x", ["mermaid.mermaid_render_and_post", "mermaid.mermaid_render_and_post"],
+            ["mermaid.mermaid_render_and_post : 실패"],
+        )
+        assert rendered_and_posted(resp)
+
+    def test_렌더가_실패했으면_그린_것이_아니다(self) -> None:
+        resp = failing("x", ["mermaid.mermaid_render"], ["mermaid.mermaid_render : 문법 오류"])
+        assert not rendered_without_posting(resp)
+
+    def test_첫_턴_게시_실패면_다시_돌리고_재실행도_실패하면_알린다(self) -> None:
+        pipeline, parts = build_pipeline(responses=[
+            failing(
+                "도식을 올렸습니다",
+                ["mermaid.mermaid_render", "mermaid.mermaid_render_and_post"],
+                ["mermaid.mermaid_render_and_post : 거부"],
+            ),
+            failing(
+                "올렸습니다", ["mermaid.mermaid_render_and_post"],
+                ["mermaid.mermaid_render_and_post : 거부"],
+            ),
+        ])
+        pipeline.handle(make_ctx())
+        assert len(parts["runner"].calls) == 2
+        assert parts["publisher"].posted[-1]["text"].endswith(NOTICE_UNPOSTED_RENDER)
+        assert _incidents(parts)[0]["recovered"] is False
+
+
+class Test재실행과_함께_판정:
+    """늦은 추가말 재실행이나 가드 재작성이 돈 턴은 그 호출의 도구까지 함께 본다."""
+
+    def test_추가말_재실행이_올렸으면_다시_돌리지_않는다(self) -> None:
+        from test_pipeline import Fake늦은추가말
+
+        pipeline, parts = build_pipeline(
+            responses=[
+                tooled("도식을 그렸습니다", ["mermaid.mermaid_render"]),
+                tooled("추가 말 반영해 올렸습니다", ["mermaid.mermaid_render_and_post"]),
+                tooled("또 올렸습니다", ["mermaid.mermaid_render_and_post"]),
+            ],
+            late_addendum=Fake늦은추가말("이것도 그려줘", "1700000009.000000"),
+        )
+        pipeline.handle(make_ctx())
+        assert len(parts["runner"].calls) == 2
+        assert not _incidents(parts)
+
+    def test_추가말_재실행이_렌더만_했으면_회수한다(self) -> None:
+        from test_pipeline import Fake늦은추가말
+
+        pipeline, parts = build_pipeline(
+            responses=[
+                ok_response("답"),
+                tooled("그렸습니다", ["mermaid.mermaid_render"]),
+                tooled("올렸습니다", ["mermaid.mermaid_render_and_post"]),
+            ],
+            late_addendum=Fake늦은추가말("그려줘", "1700000009.000000"),
+        )
+        pipeline.handle(make_ctx())
+        assert len(parts["runner"].calls) == 3
+        assert _incidents(parts)[0]["recovered"] is True
+
+
+class Test대체엔진_턴:
+    def test_세션을_이을_수_없으면_다시_돌리지_않고_알린다(self) -> None:
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        pipeline, parts = build_pipeline(responses=[
+            replace(tooled("도식을 그렸습니다", ["mermaid.mermaid_render"]), engine="codex"),
+            tooled("올렸습니다", ["mermaid.mermaid_render_and_post"]),
+        ])
+        pipeline._engine.secondary = SimpleNamespace(name="codex")  # type: ignore[attr-defined]
+        pipeline.handle(make_ctx())
+        assert len(parts["runner"].calls) == 1
+        assert parts["publisher"].posted[-1]["text"].endswith(NOTICE_UNPOSTED_RENDER)
+        incident = _incidents(parts)[0]
+        assert incident["recovered"] is False and incident["rerun"] is False
+
+    def test_1차_엔진_턴은_다시_돌린다(self) -> None:
+        from dataclasses import replace
+        from types import SimpleNamespace
+
+        pipeline, parts = build_pipeline(responses=[
+            replace(tooled("도식을 그렸습니다", ["mermaid.mermaid_render"]), engine="claude"),
+            tooled("올렸습니다", ["mermaid.mermaid_render_and_post"]),
+        ])
+        pipeline._engine.secondary = SimpleNamespace(name="codex")  # type: ignore[attr-defined]
+        pipeline.handle(make_ctx())
+        assert len(parts["runner"].calls) == 2
+
+
+class Test물음삭제:
+    def test_물음이_지워졌으면_다시_돌려_올리지_않는다(self) -> None:
+        from test_pipeline import Fake물음생존
+
+        pipeline, parts = build_pipeline(
+            responses=[
+                tooled("도식을 그렸습니다", ["mermaid.mermaid_render"]),
+                tooled("올렸습니다", ["mermaid.mermaid_render_and_post"]),
+            ],
+            origin_alive=Fake물음생존(False),
+        )
+        pipeline.handle(make_ctx())
+        assert len(parts["runner"].calls) == 1
+        assert not parts["publisher"].posted

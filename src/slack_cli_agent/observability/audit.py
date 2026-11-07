@@ -103,7 +103,8 @@ class IncidentKind(StrEnum):
     SECRET_REDACTED = "secret_redacted"
     #: The turn rendered a Mermaid PNG without posting it, so it was rerun
     #: once in the same session to post (D1, mametchi render_without_post).
-    #: `recovered` says whether that rerun called the posting tool.
+    #: `recovered` says whether that rerun posted successfully; `rerun` is
+    #: False on a fallback-engine turn, which cannot resume the session.
     RENDER_WITHOUT_POST = "render_without_post"
 
     def __str__(self) -> str:

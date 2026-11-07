@@ -15,7 +15,8 @@ that engine both checks are always false and nothing changes.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 
 from ..engine.base import EngineResponse
 
@@ -27,24 +28,60 @@ RENDER_POST_TOOLS: tuple[str, ...] = ("mermaid_render_and_post",)
 NOTICE_UNPOSTED_RENDER = "도식 파일은 만들었지만 이 스레드에 올리지 못했습니다. 다시 요청해 주세요."
 
 
+def _last_segment(name: str) -> str:
+    return name.replace("__", ".").rsplit(".", 1)[-1]
+
+
 def tool_names(response: EngineResponse) -> list[str]:
     """Last name segment of every tool the turn called, or [] when unreported."""
     raw = response.raw if isinstance(response.raw, Mapping) else {}
     tools = raw.get("tools")
     if not isinstance(tools, Sequence) or isinstance(tools, (str, bytes)):
         return []
-    return [str(t).replace("__", ".").rsplit(".", 1)[-1] for t in tools]
+    return [_last_segment(str(t)) for t in tools]
 
 
-def rendered_without_posting(response: EngineResponse) -> bool:
-    names = tool_names(response)
+def succeeded_tool_names(response: EngineResponse) -> list[str]:
+    """tool_names minus the calls that failed.
+
+    codex lists a failed MCP call in ``tools`` too and names it again in
+    ``tool_errors`` as ``server.tool : message``. A post the channel guard
+    refused is not a post, so each failure takes one call of that name off.
+    """
+    raw = response.raw if isinstance(response.raw, Mapping) else {}
+    errors = raw.get("tool_errors")
+    failed: Counter[str] = Counter()
+    if isinstance(errors, Sequence) and not isinstance(errors, (str, bytes)):
+        for entry in errors:
+            label, sep, _ = str(entry).partition(" : ")
+            if sep:
+                failed[_last_segment(label.strip())] += 1
+    names: list[str] = []
+    for name in tool_names(response):
+        if failed[name] > 0:
+            failed[name] -= 1
+        else:
+            names.append(name)
+    return names
+
+
+def _names(responses: EngineResponse | Iterable[EngineResponse]) -> list[str]:
+    if isinstance(responses, EngineResponse):
+        responses = (responses,)
+    return [n for r in responses for n in succeeded_tool_names(r)]
+
+
+def rendered_without_posting(responses: EngineResponse | Iterable[EngineResponse]) -> bool:
+    """A render that succeeded and no post that did, across every engine
+    call of the turn (the first answer, an addendum rerun, a guard rewrite)."""
+    names = _names(responses)
     return any(n in RENDER_ONLY_TOOLS for n in names) and not any(
         n in RENDER_POST_TOOLS for n in names
     )
 
 
-def rendered_and_posted(response: EngineResponse) -> bool:
-    return any(n in RENDER_POST_TOOLS for n in tool_names(response))
+def rendered_and_posted(responses: EngineResponse | Iterable[EngineResponse]) -> bool:
+    return any(n in RENDER_POST_TOOLS for n in _names(responses))
 
 
 def unposted_render_prompt(channel: str, thread_ts: str) -> str:
