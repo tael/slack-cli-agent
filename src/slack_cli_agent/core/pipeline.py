@@ -773,6 +773,13 @@ class RequestPipeline:
             principal.is_controller or ctx.from_bot or self._asker_is_bot(ctx.user)
         )
         config = self._channels.get(ctx.channel)
+        # mametchi bot.py:7855 operator=bool(delegated) or is_operator(...):
+        # the ledger, not the operators list, is what lets a bot act here.
+        # A delegated turn holds the operator tools (ToolPolicy.operator_level),
+        # so it takes the operator note too (A11).
+        operator = principal.delegated or is_channel_operator(
+            config, ctx.user, is_bot=asker_is_bot,
+        )
         composition_ctx = CompositionContext(
             principal=principal,
             prompt=ctx.text,
@@ -787,6 +794,9 @@ class RequestPipeline:
             unaddressed=ctx.unaddressed,
             chat_level=chat_level,
             authority_granted=self._access.is_full_authority(principal),
+            # The channel's disclose_mechanism (or an extension) opens the
+            # mechanism note; without this the flag never reached the prompt (A11).
+            mechanism_open=self._access.may_disclose_mechanism(principal),
             # A light turn carries no company domain knowledge, just as the
             # original's light workdir omitted the domain file (A11).
             include_domain=(
@@ -799,11 +809,8 @@ class RequestPipeline:
             watch_run_id=run_id,
             watch_out_dir=str(self._watch_results.result_dir),
             airflow_admin=bool(ctx.user) and ctx.user in airflow_admins(config),
-            # mametchi bot.py:7855 operator=bool(delegated) or is_operator(...):
-            # the ledger, not the operators list, is what lets a bot act here.
-            operator=principal.delegated or is_channel_operator(
-                config, ctx.user, is_bot=asker_is_bot,
-            ),
+            operator=operator,
+            operator_full=operator and bool(config and config.operator_full),
             advisor_enabled=advisor_enabled(config),
         )
         text, report = self._composer.compose_with_report(composition_ctx)

@@ -49,6 +49,8 @@ from slack_cli_agent.slack.publisher import PostReceipt
 class FakeAccessPolicy:
     def __init__(self, owner_user_id: str = "UOWNER") -> None:
         self._owner_user_id = owner_user_id
+        #: Channels whose disclose_mechanism a test turns on (A11).
+        self.disclose_channels: set[str] = set()
 
     def principal_for(self, channel: str, user: str, message_ts: str = "") -> Principal:
         trust = TrustLevel.OWNER if user == self._owner_user_id else TrustLevel.GENERAL
@@ -65,6 +67,9 @@ class FakeAccessPolicy:
 
     def is_full_authority(self, principal: Principal) -> bool:
         return principal.trust is TrustLevel.OWNER and principal.is_direct_message
+
+    def may_disclose_mechanism(self, principal: Principal) -> bool:
+        return self.is_full_authority(principal) or principal.channel in self.disclose_channels
 
 
 class FakeTranscriptBuilder:
