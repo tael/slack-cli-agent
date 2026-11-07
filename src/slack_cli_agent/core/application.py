@@ -218,6 +218,10 @@ from .unregistered import UnregisteredNoticeLog
 from .usage_check import UsageCheck, run_command
 from .worker import Worker
 
+
+#: 이 패키지 소스 리포 루트. 부검과 뇌 추적이 "코드는 여기" 라고 알려 주고 읽게 하는 위치다.
+_CODE_ROOT = Path(__file__).resolve().parents[3]
+
 log = logging.getLogger(__name__)
 
 # One prompt file per channel mode, by naming convention — mode "agent_coach"
@@ -1780,14 +1784,14 @@ class Application:
             self._review_tasks = {
                 POSTMORTEM_EMOJI: PostmortemTask(
                     bot_display_name=self._profile.display_name,
-                    code_dir=str(self._profile.work_root),
+                    code_dir=str(_CODE_ROOT),
                     persona_dir=str(paths.persona),
                     engine=self._review_engine(postmortem=True),
                     **shared,
                 ),
                 DEBUG_TRACE_EMOJI: DebugTraceTask(
                     bot_display_name=self._profile.display_name,
-                    code_dir=str(self._profile.work_root),
+                    code_dir=str(_CODE_ROOT),
                     persona_dir=str(paths.persona),
                     owner_display_name=owner_name,
                     engine=self._review_engine(debug_trace=True),
@@ -1878,7 +1882,9 @@ class Application:
             profile=self._profile,
             workdir=self._profile.work_root,
             system_prompt=system_prompt,
-            readable_dirs=(paths.persona, paths.prompts),
+            # 2026-11-07 김태일 "권한막힌게 왜이렇게 많니". 부검 지시는 코드를 열어 보라는데
+            # 코드 위치를 work_root 로 알려 주고 실제 코드 폴더는 읽기 경로에 없어 Read 가 거부됐다.
+            readable_dirs=(paths.persona, paths.prompts, _CODE_ROOT),
             # 부검만 전용 모델이다 (마메치 model_for postmortem=True). 디버그
             # 추적과 서식 점검은 보고 채널의 일반 규칙(어드바이저 실행자, 채널
             # model, 기본 model)을 따른다. 마메치 run_claude 가 이 둘을

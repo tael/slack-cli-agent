@@ -11,6 +11,13 @@ from pathlib import Path
 # request text contains one of the trigger words listed after it; files
 # without this marker are always loaded.
 WHEN_MARK = "<!-- when:"
+#: A line the nightly learner appended ("- ... <!-- learn:2026-10-22 -->").
+#: These are dated incident notes, not standing rules, and they were 41% of
+#: an owner turn's always-loaded knowledge (135KB of 330KB, 2026-11-07 실측).
+#: Every API call in a turn re-reads the whole system prompt, and a 159k-token
+#: cached prefix measured 6.4-8.5s per call against 1.1-2.2s for a 2.8k one,
+#: so they leave the prompt and stay one Grep away in the file they live in.
+LEARN_MARK = "<!-- learn:"
 
 #: The wiki index the knowledge mirror writes into `knowledge/` for a loader
 #: that could not read `wiki/index.md` itself. Once the loader reads the index,
@@ -77,7 +84,11 @@ class KnowledgeLoader:
         local_dir: Path | None = None,
         always_skills: Collection[str] = (),
         wiki_dir: Path | None = None,
+        defer_learn_lines: bool = True,
     ) -> None:
+        # True keeps learner-appended lines out of the prompt and leaves a
+        # pointer to grep them (LEARN_MARK). False is the pre-2026-11-07 shape.
+        self._defer_learn_lines = defer_learn_lines
         self._persona_file = persona_file
         self._knowledge_dir = knowledge_dir
         self._domain_file = domain_file
@@ -158,6 +169,8 @@ class KnowledgeLoader:
         )
         documents += [dataclasses.replace(doc, learned=True) for doc in learned]
         documents += self._local_overlay(channel_slug)
+        if self._defer_learn_lines:
+            documents = [_defer_learn_lines(doc) for doc in documents]
         return tuple(documents), tuple(skipped)
 
     def _local_overlay(self, channel_slug: str) -> list[KnowledgeDocument]:
@@ -227,6 +240,21 @@ class KnowledgeLoader:
             return None
         body = first[len(WHEN_MARK) :].split("-->", 1)[0]
         return [w.strip().lower() for w in body.split(",") if w.strip()]
+
+
+def _defer_learn_lines(doc: KnowledgeDocument) -> KnowledgeDocument:
+    """The document without its learner lines, plus one line saying where
+    they went. Unchanged when it has none."""
+    lines = doc.text.split("\n")
+    kept = [line for line in lines if LEARN_MARK not in line]
+    moved = len(lines) - len(kept)
+    if moved == 0:
+        return doc
+    note = (
+        f"\n(학습 기록 {moved}줄은 지침에서 뺐다. 이 주제의 과거 정정이 필요하면 "
+        f"Grep 으로 {doc.path} 에서 키워드와 'learn:' 을 찾는다.)\n"
+    )
+    return dataclasses.replace(doc, text="\n".join(kept).rstrip() + "\n" + note)
 
 
 def _read_or_none(path: Path) -> str | None:
