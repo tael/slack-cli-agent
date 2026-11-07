@@ -109,9 +109,22 @@ def test_파이프라인이_가드_환경을_엔진_환경에_합친다(tmp_path
 
     pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
     pipeline._restart_env = {"RESTART_GUARD_MARKER": "/s/apply-request"}
-    pipeline.handle(make_ctx(channel="C1"))
+    pipeline.handle(make_ctx(channel="C1", user="UOWNER"))
     env = deps["runner"].calls[0].engine_env
     assert env["RESTART_GUARD_MARKER"] == "/s/apply-request"
+    assert env["TURN_ID"].startswith("C1:")
+
+
+def test_소유자가_아닌_턴에는_표식_경로를_싣지_않는다(tmp_path: Path) -> None:
+    # 표식 경로를 알면 소유자가 아닌 턴도 재기동을 요청할 수 있다. 자기 수정
+    # 적용은 소유자 턴에만 열린 경로다(H3).
+    from test_pipeline import build_pipeline, make_ctx, ok_response
+
+    pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+    pipeline._restart_env = {"RESTART_GUARD_MARKER": "/s/apply-request"}
+    pipeline.handle(make_ctx(channel="C1", user="U1"))
+    env = deps["runner"].calls[0].engine_env
+    assert "RESTART_GUARD_MARKER" not in env
     assert env["TURN_ID"].startswith("C1:")
 
 

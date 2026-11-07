@@ -551,7 +551,14 @@ class RequestPipeline:
             # naming `turn_id` gets this turn's key for its audit row (C10).
             turn_context={"channel": ctx.channel, "turn_id": f"{ctx.channel}:{ctx.ts}"},
             engine_env={
-                **self._restart_env,
+                # Owner turns only: knowing the marker path is what lets a
+                # turn ask for a restart, so another grade or a delegated turn
+                # never gets it (H3).
+                **(
+                    self._restart_env
+                    if principal.trust is TrustLevel.OWNER and not principal.delegated
+                    else {}
+                ),
                 **self._engine_env(ctx.channel, config),
                 # The marker's second line, so the worker can tell the turn
                 # that asked for a restart (reliability/restart.py).
