@@ -24,9 +24,12 @@ class ChannelHistoryReader(Protocol):
 
 
 class SlackHistoryPort:
-    def __init__(self, reader: ChannelHistoryReader, client: Any) -> None:
+    def __init__(
+        self, reader: ChannelHistoryReader, client: Any, max_pages: int = 10
+    ) -> None:
         self._reader = reader
         self._client = client
+        self._max_pages = max(1, max_pages)
 
     def read_history(
         self, channel: str, oldest: float, limit: int
@@ -50,15 +53,30 @@ class SlackHistoryPort:
     ) -> list[Mapping[str, Any]]:
         """Reads an entire thread; returns an empty list on any failure.
 
+        Follows next_cursor page by page (`limit` is the page size).
+        Replies come oldest-first, so a thread past one page would
+        otherwise lose its most recent messages, including the bot's own
+        replies, and catch-up would treat an answered mention as missed.
+        For the same reason a failed later page, or a thread still going
+        at max_pages, yields an empty list rather than a truncated one.
+
         Failing to read one thread shouldn't make the whole recovery
-        scan inconclusive. wait_history_slot() applies here too since
-        thread reads share the same API rate limit.
+        scan inconclusive. wait_history_slot() applies before every page
+        since thread reads share the same API rate limit.
         """
-        self._reader.wait_history_slot()
+        msgs: list[Mapping[str, Any]] = []
+        cursor = ""
         try:
-            res = self._client.conversations_replies(
-                channel=channel, ts=thread_ts, limit=limit
-            )
-            return res.get("messages") or []
+            for _ in range(self._max_pages):
+                self._reader.wait_history_slot()
+                kwargs: dict[str, Any] = {"channel": channel, "ts": thread_ts, "limit": limit}
+                if cursor:
+                    kwargs["cursor"] = cursor
+                res = self._client.conversations_replies(**kwargs)
+                msgs.extend(res.get("messages") or [])
+                cursor = (res.get("response_metadata") or {}).get("next_cursor") or ""
+                if not res.get("has_more") or not cursor:
+                    return msgs
         except Exception:  # noqa: BLE001 - one unreadable thread shouldn't fail the whole scan
             return []
+        return []

@@ -769,7 +769,11 @@ class Application:
         return self._channel_name_resolver
 
     def _history_port(self) -> SlackHistoryPort:
-        return SlackHistoryPort(HistoryReader(self._client, self._settings), self._client)
+        return SlackHistoryPort(
+            HistoryReader(self._client, self._settings),
+            self._client,
+            max_pages=self._settings.history_max_pages,
+        )
 
     def queue(self) -> SqliteJobQueue:
         if self._queue is None:
