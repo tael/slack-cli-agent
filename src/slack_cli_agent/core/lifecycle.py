@@ -112,7 +112,11 @@ class GracefulShutdown:
         on_shutdown_timeout: Callable[[int], None] | None = None,
         on_shutdown_complete: Callable[[], None] | None = None,
         exit_fn: Callable[[], None] | None = None,
+        # In-flight requests not to wait for, given seconds waited so far: the
+        # turn that asked for this restart (reliability/restart.py).
+        discount: Callable[[float], int] | None = None,
     ) -> None:
+        self._discount = discount
         self._inflight = inflight
         self._grace_sec = grace_sec
         self._signal_register = signal_register
@@ -148,11 +152,11 @@ class GracefulShutdown:
             self._on_shutdown_start(self._inflight.count)
 
         waited = 0.0
-        while self._inflight.count > 0 and waited < self._grace_sec:
+        while self._waiting_on(waited) > 0 and waited < self._grace_sec:
             self._sleep_fn(self._poll_interval_sec)
             waited += self._poll_interval_sec
 
-        left = self._inflight.count
+        left = self._waiting_on(waited)
         if left:
             if self._on_shutdown_timeout:
                 self._on_shutdown_timeout(left)
@@ -162,3 +166,7 @@ class GracefulShutdown:
 
         if self._exit_fn:
             self._exit_fn()
+
+    def _waiting_on(self, waited: float) -> int:
+        exempt = self._discount(waited) if self._discount else 0
+        return self._inflight.count - exempt

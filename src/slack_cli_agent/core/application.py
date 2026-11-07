@@ -122,6 +122,7 @@ from ..reliability.connection import ConnectionCatchupCoordinator
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
 from ..reliability.outage import NetworkOutageEscalation, OutageTracker
+from ..reliability.restart import ApplyRequestWatch
 from ..reliability.pending_report import PendingReportStore, assemble_recovery_report
 from ..reliability.startup import StartupCatchup
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
@@ -1116,10 +1117,18 @@ class Application:
         )
         self._watch_result_log.record(removed)
 
-    def watch_runner(self) -> PeriodicRunner:
-        # without this runner, watch jobs get registered but never checked
+    def watch_runner(self, hold: Callable[[], bool] | None = None) -> PeriodicRunner:
+        # without this runner, watch jobs get registered but never checked.
+        # `hold` skips a tick: a check is an engine turn outside the claim
+        # loop, and one started after an apply request is cut by the restart.
+        check = self.watch_checker().check_once
+
+        def tick() -> None:
+            if hold is None or not hold():
+                check()
+
         return PeriodicRunner(
-            self.watch_checker().check_once,
+            tick,
             self._settings.watch_check_interval_sec,
             name="watch_jobs",
         )
@@ -1368,7 +1377,7 @@ class Application:
     def worker(self, worker_id: str = "worker") -> Worker:
         # unlike the other components here, a new Worker is created on every
         # call — worker_id must differ per process
-        return Worker(
+        worker = Worker(
             queue=self.queue(),
             handler=self.pipeline(),
             heartbeat=WorkerHeartbeat(self.queue(), self._settings),
@@ -1383,6 +1392,21 @@ class Application:
             admin=self._admin_admission(),
             slots=self.concurrency_slots(),
         )
+        # A marker from before this process started was for the restart
+        # that produced it; following it again would loop.
+        # Only an OWNER turn can be the requester the marker names; any other
+        # turn that could write it must not get someone's request completed.
+        # OWNER is the access policy's verdict, so controller_user_ids count
+        # too -- they get the write tools that can write the marker.
+        policy = self.access_policy
+        worker.watch_restart_requests(
+            ApplyRequestWatch(
+                paths=self._profile.paths.apply_requests, started_at=time.time()
+            ).pending,
+            requester_ok=lambda context: policy.principal_for(context.channel, context.user).trust
+            is TrustLevel.OWNER,
+        )
+        return worker
 
     def _admin_router(self) -> AdminRouter:
         commands = default_admin_commands(self._notices)
@@ -2106,7 +2130,7 @@ class Application:
         return ServiceGroup(
             [
                 self.state_snapshot_runner(),
-                self.watch_runner(),
+                self.watch_runner(hold=worker.holding_claims),
                 self.watch_result_cleanup_runner(),
                 self.job_purge_runner(),
                 self.epoch_purge_runner(),
