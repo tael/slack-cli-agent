@@ -46,7 +46,7 @@ from ..engine.runner import EngineInvoker
 from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
 from ..guard.figurative import FigurativeGuard
-from ..guard.mentions import AddresseeGuard, Recipient, RecipientResolver
+from ..guard.mentions import AddresseeGuard, PlainMentionGuard, Recipient, RecipientResolver
 from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
@@ -1125,6 +1125,14 @@ class RequestPipeline:
             self._record_guard_incidents(ctx, result.details)
             return result.body, _watch_desc_of(result), _watch_due_of(result)
 
+        # Read off the rerun: a guard that asks for one reports changed=False,
+        # so its detail never reaches result.details.
+        promise_rerun = result.rerun.reason == "promise_without_watch"
+        if promise_rerun:
+            self._audit.record(
+                IncidentKind.PROMISE_WITHOUT_WATCH.value, channel=ctx.channel,
+                thread_ts=ctx.thread_ts, snippet=(body or "")[:300],
+            )
         rerun_request = replace(
             request, prompt=result.rerun.rewrite_prompt, resume=True, session_id=decision.session_id,
         )
@@ -1141,6 +1149,11 @@ class RequestPipeline:
             # go out as-is: cut it like a failed retry does (bot.py:8249-8255).
             if result.rerun.guard_name == WatchPromiseGuard.name:
                 body_out = cut_untagged_promise(body_out)
+                if promise_rerun:
+                    self._audit.record(
+                        IncidentKind.PROMISE_WITHOUT_WATCH_RETRY_FAILED.value,
+                        channel=ctx.channel, thread_ts=ctx.thread_ts, rewrite="none",
+                    )
             return body_out, _watch_desc_of(result), _watch_due_of(result)
 
         retry_ctx = replace(guard_ctx, previous_body=result.body, is_rewrite_retry=True)
@@ -1160,6 +1173,17 @@ class RequestPipeline:
             self._audit.record(
                 IncidentKind.REWRITE_LOSS.value, channel=ctx.channel, thread_ts=ctx.thread_ts,
                 before_chars=loss.get("before_chars"), after_chars=loss.get("after_chars"),
+            )
+        plain = details.get(PlainMentionGuard.name)
+        if plain:
+            self._audit.record(
+                IncidentKind.PLAIN_MENTION.value, channel=ctx.channel, thread_ts=ctx.thread_ts,
+                names=plain.get("names"),
+            )
+        if (details.get(WatchPromiseGuard.name) or {}).get("promise_without_watch_retry_failed"):
+            self._audit.record(
+                IncidentKind.PROMISE_WITHOUT_WATCH_RETRY_FAILED.value,
+                channel=ctx.channel, thread_ts=ctx.thread_ts, rewrite="still_promised",
             )
         fig = details.get(FigurativeGuard.name)
         if fig:
@@ -1183,6 +1207,11 @@ class RequestPipeline:
         if self._awaiting is not None:
             waiting = had_tag or self._gate.asked_back(clean)
             self._awaiting.set_awaiting(ctx.channel, ctx.thread_ts, waiting)
+            if waiting:
+                self._audit.record(
+                    IncidentKind.AWAITING_REPLY.value, channel=ctx.channel,
+                    thread_ts=ctx.thread_ts, by="tag" if had_tag else "pattern",
+                )
         return clean
 
     def _record_delegation(

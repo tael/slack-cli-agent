@@ -1815,6 +1815,7 @@ class Application:
                 run=lambda prompt: caller.run(prompt, None, False),
                 template=lambda: library.text("welcome"),
                 self_user_id=lambda: self.identity.user_id,
+                audit=self.audit().record,
             )
         return self._welcome_service
 
@@ -1871,6 +1872,7 @@ class Application:
                     # a human speaks (C18), so two bots can't wake each other
                     # forever if the outgoing mention-strip ever misses.
                     peer_limiter=self._peer_exchange,
+                    audit=self.audit().record,
                 ),
                 # The one place the access check runs. Catch-up needs no second
                 # one: it only sweeps channels that are already registered

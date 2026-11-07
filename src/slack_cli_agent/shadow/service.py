@@ -27,6 +27,7 @@ from typing import Any, ClassVar
 
 from ..core.markers import take_recipient_tag
 from ..core.timezones import KST
+from ..observability.audit import IncidentKind
 from ..plugin.base import BotPlugin
 from ..plugin.hooks import BackgroundJob, EngineSlot, SlotUnavailable
 from ..slack.transcript import message_text
@@ -274,7 +275,7 @@ class ShadowService:
             status="answered" if ok else "failed", blind_violations=violations,
             blind_checked=result.tool_calls is not None, answered_at=self._now(),
         )
-        self._audit("shadow_answered", channel=target, source=source, source_ts=ts,
+        self._audit(IncidentKind.SHADOW_ANSWERED.value, channel=target, source=source, source_ts=ts,
                     ok=ok, blind_violations=len(violations))
 
     def _retry_stuck(self, pairs: Mapping[str, str], engine: EngineSlot) -> None:
@@ -342,7 +343,7 @@ class ShadowService:
                 return
             self._post(target, item.get("root_ts"), body)
         self._store.update(source, ts, status="judged", verdict=verdict, judged_at=self._now())
-        self._audit("shadow_judged", channel=target, source=source, source_ts=ts, verdict=verdict)
+        self._audit(IncidentKind.SHADOW_JUDGED.value, channel=target, source=source, source_ts=ts, verdict=verdict)
 
     def _take_requests(self) -> list[dict[str, Any]]:
         """Backfill requests, `[{"target", "days"}]` in a file. `oldest` is

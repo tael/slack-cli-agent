@@ -792,7 +792,7 @@ class Test점검_기록의_모델_칸:
     review 기록 11건이 전부 model="" 였다 (sca-cr2b)."""
 
     def test_요청한_모델이_model_칸에_들어간다(self, database) -> None:
-        응답 = replace(_ok_response("요약===상세"), model_asked="claude-opus-5")
+        응답 = replace(_ok_response("요약===상세===상세"), model_asked="claude-opus-5")
         rig = make_rig(database, engine_responses=[응답])
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
 
@@ -801,7 +801,7 @@ class Test점검_기록의_모델_칸:
 
     def test_실제로_돈_모델은_따로_들어간다(self, database) -> None:
         응답 = replace(
-            _ok_response("요약===상세"), model_asked="claude-opus-5",
+            _ok_response("요약===상세===상세"), model_asked="claude-opus-5",
             model_actual="claude-haiku-4-5",
         )
         rig = make_rig(database, engine_responses=[응답])
@@ -812,7 +812,7 @@ class Test점검_기록의_모델_칸:
         assert fields["model_actual"] == "claude-haiku-4-5"
 
     def test_모르면_실제_칸을_안_넣는다(self, database) -> None:
-        응답 = replace(_ok_response("요약===상세"), model_asked="claude-opus-5")
+        응답 = replace(_ok_response("요약===상세===상세"), model_asked="claude-opus-5")
         rig = make_rig(database, engine_responses=[응답])
         rig.task.run(ReviewTarget(channel="C1", ts="1.1", by_user="U2", channel_name="채널", rich=True))
 

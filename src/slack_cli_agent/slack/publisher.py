@@ -206,6 +206,15 @@ class MessagePublisher:
             return None
         return cleaned
 
+    def _fix_notion_links(self, channel: str, thread_ts: str, text: str) -> str:
+        text, fixed = fix_notion_links(text)
+        if fixed:
+            self._audit(
+                kind=IncidentKind.NOTION_LINK_FIXED.value, channel=channel,
+                thread_ts=thread_ts, links=fixed,
+            )
+        return text
+
     def _strip_file_links(self, channel: str, thread_ts: str, text: str) -> str:
         """Removes Slack file permalinks (D4). Slack re-attaches a linked file
         to the message, so leaving the link posts the same file card twice.
@@ -268,7 +277,7 @@ class MessagePublisher:
         if cleaned is None:
             return None
         text = self._redact(channel, thread_ts, cleaned)
-        text, _ = fix_notion_links(text)
+        text = self._fix_notion_links(channel, thread_ts, text)
         text = self._strip_file_links(channel, thread_ts, text)
         text, csv_payloads = extract_csv_blocks(text)
         if rich:
@@ -456,7 +465,7 @@ class MessagePublisher:
         text = self._redact(channel, ts, cleaned)
         # Same Notion `p/` fix and file-link strip as post(), so a correction
         # can't post a dead link or re-attach a file.
-        text, _ = fix_notion_links(text)
+        text = self._fix_notion_links(channel, ts, text)
         text = self._strip_file_links(channel, ts, text)
         if rich:
             body = self._verifier.separate_tables(text)
