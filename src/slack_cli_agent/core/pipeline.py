@@ -65,10 +65,13 @@ from ..slack.transcript import CurrentMessage
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
 from .markers import (
+    missing_recipient_prompt,
+    pick_recipient_tag,
     split_leaked_tags,
     strip_control_tags,
     take_ask_tag,
     take_nowatch_tag,
+    take_recipient_tag,
 )
 from .pipeline_ports import (
     AccessPolicyPort,
@@ -105,13 +108,6 @@ def _domain_applies(workdir: Path | None, home: Path) -> bool:
         return True
     return False
 
-
-#: Posted in place of the body when recipient enforcement is on and a reply
-#: arrived with no `[[RECIPIENT:...]]` tag (J11, bot.py:1261
-#: NOTICE_NO_RECIPIENT). The body is withheld so the owner never becomes an
-#: accidental relay to the wrong person or bot; only the fact of the block is
-#: shown.
-NOTICE_NO_RECIPIENT = "답변을 만들었지만 받을 사람을 확정하지 못해 게시하지 않았습니다. 다시 요청해 주세요."
 
 LAUNCHED_WATCH_DESC = "코드가 발급한 이름으로 띄운 백그라운드 작업"
 """Watch description for work launched without a tag.
@@ -152,10 +148,11 @@ class RequestPipeline:
         # unwired. Looked up only for non-owner askers, since the owner is a
         # person by definition.
         asker_is_bot: Callable[[str], bool] = lambda user_id: False,
-        # J11: when True, a reply with no `[[RECIPIENT:...]]` tag has its body
-        # withheld and only NOTICE_NO_RECIPIENT posted. Off by default so a bot
-        # set up without owner/asker wiring degrades to "publish anyway" rather
-        # than to silence -- enforcement is opt-in per deployment.
+        # J11/B1: when True, a reply with no `[[RECIPIENT:...]]` tag gets one
+        # tool-less re-ask for the tag alone; still none, and the turn ends
+        # silent. The deployment default is on (RuntimeSettings); this
+        # component default stays off so a pipeline built without settings
+        # publishes rather than goes quiet.
         require_recipient: bool = False,
         group_resolver: Callable[[str], str] | None = None,
         mention_table: Callable[[], Mapping[str, str]] = dict,
@@ -552,19 +549,21 @@ class RequestPipeline:
         # after ASK/NOWATCH are taken so the tag the resolver sees is trailing.
         body, blocked_recipient = self._resolve_recipient(body, ctx)
         if blocked_recipient:
-            notice_ts = self._publisher.post(
-                ctx.channel, ctx.thread_ts, NOTICE_NO_RECIPIENT, False, flat=flat,
-            ) or ""
-            self._audit.record(
-                IncidentKind.MISSING_RECIPIENT.value, channel=ctx.channel,
-                thread_ts=ctx.thread_ts, snippet=body[:300],
+            body, blocked_recipient = self._retry_recipient_tag(
+                body, ctx, request, decision, response, turn_calls,
             )
+        if blocked_recipient:
+            # Neither the body nor a notice goes out: the body has no settled
+            # recipient, and a notice on a turn the model meant to keep quiet
+            # is noise of its own (bot.py:8113-8117). The silent outcome still
+            # marks the request done, so catch-up doesn't re-run it.
             self._record(
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                 turns=response.turns, model_actual=response.model_actual,
                 truncated=_truncated(response), context_reset=context_reset,
             )
-            return HandleOutcome(ok=True, posted_ts=notice_ts)
+            self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
+            return HandleOutcome(ok=True, silent=True)
         body = self._strip_publish_markers(body, ctx)
         # After the markers are taken: the notice must not sit between the body
         # and a trailing tag the strip reads from the end.
@@ -1015,6 +1014,60 @@ class RequestPipeline:
             # withheld; it is not published on this path.
             return body, True
         return clean, False
+
+    def _retry_recipient_tag(
+        self,
+        body: str,
+        ctx: RequestContext,
+        request: EngineRequest,
+        decision: SessionDecision,
+        response: EngineResponse,
+        turn_calls: list[EngineResponse],
+    ) -> tuple[str, bool]:
+        """Asks the model once more for just the recipient tag of a reply that
+        came back without one (B1, bot.py:8085-8112 missing_recipient retry).
+
+        The body stays with the code; only the tag is taken from the rerun, so
+        a rerun that rewrites the answer can't change what is posted. The
+        rerun has every tool forbidden: it resumes the same session, and the
+        first turn may already have filed a ticket or sent a message that a
+        tool-carrying rerun could repeat. Returns `(body, blocked)` the same
+        way `_resolve_recipient` does.
+        """
+        self._audit.record(
+            IncidentKind.MISSING_RECIPIENT.value, channel=ctx.channel,
+            thread_ts=ctx.thread_ts, snippet=body[:300],
+        )
+        if not self._resumable(response):
+            # A fallback turn's secondary opens a fresh session that never saw
+            # the answer, so it has nothing to choose a recipient for.
+            self._audit.record(
+                IncidentKind.MISSING_RECIPIENT_RETRY.value, channel=ctx.channel,
+                thread_ts=ctx.thread_ts, attempted=False, ok=False, recovered=False, tag=None,
+            )
+            return body, True
+        rerun = self._invoker.invoke(replace(
+            request,
+            prompt=missing_recipient_prompt(),
+            resume=True,
+            session_id=decision.session_id,
+            tools=ToolSelection.forbid_all(),
+        ))
+        turn_calls.append(rerun)
+        tag = pick_recipient_tag(rerun.body) if rerun.ok else None
+        blocked = True
+        if tag:
+            # Drop a tag the first pass could not resolve (a BOT: id that is no
+            # bot) before appending the new one; left in place it would be
+            # read again instead of the choice just made.
+            held, _ = take_recipient_tag(body)
+            body, blocked = self._resolve_recipient(f"{held.rstrip()}\n{tag}", ctx)
+        self._audit.record(
+            IncidentKind.MISSING_RECIPIENT_RETRY.value, channel=ctx.channel,
+            thread_ts=ctx.thread_ts, attempted=True, ok=rerun.ok, recovered=not blocked,
+            tag=tag, reply=(rerun.body or "")[:300],
+        )
+        return body, blocked
 
     def _strip_publish_markers(self, body: str, ctx: RequestContext) -> str:
         """Last body pass before publish: strips every leftover `[[...]]`

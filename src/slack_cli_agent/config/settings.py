@@ -209,12 +209,12 @@ class RuntimeSettings:
     # actual prefix text is org-specific and doesn't belong in code.
     dropped_line_heads: tuple[str, ...] = ()
 
-    # J11: when True, a reply carrying no `[[RECIPIENT:...]]` tag has its body
-    # withheld (only NOTICE_NO_RECIPIENT is posted) so the wrong person never
-    # receives a reply the model never addressed. Off by default: enforcement
-    # needs a bot whose persona actually emits the tag, so it is opt-in per
-    # deployment rather than a silent engine default (pipeline.py require_recipient).
-    require_recipient: bool = False
+    # J11/B1: when True, a reply carrying no `[[RECIPIENT:...]]` tag is held
+    # while the tag alone is re-asked once with no tools; still none, and the
+    # turn ends silent so the wrong person never receives a reply the model
+    # never addressed. On by default: every turn's system prompt now demands
+    # the tag (prompt/sections.py RECIPIENT_RULE). A profile can set it false.
+    require_recipient: bool = True
 
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """Overrides only the fields present in `values`; unknown keys are
