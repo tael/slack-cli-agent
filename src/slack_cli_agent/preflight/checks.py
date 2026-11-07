@@ -227,25 +227,26 @@ class ProfileUnknownKeysCheck(PreflightCheck):
 class OwnerSettingsInertCheck(PreflightCheck):
     """Warns once at boot about channel settings that are silently ignored for the owner.
 
-    `EngineSpec.model_for_owner()` and `OWNER_EFFORT_MIN` always win over a
-    channel's `model`/`effort` for the owner, so a value in channels.json can
-    look active while never actually applying. `fatal=False` — this only
-    prevents misreading the config, it doesn't block boot.
+    `OWNER_EFFORT_MIN` always wins over a lower channel `effort` for the
+    owner, so a value in channels.json can look active while never actually
+    applying. `fatal=False` — this only prevents misreading the config, it
+    doesn't block boot.
 
-    Engine-agnostic on purpose: AccessPolicy overrides the owner's model and
-    effort whatever the engine is, so an engine exception here would only hide
-    the same dead setting for that bot.
+    A channel's `model` (and `advisor.executor`) is not checked: since A13
+    AccessPolicy.model_for applies it to the owner too, so warning about it
+    would say the opposite of what happens.
+
+    Engine-agnostic on purpose: AccessPolicy raises the owner's effort whatever
+    the engine is, so an engine exception here would only hide the same dead
+    setting for that bot.
     """
 
     name: ClassVar[str] = "owner_settings_inert"
 
     def run(self, ctx: PreflightContext) -> CheckResult:
-        model_owner = ctx.profile.primary_engine.model_for_owner()
         registry = ChannelRegistry(ctx.profile.paths.channels)
         dead: list[str] = []
         for config in registry.all().values():
-            if config.model and config.model != model_owner:
-                dead.append(f"{config.name} model={config.model}")
             if config.effort in EFFORT_LEVELS and (
                 EFFORT_LEVELS.index(config.effort) < EFFORT_LEVELS.index(OWNER_EFFORT_MIN)
             ):

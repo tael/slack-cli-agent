@@ -1914,13 +1914,13 @@ class TestFallbackEngine:
         switcher.approve()
         return FallbackEngine(primary, secondary, switcher, runner), secondary
 
-    def test_소유자_요청은_2차에서도_소유자_모델을_받는다(self, tmp_path: Path) -> None:
-        """1차에서 등급을 올려 보낸 요청이 2차의 일반 모델로 떨어지면
-        그 등급이 조용히 사라진다(sca-14h). 엔진마다 모델명이 달라 1차 이름을
-        그대로 옮길 수는 없으므로 2차의 소유자 모델을 쓴다."""
+    def test_소유자_요청도_2차의_기본_모델을_받는다(self, tmp_path: Path) -> None:
+        """A13 부터 1차는 요청자와 무관하게 같은 모델로 돈다. 2차에서만
+        소유자를 소유자 모델로 올리면 등급별 모델이 다시 갈린다. 엔진마다
+        모델명이 달라 1차 이름은 옮길 수 없으므로 2차 기본 모델을 쓴다."""
         fallback, secondary = self._소유자모델폴백(tmp_path)
         fallback.run(request(model="claude-opus-5", trust_level=TrustLevel.OWNER))
-        assert [r.model for r in secondary.built] == ["gpt-5.6-pro"]
+        assert [r.model for r in secondary.built] == ["gpt-5.6-sol"]
 
     def test_일반_요청은_2차의_일반_모델을_받는다(self, tmp_path: Path) -> None:
         fallback, secondary = self._소유자모델폴백(tmp_path)

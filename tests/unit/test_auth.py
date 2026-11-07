@@ -144,11 +144,43 @@ class TestFullAuthorityAndMechanism:
 
 
 class TestModelFor:
-    def test_소유자는_채널과_무관하게_소유자용_모델이다(self, tmp_path: Path) -> None:
+    def test_소유자도_채널이_정한_모델을_쓴다(self, tmp_path: Path) -> None:
+        """마메치 model_for (bot.py, 2026-10-22) : 소유자 opus 강제를 걷어냈다."""
         channels = make_channels(tmp_path / "c.json", {"C1": {"model": "haiku"}})
         policy = AccessPolicy(make_profile(), channels)
         principal = policy.principal_for("C1", OWNER)
-        assert policy.model_for(principal) == "opus"
+        assert policy.model_for(principal) == "haiku"
+
+    def test_소유자도_채널_설정이_없으면_기본_모델이다(self, tmp_path: Path) -> None:
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", {}))
+        assert policy.model_for(policy.principal_for("C1", OWNER)) == "sonnet"
+        assert policy.model_for(policy.principal_for("D1", OWNER)) == "sonnet"
+
+    def test_어드바이저_채널은_실행자_모델이_채널_모델보다_앞선다(
+        self, tmp_path: Path
+    ) -> None:
+        channels = make_channels(
+            tmp_path / "c.json",
+            {"C1": {"model": "haiku", "advisor": {"executor": "small"}}},
+        )
+        policy = AccessPolicy(make_profile(), channels)
+        assert policy.model_for(policy.principal_for("C1", OWNER)) == "small"
+        assert policy.model_for(policy.principal_for("C1", STRANGER)) == "small"
+
+    def test_어드바이저에_실행자가_없으면_기본_모델이다(self, tmp_path: Path) -> None:
+        """bot.py advisor_executor : executor 가 비면 MODEL 이다. 채널 model 이 아니다."""
+        channels = make_channels(
+            tmp_path / "c.json", {"C1": {"model": "haiku", "advisor": {}}}
+        )
+        policy = AccessPolicy(make_profile(), channels)
+        assert policy.model_for(policy.principal_for("C1", OWNER)) == "sonnet"
+
+    def test_advisor가_dict가_아니면_무시한다(self, tmp_path: Path) -> None:
+        channels = make_channels(
+            tmp_path / "c.json", {"C1": {"model": "haiku", "advisor": "small"}}
+        )
+        policy = AccessPolicy(make_profile(), channels)
+        assert policy.model_for(policy.principal_for("C1", OWNER)) == "haiku"
 
     def test_일반_사용자는_채널이_정한_모델을_쓴다(self, tmp_path: Path) -> None:
         channels = make_channels(tmp_path / "c.json", {"C1": {"model": "haiku"}})

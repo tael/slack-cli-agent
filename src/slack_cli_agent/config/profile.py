@@ -73,6 +73,9 @@ class EngineSpec:
     #: 비어 있으면(기본) 모델 폴백을 쓰지 않고 model 하나로만 돈다. 계정 한도는
     #: 모델을 바꿔도 같으므로 이 목록은 모델 단위 장애에만 쓰인다 (B9/B17).
     model_fallbacks: tuple[str, ...] = ()
+    #: 부검(dango)에만 쓰는 모델. 비어 있으면 model_for_owner() 다. 마메치
+    #: bot_profile.postmortem_model 과 같은 규칙이다 (A13).
+    postmortem_model: str = ""
     options: Mapping[str, Any] = field(default_factory=dict)
     # Engine-specific home path (e.g. CODEX_HOME). Keeps sessions/auth
     # separated per bot, so it can't collide with the user's own home.
@@ -90,12 +93,16 @@ class EngineSpec:
             model=str(data["model"]),
             model_owner=str(data.get("model_owner", "")),
             model_fallbacks=tuple(str(m) for m in (data.get("model_fallbacks") or [])),
+            postmortem_model=str(data.get("postmortem_model", "")),
             options=dict(data.get("options") or {}),
             home_dir=Path(str(home_dir)).expanduser() if home_dir else None,
         )
 
     def model_for_owner(self) -> str:
         return self.model_owner or self.model
+
+    def model_for_postmortem(self) -> str:
+        return self.postmortem_model or self.model_for_owner()
 
 
 @dataclass(frozen=True)
