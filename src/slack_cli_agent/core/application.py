@@ -186,6 +186,7 @@ from ..slack.review_ports import (
 from ..slack.roster import RosterBuilder
 from ..slack.thread_activity import SlackThreadActivity
 from ..slack.tool_post import SlackToolPostMerger
+from ..slack.transcribe import Transcriber
 from ..slack.transcript import TranscriptBuilder
 from ..storage.admin_claims import AdminClaims
 from ..storage.connection_epochs import SqliteConnectionEpochs
@@ -1854,6 +1855,7 @@ class Application:
                 attach_dir=self._profile.attach_dir,
                 token_provider=self._token_provider,
                 downloader=self._download,
+                transcriber=Transcriber(),
             )
         return self._attachments
 

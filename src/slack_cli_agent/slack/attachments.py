@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .permalinks import parse_slack_links
+from .transcribe import TranscribeFn, is_audio
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class AttachmentStore:
         max_files: int = 5,
         max_bytes: int = 20 * 1024 * 1024,
         keep_hours: int = 48,
+        transcriber: TranscribeFn | None = None,
     ) -> None:
         self._attach_dir = attach_dir
         self._token_provider = token_provider
@@ -53,6 +55,7 @@ class AttachmentStore:
         self._max_files = max_files
         self._max_bytes = max_bytes
         self._keep_hours = keep_hours
+        self._transcriber = transcriber
 
     def save(self, event: Mapping[str, Any]) -> list[SavedAttachment]:
         files = event.get("files") or []
@@ -126,8 +129,31 @@ class AttachmentStore:
             original["name"] = item.name
             original["mimetype"] = item.kind
             original["local_path"] = item.path
+            if is_audio(item.kind):
+                self._transcribe_into(original, item.path)
             merged.append(original)
         return tuple(merged), missed
+
+    def _transcribe_into(self, file: dict[str, Any], path: str) -> None:
+        """음성 첨부를 받아써 `transcript` 또는 `transcript_error` 를 붙인다.
+
+        모델은 소리를 듣지 못하므로 받아쓰지 않으면 경로만 보고 내용을
+        짐작한다. 실패도 사유를 그대로 실어 프롬프트가 실패를 밝히게 한다(G6).
+        """
+        if self._transcriber is None:
+            file["transcript_error"] = "받아쓰기 엔진이 설정되지 않았다"
+            return
+        t0 = time.time()
+        try:
+            words, why = self._transcriber(path)
+        except Exception as exc:  # noqa: BLE001 - 한 클립 실패가 요청 전체를 막지 않는다
+            words, why = None, f"받아쓰기를 실행하지 못했다 : {exc}"
+        log.info("음성을 받아썼다 : %s %.1f초 %s", file.get("name"),
+                 time.time() - t0, "성공" if words else why)
+        if words:
+            file["transcript"] = words
+        else:
+            file["transcript_error"] = why or "받아쓰기 실패"
 
     def cleanup(self, now: float | None = None) -> int:
         """지운 파일 수를 돌려준다. 건수가 없으면 0건과 아예 안 돈 것이
