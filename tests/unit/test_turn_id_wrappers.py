@@ -50,6 +50,33 @@ class Test래퍼_별칭:
         assert "bad-name" not in env
         assert env["OK_TURN"] == "C1:5.0"
 
+    def test_별칭이_정책이_채운_가드_변수를_덮지_않는다(self) -> None:
+        """SCA_VERIFY_NESTED 가 비어 있지 않으면 Stop 훅 모델 검증이 꺼진다
+        (finish_review). 비어 있는 가드 변수도 별칭으로 채워지면 안 된다."""
+        names = "SCA_VERIFY_NESTED,TURN_DEADLINE_MONO,CI,POST_CHANNEL,MCP_TOOL_TIMEOUT,OK_TURN"
+        env = ClaudeEnvironmentPolicy("test").build({
+            "PATH": "/bin", "TURN_ID": "C1:5.0", "TURN_DEADLINE_MONO": "123.5",
+            "POST_CHANNEL": "C9", TURN_ID_ALIASES_ENV: names,
+        })
+        assert "SCA_VERIFY_NESTED" not in env
+        assert env["TURN_DEADLINE_MONO"] == "123.5"
+        assert env["CI"] == "1"
+        assert env["POST_CHANNEL"] == "C9"
+        assert env["MCP_TOOL_TIMEOUT"] != "C1:5.0"
+        assert env["OK_TURN"] == "C1:5.0"
+
+    @pytest.mark.parametrize("policy", (CodexEnvironmentPolicy, GeminiEnvironmentPolicy),
+                             ids=lambda p: p.__name__)
+    def test_다른_엔진도_가드_변수_이름을_별칭으로_만들지_않는다(self, policy) -> None:
+        env = policy("test").build({
+            "PATH": "/bin", "TURN_ID": "C1:5.0",
+            TURN_ID_ALIASES_ENV: "CI,SCA_VERIFY_NESTED,GIT_TERMINAL_PROMPT,OK_TURN",
+        })
+        assert env["CI"] == "1"
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        assert "SCA_VERIFY_NESTED" not in env
+        assert env["OK_TURN"] == "C1:5.0"
+
     def test_별칭_목록_변수_자체는_자식에_넘기지_않는다(self) -> None:
         for policy in _정책들:
             env = policy("test").build({"TURN_ID": "C1:5.0", TURN_ID_ALIASES_ENV: "X_TURN"})
@@ -102,3 +129,52 @@ def test_2차_엔진_전환_턴도_턴_환경을_유지한다(tmp_path: Path) ->
     built = secondary.built[-1]
     assert built.engine_env["TURN_ID"] == "C1:5.0"
     assert built.turn_context["turn_id"] == "C1:5.0"
+
+
+class Test턴_밖_호출의_턴키:
+    """감시, 리뷰, 학습 호출은 파이프라인의 TURN_ID 없이 엔진을 부른다. 마메치는
+    이런 호출에 MAMETCHI_TURN=unknown 을 넘겨 사람의 터미널 호출과 구분했다."""
+
+    def _run(self, tmp_path: Path, req):
+        from test_engine import SETTINGS, FakeCompleted, RecordingEngine, claude_profile
+
+        from slack_cli_agent.engine.runner import EngineRunner
+
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        envs: list = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            envs.append(env)
+            return FakeCompleted(stdout="답변", returncode=0)
+
+        EngineRunner(
+            SETTINGS, subprocess_runner=fake_subprocess,
+            environment_policy=ClaudeEnvironmentPolicy("test"),
+            source_env={"PATH": "/bin", TURN_ID_ALIASES_ENV: "MAMETCHI_TURN"},
+        ).run(engine, req)
+        return engine.built[-1], envs[0]
+
+    def test_요청_식별자를_턴키로_쓴다(self, tmp_path: Path) -> None:
+        from test_engine import request
+
+        built, env = self._run(tmp_path, request(request_id="watch-7-3"))
+        assert env["TURN_ID"] == "watch-7-3"
+        assert env["MAMETCHI_TURN"] == "watch-7-3"
+        assert built.turn_context["turn_id"] == "watch-7-3"
+
+    def test_식별자도_없으면_unknown(self, tmp_path: Path) -> None:
+        from test_engine import request
+
+        built, env = self._run(tmp_path, request())
+        assert env["TURN_ID"] == "unknown"
+        assert built.turn_context["turn_id"] == "unknown"
+
+    def test_호출자가_준_턴키는_바꾸지_않는다(self, tmp_path: Path) -> None:
+        from test_engine import request
+
+        built, env = self._run(tmp_path, request(
+            request_id="r1", engine_env={"TURN_ID": "C1:5.0"},
+            turn_context={"channel": "C1", "turn_id": "C1:5.0"},
+        ))
+        assert env["TURN_ID"] == "C1:5.0"
+        assert built.turn_context == {"channel": "C1", "turn_id": "C1:5.0"}
