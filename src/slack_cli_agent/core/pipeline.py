@@ -423,6 +423,9 @@ class RequestPipeline:
         # resume leaves, and without it nothing can say how often context is
         # lost (sca-er9n, bot.py:5142).
         context_reset = False
+        # The run_id of the attempt before a session reset, kept so its
+        # background work stays watched after the retry mints a new name (C14).
+        earlier_run_id = ""
         # Covers the retry too: a new-session retry is the same wait for the
         # person watching, and closing the display between the two attempts
         # would read as the request having finished.
@@ -438,7 +441,15 @@ class RequestPipeline:
                 # A fresh name: the first attempt may already have launched the
                 # background command, and reusing the name puts two processes
                 # on one result file (codex review).
+                earlier_run_id = run_id
                 run_id = self._new_run_id()
+                # The new session never saw the first attempt, and the thread
+                # transcript holds nothing of it either since it never posted.
+                # Without this note the retry starts the same work again: a dag
+                # trigger runs twice (C14).
+                earlier_note = self._earlier_launch_note(earlier_run_id)
+                if earlier_note:
+                    prompt = f"{prompt}\n\n{earlier_note}"
                 retry_prompt, retry_budget = self._compose_system_prompt(
                     ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id
                 )
@@ -552,9 +563,10 @@ class RequestPipeline:
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
                      truncated=_truncated(response), context_reset=context_reset)
-        watch_desc = watch_desc or self._watch_desc_for_launched(workdir, run_id)
+        watch_run_id = self._watch_run_id(run_id, earlier_run_id)
+        watch_desc = watch_desc or self._watch_desc_for_launched(workdir, watch_run_id)
         watching = bool(watch_desc) and self._register_watch(
-            ctx, principal, watch_desc, workdir, run_id, watch_due_at(watch_due_raw),
+            ctx, principal, watch_desc, workdir, watch_run_id, watch_due_at(watch_due_raw),
         )
         # Record how this reply landed on the watch question so the NOWATCH
         # 판정률 can be aggregated (J9): a registered watch, an explicit
@@ -889,6 +901,36 @@ class RequestPipeline:
                 tags=dropped,
             )
         return body
+
+    def _earlier_launch_note(self, earlier_run_id: str) -> str:
+        """Tells a post-reset retry that the attempt before it already started
+        background work, or "" when it started none."""
+        if not earlier_run_id or not self._watch_results.launched(earlier_run_id):
+            return ""
+        path = self._watch_results.path_for(earlier_run_id)
+        return (
+            "앞선 시도가 이 요청의 백그라운드 작업을 이미 시작했다. "
+            f"결과 파일 : {path}\n"
+            "같은 작업을 다시 시작하지 말고 이 파일로 진행 상황을 확인해 답해라."
+        )
+
+    def _watch_run_id(self, run_id: str, earlier_run_id: str) -> str:
+        """Which result file the watch should read after a possible reset.
+
+        The retry's own file wins when it launched work. Otherwise the earlier
+        attempt's file is the only work running for this request, and the
+        retry's name points at a file that will never appear (C14).
+        """
+        if not earlier_run_id or self._watch_results.launched(run_id):
+            if earlier_run_id and self._watch_results.launched(earlier_run_id):
+                log.warning(
+                    "세션 리셋 전후 두 시도가 모두 백그라운드 작업을 띄웠다 : %s, %s",
+                    earlier_run_id, run_id,
+                )
+            return run_id
+        if self._watch_results.launched(earlier_run_id):
+            return earlier_run_id
+        return run_id
 
     def _watch_desc_for_launched(self, workdir: Path, run_id: str) -> str:
         """What to watch when the engine launched background work but emitted
