@@ -27,6 +27,7 @@ from slack_cli_agent.core.markers import ELAPSED_MODEL_LINE
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.render.blocks import BlockBuilder
 from slack_cli_agent.render.markdown import MarkdownConverter
+from slack_cli_agent.render.notion_links import fix_notion_links
 from slack_cli_agent.render.splitter import (
     ContentSplitter,
     CsvFilePayload,
@@ -157,7 +158,12 @@ class MessagePublisher:
         the message can't be downloaded and opened in a spreadsheet. The body
         keeps a one-line note where the block was; the file is attached to the
         same thread once the text has posted.
+
+        Notion page links missing `p/` are fixed first, here rather than in
+        the guard pipeline, so every caller (watch reports, review results,
+        engine failure bodies) gets it (bot.py:6532).
         """
+        text, _ = fix_notion_links(text)
         text, csv_payloads = extract_csv_blocks(text)
         if rich:
             separated = self._verifier.separate_tables(text)
@@ -335,6 +341,8 @@ class MessagePublisher:
         Slack was given, so the caller can report what the message became
         ([] for a plain-text channel).
         """
+        # Same Notion `p/` fix as post(), so a correction can't post a dead link.
+        text, _ = fix_notion_links(text)
         if rich:
             body = self._verifier.separate_tables(text)
             chunks = self._splitter.split_for_blocks(body)
