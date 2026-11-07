@@ -111,6 +111,10 @@ class IncidentKind(StrEnum):
     #: those coordinates (C34, bot.py:8170 origin_deleted). `snippet` holds
     #: the withheld body's head for troubleshooting.
     ORIGIN_DELETED = "origin_deleted"
+    #: An owner turn posted a reply addressed to a bot, and its message ts
+    #: went into the delegation ledger (A8, mametchi delegation_recorded).
+    #: `to` is the bot, `posted` the message ts written.
+    DELEGATION_RECORDED = "delegation_recorded"
     #: The engine had already posted a file in the thread through a tool, so
     #: the final answer was written over that message instead of posted as a
     #: second reply (2026-11-06 duplicate replies). `target_ts` is the file

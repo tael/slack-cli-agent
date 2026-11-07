@@ -381,6 +381,7 @@ def build_pipeline(
     default_workdir: Path | None = None,
     light_workdir: Path | None = None,
     transcriber: Any = None,
+    delegation_recorder: Any = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -441,6 +442,8 @@ def build_pipeline(
         extra_kwargs["light_workdir"] = light_workdir
     if transcriber is not None:
         extra_kwargs["transcriber"] = transcriber
+    if delegation_recorder is not None:
+        extra_kwargs["delegation_recorder"] = delegation_recorder
     extra_kwargs.setdefault(
         "watch_results",
         WatchResultReader((tmp_path or Path("/tmp")) / ".watch-out"),

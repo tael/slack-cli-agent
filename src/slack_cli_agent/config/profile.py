@@ -36,7 +36,7 @@ KNOWN_KEYS = frozenset(
         "owner_user_id", "controller_user_ids", "troubleshoot_channel", "owner_dm", "credentials_file",
         "plugins", "usage_check_command", "agent_greeting", "agent_prompts",
         "settings", "mcp_servers", "domain_file", "light_workdir", "airflow_ctl", "peer",
-        "delegation_ledger", "delegation_by",
+        "delegation_ledger", "delegation_by", "delegation_record",
     }
 )
 """Top-level keys `from_dict` reads. Anything else is dropped, so a mistyped
@@ -339,6 +339,10 @@ class Profile:
     #: The `by` a ledger row must carry (mametchi writes "mametchi").
     #: Required with delegation_ledger.
     delegation_by: str = ""
+    #: Ledger this bot writes when an owner turn hands work to another bot
+    #: (mametchi delegation.record, A8). Rows carry `by` = this profile's
+    #: name. None means this bot never delegates.
+    delegation_record: Path | None = None
     plugins: tuple[str, ...] = ()
     #: Operator-supplied usage check command. Empty means the check is off.
     usage_check_command: tuple[str, ...] = ()
@@ -510,6 +514,10 @@ class Profile:
                 if data.get("delegation_ledger") else None
             ),
             delegation_by=str(data.get("delegation_by") or ""),
+            delegation_record=(
+                Path(str(data["delegation_record"])).expanduser()
+                if data.get("delegation_record") else None
+            ),
             plugins=tuple(data.get("plugins") or ()),
             usage_check_command=tuple(str(part) for part in (data.get("usage_check_command") or ())),
             agent_greeting=str(data.get("agent_greeting") or ""),
