@@ -78,6 +78,13 @@ class IncidentKind(StrEnum):
     #: (strip_unknown_tags, bot.py:1561's UNKNOWN_TAG_LINE_RE). Logged
     #: rather than silently eaten so an invented marker surfaces.
     UNKNOWN_TAG = "unknown_tag"
+    #: A declared marker line (`[[NOWATCH]]`, `[[WATCH_DONE]]`, a mid-body
+    #: `[[RECIPIENT:...]]` ...) still in the body at publish time, so its own
+    #: handler missed it; dropped and logged (B4, bot.py:6521 control_tag_leak).
+    CONTROL_TAG_LEAK = "control_tag_leak"
+    #: Nothing but markers was left once they were dropped, so nothing was
+    #: posted (B4, bot.py:6526 empty_after_tags).
+    EMPTY_AFTER_TAGS = "empty_after_tags"
     #: One published reply's watch disposition, as a `verdict` field:
     #: "watch" (a follow-up watch was registered), "nowatch" (the model
     #: ended with `[[NOWATCH]]` to say none was needed), or "missing"

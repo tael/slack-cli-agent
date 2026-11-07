@@ -249,6 +249,71 @@ def strip_unknown_tags(text: str) -> tuple[str, list[str]]:
     return "\n".join(out).rstrip(), dropped
 
 
+# Every marker the engine-to-bot protocol defines, as a whole line. Matches
+# bot.py:1573-1576's `CONTROL_TAG_LINE_RE`, plus the two this repo also uses
+# (`[[침묵]]`, `[[WATCH_SUPERSEDED]]`). Unlike _KNOWN_TAG_LINE_RE, which exists
+# to *skip* these lines, this one exists to drop them.
+_CONTROL_TAG_LINE_RE = re.compile(
+    r"\A[ \t]*\[\[(?:ASK|NOWATCH|침묵|WATCH_DONE|WATCH_STILL|WATCH_SUPERSEDED"
+    r"|WATCH(?:@\d{4}-\d{2}-\d{2})?(?::.*)?"
+    r"|RECIPIENT:(?:OWNER|ASKER|BOT:[A-Z0-9]+))\]\][ \t]*\Z",
+    re.DOTALL,
+)
+
+# A trailing `[[WATCH: ...]]` may span several lines, so the line pass below
+# can't see it. Same shape as guard/watch.py's WATCH_RE (kept here so core
+# doesn't import guard).
+_TRAILING_WATCH_RE = re.compile(
+    r"\n{0,2}\[\[WATCH(?:@\d{4}-\d{2}-\d{2})?:\s*.+?\s*\]\]\s*\Z",
+    re.DOTALL,
+)
+
+
+def strip_control_tags(text: str) -> tuple[str, list[str]]:
+    """Drops every internal marker line before publish and returns what it
+    dropped, for the audit log (B4, bot.py:1586-1614 strip_control_tags).
+
+    Known markers are reported as-is, undeclared ones with an `unknown:`
+    prefix. Reaching this point means the marker's own handler didn't take
+    it (a WATCH here was never registered), so the caller records it as a
+    leak. Only whole-line markers outside fenced code count: a sentence that
+    names a marker, or a code block showing one, is content.
+    """
+    if not text or "[[" not in text:
+        return text, []
+    dropped: list[str] = []
+    m = _TRAILING_WATCH_RE.search(text)
+    if m:
+        dropped.append(m.group(0).strip())
+        text = text[: m.start()]
+    out: list[str] = []
+    in_fence = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if not in_fence and _CONTROL_TAG_LINE_RE.match(line):
+            dropped.append(stripped)
+            continue
+        if not in_fence and _UNKNOWN_TAG_LINE_RE.match(line):
+            dropped.append("unknown:" + stripped)
+            continue
+        out.append(line)
+    if not dropped:
+        return text, []
+    return "\n".join(out).rstrip(), dropped
+
+
+def split_leaked_tags(dropped: list[str]) -> tuple[list[str], list[str]]:
+    """Splits strip_control_tags()'s report into (known, unknown) so the two
+    land under their own audit kinds."""
+    known = [t for t in dropped if not t.startswith("unknown:")]
+    unknown = [t for t in dropped if t.startswith("unknown:")]
+    return known, unknown
+
+
 __all__ = [
     "ASK_RE",
     "ASK_TAG",
@@ -262,6 +327,8 @@ __all__ = [
     "missing_recipient_prompt",
     "pick_recipient_tag",
     "resolve_recipient",
+    "split_leaked_tags",
+    "strip_control_tags",
     "strip_unknown_tags",
     "take_ask_tag",
     "take_nowatch_tag",
