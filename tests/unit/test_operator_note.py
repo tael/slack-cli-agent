@@ -133,3 +133,44 @@ class Test파이프라인_연결:
         ctx = self._ctx(tmp_path, config, "U2")
         assert ctx.operator is False
         assert ctx.operator_full is False
+
+    def test_위임_턴은_operator_지침_맥락을_받는다(self, tmp_path: Path) -> None:
+        """A7 위임 원장이 보증한 컨트롤러 봇 턴은 operator 도구를 받는다
+        (AccessPolicy.operator_level). 마메치 bot.py:7883 은 그 턴에
+        operator=bool(delegated) 를 넘겨 OPERATOR_NOTE 를 싣는다. operators 명단만
+        보면 봇은 operator 가 아니라 실행 도구가 있는데 읽기 전용 지침을 받는다."""
+        config = ChannelConfig.from_dict("C1", {"operator_full": True})
+        pipeline, deps = build_pipeline(
+            responses=[ok_response()], channels={"C1": config}, tmp_path=tmp_path,
+        )
+        access = deps["access"]
+
+        def delegated_principal(channel: str, user: str, message_ts: str = "") -> Principal:
+            return Principal(
+                user_id=user, channel=channel, trust=TrustLevel.GENERAL,
+                is_direct_message=False, is_controller=True, delegated=True,
+            )
+
+        access.principal_for = delegated_principal
+        pipeline.handle(make_ctx(channel="C1", user="U0PEER"))
+        ctx = deps["composer"].contexts[0]
+        assert ctx.operator is True
+        assert ctx.operator_full is True
+
+    def test_위임되지_않은_컨트롤러_봇은_operator_가_아니다(self, tmp_path: Path) -> None:
+        config = ChannelConfig.from_dict("C1", {"operators": ["*"], "operator_full": True})
+        pipeline, deps = build_pipeline(
+            responses=[ok_response()], channels={"C1": config}, tmp_path=tmp_path,
+        )
+
+        def controller_principal(channel: str, user: str, message_ts: str = "") -> Principal:
+            return Principal(
+                user_id=user, channel=channel, trust=TrustLevel.GENERAL,
+                is_direct_message=False, is_controller=True,
+            )
+
+        deps["access"].principal_for = controller_principal
+        pipeline.handle(make_ctx(channel="C1", user="U0PEER"))
+        ctx = deps["composer"].contexts[0]
+        assert ctx.operator is False
+        assert ctx.operator_full is False
