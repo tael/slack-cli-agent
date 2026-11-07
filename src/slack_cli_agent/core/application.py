@@ -195,7 +195,7 @@ from .errors import AgentError
 from .ingress import IngressService
 from .lifecycle import InflightCounter, InflightRegistry
 from .periodic import PeriodicRunner
-from .pipeline import RequestPipeline
+from .pipeline import RequestPipeline, _domain_applies
 from .services import ServiceGroup
 from .spawn import ThreadTaskSpawner
 from .sweeplog import SweepLog
@@ -1451,7 +1451,6 @@ class Application:
                 "reactions": self.reactions(),
                 "permalinks": SlackPermalinks(self._client),
                 "publisher": ReviewPublisher(self.publisher()),
-                "engine": self._review_engine(),
                 "troubleshoot_channel": self._profile.troubleshoot_channel,
                 "owner_only_channels": self._settings.owner_only_channels,
                 # 점검은 몇 분이 걸린다. 표시가 없으면 도는 것과 죽은 것이
@@ -1475,6 +1474,7 @@ class Application:
                     bot_display_name=self._profile.display_name,
                     code_dir=str(self._profile.work_root),
                     persona_dir=str(paths.persona),
+                    engine=self._review_engine(postmortem=True),
                     **shared,
                 ),
                 DEBUG_TRACE_EMOJI: DebugTraceTask(
@@ -1482,6 +1482,7 @@ class Application:
                     code_dir=str(self._profile.work_root),
                     persona_dir=str(paths.persona),
                     owner_display_name=owner_name,
+                    engine=self._review_engine(debug_trace=True),
                     **shared,
                 ),
                 FORMAT_REVIEW_EMOJI: FormatReviewTask(
@@ -1489,6 +1490,7 @@ class Application:
                     persona_dir=str(paths.persona),
                     prompts_dir=str(paths.prompts),
                     rewrite_command=self.rewrite_command(),
+                    engine=self._review_engine(format_review=True),
                     **shared,
                 ),
             }
@@ -1514,15 +1516,60 @@ class Application:
             parts += ["--profile-dir", shlex.quote(str(source.parent))]
         return " ".join(parts)
 
-    def _review_engine(self) -> ReviewEngineCaller:
+    def _review_engine(
+        self, *, postmortem: bool = False, debug_trace: bool = False, format_review: bool = False
+    ) -> ReviewEngineCaller:
+        """One caller per review kind: each carries its own *_NOTE.
+
+        The review prompts say "follow the format in the system prompt", so an
+        empty system prompt left the engine with no format, no "do not modify"
+        rule and no persona. The original bot.py built these turns through
+        build_system_prompt with postmortem/debug_trace/format_review set, on
+        the troubleshoot channel as the owner (bot.py _run_postmortem,
+        _run_debug_trace, _run_format_review).
+        """
         paths = self._profile.paths
+
+        def system_prompt(prompt: str) -> str:
+            channel = self._profile.troubleshoot_channel
+            config = self._channels.get(channel)
+            principal = Principal(
+                user_id=self._profile.owner_user_id,
+                channel=channel,
+                trust=TrustLevel.OWNER,
+                is_direct_message=is_direct_message_channel(channel),
+            )
+            return self._composer().compose(CompositionContext(
+                principal=principal,
+                # The review prompt carries the transcript; its words pick the
+                # topic knowledge, as bot.py load_persona did with the prompt.
+                prompt=prompt,
+                channel_mode=config.mode if config else "default",
+                channel_slug=slug_for(channel, config),
+                # channel is left empty on purpose: a review turn has no thread
+                # of its own, so ThreadCoordsSection would print an empty
+                # thread_ts and an upload would land at the channel top level.
+                # bot.py added thread_coords only on the normal reply path.
+                is_rich=channel_is_rich(config),
+                chat_level=config.chat if config else "normal",
+                authority_granted=self.access_policy.is_full_authority(principal),
+                # Same rule as an owner turn on the normal path (pipeline.py
+                # _compose_system_prompt), so a review sees the domain facts
+                # the reviewed conversation saw.
+                include_domain=_domain_applies(
+                    config.workdir if config else None, Path.home()
+                ),
+                postmortem=postmortem,
+                debug_trace=debug_trace,
+                format_review=format_review,
+            ))
+
         return ReviewEngineCaller(
             # passing the runner directly here would also skip fallback-switch handling
             invoker=self.engine_invoker,
             profile=self._profile,
             workdir=self._profile.work_root,
-            # empty — each ReviewTask.build_prompt embeds its own instructions in the user turn
-            system_prompt="",
+            system_prompt=system_prompt,
             readable_dirs=(paths.persona, paths.prompts),
         )
 

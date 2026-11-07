@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from ..auth.execution_policy import ExecutionPolicy
@@ -28,7 +28,7 @@ class ReviewEngineCaller:
         invoker: EngineInvoker,
         profile: Profile,
         workdir: Path,
-        system_prompt: str,
+        system_prompt: str | Callable[[str], str],
         readable_dirs: Sequence[Path] = (),
         model: str | None = None,
         effort: str | None = None,
@@ -55,9 +55,17 @@ class ReviewEngineCaller:
         self, prompt: str, session_id: str | None, resume: bool, progress_log: Path | None = None,
         request_id: str = "",
     ) -> EngineResponse:
+        # A callable is composed per call, so an edit to the persona or the
+        # prompt files reaches the next review without a restart, as it does
+        # for a normal request. It gets the review prompt so topic knowledge
+        # is chosen by the reviewed conversation's words.
+        system_prompt = (
+            self._system_prompt(prompt) if callable(self._system_prompt)
+            else self._system_prompt
+        )
         request = EngineRequest(
             prompt=prompt,
-            system_prompt=self._system_prompt,
+            system_prompt=system_prompt,
             session_id=session_id,
             resume=resume,
             model=self._model,
