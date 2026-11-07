@@ -403,6 +403,14 @@ class Test허용목록은_tools_로_건다:
         assert self.tools_arg(cmd) == "Read"
         assert cmd[cmd.index("--allowedTools") + 1] == "Read,mcp__slack__channels_list"
 
+    def test_범위_지정_Bash_는_tools_에_맨_이름으로_싣는다(self, tmp_path) -> None:
+        """--tools 는 내장 도구 이름만 받는다. Bash(echo:*) 를 그대로 넣으면 claude
+        가 Bash 를 끈다 (claude 2.1.319 실측, NO_BASH). 범위는 --allowedTools 가
+        지키고, 맨 Bash 를 승인 목록에 넣지 않으므로 dontAsk 가 다른 명령을 거부한다."""
+        cmd = self.cmd(tmp_path, ToolSelection.allow(["Read", "Bash(echo:*)", "Bash(ls:*)"]))
+        assert self.tools_arg(cmd) == "Read,Bash"
+        assert cmd[cmd.index("--allowedTools") + 1] == "Read,Bash(echo:*),Bash(ls:*)"
+
     def test_MCP_만_허용하면_tools_를_비운다(self, tmp_path) -> None:
         """내장 도구를 하나도 안 허용한 것이므로 빈 값이 맞다. 인자를 빼면
         전체 내장 도구가 열린다."""

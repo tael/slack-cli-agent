@@ -2903,3 +2903,27 @@ class TestReviewRequesterScope:
         allowed = args[args.index("--allowedTools") + 1]
         assert f"Bash({app.rewrite_command()}:*)" in allowed
         assert "Write" in allowed
+
+    def test_소유자_서식_점검의_claude_명령은_Bash_도구를_켠다(
+        self, profile: Profile, client: FakeSlackClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B6 운영 실측 (2026-11-07 #test-agent 1794051030.555249) : --tools 에
+        Bash(<rewrite>:*) 를 그대로 넣으면 claude 는 그 이름을 내장 도구로 인식하지
+        못해 Bash 를 끈다. 리뷰 세션이 "No such tool available: Bash" 로 교정을
+        실행하지 못했다. --tools 에는 맨 Bash 가, --allowedTools 에는 범위 지정
+        rewrite 만 실려야 한다. 맨 Bash 는 승인 목록에 없으니 dontAsk 가 다른
+        명령을 거부한다 (claude 2.1.319 실측)."""
+        from slack_cli_agent.engine.claude import ClaudeEngine
+
+        app = self._앱(profile, client)
+        monkeypatch.setattr(app.tool_policy(), "_owner_tools", ("Write", "Edit", "Bash"))
+        request, _ = self._요청(app, monkeypatch, "pencil2", "U_OWNER")
+        cmd = ClaudeEngine(profile, app.settings).build_command(
+            replace(request, session_id="s-1", model=request.model or "claude-sonnet-5")
+        )
+        tools = cmd[cmd.index("--tools") + 1].split(",")
+        allowed = cmd[cmd.index("--allowedTools") + 1].split(",")
+        assert "Bash" in tools
+        assert not any(name.startswith("Bash(") for name in tools)
+        assert f"Bash({app.rewrite_command()}:*)" in allowed
+        assert "Bash" not in allowed
