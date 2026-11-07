@@ -457,8 +457,9 @@ class RequestPipeline:
             budget_report=budget_report,
             # Opaque to the engine layer: forwarded only so an MCP server whose
             # turn_env names a `channel` key gets this turn's channel as env
-            # (mametchi's per-turn MAMETCHI_POST_CHANNEL render guard).
-            turn_context={"channel": ctx.channel},
+            # (mametchi's per-turn MAMETCHI_POST_CHANNEL render guard), and one
+            # naming `turn_id` gets this turn's key for its audit row (C10).
+            turn_context={"channel": ctx.channel, "turn_id": f"{ctx.channel}:{ctx.ts}"},
             engine_env={
                 **self._engine_env(ctx.channel, config),
                 # The marker's second line, so the worker can tell the turn

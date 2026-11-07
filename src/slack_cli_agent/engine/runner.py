@@ -956,6 +956,11 @@ class FallbackEngine(Engine):
             # The same reason in the audit: this is the next attempt at one
             # request, not a second request (sca-4ol).
             request_id=request.request_id,
+            # Per-turn facts are the same turn's on either engine: dropping them
+            # lost TURN_ID, the Stop hook's channel sets and the MCP turn_env
+            # tokens for every turn served by the fallback (C10).
+            turn_context=request.turn_context,
+            engine_env=request.engine_env,
         )
         return self.runner.run(self.secondary, fallback_request)
 

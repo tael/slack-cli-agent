@@ -32,6 +32,8 @@ directly, so tests aren't coupled to the real process environment.
 
 from __future__ import annotations
 
+import re
+
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
@@ -59,11 +61,41 @@ TURN_WRAPUP_SEC = 60
 DEFAULT_MCP_TOOL_TIMEOUT_MS = "300000"
 
 
+#: Comma-separated extra names the turn ID is also exported under, read from
+#: the bot process's own environment (the profile's run.sh). Helper scripts
+#: written for another runtime read the turn key under their own name --
+#: mametchi's mb_card.py writes MAMETCHI_TURN into its audit row -- and would
+#: otherwise log an empty turn (C10). The list itself is not passed on.
+TURN_ID_ALIASES_ENV = "SCA_TURN_ID_ALIASES"
+
+_ALIAS_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+
+#: Names an alias may never take: the fixed base env and engine homes. An
+#: alias only ever carries the turn ID, so overriding one of these would
+#: break the child rather than add anything.
+_RESERVED_ALIAS_NAMES = frozenset({
+    "PATH", "LANG", "HOME", "USER", "SHELL", "BOT_PROFILE", "TURN_ID",
+    "CODEX_HOME", "TMPDIR",
+})
+
+
 def _turn_id(source_env: Mapping[str, str]) -> dict[str, str]:
     """TURN_ID ("channel:ts") when the runner stamped one: a turn writes it as
     the apply-request marker's second line (reliability/restart.py), the same
-    as mametchi apply.sh with MAMETCHI_TURN. Not a credential."""
-    return {"TURN_ID": source_env["TURN_ID"]} if source_env.get("TURN_ID") else {}
+    as mametchi apply.sh with MAMETCHI_TURN. Not a credential.
+
+    Each valid name in SCA_TURN_ID_ALIASES gets the same value, so a wrapper
+    launched from the engine's shell finds the turn under the name it reads.
+    Invalid or reserved names are skipped rather than failing the turn."""
+    turn = source_env.get("TURN_ID")
+    if not turn:
+        return {}
+    out = {"TURN_ID": turn}
+    for name in (source_env.get(TURN_ID_ALIASES_ENV) or "").split(","):
+        name = name.strip()
+        if name and _ALIAS_NAME_RE.fullmatch(name) and name not in _RESERVED_ALIAS_NAMES:
+            out[name] = turn
+    return out
 
 
 class EngineEnvironmentPolicy(ABC):
@@ -235,8 +267,7 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         "SCA_FINISH_VERIFY_MODEL",
         # Set inside the nested verify claude so its own run never re-verifies.
         "SCA_VERIFY_NESTED",
-        # "channel:ts" of this turn, for the apply-request marker's second line.
-        "TURN_ID",
+        # TURN_ID ("channel:ts") and its aliases go through _turn_id() below.
     })
 
     #: Empty on purpose: claude keeps its subscription credentials in the
@@ -258,6 +289,7 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
             env["CLAUDE_CODE_OAUTH_TOKEN"] = account_token
         env.setdefault("MCP_TOOL_TIMEOUT", DEFAULT_MCP_TOOL_TIMEOUT_MS)
         env.update(NON_INTERACTIVE_ENV)
+        env.update(_turn_id(source_env))
         return env
 
 
