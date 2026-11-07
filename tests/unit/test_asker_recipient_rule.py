@@ -1,5 +1,6 @@
 """AskerSection 이 수신자 표식 규칙과 짝 봇 안내를 싣는지 본다 (bot.py RECIPIENT_RULE 대응)."""
 
+from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.prompt.sections import RECIPIENT_RULE, AskerSection
 
 
@@ -14,6 +15,9 @@ class _Ctx:
         self.asker_is_bot = bot
         self.asker_name = "누구"
         self.asker_id = "U1"
+        # The section reads principal.delegated to pick the bot note (A7).
+        self.principal = Principal(user_id="U1", channel="C1", trust=TrustLevel.GENERAL,
+                                   is_direct_message=False)
 
     def _library_or_raise(self):
         return _Lib()

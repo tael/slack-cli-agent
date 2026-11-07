@@ -254,8 +254,8 @@ class TestSingletons:
     def test_재기동_요청자는_소유자_판정과_같은_기준이다(
         self, tmp_path: Path, client: FakeSlackClient
     ) -> None:
-        """컨트롤러도 OWNER 라 쓰기 도구로 표식을 쓸 수 있다. 요청자로 인정해야
-        종료 대기에서 빠지고 재처리되지 않는다."""
+        """요청자는 OWNER 판정만 인정한다. 컨트롤러는 A7 부터 GENERAL 이라
+        소유자 도구를 받지 않으므로 재기동 요청자도 아니다."""
         app = Application(write_profile(tmp_path, controller_user_ids=["U_PEER"]), client)
         requester_ok = app.worker("w1")._requester_ok
         assert requester_ok is not None
@@ -264,7 +264,7 @@ class TestSingletons:
             return requester_ok(RequestContext(channel="C1", user=user, ts="1.0", thread_ts="1.0", text=""))
 
         assert 판정("U_OWNER") is True
-        assert 판정("U_PEER") is True
+        assert 판정("U_PEER") is False
         assert 판정("U_OTHER") is False
         assert 판정("") is False
 

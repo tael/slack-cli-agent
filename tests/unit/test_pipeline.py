@@ -50,7 +50,7 @@ class FakeAccessPolicy:
     def __init__(self, owner_user_id: str = "UOWNER") -> None:
         self._owner_user_id = owner_user_id
 
-    def principal_for(self, channel: str, user: str) -> Principal:
+    def principal_for(self, channel: str, user: str, message_ts: str = "") -> Principal:
         trust = TrustLevel.OWNER if user == self._owner_user_id else TrustLevel.GENERAL
         return Principal(
             user_id=user, channel=channel, trust=trust,
@@ -1626,7 +1626,7 @@ class Test링크된스레드:
     )
     def test_소유자_턴만_사용자_세션_읽기를_켠다(self, user: str, expected: bool) -> None:
         """D5 : 사용자 세션 읽기는 프로필 owner_user_id 본인 턴에서만 켠다.
-        controller_user_ids 도 OWNER 등급이지만 소유자 개인 세션을 쓰지 않는다."""
+        controller_user_ids 는 GENERAL 이고 소유자 개인 세션을 쓰지 않는다."""
         받은: list[bool] = []
 
         def 기록(text: str, self_channel: str, attachments: Any, as_owner: bool) -> str:

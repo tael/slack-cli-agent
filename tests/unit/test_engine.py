@@ -463,19 +463,14 @@ class TestClaudeEngineBuildCommand:
         )
         assert json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"] == ["공통"]
 
-    def test_컨트롤러도_소유자_덧씌움을_받는다(self, tmp_path: Path) -> None:
-        """R0 — controller_user_ids 는 OWNER 와 완전 동급이다. principal_for 가
-        이미 trust=OWNER 로 판정하므로(auth/policy.py), _settings_value 가
-        읽는 request.trust_level 도 그 값 그대로 "owner" 수준을 고른다 — 여기
-        말고 다른 분기가 없는지 확인하는 회귀 시험이다."""
+    def test_OWNER_요청은_소유자_덧씌움을_받는다(self, tmp_path: Path) -> None:
+        """_settings_value 는 request.trust_level 만 읽는다. controller 봇은
+        A7 이후 OWNER 로 오지 않는다 (auth/policy.py)."""
         profile = claude_profile(tmp_path)
         self.기본_settings를_쓴다(profile, {"permissions": {"deny": ["공통"]}})
         self.덧씌움을_쓴다(profile, "owner", {"permissions": {"deny": ["소유자전용"]}})
         engine = ClaudeEngine(profile, SETTINGS)
 
-        # 컨트롤러(마메치) 는 principal_for 단계에서 이미 TrustLevel.OWNER 로
-        # 판정되어 넘어온다 — engine 계층은 owner 와 controller 를 구분할 수
-        # 없고, 구분해서도 안 된다(R0).
         cmd = engine.build_command(request(trust_level=TrustLevel.OWNER))
         assert json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"] == [
             "공통", "소유자전용",
@@ -947,6 +942,44 @@ class TestCodexEngineBuildCommand:
         assert "--approve-for-me" not in cmd
         assert not any("WRITE_ENABLED" in tok for tok in cmd)
         assert engine.blocks_outbound_writes(요청)
+
+    def _위임_codex(self, tmp_path: Path) -> CodexEngine:
+        profile = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            fallback={"type": "codex", "binary": "codex", "model": "gpt-5.6-sol",
+                      "options": {"sandbox": "workspace-write", "network": True}},
+            tmp_path=tmp_path,
+            mcp_servers={"jira": {"command": "jira-mcp",
+                                  "turn_env": {"WRITE_ENABLED": "can_act"}}},
+        )
+        return CodexEngine(profile, SETTINGS)
+
+    def test_맨_실행_도구_없는_위임_턴은_read_only_로_돈다(self, tmp_path: Path) -> None:
+        """operator_full 이 꺼진 채널의 위임 턴은 Bash/Edit/Write 를 받지 않는다.
+        codex 는 도구 이름을 받지 않으므로 MCP 쓰기 도구 하나로 프로필
+        샌드박스가 열리면 같은 턴이 셸로 쓴다. claude 의 general deny 와 맞춘다."""
+        engine = self._위임_codex(tmp_path)
+        요청 = request(
+            resume=False, trust_level=TrustLevel.GENERAL, delegated=True,
+            tools=ToolSelection.allow(["Read", "Grep", "mcp__jira__create_issue"]),
+        )
+        cmd = engine.build_command(요청)
+
+        assert 'sandbox_mode="read-only"' in cmd
+        assert "--approve-for-me" not in cmd
+        assert "sandbox_workspace_write.network_access=true" not in cmd
+        assert not any("WRITE_ENABLED" in tok for tok in cmd)
+
+    def test_맨_실행_도구를_받은_위임_턴도_read_only_다(self, tmp_path: Path) -> None:
+        """codex 비소유자 턴은 operator_full 과 무관하게 read-only 다 (A9 검토).
+        위임 턴도 trust 는 GENERAL 이라 같은 경계를 따른다."""
+        engine = self._위임_codex(tmp_path)
+        cmd = engine.build_command(request(
+            resume=False, trust_level=TrustLevel.GENERAL, delegated=True,
+            tools=ToolSelection.allow(["Read", "Bash", "mcp__jira__create_issue"]),
+        ))
+        assert 'sandbox_mode="read-only"' in cmd
+        assert not any("WRITE_ENABLED" in tok for tok in cmd)
 
     def test_MCP_도구가_섞이면_내리지_않는다(self, tmp_path: Path) -> None:
         """READ_ONLY_TOOLS 는 내장 도구만 담는다. MCP 도구가 밖으로 쓰는지를

@@ -3,7 +3,7 @@
     readonly (postmortem/debug trace)   known read-only tools only
     owner                                base + owner extras + channel extra_tools
     channel operator (operators)         base + the profile's operator_tools (no server
-                                         wildcard), bare Bash/Edit/Write only if operator_full
+    or delegated controller turn         wildcard), bare Bash/Edit/Write only if operator_full
     an extension applies                 base + whatever the extension adds
     the channel lists the user           base + user_tools, extra_tools, airflow wrapper
     otherwise                            base tools only

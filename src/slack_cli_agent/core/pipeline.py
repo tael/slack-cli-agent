@@ -382,7 +382,7 @@ class RequestPipeline:
         if ctx.files:
             ctx = replace(ctx, files=transcribe_files(ctx.files, self._transcriber))
 
-        principal = self._access.principal_for(ctx.channel, ctx.user)
+        principal = self._access.principal_for(ctx.channel, ctx.user, ctx.ts)
         model = self._access.model_for(principal)
         effort = self._access.effort_for(principal, ctx.text)
 
@@ -447,6 +447,7 @@ class RequestPipeline:
             ),
             readable_dirs=self._readable_dirs + self._attachment_dirs(ctx),
             trust_level=principal.trust,
+            delegated=principal.delegated,
             progress_log=progress_log,
             request_id=request_id,
             budget_report=budget_report,
@@ -735,7 +736,7 @@ class RequestPipeline:
             # the sharer's message already carries (C39).
             # The last argument turns on the owner's own Slack session for a
             # link the bot cannot read. Only the profile owner's turn gets it:
-            # controller_user_ids share OWNER trust but not the owner's
+            # controller_user_ids are GENERAL (A7) and never get the owner's
             # session, and a non-owner turn would carry a private
             # conversation only the owner can see into its answer (D5).
             as_owner = bool(self._owner_user_id) and ctx.user == self._owner_user_id
@@ -758,7 +759,10 @@ class RequestPipeline:
     ) -> tuple[str, dict[str, Any]]:
         is_owner = principal.trust is TrustLevel.OWNER
         asker_name = "" if is_owner else (self._name_resolver(ctx.user) or ctx.user)
-        asker_is_bot = False if is_owner else (ctx.from_bot or self._asker_is_bot(ctx.user))
+        # controller_user_ids are bot accounts; that does not wait on bots_info.
+        asker_is_bot = False if is_owner else (
+            principal.is_controller or ctx.from_bot or self._asker_is_bot(ctx.user)
+        )
         config = self._channels.get(ctx.channel)
         composition_ctx = CompositionContext(
             principal=principal,
@@ -786,7 +790,11 @@ class RequestPipeline:
             watch_run_id=run_id,
             watch_out_dir=str(self._watch_results.result_dir),
             airflow_admin=bool(ctx.user) and ctx.user in airflow_admins(config),
-            operator=is_channel_operator(config, ctx.user, is_bot=asker_is_bot),
+            # mametchi bot.py:7855 operator=bool(delegated) or is_operator(...):
+            # the ledger, not the operators list, is what lets a bot act here.
+            operator=principal.delegated or is_channel_operator(
+                config, ctx.user, is_bot=asker_is_bot,
+            ),
             advisor_enabled=advisor_enabled(config),
         )
         text, report = self._composer.compose_with_report(composition_ctx)

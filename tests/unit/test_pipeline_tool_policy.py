@@ -101,3 +101,59 @@ def test_Application_이_채널별_사용자_도구를_정책에_연결한다(tm
     )
 
     assert app.tool_policy().tool_list_for(general) == ("Read", "Bash(ops_ctl.sh:*)")
+
+
+def test_위임_판정에_요청_메시지_ts_가_넘어가고_엔진_요청에_실린다() -> None:
+    """A7. 원장은 메시지 ts 로 찾는다. 파이프라인이 ts 를 넘기지 않으면 위임은
+    한 번도 성립하지 않고, 판정 결과가 엔진 요청에 안 실리면 입력 표식이 갈리지 않는다."""
+    from test_pipeline import FakeAccessPolicy
+
+    from slack_cli_agent.auth.principal import Principal, TrustLevel
+
+    seen: list[str] = []
+
+    class Delegating(FakeAccessPolicy):
+        def principal_for(self, channel: str, user: str, message_ts: str = "") -> Principal:
+            seen.append(message_ts)
+            return Principal(user_id=user, channel=channel, trust=TrustLevel.GENERAL,
+                             is_direct_message=False, is_controller=True, delegated=True)
+
+    policy = ToolPolicy(
+        base_tools=("Read",), owner_tools=("Write", "mcp__jira__*"),
+        operator_level=lambda p, is_bot=False: "operator" if p.delegated else "",
+        operator_tools=("Write", "mcp__jira__create_issue"),
+    )
+    pipeline, parts = build_pipeline(responses=[ok_response()], tool_policy=policy)
+    pipeline._access = Delegating()
+
+    pipeline.handle(make_ctx(user="U_CTRL", ts="1700000009.000900"))
+
+    call = parts["runner"].calls[0]
+    assert "1700000009.000900" in seen
+    assert call.delegated is True
+    assert call.trust_level is TrustLevel.GENERAL
+    # Write 는 operator_full 채널에서만 열린다
+    assert call.tools.names == ("Read", "mcp__jira__create_issue")
+
+
+def test_위임_턴은_봇_화자이자_operator_로_지침을_조립한다() -> None:
+    """마메치는 operator=bool(delegated) 다 (bot.py 7855). controller 는 봇
+    계정이므로 bots_info 판정이 실패해도 봇 화자로 본다."""
+    from test_pipeline import FakeAccessPolicy
+
+    from slack_cli_agent.auth.principal import Principal, TrustLevel
+
+    class Delegating(FakeAccessPolicy):
+        def principal_for(self, channel: str, user: str, message_ts: str = "") -> Principal:
+            return Principal(user_id=user, channel=channel, trust=TrustLevel.GENERAL,
+                             is_direct_message=False, is_controller=True, delegated=True)
+
+    pipeline, parts = build_pipeline(responses=[ok_response()])
+    pipeline._access = Delegating()
+    pipeline._asker_is_bot = lambda user: False
+
+    pipeline.handle(make_ctx(user="U_CTRL", ts="1700000009.000900"))
+
+    composed = parts["composer"].contexts[0]
+    assert composed.asker_is_bot is True
+    assert composed.operator is True

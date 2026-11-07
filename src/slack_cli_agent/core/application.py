@@ -25,6 +25,7 @@ from ..admin.admission import AdminAdmission
 from ..admin.command import AdminContext
 from ..admin.defaults import default_admin_commands
 from ..admin.router import AdminRouter
+from ..auth.delegation import DelegationLedger
 from ..auth.execution_policy import ExecutionPolicy
 from ..auth.policy import DEFAULT_EFFORT, AccessPolicy
 from ..auth.principal import Principal, TrustLevel
@@ -528,7 +529,19 @@ class Application:
     def access_policy(self) -> AccessPolicy:
         if self._access_policy is None:
             extensions = [e for p in self._plugins for e in p.access_extensions()]
-            self._access_policy = AccessPolicy(self._profile, self._channels, extensions)
+            ledger_path = self._profile.delegation_ledger
+            delegation = (
+                DelegationLedger(
+                    ledger_path,
+                    self_user_id=lambda: self.identity.user_id,
+                    own_name=self._profile.name,
+                    delegator=self._profile.delegation_by,
+                )
+                if ledger_path is not None else None
+            )
+            self._access_policy = AccessPolicy(
+                self._profile, self._channels, extensions, delegation=delegation,
+            )
         return self._access_policy
 
     @property
@@ -1529,8 +1542,9 @@ class Application:
         # that produced it; following it again would loop.
         # Only an OWNER turn can be the requester the marker names; any other
         # turn that could write it must not get someone's request completed.
-        # OWNER is the access policy's verdict, so controller_user_ids count
-        # too -- they get the write tools that can write the marker.
+        # OWNER is the access policy's verdict. controller_user_ids are GENERAL
+        # (A7): a delegated controller turn gets operator tools, not the
+        # owner's, so it is not a restart requester either.
         policy = self.access_policy
         worker.watch_restart_requests(
             ApplyRequestWatch(

@@ -124,8 +124,10 @@ class RequestAccess:
             return
         if self._channels.is_registered(channel):
             return
-        if user and self._policy.principal_for(channel, user).trust is TrustLevel.OWNER:
-            return
+        if user:
+            principal = self._policy.principal_for(channel, user)
+            if principal.trust is TrustLevel.OWNER or principal.is_controller:
+                return
         due = self._notice_log.record(channel, user, kind, self._channel_name(channel))
         self._record_attempt(kind, channel, user, due)
         if not due:

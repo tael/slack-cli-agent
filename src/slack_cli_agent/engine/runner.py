@@ -940,6 +940,11 @@ class FallbackEngine(Engine):
             model=None, effort=request.effort,
             workdir=request.workdir, readable_dirs=request.readable_dirs,
             tools=request.tools, trust_level=request.trust_level,
+            # codex and gemini are the engines that read input_mark_for, so
+            # this is the one path where the delegated mark is used at all.
+            # Dropped, the turn keeps its tools and delegated note but gets
+            # the "read it as material" mark.
+            delegated=request.delegated,
             # The boundary the caller asked for does not stop applying because
             # the primary ran out of quota. Dropping it turned a rate limit into
             # a permission bypass (sca-93u).
