@@ -141,6 +141,17 @@ class ReviewAuditPort(Protocol):
 
 
 @runtime_checkable
+class ReviewSlotsPort(Protocol):
+    """core.slots.ConcurrencySlots' shape: the one cap the worker's requests
+    and the reviews share, as bot.py's one `_slots` did (bot.py:1166, A16).
+    acquire returns None when no slot came free within `timeout`."""
+
+    def acquire(self, timeout: float | None = None) -> object | None: ...
+
+    def release(self, token: object) -> None: ...
+
+
+@runtime_checkable
 class ReviewProgressPort(Protocol):
     """Shows that the review is running, for the length of the engine call.
 
@@ -186,7 +197,17 @@ class ReviewTask(ABC):
         progress: ReviewProgressPort | None = None,
         audit: ReviewAuditPort | None = None,
         slow_reporter: SlowReportPort | None = None,
+        # None runs the review uncapped. Taken in run() only after the
+        # owner-only and ledger checks, as the original took `_slots` only
+        # after its key claim (bot.py:8993-8996): a refused or repeated
+        # reaction must not wait for, or hold, a slot.
+        slots: ReviewSlotsPort | None = None,
+        # How long to wait for a slot before giving up, as the original's
+        # `_slots.acquire(timeout=TIMEOUT_SEC)`. None waits without end.
+        slot_wait_sec: float | None = None,
     ) -> None:
+        self._slots = slots
+        self._slot_wait_sec = slot_wait_sec
         self._ledger = ledger
         self._message_lookup = message_lookup
         self._transcript = transcript
@@ -270,8 +291,26 @@ class ReviewTask(ABC):
             return
         if self._ledger.is_reviewed(self.log_name, target.channel, target.ts):
             return
+        # Claimed before the slot wait, as the original did, so a repeat
+        # reaction during the wait is refused by is_reviewed at once.
         self._ledger.begin(self.log_name, target.channel, target.ts, by=target.by_user)
+        token: object | None = None
         try:
+            if self._slots is not None:
+                token = self._slots.acquire(timeout=self._slot_wait_sec)
+                if token is None:
+                    self._ledger.drop(self.log_name, target.channel, target.ts)
+                    log.warning(
+                        "점검을 시작할 자리가 없다. 넘긴다 : %s %s:%s",
+                        self.log_name, target.channel, target.ts,
+                    )
+                    return
+                # The ledger's stale limit covers the run only. Restart the clock
+                # here so the wait does not eat into it and let a repeat reaction
+                # start a second review mid-run.
+                self._ledger.begin(
+                    self.log_name, target.channel, target.ts, by=target.by_user
+                )
             self._execute(target)
         except Exception as exc:  # noqa: BLE001 — any failure must roll back the ledger and notify
             self._ledger.drop(self.log_name, target.channel, target.ts)
@@ -283,6 +322,9 @@ class ReviewTask(ABC):
                 f"사유 : {exc}\n\n{self.retry_hint()}",
                 rich=True,
             )
+        finally:
+            if self._slots is not None and token is not None:
+                self._slots.release(token)
 
     @contextmanager
     def _progress_display(self, target: ReviewTarget, thread_ts: str) -> Iterator[Path | None]:

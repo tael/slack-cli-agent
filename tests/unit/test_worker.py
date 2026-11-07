@@ -119,6 +119,7 @@ def make_worker(
     heartbeat_queue=None,
     admin=None,
     active=None,
+    slots=None,
 ):
     from slack_cli_agent.core.worker import Worker
 
@@ -138,6 +139,7 @@ def make_worker(
         sleep=sleep,
         admin=admin,
         active=active,
+        slots=slots,
     )
     return worker, queue, client
 
@@ -917,6 +919,35 @@ class Test동시처리상한:
         멈춤 = [False, True]
         worker.run_forever(lambda: 멈춤.pop(0) if 멈춤 else True)
         assert handler.끝났다
+
+
+class Test점검과_상한을_나눠_쓴다:
+    """접수 프로세스의 점검과 워커의 요청이 같은 상한을 쓴다. 원본은 둘을
+    한 `_slots` 로 묶었다 (bot.py:1166, A16)."""
+
+    def test_점검이_자리를_다_쓰면_요청을_집지_않는다(self, database, tmp_path) -> None:
+        from slack_cli_agent.core.slots import FileSlots
+
+        handler = FakeHandler()
+        settings = RuntimeSettings(heartbeat_interval_sec=0.01, max_concurrent=2)
+        # 다른 프로세스(접수)의 점검 둘이 자리를 다 쥔 상태다.
+        review = FileSlots(tmp_path / "slots", 2)
+        held = [review.acquire(timeout=0), review.acquire(timeout=0)]
+        worker, queue, _client = make_worker(
+            database=database, handler=handler, settings=settings,
+            slots=FileSlots(tmp_path / "slots", 2),
+        )
+        queue.enqueue(ctx("1.0"))
+
+        turns = [False] * 3 + [True]
+        worker.run_forever(lambda: turns.pop(0))
+        assert handler.received == []
+
+        review.release(held.pop())
+        turns = [False] * 20 + [True]
+        worker.run_forever(lambda: turns.pop(0) if turns else True)
+        assert [c.ts for c in handler.received] == ["1.0"]
+        review.release(held.pop())
 
 
 class Test캐치업도_관리_명령_판정을_거친다:
