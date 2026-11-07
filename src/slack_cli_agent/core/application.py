@@ -117,7 +117,7 @@ from ..prompt.sections import (
     TrustedSection,
     WatchSection,
 )
-from ..reliability.catchup import CatchupService
+from ..reliability.catchup import CatchupService, RetryStatus, StuckCause
 from ..reliability.connection import ConnectionCatchupCoordinator
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
@@ -237,6 +237,31 @@ USAGE_CHECK_FIRST_DELAY_SEC = 60.0
 def mode_prompt_names(modes: Sequence[str] = KNOWN_MODES) -> dict[str, str]:
     return {mode: f"PROMPT_{mode.upper()}" for mode in modes}
 
+
+
+def _stuck_cause_text(status: RetryStatus) -> str:
+    """Explains, per cause, why catch-up for a channel can't finish.
+
+    The alert used to always blame an empty channel history, which was
+    wrong once an unreadable long thread also kept a channel on the retry
+    list (PR #124): the owner would look for a Slack outage that wasn't there.
+    """
+    if status.cause == StuckCause.UNREADABLE_THREAD:
+        return (
+            f"긴 스레드 {status.unreadable_threads}개를 끝까지 읽지 못했습니다.\n"
+            "중간 페이지를 읽다 실패했거나 읽을 수 있는 페이지 수 한도를 넘었습니다.\n"
+            "그 스레드에서 답을 기다리는 요청이 있어도 잡히지 않습니다.\n"
+            "끝까지 읽은 나머지 스레드는 이번 점검에 반영했습니다."
+        )
+    if status.cause == StuckCause.UNKNOWN_IDENTITY:
+        return (
+            "봇 자신의 사용자 정보를 확인하지 못해 부름 여부를 판정하지 못합니다.\n"
+            "그 채널에서 답을 기다리는 요청이 있어도 잡히지 않습니다."
+        )
+    return (
+        "슬랙이 채널 기록을 계속 빈 목록으로 돌려줍니다.\n"
+        "그 채널에서 답을 기다리는 요청이 있어도 잡히지 않습니다."
+    )
 
 class Application:
     """Builds and wires every component that makes up one bot."""
@@ -769,7 +794,11 @@ class Application:
         return self._channel_name_resolver
 
     def _history_port(self) -> SlackHistoryPort:
-        return SlackHistoryPort(HistoryReader(self._client, self._settings), self._client)
+        return SlackHistoryPort(
+            HistoryReader(self._client, self._settings),
+            self._client,
+            max_pages=self._settings.history_max_pages,
+        )
 
     def queue(self) -> SqliteJobQueue:
         if self._queue is None:
@@ -2118,8 +2147,7 @@ class Application:
                 "*캐치업을 오래 마치지 못하고 있습니다*\n\n"
                 f"- 채널 : {status.channel}\n"
                 f"- {status.stuck_sec / 60:.0f}분째입니다\n\n"
-                "슬랙이 채널 기록을 계속 빈 목록으로 돌려줍니다.\n"
-                "그 채널에서 답을 기다리는 요청이 있어도 잡히지 않습니다."
+                f"{_stuck_cause_text(status)}"
             )
 
     def ingress_services(self, restart: Callable[[str], None]) -> ServiceGroup:

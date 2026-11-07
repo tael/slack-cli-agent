@@ -41,7 +41,7 @@ class RuntimeSettings:
     history_read_pause_sec: float = 2.0
     history_max_msgs: int = 40
     history_max_chars: int = 12000
-    #: How many conversations_replies pages read_thread follows via next_cursor
+    #: How many conversations_replies pages read_full_thread follows via next_cursor
     #: before stopping. A thread longer than one page (history_max_msgs) returns
     #: its replies oldest-first, so without this the most recent replies are
     #: dropped (F17, mametchi bot.py 되짚기 페이지네이션). Caps a runaway thread.

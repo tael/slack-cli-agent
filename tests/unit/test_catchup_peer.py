@@ -34,6 +34,9 @@ class _History:
     def read_thread(self, channel, thread_ts, limit):
         return self.threads.get(thread_ts, [])
 
+    def read_full_thread(self, channel, thread_ts, page_size):
+        return self.threads.get(thread_ts, [])
+
 
 def _service(
     history: _History,
