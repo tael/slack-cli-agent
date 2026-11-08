@@ -46,6 +46,16 @@ class SessionDecision:
     resume: bool
     rebuild_full: bool
     after_ts: str | None
+    #: 재개 턴이면 이 세션이 앞서 붙인 MCP 서버 (SessionRecord.mcp_servers).
+    mcp_servers: str = ""
+    #: 새 세션을 연 까닭. "threshold" 는 컨텍스트 임계 리셋이다. "" 는 그냥
+    #: 기록이 없거나 만료된 경우다.
+    reset_reason: str = ""
+    #: 임계 리셋일 때 직전 세션의 호출당 컨텍스트 토큰.
+    previous_context_tokens: int = 0
+
+#: SessionDecision.reset_reason 값. 감사 기록 context_reset_reason 에 그대로 간다.
+THRESHOLD_RESET_REASON = "threshold"
 
 
 def _default_new_session_id() -> str:
@@ -89,12 +99,24 @@ class SessionManager:
         now = self._now()
         record = self._store.get(key)
         if record is not None and self._is_valid(record, key.scope, now, engine, tier):
+            if self._over_context_threshold(record):
+                try:
+                    started = self._start_new(key, engine, now, tier)
+                except Exception:  # noqa: BLE001 -- 리셋이 안 되면 그냥 재개한다
+                    started = None
+                if started is not None:
+                    return replace(
+                        started,
+                        reset_reason=THRESHOLD_RESET_REASON,
+                        previous_context_tokens=record.last_context_tokens,
+                    )
             self._store.put(self._renew(record, now))
             return SessionDecision(
                 session_id=record.session_id,
                 resume=True,
                 rebuild_full=False,
                 after_ts=record.last_seen_ts or None,
+                mcp_servers=record.mcp_servers,
             )
         return self._start_new(key, engine, now, tier)
 
@@ -117,6 +139,25 @@ class SessionManager:
 
     def touch(self, key: SessionKey, seen_ts: str) -> None:
         self._store.touch(key, seen_ts)
+
+    def record_turn(
+        self, key: SessionKey, session_id: str, *, mcp_servers: str, context_tokens: int
+    ) -> None:
+        """끝난 턴이 붙인 MCP 서버와 호출당 컨텍스트 토큰을 세션에 남긴다.
+
+        세션 ID 가 다르면(그 사이 다른 턴이 새 세션을 열었으면) 건드리지 않는다.
+        get/put 만 쓰므로 저장소 계약은 그대로다.
+        """
+        record = self._store.get(key)
+        if record is None or record.session_id != session_id:
+            return
+        self._store.put(replace(
+            record, mcp_servers=mcp_servers, last_context_tokens=max(0, int(context_tokens)),
+        ))
+
+    def _over_context_threshold(self, record: SessionRecord) -> bool:
+        limit = getattr(self._settings, "context_reset_tokens", 0) or 0
+        return limit > 0 and record.last_context_tokens >= limit
 
     def should_retry_with_new_session(self, failure_reason: str) -> bool:
         """Some failures hit the same wall on a fresh session, so retrying

@@ -959,6 +959,8 @@ class Application:
                 # settings turn it on, so a bot without RECIPIENT-tag persona
                 # wiring degrades to "publish anyway" rather than to silence.
                 require_recipient=self._settings.require_recipient,
+                # S2: 요청 종류로 붙일 MCP 서버를 고른다. 없으면 전부.
+                mcp_routing=self._settings.mcp_routing,
                 mention_table=self._names.name_table,
                 group_resolver=self._group_names,
                 slow_reporter=self._slow_reporter(),

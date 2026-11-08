@@ -42,6 +42,11 @@ class SessionRecord:
     # keeps the first turn's instructions in context. So a turn of another
     # tier must not resume it. "" is a row written before this column existed.
     tier: str = ""
+    # 이 세션에서 지금까지 붙인 MCP 서버 (쉼표 구분, "*" 는 전부, "" 는 기록
+    # 없음). 재개 턴은 이 합집합을 유지해 앞서 쓴 도구가 사라지지 않게 한다.
+    mcp_servers: str = ""
+    # 마지막 턴의 호출당 컨텍스트 토큰. 컨텍스트 임계 리셋이 읽는다.
+    last_context_tokens: int = 0
 
 
 @runtime_checkable

@@ -37,12 +37,18 @@ class PayloadFootprint:
     #: The one field sca-ygd is about: true means N resumes cost N times the
     #: instruction size.
     instruction_replayed_on_resume: bool
+    #: 이 호출에 실제로 붙인 MCP 서버 수. None 은 엔진이 세지 않은 것이다.
+    mcp_servers_attached: int | None = None
 
     @property
     def total_bytes(self) -> int:
         return self.instruction_bytes + self.user_prompt_bytes + self.adapter_added_bytes
 
     def as_audit_dict(self) -> dict[str, Any]:
+        extra: dict[str, Any] = (
+            {} if self.mcp_servers_attached is None
+            else {"mcp_servers_attached": self.mcp_servers_attached}
+        )
         return {
             "instruction_bytes": self.instruction_bytes,
             "user_prompt_bytes": self.user_prompt_bytes,
@@ -50,6 +56,7 @@ class PayloadFootprint:
             "total_bytes": self.total_bytes,
             "instruction_transport": self.instruction_transport,
             "instruction_replayed_on_resume": self.instruction_replayed_on_resume,
+            **extra,
         }
 
 

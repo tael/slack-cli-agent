@@ -288,6 +288,16 @@ session instead (session/manager.py). Existing rows get '' and are not
 resumed by a turn that names its tier."""
 
 
+V14_SESSION_CONTEXT_SQL = """
+ALTER TABLE sessions ADD COLUMN mcp_servers TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN last_context_tokens INTEGER NOT NULL DEFAULT 0;
+"""
+"""S2 컨텍스트 다이어트. mcp_servers 는 이 세션에서 지금까지 붙인 MCP 서버
+이름(쉼표 구분, '*' 는 전부, '' 는 기록 없음)이라 재개 턴이 앞서 쓴 도구를
+잃지 않게 한다. last_context_tokens 는 마지막 턴의 호출당 컨텍스트 토큰으로,
+임계 리셋(session/manager.py)이 읽는다."""
+
+
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
@@ -302,6 +312,7 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (11, "답 대기 중인 스레드 표시 추가", _statements(V11_AWAITING_REPLY_SQL)),
     (12, "그림자 평가 상태 추가", _statements(V12_SHADOW_SQL)),
     (13, "세션에 연 턴의 화자 등급 추가", _statements(V13_SESSION_TIER_SQL)),
+    (14, "세션에 붙인 MCP 서버와 마지막 컨텍스트 토큰 추가", _statements(V14_SESSION_CONTEXT_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

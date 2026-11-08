@@ -440,7 +440,7 @@ class Test전역_MCP_서버가_안_붙는다:
     settings 의 allow 에 들어가면 열린다 (sca-mo4g).
     """
 
-    def cmd(self, tmp_path, **kwargs):
+    def cmd(self, tmp_path, tools=None, **kwargs):
         from test_engine import profile_with, request
         from test_engine_capability import SETTINGS
 
@@ -451,13 +451,18 @@ class Test전역_MCP_서버가_안_붙는다:
             tmp_path=tmp_path,
             **kwargs,
         )
-        return ClaudeEngine(profile, SETTINGS).build_command(request())
+        overrides = {"tools": tools} if tools is not None else {}
+        return ClaudeEngine(profile, SETTINGS).build_command(request(**overrides))
 
     def test_서버가_없어도_붙인다(self, tmp_path) -> None:
         assert "--strict-mcp-config" in self.cmd(tmp_path)
 
     def test_서버가_있으면_그것만_붙인다(self, tmp_path) -> None:
-        cmd = self.cmd(tmp_path, mcp_servers={"jira": {"command": "jira-mcp"}})
+        # 허용목록이 이 서버를 가리켜야 붙는다 (S2: 이름 없는 서버는 안 붙인다).
+        cmd = self.cmd(
+            tmp_path, tools=ToolSelection.allow(["Read", "mcp__jira__search"]),
+            mcp_servers={"jira": {"command": "jira-mcp"}},
+        )
         assert "--strict-mcp-config" in cmd
         assert "jira" in cmd[cmd.index("--mcp-config") + 1]
 

@@ -108,7 +108,10 @@ class TestTurnEnvWiring:
     def test_행동_턴이면_명령에_게이트가_실린다(
         self, engine_type: str, tmp_path: Path
     ) -> None:
-        본문 = _command(engine_type, ToolSelection.allow(["Read", "Bash"]), tmp_path)
+        # 서버 이름이 허용목록에 있어야 claude 가 붙인다 (S2 1단계).
+        본문 = _command(
+            engine_type, ToolSelection.allow(["Read", "Bash", "mcp__jira__search"]), tmp_path
+        )
         assert _게이트 in 본문
 
     def test_읽기전용_턴이면_게이트가_빠진다(
