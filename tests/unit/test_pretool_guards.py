@@ -30,6 +30,7 @@ from slack_cli_agent.guard.pretool import (
     install_guard,
     restart_guard,
     scan_guard,
+    sleep_poll_guard,
     turn_budget,
 )
 
@@ -44,6 +45,7 @@ _DEADLINE_VARS = (
     "POST_CHANNEL", "ADVISOR_CHANNELS", "CODE_FIRST_CHANNELS",
     "RESTART_GUARD_LABELS", "RESTART_GUARD_MARKER",
     "SCA_FINISH_VERIFY", "SCA_FINISH_VERIFY_MODEL", "SCA_VERIFY_NESTED",
+    "SLEEP_POLL_GUARD_LOG",
 )
 
 
@@ -527,18 +529,19 @@ class TestFinishHook:
 
 
 class TestClaudeEngineWiring:
-    def test_guard_hook_settings_에_bash_가드_4개와_stop_훅이_있다(self) -> None:
+    def test_guard_hook_settings_에_bash_가드_5개와_stop_훅이_있다(self) -> None:
         from slack_cli_agent.engine.claude import guard_hook_settings
 
         settings = guard_hook_settings()
         pretool_groups = settings["hooks"]["PreToolUse"]
         bash_group = next(g for g in pretool_groups if g["matcher"] == "Bash")
         commands = [h["command"] for h in bash_group["hooks"]]
-        assert len(commands) == 4
+        assert len(commands) == 5
         assert any("turn_budget.py" in c for c in commands)
         assert any("restart_guard.py" in c for c in commands)
         assert any("install_guard.py" in c for c in commands)
         assert any("scan_guard.py" in c for c in commands)
+        assert any("sleep_poll_guard.py" in c for c in commands)
         assert all(c.startswith(sys.executable) for c in commands)
 
         stop_groups = settings["hooks"]["Stop"]
@@ -589,7 +592,7 @@ class TestClaudeEngineWiring:
         assert "*" in matchers  # progress 훅
         assert "Bash" in matchers  # 가드 3종
         bash_group = next(g for g in pretool_groups if g["matcher"] == "Bash")
-        assert len(bash_group["hooks"]) == 4
+        assert len(bash_group["hooks"]) == 5
         assert settings["hooks"]["Stop"][0]["matcher"] == "*"
 
 
@@ -613,3 +616,62 @@ def test_restart_guard_env_에_서비스_라벨이_있다() -> None:
     )
     env = Application.restart_guard_env(fake)  # type: ignore[arg-type]
     assert env["RESTART_GUARD_SERVICES"] == "local.deagent.worker,local.deagent.ingress"
+
+
+class TestSleepPollGuard:
+    @staticmethod
+    def _bash(command: str, **extra: Any) -> dict[str, Any]:
+        return {"tool_name": "Bash", "session_id": "sp", "tool_input": {"command": command, **extra}}
+
+    # 2026-11-08 기상할증 스레드에서 100초를 쓴 실제 명령 모양
+    WAIT_PY = (
+        'timeout 100 python -c "\nimport time,glob\nfor i in range(90):\n'
+        "    fs=sorted(glob.glob('hsr2/*.json'))\n    if len(fs)>=30: break\n"
+        '    time.sleep(1)\n"'
+    )
+
+    def test_파이썬_대기_루프는_막는다(self) -> None:
+        result, proc = run_hook(sleep_poll_guard.HOOK_SCRIPT, self._bash(self.WAIT_PY))
+        assert proc.returncode == 0
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "WATCH" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def test_셸_while_sleep_은_막는다(self) -> None:
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT,
+                             self._bash("while ! grep -q done log.txt; do sleep 5; done"))
+        assert result is not None
+
+    def test_run_in_background_은_통과한다(self) -> None:
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT,
+                             self._bash(self.WAIT_PY, run_in_background=True))
+        assert result is None
+
+    def test_nohup_으로_떼어낸_명령은_통과한다(self) -> None:
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT,
+                             self._bash("nohup sh -c 'while true; do sleep 60; done' > o 2>&1 &"))
+        assert result is None
+
+    def test_짧은_재시도_루프는_통과한다(self) -> None:
+        cmd = "python -c \"\nimport time\nfor k in range(6):\n    try: go(); break\n    except E: time.sleep(5)\n\""
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT, self._bash(cmd))
+        assert result is None
+
+    def test_파일로_쓰기만_하는_heredoc_안의_루프는_통과한다(self) -> None:
+        cmd = "cat > w.py <<'EOF'\nimport time\nwhile True:\n    time.sleep(1800)\nEOF\npython3 -m py_compile w.py"
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT, self._bash(cmd))
+        assert result is None
+
+    def test_루프없는_sleep_은_통과한다(self) -> None:
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT, self._bash("sleep 2 && ls"))
+        assert result is None
+
+    def test_bash_가_아니면_통과한다(self) -> None:
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT,
+                             {"tool_name": "Read", "tool_input": {"file_path": "/x"}})
+        assert result is None
+
+    def test_막으면_로그를_남긴다(self, tmp_path: Path) -> None:
+        log = tmp_path / "sp.jsonl"
+        run_hook(sleep_poll_guard.HOOK_SCRIPT, self._bash(self.WAIT_PY), {"SLEEP_POLL_GUARD_LOG": str(log)})
+        assert "range(90)" in json.loads(log.read_text(encoding="utf-8").strip())["command"]
