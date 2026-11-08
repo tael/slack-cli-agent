@@ -203,6 +203,29 @@ the result file, not from here (codex review).
 
 
 
+#: 2026-11-08 23:00 김태일이 private-taeil 최상위에 "test agent 채널 테스트할때 내 계정말고
+#: 봇계정으로 테스트해라" 를 남겼는데 구치파치가 [[침묵]] 으로 끝냈다. 23:03 "이 말을 무시해?
+#: 절대 용납 못해". 멘션 없는 최상위 글을 맡은 채널(answer_top_level)에서 김태일 최상위 글은
+#: 이 봇에게 온 말이다. 침묵하면 같은 세션으로 한 번 다시 돌린다.
+OWNER_TOP_LEVEL_SILENCE_NOTE = (
+    "방금 [[침묵]] 으로 끝냈다. 이 채널에서 멘션 없는 최상위 글은 이 봇이 맡는다. "
+    "김태일 최상위 글은 이 봇에게 한 말이다. 다른 봇이나 다른 세션의 일처럼 보여도 넘기지 않는다. "
+    "지시, 규칙, 불만이면 원인을 찾아 고치고 이 턴에 결과를 보고한다. "
+    "규칙이면 지킬 위치(지침 파일, 코드, 실행 중 작업)에 반영하고 반영한 위치를 쓴다. "
+    "정말로 답할 내용이 없을 때만 다시 [[침묵]] 을 쓴다."
+)
+
+
+def should_rerun_owner_silence(
+    body: str, *, owner: bool, from_bot: bool, ts: str, thread_ts: str, answer_top_level: bool,
+) -> bool:
+    """김태일 최상위 글에 침묵한 답인지. 맞으면 한 번 다시 돌린다."""
+    return (
+        is_silent(body or "") and owner and not from_bot
+        and bool(ts) and ts == thread_ts and answer_top_level
+    )
+
+
 class RequestPipeline:
     def __init__(
         self,
@@ -692,6 +715,8 @@ class RequestPipeline:
         except Exception:  # noqa: BLE001 -- 기록 실패가 답을 막으면 안 된다
             log.warning("세션 컨텍스트 기록 실패", exc_info=True)
 
+        response = self._rerun_owner_top_level_silence(ctx, principal, request, decision, response)
+
         if is_silent(response.body):
             # A silent answer still owes the picture the turn made; mametchi
             # uploaded it without a comment.
@@ -1064,6 +1089,34 @@ class RequestPipeline:
         if self._consumption is not None:
             self._consumption.mark(ctx.thread_ts, addendum_ts)
         return rerun.body, body
+
+    def _rerun_owner_top_level_silence(
+        self,
+        ctx: RequestContext,
+        principal: Principal,
+        request: EngineRequest,
+        decision: SessionDecision,
+        response: EngineResponse,
+    ) -> EngineResponse:
+        config = self._channels.get(ctx.channel)
+        if not should_rerun_owner_silence(
+            response.body,
+            owner=principal.trust is TrustLevel.OWNER and not principal.delegated,
+            from_bot=bool(ctx.from_bot), ts=ctx.ts, thread_ts=ctx.thread_ts,
+            answer_top_level=bool(config and config.answer_top_level),
+        ):
+            return response
+        rerun = self._invoker.invoke(replace(
+            request, prompt=OWNER_TOP_LEVEL_SILENCE_NOTE, resume=True,
+            session_id=decision.session_id,
+        ))
+        new_body = (rerun.body or "").strip()
+        kept = rerun.ok and bool(new_body) and not is_silent(new_body)
+        self._audit.record(
+            "owner_silence_rerun", channel=ctx.channel, thread_ts=ctx.thread_ts,
+            ok=rerun.ok, answered=kept,
+        )
+        return rerun if kept else response
 
     def _recover_unposted_render(
         self,
