@@ -64,7 +64,9 @@ HOOK_SCRIPT = Path(__file__).resolve()
 #: started at 4; replaying 2026-11-08's 93 guchipachi sessions
 #: (tools/serial_read_replay.py) put the share of denies whose call really
 #: needed the previous result at 63% for 4, 29% for 5 (36% read by hand) and
-#: 22% for 6, against a 30% ceiling.
+#: 22% for 6, against a 30% ceiling. Re-run over 2026-11-06..08 (865
+#: requests): 57.8% for 4, 37.2% for 5 (21 of 44 read by hand were plain
+#: dependent calls or batches) and 32.0% for 6, so it stays at 6.
 DEFAULT_RUN = 6
 
 #: Seconds to keep re-reading the transcript for sibling tool_use lines of
@@ -91,6 +93,10 @@ class Use:
     name: str
     tool_input: dict[str, Any]
     denied: bool = False
+    #: The call's tool_result text and error flag once it is on record
+    #: (None until then). Read by repeat_guard; this guard only needs denied.
+    result: str | None = None
+    is_error: bool = False
 
 
 @dataclass
@@ -120,9 +126,10 @@ def _result_text(block: dict[str, Any]) -> str:
     return ""
 
 
-def responses_since_prompt(records: list[dict[str, Any]]) -> list[Response]:
+def responses_since_prompt(records: list[dict[str, Any]], marker: str = MARKER) -> list[Response]:
     """Group this request's tool-calling assistant lines by message id, and
-    mark the uses this guard denied (their tool_result starts with MARKER)."""
+    mark the uses a guard denied (their tool_result starts with ``marker``,
+    this guard's MARKER unless another guard passes its own)."""
     responses: list[Response] = []
     by_id: dict[str, Use] = {}
     for record in records:
@@ -140,7 +147,11 @@ def responses_since_prompt(records: list[dict[str, Any]]) -> list[Response]:
                 if not (isinstance(block, dict) and block.get("type") == "tool_result"):
                     continue
                 use = by_id.get(str(block.get("tool_use_id")))
-                if use is not None and _result_text(block).lstrip().startswith(MARKER):
+                if use is None:
+                    continue
+                use.result = _result_text(block)
+                use.is_error = bool(block.get("is_error"))
+                if use.result.lstrip().startswith(marker):
                     use.denied = True
             continue
         if kind != "assistant" or not isinstance(content, list):

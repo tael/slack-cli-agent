@@ -109,12 +109,15 @@ def requests(path: str, since: float, until: float) -> list[dict[str, Any]]:
             if kind == "user":
                 if _is_human_turn(content):
                     cur = {"prompt": content if isinstance(content, str) else json.dumps(content, ensure_ascii=False),
-                           "t": t, "responses": [], "results": {}, "in_window": since <= t < until}
+                           "t": t, "responses": [], "results": {}, "errors": set(),
+                           "in_window": since <= t < until, "path": path}
                     out.append(cur)
                 elif cur is not None:
                     for b in content or []:
                         if isinstance(b, dict) and b.get("type") == "tool_result":
                             cur["results"][str(b.get("tool_use_id"))] = result_text(b)
+                            if b.get("is_error"):
+                                cur["errors"].add(str(b.get("tool_use_id")))
                 continue
             if kind != "assistant" or cur is None or not isinstance(content, list):
                 continue
