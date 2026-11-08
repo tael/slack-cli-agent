@@ -133,6 +133,15 @@ class CompositionContext:
     # RequestContext, we just render them (AttachmentSection).
     files: tuple[Mapping[str, Any], ...] = ()
     missed_files: int = 0
+    #: The per-request values (thread coordinates, the watch run id and its
+    #: directory, attachments) go in a header block at the front of the user
+    #: prompt instead of the system prompt (render_request_header). The
+    #: pipeline sets this: claude --resume ignores --append-system-prompt, so
+    #: a value in the system prompt stays the first turn's on every later
+    #: turn, and a value there also breaks the prompt cache prefix for every
+    #: new thread (S4 2nd round, 2026-11-08). Callers that do not build the
+    #: header leave it False and keep the values in the system prompt.
+    request_header: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -213,6 +222,16 @@ class PersonaSection(PromptSection):
 
 
 class KnowledgeSection(BudgetAwareSection):
+    """Knowledge documents. `part` is a KnowledgeLoader.knowledge_selection
+    part: "all" (the default, every document in one place), "fixed" (the ones
+    that load on every turn) or "selected" (the ones this request's `when:`
+    words picked, plus the list of the ones they did not). A profile that
+    registers a "fixed" one early and a "selected" one after its fixed
+    sections keeps the shared prefix identical for the prompt cache (S4)."""
+
+    def __init__(self, part: str = "all") -> None:
+        self._part = part
+
     def applies_to(self, ctx: CompositionContext) -> bool:
         return True
 
@@ -224,7 +243,7 @@ class KnowledgeSection(BudgetAwareSection):
     def render_within(self, ctx: CompositionContext, budget: int) -> BudgetedRender:
         for_loader = None if budget < 0 else max(0, budget - len(self._SEPARATOR.encode("utf-8")))
         text, omitted = ctx._knowledge_or_raise().knowledge_selection(
-            ctx.channel_slug, ctx.prompt, budget=for_loader,
+            ctx.channel_slug, ctx.prompt, budget=for_loader, part=self._part,
         )
         return BudgetedRender(
             text=f"{text}{self._SEPARATOR}" if text else "",
@@ -623,16 +642,25 @@ class WatchSection(PromptSection):
         if ctx.watch_check:
             return library.text("WATCH_CHECK_NOTE")
         text = library.text("WATCH_NOTE")
+        background = "" if ctx.request_header else self.background_note(ctx)
+        if background:
+            text += "\n\n" + background
+        return text
+
+    def background_note(self, ctx: CompositionContext) -> str:
+        """The note naming this turn's result file, or "" when none was minted."""
+        if ctx.aside or ctx.watch_check:
+            return ""
         # Both slots or neither: a note naming the file but not the directory
         # would send the model to a path nothing reads.
-        if ctx.watch_run_id and ctx.watch_out_dir:
-            background = library.text(
-                "WATCH_BACKGROUND_NOTE", keep_slots=("WATCH_RUN_ID", "WATCH_OUT_DIR"),
-            )
-            text += "\n\n" + background.replace(
-                self.RUN_ID_SLOT, ctx.watch_run_id,
-            ).replace(self.OUT_DIR_SLOT, ctx.watch_out_dir)
-        return text
+        if not (ctx.watch_run_id and ctx.watch_out_dir):
+            return ""
+        background = ctx._library_or_raise().text(
+            "WATCH_BACKGROUND_NOTE", keep_slots=("WATCH_RUN_ID", "WATCH_OUT_DIR"),
+        )
+        return background.replace(
+            self.RUN_ID_SLOT, ctx.watch_run_id,
+        ).replace(self.OUT_DIR_SLOT, ctx.watch_out_dir)
 
 
 class AdvisorSection(PromptSection):
@@ -710,6 +738,10 @@ class AttachmentSection(PromptSection):
     even arrived (sca-q45r)."""
 
     def applies_to(self, ctx: CompositionContext) -> bool:
+        return not ctx.request_header and self.has_content(ctx)
+
+    @staticmethod
+    def has_content(ctx: CompositionContext) -> bool:
         return bool(ctx.files) or ctx.missed_files > 0
 
     def render(self, ctx: CompositionContext) -> str:
@@ -756,7 +788,7 @@ class ThreadCoordsSection(PromptSection):
     """
 
     def applies_to(self, ctx: CompositionContext) -> bool:
-        return bool(ctx.channel)
+        return bool(ctx.channel) and not ctx.request_header
 
     def render(self, ctx: CompositionContext) -> str:
         return (
@@ -764,6 +796,33 @@ class ThreadCoordsSection(PromptSection):
             "그림이나 파일을 올리는 도구에 이 값을 그대로 준다. "
             "이 줄 자체는 답변에 옮겨 적지 않는다."
         )
+
+
+#: First line of the user-prompt header, so the model reads the block as this
+#: request's values and not as something the person wrote.
+REQUEST_HEADER_TITLE = "[이 요청의 값. 사람이 쓴 말이 아니라 봇이 붙인 것이다]"
+
+
+def render_request_header(ctx: CompositionContext) -> str:
+    """The per-request values that used to sit in the system prompt, as a
+    block for the front of the user prompt. Same sentences as the sections
+    they come from (ThreadCoords, the watch background note, Attachment), so
+    the model gets the same information. "" when there is nothing to say.
+
+    Needs the composer's library on ctx for the watch note
+    (SystemPromptComposer.request_header fills it).
+    """
+    parts: list[str] = []
+    if ctx.channel:
+        parts.append(ThreadCoordsSection().render(ctx).strip())
+    background = WatchSection().background_note(ctx)
+    if background:
+        parts.append(background.strip())
+    if AttachmentSection.has_content(ctx):
+        parts.append(AttachmentSection().render(ctx).strip())
+    if not parts:
+        return ""
+    return "\n\n".join([REQUEST_HEADER_TITLE, *parts])
 
 
 class PresentPeopleSection(PromptSection):

@@ -610,12 +610,13 @@ class RequestPipeline:
             },
         )
         reach = turn_reach(self._engine, request)
-        system_prompt, budget_report = self._compose_system_prompt(
+        system_prompt, budget_report, header = self._compose_system_prompt(
             ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
             tier=tier, reach=reach,
         )
         request = replace(
-            request, system_prompt=system_prompt, budget_report=budget_report,
+            request, prompt=_with_request_header(header, prompt),
+            system_prompt=system_prompt, budget_report=budget_report,
             retarget=tier_note_retarget(principal, tier),
         )
         # Counted rather than derived: the reset is the only trace a broken
@@ -658,12 +659,13 @@ class RequestPipeline:
                     prompt = f"{prompt}\n\n{earlier_note}"
                 # The tier goes again: without it the retry lost the note while
                 # its audit row still named the tier (A12 review).
-                retry_prompt, retry_budget = self._compose_system_prompt(
+                retry_prompt, retry_budget, retry_header = self._compose_system_prompt(
                     ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
                     tier=tier, reach=reach,
                 )
                 request = replace(
-                    request, session_id=decision.session_id, resume=False, prompt=prompt,
+                    request, session_id=decision.session_id, resume=False,
+                    prompt=_with_request_header(retry_header, prompt),
                     system_prompt=retry_prompt, budget_report=retry_budget,
                 )
                 engine_start = self._timing_stamp()
@@ -960,7 +962,19 @@ class RequestPipeline:
         *,
         tier: str = "",
         reach: tuple[bool, tuple[str, ...]] = (False, ()),
-    ) -> tuple[str, dict[str, Any]]:
+    ) -> tuple[str, dict[str, Any], str]:
+        """System prompt, its budget report, and the user-prompt header.
+
+        The header carries the per-request values (thread coordinates, watch
+        run id, attachments) when the composer can build one. It goes on the
+        user prompt of every turn, resumed or not: claude --resume ignores
+        --append-system-prompt, so these values in the system prompt stayed
+        the first turn's, and they made every new thread's prompt prefix
+        differ for the prompt cache (S4 2nd round). A composer without
+        request_header (a test double, a plugin) keeps them in the system
+        prompt as before and the header is "".
+        """
+        build_header = getattr(self._composer, "request_header", None)
         is_owner = principal.trust is TrustLevel.OWNER
         asker_name = "" if is_owner else (self._name_resolver(ctx.user) or ctx.user)
         # controller_user_ids are bot accounts; that does not wait on bots_info.
@@ -1010,9 +1024,11 @@ class RequestPipeline:
             turn_tier=tier,
             turn_reads_only=reach[0],
             turn_acting_tools=reach[1],
+            request_header=callable(build_header),
         )
         text, report = self._composer.compose_with_report(composition_ctx)
-        return text, report.as_audit_dict()
+        header = build_header(composition_ctx) if callable(build_header) else ""
+        return text, report.as_audit_dict(), header
 
     def _engine_env(self, channel: str, config: ChannelConfig | None) -> dict[str, str]:
         """Per-turn env the engine's built-in Stop hook reads (finish_review):
@@ -1825,3 +1841,9 @@ def _watch_due_of(result: Any) -> str:
     means no deadline — the same as a plain `[[WATCH: ...]]` tag."""
     detail = result.details.get(WatchPromiseGuard.name) or {}
     return str(detail.get("watch_due") or "")
+
+
+def _with_request_header(header: str, prompt: str) -> str:
+    """The user prompt with this request's values in front, or as is when
+    there are none (RequestPipeline._compose_system_prompt)."""
+    return f"{header}\n\n{prompt}" if header else prompt

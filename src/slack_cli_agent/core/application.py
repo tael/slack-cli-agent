@@ -649,28 +649,40 @@ class Application:
         return self._tool_policy
 
     def _prompt_sections(self) -> list[PromptSection]:
+        # Sections whose text depends only on the channel and the speaker's
+        # tier go first, the ones carrying per-thread or per-request values
+        # (speaker name, people, channel/thread_ts, watch run id, attachments)
+        # go last. The prompt cache reuses the longest identical prefix, so a
+        # thread_ts in the middle used to make every new thread rewrite the
+        # rest of the prompt (S4, 2026-11-08). Knowledge is split the same
+        # way: documents every turn carries go early, the ones a request's
+        # `when:` words picked go after TurnTier. AirflowSection still follows
+        # AuthoritySection, and SilenceRuleSection stays the closing note.
         sections: list[PromptSection] = [
             PersonaSection(),
-            KnowledgeSection(),
+            KnowledgeSection(part="fixed"),
             RosterSection(self._profile.roster_file),
             ChannelModeSection(mode_prompt_names(), default_prompt=DEFAULT_PROMPT),
             OwnerNoteSection(),
             PeerRecoverySection(self._profile.peer),
             SlackFormatSection(),
             ReviewFormatSection(),
-            AskerSection(peer_bot_ids=self._profile.controller_user_ids),
-            AttachmentSection(),
-            ThreadCoordsSection(),
-            PresentPeopleSection(),
             TrustedSection(),
             SensitiveGuardSection(),
             AuthoritySection(),
             AirflowSection(),
-            WatchSection(),
             AdvisorSection(),
             AskSection(),
             WorkStyleSection(),
             TurnTierSection(),
+            # Documents picked by this request's `when:` words, after the
+            # fixed sections so they do not split the shared prefix (S4).
+            KnowledgeSection(part="selected"),
+            AskerSection(peer_bot_ids=self._profile.controller_user_ids),
+            PresentPeopleSection(),
+            ThreadCoordsSection(),
+            WatchSection(),
+            AttachmentSection(),
             SilenceRuleSection(),
         ]
         sections.extend(s for p in self._plugins for s in p.prompt_sections())

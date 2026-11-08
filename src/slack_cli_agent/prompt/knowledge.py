@@ -68,10 +68,21 @@ class KnowledgeDocument:
     #: Learned knowledge gets one shared header, printed once above the first
     #: of them that survives the budget.
     learned: bool = False
+    #: Loaded because its `when:` words matched this request, not on every
+    #: turn. The system prompt puts these after the fixed sections so the
+    #: part every request in a channel shares stays byte-identical for the
+    #: prompt cache (S4 2nd round, KnowledgeSection part="selected").
+    selected: bool = False
 
     @property
     def size(self) -> int:
         return len(self.text.encode("utf-8"))
+
+
+#: KnowledgeLoader.knowledge_selection parts.
+KNOWLEDGE_ALL = "all"
+KNOWLEDGE_FIXED = "fixed"
+KNOWLEDGE_SELECTED = "selected"
 
 
 class KnowledgeLoader:
@@ -136,15 +147,24 @@ class KnowledgeLoader:
 
     def knowledge_selection(
         self, channel_slug: str, prompt: str = "", budget: int | None = None,
+        part: str = KNOWLEDGE_ALL,
     ) -> tuple[str, tuple[KnowledgeDocument, ...]]:
         """The text plus what the budget left out, for the caller that has to
         report it. A budget of 0 or less renders nothing at all -- printing the
         omission list there would add bytes to a prompt that already has none
-        to spare (리뷰 2026-09-19)."""
-        if budget is not None and budget <= 0:
-            documents, _ = self.documents(channel_slug, prompt)
-            return "", documents
+        to spare (리뷰 2026-09-19).
+
+        `part` narrows it to the documents that load on every turn
+        (KNOWLEDGE_FIXED) or to the ones this request's words picked plus the
+        list of the ones they did not (KNOWLEDGE_SELECTED). The two together
+        carry what KNOWLEDGE_ALL carries."""
         documents, skipped = self.documents(channel_slug, prompt)
+        if part == KNOWLEDGE_FIXED:
+            documents, skipped = tuple(d for d in documents if not d.selected), ()
+        elif part == KNOWLEDGE_SELECTED:
+            documents = tuple(d for d in documents if d.selected)
+        if budget is not None and budget <= 0:
+            return "", documents
         kept, omitted = _within_budget(documents, budget, skipped)
         return _render(kept, omitted, skipped), tuple(omitted)
 
@@ -221,7 +241,9 @@ class KnowledgeLoader:
                 if triggers is not None and not always and not any(t in low for t in triggers):
                     skipped.append(common)
                     continue
-                parts.append(KnowledgeDocument(path=common, text=text))
+                parts.append(KnowledgeDocument(
+                    path=common, text=text, selected=triggers is not None and not always,
+                ))
         parts.extend(after_common)
         if channel_slug:
             channel_file = directory / f"{channel_slug}.md"
