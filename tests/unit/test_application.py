@@ -2975,7 +2975,10 @@ class Test프롬프트캐시배치:
 
     def test_같은_요청_값이면_바이트가_같다(self, tmp_path: Path) -> None:
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
-        kw = dict(user_id="U1", channel="C1", thread_ts="1.2", asker_id="U1", watch_run_id="r")
+        kw = {
+            "user_id": "U1", "channel": "C1", "thread_ts": "1.2",
+            "asker_id": "U1", "watch_run_id": "r",
+        }
         assert self._compose(app, **dict(kw)) == self._compose(app, **dict(kw))
 
     def test_요청별_섹션이_고정_섹션_뒤에_온다(self, tmp_path: Path) -> None:
