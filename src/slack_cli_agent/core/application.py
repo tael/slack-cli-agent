@@ -1868,6 +1868,34 @@ class Application:
         flat = bool(config and config.flat_reply)
         self.publisher().post(channel, thread_ts, message, rich=False, flat=flat)
 
+    def _notify_peer_limit(self, event: Mapping[str, Any], limit: int) -> None:
+        """Posts one line to the troubleshoot channel when a thread's
+        bot-to-bot exchange first goes past the cap and this bot stops answering.
+
+        2026-11-08 김태일 지시 : 핑퐁 한도에서 멈추는 것은 괜찮지만 아무도 모르게
+        버려지면 안 된다. 어드민 채널(troubleshoot_channel)에 알린다.
+        """
+        target = self._profile.troubleshoot_channel
+        if not target:
+            return
+        channel = str(event.get("channel") or "")
+        ts = str(event.get("ts") or "")
+        thread = str(event.get("thread_ts") or ts)
+        link = ""
+        try:
+            link = str(self._client.chat_getPermalink(channel=channel, message_ts=ts).get("permalink") or "")
+        except Exception:
+            log.exception("한도 알림용 permalink 를 받지 못했다 : %s %s", channel, ts)
+        sender = str(event.get("user") or event.get("bot_id") or "")
+        who = f"<@{sender}>" if sender.startswith("U") else (sender or "다른 봇")
+        text = (
+            f"봇끼리 주고받기가 한도 {limit}턴을 넘어 {self._profile.display_name}가 <#{channel}> 스레드에서 "
+            f"더 답하지 않고 멈췄습니다. 마지막 요청은 {who} 가 보냈습니다. "
+            "사람이 스레드에 한 번 말하면 횟수가 다시 시작됩니다."
+            + (f"\n{link}" if link else f"\nthread_ts={thread}")
+        )
+        self._client.chat_postMessage(channel=target, text=text, unfurl_links=False)
+
     def ingress(self) -> IngressService:
         if self._ingress is None:
             self._ingress = IngressService(
@@ -1890,6 +1918,7 @@ class Application:
                     # forever if the outgoing mention-strip ever misses.
                     peer_limiter=self._peer_exchange,
                     audit=self.audit().record,
+                    peer_limit_notice=self._notify_peer_limit,
                 ),
                 # The one place the access check runs. Catch-up needs no second
                 # one: it only sweeps channels that are already registered

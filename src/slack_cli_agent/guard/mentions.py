@@ -323,6 +323,15 @@ class PeerExchangeLimiter:
             self._counts[thread_ts] = count
             return count <= self._limit
 
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    def count(self, thread_ts: str) -> int:
+        """Bot turns counted in this thread since a human last spoke."""
+        with self._lock:
+            return self._counts.get(thread_ts, 0)
+
     def reset(self, thread_ts: str) -> None:
         """A human spoke in this thread; its bot-exchange count starts over."""
         with self._lock:

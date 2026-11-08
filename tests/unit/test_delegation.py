@@ -131,8 +131,10 @@ class TestControllerPrincipal:
         assert "WebFetch" in got and "mcp__jira__create_issue" in got
         # 소유자 서버 와일드카드(메일, 지라 전체)는 위임 턴에도 가지 않는다
         assert "mcp__jira__*" not in got and "mcp__gmail__*" not in got
-        # 맨 실행 도구는 operator_full 채널에서만 열린다
-        assert not {"Bash", "Edit", "Write", "NotebookEdit"} & set(got)
+        # 위임 턴은 operator_full 이 없는 채널에서도 맨 실행 도구를 받는다
+        # (2026-11-08 test-weather-simul 위임 턴이 셸 없이 끝난 건)
+        assert {"Bash", "Edit", "Write"} <= set(got)
+        assert pol.operator_level(p, is_bot=True) == "operator_full"
         # 봇이어도 원장이 보증한 메시지는 실행 턴이다
         assert tools(pol).lookups_for(p, asker_is_bot=True) == ()
 
