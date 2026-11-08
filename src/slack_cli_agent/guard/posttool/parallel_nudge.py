@@ -44,7 +44,12 @@ MCP_READ = re.compile(
     r"(query|search|get|list|read|fetch|history|replies|permalink|status)", re.IGNORECASE,
 )
 BASH_WRITE = re.compile(
-    r"(restart|\brm\s|\bmv\s|git (commit|push)|-X\s*(POST|PUT|DELETE|PATCH)|>\s*[^&/])"
+    r"(restart|\brm\s|\bmv\s|git (commit|push)|-X\s*(POST|PUT|DELETE|PATCH)|>\s*[^&/]"
+    # Added 2026-11-08 when guard/pretool/serial_read_guard.py started denying
+    # on this judgment: signals, copies, in-place edits and scripted writes
+    # are not lookups.
+    r"|\bkill\s|\bpkill\s|\bcp\s|\bsed\s+-i|\btee\s|\bmkdir\s|\btouch\s|\bchmod\s"
+    r"|\blaunchctl\s|open\([^)]*['\"][wa]b?['\"]|\.write_text\(|\.write\()"
 )
 
 MESSAGE = (

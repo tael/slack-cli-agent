@@ -380,6 +380,14 @@ class TestParallelNudge:
         assert parallel_nudge.is_read("mcp__slack__slack_search", {}) is True
         assert parallel_nudge.is_read("mcp__slack__slack_post_message", {}) is False
         assert parallel_nudge.is_read("Edit", {}) is False
+        # serial_read_guard 가 이 판정으로 거부하므로 신호, 복사, 제자리 수정,
+        # 스크립트 쓰기는 조회로 세지 않는다
+        for command in (
+            "kill -TERM 123", "cp a b", "sed -i '' s/a/b/ f", "echo x | tee out",
+            "python3 - <<'EOF'\nopen(p, 'w').write(s)\nEOF",
+        ):
+            assert parallel_nudge.is_read("Bash", {"command": command}) is False, command
+        assert parallel_nudge.is_read("Bash", {"command": "grep -n x f.py | head; git log -3"}) is True
 
     def test_대화록이_없어도_실패하지_않는다(self, tmp_path: Path) -> None:
         result, proc = run_hook(

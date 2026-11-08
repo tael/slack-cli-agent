@@ -5,4 +5,8 @@ import-free-beyond-stdlib script in the same shape as
 observability/progress_hook.py: engine/claude.py invokes it as
 ``<sys.executable> <module>.HOOK_SCRIPT`` through claude's ``--settings``
 PreToolUse hooks for the ``Bash`` matcher, in that order.
+
+serial_read_guard is the exception on two counts: it runs for every tool
+(matcher ``*``), and it imports parallel_nudge.is_read from the package so
+both hooks agree on what a lookup is.
 """
