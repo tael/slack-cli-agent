@@ -108,6 +108,44 @@ class Test파이프라인_배선:
         self._run(tmp_path, "확인했습니다.\n[[RECIPIENT:ASKER]]", user="UBOT")
         assert rows(tmp_path) == []
 
+    def _run_delegated(self, tmp_path: Path, body: str, user: str = "UBOT"):
+        from slack_cli_agent.auth.principal import Principal, TrustLevel
+        rec = DelegationRecorder(tmp_path / "delegations.json", delegator="guchipachi",
+                                 clock=lambda: NOW)
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body=body)],
+            asker_is_bot=lambda u: u in {"UBOT", "UOTHERBOT"},
+            delegation_recorder=rec,
+            tmp_path=tmp_path,
+        )
+        deps["access"].principal_for = lambda channel, u, ts="": Principal(
+            user_id=u, channel=channel, trust=TrustLevel.GENERAL,
+            is_direct_message=False, is_controller=True, delegated=True,
+        )
+        deps["publisher"]._message_ts = POSTED
+        ctx = make_ctx(user=user)
+        pipeline.handle(ctx)
+        return ctx, deps
+
+    def test_위임받은_턴이_위임자에게_돌려준_답은_reply_로_남는다(self, tmp_path: Path) -> None:
+        # 2026-11-08 김태일 "마메치 턴도 권한이 있어야해". 위임자는 이 줄과
+        # 자기 원장의 원 위임을 함께 보고 회신 글 하나에만 실행 권한을 연다.
+        ctx, deps = self._run_delegated(tmp_path, "끝냈습니다.\n[[RECIPIENT:ASKER]]")
+        got = rows(tmp_path)
+        assert [r["message_ts"] for r in got] == list(POSTED)
+        assert {r["kind"] for r in got} == {"reply"}
+        assert {r["to"] for r in got} == {"UBOT"}
+        assert {r["by"] for r in got} == {"guchipachi"}
+        assert got[0]["origin_ts"] == ctx.ts
+
+    def test_위임받은_턴이_다른_봇에게_넘기면_적지_않는다(self, tmp_path: Path) -> None:
+        self._run_delegated(tmp_path, "부탁합니다.\n[[RECIPIENT:BOT:UOTHERBOT]]")
+        assert rows(tmp_path) == []
+
+    def test_위임받은_턴이_소유자에게_답하면_적지_않는다(self, tmp_path: Path) -> None:
+        self._run_delegated(tmp_path, "보고드립니다.\n[[RECIPIENT:OWNER]]")
+        assert rows(tmp_path) == []
+
     def test_원장_쓰기_실패는_답을_실패로_바꾸지_않는다(self, tmp_path: Path) -> None:
         blocker = tmp_path / "blocker"
         blocker.write_text("x", encoding="utf-8")
