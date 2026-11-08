@@ -30,7 +30,7 @@ from slack_cli_agent.engine.base import Engine, EngineRequest
 from slack_cli_agent.engine.claude import ClaudeEngine
 from slack_cli_agent.engine.codex import CodexEngine
 from slack_cli_agent.engine.gemini import GeminiEngine
-from slack_cli_agent.engine.tool_selection import ToolSelection
+from slack_cli_agent.engine.tool_selection import ToolAccess, ToolSelection
 
 _ENGINES: dict[str, Callable[[Profile, RuntimeSettings], Engine]] = {
     "claude": ClaudeEngine,
@@ -109,7 +109,12 @@ def _command(engine_type: str, trust: TrustLevel, workdir: Path) -> str:
         prompt="프롬프트", system_prompt="지침",
         session_id="11111111-1111-1111-1111-111111111111", resume=False,
         model="m", effort="medium", workdir=workdir,
-        tools=ToolSelection.allow(["Read", "Grep"]),
+        # 서버 이름이 허용목록에 있어야 claude 가 붙인다 (S2 1단계). 조회로
+        # 묶어 두어 읽기 턴 성격은 그대로다.
+        tools=ToolSelection(
+            access=ToolAccess.ALLOWLIST, names=("Read", "Grep", "mcp__mermaid__render"),
+            lookups=frozenset({"mcp__mermaid__render"}),
+        ),
         trust_level=trust,
     )
     engine.prepare(request)

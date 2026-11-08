@@ -35,6 +35,7 @@ link and writes go to the plain path.
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
 import json
 import logging
 import shlex
@@ -75,6 +76,7 @@ from .capability import (
     ToolRestriction,
 )
 from .claude_settings import load_merged_settings, merge_settings
+from .footprint import PayloadFootprint
 from .tool_selection import ToolAccess
 
 # Same hint list as the original bot.py's usage_limit_message().
@@ -221,6 +223,49 @@ def _deny_ledger_writes(settings: dict[str, Any], *ledgers: Path | None) -> dict
     deny = list(permissions.get("deny") or [])
     permissions["deny"] = deny + [entry for entry in extra if entry not in deny]
     return {**settings, "permissions": permissions}
+
+
+def _named_mcp_servers(names: Iterable[str], servers: Iterable[str]) -> set[str]:
+    """허용목록 이름이 가리키는 서버. 서버 자리에 * 가 든 이름(mcp__*__*,
+    mcp__*)은 패턴으로 읽어 맞는 서버를 모두 넣는다. 와일드카드 허용을 쓰던
+    프로필이 서버를 잃지 않게 하려는 것이다 (S2 1단계)."""
+    server_list = list(servers)
+    named: set[str] = set()
+    for name in names:
+        if name in server_list:
+            named.add(name)
+            continue
+        if not name.startswith(MCP_PREFIX):
+            continue
+        rest = name[len(MCP_PREFIX):]
+        server_part = rest.split("__", 1)[0]
+        if "*" in server_part or "?" in server_part:
+            named.update(s for s in server_list if fnmatch.fnmatchcase(s, server_part))
+        else:
+            named.update(s for s in server_list if rest.startswith(f"{s}__"))
+    return named
+
+
+def _attached_mcp_servers(
+    request: EngineRequest, servers: Iterable[str]
+) -> list[str]:
+    """이 턴에 --mcp-config 로 붙일 서버 이름.
+
+    1단계: 허용목록(ALLOWLIST) 턴은 허용 이름이 하나도 없는 서버를 붙이지
+    않는다. 붙여 봐야 --disallowedTools 로 닫히는 서버라 동작은 같고, 도구
+    정의만 컨텍스트에서 빠진다. 도구 금지(FORBIDDEN) 턴은 어떤 서버도 못 쓰니
+    아무것도 붙이지 않는다. 제한 없는(UNRESTRICTED) 턴은 그대로 다 붙인다.
+    2단계: request.mcp_selection 이 있으면 그 안의 서버만 남긴다.
+    """
+    attached = list(servers)
+    if request.tools.access is ToolAccess.FORBIDDEN:
+        return []
+    if request.tools.access is ToolAccess.ALLOWLIST:
+        named = _named_mcp_servers(request.tools.names, attached)
+        attached = [s for s in attached if s in named]
+    if request.mcp_selection is not None:
+        attached = [s for s in attached if s in request.mcp_selection]
+    return attached
 
 
 def _open_mcp_servers(names: tuple[str, ...], servers: Iterable[str]) -> set[str]:
@@ -467,6 +512,15 @@ class ClaudeEngine(Engine):
             restriction = ToolRestriction.SERVER_SCOPED_ALLOWLIST
         return dataclasses.replace(self.capabilities, tool_restriction=restriction)
 
+    def footprint_for(self, request: EngineRequest) -> PayloadFootprint:
+        # 붙인 MCP 서버 수를 감사 payload 기록에 남긴다. 서버 정의를 풀지
+        # 않고 이름만 세므로 자격증명이 없어도 실패하지 않는다.
+        base = super().footprint_for(request)
+        names = [name for name, server in self.profile.mcp_servers.items() if not server.disabled]
+        return dataclasses.replace(
+            base, mcp_servers_attached=len(_attached_mcp_servers(request, names))
+        )
+
     def prepare(self, request: EngineRequest) -> None:
         self._ensure_skill_discovery_link()
 
@@ -521,7 +575,12 @@ class ClaudeEngine(Engine):
             is_owner=acts_for_owner(request),
             turn_context=request.turn_context,
         )
+        attached = set(_attached_mcp_servers(request, mcp_servers))
+        # 서버 자리 와일드카드 이름은 붙인 서버 기준으로 다시 펴야 하므로
+        # 거부 목록 계산은 붙이기 전 전체 목록으로 한다. 붙이지 않은 서버의
+        # 거부 패턴은 남아도 해가 없다.
         cmd += self._tool_args(request, mcp_servers)
+        mcp_servers = {name: entry for name, entry in mcp_servers.items() if name in attached}
         for path in request.readable_dirs:
             cmd += ["--add-dir", str(path)]
         skills_dir = self.profile.paths.skills
