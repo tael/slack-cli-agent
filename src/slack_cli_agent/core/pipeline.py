@@ -928,7 +928,7 @@ class RequestPipeline:
             watch_out_dir=str(self._watch_results.result_dir),
             airflow_admin=bool(ctx.user) and ctx.user in airflow_admins(config),
             operator=operator,
-            operator_full=operator and bool(config and config.operator_full),
+            operator_full=principal.delegated or (operator and bool(config and config.operator_full)),
             advisor_enabled=advisor_enabled(config),
             turn_tier=tier,
             turn_reads_only=reach[0],

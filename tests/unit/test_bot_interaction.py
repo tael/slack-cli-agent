@@ -507,6 +507,27 @@ class TestC19_배선_봇왕복_한도:
         assert listener.from_app_mention(event) is not None  # 1회차 허용
         assert listener.from_app_mention(event) is None  # 한도 초과 → 침묵
 
+    def test_한도를_처음_넘을_때_한_번만_어드민_알림을_보낸다(self) -> None:
+        """2026-11-08 김태일 지시 : 핑퐁 한도에서 멈추면 어드민 채널에 알린다."""
+        limiter = PeerExchangeLimiter(limit=1)
+        sent: list[tuple[str, int]] = []
+        listener = EventListener(
+            _ThreadClient(),
+            ChannelRegistry(Path("/nonexistent.json")),
+            ResponseGate(),
+            identity=fake_identity(),
+            peer_limiter=limiter,
+            peer_limit_notice=lambda ev, lim: sent.append((ev["ts"], lim)),
+        )
+        event = {
+            "channel": "C1", "bot_id": "B_OTHER", "ts": "1.0", "thread_ts": "1.0",
+            "text": "<@U_BOT> 다시 봐줘",
+        }
+        assert listener.from_app_mention(event) is not None
+        assert listener.from_app_mention(event) is None
+        assert listener.from_app_mention(event) is None
+        assert sent == [("1.0", 1)]  # 두 번째 차단에는 다시 보내지 않는다
+
     def test_사람이_말하면_봇왕복_한도가_리셋된다(self) -> None:
         """C18 — 리셋이 배선 안 되면 한도 도달 뒤 영구 침묵한다."""
         limiter = PeerExchangeLimiter(limit=1)

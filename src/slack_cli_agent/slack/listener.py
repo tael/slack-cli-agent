@@ -71,6 +71,10 @@ class EventListener:
         # Writes the peer-cap and skip rows (G7, mametchi peer_turn_limit,
         # peer_skipped, gate_skipped). None records nothing.
         audit: Callable[..., None] | None = None,
+        # Called once per run of denials when a thread first goes past the
+        # peer cap (2026-11-08 김태일 지시 : 봇끼리 핑퐁이 한도에 걸려 멈추면
+        # 어드민 채널에 알린다). Gets the event and the cap. None posts nothing.
+        peer_limit_notice: Callable[[Mapping[str, Any], int], None] | None = None,
     ) -> None:
         self._client = client
         self._channels = channel_registry
@@ -78,6 +82,7 @@ class EventListener:
         self._awaiting = awaiting
         self._peer_limiter = peer_limiter
         self._audit = audit or (lambda *_a, **_k: None)
+        self._peer_limit_notice = peer_limit_notice
         # Self-message detection and mention matching must use the
         # same identity source — holding it separately would let
         # wiring pass the value to only one and still pass unit tests.
@@ -178,6 +183,15 @@ class EventListener:
                     IncidentKind.PEER_TURN_LIMIT.value, channel=event.get("channel") or "",
                     thread_ts=self._thread_key(event), message_ts=event.get("ts") or "",
                 )
+                limiter = self._peer_limiter
+                if (
+                    self._peer_limit_notice is not None
+                    and limiter.count(self._thread_key(event)) == limiter.limit + 1
+                ):
+                    try:
+                        self._peer_limit_notice(event, limiter.limit)
+                    except Exception:
+                        log.exception("봇끼리 한도 알림을 보내지 못했다 : %s", event.get("ts"))
                 return None
         elif self._peer_limiter is not None:
             # A human named this bot: the thread's bot-exchange count starts

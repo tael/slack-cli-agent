@@ -258,6 +258,14 @@ class AccessPolicy:
             config, principal.user_id, is_bot=is_bot,
         ):
             return ""
+        # A delegated turn is work the owner handed over through a controller
+        # bot in the owner's own turn, so it runs with the shell regardless of
+        # the channel's operator_full. 2026-11-08 test-weather-simul : the
+        # ledger vouched for 12:39 마메치 위임 (tier=delegated) but the channel
+        # had no operator_full, bare Bash was held back and the turn answered
+        # "don't ask mode" twice. 김태일 지시로 위임 턴은 셸을 연다.
+        if principal.delegated:
+            return OPERATOR_FULL
         return OPERATOR_FULL if config and config.operator_full else OPERATOR
 
     def _is_channel_trusted(self, channel: str, user: str) -> bool:
