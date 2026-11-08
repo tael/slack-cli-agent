@@ -120,9 +120,10 @@ def _result_text(block: dict[str, Any]) -> str:
     return ""
 
 
-def responses_since_prompt(records: list[dict[str, Any]]) -> list[Response]:
+def responses_since_prompt(records: list[dict[str, Any]], marker: str = MARKER) -> list[Response]:
     """Group this request's tool-calling assistant lines by message id, and
-    mark the uses this guard denied (their tool_result starts with MARKER)."""
+    mark the uses a guard denied (their tool_result starts with ``marker``,
+    this guard's MARKER unless another guard passes its own)."""
     responses: list[Response] = []
     by_id: dict[str, Use] = {}
     for record in records:
@@ -140,7 +141,7 @@ def responses_since_prompt(records: list[dict[str, Any]]) -> list[Response]:
                 if not (isinstance(block, dict) and block.get("type") == "tool_result"):
                     continue
                 use = by_id.get(str(block.get("tool_use_id")))
-                if use is not None and _result_text(block).lstrip().startswith(MARKER):
+                if use is not None and _result_text(block).lstrip().startswith(marker):
                     use.denied = True
             continue
         if kind != "assistant" or not isinstance(content, list):

@@ -51,6 +51,7 @@ from ..guard import finish_hook
 from ..guard.posttool import parallel_nudge
 from ..guard.pretool import (
     install_guard,
+    repeat_guard,
     restart_guard,
     scan_guard,
     serial_read_guard,
@@ -296,6 +297,9 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
                 "matcher": "*",
                 "hooks": [
                     {"type": "command", "command": _hook_command(serial_read_guard.HOOK_SCRIPT)},
+                    # Denies a call after the previous responses each made an
+                    # essentially-same call (guard/pretool/repeat_guard).
+                    {"type": "command", "command": _hook_command(repeat_guard.HOOK_SCRIPT)},
                 ],
             },
         ],
@@ -322,7 +326,8 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
 def guard_hook_settings() -> dict[str, Any]:
     """The settings fragment registering the Bash PreToolUse guards
     (turn_budget, restart_guard, install_guard, scan_guard -- guard/pretool/),
-    the all-tools serial-read guard (guard/pretool/serial_read_guard.py),
+    the all-tools serial-read and repeat guards (guard/pretool/serial_read_guard.py,
+    guard/pretool/repeat_guard.py),
     the parallel-nudge PostToolUse hook (guard/posttool/parallel_nudge.py)
     and the finish-review Stop hook (guard/finish_hook.py) as engine built-ins.
 
