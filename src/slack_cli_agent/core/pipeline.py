@@ -60,7 +60,7 @@ from ..reliability.restart import TURN_ID_ENV
 from ..reliability.watchjobs import WatchJobPort
 from ..reliability.watchresult import WatchResultReader
 from ..session.awaiting import AwaitingPort
-from ..session.manager import SessionDecision, SessionManager
+from ..session.manager import THRESHOLD_RESET_REASON, SessionDecision, SessionManager
 from ..session.ports import SessionKey, SessionScope
 from ..slack.gate import ResponseGate
 from ..slack.generated_images import (
@@ -76,6 +76,7 @@ from ..slack.transcribe import TranscribeFn, transcribe_files
 from ..slack.transcript import CurrentMessage
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
+from .mcp_routing import encode_servers, select_mcp_servers
 from .markers import (
     missing_recipient_prompt,
     pick_recipient_tag,
@@ -294,7 +295,10 @@ class RequestPipeline:
         # Writes the ts of an owner-turn reply addressed to a bot into the
         # delegation ledger that bot reads (A8). None: this bot never delegates.
         delegation_recorder: DelegationRecorder | None = None,
+        # S2: settings.mcp_routing. None 이면 MCP 서버를 고르지 않는다 (전부).
+        mcp_routing: Mapping[str, Any] | None = None,
     ) -> None:
+        self._mcp_routing = mcp_routing
         self._access = access_policy
         self._transcript = transcript_builder
         self._composer = prompt_composer
@@ -523,7 +527,15 @@ class RequestPipeline:
         request_id = self._new_request_id()
 
         prompt = self._build_prompt(ctx, scope, decision)
+        if decision.reset_reason == THRESHOLD_RESET_REASON:
+            # 새 세션이 스레드 기록을 처음부터 다시 읽었다(_build_prompt 의
+            # 전체 재구성). 모델이 이어 가는 대화임을 알게 한 줄 붙인다.
+            prompt = f"{_THRESHOLD_RESET_NOTE}\n\n{prompt}"
         tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
+        # 재개 턴은 그 세션이 앞서 붙인 서버를 유지한다 (core/mcp_routing.py).
+        mcp_selection = select_mcp_servers(
+            self._mcp_routing, ctx.text, decision.mcp_servers if decision.resume else "",
+        )
 
         progress_log = (
             self._progress.log_path_for(config, ctx.channel, ctx.ts)
@@ -549,6 +561,7 @@ class RequestPipeline:
             progress_log=progress_log,
             request_id=request_id,
             turn_tier=tier,
+            mcp_selection=mcp_selection,
             # Opaque to the engine layer: forwarded only so an MCP server whose
             # turn_env names a `channel` key gets this turn's channel as env
             # (mametchi's per-turn MAMETCHI_POST_CHANNEL render guard), and one
@@ -581,7 +594,8 @@ class RequestPipeline:
         # Counted rather than derived: the reset is the only trace a broken
         # resume leaves, and without it nothing can say how often context is
         # lost (sca-er9n, bot.py:5142).
-        context_reset = False
+        context_reset = decision.reset_reason == THRESHOLD_RESET_REASON
+        context_reset_reason = decision.reset_reason if context_reset else ""
         # The run_id of the attempt before a session reset, kept so its
         # background work stays watched after the retry mints a new name (C14).
         earlier_run_id = ""
@@ -596,6 +610,7 @@ class RequestPipeline:
             ):
                 decision = self._sessions.reset(key, engine=self._engine.name, tier=tier)
                 context_reset = True
+                context_reset_reason = "retry"
                 prompt = self._build_prompt(ctx, scope, decision)
                 # A fresh name: the first attempt may already have launched the
                 # background command, and reusing the name puts two processes
@@ -639,7 +654,7 @@ class RequestPipeline:
                 model_actual=response.model_actual, model_usage=_turn_model_usage([response]),
                 failure_detail=response.failure_detail,
                 truncated=_truncated(response),
-                context_reset=context_reset, tier=tier,
+                context_reset=context_reset, context_reset_reason=context_reset_reason, tier=tier,
             )
             return HandleOutcome(ok=False, failure=failure)
 
@@ -651,6 +666,14 @@ class RequestPipeline:
             decision = replace(decision, session_id=response.session_id)
 
         self._sessions.touch(key, ctx.ts)
+        try:
+            self._sessions.record_turn(
+                key, decision.session_id,
+                mcp_servers=encode_servers(mcp_selection),
+                context_tokens=_per_call_context_tokens(response),
+            )
+        except Exception:  # noqa: BLE001 -- 기록 실패가 답을 막으면 안 된다
+            log.warning("세션 컨텍스트 기록 실패", exc_info=True)
 
         if is_silent(response.body):
             # A silent answer still owes the picture the turn made; mametchi
@@ -659,7 +682,7 @@ class RequestPipeline:
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
                      model_usage=_turn_model_usage([response]),
-                     truncated=_truncated(response), context_reset=context_reset, tier=tier)
+                     truncated=_truncated(response), context_reset=context_reset, context_reset_reason=context_reset_reason, tier=tier)
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
 
@@ -698,7 +721,7 @@ class RequestPipeline:
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                 turns=response.turns, model_actual=response.model_actual,
                 model_usage=_turn_model_usage(turn_calls),
-                truncated=_truncated(response), context_reset=context_reset, tier=tier,
+                truncated=_truncated(response), context_reset=context_reset, context_reset_reason=context_reset_reason, tier=tier,
             )
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
@@ -724,7 +747,7 @@ class RequestPipeline:
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                 turns=response.turns, model_actual=response.model_actual,
                 model_usage=_turn_model_usage(turn_calls),
-                truncated=_truncated(response), context_reset=context_reset, tier=tier,
+                truncated=_truncated(response), context_reset=context_reset, context_reset_reason=context_reset_reason, tier=tier,
             )
             return HandleOutcome(ok=True)
         posted_ts = ""
@@ -760,7 +783,7 @@ class RequestPipeline:
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
                      model_usage=_turn_model_usage(turn_calls),
-                     truncated=_truncated(response), context_reset=context_reset, tier=tier,
+                     truncated=_truncated(response), context_reset=context_reset, context_reset_reason=context_reset_reason, tier=tier,
                      # The format review rewrites a message from this body: on a
                      # rich channel Slack only hands back the notification
                      # preview, and without the stored body it must not
@@ -1497,12 +1520,15 @@ class RequestPipeline:
         # in a row marks when the count started -- a window with no key at all
         # is "before this was instrumented", not "no resets".
         context_reset: bool = False,
+        context_reset_reason: str = "",
         answer: _AnswerFields | None = None,
         # The tier this turn ran as (A12). Left out when unknown, the same
         # way model_actual is, so a missing key never reads as "read".
         tier: str = "",
     ) -> None:
         extra: dict[str, Any] = {CONTEXT_RESET_RAW_KEY: context_reset}
+        if context_reset and context_reset_reason:
+            extra["context_reset_reason"] = context_reset_reason
         if tier:
             extra["tier"] = tier
         if answer is not None:
@@ -1628,6 +1654,30 @@ def _turn_model_usage(turn_calls: Sequence[EngineResponse]) -> _TurnModelUsage |
         if response.model_usage:
             return _TurnModelUsage(response.model_usage, response.session_id or "")
     return None
+
+
+_THRESHOLD_RESET_NOTE = (
+    "[이전 세션의 컨텍스트가 커져 새 세션으로 이어 갑니다. 아래 스레드 기록이 "
+    "지금까지의 대화이고, 앞선 답도 그 안에 있습니다.]"
+)
+
+
+def _per_call_context_tokens(response: EngineResponse) -> int:
+    """이 턴의 호출당 컨텍스트 토큰 (input + cache_read + cache_creation).
+
+    응답 usage 는 턴 안 모든 호출의 합이라 호출 수로 나눈다. 뒤 호출일수록
+    커지므로 마지막 호출보다 조금 작게 나오고, 리셋은 그만큼 늦게 걸린다.
+    """
+    usage = response.usage
+    if usage is None:
+        return 0
+    total = (
+        int(usage.input_tokens or 0)
+        + int(usage.cache_read_tokens or 0)
+        + int(usage.cache_creation_tokens or 0)
+    )
+    calls = response.turns if isinstance(response.turns, int) and response.turns > 0 else 1
+    return total // calls
 
 
 def _truncated(response: EngineResponse) -> bool:

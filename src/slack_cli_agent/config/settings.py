@@ -241,6 +241,17 @@ class RuntimeSettings:
     # the tag (prompt/sections.py RECIPIENT_RULE). A profile can set it false.
     require_recipient: bool = True
 
+    # S2 MCP 2단계 라우팅. 요청 문장으로 이 턴에 붙일 MCP 서버 묶음을 고른다.
+    # {"always": [...], "groups": {이름: {"when": [키워드 또는 "re:정규식"],
+    # "servers": [...]}}, "fallback": "all"}. 없으면 지금처럼 전부 붙인다.
+    # 형식은 core/mcp_routing.py 가 읽는다.
+    mcp_routing: Mapping[str, Any] | None = field(default=None, hash=False, compare=False)
+
+    # S2 컨텍스트 임계 리셋. 세션 마지막 턴의 호출당 컨텍스트 토큰
+    # (input + cache_read + cache_creation) 이 이 값 이상이면 다음 요청은 새
+    # 세션으로 시작하고 스레드 기록을 다시 읽어 이어 간다. 0 이하는 끈다.
+    context_reset_tokens: int = 150000
+
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """Overrides only the fields present in `values`; unknown keys are
         ignored. Set-typed fields get converted, since JSON has no set
