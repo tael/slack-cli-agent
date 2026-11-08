@@ -307,21 +307,35 @@ class PeerExchangeLimiter:
     with the cap, not after it (ownership.md's "B5 에 C18 포함" note).
     """
 
-    def __init__(self, limit: int = 12) -> None:
+    def __init__(
+        self, limit: int = 12, limit_for: "Callable[[str], int | None] | None" = None,
+    ) -> None:
         self._limit = limit
+        #: Per-channel override (channels.json peer_turn_limit). None keeps
+        #: `limit`, 0 switches the cap off for that channel.
+        self._limit_for = limit_for
         self._counts: dict[str, int] = {}
         self._lock = threading.Lock()
 
-    def allowed(self, thread_ts: str) -> bool:
+    def allowed(self, thread_ts: str, channel: str = "") -> bool:
         """One more bot turn arrived in this thread; say whether it may run.
 
         Counts this call before comparing (bot.py increments first), so the
         call that pushes the count past the limit is itself the one denied.
+        A channel whose peer_turn_limit is 0 is never capped.
         """
+        limit = self._limit
+        if channel and self._limit_for is not None:
+            try:
+                override = self._limit_for(channel)
+            except Exception:
+                override = None
+            if override is not None:
+                limit = override
         with self._lock:
             count = self._counts.get(thread_ts, 0) + 1
             self._counts[thread_ts] = count
-            return count <= self._limit
+            return limit == 0 or count <= limit
 
     @property
     def limit(self) -> int:

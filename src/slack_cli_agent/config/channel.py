@@ -67,7 +67,7 @@ KNOWN_KEYS = frozenset(
         "session_scope",
         "disclose_mechanism", "full_authority", "operator_full", "skills",
         "light_context", "rich", "chat",
-        "progress", "bot_mentions", "code_first",
+        "progress", "bot_mentions", "code_first", "peer_turn_limit",
         "user_tools", "tool_enforcement",
         "operators", "airflow_admins", "extra_tools",
     }
@@ -129,6 +129,10 @@ class ChannelConfig:
     """Per-user extra tools. The org-specific value (an ops script, say) lives
     in the channel file, not in the installed package (sca-ww4)."""
     answer_unaddressed: bool = False
+    peer_turn_limit: int | None = None
+    """Bot-to-bot exchange cap for this channel's threads. None keeps the
+    process default, 0 turns the cap off (2026-11-08 김태일 "무제한턴 방지를
+    끄는 옵션을 채널별로 두어야겠네")."""
     answer_top_level: bool = False
     """Answers a mention-less *top-level* message (not a thread reply) in this
     channel. `answer_unaddressed` only releases thread replies; a top-level
@@ -240,6 +244,7 @@ class ChannelConfig:
             },
             answer_unaddressed=bool(data.get("answer_unaddressed", False)),
             answer_top_level=bool(data.get("answer_top_level", False)),
+            peer_turn_limit=_peer_turn_limit(data.get("peer_turn_limit")),
             flat_reply=bool(data.get("flat_reply", False)),
             session_scope=str(data.get("session_scope") or "thread"),
             disclose_mechanism=bool(data.get("disclose_mechanism", False)),
@@ -609,3 +614,14 @@ def channel_slug(channel: str, config: ChannelConfig | None) -> str:
     if config is None:
         return channel
     return config.knowledge or config.name or channel
+
+
+def _peer_turn_limit(value: object) -> int | None:
+    """channels.json peer_turn_limit : 없으면 None (기본값), 0 은 한도 끔, 양수는 그 값."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
