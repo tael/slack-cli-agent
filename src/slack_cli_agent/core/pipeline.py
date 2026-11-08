@@ -1272,7 +1272,9 @@ class RequestPipeline:
                 self._audit.record(
                     IncidentKind.DELEGATION_RECORDED.value, channel=ctx.channel,
                     thread_ts=ctx.thread_ts, message_ts=ctx.ts, to=recipient.bot_id,
-                    posted=list(posted), kind="reply",
+                    # AuditLog.record 의 첫 인자 이름이 kind 라 같은 이름을 넘기면
+                    # TypeError 로 요청 전체가 실패로 남았다 (2026-11-08 16:10 실측).
+                    posted=list(posted), delegation_kind="reply",
                 )
             return
         if not posted or principal.trust is not TrustLevel.OWNER:
