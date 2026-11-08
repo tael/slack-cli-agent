@@ -3014,6 +3014,71 @@ class Test프롬프트캐시배치:
         # 감시 안내 본문은 시스템 프롬프트에 남는다.
         assert len(after) < len(before)
 
+    def test_같은_채널_두_요청은_고정_섹션_전부가_바이트_같은_앞부분이다(
+        self, tmp_path: Path,
+    ) -> None:
+        """S4 2회차. 스레드, 말 건 사람, 첨부, 요청 낱말로 고른 지식만 다른 같은
+        채널의 두 요청은 고정 섹션 전부(TurnTier 까지)를 바이트 그대로 공유한다.
+        파이프라인처럼 request_header=True 로 조립한다."""
+        from slack_cli_agent.prompt.composer import SystemPromptComposer
+        from slack_cli_agent.prompt.sections import TurnTierSection
+
+        profile = write_profile(tmp_path)
+        knowledge = profile.paths.knowledge
+        knowledge.mkdir(parents=True, exist_ok=True)
+        (knowledge / "_common.md").write_text("공통 지식 원문", encoding="utf-8")
+        (knowledge / "_airflow.md").write_text(
+            "<!-- when: 에어플로우 -->\n에어플로우 지식 원문", encoding="utf-8",
+        )
+        (knowledge / "_metabase.md").write_text(
+            "<!-- when: 메타베이스 -->\n메타베이스 지식 원문", encoding="utf-8",
+        )
+        (knowledge / "general.md").write_text("채널 지식 원문", encoding="utf-8")
+        app = Application.from_profile(profile, client=FakeSlackClient())
+        composer = app._composer()
+
+        def ctx(user: str, **kw: Any) -> CompositionContext:
+            return CompositionContext(
+                principal=Principal(
+                    user_id=user, channel="C111", trust=TrustLevel.GENERAL,
+                    is_direct_message=False,
+                ),
+                channel="C111", channel_slug="general", turn_tier="read",
+                watch_out_dir="/tmp/watch-out", request_header=True, **kw,
+            )
+
+        ctx_a = ctx(
+            "U1", prompt="에어플로우 DAG 봐줘", thread_ts="1762500000.000100",
+            asker_name="가", asker_id="U1", watch_run_id="run-aaaa",
+            files=({"name": "a.png", "mimetype": "image/png", "local_path": "/tmp/a.png"},),
+        )
+        ctx_b = ctx(
+            "U9", prompt="메타베이스 카드 봐줘", thread_ts="1762599999.000900",
+            asker_name="다", asker_id="U9", watch_run_id="run-bbbb",
+        )
+        a = composer.compose(ctx_a)
+        b = composer.compose(ctx_b)
+        assert a != b
+        assert "에어플로우 지식 원문" in a and "메타베이스 지식 원문" in b
+
+        sections = app._prompt_sections()
+        fixed_end = next(
+            i for i, s in enumerate(sections) if isinstance(s, TurnTierSection)
+        ) + 1
+        fixed_only = SystemPromptComposer(
+            composer._library, composer._knowledge, sections[:fixed_end],
+        )
+        fixed_a = fixed_only.compose(ctx_a)
+        assert fixed_a == fixed_only.compose(ctx_b)
+        assert a.startswith(fixed_a) and b.startswith(fixed_a)
+        assert "공통 지식 원문" in fixed_a and "채널 지식 원문" in fixed_a
+        assert "[이 턴 권한" in fixed_a
+        for value in (
+            "1762500000", "run-aaaa", "a.png", "<@U1>", "에어플로우 지식 원문",
+            "메타베이스 지식 원문",
+        ):
+            assert value not in fixed_a
+
     def test_요청별_섹션이_고정_섹션_뒤에_온다(self, tmp_path: Path) -> None:
         from slack_cli_agent.prompt.sections import (
             AskerSection,
