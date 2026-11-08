@@ -9,11 +9,13 @@ based on the response.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
+from ..auth.principal import TrustLevel
 from ..config.channel import channel_is_rich
 from ..config.settings import RuntimeSettings
 from ..engine.base import MODEL_USAGE_KEY, EngineResponse, engine_usage_audit_fields
@@ -54,6 +56,55 @@ class WatchReportPublisher(Protocol):
     ) -> str | None: ...
 
 _TERMINAL = (WatchOutcome.SUCCEEDED, WatchOutcome.FAILED)
+
+
+# A watch condition can name more than its own thread as the report target:
+# "보고 to C01EWFYL077 thread and test-weather-simul(C0CFYL69JDS) 착수 글
+# 스레드 1794105022.126019". The check turn is read-only, so it had no post
+# tool for the second thread and wrote "이 턴 권한 밖이라 하지 못했습니다"
+# (2026-11-08 watch job 35). The runner posts the same report there instead:
+# the model never gets a post tool, and the target is fixed at registration.
+_CHANNEL_ID_RE = re.compile(r"(?<![A-Z0-9])([CG][A-Z0-9]{8,12})(?![A-Z0-9])")
+_TS_RE = re.compile(r"(?<![0-9.])(\d{10}\.\d{6})(?![0-9])")
+#: How far after a channel ID its thread ts may sit and still belong to it.
+_PAIR_SPAN = 120
+
+
+def extra_report_targets(job: WatchJob) -> list[tuple[str, str]]:
+    """Other (channel, thread_ts) pairs the condition names as report targets.
+
+    Owner watches only: a participant's watch must not reach a thread the
+    participant could not post in themselves. A channel ID counts only with a
+    thread ts after it and before the next channel ID, so a bare mention of a
+    channel never turns into a top-level post.
+    """
+    if job.trust is not TrustLevel.OWNER:
+        return []
+    text = job.condition
+    ids = list(_CHANNEL_ID_RE.finditer(text))
+    found: list[tuple[str, str]] = []
+    for i, m in enumerate(ids):
+        end = ids[i + 1].start() if i + 1 < len(ids) else len(text)
+        end = min(end, m.end() + _PAIR_SPAN)
+        ts = _TS_RE.search(text, m.end(), end)
+        if ts is None:
+            continue
+        pair = (m.group(1), ts.group(1))
+        if pair == (job.channel, job.thread_ts) or pair in found:
+            continue
+        found.append(pair)
+    return found
+
+
+def extra_targets_note(targets: list[tuple[str, str]]) -> str:
+    """Tells the check turn the runner posts to the other threads itself."""
+    if not targets:
+        return ""
+    where = ", ".join(f"{c} 스레드 {t}" for c, t in targets)
+    return (
+        f"\n\n이 보고는 실행기가 이 스레드와 함께 {where} 에도 같은 내용으로 올린다. "
+        "다른 스레드 게시를 하지 못했다거나 권한 밖이라는 말은 쓰지 않는다."
+    )
 
 
 @runtime_checkable
@@ -438,6 +489,18 @@ class WatchJobChecker:
             # another engine call on work already finished. The report is kept
             # so the next round retries only the send (sca-dlv).
             self._queue.hold_report(job.id, body)
+
+        for channel, thread_ts in extra_report_targets(job):
+            # No hold here: the held-report table keys on the job, and a retry
+            # would post to the job's own thread again. A failure goes to the
+            # log and the audit so it is not silent.
+            ok = self._post_report(job.id, channel, thread_ts, body)
+            # A second watch_finished row, told apart by extra_target, so the
+            # audit needs no new kind.
+            self._record(
+                WATCH_FINISHED_KIND, job, outcome=outcome.name,
+                extra_target=f"{channel}/{thread_ts}", posted=ok,
+            )
 
         self._queue.mark_done(job.id)
         self._settle_mark(job, failed=False)
