@@ -652,11 +652,13 @@ class Application:
         # (speaker name, people, channel/thread_ts, watch run id, attachments)
         # go last. The prompt cache reuses the longest identical prefix, so a
         # thread_ts in the middle used to make every new thread rewrite the
-        # rest of the prompt (S4, 2026-11-08). AirflowSection still follows
+        # rest of the prompt (S4, 2026-11-08). Knowledge is split the same
+        # way: documents every turn carries go early, the ones a request's
+        # `when:` words picked go after TurnTier. AirflowSection still follows
         # AuthoritySection, and SilenceRuleSection stays the closing note.
         sections: list[PromptSection] = [
             PersonaSection(),
-            KnowledgeSection(),
+            KnowledgeSection(part="fixed"),
             RosterSection(self._profile.roster_file),
             ChannelModeSection(mode_prompt_names(), default_prompt=DEFAULT_PROMPT),
             OwnerNoteSection(),
@@ -670,6 +672,9 @@ class Application:
             AdvisorSection(),
             AskSection(),
             TurnTierSection(),
+            # Documents picked by this request's `when:` words, after the
+            # fixed sections so they do not split the shared prefix (S4).
+            KnowledgeSection(part="selected"),
             AskerSection(peer_bot_ids=self._profile.controller_user_ids),
             PresentPeopleSection(),
             ThreadCoordsSection(),

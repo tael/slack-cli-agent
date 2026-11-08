@@ -222,6 +222,16 @@ class PersonaSection(PromptSection):
 
 
 class KnowledgeSection(BudgetAwareSection):
+    """Knowledge documents. `part` is a KnowledgeLoader.knowledge_selection
+    part: "all" (the default, every document in one place), "fixed" (the ones
+    that load on every turn) or "selected" (the ones this request's `when:`
+    words picked, plus the list of the ones they did not). A profile that
+    registers a "fixed" one early and a "selected" one after its fixed
+    sections keeps the shared prefix identical for the prompt cache (S4)."""
+
+    def __init__(self, part: str = "all") -> None:
+        self._part = part
+
     def applies_to(self, ctx: CompositionContext) -> bool:
         return True
 
@@ -233,7 +243,7 @@ class KnowledgeSection(BudgetAwareSection):
     def render_within(self, ctx: CompositionContext, budget: int) -> BudgetedRender:
         for_loader = None if budget < 0 else max(0, budget - len(self._SEPARATOR.encode("utf-8")))
         text, omitted = ctx._knowledge_or_raise().knowledge_selection(
-            ctx.channel_slug, ctx.prompt, budget=for_loader,
+            ctx.channel_slug, ctx.prompt, budget=for_loader, part=self._part,
         )
         return BudgetedRender(
             text=f"{text}{self._SEPARATOR}" if text else "",
