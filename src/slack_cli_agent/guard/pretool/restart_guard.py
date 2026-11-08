@@ -17,9 +17,20 @@ before it runs, with the message pointing at the marker path instead.
 
 What denies:
 - ``launchctl`` with a mutating subcommand (kickstart / stop / bootout /
-  bootstrap / unload / load / remove / kill / disable / enable). Read-only
+  bootstrap / unload / load / remove / kill / disable / enable) aimed at the
+  bot's *own* services (RESTART_GUARD_SERVICES), or at a target the guard
+  cannot resolve (a shell variable in the service name). Read-only
   ``launchctl list|print|blame|dumpstate`` is left alone -- a turn asking
   "is the worker up?" is fine; a turn kicking it is not.
+
+  2026-11-08: the guard used to deny every mutating launchctl call whatever
+  the target. deagent's owner told it to register its own hourly
+  autoupdate job (local.deagent.autoupdate); the guard denied
+  ``launchctl bootstrap`` of that new job three turns running, and the bot
+  handed the command back to the owner each time. Registering or kicking a
+  job that is not the running bot cannot deadlock the turn, so only the
+  bot's own service labels are denied now. With no service list configured
+  the guard keeps the old deny-all behaviour.
 - a bot restart/apply script (``apply-restart.sh``, ``restart.sh``, or
   ``apply.sh`` -- mametchi's turn-external restart scripts).
 - ``kill``/``pkill``/``killall`` whose target names a configured bot
@@ -72,6 +83,16 @@ _LABELS = [
     lbl for lbl in re.split(r"[,\s]+", os.environ.get("RESTART_GUARD_LABELS", "")) if lbl
 ]
 
+#: The bot's own launchd service labels (e.g. "local.deagent.worker,
+#: local.deagent.ingress"). Mutating launchctl only denies when it names one of
+#: these. Empty means unknown, and then every mutating call denies as before.
+_SERVICES = [
+    s for s in re.split(r"[,\s]+", os.environ.get("RESTART_GUARD_SERVICES", "")) if s
+]
+
+#: gui/<uid> domain spellings that are not an unresolved target.
+_UID_FORMS = re.compile(r"\$\(\s*id\s+-u\s*\)|\$\{?UID\}?|\$\(\s*id\s+-u\s+-n\s*\)")
+
 #: Path of the apply-request marker to point the model at instead. The
 #: supervisor polls this; writing it is how a turn asks for a restart
 #: without killing itself. Overridable for a bot's own state convention.
@@ -113,13 +134,43 @@ def _marker_hint() -> str:
     )
 
 
+def _names_service(segment: str, label: str) -> bool:
+    """Whether *segment* targets *label* itself (not a longer sibling label).
+
+    ``local.deagent.worker`` matches ``gui/501/local.deagent.worker`` and
+    ``.../local.deagent.worker.plist`` but not ``local.deagent.worker2``.
+    """
+    pat = re.escape(label) + r"(?:\.plist)?(?![\w.-])"
+    return re.search(pat, segment) is not None
+
+
+def _launchctl_targets_self(cmd: str) -> bool:
+    """Whether a mutating launchctl call in *cmd* could hit the running bot."""
+    for m in _LAUNCHCTL_MUTATING.finditer(cmd):
+        if not _SERVICES:
+            return True
+        # The rest of this shell command, up to the next separator.
+        segment = re.split(r"&&|\|\||;|\||\n", cmd[m.end():], maxsplit=1)[0]
+        if any(_names_service(segment, lbl) for lbl in _SERVICES):
+            return True
+        if "$" in _UID_FORMS.sub("", segment):
+            return True
+    return False
+
+
+_OTHER_JOBS_OK = (
+    " 봇 자신의 서비스(" + ", ".join(_SERVICES) + ")가 아닌 다른 launchd 작업은 "
+    "등록, 기동, 해제를 턴 안에서 해도 된다. 대상을 라벨이나 plist 경로로 직접 적는다."
+) if _SERVICES else ""
+
+
 def _self_restart_reason(cmd: str) -> str | None:
     """The deny reason if *cmd* would restart the running bot, else None."""
-    if _LAUNCHCTL_MUTATING.search(cmd):
+    if _launchctl_targets_self(cmd):
         return (
             "봇 턴 안에서 launchctl 로 봇 프로세스를 멈추거나 되살리면 교착된다: 재기동은 "
             "지금 처리 중인 바로 그 요청이 끝나길 기다리는데, 그 요청이 이 턴이다."
-            + _marker_hint()
+            + _marker_hint() + _OTHER_JOBS_OK
         )
     if _RESTART_SCRIPT.search(cmd):
         return (

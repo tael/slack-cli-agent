@@ -280,6 +280,7 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # launchd labels, not credentials.
         "RESTART_GUARD_MARKER",
         "RESTART_GUARD_LABELS",
+        "RESTART_GUARD_SERVICES",
         # TURN_ID ("channel:ts") and its aliases go through _with_turn_id().
     })
 

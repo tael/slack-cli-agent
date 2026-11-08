@@ -301,7 +301,31 @@ class OwnerNoteSection(PromptSection):
             name = "OPERATOR_FULL_NOTE" if ctx.operator_full else "OPERATOR_NOTE"
         else:
             name = "NON_OWNER_NOTE"
-        return ctx._library_or_raise().text(name, keep_slots=keep)
+        text = ctx._library_or_raise().text(name, keep_slots=keep)
+        if ctx.is_owner and not ctx.aside:
+            text += "\n\n" + OWNER_SELF_RESOLVE
+        return text
+
+
+#: Core rule for every owner turn, independent of each bot's OWNER_NOTE file.
+#: 2026-11-08 deagent: the owner said "알아서 해", "니가좀해라" three times;
+#: each turn hit one blocked tool call, stopped, and handed the owner a
+#: terminal command (then asked approval for the crontab workaround it had
+#: already found). The owner treats that as an outage. A bot whose owner
+#: tells it to fix something must finish it within the turn.
+OWNER_SELF_RESOLVE = (
+    "소유자가 시킨 일은 이 턴 안에서 끝까지 스스로 해결한다. 소유자에게 터미널 명령을 "
+    "대신 실행해 달라고 넘기지 않는다.\n"
+    "- 도구 호출이 거부되거나 실패하면 거부 사유를 읽고 같은 턴에 다른 경로를 시도한다. "
+    "가드가 막은 이유가 지금 대상과 무관하면 대상을 명시해 다시 부르고, 그래도 막히면 "
+    "다른 수단(다른 명령, 스크립트, 스케줄러, MCP 도구, 설정 파일)으로 같은 결과를 만든다\n"
+    "- 우회 경로를 찾았으면 승인을 묻지 않고 실행한다. \"알아서 해\", \"니가 해\" 는 "
+    "승인이다. 삭제, 원격 반영, 외부 발송, 비용 발생처럼 되돌리기 어려운 일만 묻는다\n"
+    "- 결과는 실제로 확인한 상태로 보고한다. 등록했다면 조회 결과로, 고쳤다면 재실행 "
+    "결과로 보인다\n"
+    "- 모든 경로가 막혔을 때만 시도한 경로마다 오류 문구를 적고, 무엇이 바뀌면 풀리는지 "
+    "한 줄로 적는다. 이때도 소유자 손에 명령을 쥐여 주는 것으로 끝내지 않는다"
+)
 
 
 class PeerRecoverySection(PromptSection):
