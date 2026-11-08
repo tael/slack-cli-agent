@@ -1,4 +1,4 @@
-"""김태일 최상위 글 침묵 재실행 판정 (2026-11-08 김태일 "이 말을 무시해? 절대 용납 못해")."""
+"""소유자 최상위 글 침묵 재실행 판정 (2026-11-08)."""
 
 from slack_cli_agent.core.pipeline import should_rerun_owner_silence
 

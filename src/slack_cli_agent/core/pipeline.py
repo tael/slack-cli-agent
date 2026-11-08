@@ -203,13 +203,12 @@ the result file, not from here (codex review).
 
 
 
-#: 2026-11-08 23:00 김태일이 private-taeil 최상위에 "test agent 채널 테스트할때 내 계정말고
-#: 봇계정으로 테스트해라" 를 남겼는데 구치파치가 [[침묵]] 으로 끝냈다. 23:03 "이 말을 무시해?
-#: 절대 용납 못해". 멘션 없는 최상위 글을 맡은 채널(answer_top_level)에서 김태일 최상위 글은
-#: 이 봇에게 온 말이다. 침묵하면 같은 세션으로 한 번 다시 돌린다.
+#: 2026-11-08 소유자가 멘션 없는 최상위 글로 남긴 지시를 봇이 [[침묵]] 으로 넘겼다.
+#: 멘션 없는 최상위 글을 맡은 채널(answer_top_level)에서 소유자 최상위 글은 이 봇에게
+#: 온 말이다. 침묵하면 같은 세션으로 한 번 다시 돌린다.
 OWNER_TOP_LEVEL_SILENCE_NOTE = (
     "방금 [[침묵]] 으로 끝냈다. 이 채널에서 멘션 없는 최상위 글은 이 봇이 맡는다. "
-    "김태일 최상위 글은 이 봇에게 한 말이다. 다른 봇이나 다른 세션의 일처럼 보여도 넘기지 않는다. "
+    "소유자의 최상위 글은 이 봇에게 한 말이다. 다른 봇이나 다른 세션의 일처럼 보여도 넘기지 않는다. "
     "지시, 규칙, 불만이면 원인을 찾아 고치고 이 턴에 결과를 보고한다. "
     "규칙이면 지킬 위치(지침 파일, 코드, 실행 중 작업)에 반영하고 반영한 위치를 쓴다. "
     "정말로 답할 내용이 없을 때만 다시 [[침묵]] 을 쓴다."
@@ -219,7 +218,7 @@ OWNER_TOP_LEVEL_SILENCE_NOTE = (
 def should_rerun_owner_silence(
     body: str, *, owner: bool, from_bot: bool, ts: str, thread_ts: str, answer_top_level: bool,
 ) -> bool:
-    """김태일 최상위 글에 침묵한 답인지. 맞으면 한 번 다시 돌린다."""
+    """소유자 최상위 글에 침묵한 답인지. 맞으면 한 번 다시 돌린다."""
     return (
         is_silent(body or "") and owner and not from_bot
         and bool(ts) and ts == thread_ts and answer_top_level
