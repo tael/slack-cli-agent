@@ -249,7 +249,10 @@ class ToolPolicy:
             granted = self.tool_list_for(principal, prompt=prompt, asker_is_bot=asker_is_bot)
             return self._readonly_tools(granted)
         tools: list[str] = list(self._base_tools)
-        if principal.trust is TrustLevel.OWNER:
+        if principal.trust is TrustLevel.OWNER or principal.delegated:
+            # 위임 턴은 소유자 턴에서 시작된 일이라 소유자 도구를 그대로 받는다
+            # (2026-11-08 김태일 지시). operator_tools 로는 Snowflake 쓰기, 노션,
+            # 메타베이스, 슬랙, 시트 등이 빠져 구치파치가 권한 없다며 멈췄다.
             tools += self._owner_tools
             if self._channel_tools is not None:
                 tools += [t for t in self._channel_tools(principal) if t not in tools]

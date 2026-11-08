@@ -43,7 +43,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
-from ..auth.principal import TrustLevel
 from ..auth.tools import SKILL_TOOL
 from ..config.profile import EngineSpec, McpServerSpec
 from .base import (
@@ -53,6 +52,7 @@ from .base import (
     FailureDetail,
     Usage,
     UsageLimit,
+    acts_for_owner,
     input_mark_for,
     json_object_line,
 )
@@ -129,7 +129,7 @@ def _non_owner_reads_only(request: EngineRequest) -> bool:
     An unrestricted selection means no tool policy is wired at all, which no
     profile Application builds runs under; it keeps the profile sandbox.
     """
-    if request.trust_level is TrustLevel.OWNER:
+    if acts_for_owner(request):
         return False
     return request.tools.access is ToolAccess.ALLOWLIST
 
@@ -327,7 +327,7 @@ class CodexEngine(Engine):
         cmd += _codex_mcp_config_args(
             self.profile.mcp_servers,
             can_act=_codex_can_act(request.tools) and sandbox != "read-only",
-            is_owner=request.trust_level is TrustLevel.OWNER,
+            is_owner=acts_for_owner(request),
             turn_context=request.turn_context,
         )
         if not request.resume:

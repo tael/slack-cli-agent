@@ -133,7 +133,8 @@ def test_위임_판정에_요청_메시지_ts_가_넘어가고_엔진_요청에_
     assert call.delegated is True
     assert call.trust_level is TrustLevel.GENERAL
     # Write 는 operator_full 채널에서만 열린다
-    assert call.tools.names == ("Read", "mcp__jira__create_issue")
+    # 위임 턴은 소유자 도구를 받는다 (2026-11-08 김태일 지시)
+    assert call.tools.names == ("Read", "Write", "mcp__jira__*")
 
 
 def test_위임_턴은_봇_화자이자_operator_로_지침을_조립한다() -> None:

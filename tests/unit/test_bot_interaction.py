@@ -402,7 +402,7 @@ class TestAskerSection_봇_3분기:
             is_controller=True, delegated=True,
         ))
         note = AskerSection().render(ctx)
-        assert "위임 원장" in note and "삭제, 원격 반영, 외부 발송" in note
+        assert "위임 원장" in note and "권한이 없다고 멈추지 않는다" in note
 
     def test_사람이_물으면_기존과_같다(self) -> None:
         ctx = _ctx(asker_is_bot=False, asker_name="홍길동", asker_id="U1")

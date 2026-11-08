@@ -60,6 +60,7 @@ from .base import (
     ModelUsage,
     Usage,
     UsageLimit,
+    acts_for_owner,
 )
 from .capability import (
     EngineCapabilities,
@@ -501,7 +502,7 @@ class ClaudeEngine(Engine):
         mcp_servers = _claude_mcp_servers(
             self.profile.mcp_servers,
             can_act=request.tools.can_act,
-            is_owner=request.trust_level is TrustLevel.OWNER,
+            is_owner=acts_for_owner(request),
             turn_context=request.turn_context,
         )
         cmd += self._tool_args(request, mcp_servers)
@@ -550,6 +551,10 @@ class ClaudeEngine(Engine):
         """
         paths = self.profile.paths
         level = request.trust_level.name.lower()
+        if request.delegated:
+            # 위임 턴은 소유자 도구로 돈다. general 오버레이의 Bash/Edit/Write deny 를
+            # 싣지 않는다. 원장 쓰기 deny 는 아래에서 그대로 걸린다.
+            level = TrustLevel.OWNER.name.lower()
         if level == TrustLevel.GENERAL.name.lower() and self._operator_full_signal(request):
             level = self.OPERATOR_FULL_SETTINGS_LEVEL
         # The deny check reads the merged document, so the files go in

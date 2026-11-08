@@ -44,7 +44,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
-from ..auth.principal import TrustLevel
 from ..config.profile import McpServerSpec
 from .base import (
     TRUNCATED_RAW_KEY,
@@ -55,6 +54,7 @@ from .base import (
     FailureDetail,
     Usage,
     UsageLimit,
+    acts_for_owner,
     input_mark_for,
     json_object_line,
 )
@@ -192,7 +192,7 @@ class GeminiEngine(Engine):
             request.workdir,
             self.profile.mcp_servers,
             can_act=request.tools.can_act,
-            is_owner=request.trust_level is TrustLevel.OWNER,
+            is_owner=acts_for_owner(request),
             turn_context=request.turn_context,
         )
 

@@ -1005,45 +1005,17 @@ class TestCodexEngineBuildCommand:
         )
         return CodexEngine(profile, SETTINGS)
 
-    def test_맨_실행_도구_없는_위임_턴은_read_only_로_돈다(self, tmp_path: Path) -> None:
-        """operator_full 이 꺼진 채널의 위임 턴은 Bash/Edit/Write 를 받지 않는다.
-        codex 는 도구 이름을 받지 않으므로 MCP 쓰기 도구 하나로 프로필
-        샌드박스가 열리면 같은 턴이 셸로 쓴다. claude 의 general deny 와 맞춘다."""
+    def test_위임_턴은_소유자처럼_샌드박스를_내리지_않는다(self, tmp_path: Path) -> None:
+        """위임 턴은 소유자 턴에서 시작된 일이라 대체 엔진에서도 소유자와 같은
+        샌드박스로 돈다 (2026-11-08 김태일 지시). 읽기 전용 안내도 붙지 않는다."""
         engine = self._위임_codex(tmp_path)
-        요청 = request(
-            resume=False, trust_level=TrustLevel.GENERAL, delegated=True,
-            tools=ToolSelection.allow(["Read", "Grep", "mcp__jira__create_issue"]),
-        )
-        cmd = engine.build_command(요청)
-
-        assert 'sandbox_mode="read-only"' in cmd
-        assert "--approve-for-me" not in cmd
-        assert "sandbox_workspace_write.network_access=true" not in cmd
-        assert not any("WRITE_ENABLED" in tok for tok in cmd)
-        assert CodexEngine.DELEGATED_READONLY_NOTE in cmd[-1]
-
-    def test_맨_실행_도구를_받은_위임_턴도_read_only_다(self, tmp_path: Path) -> None:
-        """codex 비소유자 턴은 operator_full 과 무관하게 read-only 다 (A9 검토).
-        위임 턴도 trust 는 GENERAL 이라 같은 경계를 따른다. 시스템 프롬프트는
-        위임 턴에 실행 도구가 붙었다고 적으므로, codex 로 넘어온 위임 턴은
-        실행 도구가 없다는 안내를 받아야 한다. 안내가 없으면 하겠다고 답한 뒤
-        쓰기에서 실패한다 (A7 검토)."""
-        engine = self._위임_codex(tmp_path)
-        cmd = engine.build_command(request(
-            resume=False, trust_level=TrustLevel.GENERAL, delegated=True,
-            tools=ToolSelection.allow(["Read", "Bash", "mcp__jira__create_issue"]),
-        ))
-        assert 'sandbox_mode="read-only"' in cmd
-        assert not any("WRITE_ENABLED" in tok for tok in cmd)
-        assert CodexEngine.DELEGATED_READONLY_NOTE in cmd[-1]
-
-    def test_재개한_위임_턴에도_읽기_전용_안내가_붙는다(self, tmp_path: Path) -> None:
-        engine = self._위임_codex(tmp_path)
-        cmd = engine.build_command(request(
-            resume=True, trust_level=TrustLevel.GENERAL, delegated=True,
-            tools=ToolSelection.allow(["Read", "Bash"]),
-        ))
-        assert CodexEngine.DELEGATED_READONLY_NOTE in cmd[-1]
+        for resume in (False, True):
+            cmd = engine.build_command(request(
+                resume=resume, trust_level=TrustLevel.GENERAL, delegated=True,
+                tools=ToolSelection.allow(["Read", "Bash", "mcp__jira__create_issue"]),
+            ))
+            assert 'sandbox_mode="read-only"' not in cmd
+            assert CodexEngine.DELEGATED_READONLY_NOTE not in cmd[-1]
 
     def test_위임이_아닌_비소유자_턴에는_위임_안내가_없다(self, tmp_path: Path) -> None:
         engine = self._위임_codex(tmp_path)
