@@ -774,8 +774,10 @@ class RequestPipeline:
         # and a trailing tag the strip reads from the end.
         body = self._recover_unposted_render(body, ctx, request, decision, turn_calls)
         body, image_ts = self._post_generated_images(body, ctx, start, turn_calls, flat)
-        # 2026-11-08 김태일 지시: private-taeil 은 마메치와 같은 통계 푸터를 쓴다.
-        if ctx.channel == "C01EWFYL077" and hasattr(self._publisher, "apply_stats_footer"):
+        footer_config = self._channels.get(ctx.channel)
+        if footer_config is not None and footer_config.stats_footer and hasattr(
+            self._publisher, "apply_stats_footer"
+        ):
             body = self._publisher.apply_stats_footer(
                 body, model, rich, elapsed=elapsed, effort=effort, usage=response.usage)
         else:

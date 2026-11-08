@@ -67,7 +67,7 @@ KNOWN_KEYS = frozenset(
         "session_scope",
         "disclose_mechanism", "full_authority", "operator_full", "skills",
         "light_context", "rich", "chat",
-        "progress", "bot_mentions", "code_first", "peer_turn_limit",
+        "progress", "bot_mentions", "code_first", "peer_turn_limit", "stats_footer",
         "user_tools", "tool_enforcement",
         "operators", "airflow_admins", "extra_tools",
     }
@@ -140,6 +140,9 @@ class ChannelConfig:
     channel where people talk to each other must leave this off so the bot
     doesn't butt in -- a separate key from `answer_unaddressed` for exactly
     that reason (mametchi answer_top_level, bot.py:10089)."""
+    stats_footer: bool = False
+    """Ends each reply with elapsed time, model, effort, token count and cache
+    hit rate instead of the short elapsed/model line."""
     flat_reply: bool = False
     """Posts the reply straight to the channel instead of opening a thread off
     the triggering message. DMs already post flat; this extends that to a
@@ -245,6 +248,7 @@ class ChannelConfig:
             answer_unaddressed=bool(data.get("answer_unaddressed", False)),
             answer_top_level=bool(data.get("answer_top_level", False)),
             peer_turn_limit=_peer_turn_limit(data.get("peer_turn_limit")),
+            stats_footer=bool(data.get("stats_footer", False)),
             flat_reply=bool(data.get("flat_reply", False)),
             session_scope=str(data.get("session_scope") or "thread"),
             disclose_mechanism=bool(data.get("disclose_mechanism", False)),
