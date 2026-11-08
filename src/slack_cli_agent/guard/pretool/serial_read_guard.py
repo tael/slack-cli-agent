@@ -64,7 +64,9 @@ HOOK_SCRIPT = Path(__file__).resolve()
 #: started at 4; replaying 2026-11-08's 93 guchipachi sessions
 #: (tools/serial_read_replay.py) put the share of denies whose call really
 #: needed the previous result at 63% for 4, 29% for 5 (36% read by hand) and
-#: 22% for 6, against a 30% ceiling.
+#: 22% for 6, against a 30% ceiling. Re-run over 2026-11-06..08 (865
+#: requests): 57.8% for 4, 37.2% for 5 (21 of 44 read by hand were plain
+#: dependent calls or batches) and 32.0% for 6, so it stays at 6.
 DEFAULT_RUN = 6
 
 #: Seconds to keep re-reading the transcript for sibling tool_use lines of
