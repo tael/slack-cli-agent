@@ -22,7 +22,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from slack_cli_agent.guard import finish_hook
 from slack_cli_agent.guard.posttool import parallel_nudge
@@ -158,6 +158,43 @@ class TestRestartGuard:
         assert proc.returncode == 0
         assert result is not None
         assert "/tmp/apply-request" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    _SVC: ClassVar[dict[str, str]] = {"RESTART_GUARD_SERVICES": "local.deagent.worker,local.deagent.ingress"}
+
+    def test_봇_서비스가_아닌_작업_등록은_통과한다(self) -> None:
+        cmd = (
+            "cp ~/.deagent/local.deagent.autoupdate.plist ~/Library/LaunchAgents/ && "
+            "launchctl bootstrap gui/$(id -u) "
+            "~/Library/LaunchAgents/local.deagent.autoupdate.plist && "
+            "launchctl print gui/$(id -u)/local.deagent.autoupdate"
+        )
+        result, proc = self._run(cmd, self._SVC)
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_봇_서비스_kickstart_는_서비스목록이_있어도_거부한다(self) -> None:
+        result, _ = self._run("launchctl kickstart -k gui/$(id -u)/local.deagent.worker", self._SVC)
+        assert result is not None
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "다른 launchd 작업" in reason
+
+    def test_봇_서비스_plist_bootout_은_거부한다(self) -> None:
+        result, _ = self._run(
+            "launchctl bootout gui/501 ~/Library/LaunchAgents/local.deagent.ingress.plist",
+            self._SVC,
+        )
+        assert result is not None
+
+    def test_변수로_가린_대상은_거부한다(self) -> None:
+        result, _ = self._run("launchctl kickstart -k gui/$(id -u)/$LABEL", self._SVC)
+        assert result is not None
+
+    def test_같은_명령의_뒤쪽_세그먼트가_봇서비스면_거부한다(self) -> None:
+        result, _ = self._run(
+            "launchctl bootstrap gui/501 /tmp/x.plist; launchctl stop local.deagent.worker",
+            self._SVC,
+        )
+        assert result is not None
 
     def test_봇라벨을_겨냥한_kill_은_거부한다(self) -> None:
         result, proc = self._run(
@@ -546,3 +583,25 @@ class TestClaudeEngineWiring:
         bash_group = next(g for g in pretool_groups if g["matcher"] == "Bash")
         assert len(bash_group["hooks"]) == 4
         assert settings["hooks"]["Stop"][0]["matcher"] == "*"
+
+
+def test_오너_턴에는_스스로_해결_규칙이_실린다() -> None:
+    from slack_cli_agent.prompt.sections import OWNER_SELF_RESOLVE
+
+    assert "터미널 명령" in OWNER_SELF_RESOLVE
+    assert "승인을 묻지 않고" in OWNER_SELF_RESOLVE
+
+
+def test_restart_guard_env_에_서비스_라벨이_있다() -> None:
+    from types import SimpleNamespace
+
+    from slack_cli_agent.core.application import Application
+
+    fake = SimpleNamespace(
+        _profile=SimpleNamespace(
+            launch_label="local.deagent",
+            paths=SimpleNamespace(apply_requests=("/tmp/req", "/tmp/run")),
+        )
+    )
+    env = Application.restart_guard_env(fake)  # type: ignore[arg-type]
+    assert env["RESTART_GUARD_SERVICES"] == "local.deagent.worker,local.deagent.ingress"

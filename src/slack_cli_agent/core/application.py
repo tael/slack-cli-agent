@@ -761,6 +761,12 @@ class Application:
             # The base label is a prefix of every service label, so a kill
             # naming any of them (or the job family) is caught.
             "RESTART_GUARD_LABELS": self._profile.launch_label,
+            # Exact service labels: launchctl is denied only against these, so
+            # a turn can still register or kick its own side jobs
+            # (local.deagent.autoupdate, 2026-11-08).
+            "RESTART_GUARD_SERVICES": ",".join(
+                f"{self._profile.launch_label}.{svc}" for svc in ("worker", "ingress")
+            ),
         }
 
     def reactions(self) -> ReactionMarker:
