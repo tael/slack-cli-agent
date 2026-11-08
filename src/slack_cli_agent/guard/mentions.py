@@ -300,14 +300,14 @@ class PeerExchangeLimiter:
     human speaks (C19 cap, with the C18 reset it has to ship alongside).
 
     bot.py:4195-4200 (`peer_turn_allowed`/`reset_peer_turns`,
-    `PEER_TURN_LIMIT = 6`). The cap alone is a trap: once a thread's count
+    `PEER_TURN_LIMIT = 12`, 2026-11-08 raised from 6). The cap alone is a trap: once a thread's count
     ever reaches the limit, every later message in it -- including one from
     a human who just walked back in -- would go unanswered forever with
     nothing to bring the count back down. That is why the reset has to ship
     with the cap, not after it (ownership.md's "B5 에 C18 포함" note).
     """
 
-    def __init__(self, limit: int = 6) -> None:
+    def __init__(self, limit: int = 12) -> None:
         self._limit = limit
         self._counts: dict[str, int] = {}
         self._lock = threading.Lock()
