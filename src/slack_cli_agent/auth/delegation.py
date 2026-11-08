@@ -122,8 +122,15 @@ class DelegationRecorder:
         message_ts: Sequence[str],
         to_user: str,
         scope: str = "",
+        kind: str = "",
     ) -> int:
-        """Appends the rows and returns how many were written."""
+        """Appends the rows and returns how many were written.
+
+        `kind="reply"` marks a row a delegated turn wrote for its result
+        message back to the delegator (2026-11-08 김태일 "마메치 턴도 권한이
+        있어야해"). The delegator opens execution tools only for that one
+        message and only after matching `origin_ts` against its own ledger.
+        """
         if not (self._delegator and channel and message_ts and to_user):
             return 0
         now = self._clock()
@@ -140,6 +147,7 @@ class DelegationRecorder:
                     "to": to_user,
                     "by": self._delegator,
                     "scope": (scope or "")[:SCOPE_MAX],
+                    **({"kind": kind} if kind else {}),
                     "created": now,
                     "expires": now + TTL_SEC,
                 })

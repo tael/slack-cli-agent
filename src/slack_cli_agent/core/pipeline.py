@@ -1249,7 +1249,33 @@ class RequestPipeline:
         """
         if self._delegation_recorder is None or recipient is None or recipient.kind != "bot":
             return
-        if not posted or principal.delegated or principal.trust is not TrustLevel.OWNER:
+        if posted and principal.delegated:
+            # A delegated turn handing its result back to the bot that
+            # delegated it. Recorded as kind=reply with origin_ts = the
+            # delegating message, so the delegator can open execution tools
+            # for this one result message only (2026-11-08 김태일 "마메치
+            # 턴도 권한이 있어야해"). The delegator checks origin_ts against
+            # its own ledger, so this row alone opens nothing, and the
+            # delegator's reply turn is not an owner turn, so it never
+            # writes a new delegation: no chain, no ping-pong clearance.
+            if not ctx.user or recipient.bot_id != ctx.user:
+                return
+            try:
+                n = self._delegation_recorder.record(
+                    ctx.channel, ctx.thread_ts, ctx.ts, tuple(posted), recipient.bot_id,
+                    scope=body, kind="reply",
+                )
+            except Exception:
+                log.exception("위임 회신을 원장에 적지 못했다 : %s", ctx.ts)
+                return
+            if n:
+                self._audit.record(
+                    IncidentKind.DELEGATION_RECORDED.value, channel=ctx.channel,
+                    thread_ts=ctx.thread_ts, message_ts=ctx.ts, to=recipient.bot_id,
+                    posted=list(posted), kind="reply",
+                )
+            return
+        if not posted or principal.trust is not TrustLevel.OWNER:
             return
         if not self._owner_user_id or ctx.user != self._owner_user_id:
             return
