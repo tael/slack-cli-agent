@@ -15,6 +15,7 @@ from .sections import (
     CompositionContext,
     PromptSection,
     SlackFormatSection,
+    render_request_header,
 )
 
 
@@ -128,6 +129,13 @@ class SystemPromptComposer:
             bytes_after=after,
             omitted_document_count=omitted_count,
             omitted_document_bytes=omitted_bytes,
+        )
+
+    def request_header(self, ctx: CompositionContext) -> str:
+        """The user-prompt header for a ctx composed with request_header=True
+        (sections.render_request_header)."""
+        return render_request_header(
+            replace(ctx, library=self._library, knowledge=self._knowledge),
         )
 
     def _substitute(self, text: str, ctx: CompositionContext, format_value: str) -> str:

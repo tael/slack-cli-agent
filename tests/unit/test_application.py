@@ -2981,6 +2981,39 @@ class Test프롬프트캐시배치:
         }
         assert self._compose(app, **dict(kw)) == self._compose(app, **dict(kw))
 
+    def test_요청_값은_사용자_프롬프트_머리로_가고_내용은_같다(self, tmp_path: Path) -> None:
+        """S4 2회차. 좌표, 감시 실행 ID, 첨부는 시스템 프롬프트에서 빠지고
+        사용자 프롬프트 머리 블록에 같은 문장으로 들어간다."""
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        principal = Principal(
+            user_id="U1", channel="C111", trust=TrustLevel.GENERAL, is_direct_message=False,
+        )
+        kw: dict[str, Any] = {
+            "principal": principal, "channel_slug": "general", "turn_tier": "read",
+            "channel": "C111", "thread_ts": "1762500000.000100",
+            "watch_run_id": "run-aaaa", "watch_out_dir": "/tmp/watch-out",
+            "files": ({
+                "name": "a.m4a", "mimetype": "audio/mp4", "local_path": "/tmp/a.m4a",
+                "transcript": "들은 말",
+            },),
+            "missed_files": 1,
+        }
+        composer = app._composer()
+        before = composer.compose(CompositionContext(**kw))
+        ctx = CompositionContext(**kw, request_header=True)
+        after = composer.compose(ctx)
+        header = composer.request_header(ctx)
+
+        for value in ("C111", "1762500000.000100", "run-aaaa", "/tmp/a.m4a", "들은 말"):
+            assert value in before
+            assert value not in after
+            assert value in header
+        # 머리 블록의 각 덩어리는 예전 시스템 프롬프트에 있던 문장 그대로다.
+        for chunk in header.split("\n\n")[1:]:
+            assert chunk in before
+        # 감시 안내 본문은 시스템 프롬프트에 남는다.
+        assert len(after) < len(before)
+
     def test_요청별_섹션이_고정_섹션_뒤에_온다(self, tmp_path: Path) -> None:
         from slack_cli_agent.prompt.sections import (
             AskerSection,

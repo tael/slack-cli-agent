@@ -2909,3 +2909,60 @@ class Test모델별_사용량을_요청_기록에_남긴다:
         pipeline, deps = build_pipeline(responses=[응답], tmp_path=tmp_path)
         pipeline.handle(make_ctx(user="U1"))
         assert deps["audit"].records[-1]["model_usage_session"] == "eng-s"
+
+
+class _HeaderComposer(FakeComposer):
+    """request_header 를 가진 조립기. 실물 SystemPromptComposer 와 같은 진입점이다."""
+
+    def request_header(self, ctx: Any) -> str:
+        return f"[머리] ch={ctx.channel} ts={ctx.thread_ts} run={ctx.watch_run_id}"
+
+
+class Test요청값머리블록:
+    """요청마다 바뀌는 값은 사용자 프롬프트 앞머리에 붙는다 (S4 2회차).
+
+    claude --resume 은 --append-system-prompt 를 무시한다. 시스템 프롬프트에
+    두면 이어지는 턴에 첫 턴 값이 남는다.
+    """
+
+    def test_첫_턴과_이어지는_턴_모두_앞머리에_새_값이_붙는다(self, tmp_path: Path) -> None:
+        run_ids = iter(["run-1", "run-2"])
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(), ok_response()], tmp_path=tmp_path,
+            composer=_HeaderComposer(), new_run_id=lambda: next(run_ids),
+        )
+        pipeline.handle(make_ctx())
+        pipeline.handle(make_ctx(ts="1700000002.000200"))
+
+        calls = deps["runner"].calls
+        assert calls[0].resume is False
+        assert calls[1].resume is True
+        assert calls[0].prompt.startswith(
+            "[머리] ch=C1 ts=1700000001.000100 run=run-1\n\n"
+        )
+        assert calls[1].prompt.startswith(
+            "[머리] ch=C1 ts=1700000001.000100 run=run-2\n\n"
+        )
+        assert all(c.request_header for c in deps["composer"].contexts)
+
+    def test_새_세션_재시도에도_새_실행_ID로_붙는다(self, tmp_path: Path) -> None:
+        run_ids = iter(["run-1", "run-2"])
+        pipeline, deps = build_pipeline(
+            responses=[fail_response("nonzero_exit"), ok_response()], tmp_path=tmp_path,
+            composer=_HeaderComposer(), new_run_id=lambda: next(run_ids),
+        )
+        pipeline.handle(make_ctx())
+
+        calls = deps["runner"].calls
+        assert calls[1].resume is False
+        assert calls[1].prompt.startswith("[머리] ch=C1 ts=1700000001.000100 run=run-2\n\n")
+        assert "run=run-1" not in calls[1].prompt
+
+    def test_머리를_못_만드는_조립기면_예전처럼_시스템_프롬프트에_둔다(
+        self, tmp_path: Path,
+    ) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx())
+
+        assert not deps["runner"].calls[0].prompt.startswith("[머리]")
+        assert deps["composer"].contexts[0].request_header is False
