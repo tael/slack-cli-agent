@@ -1766,3 +1766,55 @@ class Test감시_기록의_모델별_사용량:
         큐.시각["값"] = 2000.0
         c.check_once()
         assert not [k for k, _ in 감사.기록 if k == ENGINE_SPEND_KIND]
+
+
+class Test추가보고대상:
+    """감시 조건이 자기 스레드 말고 다른 채널 스레드도 보고 대상으로 적으면,
+    읽기 전용 확인 턴 대신 실행기가 같은 보고를 거기에도 올린다.
+    2026-11-08 감시 35번이 "착수 글 스레드 게시는 이 턴 권한 밖" 으로 끝났다."""
+
+    조건 = (
+        "재판정 결과를 C01EWFYL077 스레드와 test-weather-simul(C0CFYL69JDS) "
+        "착수 글 스레드 1794105022.126019 에 보고"
+    )
+
+    def _실행(self, 큐, trust) -> 가짜발행:
+        from slack_cli_agent.auth.principal import TrustLevel  # noqa: F401
+        큐.enqueue("C01EWFYL077", "1794052435.911239", self.조건, trust=trust)
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝났습니다 {WATCH_DONE_TAG}"),
+            발행=발행,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        return 발행
+
+    def test_소유자_감시는_다른_스레드에도_같은_보고를_올린다(self, 큐) -> None:
+        from slack_cli_agent.auth.principal import TrustLevel
+        발행 = self._실행(큐, TrustLevel.OWNER)
+        assert [(c, t) for c, t, _, _ in 발행.게시내역] == [
+            ("C01EWFYL077", "1794052435.911239"),
+            ("C0CFYL69JDS", "1794105022.126019"),
+        ]
+        assert 발행.게시내역[0][2] == 발행.게시내역[1][2] == "끝났습니다"
+
+    def test_소유자가_아니면_자기_스레드에만_올린다(self, 큐) -> None:
+        from slack_cli_agent.auth.principal import TrustLevel
+        발행 = self._실행(큐, TrustLevel.GENERAL)
+        assert [(c, t) for c, t, _, _ in 발행.게시내역] == [("C01EWFYL077", "1794052435.911239")]
+
+    def test_스레드_ts_없는_채널_언급은_대상이_아니다(self) -> None:
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.reliability.watchrunner import extra_report_targets
+        job = WatchJob(
+            id=1, channel="C1", thread_ts="1.1", created_at=0.0, last_run=None,
+            condition="C0CFYL69JDS 채널 착수 글 확인 후 보고", trust=TrustLevel.OWNER,
+        )
+        assert extra_report_targets(job) == []
+
+    def test_확인턴_안내문에_실행기가_올린다고_적는다(self) -> None:
+        from slack_cli_agent.reliability.watchrunner import extra_targets_note
+        안내 = extra_targets_note([("C0CFYL69JDS", "1794105022.126019")])
+        assert "C0CFYL69JDS" in 안내 and "권한 밖" in 안내
+        assert extra_targets_note([]) == ""

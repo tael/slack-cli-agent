@@ -143,18 +143,20 @@ from ..prompt.sections import (
     WatchSection,
 )
 from ..reliability.catchup import CatchupService, RetryStatus, StuckCause
+from ..reliability.channel_join import join_registered_channels
 from ..reliability.connection import ConnectionCatchupCoordinator
 from ..reliability.dedup import DeduplicationTracker
 from ..reliability.health import HealthMonitor, SelfRestarter, SocketErrorWatch
 from ..reliability.outage import NetworkOutageEscalation, OutageTracker
 from ..reliability.pending_report import PendingReportStore, assemble_recovery_report
-from ..reliability.channel_join import join_registered_channels
 from ..reliability.restart import ApplyRequestWatch
 from ..reliability.startup import StartupCatchup
 from ..reliability.watchjobs import WatchJob, WatchJobQueue
 from ..reliability.watchresult import WatchOutcome, WatchResultReader
 from ..reliability.watchrunner import (
     WatchJobChecker,
+    extra_report_targets,
+    extra_targets_note,
     watch_already_reported_prompt,
     watch_check_prompt,
     watch_supersede_prompt,
@@ -242,7 +244,6 @@ from .timezones import KST
 from .unregistered import UnregisteredNoticeLog
 from .usage_check import UsageCheck, run_command
 from .worker import Worker
-
 
 #: 이 패키지 소스 리포 루트. 부검과 뇌 추적이 "코드는 여기" 라고 알려 주고 읽게 하는 위치다.
 _CODE_ROOT = Path(__file__).resolve().parents[3]
@@ -1360,6 +1361,9 @@ class Application:
         workdir = _watch_workdir(job, config, self._profile.work_root)
         결과파일 = self.watch_results().path_for(job.run_id)
         prompt = watch_check_prompt(job.condition, outcome, str(결과파일) if 결과파일 else "")
+        # The runner posts to any other thread the condition names; say so,
+        # or the read-only turn reports that it lacked the right (job 35).
+        prompt += extra_targets_note(extra_report_targets(job))
         watch_tools = ToolSelection.from_names(
             self.tool_policy().tool_list_for(
                 principal, prompt=prompt, readonly=True, skills_enabled=False,
