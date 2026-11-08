@@ -387,6 +387,7 @@ def build_pipeline(
     light_workdir: Path | None = None,
     transcriber: Any = None,
     delegation_recorder: Any = None,
+    request_timing: Any = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -449,6 +450,8 @@ def build_pipeline(
         extra_kwargs["transcriber"] = transcriber
     if delegation_recorder is not None:
         extra_kwargs["delegation_recorder"] = delegation_recorder
+    if request_timing is not None:
+        extra_kwargs["request_timing"] = request_timing
     extra_kwargs.setdefault(
         "watch_results",
         WatchResultReader((tmp_path or Path("/tmp")) / ".watch-out"),

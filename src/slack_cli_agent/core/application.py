@@ -94,6 +94,7 @@ from ..observability.audit import AuditLog
 from ..observability.model_cost import record_engine_spend
 from ..observability.notices import NoticeCatalog
 from ..observability.progress import ProgressCoordinator
+from ..observability.request_timing import RequestTimingCalculator
 from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import (
     ElapsedDiagnostician,
@@ -961,6 +962,9 @@ class Application:
                 mention_table=self._names.name_table,
                 group_resolver=self._group_names,
                 slow_reporter=self._slow_reporter(),
+                # Resolved per request like the slow report: the engine that
+                # answered decides the transcript format (S0 계측).
+                request_timing=RequestTimingCalculator(self.transcript_reader),
                 # built lazily rather than as a field — eagerly building it here would
                 # look up the bot user ID, making assembly alone call out to Slack
                 participants=lambda channel, thread_ts: self._participants().of(channel, thread_ts),

@@ -52,6 +52,7 @@ from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
 from ..observability.audit import IncidentKind
 from ..observability.progress import ProgressCoordinator
+from ..observability.request_timing import RequestTiming, RequestTimingCalculator
 from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter
 from ..prompt.composer import PromptComposer
@@ -238,6 +239,9 @@ class RequestPipeline:
         group_resolver: Callable[[str], str] | None = None,
         mention_table: Callable[[], Mapping[str, str]] = dict,
         slow_reporter: SlowRequestReporter | None = None,
+        # Splits each request's wall time into named items for its audit row
+        # (time_breakdown). None leaves the row without one (S0 계측).
+        request_timing: RequestTimingCalculator | None = None,
         # Optional to avoid an extra Slack lookup where it's not needed.
         participants: Callable[[str, str], tuple[tuple[str, str], ...]] | None = None,
         linked_threads: Callable[[str, str, Sequence[Mapping[str, Any]], bool], str] | None = None,
@@ -326,6 +330,7 @@ class RequestPipeline:
         self._mentions = MentionRenderer(name_resolver, group_resolver)
         self._mention_table = mention_table
         self._slow_reporter = slow_reporter
+        self._request_timing = request_timing
         self._participants = participants
         self._linked_threads = linked_threads
         self._late_addendum = late_addendum
@@ -589,7 +594,12 @@ class RequestPipeline:
         # person watching, and closing the display between the two attempts
         # would read as the request having finished.
         with self._progress_session(ctx, progress_log):
+            # Bracketing each engine call lets the audit row tell bot-side
+            # preparation from engine startup (S0 계측). The retry overwrites
+            # both, so a failed first attempt is booked as pre-engine time.
+            engine_start = self._timing_stamp()
             response = self._invoker.invoke(request)
+            engine_end = self._timing_stamp()
 
             if not response.ok and self._sessions.should_retry_with_new_session(
                 response.failure_reason or ""
@@ -619,12 +629,19 @@ class RequestPipeline:
                     request, session_id=decision.session_id, resume=False, prompt=prompt,
                     system_prompt=retry_prompt, budget_report=retry_budget,
                 )
+                engine_start = self._timing_stamp()
                 response = self._invoker.invoke(request)
+                engine_end = self._timing_stamp()
 
         elapsed = self._now() - start
+        mono_elapsed = self._monotonic() - mono_start
         # Called once here, before branching into success/failure/silent — calling
         # it in each branch would report the same request multiple times.
-        self._report_if_slow(ctx, decision, model, effort, elapsed, self._monotonic() - mono_start, response, start)
+        self._report_if_slow(ctx, decision, model, effort, elapsed, mono_elapsed, response, start)
+        timing = self._time_breakdown(
+            ctx, decision, response, start=start, engine_start=engine_start,
+            engine_end=engine_end, elapsed=elapsed, mono_elapsed=mono_elapsed,
+        )
 
         if not response.ok:
             failure = response.failure_reason or "엔진 실행 실패"
@@ -639,7 +656,7 @@ class RequestPipeline:
                 model_actual=response.model_actual, model_usage=_turn_model_usage([response]),
                 failure_detail=response.failure_detail,
                 truncated=_truncated(response),
-                context_reset=context_reset, tier=tier,
+                context_reset=context_reset, tier=tier, timing=timing,
             )
             return HandleOutcome(ok=False, failure=failure)
 
@@ -659,7 +676,8 @@ class RequestPipeline:
             self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
                      model_usage=_turn_model_usage([response]),
-                     truncated=_truncated(response), context_reset=context_reset, tier=tier)
+                     truncated=_truncated(response), context_reset=context_reset, tier=tier,
+                     timing=timing)
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
 
@@ -698,7 +716,7 @@ class RequestPipeline:
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                 turns=response.turns, model_actual=response.model_actual,
                 model_usage=_turn_model_usage(turn_calls),
-                truncated=_truncated(response), context_reset=context_reset, tier=tier,
+                truncated=_truncated(response), context_reset=context_reset, tier=tier, timing=timing,
             )
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
             return HandleOutcome(ok=True, silent=True)
@@ -724,7 +742,7 @@ class RequestPipeline:
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                 turns=response.turns, model_actual=response.model_actual,
                 model_usage=_turn_model_usage(turn_calls),
-                truncated=_truncated(response), context_reset=context_reset, tier=tier,
+                truncated=_truncated(response), context_reset=context_reset, tier=tier, timing=timing,
             )
             return HandleOutcome(ok=True)
         posted_ts = ""
@@ -761,6 +779,7 @@ class RequestPipeline:
                      turns=response.turns, model_actual=response.model_actual,
                      model_usage=_turn_model_usage(turn_calls),
                      truncated=_truncated(response), context_reset=context_reset, tier=tier,
+                     timing=timing,
                      # The format review rewrites a message from this body: on a
                      # rich channel Slack only hands back the notification
                      # preview, and without the stored body it must not
@@ -1501,8 +1520,13 @@ class RequestPipeline:
         # The tier this turn ran as (A12). Left out when unknown, the same
         # way model_actual is, so a missing key never reads as "read".
         tier: str = "",
+        # Where the wall time went (S0 계측). Left out when not computed, so
+        # an old row and a row with no breakdown read the same.
+        timing: RequestTiming | None = None,
     ) -> None:
         extra: dict[str, Any] = {CONTEXT_RESET_RAW_KEY: context_reset}
+        if timing is not None:
+            extra["time_breakdown"] = timing.as_audit_dict()
         if tier:
             extra["tier"] = tier
         if answer is not None:
@@ -1551,6 +1575,50 @@ class RequestPipeline:
             turns=turns,
             **extra,
         )
+
+    def _time_breakdown(
+        self,
+        ctx: RequestContext,
+        decision: SessionDecision,
+        response: EngineResponse,
+        *,
+        start: float,
+        engine_start: float,
+        engine_end: float,
+        elapsed: float,
+        mono_elapsed: float,
+    ) -> RequestTiming | None:
+        if self._request_timing is None:
+            return None
+        try:
+            return self._request_timing.compute(
+                engine=response.engine,
+                session_id=response.session_id or decision.session_id or "",
+                start=start,
+                engine_start=engine_start,
+                engine_end=engine_end,
+                end=start + elapsed,
+                queue_wait_sec=self._pickup_wait_sec(ctx, start),
+                mono_elapsed=mono_elapsed,
+            )
+        except Exception:  # the audit row must still be written
+            log.exception("요청 시간 분해에 실패했다")
+            return None
+
+    def _timing_stamp(self) -> float:
+        """The clock, read only when a breakdown will use it: an unwired
+        pipeline keeps the clock reads it had before (S0 계측)."""
+        return self._now() if self._request_timing is not None else 0.0
+
+    @staticmethod
+    def _pickup_wait_sec(ctx: RequestContext, start: float) -> float | None:
+        """Message posted to handler start. Unlike the top-level
+        queue_wait_sec, which only a requeued request carries, every request
+        has this wait, and leaving it out read as 0 (S0 계측)."""
+        try:
+            return max(0.0, start - float(ctx.ts))
+        except (TypeError, ValueError):
+            return None
 
     def _record_best_effort(self, ctx: RequestContext, failure: str) -> None:
         # No EngineResponse survived the exception that got us here, so

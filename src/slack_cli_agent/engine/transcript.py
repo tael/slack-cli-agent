@@ -55,6 +55,28 @@ class TranscriptEvent:
     """
 
 
+@dataclass(frozen=True)
+class TimingEvent:
+    """One transcript line as the per-request time attribution reads it.
+
+    Wider than TranscriptEvent on purpose: the attribution needs the lines
+    TranscriptEvent drops (model request starts, hook runs, the finish
+    review's Stop block) and the tool call ids, so parallel calls and a
+    subagent or MCP wait can be told apart. Kept as its own type so the
+    slow-report breakdown, which reads TranscriptEvent, keeps its numbers.
+    """
+
+    ts: float
+    kind: str
+    """"api_request" | "assistant" | "tool_use" | "tool_result" | "hook" | "stop_block" | "other"."""
+    tool_uses: tuple[tuple[str, str], ...] = ()
+    """(call id, tool name) for every call this line opens."""
+    tool_results: tuple[str, ...] = ()
+    """Call ids this line closes. Empty on a tool_result means "the oldest open call"."""
+    hook_sec: float = 0.0
+    """How long the hooks this line reports ran, as the engine measured it."""
+
+
 def _parse_iso_ts(value: Any) -> float | None:
     """Converts an ISO8601 timestamp to epoch seconds, or None on failure.
 
@@ -109,6 +131,28 @@ class SessionTranscriptReader(ABC):
 
     @abstractmethod
     def read(self, session_id: str) -> list[TranscriptEvent]: ...
+
+    def read_timing(self, session_id: str, since_ts: float | None = None) -> list[TimingEvent]:
+        """Events for per-request time attribution, oldest first.
+
+        The default derives them from read(): no call ids, no model request
+        starts and no hook times, so a tool_result closes the oldest open
+        call. A reader whose format carries more overrides this.
+        """
+        events: list[TimingEvent] = []
+        for seq, event in enumerate(self.read(session_id)):
+            if since_ts is not None and event.ts < since_ts:
+                continue
+            if event.role == "assistant" and event.kind == "tool_use":
+                name = event.brief.split(" ", 1)[0] if event.brief else "?"
+                events.append(TimingEvent(ts=event.ts, kind="tool_use", tool_uses=((f"#{seq}", name),)))
+            elif event.kind == "tool_result":
+                events.append(TimingEvent(ts=event.ts, kind="tool_result"))
+            elif event.role == "assistant":
+                events.append(TimingEvent(ts=event.ts, kind="assistant"))
+            else:
+                events.append(TimingEvent(ts=event.ts, kind="other"))
+        return events
 
     @property
     def splits_tool_time(self) -> bool:
@@ -187,6 +231,96 @@ class ClaudeTranscriptReader(SessionTranscriptReader):
                 request_id=str(request_id) if request_id is not None else None,
             ))
         return events
+
+    #: Lines are appended in time order, but parallel writers can interleave a
+    #: little. Reading back from the end stops only once a line is this much
+    #: older than the request, so a slightly out-of-order line is still kept.
+    TIMING_LOOKBACK_SEC = 120.0
+
+    def read_timing(self, session_id: str, since_ts: float | None = None) -> list[TimingEvent]:
+        """Every main-thread line the time attribution needs, oldest first.
+
+        Reads from the end of the file and stops past since_ts: a resumed
+        session file holds every earlier request too (12 MB was seen), and
+        this runs on every request, not only on slow ones.
+        """
+        path = self.transcript_path(session_id)
+        try:
+            raw_lines = path.read_text(errors="replace").splitlines()
+        except OSError:
+            return []
+        events: list[TimingEvent] = []
+        for raw_line in reversed(raw_lines):
+            try:
+                data = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            ts = _parse_iso_ts(data.get("timestamp"))
+            if ts is None:
+                continue
+            if since_ts is not None and ts < since_ts:
+                if ts < since_ts - self.TIMING_LOOKBACK_SEC:
+                    break
+                continue
+            # A subagent's own lines sit inside the parent's Task call; the
+            # parent's call/result pair already covers that wall time.
+            if data.get("isSidechain") is True:
+                continue
+            events.append(self._timing_event(ts, data))
+        # Back to file order before the stable sort: lines with one timestamp
+        # (a tool result and its hook) must keep the order they were written in.
+        events.reverse()
+        events.sort(key=lambda event: event.ts)
+        return events
+
+    @staticmethod
+    def _timing_event(ts: float, data: Mapping[str, Any]) -> TimingEvent:
+        line_type = data.get("type")
+        if line_type == "api-request":
+            return TimingEvent(ts=ts, kind="api_request")
+        if line_type == "system" and data.get("subtype") == "stop_hook_summary":
+            infos = data.get("hookInfos")
+            total_ms = sum(
+                float(info.get("durationMs") or 0)
+                for info in (infos if isinstance(infos, list) else [])
+                if isinstance(info, dict) and isinstance(info.get("durationMs"), (int, float))
+            )
+            return TimingEvent(ts=ts, kind="hook", hook_sec=total_ms / 1000)
+        if line_type == "attachment":
+            attachment = data.get("attachment")
+            attachment = attachment if isinstance(attachment, dict) else {}
+            event = attachment.get("hookEvent")
+            # The finish review (마무리 검수) is a Stop hook. A block sends the
+            # model back to rewrite, and everything after it is that rewrite.
+            if event == "Stop" and attachment.get("type") == "hook_blocking_error":
+                return TimingEvent(ts=ts, kind="stop_block")
+            duration = attachment.get("durationMs")
+            # Stop hook times come once, on stop_hook_summary; counting the
+            # attachment as well would book the same run twice.
+            if event and event != "Stop" and isinstance(duration, (int, float)):
+                return TimingEvent(ts=ts, kind="hook", hook_sec=float(duration) / 1000)
+            return TimingEvent(ts=ts, kind="other")
+        message = data.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        blocks = [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
+        if line_type == "assistant":
+            uses = tuple(
+                (str(block.get("id") or ""), str(block.get("name") or "?"))
+                for block in blocks if block.get("type") == "tool_use"
+            )
+            if uses:
+                return TimingEvent(ts=ts, kind="tool_use", tool_uses=uses)
+            return TimingEvent(ts=ts, kind="assistant")
+        if line_type == "user":
+            results = tuple(
+                str(block.get("tool_use_id") or "")
+                for block in blocks if block.get("type") == "tool_result"
+            )
+            if results:
+                return TimingEvent(ts=ts, kind="tool_result", tool_results=results)
+        return TimingEvent(ts=ts, kind="other")
 
     @staticmethod
     def _classify_content(content: Any) -> tuple[str | None, str]:
