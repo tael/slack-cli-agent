@@ -423,7 +423,7 @@ class CatchupService:
             self._peer_limiter.reset(thread)
         if not items[-1].extra.get("bot_id"):
             return True
-        return self._peer_limiter.allowed(thread)
+        return self._peer_limiter.allowed(thread, getattr(items[-1], "channel", "") or "")
 
     def _with_attachments(self, ctx: RequestContext) -> RequestContext:
         """Downloads attachments only for the representative a thread group

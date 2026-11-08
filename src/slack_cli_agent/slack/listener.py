@@ -177,7 +177,7 @@ class EventListener:
             # at the only entry a bot-authored mention takes, mirrors bot.py
             # incrementing right before it answers a bot.
             if self._peer_limiter is not None and not self._peer_limiter.allowed(
-                self._thread_key(event)
+                self._thread_key(event), event.get("channel") or ""
             ):
                 self._audit(
                     IncidentKind.PEER_TURN_LIMIT.value, channel=event.get("channel") or "",

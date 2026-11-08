@@ -388,7 +388,10 @@ class Application:
         self._bot_users = BotUserResolver(client)
         # One bot-to-bot cap for the listener and catch-up (C3, C19); two
         # counters would let catch-up answer a mention the live path capped.
-        self._peer_exchange = PeerExchangeLimiter()
+        # channels.json peer_turn_limit 로 채널별 한도를 바꾸거나 끈다 (0). 2026-11-08.
+        self._peer_exchange = PeerExchangeLimiter(
+            limit_for=lambda ch: getattr(self._channels.get(ch), "peer_turn_limit", None),
+        )
         self._channel_name_resolver: ChannelNameResolver | None = None
         self._usage_check_run = run_command
         self._notices = NoticeCatalog()
