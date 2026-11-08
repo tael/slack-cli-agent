@@ -684,6 +684,24 @@ class AskSection(PromptSection):
         return ctx._library_or_raise().text("ASK_NOTE")
 
 
+class WorkStyleSection(PromptSection):
+    """WORK_STYLE_NOTE: explore, write one script, run it once, summarise.
+
+    Measured 2026-11-08 (42 guchipachi requests): median 13 model turns per
+    request at 4.8s each, and 85% of tool-calling responses made one call.
+    Each response is one more round trip, so multi-step lookups are asked to
+    go into one script run once, and independent calls into one response.
+    Kept to a few lines on purpose: the prompt is resent every turn.
+    Skipped during postmortem/debug/format-review, which only look back.
+    """
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return not ctx.aside
+
+    def render(self, ctx: CompositionContext) -> str:
+        return ctx._library_or_raise().text("WORK_STYLE_NOTE")
+
+
 class AttachmentSection(PromptSection):
     """Tells the engine what got attached to this turn: bot.py:4699-4712's
     attachment_note ported. Attachments are downloaded and their local path

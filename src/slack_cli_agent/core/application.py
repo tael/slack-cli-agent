@@ -141,6 +141,7 @@ from ..prompt.sections import (
     TrustedSection,
     TurnTierSection,
     WatchSection,
+    WorkStyleSection,
 )
 from ..reliability.catchup import CatchupService, RetryStatus, StuckCause
 from ..reliability.channel_join import join_registered_channels
@@ -667,6 +668,7 @@ class Application:
             WatchSection(),
             AdvisorSection(),
             AskSection(),
+            WorkStyleSection(),
             TurnTierSection(),
             SilenceRuleSection(),
         ]

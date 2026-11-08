@@ -17,6 +17,7 @@ from slack_cli_agent.prompt.sections import (
     SILENT_MARK_LEGACY,
     AskSection,
     CompositionContext,
+    WorkStyleSection,
     is_silent,
 )
 
@@ -139,3 +140,25 @@ class TestAskSection:
         section = AskSection()
         text = section.render(_ctx())
         assert "[[ASK]]" in text
+
+
+class TestWorkStyleSection:
+    """탐색, 스크립트 작성, 1회 실행, 결과 요약 순의 작업 방식 안내 (S1 턴 압축)."""
+
+    def test_보통_턴에는_적용된다(self) -> None:
+        assert WorkStyleSection().applies_to(_ctx()) is True
+
+    def test_돌아보는_턴에서는_빠진다(self) -> None:
+        for flag in ("postmortem", "debug_trace", "format_review"):
+            assert WorkStyleSection().applies_to(_ctx(**{flag: True})) is False
+
+    def test_스크립트_1회_실행과_묶어_부르기를_담는다(self) -> None:
+        text = WorkStyleSection().render(_ctx())
+        assert "스크립트" in text
+        assert "1회 실행" in text
+        assert "한 응답에 함께" in text
+
+    def test_짧게_유지한다(self) -> None:
+        # 매 턴 다시 실리는 지침이라 몇 줄로 둔다. 지침 크기는 S2 과제가 따로 줄인다.
+        text = WorkStyleSection().render(_ctx())
+        assert len(text.encode("utf-8")) < 800
