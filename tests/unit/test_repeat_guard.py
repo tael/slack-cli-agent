@@ -34,21 +34,24 @@ def _assistant(message_id: str, *uses: tuple[str, str, dict[str, Any]]) -> dict[
     }
 
 
-def _result(tool_use_id: str, text: str = "ok") -> dict[str, Any]:
-    return {
-        "type": "user",
-        "message": {"content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": text}]},
-    }
+def _result(tool_use_id: str, text: str = "ok", is_error: bool = False) -> dict[str, Any]:
+    block = {"type": "tool_result", "tool_use_id": tool_use_id, "content": text}
+    if is_error:
+        block["is_error"] = True
+    return {"type": "user", "message": {"content": [block]}}
 
 
 def _human(text: str = "조사해 줘") -> dict[str, Any]:
     return {"type": "user", "message": {"content": text}}
 
 
-def _bash(n: int, command: str = CMD, start: int = 0) -> list[dict[str, Any]]:
+def _bash(n: int, command: str = CMD, start: int = 0, output: str | None = None) -> list[dict[str, Any]]:
+    """n responses of the same command. Each fails with a different message
+    unless ``output`` is given, which every call then returns."""
     records: list[dict[str, Any]] = []
     for i in range(start, start + n):
-        records += [_assistant(f"m{i}", (f"t{i}", "Bash", {"command": command})), _result(f"t{i}", "Error: 1")]
+        result = _result(f"t{i}", output) if output is not None else _result(f"t{i}", f"Exit code 1 line {i}", True)
+        records += [_assistant(f"m{i}", (f"t{i}", "Bash", {"command": command})), result]
     return records
 
 
@@ -99,6 +102,21 @@ class TestRepeatGuardHook:
         out, _ = run_guard(path, "t3", "Bash", {"command": CMD})
         assert _denied(out)
 
+    def test_같은_출력을_3번_받은_뒤에도_거부한다(self, tmp_path: Path) -> None:
+        path = tmp_path / "t.jsonl"
+        _write(path, [_human(), *_bash(3, output="running\n")])
+        out, _ = run_guard(path, "t3", "Bash", {"command": CMD})
+        assert _denied(out)
+
+    def test_결과가_매번_달라지면_진행으로_보고_통과한다(self, tmp_path: Path) -> None:
+        path = tmp_path / "t.jsonl"
+        records = [_human()]
+        for i in range(3):
+            records += [_assistant(f"m{i}", (f"t{i}", "Bash", {"command": CMD})), _result(f"t{i}", f"rows {i}")]
+        _write(path, records)
+        out, _ = run_guard(path, "t3", "Bash", {"command": CMD})
+        assert out is None
+
     def test_같은_호출_2번이면_통과한다(self, tmp_path: Path) -> None:
         path = tmp_path / "t.jsonl"
         _write(path, [_human(), *_bash(2)])
@@ -137,7 +155,7 @@ class TestRepeatGuardHook:
     def test_다른_가드의_거부는_끊지_않는다(self, tmp_path: Path) -> None:
         path = tmp_path / "t.jsonl"
         records = [_human(), *_bash(2),
-                   _assistant("m2", ("t2", "Bash", {"command": CMD})), _result("t2", "[연속 단건 조회] 묶어라")]
+                   _assistant("m2", ("t2", "Bash", {"command": CMD})), _result("t2", "[연속 단건 조회] 묶어라", True)]
         _write(path, records)
         out, _ = run_guard(path, "t3", "Bash", {"command": CMD})
         assert _denied(out)
@@ -188,6 +206,10 @@ class TestSimilar:
     def test_도구가_다르면_다르다(self) -> None:
         assert not rg.similar("Bash", {"command": "ls"}, "Grep", {"command": "ls"})
 
+    def test_다른_파일은_경로가_길게_겹쳐도_다르다(self) -> None:
+        base = "/Users/someone/Jobs/tasks/a-very-long-task-directory-name/"
+        assert not rg.similar("Read", {"file_path": base + "run1.out"}, "Read", {"file_path": base + "runner.log"})
+
     def test_쪽_넘김은_반복이_아니다(self) -> None:
         a = {"file_path": "/a/very/long/path/to/some/file.py", "offset": 100, "limit": 50}
         b = {**a, "offset": 150}
@@ -215,15 +237,27 @@ class TestSimilar:
 class TestJudge:
     def test_기본값은_앞선_응답_3개다(self) -> None:
         assert rg.DEFAULT_RUN == 3
-        responses = [Response(f"m{i}", [Use(f"t{i}", "Bash", {"command": CMD})]) for i in range(3)]
+        responses = [Response(f"m{i}", [Use(f"t{i}", "Bash", {"command": CMD}, result="same")]) for i in range(3)]
         assert rg.judge(responses, "t3", "Bash", {"command": CMD}) == ("deny", 3)
 
     def test_묶음_속의_같은_호출도_센다(self) -> None:
         responses = [
-            Response(f"m{i}", [Use(f"t{i}", "Bash", {"command": CMD}), Use(f"u{i}", "Read", {"file_path": "/x"})])
+            Response(f"m{i}", [
+                Use(f"t{i}", "Bash", {"command": CMD}, result="same"), Use(f"u{i}", "Read", {"file_path": "/x"}),
+            ])
             for i in range(3)
         ]
         assert rg.judge(responses, "t3", "Bash", {"command": CMD})[0] == "deny"
+
+    def test_결과가_다르면_진행이다(self) -> None:
+        responses = [
+            Response(f"m{i}", [Use(f"t{i}", "Bash", {"command": CMD}, result=f"page {i}")]) for i in range(3)
+        ]
+        assert rg.judge(responses, "t3", "Bash", {"command": CMD}) == ("progress", 3)
+
+    def test_결과가_아직_없으면_막지_않는다(self) -> None:
+        responses = [Response(f"m{i}", [Use(f"t{i}", "Bash", {"command": CMD})]) for i in range(3)]
+        assert rg.judge(responses, "t3", "Bash", {"command": CMD})[0] == "progress"
 
     def test_TodoWrite_는_막지_않는다(self) -> None:
         todo = {"todos": [{"content": "a", "status": "in_progress"}]}
@@ -231,7 +265,7 @@ class TestJudge:
         assert rg.judge(responses, "t5", "TodoWrite", todo) == ("exempt", 0)
 
     def test_tool_use_id_가_없으면_마지막_같은_호출을_자기로_본다(self) -> None:
-        responses = [Response(f"m{i}", [Use(f"t{i}", "Bash", {"command": CMD})]) for i in range(4)]
+        responses = [Response(f"m{i}", [Use(f"t{i}", "Bash", {"command": CMD}, result="same")]) for i in range(4)]
         assert rg.judge(responses, None, "Bash", {"command": CMD}) == ("deny", 3)
 
 

@@ -20,6 +20,8 @@ Each denied response is classified for the table:
 - ``fuzzy``: near-identical only (ratio >= similarity) -- a variation.
 - ``fail``: of those, every earlier matching call in the run ended in a
   tool error -- the same failing call retried.
+- ``progress`` (not a deny): a run of similar calls long enough to deny that
+  was let through because the calls kept returning something new.
 - ``poll``: a Bash command with sleep, tail, or a background output read,
   or a TaskOutput/BashOutput call -- waiting turn by turn.
 
@@ -62,13 +64,22 @@ def replay(
         for mid, uses in req["responses"]:
             c["responses"] += 1
             c["calls"] += len(uses)
-            response = Response(mid, [Use(i, n, inp) for i, n, inp, _ in uses])
+            response = Response(mid, [
+                Use(i, n, inp, result=req["results"].get(i), is_error=i in req["errors"]) for i, n, inp, _ in uses
+            ])
             denied_here: list[tuple[Use, int]] = []
+            progress = False
             for use in response.uses:
-                verdict, run = judge([*seen, response], use.tool_use_id, use.name, use.tool_input,
+                # The hook runs before this call's own result exists.
+                own = Use(use.tool_use_id, use.name, use.tool_input)
+                current = Response(mid, [own if u is use else u for u in response.uses])
+                verdict, run = judge([*seen, current], use.tool_use_id, use.name, use.tool_input,
                                      run_needed, threshold)
                 if verdict == "deny":
                     denied_here.append((use, run))
+                progress = progress or verdict == "progress"
+            if progress and not denied_here:
+                c["progress"] += 1
             if denied_here:
                 c["deny_responses"] += 1
                 c["deny_calls"] += len(denied_here)
@@ -119,15 +130,15 @@ def main() -> int:
     reqs = [r for f in files for r in requests(f, since, until)]
     print(f"files={len(files)} requests={len(reqs)}")
     print("| N | 유사도 | 요청 | 도구 응답 | 호출 | deny 응답 | deny 요청 "
-          "| 정확히 같음 | 변형 | 같은 실패 | 대기 폴링 |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|")
+          "| 정확히 같음 | 변형 | 같은 실패 | 대기 폴링 | 진행이라 통과 |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     first = True
     for n in [int(x) for x in args.runs.split(",")]:
         for sim in [float(x) for x in args.similarity.split(",")]:
             samples: list[str] | None = [] if (first and args.samples) else None
             c = replay(reqs, n, sim, samples)
             print(f"| {n} | {sim:g} | {c['requests']} | {c['responses']} | {c['calls']} | {c['deny_responses']} | "
-                  f"{c['deny_requests']} | {c['exact']} | {c['fuzzy']} | {c['fail']} | {c['poll']} |")
+                  f"{c['deny_requests']} | {c['exact']} | {c['fuzzy']} | {c['fail']} | {c['poll']} | {c['progress']} |")
             if samples is not None:
                 Path(args.samples).write_text(
                     f"# repeat_guard 재생 거부 표본 (N={n}, 유사도={sim:g})\n\n" + "\n\n".join(samples) + "\n",

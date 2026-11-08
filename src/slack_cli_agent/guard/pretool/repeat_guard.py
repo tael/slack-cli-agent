@@ -1,23 +1,29 @@
 """PreToolUse guard: stop the same work being repeated response after response.
 
 serial_read_guard.py stops a run of *different* one-at-a-time lookups. This
-hook stops a run of the *same* call: within the current request (everything
-after the last human input), when each of the previous ``RUN`` responses
-(default 3, REPEAT_GUARD_RUN) made a call essentially the same as this one,
-this call is denied with a reason telling the model to change approach --
-put the variations into one script, rethink a failure that keeps repeating,
-or wait inside one command instead of polling turn by turn.
+hook stops a run of the *same* call that keeps getting nowhere: within the
+current request (everything after the last human input), when each of the
+previous ``RUN`` responses (default 3, REPEAT_GUARD_RUN) made a call
+essentially the same as this one, and those calls were stuck -- every one
+failed, or they all returned the same output -- this call is denied with a
+reason telling the model to change approach: put the variations into one
+script, rethink a failure that keeps repeating, or wait inside one command
+instead of polling turn by turn.
 
 "Essentially the same" is judged per call, by ``similar()``:
 
 - same tool name, and
-- the same normalized input, or one whose difflib ratio is at least
-  ``SIMILARITY`` (default 0.9, REPEAT_GUARD_SIMILARITY). For Bash only the
-  command counts (whitespace collapsed; description and timeout ignored).
-  1.0 means exact matches only.
-- A paging key (offset, page, cursor, ...) with a different value makes two
-  calls different: reading a file page by page is serial reading, which is
-  serial_read_guard's job, not repetition.
+- the same value for every key in ``DISTINCT_KEYS`` (file path, url, page,
+  offset, ...): another file or the next page is other work, and reading
+  page by page is serial_read_guard's business, and
+- the same normalized input, or one whose difflib-style ratio is at least
+  ``SIMILARITY`` (default 0.9, REPEAT_GUARD_SIMILARITY; 1.0 means exact
+  matches only). For Bash only the command counts, whitespace collapsed.
+
+"Stuck" is what keeps a run of similar calls that make progress out:
+replaying two weeks of sessions (tools/repeat_replay.py) without it, most
+denies were queries paging through a table by key or reads of different
+files under one long directory, each returning something new.
 
 A prior response counts towards the run when any of its calls is similar to
 this one, so a polled command stays caught when it rides in a small batch.
@@ -50,6 +56,7 @@ from typing import Any
 try:
     from slack_cli_agent.guard.pretool.serial_read_guard import (
         Response,
+        Use,
         _env_number,
         _read_records,
         responses_since_prompt,
@@ -58,6 +65,7 @@ except ImportError:  # pragma: no cover - run straight from a source checkout
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from slack_cli_agent.guard.pretool.serial_read_guard import (
         Response,
+        Use,
         _env_number,
         _read_records,
         responses_since_prompt,
@@ -77,8 +85,12 @@ DEFAULT_SIMILARITY = 0.9
 #: Tools whose calls repeat by design and cost nothing to repeat.
 EXEMPT_TOOLS = frozenset({"TodoWrite"})
 
-#: Input keys whose differing values mean "the next page", not a repeat.
-PAGING_KEYS = ("offset", "page", "cursor", "start", "start_line", "page_token")
+#: Input keys whose differing values mean other work -- another file or url,
+#: the next page -- not a repeat.
+DISTINCT_KEYS = (
+    "file_path", "path", "notebook_path", "url",
+    "offset", "page", "cursor", "start", "start_line", "page_token",
+)
 
 #: After the common prefix and suffix are taken off, middles longer than this
 #: are not compared: SequenceMatcher is quadratic in the worst case (0.4s on
@@ -90,7 +102,7 @@ MAX_FUZZY_CHARS = 2000
 MARKER = "[같은 작업 반복]"
 
 REASON = (
-    MARKER + " 이번 요청에서 거의 같은 호출을 {run}번 연달아 불렀다. "
+    MARKER + " 이번 요청에서 거의 같은 호출을 {run}번 연달아 불러 같은 결과나 실패만 받았다. "
     "같은 호출을 또 부르지 말고 방법을 바꿔라. "
     "값을 하나씩 바꿔 보는 중이면 스크립트 하나에 묶어 한 번에 돌리고, "
     "같은 실패가 되풀이되면 원인부터 다시 본다. "
@@ -114,7 +126,7 @@ def similar(
 ) -> bool:
     if a_name != b_name:
         return False
-    if any(a_input.get(k) != b_input.get(k) for k in PAGING_KEYS):
+    if any(a_input.get(k) != b_input.get(k) for k in DISTINCT_KEYS):
         return False
     a, b = normalize(a_name, a_input), normalize(b_name, b_input)
     if a == b:
@@ -148,6 +160,15 @@ def ratio_at_least(a: str, b: str, threshold: float) -> bool:
     )
 
 
+def stuck(uses: list[Use]) -> bool:
+    """Every call failed, or every call returned the same output (whitespace
+    collapsed). A call whose result is not on record is not stuck."""
+    if any(u.result is None for u in uses):
+        return False
+    outputs = {_SPACE.sub(" ", u.result or "").strip() for u in uses if not u.is_error}
+    return len(outputs) <= 1
+
+
 def judge(
     responses: list[Response],
     tool_use_id: str | None,
@@ -157,7 +178,8 @@ def judge(
     threshold: float = DEFAULT_SIMILARITY,
 ) -> tuple[str, int]:
     """Decide one call. Returns (verdict, run) where verdict is one of
-    ``deny``, ``exempt``, ``short_run``.
+    ``deny``, ``exempt``, ``short_run`` or ``progress`` (a long enough run of
+    similar calls that was not stuck).
 
     ``responses`` must be parsed with this guard's MARKER so its own denies
     are marked. Pure function over the parsed transcript so the offline
@@ -177,16 +199,20 @@ def judge(
             # Older payloads carry no tool_use_id: take a matching last
             # response as this call's own so it is not counted against itself.
             prior = responses[:-1]
-    run = 0
+    matched: list[Use] = []
     for response in reversed(prior):
-        if any(u.denied for u in response.uses):
+        if len(matched) >= run_needed or any(u.denied for u in response.uses):
             break
-        if not any(similar(u.name, u.tool_input, name, tool_input, threshold) for u in response.uses):
+        same = next(
+            (u for u in response.uses if similar(u.name, u.tool_input, name, tool_input, threshold)), None,
+        )
+        if same is None:
             break
-        run += 1
-        if run >= run_needed:
-            break
-    return ("deny" if run >= run_needed else "short_run"), run
+        matched.append(same)
+    run = len(matched)
+    if run < run_needed:
+        return "short_run", run
+    return ("deny" if stuck(matched) else "progress"), run
 
 
 def decide(data: dict[str, Any]) -> tuple[str, int]:

@@ -91,6 +91,10 @@ class Use:
     name: str
     tool_input: dict[str, Any]
     denied: bool = False
+    #: The call's tool_result text and error flag once it is on record
+    #: (None until then). Read by repeat_guard; this guard only needs denied.
+    result: str | None = None
+    is_error: bool = False
 
 
 @dataclass
@@ -141,7 +145,11 @@ def responses_since_prompt(records: list[dict[str, Any]], marker: str = MARKER) 
                 if not (isinstance(block, dict) and block.get("type") == "tool_result"):
                     continue
                 use = by_id.get(str(block.get("tool_use_id")))
-                if use is not None and _result_text(block).lstrip().startswith(marker):
+                if use is None:
+                    continue
+                use.result = _result_text(block)
+                use.is_error = bool(block.get("is_error"))
+                if use.result.lstrip().startswith(marker):
                     use.denied = True
             continue
         if kind != "assistant" or not isinstance(content, list):
