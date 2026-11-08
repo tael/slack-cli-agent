@@ -127,7 +127,7 @@ class AccessPolicy:
         if self._delegation is None or not message_ts:
             return False
         try:
-            found = self._delegation.lookup(channel, message_ts)
+            found = self._delegation.lookup_settled(channel, message_ts)
         except Exception:  # a broken ledger must close, not open, the turn
             log.exception("위임 원장 판정에 실패해 위임 없음으로 본다 : %s", message_ts)
             return False

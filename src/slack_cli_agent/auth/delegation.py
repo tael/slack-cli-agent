@@ -35,6 +35,14 @@ log = logging.getLogger(__name__)
 TTL_SEC = 1800
 #: mametchi cuts the stored scope (the posted body) at the same length.
 SCOPE_MAX = 500
+#: How long after a message was posted the ledger may still be catching up.
+#: The delegator can only write the row after chat.postMessage returns the
+#: ts, so the receiving bot's event can arrive first. 2026-11-08 15:36:57 the
+#: delegation for #test-bw-sop was looked up at 15:36:59.8 and written at
+#: 15:37:01.6; the turn ran read-only and gave up (김태일 "권한없다고 포기").
+WRITE_GRACE_SEC = 20.0
+#: Poll step while waiting inside the grace window.
+WRITE_POLL_SEC = 0.5
 
 
 class DelegationLedger:
@@ -46,8 +54,12 @@ class DelegationLedger:
         own_name: str,
         delegator: str,
         clock: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
+        write_grace: float = WRITE_GRACE_SEC,
     ) -> None:
         self._path = path
+        self._sleep = sleep
+        self._write_grace = write_grace
         self._self_user_id = self_user_id
         self._own_name = own_name
         #: The only `by` accepted, as mametchi lookup accepts only
@@ -64,6 +76,34 @@ class DelegationLedger:
         for row in self._rows():
             if self._matches(row, channel, message_ts, me, now):
                 return row
+        return None
+
+    def lookup_settled(self, channel: str, message_ts: str) -> Mapping[str, Any] | None:
+        """lookup, but waits out the delegator's write lag for a fresh message.
+
+        A miss on a message younger than write_grace is not final: the row
+        may simply not be written yet. Poll until it shows up or the message
+        is write_grace old. An older message is judged once, as before, so a
+        stale or forged request costs no wait.
+        """
+        found = self.lookup(channel, message_ts)
+        if found is not None or not (channel and message_ts and self._self_user_id()):
+            return found
+        try:
+            posted = float(message_ts)
+        except ValueError:
+            return None
+        deadline = posted + self._write_grace
+        waited = False
+        while self._clock() < deadline:
+            waited = True
+            self._sleep(min(WRITE_POLL_SEC, max(0.0, deadline - self._clock())))
+            found = self.lookup(channel, message_ts)
+            if found is not None:
+                log.info("위임 원장 기록을 기다려 찾았다 : %s : %s", channel, message_ts)
+                return found
+        if waited:
+            log.info("위임 원장 기록을 %.0f초 기다렸지만 없다 : %s : %s", self._write_grace, channel, message_ts)
         return None
 
     def _matches(

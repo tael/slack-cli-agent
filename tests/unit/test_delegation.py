@@ -183,3 +183,51 @@ class TestInputMark:
         mark = input_mark_for(req)
         assert mark not in (UNTRUSTED_INPUT_MARK, OWNER_INPUT_MARK)
         assert "위임" in mark
+
+
+class TestWriteLag:
+    """2026-11-08 15:36:57 위임 글을 15:36:59.8 에 판정하고 원장은 15:37:01.6 에
+    적혀, 위임 턴이 조회 전용으로 돌아 구치파치가 권한 없다며 포기했다."""
+
+    def _setup(self, tmp_path: Path, posted: float, write_at: float | None):
+        path = tmp_path / "delegations.json"
+        path.write_text("[]", encoding="utf-8")
+        clock = {"t": posted + 2.8}
+        sleeps: list[float] = []
+
+        def sleep(sec: float) -> None:
+            sleeps.append(sec)
+            clock["t"] += sec
+            if write_at is not None and clock["t"] >= write_at and path.read_text() == "[]":
+                path.write_text(json.dumps([row(message_ts=f"{posted:.6f}", created=write_at,
+                                                expires=write_at + TTL_SEC)]), encoding="utf-8")
+
+        led = DelegationLedger(path, self_user_id=lambda: ME, own_name="guchi", delegator="mametchi",
+                               clock=lambda: clock["t"], sleep=sleep)
+        return led, sleeps
+
+    def test_waits_for_row_written_after_the_event(self, tmp_path: Path) -> None:
+        posted = NOW
+        led, sleeps = self._setup(tmp_path, posted, write_at=posted + 4.6)
+        assert led.lookup("C1", f"{posted:.6f}") is None
+        assert led.lookup_settled("C1", f"{posted:.6f}") is not None
+        assert 0 < sum(sleeps) < 3
+
+    def test_gives_up_after_grace(self, tmp_path: Path) -> None:
+        posted = NOW
+        led, sleeps = self._setup(tmp_path, posted, write_at=None)
+        assert led.lookup_settled("C1", f"{posted:.6f}") is None
+        assert sum(sleeps) <= 20
+
+    def test_old_message_is_not_waited(self, tmp_path: Path) -> None:
+        posted = NOW
+        led, sleeps = self._setup(tmp_path, posted, write_at=None)
+        assert led.lookup_settled("C1", f"{posted - 300:.6f}") is None
+        assert sleeps == []
+
+    def test_policy_marks_delegated_after_lag(self, tmp_path: Path) -> None:
+        posted = NOW
+        led, _ = self._setup(tmp_path, posted, write_at=posted + 4.6)
+        (tmp_path / "c.json").write_text(json.dumps({"C1": {}}), encoding="utf-8")
+        pol = AccessPolicy(Profile.from_dict(PROFILE), ChannelRegistry(tmp_path / "c.json"), delegation=led)
+        assert pol.principal_for("C1", CTRL, f"{posted:.6f}").delegated is True
