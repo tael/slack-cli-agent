@@ -2927,3 +2927,75 @@ class TestReviewRequesterScope:
         assert not any(name.startswith("Bash(") for name in tools)
         assert f"Bash({app.rewrite_command()}:*)" in allowed
         assert "Bash" not in allowed
+
+
+class Test프롬프트캐시배치:
+    """요청마다 바뀌는 값은 시스템 프롬프트 끝에 모인다 (S4).
+
+    프롬프트 캐시는 같은 앞부분만 다시 쓴다. 스레드 좌표나 감시 실행 ID 가
+    중간에 있으면 새 스레드마다 그 뒤를 전부 다시 써야 한다.
+    """
+
+    @staticmethod
+    def _compose(app: Application, **kw: Any) -> str:
+        principal = Principal(
+            user_id=kw.pop("user_id"), channel=kw["channel"],
+            trust=TrustLevel.GENERAL, is_direct_message=False,
+        )
+        return app._composer().compose(CompositionContext(
+            principal=principal, channel_slug="general", turn_tier="read",
+            watch_out_dir="/tmp/watch-out", **kw,
+        ))
+
+    def test_스레드와_요청_값이_달라도_앞부분은_같다(self, tmp_path: Path) -> None:
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        a = self._compose(
+            app, user_id="U1", channel="C111", thread_ts="1762500000.000100",
+            asker_name="가", asker_id="U1", watch_run_id="run-aaaa",
+            people=(("가", "<@U1>"), ("나", "<@U2>")),
+            files=({"name": "a.png", "mimetype": "image/png", "local_path": "/tmp/a.png"},),
+        )
+        b = self._compose(
+            app, user_id="U9", channel="C999", thread_ts="1762599999.000900",
+            asker_name="다", asker_id="U9", watch_run_id="run-bbbb",
+            people=(("다", "<@U9>"), ("라", "<@U8>")),
+            files=({"name": "b.csv", "mimetype": "text/csv", "local_path": "/tmp/b.csv"},),
+        )
+        common = 0
+        for x, y in zip(a, b, strict=False):
+            if x != y:
+                break
+            common += 1
+        prefix = a[:common]
+        # 권한 단계 줄까지는 요청 값이 없다. 같은 채널, 같은 단계면 그대로 재사용된다.
+        assert "[이 턴 권한" in prefix
+        for value in ("C111", "1762500000", "run-aaaa", "a.png", "<@U1>"):
+            assert value not in prefix
+            assert value in a
+
+    def test_같은_요청_값이면_바이트가_같다(self, tmp_path: Path) -> None:
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        kw = dict(user_id="U1", channel="C1", thread_ts="1.2", asker_id="U1", watch_run_id="r")
+        assert self._compose(app, **dict(kw)) == self._compose(app, **dict(kw))
+
+    def test_요청별_섹션이_고정_섹션_뒤에_온다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.prompt.sections import (
+            AskerSection,
+            AttachmentSection,
+            AuthoritySection,
+            PresentPeopleSection,
+            SilenceRuleSection,
+            ThreadCoordsSection,
+            TurnTierSection,
+            WatchSection,
+        )
+
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        kinds = [type(s) for s in app._prompt_sections()]
+        last_stable = max(kinds.index(AuthoritySection), kinds.index(TurnTierSection))
+        for variable in (
+            AskerSection, PresentPeopleSection, ThreadCoordsSection,
+            WatchSection, AttachmentSection,
+        ):
+            assert kinds.index(variable) > last_stable
+        assert kinds.index(SilenceRuleSection) > kinds.index(AttachmentSection)

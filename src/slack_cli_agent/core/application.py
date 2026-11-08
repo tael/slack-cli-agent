@@ -647,6 +647,13 @@ class Application:
         return self._tool_policy
 
     def _prompt_sections(self) -> list[PromptSection]:
+        # Sections whose text depends only on the channel and the speaker's
+        # tier go first, the ones carrying per-thread or per-request values
+        # (speaker name, people, channel/thread_ts, watch run id, attachments)
+        # go last. The prompt cache reuses the longest identical prefix, so a
+        # thread_ts in the middle used to make every new thread rewrite the
+        # rest of the prompt (S4, 2026-11-08). AirflowSection still follows
+        # AuthoritySection, and SilenceRuleSection stays the closing note.
         sections: list[PromptSection] = [
             PersonaSection(),
             KnowledgeSection(),
@@ -656,18 +663,18 @@ class Application:
             PeerRecoverySection(self._profile.peer),
             SlackFormatSection(),
             ReviewFormatSection(),
-            AskerSection(peer_bot_ids=self._profile.controller_user_ids),
-            AttachmentSection(),
-            ThreadCoordsSection(),
-            PresentPeopleSection(),
             TrustedSection(),
             SensitiveGuardSection(),
             AuthoritySection(),
             AirflowSection(),
-            WatchSection(),
             AdvisorSection(),
             AskSection(),
             TurnTierSection(),
+            AskerSection(peer_bot_ids=self._profile.controller_user_ids),
+            PresentPeopleSection(),
+            ThreadCoordsSection(),
+            WatchSection(),
+            AttachmentSection(),
             SilenceRuleSection(),
         ]
         sections.extend(s for p in self._plugins for s in p.prompt_sections())
