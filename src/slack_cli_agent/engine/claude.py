@@ -49,7 +49,13 @@ from ..auth.principal import TrustLevel
 from ..config.profile import EngineSpec, McpServerSpec
 from ..guard import finish_hook
 from ..guard.posttool import parallel_nudge
-from ..guard.pretool import install_guard, restart_guard, scan_guard, turn_budget
+from ..guard.pretool import (
+    install_guard,
+    restart_guard,
+    scan_guard,
+    serial_read_guard,
+    turn_budget,
+)
 from ..observability.progress_hook import HOOK_SCRIPT
 from .base import (
     ElapsedSource,
@@ -283,6 +289,15 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
                     {"type": "command", "command": _hook_command(scan_guard.HOOK_SCRIPT)},
                 ],
             },
+            # Every tool: denies a read-only call after a run of responses that
+            # each made one read-only call (guard/pretool/serial_read_guard).
+            # The posttool nudge below only reminds and was ignored in practice.
+            {
+                "matcher": "*",
+                "hooks": [
+                    {"type": "command", "command": _hook_command(serial_read_guard.HOOK_SCRIPT)},
+                ],
+            },
         ],
         # Never blocks; only reminds the model to batch independent lookups
         # after a run of single read-only calls (guard/posttool/parallel_nudge).
@@ -307,6 +322,7 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
 def guard_hook_settings() -> dict[str, Any]:
     """The settings fragment registering the Bash PreToolUse guards
     (turn_budget, restart_guard, install_guard, scan_guard -- guard/pretool/),
+    the all-tools serial-read guard (guard/pretool/serial_read_guard.py),
     the parallel-nudge PostToolUse hook (guard/posttool/parallel_nudge.py)
     and the finish-review Stop hook (guard/finish_hook.py) as engine built-ins.
 

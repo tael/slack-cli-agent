@@ -424,8 +424,8 @@ class TestClaudeEngineBuildCommand:
         engine = ClaudeEngine(profile, SETTINGS)
         cmd = engine.build_command(request(progress_log=tmp_path / "p.log"))
         실린것 = json.loads(cmd[cmd.index("--settings") + 1])
-        # 운영자 훅 + 진행 훅 + B4 Bash 가드 그룹 = 3
-        assert len(실린것["hooks"]["PreToolUse"]) == 3
+        # 운영자 훅 + 진행 훅 + B4 Bash 가드 그룹 + 연속 단건 조회 가드 = 4
+        assert len(실린것["hooks"]["PreToolUse"]) == 4
         assert any(g["matcher"] == "Bash" for g in 실린것["hooks"]["PreToolUse"])
 
     @staticmethod
