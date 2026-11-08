@@ -775,7 +775,12 @@ class RequestPipeline:
         # and a trailing tag the strip reads from the end.
         body = self._recover_unposted_render(body, ctx, request, decision, turn_calls)
         body, image_ts = self._post_generated_images(body, ctx, start, turn_calls, flat)
-        body = self._publisher.apply_elapsed_model_line(body, model, rich)
+        # 2026-11-08 김태일 지시: private-taeil 은 마메치와 같은 통계 푸터를 쓴다.
+        if ctx.channel == "C01EWFYL077" and hasattr(self._publisher, "apply_stats_footer"):
+            body = self._publisher.apply_stats_footer(
+                body, model, rich, elapsed=elapsed, effort=effort, usage=response.usage)
+        else:
+            body = self._publisher.apply_elapsed_model_line(body, model, rich)
         # Right before the post, confirm the question is still in its thread.
         # If the asker deleted it mid-turn, the intake coordinates now point at
         # whatever thread took its place, and posting there strands the answer

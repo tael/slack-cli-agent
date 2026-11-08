@@ -24,6 +24,7 @@ from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.channel_kind import is_direct_message_channel
 from slack_cli_agent.core.errors import SlackError
 from slack_cli_agent.core.markers import (
+    ELAPSED_LINE,
     ELAPSED_MODEL_LINE,
     split_leaked_tags,
     strip_control_tags,
@@ -138,6 +139,33 @@ class MessagePublisher:
             return body
         cleaned = ELAPSED_MODEL_LINE.sub("", body.rstrip()).rstrip()
         return cleaned.rstrip() + f"\n> 실행 모델 : {model}"
+
+    def apply_stats_footer(self, body: str, model: str, rich: bool, *, elapsed, effort, usage) -> str:
+        """Mametchi 와 같은 푸터: 걸린 시간, 실행 모델 · effort, 토큰, 캐시 적중률.
+
+        2026-11-08 김태일 지시 "응답에 마메치처럼 모델과 시간등을 표기해라. 똑같이".
+        모델이 흉내 낸 줄은 먼저 지운다. 값은 실행기가 잰 것만 쓴다.
+        """
+        if not rich or not model:
+            return body
+        cleaned = ELAPSED_MODEL_LINE.sub("", body.rstrip()).rstrip()
+        cleaned = ELAPSED_LINE.sub("", cleaned).rstrip()
+        out = cleaned
+        if elapsed is not None:
+            out += f"\n\n> 걸린 시간 : {elapsed:.0f}초"
+        out += f"\n> 실행 모델 : {model}" + (f" · {effort}" if effort else "")
+        if usage is not None:
+            def k(n):
+                return f"{n / 1_000_000:.1f}M" if n >= 1_000_000 else (f"{n / 1_000:.0f}k" if n >= 1_000 else str(n))
+            i, o = usage.input_tokens, usage.output_tokens
+            made, read = usage.cache_creation_tokens, usage.cache_read_tokens
+            side = i + made + read
+            out += (f"\n> 토큰 : {i + made + read + o:,}개 (입력 {k(i)} / 캐시 기록 {k(made)} / "
+                    f"캐시 읽기 {k(read)} / 출력 {k(o)})"
+                    f"\n> 캐시 적중률 : {(100 * read / side if side else 0):.0f}퍼센트")
+        else:
+            out += "\n> 토큰 : 기록 없음"
+        return out
 
     def _rich_payload(self, part: str, *, split_note: bool) -> RichPayload:
         """Renders one chunk into Slack arguments for a rich channel.
