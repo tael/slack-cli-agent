@@ -250,7 +250,9 @@ class RuntimeSettings:
     # S2 컨텍스트 임계 리셋. 세션 마지막 턴의 호출당 컨텍스트 토큰
     # (input + cache_read + cache_creation) 이 이 값 이상이면 다음 요청은 새
     # 세션으로 시작하고 스레드 기록을 다시 읽어 이어 간다. 0 이하는 끈다.
-    context_reset_tokens: int = 150000
+    # 기본은 끔이다. 첫 호출 바닥이 봇마다 달라(구치파치 S0 268k) 한 값으로 켜면
+    # 이어 가야 할 턴이 모두 새 세션이 된다. 프로필에서 켠다.
+    context_reset_tokens: int = 0
 
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """Overrides only the fields present in `values`; unknown keys are

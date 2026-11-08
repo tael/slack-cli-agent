@@ -104,3 +104,32 @@ def test_footprint_records_attached_count(tmp_path):
     assert footprint.as_audit_dict()["mcp_servers_attached"] == 1
     full = engine.footprint_for(_request(tmp_path, ToolSelection.unrestricted()))
     assert full.as_audit_dict()["mcp_servers_attached"] == len(SERVERS)
+
+
+def _arg(cmd: list[str], flag: str) -> str:
+    return cmd[cmd.index(flag) + 1]
+
+
+def test_MCP_서버가_열린_턴은_ToolSearch_를_붙여_도구_정의를_미룬다(tmp_path: Path) -> None:
+    """ToolSearch 가 --tools 에 없으면 claude 가 MCP 도구 정의를 매 호출에 모두 싣는다.
+    claude 2.1.319 실측(2026-11-08, kubernetes 21개 도구) : 없으면 입력 12,219 토큰,
+    있으면 4,943 토큰. 승인 목록에도 넣어 dontAsk 가 막지 않게 한다."""
+    cmd = _engine().build_command(
+        _request(tmp_path, ToolSelection.allow(["Read", "mcp__notion__*"]))
+    )
+    assert _arg(cmd, "--tools").split(",") == ["Read", "ToolSearch"]
+    assert "ToolSearch" in _arg(cmd, "--allowedTools").split(",")
+
+
+def test_MCP_서버가_닫힌_턴은_ToolSearch_를_붙이지_않는다(tmp_path: Path) -> None:
+    cmd = _engine().build_command(_request(tmp_path, ToolSelection.allow(["Read", "Grep"])))
+    assert _arg(cmd, "--tools") == "Read,Grep"
+    assert "ToolSearch" not in _arg(cmd, "--allowedTools")
+
+
+def test_이미_허용한_ToolSearch_는_두_번_싣지_않는다(tmp_path: Path) -> None:
+    cmd = _engine().build_command(
+        _request(tmp_path, ToolSelection.allow(["ToolSearch", "mcp__jira__*"]))
+    )
+    assert _arg(cmd, "--tools") == "ToolSearch"
+    assert _arg(cmd, "--allowedTools").split(",").count("ToolSearch") == 1
