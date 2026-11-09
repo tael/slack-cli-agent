@@ -171,6 +171,10 @@ class EventListener:
             # The body, not just `text`: a rich post's `text` is only its
             # notification preview, and the mention may sit in its blocks (C1).
             if not self._identity.is_mentioned(event_body(event)):
+                log.info(
+                    "봇 명의 멘션을 버린다 : 신원 미확인 또는 이 봇을 부르지 않음 : %s:%s (신원 확인=%s)",
+                    event.get("channel"), event.get("ts"), self._identity.known,
+                )
                 return None
             # A peer named this bot: count the turn and stop once the thread's
             # bot-to-bot exchange has gone past its cap (C19). Counting here,
