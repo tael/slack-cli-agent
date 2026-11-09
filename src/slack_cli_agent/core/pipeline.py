@@ -1067,7 +1067,20 @@ class RequestPipeline:
             "CODE_FIRST_CHANNELS": ",".join(
                 sorted(cid for cid, c in configs.items() if c.code_first)
             ),
+            # finish_review.named_turn also blocks "<오너 이름> 턴" written
+            # without 님 (2026-11-09 private-taeil: 오너를 실명으로 특정).
+            "OWNER_NAME": self._owner_name(),
         }
+
+    def _owner_name(self) -> str:
+        if not self._owner_user_id:
+            return ""
+        try:
+            name = self._name_resolver(self._owner_user_id) or ""
+        except Exception as exc:  # noqa: BLE001 — a lookup failure only weakens one hook rule
+            log.warning("오너 이름을 찾지 못했다 : %s", exc)
+            return ""
+        return "" if name == self._owner_user_id else name
 
     def _present_people(self, ctx: RequestContext) -> tuple[tuple[str, str], ...]:
         # A lookup failure just omits this from the prompt; it must not block the reply.

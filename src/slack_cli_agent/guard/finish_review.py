@@ -284,17 +284,30 @@ def offer(turn: Turn) -> str | None:
 _NAMED_TURN_RE = re.compile(r"[가-힣A-Za-z]{2,10}님\s?(?:의\s?)?턴")
 
 
-def named_turn(turn: Turn) -> str | None:
-    """The first "<이름>님 턴" outside quotes, if any."""
+def _owner_turn_re(env: Mapping[str, str]) -> re.Pattern[str] | None:
+    """"<오너 이름> 턴", "<오너 이름> 본인 턴", "<오너 이름>이 아닌 사람의 턴"
+    -- the owner named within a few characters before 턴, with or without 님.
+    The name comes from OWNER_NAME (pipeline._engine_env), never hardcoded."""
+    name = (env.get("OWNER_NAME") or "").strip()
+    if len(name) < 2:
+        return None
+    return re.compile(re.escape(name) + r"[^.\n,]{0,10}?턴")
+
+
+def named_turn(turn: Turn, env: Mapping[str, str] | None = None) -> str | None:
+    """The first "<이름>님 턴" (or "<오너 이름> 턴") outside quotes, if any."""
     answer = turn.answer
     if not answer:
         return None
+    owner_re = _owner_turn_re(os.environ if env is None else env)
     for line in answer.splitlines():
         if _TAG_LINE.match(line):
             continue
-        hit = _NAMED_TURN_RE.search(_QUOTED.sub("", line))
-        if hit:
-            return hit.group(0)
+        bare = _QUOTED.sub("", line)
+        for pattern in (_NAMED_TURN_RE, owner_re):
+            hit = pattern.search(bare) if pattern else None
+            if hit:
+                return hit.group(0)
     return None
 
 

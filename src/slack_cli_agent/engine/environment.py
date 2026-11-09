@@ -269,6 +269,9 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         "POST_CHANNEL",
         "ADVISOR_CHANNELS",
         "CODE_FIRST_CHANNELS",
+        # finish_review.named_turn: the owner's display name, so "<이름> 턴"
+        # without 님 is caught too. A name, not a credential.
+        "OWNER_NAME",
         # Stop hook model verify toggle and model (finish_review.
         # resolve_verify_settings). On by default; these only override.
         "SCA_FINISH_VERIFY",
