@@ -36,7 +36,8 @@ KNOWN_KEYS = frozenset(
         "owner_user_id", "controller_user_ids", "troubleshoot_channel", "owner_dm", "credentials_file",
         "plugins", "usage_check_command", "agent_greeting", "agent_prompts",
         "settings", "mcp_servers", "domain_file", "light_workdir", "airflow_ctl", "peer",
-        "delegation_ledger", "delegation_by", "delegation_record",
+        "delegation_ledger", "delegation_by", "delegation_record", "delegation_reply_only",
+        "extra_readable_dirs",
     }
 )
 """Top-level keys `from_dict` reads. Anything else is dropped, so a mistyped
@@ -343,6 +344,10 @@ class Profile:
     #: (mametchi delegation.record, A8). Rows carry `by` = this profile's
     #: name. None means this bot never delegates.
     delegation_record: Path | None = None
+    #: Accept from delegation_ledger only replies to work this bot handed out:
+    #: kind=reply rows whose origin_ts is in delegation_record (mametchi
+    #: lookup_reply). False keeps the plain delegation check.
+    delegation_reply_only: bool = False
     plugins: tuple[str, ...] = ()
     #: Operator-supplied usage check command. Empty means the check is off.
     usage_check_command: tuple[str, ...] = ()
@@ -372,6 +377,10 @@ class Profile:
     # Airflow note. Org-specific, so it lives in the profile. None leaves the
     # slot unfilled, which only matters to a bot whose prompts use it.
     airflow_ctl: Path | None = None
+    # Directories outside the state dir every engine call may also read, such as
+    # API spec repos a helpdesk channel answers from (mametchi bot.py:473-477).
+    # Org-specific paths, so they live in the profile.
+    extra_readable_dirs: tuple[Path, ...] = ()
     # A sibling bot this one can revive on the owner's word. None means there is
     # no peer, and the revival guidance is left out of the prompt entirely
     # (PeerRecoverySection). Org-specific locations, so it lives in the profile.
@@ -475,6 +484,14 @@ class Profile:
         # wrote into the file (mametchi lookup checks by == DELEGATOR).
         if data.get("delegation_ledger") and not data.get("delegation_by"):
             raise ConfigError("delegation_ledger 를 쓰려면 delegation_by 에 위임자 이름을 적는다")
+        if data.get("delegation_reply_only") is True and not data.get("delegation_record"):
+            raise ConfigError("delegation_reply_only 를 쓰려면 delegation_record 에 내 위임 원장을 적는다")
+        extra_readable_dirs = tuple(
+            Path(str(d)).expanduser() for d in (data.get("extra_readable_dirs") or ()) if d
+        )
+        for d in extra_readable_dirs:
+            if not d.is_absolute():
+                raise ConfigError(f"extra_readable_dirs 는 절대경로여야 한다 : {redact(str(d))}")
         fallback = data.get("fallback_engine")
         mcp_servers_block = data.get("mcp_servers") or {}
         mcp_servers = {
@@ -514,6 +531,8 @@ class Profile:
                 if data.get("delegation_ledger") else None
             ),
             delegation_by=str(data.get("delegation_by") or ""),
+            extra_readable_dirs=extra_readable_dirs,
+            delegation_reply_only=data.get("delegation_reply_only") is True,
             delegation_record=(
                 Path(str(data["delegation_record"])).expanduser()
                 if data.get("delegation_record") else None
