@@ -80,7 +80,7 @@ class TestReplyOnly:
     def test_요청자를_모르면_받지_않는다(self, tmp_path: Path) -> None:
         assert ledger(tmp_path, [peer_row()], [own_row()]).lookup("C1", "2.0") is None
 
-    def test_회신_모드가_아니면_종전대로_kind_를_보지_않는다(self, tmp_path: Path) -> None:
+    def test_회신_모드가_아니면_kind_없는_행은_종전대로_받는다(self, tmp_path: Path) -> None:
         plain = peer_row()
         del plain["kind"]
         assert ledger(tmp_path, [plain], None).lookup("C1", "2.0") is not None
