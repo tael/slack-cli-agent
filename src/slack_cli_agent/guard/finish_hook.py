@@ -52,6 +52,7 @@ from slack_cli_agent.guard.finish_review import (
     time_left,
     turn_from_transcript_rows,
 )
+from slack_cli_agent.core.markers import missing_recipient_prompt
 
 #: Absolute path to this file, for the engine adapter that builds the hook
 #: command (same pattern as observability/progress_hook.py's HOOK_SCRIPT).
@@ -132,6 +133,31 @@ def _log_verify(state_dir: Path | None, record: dict[str, Any]) -> None:
         pass
 
 
+def _is_recipient_retry_turn(rows: Sequence[Mapping[str, Any]]) -> bool:
+    """True when the latest non-meta text input is the missing-recipient
+    reprompt. That rerun runs with every tool forbidden and only its tag is
+    used (pipeline._retry_recipient_tag), so a claim check there has no
+    evidence to read and blocks the whole body; the model then answered
+    empty and the reply was lost (2026-11-09 private-taeil 20:31)."""
+    head = missing_recipient_prompt().split("\n", 1)[0][:40]
+    for entry in reversed(rows):
+        if entry.get("type") != "user" or entry.get("isMeta"):
+            continue
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        if isinstance(content, list):
+            texts = [b.get("text") for b in content if isinstance(b, Mapping) and b.get("type") == "text"]
+            if not texts:
+                continue
+            content = str(texts[0] or "")
+        if not isinstance(content, str):
+            continue
+        if content.lstrip().startswith("Stop hook feedback"):
+            continue
+        return content.lstrip().startswith(head)
+    return False
+
+
 def main(argv: list[str]) -> int:
     try:
         payload = json.load(sys.stdin)
@@ -141,6 +167,8 @@ def main(argv: list[str]) -> int:
         session_id = payload.get("session_id")
         transcript_path = payload.get("transcript_path") or ""
         rows = _read_transcript_rows(transcript_path) if transcript_path else []
+        if rows and _is_recipient_retry_turn(rows):
+            return 0
         this_turn_rows = rows_since_last_human_input(rows) if rows else []
         turn = turn_from_transcript_rows(
             rows,

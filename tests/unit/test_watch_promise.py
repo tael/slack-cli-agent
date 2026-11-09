@@ -125,3 +125,23 @@ def test_재작성이_안_되면_약속_위치에서_자른다(rerun, tmp_path: 
     assert outcome.ok is True
     assert len(deps["runner"].calls) == 2
     assert deps["publisher"].posted[0]["text"] == CUT_BODY
+
+
+def test_감시_표식_아래의_수신자_표식을_지우지_않는다() -> None:
+    """2026-11-09 private-taeil 20:31 : ASK / WATCH / RECIPIENT 순서로 끝난 답에서
+    감시 표식을 떼며 수신자 표식까지 지워 답이 게시되지 않았다."""
+    body = (
+        "옵션만 정해 주시면 진행하겠습니다.\n\n[[ASK]]\n"
+        "[[WATCH: jobs/exit6 파일이 생겼는지와 그 값, 착수 조건(B1) 충족 여부를 보고]]\n"
+        "[[RECIPIENT:ASKER]]"
+    )
+    result = WatchPromiseGuard().apply(body, GuardContext())
+    assert result.detail["watch_desc"] == "jobs/exit6 파일이 생겼는지와 그 값, 착수 조건(B1) 충족 여부를 보고"
+    assert result.body == "옵션만 정해 주시면 진행하겠습니다.\n\n[[ASK]]\n[[RECIPIENT:ASKER]]"
+
+
+def test_감시_표식이_마지막_줄이면_그대로_떼어_낸다() -> None:
+    body = "확인했습니다.\n[[WATCH@2026-11-12: dag x run y 상태]]"
+    result = WatchPromiseGuard().apply(body, GuardContext())
+    assert result.detail == {"watch_desc": "dag x run y 상태", "watch_due": "2026-11-12"}
+    assert result.body == "확인했습니다."

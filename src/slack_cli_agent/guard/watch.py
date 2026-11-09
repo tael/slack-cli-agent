@@ -38,8 +38,14 @@ WATCH_MARK_EMOJI = "mag"
 # 2026-09-19): the model names a date and the watch isn't checked before it
 # arrives. Without it a week-long promise gets polled every five minutes for
 # nothing.
+# The description may not run past its own `]]`, and marker lines after it
+# (`[[RECIPIENT:...]]`, `[[NOWATCH]]`) are captured in `trailing` and kept on
+# strip. Before 2026-11-09 the lazy `.+?` anchored at \Z stretched over a
+# following `[[RECIPIENT:ASKER]]` line and the strip deleted it, so a reply
+# ending ASK / WATCH / RECIPIENT went unposted (private-taeil 20:31).
 WATCH_RE = re.compile(
-    r"\n{0,2}\[\[WATCH(?:@(?P<due>\d{4}-\d{2}-\d{2}))?:\s*(?P<desc>.+?)\s*\]\]\s*\Z",
+    r"\n{0,2}\[\[WATCH(?:@(?P<due>\d{4}-\d{2}-\d{2}))?:\s*(?P<desc>(?:(?!\]\]).)+?)\s*\]\]"
+    r"(?P<trailing>(?:[ \t]*\n[ \t]*\[\[[^\]\n]*\]\][ \t]*)*)\s*\Z",
     re.DOTALL,
 )
 
@@ -245,7 +251,7 @@ class WatchPromiseGuard(OutputGuard):
                         ),
                     )
                 log.warning("실행이 필요한 감시가 재작성 뒤에도 남아 그대로 등록한다 : %s", desc)
-            stripped = WATCH_RE.sub("", body).rstrip()
+            stripped = WATCH_RE.sub(lambda w: w.group("trailing") or "", body).rstrip()
             return GuardResult(
                 body=stripped, changed=True, detail={"watch_desc": desc, "watch_due": due},
             )
