@@ -77,7 +77,25 @@ general 덧씌움은 `Bash`, `Edit`, `Write`, `NotebookEdit` 넷을 막는다.
 조직마다 더 막을 것이 있다. 회사 문서 경로, 사내 자격 파일 자리 같은 것은 깐 뒤
 운영물 쪽 파일에 더한다. 그 값은 조직 고유값이라 본보기에 넣지 않는다.
 
+## `Read(~/.claude/**)` 는 소유자가 아닌 수준에만 둔다 (2026-11-09)
+
+이 차단이 공통 파일에 있으면 덧씌움이 되돌리지 못해 소유자 턴도 `~/.claude`
+아래를 못 읽는다. 구치파치 소유자 턴에서 실행기 세션 기록(`~/.claude/projects/
+*/*.jsonl`)과 memory 의 Read, Grep 이 거부됐고, 경로를 읽는 Bash 명령도 같은
+deny 에 걸렸다.
+
+- 공통 : `Read(~/.claude/.credentials.json)`, `Read(~/.claude/session-env/**)`
+  만 막는다. 자격증명은 모든 수준에서 계속 막힌다
+- general, trusted, operator_full : `Read(~/.claude/**)` 를 덧씌움에 둔다.
+  operator_full 파일이 없으면 operator 턴은 공통만 읽어 `~/.claude` 가 열린다
+- owner(위임 턴 포함) : `~/.claude` 를 읽는다
+
+이미 깐 봇은 운영물 파일을 같은 모양으로 손으로 고친다. 본보기 설치는 있는
+파일을 덮지 않는다.
+
 ## `Read(~/.claude/**)` 가 자동 memory 쓰기를 막는다 (2026-09-27)
+
+소유자 수준은 2026-11-09 부터 이 차단이 없다. 아래는 그 밖의 수준에 해당한다.
 
 공통 차단 `Read(~/.claude/**)`는 자동 memory 기능의 저장 위치
 `~/.claude/projects/<프로젝트>/memory/`도 함께 막는다. Claude Code는 읽기

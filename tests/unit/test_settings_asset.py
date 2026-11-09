@@ -58,7 +58,11 @@ class Test본보기내용:
 
     def test_일반_덧씌움은_도구_넷만_막는다(self) -> None:
         본보기 = load_settings_file(_ASSET_DIR / 일반)
-        assert 본보기 == {"permissions": {"deny": ["Bash", "Edit", "Write", "NotebookEdit"]}}
+        assert 본보기 == {
+            "permissions": {
+                "deny": ["Bash", "Edit", "Write", "NotebookEdit", "Read(~/.claude/**)"]
+            }
+        }
 
     @pytest.mark.parametrize("이름", _비차단_덧씌움)
     def test_도구를_막지_않는_덧씌움은_도구_넷을_안_막는다(self, 이름: str) -> None:
@@ -79,13 +83,19 @@ class Test본보기내용:
         assert any("token" in 항목 for 항목 in deny)
         assert any("secret" in 항목 for 항목 in deny)
 
-    def test_신뢰와_운영자전권_덧씌움은_빈_조각이다(self) -> None:
-        """지금은 공통 파일 내용 그대로가 맞다 — 둘 다 전면 차단이 없는 채널
-        사용자용이라 더 막을 것이 없다. 자리를 비워 두지 않고 빈 파일로 깐
-        것은, 없어서 안 거는 것과 있는데 비워서 안 거는 것을 운영자가 파일
-        존재 여부로 구분할 수 있게 하기 위해서다."""
-        assert load_settings_file(_ASSET_DIR / 신뢰) == {}
-        assert load_settings_file(_ASSET_DIR / 운영자전권) == {}
+    @pytest.mark.parametrize("이름", [일반, 신뢰, 운영자전권])
+    def test_소유자가_아닌_덧씌움은_claude_홈을_막는다(self, 이름: str) -> None:
+        """~/.claude 전체 읽기 차단은 소유자가 아닌 수준에만 둔다. 공통에 두면
+        덧씌움이 되돌리지 못해 소유자도 세션 기록과 memory 를 못 읽는다."""
+        deny = load_settings_file(_ASSET_DIR / 이름)["permissions"]["deny"]
+        assert "Read(~/.claude/**)" in deny
+
+    def test_공통과_소유자는_claude_자격증명만_막는다(self) -> None:
+        공통deny = load_settings_file(_ASSET_DIR / 공통)["permissions"]["deny"]
+        소유자deny = load_settings_file(_ASSET_DIR / 소유자)["permissions"]["deny"]
+        assert "Read(~/.claude/**)" not in 공통deny + 소유자deny
+        assert "Read(~/.claude/.credentials.json)" in 공통deny
+        assert "Read(~/.claude/session-env/**)" in 공통deny
 
     def test_훅을_두지_않는다(self) -> None:
         """진행 훅은 요청마다 엔진이 붙인다. 본보기에 훅을 두면 한 턴에 둘이
