@@ -123,6 +123,14 @@ class SlackGateway:
         event_type = event.get("type") or ""
         if not event_type:
             return
+        bot_id = event.get("bot_id")
+        if event_type == "app_mention" or (event_type == "message" and bot_id):
+            log.info(
+                "이벤트 수신 : type=%s channel=%s ts=%s bot_id=%s",
+                event_type, event.get("channel"), event.get("ts"), "있음" if bot_id else "없음",
+            )
+        else:
+            log.debug("이벤트 수신 : type=%s channel=%s ts=%s", event_type, event.get("channel"), event.get("ts"))
         try:
             self.dispatch(event_type, event)
         except Exception:

@@ -857,6 +857,31 @@ class TestSlackGatewayConnection:
             gateway.handle_events_api({"event": {"type": "message"}})
         assert caplog.records
 
+    def test_앱_멘션은_INFO_로_남긴다(self, caplog: pytest.LogCaptureFixture) -> None:
+        gateway = SlackGateway(client=FakeWebClient())
+        with caplog.at_level(logging.INFO):
+            gateway.handle_events_api(
+                {"event": {"type": "app_mention", "channel": "C1", "ts": "1.0", "bot_id": "B1"}}
+            )
+        기록 = [r for r in caplog.records if r.levelno == logging.INFO and "이벤트 수신" in r.getMessage()]
+        assert len(기록) == 1
+        assert "C1" in 기록[0].getMessage() and "1.0" in 기록[0].getMessage()
+
+    def test_봇_명의_message_는_INFO_사람_message_는_INFO_로_남기지_않는다(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        gateway = SlackGateway(client=FakeWebClient())
+        with caplog.at_level(logging.INFO):
+            gateway.handle_events_api(
+                {"event": {"type": "message", "channel": "C1", "ts": "2.0", "user": "U1"}}
+            )
+        assert not [r for r in caplog.records if "이벤트 수신" in r.getMessage()]
+        with caplog.at_level(logging.INFO):
+            gateway.handle_events_api(
+                {"event": {"type": "message", "channel": "C1", "ts": "3.0", "bot_id": "B2"}}
+            )
+        assert len([r for r in caplog.records if "이벤트 수신" in r.getMessage()]) == 1
+
     def test_토큰이_비어_있으면_연결하지_않는다(self) -> None:
         gateway = SlackGateway(client=FakeWebClient())
         with pytest.raises(ConfigError):

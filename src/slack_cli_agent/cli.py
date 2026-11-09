@@ -446,6 +446,10 @@ class IngressCommand(PreflightGatedServiceCommand):
         with PidFile(profile.paths.pid_file("ingress")):
             try:
                 gateway = app.gateway()
+                if not app.identity.known:
+                    logging.getLogger(__name__).warning(
+                        "봇 신원을 기동 때 확정하지 못했다. 첫 이벤트에서 다시 조회한다"
+                    )
                 app.ingress().register(gateway)
                 # Must be enabled before start: the socket connection only exists in
                 # this process, so a drop would otherwise go unnoticed.

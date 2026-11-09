@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import logging
 from pathlib import Path
 from typing import TextIO
 
@@ -389,3 +390,77 @@ class Test자격은_게이트에서_확인한다:
                 stdout=io.StringIO(),
             )
         assert 조립했다 == ["조립"]
+
+
+class Test기동_때_신원을_먼저_확정한다:
+    def _돌린다(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, known: bool) -> list[str]:
+        monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+        순서: list[str] = []
+
+        class 신원:
+            @property
+            def known(self) -> bool:
+                순서.append("신원 확인")
+                return known
+
+        class 게이트웨이:
+            def start(self, token: str) -> None:
+                순서.append("게이트웨이 시작")
+
+        class 접수:
+            def register(self, gateway: object) -> None:
+                순서.append("접수 등록")
+
+        class 서비스:
+            def __enter__(self) -> None:
+                return None
+
+            def __exit__(self, *exc: object) -> None:
+                return None
+
+        class 앱:
+            identity = 신원()
+
+            def gateway(self) -> 게이트웨이:
+                return 게이트웨이()
+
+            def ingress(self) -> 접수:
+                return 접수()
+
+            def connection_watch(self) -> None:
+                return None
+
+            def ingress_services(self, restart: object) -> 서비스:
+                return 서비스()
+
+            def self_restarter(self) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        명령 = IngressCommand(
+            application_factory=lambda profile, resolver: 앱(),  # type: ignore[arg-type,return-value]
+            preflight_suite_factory=lambda: 고정_suite(bootable=True),
+        )
+        code = SlackCliAgent([명령]).run(
+            ["ingress", "--profile", "example", "--profile-dir", str(_프로필(tmp_path))],
+            stdout=io.StringIO(),
+        )
+        assert code == 0
+        return 순서
+
+    def test_접수_등록보다_먼저_신원을_확인한다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        순서 = self._돌린다(tmp_path, monkeypatch, known=True)
+        assert 순서 == ["신원 확인", "접수 등록", "게이트웨이 시작"]
+
+    def test_확정하지_못해도_기동하고_경고한다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            순서 = self._돌린다(tmp_path, monkeypatch, known=False)
+        assert 순서[-1] == "게이트웨이 시작"
+        assert "봇 신원을 기동 때 확정하지 못했다" in caplog.text

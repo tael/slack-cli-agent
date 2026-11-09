@@ -14,9 +14,11 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
+import pytest
 from identity_support import fake_identity
 
 from slack_cli_agent.auth.principal import Principal, TrustLevel
@@ -228,6 +230,19 @@ class TestC26_다른_봇이_나를_불렀는지:
         )
         event = {"channel": "C1", "bot_id": "B_OTHER", "ts": "1.0", "text": "다른 봇들끼리 하는 말"}
         assert listener.from_app_mention(event) is None
+
+    def test_버릴_때_INFO_로_남긴다(self, caplog: pytest.LogCaptureFixture) -> None:
+        listener = EventListener(
+            _ThreadClient(), ChannelRegistry(Path("/nonexistent.json")),
+            ResponseGate(), identity=fake_identity(),
+        )
+        event = {"channel": "C1", "bot_id": "B_OTHER", "ts": "1.0", "text": "다른 봇들끼리 하는 말"}
+        with caplog.at_level(logging.INFO):
+            assert listener.from_app_mention(event) is None
+        기록 = [r.getMessage() for r in caplog.records if "봇 명의 멘션을 버린다" in r.getMessage()]
+        assert len(기록) == 1
+        assert "C1:1.0" in 기록[0]
+        assert "신원" in 기록[0]
 
     def test_사람이_부른_말은_그대로_받는다(self) -> None:
         """기존 계약 — bot_id 가 없는 사람 멘션은 영향 없다."""

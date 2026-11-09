@@ -689,6 +689,8 @@ class Test명령_안내:
         받은: list[object] = []
 
         class 가짜앱:
+            identity = type("신원", (), {"known": True})()
+
             def gateway(self) -> object:
                 return type("게이트웨이", (), {"start": lambda _s, _t: None})()
 
@@ -782,6 +784,8 @@ class Test명령_안내:
                 받은.append(token)
 
         class 가짜앱:
+            identity = type("신원", (), {"known": True})()
+
             def gateway(self) -> 가짜게이트웨이:
                 return 가짜게이트웨이()
 

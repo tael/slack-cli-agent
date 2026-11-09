@@ -11,6 +11,7 @@ import io
 import json
 import signal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from preflight_support import 통과하는_suite
@@ -315,6 +316,7 @@ class FakeApplication:
         worker: object | None = None,
         channel_ids: list[str] | None = None,
     ) -> None:
+        self.identity = SimpleNamespace(known=True)
         self._gateway = gateway if gateway is not None else FakeGateway()
         self._ingress = ingress if ingress is not None else FakeIngress()
         self._worker = worker
