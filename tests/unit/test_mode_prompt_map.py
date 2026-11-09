@@ -155,3 +155,31 @@ class TestKnowledgeLoader_상시스킬:
         text = loader.knowledge_text("chan", "메타베이스 조회해줘")
         assert "메타베이스 스킬 지식" in text
 
+
+
+class TestChannelModeSection_잡담_활성:
+    """chat=active 채널은 mode 와 무관하게 잡담 조각을 쓴다(마메치 bot.py
+    prompt_for 2026-10-16). mode 만 private 로 남아 존댓말 조각이 골라졌다."""
+
+    @pytest.fixture
+    def library(self, tmp_path: Path) -> PromptLibrary:
+        d = tmp_path / "prompts"
+        write(d / "prompt_private.md", "사적 채널 조각")
+        write(d / "prompt_chat.md", "잡담 채널 조각")
+        write(d / "prompt_default.md", "기본 채널 조각")
+        return PromptLibrary(d)
+
+    def test_active_면_잡담_조각이_이긴다(self, library: PromptLibrary) -> None:
+        section = ChannelModeSection(mode_prompt_names(), default_prompt=DEFAULT_PROMPT)
+        ctx = CompositionContext(
+            principal=PRINCIPAL, channel_mode="private", chat_level="active", library=library,
+        )
+        assert section.render(ctx) == "잡담 채널 조각"
+
+    @pytest.mark.parametrize("level", ["normal", "quiet"])
+    def test_active_가_아니면_mode_를_따른다(self, library: PromptLibrary, level: str) -> None:
+        section = ChannelModeSection(mode_prompt_names(), default_prompt=DEFAULT_PROMPT)
+        ctx = CompositionContext(
+            principal=PRINCIPAL, channel_mode="private", chat_level=level, library=library,
+        )
+        assert section.render(ctx) == "사적 채널 조각"

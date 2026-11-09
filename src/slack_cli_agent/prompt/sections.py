@@ -295,7 +295,10 @@ class ChannelModeSection(PromptSection):
 
     def render(self, ctx: CompositionContext) -> str:
         keep = ("NEVER_DISCLOSE",) if ctx.may_disclose_mechanism else ()
-        name = self._mode_prompts.get(ctx.channel_mode, self._default_prompt)
+        # chat=active marks a chat channel even when its mode says otherwise
+        # (mametchi bot.py prompt_for, 2026-10-16).
+        mode = "chat" if ctx.chat_level == "active" else ctx.channel_mode
+        name = self._mode_prompts.get(mode, self._default_prompt)
         return ctx._library_or_raise().text(name, keep_slots=keep)
 
 
