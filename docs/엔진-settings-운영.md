@@ -67,17 +67,30 @@ owner 와 trusted 파일이 같은 항목을 들고 있어 손으로 맞춰야 �
 
 ## 본보기가 막는 것
 
-공통 파일은 읽기만 막는다 — `~/.ssh`, `~/.aws`, `~/.config`, `~/.claude`,
-`~/Library`, `~/.mcp.json`, 자격 파일 이름 패턴, `.env*`. 여기에 그 봇 자신의
+공통 파일은 읽기만 막는다 — `~/.ssh`, `~/.aws`, `~/.config`,
+`~/.claude/.credentials.json`, `~/.claude/session-env`, `~/Library`,
+`~/.mcp.json`, 자격 파일 이름 패턴, `.env*`. 여기에 그 봇 자신의
 `credentials.json` 과 `engine/` 아래(엔진 자격과 이 settings 파일들)를 읽기·
 쓰기·고치기로 막고, `state.db` 와 `audit.jsonl` 은 쓰기·고치기만 막는다.
 
-general 덧씌움은 `Bash`, `Edit`, `Write`, `NotebookEdit` 넷을 막는다.
+general 덧씌움은 `Bash`, `Edit`, `Write`, `NotebookEdit` 넷과
+`Read(~/.claude/**)` 를 막는다. trusted, operator_full 덧씌움은
+`Read(~/.claude/**)` 하나만 든다.
+
+**`~/.claude` 전체 읽기 차단은 공통이 아니라 소유자 밖 수준 덧씌움에 둔다
+(2026-11-09).** 공통에 두면 덧씌움이 지우지 못해 소유자 턴도 실행기 세션
+기록(`~/.claude/projects/*/*.jsonl`)과 auto memory 를 못 읽는다. 경로를 읽는
+`ls`, `grep` 같은 Bash 명령도 같은 Read deny 에 걸려 거부된다. 소유자 턴에서
+막아야 할 자격증명은 공통의 `.credentials.json`, `session-env` 와 owner
+덧씌움의 token, api key, secret 패턴이 그대로 막는다.
 
 조직마다 더 막을 것이 있다. 회사 문서 경로, 사내 자격 파일 자리 같은 것은 깐 뒤
 운영물 쪽 파일에 더한다. 그 값은 조직 고유값이라 본보기에 넣지 않는다.
 
 ## `Read(~/.claude/**)` 가 자동 memory 쓰기를 막는다 (2026-09-27)
+
+2026-11-09 부터 이 차단은 소유자 밖 수준에만 걸린다. 아래 심볼릭 링크 우회는
+소유자 밖 수준 턴이 memory 를 써야 하는 봇에만 필요하다.
 
 공통 차단 `Read(~/.claude/**)`는 자동 memory 기능의 저장 위치
 `~/.claude/projects/<프로젝트>/memory/`도 함께 막는다. Claude Code는 읽기
