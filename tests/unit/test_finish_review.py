@@ -716,3 +716,15 @@ def test_run_killable_returns_on_timeout_even_with_lingering_child():
     except sp.TimeoutExpired:
         pass
     assert time.monotonic() - started < 10
+
+
+def test_spent_gave_up_does_not_skip_verify_on_rewrite():
+    turn = _turn("현재 사용량은 확인하지 못했습니다. " + "주간 한도 사용 12% 입니다. " * 40)
+    calls = []
+
+    def verifier(answer, evidence):
+        calls.append(1)
+        return ["주간 한도 사용 1% (근거 없음)"]
+
+    d = finish_review.decide(turn, block_count=1, claim_verifier=verifier)
+    assert calls and d.action == "block" and d.findings[0].name == "verify"

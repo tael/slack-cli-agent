@@ -757,6 +757,9 @@ class ModelClaimVerifier:
         self._executable = executable
         self._env = dict(os.environ if env is None else env)
         self.status = "not_run"
+        #: Seconds the nested claude call took, so a slow Stop hook can be
+        #: split into the model call and everything else.
+        self.elapsed: float | None = None
 
     def __call__(self, answer: str, evidence: str) -> list[str]:
         if self._env.get(VERIFY_NESTED_ENV):
@@ -764,6 +767,7 @@ class ModelClaimVerifier:
             return []
         exe = self._executable or shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
         prompt = _VERIFY_PROMPT + "[근거]\n" + evidence + "\n\n[답]\n" + (answer or "")
+        started = time.monotonic()
         try:
             proc = self._runner(
                 [exe, "-p", "--model", self.model, "--tools", "", "--strict-mcp-config",
@@ -773,7 +777,9 @@ class ModelClaimVerifier:
             )
         except Exception as exc:  # noqa: BLE001 - a failed check never blocks
             self.status = "error:" + type(exc).__name__
+            self.elapsed = round(time.monotonic() - started, 1)
             return []
+        self.elapsed = round(time.monotonic() - started, 1)
         out = proc.stdout or ""
         start, end = out.find("{"), out.rfind("}")
         if start < 0 or end <= start:
@@ -1086,6 +1092,14 @@ def resolve_code_first_channel(env: Mapping[str, str]) -> bool:
     return current in configured
 
 
+def _drop_spent_gave_up(findings: tuple[Finding, ...], block_count: int) -> tuple[Finding, ...]:
+    """gave_up blocks once; after that it is dropped before the verify gate,
+    so the rewrite still gets the model verify instead of skipping it."""
+    if block_count >= GAVE_UP_MAX_BLOCKS:
+        return tuple(f for f in findings if f.name != "gave_up")
+    return findings
+
+
 def decide(
     turn: Turn,
     *,
@@ -1114,9 +1128,11 @@ def decide(
         return StopDecision(action="allow")
     active_registry = default_registry if registry is None else registry
     if claim_verifier is None:
-        findings = tuple(active_registry.evaluate(turn))
+        findings = _drop_spent_gave_up(tuple(active_registry.evaluate(turn)), block_count)
     else:
-        findings = tuple(active_registry.evaluate(turn, skip=("verify",)))
+        findings = _drop_spent_gave_up(
+            tuple(active_registry.evaluate(turn, skip=("verify",))), block_count
+        )
         # Model verify (mametchi's order): only when nothing cheaper already
         # flagged the turn, at most VERIFY_MAX_BLOCKS blocks per request, and
         # never so close to the deadline that the rewrite can't land.
@@ -1126,8 +1142,6 @@ def decide(
             if claims:
                 hit = " | ".join(claims)
                 findings = (Finding(name="verify", detail=hit, guidance=_verify_guidance(hit)),)
-    if block_count >= GAVE_UP_MAX_BLOCKS:
-        findings = tuple(f for f in findings if f.name != "gave_up")
     if not findings:
         return StopDecision(action="allow")
     if seconds_left is not None and seconds_left < release_sec:

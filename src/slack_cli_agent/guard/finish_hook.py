@@ -177,6 +177,7 @@ def main(argv: list[str]) -> int:
                 "model": verify_model,
                 "decision": decision.action,
                 "elapsed_sec": elapsed,
+                "verify_sec": verifier.elapsed,
                 "findings": [f.detail for f in decision.findings if f.name == "verify"],
             })
 
