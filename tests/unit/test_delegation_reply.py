@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from slack_cli_agent.auth.delegation import TTL_SEC, DelegationLedger
+from slack_cli_agent.auth.delegation import TTL_SEC, DelegationLedger, DelegationRecorder
 from slack_cli_agent.auth.policy import AccessPolicy
 from slack_cli_agent.config.channel import ChannelRegistry
 from slack_cli_agent.config.profile import ConfigError, Profile
@@ -84,6 +84,43 @@ class TestReplyOnly:
         plain = peer_row()
         del plain["kind"]
         assert ledger(tmp_path, [plain], None).lookup("C1", "2.0") is not None
+
+
+    def test_내_원장의_회신_행은_근거가_아니다(self, tmp_path: Path) -> None:
+        mine = own_row(kind="reply")
+        assert ledger(tmp_path, [peer_row()], [mine]).lookup("C1", "2.0", from_user=PEER) is None
+
+
+class TestNoChain:
+    """마메치 원장에는 김태일 턴이 넘긴 행만 위임 근거다. 회신 턴이 쓴 kind=reply 행으로
+    두 봇이 서로 실행 도구를 열어 주면 사람 턴 없이 소유자 도구가 오간다."""
+
+    def test_회신_행으로_두_봇이_서로_열어_주지_않는다(self, tmp_path: Path) -> None:
+        mame_led = tmp_path / "mame.json"
+        guchi_led = tmp_path / "guchi.json"
+        mame_rec = DelegationRecorder(mame_led, delegator="mame", clock=lambda: NOW - 60)
+        guchi_rec = DelegationRecorder(guchi_led, delegator="guchi", clock=lambda: NOW - 60)
+        mame = DelegationLedger(
+            guchi_led, self_user_id=lambda: ME, own_name="mame", delegator="guchi",
+            clock=lambda: NOW, reply_origin=mame_led,
+        )
+        guchi = DelegationLedger(
+            mame_led, self_user_id=lambda: PEER, own_name="guchi", delegator="mame",
+            clock=lambda: NOW,
+        )
+
+        mame_rec.record("C1", "1.0", "1.2", ["1.5"], PEER)
+        assert guchi.lookup("C1", "1.5", from_user=ME) is not None
+        guchi_rec.record("C1", "1.0", "1.5", ["2.0"], ME, kind="reply")
+        assert mame.lookup("C1", "2.0", from_user=PEER) is not None
+
+        mame_rec.record("C1", "1.0", "2.0", ["3.0"], PEER, kind="reply")
+        assert guchi.lookup("C1", "3.0", from_user=ME) is None
+        guchi_rec.record("C1", "1.0", "3.0", ["4.0"], ME, kind="reply")
+        assert mame.lookup("C1", "4.0", from_user=PEER) is None
+
+    def test_회신_모드가_아니어도_회신_행은_위임이_아니다(self, tmp_path: Path) -> None:
+        assert ledger(tmp_path, [peer_row()], None).lookup("C1", "2.0") is None
 
 
 PROFILE = {

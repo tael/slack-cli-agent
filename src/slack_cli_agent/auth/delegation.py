@@ -82,7 +82,12 @@ class DelegationLedger:
         for row in self._rows():
             if self._matches(row, channel, message_ts, me, now):
                 origin = self._reply_origin
-                if origin is not None and not self._answers_own(origin, row, channel, from_user):
+                if origin is None:
+                    # A reply row answers work this bot handed out; it is not a
+                    # hand-over to this bot (mametchi lookup never sees kind).
+                    if row.get("kind"):
+                        continue
+                elif not self._answers_own(origin, row, channel, from_user):
                     continue
                 return row
         return None
@@ -92,8 +97,11 @@ class DelegationLedger:
     ) -> bool:
         if row.get("kind") != "reply" or not row.get("origin_ts") or not from_user:
             return False
+        # Only an owner-turn row counts; a reply row of ours would let two
+        # bots reopen each other's tools with no human turn in between.
         return any(
-            r.get("by") == self._own_name and r.get("channel") == channel
+            not r.get("kind")
+            and r.get("by") == self._own_name and r.get("channel") == channel
             and r.get("message_ts") == row["origin_ts"] and r.get("to") == from_user
             for r in _read_rows(origin)
         )
