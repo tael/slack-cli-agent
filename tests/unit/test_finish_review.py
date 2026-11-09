@@ -671,6 +671,7 @@ class TestExtensionPoint:
             "denied_unretried",
             "advisor_skipped",
             "code_first",
+            "named_turn",
             "verify",
         }
 

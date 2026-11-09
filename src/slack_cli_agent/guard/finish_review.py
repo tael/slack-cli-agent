@@ -275,6 +275,30 @@ def offer(turn: Turn) -> str | None:
 
 
 # --------------------------------------------------------------------------
+# named_turn — a turn's role described by a person's name
+# --------------------------------------------------------------------------
+
+#: "<이름>님 턴" names the person instead of the role. The owner is profile
+#: config, not a fixed person, so turn tiers are written as 오너 턴 / 요청자 턴
+#: (2026-11-09 private-taeil: the owner was named in a turn-tier explanation).
+_NAMED_TURN_RE = re.compile(r"[가-힣A-Za-z]{2,10}님\s?(?:의\s?)?턴")
+
+
+def named_turn(turn: Turn) -> str | None:
+    """The first "<이름>님 턴" outside quotes, if any."""
+    answer = turn.answer
+    if not answer:
+        return None
+    for line in answer.splitlines():
+        if _TAG_LINE.match(line):
+            continue
+        hit = _NAMED_TURN_RE.search(_QUOTED.sub("", line))
+        if hit:
+            return hit.group(0)
+    return None
+
+
+# --------------------------------------------------------------------------
 # handoff — handed off to a person without a real permission wall
 # --------------------------------------------------------------------------
 
@@ -866,6 +890,13 @@ def _offer_guidance(hit: str) -> str:
     )
 
 
+def _named_turn_guidance(hit: str) -> str:
+    return (
+        f'답에 "{hit}" 처럼 턴의 주체를 사람 이름으로 특정했다. 턴은 역할로 쓴다. '
+        "오너가 말한 턴은 오너 턴, 그 밖의 사람은 요청자 턴이나 다른 사람 턴으로 고쳐 답을 다시 쓴다."
+    )
+
+
 def _handoff_guidance(hit: str) -> str:
     return (
         f'답에 "{hit}" 처럼 권한 밖이라며 요청자에게 다른 사람을 부르라고 넘겼다. '
@@ -1000,6 +1031,7 @@ def _build_common_registry() -> JudgmentRegistry:
     common.register("denied_unretried", denied_unretried, _denied_unretried_guidance)
     common.register("advisor_skipped", _advisor_skipped_check, _advisor_skipped_guidance)
     common.register("code_first", code_first_doc_only, _code_first_guidance)
+    common.register("named_turn", named_turn, _named_turn_guidance)
     common.register("verify", _unsupported_claims_check, _verify_guidance)
     return common
 
