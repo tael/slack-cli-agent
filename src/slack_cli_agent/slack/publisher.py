@@ -354,7 +354,9 @@ class MessagePublisher:
         idx = 0
         while idx < len(pending):
             part = pending[idx]
-            kwargs: dict[str, Any] = {"channel": channel, "username": self._bot_display_name}
+            # username 을 주지 않는다 (2026-11-10). 덮어쓰면 user 없는 bot_message 로 저장돼
+            # 봇 사용자 명의 글과 한 스레드에 "구치파치" 가 두 명으로 보인다.
+            kwargs: dict[str, Any] = {"channel": channel}
             note = ""
             if rich:
                 payload = self._rich_payload(part, split_note=idx == len(pending) - 1)
@@ -405,7 +407,7 @@ class MessagePublisher:
                 if sent:
                     try:
                         self._client.chat_postMessage(
-                            channel=channel, username=self._bot_display_name,
+                            channel=channel,
                             thread_ts=parent_ts,
                             text=f"답변이 {sent}/{len(pending)} 까지만 전달됐습니다.",
                             attachments=[{
@@ -465,7 +467,7 @@ class MessagePublisher:
                 fallback = f"{payload.filename} (파일 업로드 실패, 본문으로 대신 올립니다):\n```\n{recovered}```"
                 try:
                     self._client.chat_postMessage(
-                        channel=channel, username=self._bot_display_name,
+                        channel=channel,
                         text=fallback[:3900],
                         **({"thread_ts": parent_ts} if parent_ts else {}),
                     )

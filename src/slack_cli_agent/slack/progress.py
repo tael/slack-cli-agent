@@ -62,8 +62,6 @@ class SlackProgressSink:
 
     def open(self, text: str) -> None:
         kwargs: dict[str, Any] = {"channel": self._channel, "text": text}
-        if self._bot_display_name:
-            kwargs["username"] = self._bot_display_name
         if self._thread_ts:
             kwargs["thread_ts"] = self._thread_ts
         response = self._client.chat_postMessage(**kwargs)
@@ -160,8 +158,6 @@ class SlackTaskCardProgressSink:
             "text": self._lines[-1],
             "blocks": [self._card(self._lines[-1], "in_progress")],
         }
-        if self._bot_display_name:
-            kwargs["username"] = self._bot_display_name
         if self._thread_ts:
             kwargs["thread_ts"] = self._thread_ts
         response = self._client.chat_postMessage(**kwargs)
@@ -322,8 +318,6 @@ class SlackStreamingProgressSink:
             "recipient_team_id": self._team_id,
             "recipient_user_id": self._user_id,
         }
-        if self._bot_display_name:
-            kwargs["username"] = self._bot_display_name
         response = self._client.chat_startStream(**kwargs)
         self._ts = response["ts"]
 
