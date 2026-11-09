@@ -313,3 +313,44 @@ class TestApplication배선_J11:
         profile = write_profile(tmp_path, settings={"require_recipient": False})
         app = Application(profile, FakeSlackClient())
         assert app.pipeline()._require_recipient is False
+
+
+class Test소유자_턴_미표식_폴백:
+    """소유자 턴은 ASKER 가 곧 소유자라 잘못된 상대에게 갈 수 없다. 재요청까지
+    표식이 없으면 본문을 버리지 않고 소유자에게 게시한다 (2026-11-09 private-taeil 20:31)."""
+
+    def test_재요청에도_표식없으면_소유자에게_원본문을_게시한다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[
+                ok_response(body="표식 없는 답입니다."),
+                fail_response(),
+            ],
+            require_recipient=True,
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx(user="UOWNER"))
+        assert [p["text"] for p in deps["publisher"].posted] == ["표식 없는 답입니다."]
+        assert outcome.silent is False
+        rows = [i for i in deps["audit"].incidents if i["kind"] == "missing_recipient_retry"]
+        assert rows[-1]["tag"] == "owner_fallback"
+        assert rows[-1]["recovered"] is True
+
+    def test_소유자가_아니면_그대로_침묵한다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="표식 없는 답입니다."), fail_response()],
+            require_recipient=True,
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx(user="U1"))
+        assert deps["publisher"].posted == []
+        assert outcome.silent is True
+
+    def test_본문이_표식뿐이면_폴백하지_않는다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body="[[RECIPIENT:BOT:UNOTBOT]]"), fail_response()],
+            require_recipient=True,
+            tmp_path=tmp_path,
+        )
+        outcome = pipeline.handle(make_ctx(user="UOWNER"))
+        assert deps["publisher"].posted == []
+        assert outcome.silent is True

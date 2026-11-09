@@ -757,6 +757,20 @@ class RequestPipeline:
             body, blocked_recipient, recipient = self._retry_recipient_tag(
                 body, ctx, request, decision, response, turn_calls,
             )
+        if (blocked_recipient and ctx.user == self._owner_user_id and not ctx.from_bot
+                and take_recipient_tag(body)[0].strip()):
+            # 2026-11-09 private-taeil 20:31: the tag was lost and the retry came
+            # back empty, so the owner's own question got no answer at all. On an
+            # owner turn the asker is the owner, so ASKER can't reach a wrong
+            # party; publish to the owner rather than drop the body.
+            held, _ = take_recipient_tag(body)
+            body, blocked_recipient, recipient = self._resolve_recipient(
+                f"{held.rstrip()}\n[[RECIPIENT:ASKER]]", ctx)
+            self._audit.record(
+                IncidentKind.MISSING_RECIPIENT_RETRY.value, channel=ctx.channel,
+                thread_ts=ctx.thread_ts, attempted=False, ok=True,
+                recovered=not blocked_recipient, tag="owner_fallback",
+            )
         if blocked_recipient:
             # Neither the body nor a notice goes out: the body has no settled
             # recipient, and a notice on a turn the model meant to keep quiet
