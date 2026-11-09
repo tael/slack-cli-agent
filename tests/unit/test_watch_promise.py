@@ -145,3 +145,25 @@ def test_감시_표식이_마지막_줄이면_그대로_떼어_낸다() -> None:
     result = WatchPromiseGuard().apply(body, GuardContext())
     assert result.detail == {"watch_desc": "dag x run y 상태", "watch_due": "2026-11-12"}
     assert result.body == "확인했습니다."
+
+
+def test_본문에_인용한_감시_표식은_감시로_등록하지_않는다() -> None:
+    """2026-11-09 private-taeil 20:58 : 원인 설명에 인용한 [[WATCH: ...]] 를 감시로 읽어
+    NOWATCH 로 끝난 답에서 감시 51번이 등록됐다. 원문과 같은 형태."""
+    body = (
+        "- 왜 표식이 사라졌나\n"
+        "  - [[WATCH: ...]] 줄 아래에 표식이 하나 더 있으면, 마지막 줄의 ]] 까지 감시 내용으로 보고 함께 지움\n"
+        "  - 첫 답 원문에 같은 치환을 돌려 재현함\n\n"
+        "이번 턴에는 둘 다 고치지 않았습니다.\n\n[[NOWATCH]]\n[[RECIPIENT:ASKER]]"
+    )
+    result = WatchPromiseGuard().apply(body, GuardContext())
+    assert "watch_desc" not in (result.detail or {})
+    assert result.body.endswith("[[NOWATCH]]\n[[RECIPIENT:ASKER]]")
+
+
+def test_감시와_NOWATCH가_함께_끝나면_감시를_등록하지_않는다() -> None:
+    body = "확인했습니다.\n[[WATCH: dag x run y 상태]]\n[[NOWATCH]]\n[[RECIPIENT:ASKER]]"
+    result = WatchPromiseGuard().apply(body, GuardContext())
+    assert "watch_desc" not in result.detail
+    assert result.detail["watch_conflict"] == "dag x run y 상태"
+    assert result.body == "확인했습니다.\n[[NOWATCH]]\n[[RECIPIENT:ASKER]]"

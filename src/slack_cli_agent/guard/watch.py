@@ -50,6 +50,9 @@ WATCH_RE = re.compile(
 )
 
 
+_NOWATCH_LINE_RE = re.compile(r"^[ \t]*\[\[NOWATCH\]\][ \t]*$", re.MULTILINE)
+
+
 def watch_due_at(due: str | None) -> float | None:
     """Turns a `[[WATCH@2026-09-26: ...]]` date into that day's 09:00 KST,
     as an epoch timestamp. Matches bot.py:10769-10783's `watch_due_at`.
@@ -235,6 +238,14 @@ class WatchPromiseGuard(OutputGuard):
 
     def apply(self, body: str, ctx: GuardContext) -> GuardResult:
         m = WATCH_RE.search(body or "")
+        if m and _NOWATCH_LINE_RE.search(m.group("trailing") or ""):
+            # 2026-11-09 private-taeil 20:58 : the reply said [[NOWATCH]] and a
+            # phantom watch (job 51) was registered anyway, handing a read-only
+            # check turn work it could not do. An explicit NOWATCH in the same
+            # closing marker block wins: drop the WATCH line, register nothing.
+            log.warning("감시 표식과 NOWATCH 가 함께 있어 감시를 등록하지 않는다 : %s", m.group("desc")[:120])
+            stripped = WATCH_RE.sub(lambda w: w.group("trailing") or "", body).rstrip()
+            return GuardResult(body=stripped, changed=True, detail={"watch_conflict": m.group("desc").strip()})
         if m:
             desc = m.group("desc").strip()
             due = m.group("due") or ""
