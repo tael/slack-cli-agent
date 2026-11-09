@@ -268,6 +268,11 @@ class ToolPolicy:
                     tool for tool in _non_owner_safe(self._channel_tools(principal))
                     if tool not in tools
                 ]
+            if asker_is_bot:
+                # Any scoped Bash grant makes engine/claude.py lift the bare
+                # Bash deny, and Claude Code then runs read-only commands such
+                # as date outside the allowlist (2026-11-09, #test-agent).
+                tools = [t for t in tools if t.split("(", 1)[0] != "Bash"]
         if not aside and skills_enabled:
             tools.append(SKILL_TOOL)
         # Standing-clearance skills reach the turn even when the channel has
