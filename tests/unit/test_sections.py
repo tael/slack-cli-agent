@@ -158,7 +158,15 @@ class TestWorkStyleSection:
         assert "1회 실행" in text
         assert "한 응답에 함께" in text
 
+    def test_번호_조회는_정확_일치_컬럼_하나로_한다(self) -> None:
+        # 2026-11-09 : 오더 조사가 여러 컬럼 OR, 앞 % LIKE 로 4억 행을 훑어 Bash 120초에 끊겼다.
+        text = WorkStyleSection().render(_ctx())
+        assert "컬럼 하나에 `=`" in text
+        assert "OR" in text
+        assert "기간 조건" in text
+
     def test_짧게_유지한다(self) -> None:
         # 매 턴 다시 실리는 지침이라 몇 줄로 둔다. 지침 크기는 S2 과제가 따로 줄인다.
+        # 800 에서 1200 으로 올렸다 : 번호 조회 줄(약 540 B, 150 토큰 안팎)이 더해졌다.
         text = WorkStyleSection().render(_ctx())
-        assert len(text.encode("utf-8")) < 800
+        assert len(text.encode("utf-8")) < 1200
