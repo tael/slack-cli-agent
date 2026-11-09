@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Any, ClassVar
 
+import pytest
+
 from slack_cli_agent.guard import finish_hook
 from slack_cli_agent.guard.posttool import parallel_nudge
 from slack_cli_agent.guard.pretool import (
@@ -151,6 +153,39 @@ class TestRestartGuard:
         assert proc.returncode == 0
         assert result is not None
         assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "./apply.sh",
+            "cd ~/Projects/mametchi-slack-bot && ./apply.sh",
+            "bash ~/Projects/mametchi-slack-bot/apply.sh",
+            "nohup bash -x restart.sh &",
+            "sh -c './apply-restart.sh'",
+            "echo hi; restart.sh",
+            "source apply.sh",
+            "VAR=1 env FOO=2 apply.sh",
+        ],
+    )
+    def test_스크립트_실행_위치면_거부한다(self, command: str) -> None:
+        result, _ = self._run(command)
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "test -e ~/Projects/mametchi-slack-bot/apply.sh && echo exists",
+            "ls -la apply.sh",
+            "grep -n restart apply-restart.sh",
+            "cat ~/Projects/mametchi-slack-bot/restart.sh | head",
+            "git diff -- apply.sh",
+        ],
+    )
+    def test_스크립트를_읽기만_하면_통과한다(self, command: str) -> None:
+        result, proc = self._run(command)
+        assert proc.returncode == 0
+        assert result is None
 
     def test_마커경로가_있으면_사유에_담긴다(self) -> None:
         result, proc = self._run(
