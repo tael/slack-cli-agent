@@ -59,3 +59,24 @@ def test_설정이_없으면_기존_동작이다(tmp_path):
 def test_계정_변수는_자식_환경에_넘기지_않는다(tmp_path):
     env = _policy().build(_source(tmp_path, "bot"))
     assert "CLAUDE_ACCOUNT_FILE" not in env and "CLAUDE_TOKEN_DIRS" not in env
+
+
+def test_이번_턴에_고른_계정_이름을_자식_환경에_넘긴다(tmp_path):
+    """봇 턴의 셸이 다시 띄운 claude 는 Claude Code 가 토큰 변수를 지운 환경에서
+    돈다. 셸 claude 래퍼가 계정 이름으로 같은 토큰을 고르게 이름을 넘긴다
+    (2026-11-09 마메치 sca 전환 준비)."""
+    src = _source(tmp_path, "personal")
+    policy = _policy()
+    assert policy.build(src)["CLAUDE_ACCOUNT"] == "personal"
+    (tmp_path / "claude_account").write_text("bot")
+    assert policy.build(src)["CLAUDE_ACCOUNT"] == "bot"
+
+
+def test_토큰을_못_찾은_계정_이름은_넘기지_않는다(tmp_path):
+    env = _policy().build(_source(tmp_path, "nobody"))
+    assert "CLAUDE_ACCOUNT" not in env
+
+
+def test_계정_파일이_없으면_계정_이름도_없다(tmp_path):
+    src = {"PATH": "/usr/bin", "CLAUDE_CODE_OAUTH_TOKEN": "tok-launch", "CLAUDE_ACCOUNT": "stale"}
+    assert "CLAUDE_ACCOUNT" not in _policy().build(src)

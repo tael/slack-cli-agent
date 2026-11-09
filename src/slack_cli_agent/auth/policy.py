@@ -117,17 +117,17 @@ class AccessPolicy:
             trust = TrustLevel.TRUSTED
         else:
             trust = TrustLevel.GENERAL
-        delegated = is_controller and self._is_delegated(channel, message_ts)
+        delegated = is_controller and self._is_delegated(channel, message_ts, user)
         return Principal(
             user_id=user, channel=channel, trust=trust, is_direct_message=is_dm,
             is_controller=is_controller, delegated=delegated,
         )
 
-    def _is_delegated(self, channel: str, message_ts: str) -> bool:
+    def _is_delegated(self, channel: str, message_ts: str, user: str = "") -> bool:
         if self._delegation is None or not message_ts:
             return False
         try:
-            found = self._delegation.lookup_settled(channel, message_ts)
+            found = self._delegation.lookup_settled(channel, message_ts, user)
         except Exception:  # a broken ledger must close, not open, the turn
             log.exception("위임 원장 판정에 실패해 위임 없음으로 본다 : %s", message_ts)
             return False

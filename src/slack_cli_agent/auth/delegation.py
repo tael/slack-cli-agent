@@ -56,8 +56,14 @@ class DelegationLedger:
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         write_grace: float = WRITE_GRACE_SEC,
+        reply_origin: Path | None = None,
     ) -> None:
         self._path = path
+        #: Set when this bot is the delegator and accepts only replies to work
+        #: it handed out (mametchi lookup_reply): the row must be kind=reply
+        #: and its origin_ts a message this bot wrote, in this file, for the
+        #: replying bot. None keeps the plain delegation check.
+        self._reply_origin = reply_origin
         self._sleep = sleep
         self._write_grace = write_grace
         self._self_user_id = self_user_id
@@ -67,7 +73,7 @@ class DelegationLedger:
         self._delegator = delegator
         self._clock = clock
 
-    def lookup(self, channel: str, message_ts: str) -> Mapping[str, Any] | None:
+    def lookup(self, channel: str, message_ts: str, from_user: str = "") -> Mapping[str, Any] | None:
         """The live row that handed this message to this bot, or None."""
         me = self._self_user_id()
         if not (channel and message_ts and me):
@@ -75,10 +81,34 @@ class DelegationLedger:
         now = self._clock()
         for row in self._rows():
             if self._matches(row, channel, message_ts, me, now):
+                origin = self._reply_origin
+                if origin is None:
+                    # A reply row answers work this bot handed out; it is not a
+                    # hand-over to this bot (mametchi lookup never sees kind).
+                    if row.get("kind"):
+                        continue
+                elif not self._answers_own(origin, row, channel, from_user):
+                    continue
                 return row
         return None
 
-    def lookup_settled(self, channel: str, message_ts: str) -> Mapping[str, Any] | None:
+    def _answers_own(
+        self, origin: Path, row: Mapping[str, Any], channel: str, from_user: str
+    ) -> bool:
+        if row.get("kind") != "reply" or not row.get("origin_ts") or not from_user:
+            return False
+        # Only an owner-turn row counts; a reply row of ours would let two
+        # bots reopen each other's tools with no human turn in between.
+        return any(
+            not r.get("kind")
+            and r.get("by") == self._own_name and r.get("channel") == channel
+            and r.get("message_ts") == row["origin_ts"] and r.get("to") == from_user
+            for r in _read_rows(origin)
+        )
+
+    def lookup_settled(
+        self, channel: str, message_ts: str, from_user: str = ""
+    ) -> Mapping[str, Any] | None:
         """lookup, but waits out the delegator's write lag for a fresh message.
 
         A miss on a message younger than write_grace is not final: the row
@@ -86,7 +116,7 @@ class DelegationLedger:
         is write_grace old. An older message is judged once, as before, so a
         stale or forged request costs no wait.
         """
-        found = self.lookup(channel, message_ts)
+        found = self.lookup(channel, message_ts, from_user)
         if found is not None or not (channel and message_ts and self._self_user_id()):
             return found
         try:
@@ -98,7 +128,7 @@ class DelegationLedger:
         while self._clock() < deadline:
             waited = True
             self._sleep(min(WRITE_POLL_SEC, max(0.0, deadline - self._clock())))
-            found = self.lookup(channel, message_ts)
+            found = self.lookup(channel, message_ts, from_user)
             if found is not None:
                 log.info("위임 원장 기록을 기다려 찾았다 : %s : %s", channel, message_ts)
                 return found
@@ -127,16 +157,20 @@ class DelegationLedger:
         return expires > now and now - created <= TTL_SEC
 
     def _rows(self) -> list[Mapping[str, Any]]:
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return []
-        except (OSError, ValueError) as exc:
-            log.warning("위임 원장을 읽지 못해 위임 없음으로 본다 : %s : %s", self._path, exc)
-            return []
-        if not isinstance(data, list):
-            return []
-        return [row for row in data if isinstance(row, Mapping)]
+        return _read_rows(self._path)
+
+
+def _read_rows(path: Path) -> list[Mapping[str, Any]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as exc:
+        log.warning("위임 원장을 읽지 못해 위임 없음으로 본다 : %s : %s", path, exc)
+        return []
+    if not isinstance(data, list):
+        return []
+    return [row for row in data if isinstance(row, Mapping)]
 
 
 class DelegationRecorder:

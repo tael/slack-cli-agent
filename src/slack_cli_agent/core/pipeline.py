@@ -1362,8 +1362,9 @@ class RequestPipeline:
         """Writes the posted ts into the delegation ledger when the owner's
         own turn just addressed a bot (A8, mametchi bot.py:8435-8446).
 
-        Only the owner's turn writes: a turn some bot started, delegated or
-        not, never extends the ledger, so a delegation cannot chain back. A
+        Only the owner's turn writes a delegation. A delegated turn writes
+        only a kind=reply row back to the bot that started it, which no
+        receiver treats as a delegation, so a delegation cannot chain. A
         bot mentioned inside a reply to the owner is not a hand-over; only a
         resolved bot recipient is. The answer is already up, so a write
         failure is logged and the turn stays a success.
@@ -1375,10 +1376,12 @@ class RequestPipeline:
             # delegated it. Recorded as kind=reply with origin_ts = the
             # delegating message, so the delegator can open execution tools
             # for this one result message only (2026-11-08 김태일 "마메치
-            # 턴도 권한이 있어야해"). The delegator checks origin_ts against
-            # its own ledger, so this row alone opens nothing, and the
-            # delegator's reply turn is not an owner turn, so it never
-            # writes a new delegation: no chain, no ping-pong clearance.
+            # 턴도 권한이 있어야해"). Any delegated turn writes this row,
+            # including the delegator's own reply turn. It opens nothing by
+            # itself: a plain receiver ignores kind=reply rows, and the
+            # delegator accepts one only when origin_ts is a kind-less
+            # owner-turn row in its own ledger. A reply row answering a
+            # reply row therefore opens nothing (DelegationLedger.lookup).
             if not ctx.user or recipient.bot_id != ctx.user:
                 return
             try:

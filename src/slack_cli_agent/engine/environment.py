@@ -197,7 +197,7 @@ class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
         }, source_env, _GUARD_VAR_NAMES)
 
 
-def _account_file_token(source_env: Mapping[str, str]) -> str | None:
+def _account_file_token(source_env: Mapping[str, str]) -> tuple[str, str] | None:
     """Re-read the Claude subscription token named by CLAUDE_ACCOUNT_FILE, per turn.
 
     The launcher used to read the token once into CLAUDE_CODE_OAUTH_TOKEN, so
@@ -206,7 +206,7 @@ def _account_file_token(source_env: Mapping[str, str]) -> str | None:
     an account name, the token is looked up as <dir>/<name> in each directory of
     CLAUDE_TOKEN_DIRS (colon-separated) on every turn, so an external switcher
     only rewrites that one file. Any miss keeps the launcher's token. The token
-    value is never logged.
+    value is never logged. Returns (account name, token).
     """
     account_file = source_env.get("CLAUDE_ACCOUNT_FILE")
     token_dirs = source_env.get("CLAUDE_TOKEN_DIRS")
@@ -226,7 +226,7 @@ def _account_file_token(source_env: Mapping[str, str]) -> str | None:
         except OSError:
             continue
         if token:
-            return token
+            return name, token
     return None
 
 
@@ -298,9 +298,11 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         for key in self.ADDITIONAL_ALLOWED_VARS:
             if key in source_env:
                 env[key] = source_env[key]
-        account_token = _account_file_token(source_env)
-        if account_token:
-            env["CLAUDE_CODE_OAUTH_TOKEN"] = account_token
+        account = _account_file_token(source_env)
+        if account:
+            # Claude Code drops CLAUDE_CODE_OAUTH_TOKEN from its Bash children;
+            # a shell-side claude wrapper picks the same token by this name.
+            env["CLAUDE_ACCOUNT"], env["CLAUDE_CODE_OAUTH_TOKEN"] = account
         env.setdefault("MCP_TOOL_TIMEOUT", DEFAULT_MCP_TOOL_TIMEOUT_MS)
         env.update(NON_INTERACTIVE_ENV)
         return _with_turn_id(env, source_env, self.ADDITIONAL_ALLOWED_VARS)

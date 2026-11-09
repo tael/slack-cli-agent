@@ -606,6 +606,10 @@ class Application:
                     self_user_id=lambda: self.identity.user_id,
                     own_name=self._profile.name,
                     delegator=self._profile.delegation_by,
+                    reply_origin=(
+                        self._profile.delegation_record
+                        if self._profile.delegation_reply_only else None
+                    ),
                 )
                 if ledger_path is not None else None
             )
@@ -631,6 +635,7 @@ class Application:
             self._profile.paths.persona,
             self._profile.paths.prompts,
             self._profile.paths.watch_out,
+            *self._profile.extra_readable_dirs,
         )
 
     def tool_policy(self) -> ToolPolicy:
