@@ -49,6 +49,17 @@ class HistoryReader:
                 self._sleep(min_interval - gap)
             self._last_call = self._clock()
 
+    def _latest_is_before(self, channel: str, oldest: str) -> bool:
+        """True only when the channel's newest message is confirmed older
+        than `oldest`. An empty or failed probe stays undecidable."""
+        self.wait_history_slot()
+        try:
+            res = self._client.conversations_history(channel=channel, limit=1)
+            msgs = res.get("messages") or []
+            return bool(msgs) and float(msgs[0].get("ts") or 0) < float(oldest)
+        except Exception:  # noqa: BLE001 - a failed probe keeps the old "can't tell"
+            return False
+
     def read_history(self, channel: str, oldest: str, limit: int) -> list[dict[str, Any]]:
         """Reads channel history, retrying rather than trusting an
         empty result.
@@ -70,6 +81,14 @@ class HistoryReader:
             empty += 1
             if attempt < tries - 1:
                 self._sleep(self._settings.history_read_pause_sec)
+        # A quiet channel (no top-level post inside the window) is genuinely
+        # empty, yet used to raise here forever and page the owner after 30
+        # minutes (2026-11-09, 법영-api-헬프데스크: last post 18 days old,
+        # lookback 7 days). Ask for the newest message without `oldest` --
+        # that sidesteps the malformed-oldest glitch this retry guards
+        # against. If it is older than the window, the empty read was true.
+        if self._latest_is_before(channel, oldest):
+            return []
         raise HistoryUnavailable(
             f"{channel} 기록이 {empty}번 내리 비어 있다. 없다고 단정하지 않는다."
         )

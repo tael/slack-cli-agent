@@ -199,11 +199,38 @@ class TestHistoryReader:
         client = FakeWebClient()
         for _ in range(settings.history_read_tries):
             client.queue_history({"ok": True, "messages": []})
+        client.queue_history({"ok": True, "messages": []})  # oldest 없는 확인도 비었다
         clock = FakeClock()
         reader = HistoryReader(client, settings, clock=clock.time, sleep=clock.sleep)
         with pytest.raises(HistoryUnavailable):
             reader.read_history("C1", "0.000000", 40)
-        assert len(client.calls) == settings.history_read_tries
+        assert len(client.calls) == settings.history_read_tries + 1
+
+    def test_최신글이_창보다_오래됐으면_조용한_채널로_보고_빈_목록을_준다(
+        self, settings: RuntimeSettings
+    ) -> None:
+        """2026-11-09 법영-api-헬프데스크 : 마지막 글이 18일 전이라 7일 창이
+        매번 비었고, 판정 불가로 30분 뒤 경보가 났다."""
+        client = FakeWebClient()
+        for _ in range(settings.history_read_tries):
+            client.queue_history({"ok": True, "messages": []})
+        client.queue_history({"ok": True, "messages": [{"ts": "1792637775.380219"}]})
+        clock = FakeClock()
+        reader = HistoryReader(client, settings, clock=clock.time, sleep=clock.sleep)
+        assert reader.read_history("C1", "1793615645.000000", 40) == []
+        assert "oldest" not in client.calls[-1][1]
+
+    def test_최신글이_창_안인데_비어오면_여전히_판정불가다(
+        self, settings: RuntimeSettings
+    ) -> None:
+        client = FakeWebClient()
+        for _ in range(settings.history_read_tries):
+            client.queue_history({"ok": True, "messages": []})
+        client.queue_history({"ok": True, "messages": [{"ts": "1794220000.000000"}]})
+        clock = FakeClock()
+        reader = HistoryReader(client, settings, clock=clock.time, sleep=clock.sleep)
+        with pytest.raises(HistoryUnavailable):
+            reader.read_history("C1", "1793615645.000000", 40)
 
 
 # ReactionMarker
