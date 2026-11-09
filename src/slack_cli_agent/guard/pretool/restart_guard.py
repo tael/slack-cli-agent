@@ -68,7 +68,18 @@ _LAUNCHCTL_MUTATING = re.compile(
 
 #: mametchi's turn-external restart/apply scripts. Any invocation of one of
 #: these from inside a turn is the deadlock the marker exists to dodge.
-_RESTART_SCRIPT = re.compile(r"\b(apply-restart|restart|apply)\.sh\b")
+#: 2026-11-10: the pattern used to match the script name anywhere, so a
+#: read such as ``test -e .../apply.sh`` or ``grep x apply.sh`` was denied
+#: as a restart. Only a command position counts now: the start of a
+#: segment (after ; & | ( or an opening quote, e.g. ``sh -c './apply.sh'``),
+#: optionally behind VAR=val assignments and a runner
+#: (sudo/nohup/exec/time/env/bash/sh/zsh/source/.).
+_RESTART_SCRIPT = re.compile(
+    r"""(?:^|[;&|(`'"]|\$\()\s*"""
+    r"""(?:\w+=\S*\s+)*"""
+    r"""(?:(?:sudo|nohup|exec|time|env(?:\s+\w+=\S*)*|bash|sh|zsh|source|\.)(?:\s+-\S+)*\s+)*"""
+    r"""(?:\S*/)?(?:apply-restart|restart|apply)\.sh\b"""
+)
 
 #: Process-targeting kill commands. Only deny when the target names a
 #: configured bot label (RESTART_GUARD_LABELS) or the bot's own pid --
