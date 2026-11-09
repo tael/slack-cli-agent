@@ -165,8 +165,17 @@ class TestWorkStyleSection:
         assert "OR" in text
         assert "기간 조건" in text
 
+    def test_연관_조회는_한_Bash_에_묶는다(self) -> None:
+        # 2026-11-09 : 오더 조사(T2)가 오더, 배정 이력, 이름 조회, SHOW COLUMNS 를 따로 불러 호출 14번이 들었다.
+        # 묶으라는 줄을 더하자 T2 3회 중앙 호출 14 -> 10, 총 토큰 176만 -> 128만이 됐다.
+        text = WorkStyleSection().render(_ctx())
+        assert "한 Bash 에 모두 묶어" in text
+        assert "SHOW COLUMNS" in text
+        assert "JOIN" in text
+
     def test_짧게_유지한다(self) -> None:
         # 매 턴 다시 실리는 지침이라 몇 줄로 둔다. 지침 크기는 S2 과제가 따로 줄인다.
         # 800 에서 1200 으로 올렸다 : 번호 조회 줄(약 540 B, 150 토큰 안팎)이 더해졌다.
+        # 1200 에서 1600 으로 올렸다 : 연관 조회 묶음 줄(약 370 B)이 더해졌다.
         text = WorkStyleSection().render(_ctx())
-        assert len(text.encode("utf-8")) < 1200
+        assert len(text.encode("utf-8")) < 1600
