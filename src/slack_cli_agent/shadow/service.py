@@ -89,7 +89,8 @@ def tool_calls_in(path: Path | None) -> tuple[tuple[str, str], ...] | None:
 
     def walk(node: Any) -> None:
         if isinstance(node, Mapping):
-            if node.get("type") in _TOOL_CALL_TYPES and node.get("name"):
+            kind = node.get("type")
+            if isinstance(kind, str) and kind in _TOOL_CALL_TYPES and node.get("name"):
                 name = f"{node['namespace']}.{node['name']}" if node.get("namespace") else str(node["name"])
                 raw = node.get("input", node.get("arguments"))
                 calls.append((name, raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)))

@@ -131,6 +131,16 @@ def test_실행기록에서_도구호출을_뽑는다(tmp_path: Path) -> None:
     assert tool_calls_in(None) is None
 
 
+def test_type_값이_문자열이_아닌_노드가_있어도_도구호출을_뽑는다(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    path.write_text("\n".join([
+        json.dumps({"message": {"content": [{"type": {"kind": "x"}, "name": "Bad"}]}}),
+        json.dumps({"message": {"content": [{"type": ["tool_use"], "name": "Bad2"}]}}),
+        json.dumps({"message": {"content": [{"type": "tool_use", "name": "Grep", "input": {"pattern": "a"}}]}}),
+    ]), encoding="utf-8")
+    assert tool_calls_in(path) == (("Grep", '{"pattern": "a"}'),)
+
+
 def test_처음_보는_원본은_지금부터_본다(tmp_path: Path) -> None:
     api = _Api([_question()])
     service, posts, _ = _service(tmp_path, api, TurnResult(True, "답", ()), now=float(Q_TS) + 60)
