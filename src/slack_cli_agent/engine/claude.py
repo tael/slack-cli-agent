@@ -37,8 +37,6 @@ from __future__ import annotations
 import dataclasses
 import fnmatch
 import json
-import re
-import os
 import logging
 import shlex
 import sys
@@ -376,32 +374,6 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
 }
 
 
-#: 2026-11-09 김태일 지시 "서브에이전트로 바꿔보면" : 기존 finish_hook 은 그대로 두고,
-#: SCA_AGENT_VERIFY_CHANNELS 에 든 채널에서만 Claude Code agent 훅 근거 검수를 함께 건다.
-#: agent 훅은 공식 문서상 실험 기능이라 시험 채널에서 지연, 판정 일치, 시간 초과를 비교한 뒤 정한다.
-AGENT_VERIFY_PROMPT = (
-    "너는 답변 근거 검수기다. 훅 입력: $ARGUMENTS\n\n"
-    "stop_hook_active 가 true 면 바로 {\"ok\": true} 를 낸다.\n"
-    "아니면 transcript_path 파일을 Read 로 열어, 마지막 사람 입력 이후의 도구 결과(tool_result)와 "
-    "마지막 assistant 답을 대조한다. last_assistant_message 가 있으면 그것이 답이다.\n"
-    "답의 사실 문장(수치, 원인, 있음/없음, 실행했다는 보고) 중 이번 턴 도구 결과나 사람 입력으로 "
-    "확인되지 않는 문장이 있으면 {\"ok\": false, \"reason\": \"근거 없는 문장: <문장> (이유)\"} 로 "
-    "최대 3개를 적는다. 의견, 제안, 인사는 제외한다. 모두 근거가 있으면 {\"ok\": true}."
-)
-AGENT_VERIFY_TIMEOUT = 120
-
-
-def agent_verify_enabled(channel: str, env: Mapping[str, str]) -> bool:
-    channels = {c for c in re.split(r"[,\s]+", env.get("SCA_AGENT_VERIFY_CHANNELS") or "") if c}
-    return bool(channel) and channel in channels
-
-
-def agent_verify_hook_settings() -> dict[str, Any]:
-    return {"hooks": {"Stop": [{"hooks": [{
-        "type": "agent", "prompt": AGENT_VERIFY_PROMPT, "timeout": AGENT_VERIFY_TIMEOUT,
-    }]}]}}
-
-
 def guard_hook_settings() -> dict[str, Any]:
     """The settings fragment registering the Bash PreToolUse guards
     (turn_budget, restart_guard, install_guard, scan_guard, sleep_poll_guard -- guard/pretool/),
@@ -697,10 +669,7 @@ class ClaudeEngine(Engine):
             merged = merge_settings(merged, progress_hook_settings(request.progress_log))
         # Always on, regardless of progress_log: these are engine built-ins,
         # not a per-request feature toggle (sca-kos.B4).
-        merged = merge_settings(merged, guard_hook_settings(), NO_ATTRIBUTION_SETTINGS)
-        if agent_verify_enabled(request.engine_env.get("POST_CHANNEL", ""), os.environ):
-            merged = merge_settings(merged, agent_verify_hook_settings())
-        return merged
+        return merge_settings(merged, guard_hook_settings(), NO_ATTRIBUTION_SETTINGS)
 
     @staticmethod
     def _operator_full_signal(request: EngineRequest) -> bool:
