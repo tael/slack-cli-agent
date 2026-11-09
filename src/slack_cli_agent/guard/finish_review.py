@@ -52,6 +52,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -319,6 +320,8 @@ def handoff(turn: Turn) -> str | None:
 # gave_up — said a lookup failed and never tried it again
 # --------------------------------------------------------------------------
 
+#: gave_up blocks a turn at most this many times; see gave_up().
+GAVE_UP_MAX_BLOCKS = 1
 _GAVE_UP_RE = re.compile(r"(조회|확인|열람)(하지 못|할 수 없었)[^\n]{0,20}")
 
 
@@ -331,11 +334,13 @@ def gave_up(turn: Turn) -> str | None:
     match = _GAVE_UP_RE.search(_QUOTED.sub("", answer))
     if not match:
         return None
-    counts: dict[str, int] = {}
-    for call in turn.tool_calls:
-        counts[call.name] = counts.get(call.name, 0) + 1
-    if any(n >= 2 for n in counts.values()):
-        return None
+    # 2026-11-09: the old exemption ("any tool called twice") let every turn
+    # with two Bash calls through. guchipachi ran four ssh lookups on the same
+    # stale session file and shipped "현재 사용량은 확인하지 못했습니다"; one
+    # more lookup 18 seconds later found the live value. Bash is too generic
+    # for a call count to mean "tried another way", so the phrase now always
+    # flags, and decide() blocks it once only (GAVE_UP_MAX_BLOCKS): the rewrite
+    # either retries and drops the phrase, or keeps it and is let through.
     return match.group(0)
 
 
@@ -742,13 +747,13 @@ class ModelClaimVerifier:
         *,
         model: str = VERIFY_DEFAULT_MODEL,
         timeout: float = VERIFY_TIMEOUT,
-        runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
         executable: str | None = None,
         env: Mapping[str, str] | None = None,
     ) -> None:
         self.model = model
         self.timeout = timeout
-        self._runner = runner
+        self._runner = runner or _run_killable
         self._executable = executable
         self._env = dict(os.environ if env is None else env)
         self.status = "not_run"
@@ -786,6 +791,32 @@ class ModelClaimVerifier:
         ]
         self.status = "ok"
         return found[:3]
+
+
+def _run_killable(cmd, *, input, capture_output, text, timeout, env):  # noqa: A002 - subprocess.run's name
+    """subprocess.run that kills the whole process group on timeout.
+
+    2026-11-09: a verify call hit the 90 s timeout but the Stop hook took
+    196 s; where the other 106 s went is not known (finish-hook-verify.jsonl
+    now records elapsed_sec). subprocess.run kills only the direct child and
+    leaves claude's own children running, so this kills the whole group.
+    """
+    del capture_output  # always captured
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=text, env=env, start_new_session=True)
+    try:
+        out, err = proc.communicate(input=input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            proc.communicate(timeout=5)
+        except Exception:  # noqa: BLE001 - already timed out; just stop waiting
+            pass
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 def resolve_verify_settings(env: Mapping[str, str]) -> tuple[bool, str]:
@@ -1095,6 +1126,8 @@ def decide(
             if claims:
                 hit = " | ".join(claims)
                 findings = (Finding(name="verify", detail=hit, guidance=_verify_guidance(hit)),)
+    if block_count >= GAVE_UP_MAX_BLOCKS:
+        findings = tuple(f for f in findings if f.name != "gave_up")
     if not findings:
         return StopDecision(action="allow")
     if seconds_left is not None and seconds_left < release_sec:

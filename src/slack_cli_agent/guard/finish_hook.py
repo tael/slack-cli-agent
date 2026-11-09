@@ -159,9 +159,11 @@ def main(argv: list[str]) -> int:
         seconds_left = time_left(os.environ)
         verify_on, verify_model = resolve_verify_settings(os.environ)
         verifier = ModelClaimVerifier(model=verify_model) if verify_on else None
+        started = time.monotonic()
         decision = decide(
             turn, block_count=block_count, seconds_left=seconds_left, claim_verifier=verifier
         )
+        elapsed = round(time.monotonic() - started, 1)
         if decision.action == "block" and count_path is not None:
             _write_count(count_path, block_count + 1)
         if verifier is not None and turn.has_transcript and needs_verification(turn.answer):
@@ -174,6 +176,7 @@ def main(argv: list[str]) -> int:
                 "verify": status,
                 "model": verify_model,
                 "decision": decision.action,
+                "elapsed_sec": elapsed,
                 "findings": [f.detail for f in decision.findings if f.name == "verify"],
             })
 

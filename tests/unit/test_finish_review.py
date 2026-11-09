@@ -72,16 +72,19 @@ class TestGaveUp:
         assert hit is not None
         assert finish_review.decide(turn).action == "block"
 
-    def test_allows_when_same_tool_was_called_again(self):
+    def test_blocks_once_even_after_repeated_bash(self):
+        # 2026-11-09: four ssh lookups on a stale file, then "확인하지 못했습니다".
         turn = _turn(
-            "오더 상태를 조회하지 못했다.",
+            "현재 사용량은 확인하지 못했습니다.",
             tool_calls=(
                 ToolCall(name="Bash", input={"command": "a"}, result="error"),
                 ToolCall(name="Bash", input={"command": "b"}, result="ok"),
             ),
         )
 
-        assert finish_review.gave_up(turn) is None
+        assert finish_review.gave_up(turn) is not None
+        assert finish_review.decide(turn).action == "block"
+        assert finish_review.decide(turn, block_count=1).action == "allow"
 
 
 class TestStoppedUnfinished:
@@ -701,3 +704,15 @@ class TestStopDecisionHookJson:
         decision = StopDecision(action=action)
 
         assert decision.to_hook_json() == {}
+
+
+def test_run_killable_returns_on_timeout_even_with_lingering_child():
+    import time, subprocess as sp
+    started = time.monotonic()
+    try:
+        finish_review._run_killable(
+            ["sh", "-c", "sleep 30 & sleep 30"], input="", capture_output=True,
+            text=True, timeout=1, env=None)
+    except sp.TimeoutExpired:
+        pass
+    assert time.monotonic() - started < 10
