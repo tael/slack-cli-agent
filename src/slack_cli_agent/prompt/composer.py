@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
-from .knowledge import LEARN_NOTE_COUNT, LEARN_NOTE_COUNT_FIXED, KnowledgeLoader
+from .knowledge import LEARN_MARK, LEARN_NOTE_COUNT, LEARN_NOTE_COUNT_FIXED, KnowledgeLoader
 from .library import PromptLibrary
 from .sections import (
     AuthoritySection,
@@ -147,9 +147,10 @@ class SystemPromptComposer:
         attachments, the unaddressed flag, the thread ts and the watch run id.
         What stays is what a conversation keeps from turn to turn: the
         persona, mode, format, authority and tier text, the fixed knowledge
-        documents, the channel and the speaker's grants. The line count in
-        the deferred-learning note is fixed too: the learner adds a line at
-        night, and the lines themselves are not in the prompt.
+        documents, the channel and the speaker's grants. Learned lines are
+        left out too: the learner adds one at night, and a channel that
+        carries them in its prompt (chat) would otherwise reset every open
+        session. Where they are deferred, the count in the note is fixed.
         """
         stable = replace(
             ctx, prompt="", thread_ts="", asker_name="", asker_id="", unaddressed=False,
@@ -157,6 +158,7 @@ class SystemPromptComposer:
             people=(), files=(), missed_files=0,
         )
         text, _ = self.compose_with_report(stable)
+        text = "\n".join(line for line in text.split("\n") if LEARN_MARK not in line)
         text = LEARN_NOTE_COUNT.sub(LEARN_NOTE_COUNT_FIXED, text)
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 

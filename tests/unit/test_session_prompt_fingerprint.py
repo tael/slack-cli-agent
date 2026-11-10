@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from test_application import FakeSlackClient, write_profile
 from test_pipeline import FakeComposer, build_pipeline, make_ctx, ok_response
 
@@ -159,24 +160,37 @@ class Test지문안정성:
         assert composer.instruction_fingerprint(ctx) != before
         app.close()
 
-    def test_학습_줄이_늘어도_지문이_같다(self, tmp_path: Path) -> None:
-        """학습 줄은 지침에서 빠지고 개수만 안내 문장에 남는다. 야간 학습 한 줄로
-        모든 세션이 리셋되면 안 된다."""
+    @pytest.mark.parametrize("channel_mode", ["default", "chat"])
+    def test_학습_줄이_늘어도_지문이_같다(self, tmp_path: Path, channel_mode: str) -> None:
+        """야간 학습기가 한 줄을 더해도 열린 세션이 리셋되면 안 된다. 업무 채널은
+        학습 줄을 빼고 개수만 안내하고, 잡담 채널은 학습 줄을 그대로 싣는다
+        (PR #183). 두 경우 모두 지문은 같아야 한다."""
         composer, _prompts, app = self._composer(tmp_path)
         knowledge = app.profile.paths.knowledge
         knowledge.mkdir(parents=True, exist_ok=True)
         doc = knowledge / "_rules.md"
         doc.write_text("규칙\n- 정정 1 <!-- learn:2026-11-09 -->\n", encoding="utf-8")
-        ctx = self._ctx(self.OWNER)
+        ctx = self._ctx(self.OWNER, channel_mode=channel_mode)
         before_text = composer.compose(ctx)
         before = composer.instruction_fingerprint(ctx)
         doc.write_text(
             "규칙\n- 정정 1 <!-- learn:2026-11-09 -->\n- 정정 2 <!-- learn:2026-11-10 -->\n",
             encoding="utf-8",
         )
-        assert "학습 기록 1줄" in before_text
-        assert "학습 기록 2줄" in composer.compose(ctx)
+        assert composer.compose(ctx) != before_text
         assert composer.instruction_fingerprint(ctx) == before
+        app.close()
+
+    def test_학습_줄이_아닌_수정은_잡담_채널에서도_지문을_바꾼다(self, tmp_path: Path) -> None:
+        composer, _prompts, app = self._composer(tmp_path)
+        knowledge = app.profile.paths.knowledge
+        knowledge.mkdir(parents=True, exist_ok=True)
+        doc = knowledge / "_rules.md"
+        doc.write_text("규칙 1\n- 정정 <!-- learn:2026-11-09 -->\n", encoding="utf-8")
+        ctx = self._ctx(self.OWNER, channel_mode="chat")
+        before = composer.instruction_fingerprint(ctx)
+        doc.write_text("규칙 2\n- 정정 <!-- learn:2026-11-09 -->\n", encoding="utf-8")
+        assert composer.instruction_fingerprint(ctx) != before
         app.close()
 
     def test_고정_지식_문서를_고쳐도_지문이_바뀐다(self, tmp_path: Path) -> None:
