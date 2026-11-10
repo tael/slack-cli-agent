@@ -674,6 +674,13 @@ VERIFY_MIN_LEN = 400
 #: guesses ("워크플로나 예약 발송") that went out unverified. 2 checks the
 #: rewrite once, matching mametchi's finish_work_hook.
 VERIFY_MAX_BLOCKS = 2
+#: 2026-11-10: past VERIFY_MAX_BLOCKS the model check used to be skipped
+#: outright, and a rewrite carrying a stale knowledge-file line ("사무실 IP
+#: 는 API허브에서 차단 중") went out unchecked. Now the check keeps running up
+#: to this hard cap, but past VERIFY_MAX_BLOCKS it blocks only on sentences
+#: no earlier block in the same turn flagged (`prior_flagged`), so a rewrite
+#: can't keep bouncing on the same claim.
+VERIFY_HARD_MAX_BLOCKS = 4
 #: Seconds the nested model call may take.
 VERIFY_TIMEOUT = 90
 #: Cap on tool-result text handed to the model.
@@ -1157,6 +1164,7 @@ def decide(
     seconds_left: float | None = None,
     release_sec: int = 240,
     claim_verifier: ClaimVerifier | None = None,
+    prior_flagged: frozenset[str] = frozenset(),
 ) -> StopDecision:
     """The Stop-hook decision for one turn.
 
@@ -1185,8 +1193,10 @@ def decide(
         # flagged the turn, at most VERIFY_MAX_BLOCKS blocks per request, and
         # never so close to the deadline that the rewrite can't land.
         budget_ok = seconds_left is None or seconds_left > release_sec + VERIFY_TIMEOUT
-        if not findings and budget_ok and block_count < VERIFY_MAX_BLOCKS:
+        if not findings and budget_ok and block_count < VERIFY_HARD_MAX_BLOCKS:
             claims = unsupported_claims(turn, verifier=claim_verifier)
+            if block_count >= VERIFY_MAX_BLOCKS:
+                claims = [c for c in claims if claim_key(c) not in prior_flagged]
             if claims:
                 hit = " | ".join(claims)
                 findings = (Finding(name="verify", detail=hit, guidance=_verify_guidance(hit)),)
@@ -1194,6 +1204,26 @@ def decide(
         return StopDecision(action="allow")
     if seconds_left is not None and seconds_left < release_sec:
         return StopDecision(action="release", findings=findings)
-    if block_count >= max_blocks:
+    only_verify = all(f.name == "verify" for f in findings)
+    if block_count >= max_blocks and not (only_verify and block_count < VERIFY_HARD_MAX_BLOCKS):
         return StopDecision(action="release", findings=findings)
     return StopDecision(action="block", findings=findings)
+
+
+def claim_key(finding_text: str) -> str:
+    """The flagged sentence of one verify finding ("sentence (why)"),
+    whitespace-normalized, so a later block can tell a claim it already
+    flagged from a new one."""
+    text = finding_text or ""
+    cut = text.rfind(" (")
+    sentence = text[:cut] if cut > 0 else text
+    return " ".join(sentence.split())[:160]
+
+
+def verify_claim_keys(decision: StopDecision) -> set[str]:
+    """claim_key of every sentence a verify finding in `decision` flagged."""
+    keys: set[str] = set()
+    for f in decision.findings:
+        if f.name == "verify":
+            keys |= {claim_key(part) for part in f.detail.split(" | ") if part.strip()}
+    return keys
