@@ -36,12 +36,13 @@ from __future__ import annotations
 
 import dataclasses
 import fnmatch
+import itertools
 import json
 import logging
 import shlex
 import sys
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -126,6 +127,26 @@ def _server_wide_names(names: tuple[str, ...], servers: Iterable[str]) -> tuple[
 
 #: The built-in tool that loads deferred MCP tool schemas on demand.
 TOOL_SEARCH = "ToolSearch"
+
+
+def _closed_tool_names(args: Sequence[str]) -> dict[str, tuple[str, ...]]:
+    """The tool lists a turn's arguments carry, for the audit row (names only).
+
+    Reads _tool_args' output rather than rebuilding the lists, so the record
+    cannot disagree with the command that ran. A flag the turn did not pass is
+    left out: "not closed" and "closed to nothing" stay apart.
+    """
+    keys = {
+        "--tools": "tools_builtin",
+        "--allowedTools": "tools_allowed",
+        "--disallowedTools": "tools_disallowed",
+    }
+    found: dict[str, tuple[str, ...]] = {}
+    for flag, value in itertools.pairwise(args):
+        key = keys.get(flag)
+        if key is not None:
+            found[key] = tuple(name for name in value.split(",") if name)
+    return found
 
 
 def _builtin_names(names: tuple[str, ...]) -> list[str]:
@@ -538,8 +559,11 @@ class ClaudeEngine(Engine):
         # 않고 이름만 세므로 자격증명이 없어도 실패하지 않는다.
         base = super().footprint_for(request)
         names = [name for name, server in self.profile.mcp_servers.items() if not server.disabled]
+        tools = _closed_tool_names(
+            self._tool_args(request, _claude_mcp_servers(self.profile.mcp_servers))
+        )
         return dataclasses.replace(
-            base, mcp_servers_attached=len(_attached_mcp_servers(request, names))
+            base, mcp_servers_attached=len(_attached_mcp_servers(request, names)), **tools
         )
 
     def prepare(self, request: EngineRequest) -> None:
