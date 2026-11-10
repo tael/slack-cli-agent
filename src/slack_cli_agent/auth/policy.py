@@ -66,9 +66,9 @@ def turn_tier(
         return TurnTier.OWNER_TRUSTED if full_authority else TurnTier.OWNER
     if delegated:
         return TurnTier.DELEGATED
-    if is_bot:
+    if is_bot and not is_channel_operator(config, principal.user_id, is_bot=True):
         return TurnTier.BOT
-    if is_channel_operator(config, principal.user_id):
+    if is_channel_operator(config, principal.user_id, is_bot=is_bot):
         return TurnTier.OPERATOR_FULL if config and config.operator_full else TurnTier.OPERATOR
     if principal.user_id and principal.user_id in airflow_admins(config):
         return TurnTier.AIRFLOW

@@ -268,7 +268,11 @@ class ToolPolicy:
                     tool for tool in _non_owner_safe(self._channel_tools(principal))
                     if tool not in tools
                 ]
-            if asker_is_bot:
+            if asker_is_bot and not (
+                self._operator_level is not None
+                and self._operator_level(principal, is_bot=True)
+            ):
+                # A bot the channel lists in operator_bots keeps its Bash.
                 # Any scoped Bash grant makes engine/claude.py lift the bare
                 # Bash deny, and Claude Code then runs read-only commands such
                 # as date outside the allowlist (2026-11-09, #test-agent).
