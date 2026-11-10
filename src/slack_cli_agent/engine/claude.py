@@ -590,7 +590,11 @@ class ClaudeEngine(Engine):
             self._tool_args(request, _claude_mcp_servers(self.profile.mcp_servers))
         )
         return dataclasses.replace(
-            base, mcp_servers_attached=len(_attached_mcp_servers(request, names)), **tools
+            base,
+            mcp_servers_attached=len(_attached_mcp_servers(request, names)),
+            tools_builtin=tools.get("tools_builtin"),
+            tools_allowed=tools.get("tools_allowed"),
+            tools_disallowed=tools.get("tools_disallowed"),
         )
 
     def prepare(self, request: EngineRequest) -> None:

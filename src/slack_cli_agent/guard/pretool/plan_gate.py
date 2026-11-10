@@ -248,6 +248,15 @@ def decide(data: dict[str, Any]) -> tuple[str, int]:
     threshold = threshold_from_env()
     if threshold <= 0:
         return "off", 0
+    if data.get("agent_id"):
+        # A worker's call (Agent subagent). Claude Code hands its PreToolUse
+        # hook the main session's transcript_path plus agent_id/agent_type
+        # (claude 2.1.321, measured 2026-11-10 W5). The worker's own call is
+        # not in that transcript, so judge() would count the main's responses
+        # and deny a worker started at response 2 without a plan -- with no
+        # way out, since the worker's denials never reach the main transcript
+        # and gave_up never trips. The plan is the main's job; workers pass.
+        return "subagent", 0
     raw_path = data.get("transcript_path")
     if not raw_path or not os.path.exists(raw_path):
         return "no_transcript", 0
