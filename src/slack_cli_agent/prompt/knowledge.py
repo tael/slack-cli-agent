@@ -147,7 +147,7 @@ class KnowledgeLoader:
 
     def knowledge_selection(
         self, channel_slug: str, prompt: str = "", budget: int | None = None,
-        part: str = KNOWLEDGE_ALL,
+        part: str = KNOWLEDGE_ALL, chat: bool = False,
     ) -> tuple[str, tuple[KnowledgeDocument, ...]]:
         """The text plus what the budget left out, for the caller that has to
         report it. A budget of 0 or less renders nothing at all -- printing the
@@ -157,8 +157,15 @@ class KnowledgeLoader:
         `part` narrows it to the documents that load on every turn
         (KNOWLEDGE_FIXED) or to the ones this request's words picked plus the
         list of the ones they did not (KNOWLEDGE_SELECTED). The two together
-        carry what KNOWLEDGE_ALL carries."""
-        documents, skipped = self.documents(channel_slug, prompt)
+        carry what KNOWLEDGE_ALL carries.
+
+        `chat` is a chat channel's request (`mode: chat` or `chat: active`),
+        which loads the way mametchi load_persona did (bot.py:3596): learner
+        lines stay in, and `always_skills` does not pull in a topic file its
+        `when:` words did not match. Both were added for work turns; in a
+        chat channel they cut the incident notes the old bot answered from
+        and added lookup guidance it never had (2026-11-10 비교)."""
+        documents, skipped = self.documents(channel_slug, prompt, chat=chat)
         if part == KNOWLEDGE_FIXED:
             documents, skipped = tuple(d for d in documents if not d.selected), ()
         elif part == KNOWLEDGE_SELECTED:
@@ -169,7 +176,7 @@ class KnowledgeLoader:
         return _render(kept, omitted, skipped), tuple(omitted)
 
     def documents(
-        self, channel_slug: str, prompt: str = "",
+        self, channel_slug: str, prompt: str = "", chat: bool = False,
     ) -> tuple[tuple[KnowledgeDocument, ...], tuple[Path, ...]]:
         """Every document this request would carry, in send order.
 
@@ -178,18 +185,22 @@ class KnowledgeLoader:
         """
         skipped: list[Path] = []
         wiki = self._wiki_index()
+        always = frozenset() if chat else self._always_skills
         documents = list(self._from_dir(
             self._knowledge_dir, channel_slug, prompt, skipped,
             after_common=wiki, skip_names={WIKI_INDEX_MIRROR} if wiki else frozenset(),
+            always_skills=always,
         ))
         learned = (
-            self._from_dir(self._learned_dir, channel_slug, prompt, skipped)
+            self._from_dir(
+                self._learned_dir, channel_slug, prompt, skipped, always_skills=always,
+            )
             if self._learned_dir is not None
             else []
         )
         documents += [dataclasses.replace(doc, learned=True) for doc in learned]
         documents += self._local_overlay(channel_slug)
-        if self._defer_learn_lines:
+        if self._defer_learn_lines and not chat:
             documents = [_defer_learn_lines(doc) for doc in documents]
         return tuple(documents), tuple(skipped)
 
@@ -228,6 +239,7 @@ class KnowledgeLoader:
         self, directory: Path, channel_slug: str, prompt: str, skipped: list[Path],
         after_common: Sequence[KnowledgeDocument] = (),
         skip_names: Collection[str] = frozenset(),
+        always_skills: Collection[str] = frozenset(),
     ) -> list[KnowledgeDocument]:
         parts: list[KnowledgeDocument] = []
         low = (prompt or "").lower()
@@ -237,7 +249,7 @@ class KnowledgeLoader:
                     continue
                 text = common.read_text(encoding="utf-8")
                 triggers = self._triggers(text)
-                always = common.stem.lstrip("_") in self._always_skills
+                always = common.stem.lstrip("_") in always_skills
                 if triggers is not None and not always and not any(t in low for t in triggers):
                     skipped.append(common)
                     continue

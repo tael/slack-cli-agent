@@ -1065,8 +1065,8 @@ class Test멘션이_붙은_관리_명령:
         assert queue.enqueued[0].text == "배포 상태 알려줘"
 
     def test_남을_부른_멘션은_큐에_남는다(self, listener, admin_router, tmp_path) -> None:
-        """전부 지우면 누구를 불렀는지가 모델에게 안 간다. 이름으로 바꾸는
-        것은 프롬프트를 만드는 자리가 한다 (sca-za2a)."""
+        """전부 지우면 누구를 불렀는지가 모델에게 안 간다. 본문은 원문을
+        두고 불린 사람 이름은 대화록 머리가 적는다 (sca-za2a)."""
         queue = FakeJobQueue()
         ingress = make_ingress(
             listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path

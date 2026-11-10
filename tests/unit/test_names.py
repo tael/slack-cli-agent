@@ -388,7 +388,7 @@ class TestUserNamer:
         assert namer.name_of("U1") == "홍길동"
 
     def test_resolver_자리에_그대로_넣을_수_있다(self) -> None:
-        """MentionRenderer·CalledNames 가 Callable[[str], str] 을 받는다."""
+        """CalledNames 가 Callable[[str], str] 을 받는다."""
         namer = UserNamer(
             lambda uid: "Shinji Ikari Bot",
             identity=_가짜신원("UBOT"),

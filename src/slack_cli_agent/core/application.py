@@ -747,6 +747,8 @@ class Application:
                 is_bot=self._is_bot_or_peer,
                 display_name=self._names.resolve,
                 allowed_in=self._bot_mentions_allowed,
+                # A chat channel keeps a bot mention the request asked for.
+                requested_only_in=self._is_chat_channel,
             ),
             AddresseeGuard(is_bot=self._is_bot_or_peer),
             WatchPromiseGuard(),
@@ -981,7 +983,6 @@ class Application:
                 # S2: 요청 종류로 붙일 MCP 서버를 고른다. 없으면 전부.
                 mcp_routing=self._settings.mcp_routing,
                 mention_table=self._names.name_table,
-                group_resolver=self._group_names,
                 slow_reporter=self._slow_reporter(),
                 # Resolved per request like the slow report: the engine that
                 # answered decides the transcript format (S0 계측).

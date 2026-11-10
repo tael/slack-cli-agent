@@ -188,6 +188,12 @@ class BotMentionGuard(OutputGuard):
     a plain name neither links nor wakes it -- and the loop this guard exists
     to stop needs the answer to name the asker back, so only that leg is cut
     (sca-c4m).
+
+    A chat channel (`requested_only_in`) keeps a bot's mention only when the
+    request being answered names that bot, by `<@ID>` or by display name.
+    mametchi had no such guard, so "<봇> 불러 줘" reached the other bot there;
+    keeping every bot mention instead let three or more bots call each other
+    round until the peer limit (리뷰 MEDIUM-1, 2026-11-10).
     """
 
     name: ClassVar[str] = "bot_mention"
@@ -197,18 +203,38 @@ class BotMentionGuard(OutputGuard):
         is_bot: Callable[[str], bool],
         display_name: Callable[[str], str],
         allowed_in: Callable[[str], bool] | None = None,
+        requested_only_in: Callable[[str], bool] | None = None,
     ) -> None:
         self._is_bot = is_bot
         self._display_name = display_name
         self._allowed_in = allowed_in
+        self._requested_only_in = requested_only_in
 
-    def _allowed(self, channel: str) -> bool:
-        if self._allowed_in is None:
+    @staticmethod
+    def _flag(check: Callable[[str], bool] | None, channel: str) -> bool:
+        if check is None:
             return False
         try:
-            return bool(self._allowed_in(channel))
+            return bool(check(channel))
         except Exception:  # noqa: BLE001 - an unreadable setting falls back to stripping
             return False
+
+    def _allowed(self, channel: str) -> bool:
+        return self._flag(self._allowed_in, channel)
+
+    def _requested(self, user_id: str, request_text: str) -> bool:
+        """Same reading as AddresseeGuard._requested, plus the display name:
+        "구치파치 불러 줘" names the bot without its markup."""
+        if not request_text:
+            return False
+        text = CODE_SPANS.sub("", request_text)
+        if user_id in ANY_MENTION.findall(text):
+            return True
+        try:
+            name = (self._display_name(user_id) or "").strip()
+        except Exception:  # noqa: BLE001 - an unknown name is not a request
+            return False
+        return bool(name) and name in text
 
     def apply(self, body: str, ctx: GuardContext) -> GuardResult:
         if not body or "<@" not in body:
@@ -217,6 +243,7 @@ class BotMentionGuard(OutputGuard):
         # Only the asker's own mention closes the loop; the rest are calls
         # this channel is configured to allow.
         keep_others = self._allowed(ctx.channel)
+        requested_only = not keep_others and self._flag(self._requested_only_in, ctx.channel)
         asker = ctx.asker_id or ""
 
         mask = CodeSpanMask(body)
@@ -232,6 +259,8 @@ class BotMentionGuard(OutputGuard):
             if not verdicts[user_id]:
                 return m.group(0)
             if keep_others and user_id != asker:
+                return m.group(0)
+            if requested_only and user_id != asker and self._requested(user_id, ctx.request_text):
                 return m.group(0)
             if user_id not in targets:
                 targets.append(user_id)

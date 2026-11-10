@@ -1,12 +1,10 @@
-"""Rewrites Slack mention markup in a message body into readable names.
+"""Mention markup helpers: who a message called, and this bot's own mention.
 
-The speaker label is resolved elsewhere; the body was left as-is, so the
-model saw `<@U0EXAMPLE05>` and could not tell who called whom. bot.py:2722
-records what that costs -- on 2026-08-26 a reply inverted who said what to
-whom (sca-hkmb).
-
-Unresolvable mentions keep their original markup. Dropping them would erase
-the fact that someone was called.
+Message bodies keep Slack's markup as sent. Who was called is named in the
+transcript head instead (CalledNames), the way mametchi readable_mentions
+(bot.py:4577) does: a body with names put in made the model copy the bare
+name into its reply, which neither links nor notifies (2026-08-26). Without
+the head the model could not tell who called whom (sca-hkmb).
 """
 
 from __future__ import annotations
@@ -46,38 +44,12 @@ def resolve_name(resolver: Callable[[str], str] | None, key: str) -> str:
         return ""
 
 
-class MentionRenderer:
-    def __init__(
-        self,
-        name_resolver: Callable[[str], str],
-        group_resolver: Callable[[str], str] | None = None,
-    ) -> None:
-        self._name = name_resolver
-        self._group = group_resolver
-
-    def render(self, text: str) -> str:
-        if not text:
-            return text
-        return MENTION.sub(self._one, text)
-
-    def _one(self, found: re.Match[str]) -> str:
-        is_group = found.group(1) == _GROUP_MARK
-        resolver = self._group if is_group else self._name
-        name = resolve_name(resolver, found.group(2)) or (found.group(3) or "").strip()
-        if is_group:
-            # A handle may or may not carry the @ already; the prefix is added here.
-            name = name.lstrip("@")
-        if not name:
-            return found.group(0)
-        return f"@{name} 그룹" if is_group else name
-
-
 class SelfMentionStripper:
     """Removes this bot's own mention from an incoming message.
 
     Every mention used to go with it (bot.py:4973), so the body reaching the
     model no longer said who had been called. Other people's mentions are kept
-    here and turned into names where the prompt is built (sca-za2a).
+    as markup; the transcript head names who they call (sca-za2a).
 
     An unresolved identity falls back to removing the leading mention only:
     this text is what the admin router matches, and a leading `<@U...>` stops
