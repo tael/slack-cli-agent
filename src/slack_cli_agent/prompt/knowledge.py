@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -274,6 +275,13 @@ class KnowledgeLoader:
             return None
         body = first[len(WHEN_MARK) :].split("-->", 1)[0]
         return [w.strip().lower() for w in body.split(",") if w.strip()]
+
+
+#: The line count in the deferred-learning note. SystemPromptComposer's
+#: fingerprint replaces it with a fixed value so one learned line added at
+#: night does not reset every open session.
+LEARN_NOTE_COUNT = re.compile(r"\(학습 기록 \d+줄은 지침에서 뺐다")
+LEARN_NOTE_COUNT_FIXED = "(학습 기록 N줄은 지침에서 뺐다"
 
 
 def _defer_learn_lines(doc: KnowledgeDocument) -> KnowledgeDocument:

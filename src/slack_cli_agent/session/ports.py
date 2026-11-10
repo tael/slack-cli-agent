@@ -47,6 +47,12 @@ class SessionRecord:
     mcp_servers: str = ""
     # 마지막 턴의 호출당 컨텍스트 토큰. 컨텍스트 임계 리셋이 읽는다.
     last_context_tokens: int = 0
+    # 세션을 연 턴의 시스템 지침 지문 (SystemPromptComposer.instruction_fingerprint).
+    # claude --resume 은 --append-system-prompt 를 반영하지 않으므로 지침 파일을
+    # 고친 뒤의 턴은 이 값이 달라 새 세션을 연다. "" 는 이 컬럼 이전의 행이거나
+    # 지문을 쓰지 않는 엔진(codex, gemini)이 연 세션이다. 지문을 주는 턴은 ""
+    # 행을 이어받지 않는다.
+    prompt_fingerprint: str = ""
 
 
 @runtime_checkable

@@ -17,7 +17,8 @@ class SqliteSessionStore(SqliteRepository):
         row = self._fetch_one(
             """
             SELECT scope, key, session_id, engine, created_at, last_seen_ts, updated_at,
-                   workdir, model, tier, mcp_servers, last_context_tokens
+                   workdir, model, tier, mcp_servers, last_context_tokens,
+                   prompt_fingerprint
               FROM sessions WHERE scope = ? AND key = ?
             """,
             (key.scope, key.key),
@@ -29,8 +30,8 @@ class SqliteSessionStore(SqliteRepository):
             """
             INSERT INTO sessions
               (scope, key, session_id, engine, created_at, last_seen_ts, updated_at,
-               workdir, model, tier, mcp_servers, last_context_tokens)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               workdir, model, tier, mcp_servers, last_context_tokens, prompt_fingerprint)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(scope, key) DO UPDATE SET
               session_id = excluded.session_id,
               engine = excluded.engine,
@@ -41,13 +42,15 @@ class SqliteSessionStore(SqliteRepository):
               model = excluded.model,
               tier = excluded.tier,
               mcp_servers = excluded.mcp_servers,
-              last_context_tokens = excluded.last_context_tokens
+              last_context_tokens = excluded.last_context_tokens,
+              prompt_fingerprint = excluded.prompt_fingerprint
             """,
             (
                 record.scope, record.key, record.session_id, record.engine,
                 record.created_at, record.last_seen_ts, record.updated_at,
                 record.workdir, record.model, record.tier,
                 record.mcp_servers, int(record.last_context_tokens),
+                record.prompt_fingerprint,
             ),
         )
 
@@ -95,4 +98,5 @@ class SqliteSessionStore(SqliteRepository):
             tier=row["tier"],
             mcp_servers=row["mcp_servers"],
             last_context_tokens=int(row["last_context_tokens"]),
+            prompt_fingerprint=row["prompt_fingerprint"],
         )

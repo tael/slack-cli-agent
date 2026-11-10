@@ -79,6 +79,7 @@ def insert_request(
     turns: object = _UNSET,
     truncated: object = _UNSET,
     context_reset: object = _UNSET,
+    context_reset_reason: str = "",
 ) -> None:
     payload: dict[str, object] = {
         "message_ts": thread_ts,
@@ -102,6 +103,8 @@ def insert_request(
         payload[TRUNCATED_RAW_KEY] = truncated
     if context_reset is not _UNSET:
         payload[CONTEXT_RESET_RAW_KEY] = context_reset
+    if context_reset_reason:
+        payload["context_reset_reason"] = context_reset_reason
     db.connect().execute(
         "INSERT INTO audit (at, kind, channel, thread_ts, payload) VALUES (?, ?, ?, ?, ?)",
         (at, REQUEST_KIND, channel, thread_ts, json.dumps(payload, ensure_ascii=False)),
@@ -314,6 +317,18 @@ class Test신뢰성:
         assert reliability["context_reset_pct"] == 50.0
         assert reliability["tracked_since"]["context_reset"] == metrics_module._kst(1_000.0)
         assert "reliability.context_reset" not in result["bot"]["not_applicable"]
+
+    def test_지침_변경_리셋은_끊긴_재개로_세지_않는다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", context_reset=True,
+                       context_reset_reason="threshold")
+        insert_request(db, at=1_001.0, channel="C1", context_reset=True,
+                       context_reset_reason="system_prompt")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        reliability = collector.collect(days=7)["reliability"]
+        assert reliability["context_reset"] == 1
+        assert reliability["context_reset_pct"] == 50.0
 
     def test_재설정_기록_이전이면_0이_아니라_None이다(self, tmp_path: Path) -> None:
         profile = make_profile(tmp_path)

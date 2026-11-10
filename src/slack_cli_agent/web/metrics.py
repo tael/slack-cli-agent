@@ -43,6 +43,7 @@ from ..observability.audit import (
     normalize_kind,
 )
 from ..observability import model_cost
+from ..session.manager import SYSTEM_PROMPT_RESET_REASON
 from ..storage.database import Database
 
 KST = timezone(timedelta(hours=9))
@@ -614,7 +615,13 @@ class MetricsCollector:
         truncated_tracked = "truncated" in field_first_seen
         truncated = sum(1 for r in requests if r.get(TRUNCATED_RAW_KEY) is True)
         context_reset_tracked = "context_reset" in field_first_seen
-        context_reset = sum(1 for r in requests if r.get(CONTEXT_RESET_RAW_KEY) is True)
+        # A reset because the instructions changed is deliberate, not a resume
+        # that broke, so it stays out of this count.
+        context_reset = sum(
+            1 for r in requests
+            if r.get(CONTEXT_RESET_RAW_KEY) is True
+            and r.get("context_reset_reason") != SYSTEM_PROMPT_RESET_REASON
+        )
         return {
             "total": len(requests),
             "ok": len(ok),

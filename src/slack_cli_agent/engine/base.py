@@ -622,6 +622,15 @@ class Engine(ABC):
         self.settings = settings
         self._instruction_ledger = InstructionLedger(refresh_after=self.instruction_refresh_after)
 
+    def resumes_with_opening_instructions(self) -> bool:
+        """Whether a resumed turn runs under the instructions the session
+        opened with rather than this turn's. claude drops
+        --append-system-prompt on --resume; an engine that folds this turn's
+        instructions into the resumed prompt (dedups_resumed_instructions)
+        does not. The pipeline compares instruction fingerprints only when
+        this holds."""
+        return not self.dedups_resumed_instructions
+
     def instructions_for(self, request: EngineRequest) -> str:
         """The instruction text this turn actually sends.
 

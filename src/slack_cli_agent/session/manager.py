@@ -56,6 +56,8 @@ class SessionDecision:
 
 #: SessionDecision.reset_reason 값. 감사 기록 context_reset_reason 에 그대로 간다.
 THRESHOLD_RESET_REASON = "threshold"
+#: 세션을 연 턴과 이번 턴의 시스템 지침 지문이 다르다. 지침 파일을 고친 뒤다.
+SYSTEM_PROMPT_RESET_REASON = "system_prompt"
 
 
 def _default_new_session_id() -> str:
@@ -79,7 +81,9 @@ class SessionManager:
         self._now = now
         self._new_session_id = new_session_id
 
-    def resolve(self, key: SessionKey, engine: str, tier: str = "") -> SessionDecision:
+    def resolve(
+        self, key: SessionKey, engine: str, tier: str = "", fingerprint: str = "",
+    ) -> SessionDecision:
         """Decide whether this conversation has a session to resume.
 
         No record, expired TTL, an engine mismatch (passing another
@@ -95,13 +99,29 @@ class SessionManager:
         of another tier would run under those. The full rebuild reads the
         thread back from Slack, so the conversation still carries. An empty
         `tier` skips the check, for callers that have no speaker.
+
+        `fingerprint` is the same check for the instruction text itself: the
+        system prompt with its per-turn values left out. A prompt file edited
+        after the session opened gives a different fingerprint, and resuming
+        would keep the old text (2026-11-10: 11:55 prompt_chat.md edit, 12:17
+        answer still under the old one). An empty `fingerprint` skips the
+        check: the caller has none, or its engine re-sends this turn's
+        instructions on a resumed turn anyway (codex, gemini). A row from
+        before the column holds "", which no fingerprint matches, so it opens
+        a new session once: which instructions it opened with is unknown,
+        and a session opened under the old text is cleared by the deploy.
         """
         now = self._now()
         record = self._store.get(key)
         if record is not None and self._is_valid(record, key.scope, now, engine, tier):
+            if fingerprint and record.prompt_fingerprint != fingerprint:
+                return replace(
+                    self._start_new(key, engine, now, tier, fingerprint),
+                    reset_reason=SYSTEM_PROMPT_RESET_REASON,
+                )
             if self._over_context_threshold(record):
                 try:
-                    started = self._start_new(key, engine, now, tier)
+                    started = self._start_new(key, engine, now, tier, fingerprint)
                 except Exception:  # noqa: BLE001 -- 리셋이 안 되면 그냥 재개한다
                     started = None
                 if started is not None:
@@ -118,11 +138,13 @@ class SessionManager:
                 after_ts=record.last_seen_ts or None,
                 mcp_servers=record.mcp_servers,
             )
-        return self._start_new(key, engine, now, tier)
+        return self._start_new(key, engine, now, tier, fingerprint)
 
-    def reset(self, key: SessionKey, engine: str, tier: str = "") -> SessionDecision:
+    def reset(
+        self, key: SessionKey, engine: str, tier: str = "", fingerprint: str = "",
+    ) -> SessionDecision:
         """Force a fresh session for a conversation whose continuity broke."""
-        return self._start_new(key, engine, self._now(), tier)
+        return self._start_new(key, engine, self._now(), tier, fingerprint)
 
     def adopt_engine_session(
         self, key: SessionKey, expected_session_id: str, engine: str, actual_session_id: str
@@ -185,7 +207,7 @@ class SessionManager:
         return replace(record, updated_at=now)
 
     def _start_new(
-        self, key: SessionKey, engine: str, now: float, tier: str = ""
+        self, key: SessionKey, engine: str, now: float, tier: str = "", fingerprint: str = "",
     ) -> SessionDecision:
         session_id = self._new_session_id()
         self._store.put(SessionRecord(
@@ -197,6 +219,7 @@ class SessionManager:
             last_seen_ts="",
             updated_at=now,
             tier=tier,
+            prompt_fingerprint=fingerprint,
         ))
         return SessionDecision(
             session_id=session_id, resume=False, rebuild_full=True, after_ts=None,
