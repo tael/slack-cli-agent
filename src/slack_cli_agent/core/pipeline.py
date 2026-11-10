@@ -14,8 +14,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from ..auth.execution_policy import ExecutionPolicy
 from ..auth.delegation import DelegationRecorder
+from ..auth.execution_policy import ExecutionPolicy
 from ..auth.policy import turn_tier
 from ..auth.principal import Principal, TrustLevel
 from ..auth.tools import SKILL_TOOL, ToolPolicy
@@ -48,6 +48,7 @@ from ..guard.base import GuardContext
 from ..guard.figurative import FigurativeGuard
 from ..guard.mentions import AddresseeGuard, PlainMentionGuard, Recipient, RecipientResolver
 from ..guard.pipeline import GuardPipeline
+from ..guard.pretool.plan_gate import PLAN_GATE_ENV
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
 from ..observability.audit import IncidentKind
@@ -56,7 +57,13 @@ from ..observability.request_timing import RequestTiming, RequestTimingCalculato
 from ..observability.response_archive import ResponseArchive
 from ..observability.slow_report import SlowRequestMeta, SlowRequestReporter
 from ..prompt.composer import PromptComposer
-from ..prompt.sections import TIER_NOTES, CompositionContext, TurnTierSection, is_silent
+from ..prompt.sections import (
+    TIER_NOTES,
+    CompositionContext,
+    TurnTierSection,
+    flow_applies,
+    is_silent,
+)
 from ..reliability.restart import TURN_ID_ENV
 from ..reliability.watchjobs import WatchJobPort
 from ..reliability.watchresult import WatchResultReader
@@ -81,7 +88,6 @@ from ..slack.transcribe import TranscribeFn, transcribe_files
 from ..slack.transcript import CurrentMessage
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
-from .mcp_routing import encode_servers, select_mcp_servers
 from .markers import (
     missing_recipient_prompt,
     pick_recipient_tag,
@@ -91,6 +97,7 @@ from .markers import (
     take_nowatch_tag,
     take_recipient_tag,
 )
+from .mcp_routing import encode_servers, select_mcp_servers
 from .pipeline_ports import (
     AccessPolicyPort,
     AuditPort,
@@ -281,6 +288,10 @@ class RequestPipeline:
         # component default stays off so a pipeline built without settings
         # publishes rather than goes quiet.
         require_recipient: bool = False,
+        # W4: the response number from which guard/pretool/plan_gate denies a
+        # call when no `[계획]` block came first. Set as PLAN_GATE on turns
+        # FlowSection applies to; 0 (the component default) leaves it off.
+        plan_gate_responses: int = 0,
         mention_table: Callable[[], Mapping[str, str]] = dict,
         slow_reporter: SlowRequestReporter | None = None,
         # Splits each request's wall time into named items for its audit row
@@ -366,6 +377,7 @@ class RequestPipeline:
         self._name_resolver = name_resolver
         self._asker_is_bot = asker_is_bot
         self._require_recipient = require_recipient
+        self._plan_gate_responses = plan_gate_responses
         # Reuses asker_is_bot as the is-bot oracle: resolving a RECIPIENT tag
         # needs the same "is this user a bot" lookup for the ASKER→BOT fold and
         # for validating a BOT:id. Forces the leading mention for bot recipients
@@ -638,6 +650,7 @@ class RequestPipeline:
                     else {}
                 ),
                 **self._engine_env(ctx.channel, config),
+                **self._plan_gate_env(tier, config),
                 # The marker's second line, so the worker can tell the turn
                 # that asked for a restart (reliability/restart.py).
                 TURN_ID_ENV: f"{ctx.channel}:{ctx.ts}",
@@ -1169,6 +1182,16 @@ class RequestPipeline:
             # without 님 (2026-11-09 private-taeil: 오너를 실명으로 특정).
             "OWNER_NAME": self._owner_name(),
         }
+
+    def _plan_gate_env(self, tier: str, config: ChannelConfig | None) -> dict[str, str]:
+        """PLAN_GATE for guard/pretool/plan_gate: the response number from
+        which a call is denied without a `[계획]` block. Only on a turn
+        FlowSection applies to (same flow_applies), so the hook never asks
+        for a plan the prompt never mentioned. Absent means off."""
+        chat = config is not None and (config.chat == "active" or config.mode == "chat")
+        if self._plan_gate_responses <= 0 or not flow_applies(tier, chat=chat):
+            return {}
+        return {PLAN_GATE_ENV: str(self._plan_gate_responses)}
 
     def _owner_name(self) -> str:
         if not self._owner_user_id:

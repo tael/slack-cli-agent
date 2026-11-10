@@ -272,6 +272,9 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # finish_review.named_turn: the owner's display name, so "<이름> 턴"
         # without 님 is caught too. A name, not a credential.
         "OWNER_NAME",
+        # guard/pretool/plan_gate: the response number from which a call needs
+        # a `[계획]` block first. Set per turn by the pipeline (W4); a number.
+        "PLAN_GATE",
         # Stop hook model verify toggle and model (finish_review.
         # resolve_verify_settings). On by default; these only override.
         "SCA_FINISH_VERIFY",
