@@ -214,7 +214,7 @@ class EventListener:
             return
         try:
             self._mark_silent(event.get("channel") or "", event.get("ts") or "")
-        except Exception:  # noqa: BLE001 - a reaction must not cost the skip row
+        except Exception:  # a reaction must not cost the skip row
             log.warning("넘김 표식을 달지 못했다 : %s:%s", event.get("channel"), event.get("ts"), exc_info=True)
 
     def _audit_skip(self, kind: IncidentKind, event: Mapping[str, Any], bot_asked: bool) -> None:
