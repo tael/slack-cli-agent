@@ -94,6 +94,13 @@ class BlockBuilder:
             return text, ""
         return "\n".join(lines).rstrip(), joined
 
+    #: Prefix for a paragraph that follows a list in its own markdown block.
+    #: A separate rich_text block still renders flush under the last bullet,
+    #: and Slack drops a leading newline. A zero-width space line survives
+    #: conversion and renders as one blank line. 2026-11-10 #test-agent
+    #: screenshots: split alone and a leading newline stayed glued, this did not.
+    LIST_GAP = "\u200b\n"
+
     #: A list item line: "- x", "* x", "+ x", "1. x", "1) x", any indent.
     _LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\S")
 

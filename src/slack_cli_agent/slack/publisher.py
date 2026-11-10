@@ -192,7 +192,11 @@ class MessagePublisher:
             pieces = self._blocks.split_after_lists(part)
             if len(pieces) > 20:
                 pieces = [part]
-            for piece in pieces:
+            for i, piece in enumerate(pieces):
+                # A split alone still renders flush under the bullet; the
+                # zero-width line gives one blank line (BlockBuilder.LIST_GAP).
+                if i:
+                    piece = self._blocks.LIST_GAP + piece
                 markdown_blocks.append({"type": "markdown", "text": piece})
                 # Tables become table blocks with wrapped columns (table_blocks).
                 table = None
