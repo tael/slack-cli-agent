@@ -252,8 +252,18 @@ class BotMentionGuard(OutputGuard):
         targets: list[str] = []
         verdicts: dict[str, bool] = {}
 
+        head = ADDRESSED_AT_HEAD.match(out)
+        head_at = head.start(1) if head else -1
+
         def swap(m: re.Match[str]) -> str:
             user_id = m.group(1)
+            # The confirmed recipient's leading mention stays as written.
+            if (
+                ctx.recipient_bot_id
+                and user_id == ctx.recipient_bot_id
+                and m.start(1) == head_at
+            ):
+                return m.group(0)
             if user_id not in verdicts:
                 verdicts[user_id] = self._is_bot(user_id)
             if not verdicts[user_id]:
@@ -410,6 +420,21 @@ RECIPIENT_TAG = re.compile(
 
 def _mentions(body: str | None, user_id: str) -> bool:
     return any(m.group(1) == user_id for m in ANY_MENTION.finditer(body or ""))
+
+
+def leading_recipient_bot(
+    body: str, asker_id: str, is_bot: Callable[[str], bool]
+) -> str:
+    """Bot a trailing RECIPIENT tag resolves to, read before guards run."""
+    m = RECIPIENT_TAG.search(body or "")
+    if not m:
+        return ""
+    kind, bot_id = m.group(1), m.group(2)
+    if kind == "ASKER" and asker_id and is_bot(asker_id):
+        return asker_id
+    if kind.startswith("BOT:") and bot_id and is_bot(bot_id):
+        return bot_id
+    return ""
 
 
 class RecipientResolver:
