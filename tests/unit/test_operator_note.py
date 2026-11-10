@@ -157,7 +157,8 @@ class Test파이프라인_연결:
         assert ctx.operator is True
         assert ctx.operator_full is True
 
-    def test_위임되지_않은_컨트롤러_봇은_operator_가_아니다(self, tmp_path: Path) -> None:
+    def test_위임되지_않은_컨트롤러_봇도_사람과_같이_operator_다(self, tmp_path: Path) -> None:
+        # 2026-11-10 김태일 지시 : 컨트롤러 봇은 일반 사용자와 같게 다룬다. operators "*" 채널이면 operator.
         config = ChannelConfig.from_dict("C1", {"operators": ["*"], "operator_full": True})
         pipeline, deps = build_pipeline(
             responses=[ok_response()], channels={"C1": config}, tmp_path=tmp_path,
@@ -172,5 +173,5 @@ class Test파이프라인_연결:
         deps["access"].principal_for = controller_principal
         pipeline.handle(make_ctx(channel="C1", user="U0PEER"))
         ctx = deps["composer"].contexts[0]
-        assert ctx.operator is False
-        assert ctx.operator_full is False
+        assert ctx.operator is True
+        assert ctx.operator_full is True
