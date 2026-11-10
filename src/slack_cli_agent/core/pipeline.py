@@ -215,6 +215,24 @@ OWNER_TOP_LEVEL_SILENCE_NOTE = (
 )
 
 
+#: 2026-11-10 14:10 김태일이 마메치와 대화하던 스레드에서 구치파치를 멘션해 "조사해서 원인분석"
+#: 을 지시했는데 [[침묵]] 으로 끝났다. 14:18 "포카요케". 사람이 이 봇을 직접 멘션한 말은 이
+#: 봇에게 온 말이다. 침묵하면 같은 세션으로 한 번 다시 돌린다.
+MENTIONED_SILENCE_NOTE = (
+    "방금 [[침묵]] 으로 끝냈다. 이 말은 이 봇을 직접 멘션해 한 말이다. "
+    "스레드의 앞 대화가 다른 봇과 오간 것이어도 이 말의 수신자는 이 봇이다. "
+    "지시면 이 턴에 실행하고 결과를 보고한다. 질문이면 답한다. "
+    "정말로 답할 내용이 없을 때만 다시 [[침묵]] 을 쓴다."
+)
+
+
+def should_rerun_mentioned_silence(
+    body: str, *, from_bot: bool, unaddressed: bool, direct_message: bool,
+) -> bool:
+    """사람이 이 봇을 직접 멘션한 말에 침묵한 답인지. 맞으면 한 번 다시 돌린다."""
+    return is_silent(body or "") and not from_bot and not unaddressed and not direct_message
+
+
 def should_rerun_owner_silence(
     body: str, *, owner: bool, from_bot: bool, ts: str, thread_ts: str, answer_top_level: bool,
 ) -> bool:
@@ -717,6 +735,7 @@ class RequestPipeline:
             log.warning("세션 컨텍스트 기록 실패", exc_info=True)
 
         response = self._rerun_owner_top_level_silence(ctx, principal, request, decision, response)
+        response = self._rerun_mentioned_silence(ctx, request, decision, response)
 
         if is_silent(response.body):
             # A silent answer still owes the picture the turn made; mametchi
@@ -927,7 +946,10 @@ class RequestPipeline:
         # cannot hand over a bare body and leave the speaker unstated (sca 2026-09-21).
         return self._transcript.with_history(
             transcript,
-            CurrentMessage(ts=ctx.ts, user=ctx.user, raw_text=ctx.text, body=body),
+            CurrentMessage(
+                ts=ctx.ts, user=ctx.user,
+                raw_text=str((ctx.extra or {}).get("raw_text") or ctx.text), body=body,
+            ),
         )
 
     def _light_workdir_for(
@@ -1138,6 +1160,38 @@ class RequestPipeline:
         if self._consumption is not None:
             self._consumption.mark(ctx.thread_ts, addendum_ts)
         return rerun.body, body
+
+    def _rerun_mentioned_silence(
+        self,
+        ctx: RequestContext,
+        request: EngineRequest,
+        decision: SessionDecision,
+        response: EngineResponse,
+    ) -> EngineResponse:
+        if not should_rerun_mentioned_silence(
+            response.body, from_bot=bool(ctx.from_bot), unaddressed=bool(ctx.unaddressed),
+            direct_message=bool(ctx.is_direct_message),
+        ):
+            return response
+        try:
+            rerun = self._invoker.invoke(replace(
+                request, prompt=MENTIONED_SILENCE_NOTE, resume=True,
+                session_id=decision.session_id,
+            ))
+        except Exception:  # noqa: BLE001 -- 재실행 실패는 원래 침묵을 그대로 둔다
+            log.warning("멘션 침묵 재실행 실패", exc_info=True)
+            self._audit.record(
+                "mentioned_silence_rerun", channel=ctx.channel, thread_ts=ctx.thread_ts,
+                ok=False, answered=False,
+            )
+            return response
+        new_body = (rerun.body or "").strip()
+        kept = rerun.ok and bool(new_body) and not is_silent(new_body)
+        self._audit.record(
+            "mentioned_silence_rerun", channel=ctx.channel, thread_ts=ctx.thread_ts,
+            ok=rerun.ok, answered=kept,
+        )
+        return rerun if kept else response
 
     def _rerun_owner_top_level_silence(
         self,

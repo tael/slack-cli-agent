@@ -228,7 +228,13 @@ class IngressService:
                     self._spawn.spawn(f"DM:{dm_user}", lambda: dm(dm_channel, dm_user, dm_text))
                 return
 
-            ctx = replace(ctx, text=self._strip_self_mention(ctx.text))
+            # 자기 멘션을 지운 본문만 넘기면 현재 줄 머리에 '-> 이 봇' 이 빠진다. 2026-11-10
+            # 14:10 김태일이 마메치와 대화하던 스레드에서 구치파치를 멘션해 지시했는데, 머리가
+            # 수신자 없는 말로 보여 [[침묵]] 으로 끝났다. 원문을 extra 에 남겨 머리를 그린다.
+            ctx = replace(
+                ctx, text=self._strip_self_mention(ctx.text),
+                extra={**dict(ctx.extra), "raw_text": ctx.text},
+            )
 
             # bot.py:7705. Asked back instead of queued, so a mention with no
             # request in it never costs an engine turn (sca-yb8q). A message
