@@ -345,7 +345,8 @@ class CatchupService:
                 unaddressed=not called,
                 # Marks a peer's request so the bot-to-bot cap can count it
                 # in _pick_representatives, as bot.py keeps bot_id (C3).
-                extra={"bot_id": bot_id} if bot_id else {},
+                # 원문은 현재 줄 머리의 "-> 이 봇" 을 그리는 데 쓴다 (ingress 와 같은 이유).
+                extra={**({"bot_id": bot_id} if bot_id else {}), "raw_text": event_body(m)},
             )
             # The socket path asks back instead of queueing this (sca-yb8q);
             # without the same judgment here the call costs an engine turn
