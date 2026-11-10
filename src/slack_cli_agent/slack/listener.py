@@ -344,9 +344,9 @@ class EventListener:
         # with — a reply to this bot's own question still belongs to it even
         # if an earlier turn addressed a peer.
         if peer_talk and not bot_asked:
+            self._audit_skip(IncidentKind.PEER_SKIPPED, event, bot_asked)
             if joined:
                 self._silent_mark(event)
-            self._audit_skip(IncidentKind.PEER_SKIPPED, event, bot_asked)
             return None
         has_files = bool(event.get("files"))
         if not self._policy.answers(
@@ -355,8 +355,14 @@ class EventListener:
             # Only where the bot already spoke: elsewhere every passing
             # remark in a registered channel would get a row.
             if joined:
-                self._silent_mark(event)
                 self._audit_skip(IncidentKind.GATE_SKIPPED, event, bot_asked)
+                # Marked only where the old bot marked: when the vocabulary
+                # filter itself drops the message (bot.py:10546). Other
+                # refusals here (a leading mention of someone else, the
+                # `quiet` level) went to the model in the old bot, which
+                # decided and marked on its own.
+                if not self._gate.worth_answering(text, bot_asked, has_files=has_files):
+                    self._silent_mark(event)
             return None
 
         return self._context_from_event(event, unaddressed=True, is_dm=False)
