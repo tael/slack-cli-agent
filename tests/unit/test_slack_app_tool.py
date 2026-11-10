@@ -49,3 +49,23 @@ class Test멀티파트_본문:
         body, _ = slack_app.multipart_body({"app_id": "A1"}, "file", png)
 
         assert b'name="app_id"\r\n\r\nA1\r\n' in body
+
+
+class Test봇_이름_복구:
+    """앱 설정 변경이 봇 사용자 실명을 영문으로 덮는 것을 되돌린다 (2026-11-10 구치파치)."""
+
+    def test_앱_ID_로_봇_사용자를_고른다(self) -> None:
+        members = [
+            {"id": "U1", "is_bot": True, "profile": {"api_app_id": "A_OTHER"}},
+            {"id": "U2", "is_bot": False, "profile": {"api_app_id": "A1"}},
+            {"id": "U3", "is_bot": True, "deleted": True, "profile": {"api_app_id": "A1"}},
+            {"id": "U4", "is_bot": True, "profile": {"api_app_id": "A1"}},
+        ]
+        assert slack_app.bot_user_of(members, "A1")["id"] == "U4"
+        assert slack_app.bot_user_of(members, "A9") is None
+
+    def test_영문으로_덮였으면_복구_대상이다(self) -> None:
+        덮임 = {"profile": {"real_name": "guchipachi", "display_name": ""}}
+        정상 = {"profile": {"real_name": "구치파치", "display_name": "구치파치"}}
+        assert slack_app.needs_name_restore(덮임, "구치파치")
+        assert not slack_app.needs_name_restore(정상, "구치파치")
