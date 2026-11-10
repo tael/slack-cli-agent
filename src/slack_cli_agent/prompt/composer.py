@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from .knowledge import LEARN_MARK, LEARN_NOTE_COUNT, LEARN_NOTE_COUNT_FIXED, KnowledgeLoader
@@ -14,6 +14,7 @@ from .sections import (
     AuthoritySection,
     BudgetAwareSection,
     CompositionContext,
+    KnowledgeSection,
     PromptSection,
     SlackFormatSection,
     render_request_header,
@@ -35,6 +36,10 @@ class PromptBudgetReport:
     bytes_after: int
     omitted_document_count: int
     omitted_document_bytes: int
+    #: The knowledge sections' rendered text, for the Stop hook's verify
+    #: (EngineRequest.review_knowledge). Not part of as_audit_dict: the audit
+    #: stays sizes and counts only.
+    knowledge_text: str = field(default="", repr=False, compare=False)
 
     @property
     def budget_limited(self) -> bool:
@@ -124,12 +129,16 @@ class SystemPromptComposer:
         )
         text = self._substitute("".join(parts), full_ctx, format_value)
         after = len(text.encode("utf-8"))
+        knowledge_text = "".join(
+            parts[index] for index, section in deferred if isinstance(section, KnowledgeSection)
+        )
         return text, PromptBudgetReport(
             budget_bytes=self._budget_bytes,
             bytes_before=after + omitted_bytes,
             bytes_after=after,
             omitted_document_count=omitted_count,
             omitted_document_bytes=omitted_bytes,
+            knowledge_text=knowledge_text.strip(),
         )
 
     def instruction_fingerprint(self, ctx: CompositionContext) -> str:

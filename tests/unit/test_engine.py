@@ -1797,6 +1797,50 @@ class TestEngineRunner:
         assert env["CODE_FIRST_CHANNELS"] == "C_CODE"
         assert "NOT_ALLOWED" not in env
 
+    def test_실린_지식이_검수용_파일로_넘어가고_호출_뒤_지워진다(self, tmp_path: Path) -> None:
+        """2026-11-10 Stop 훅 검수가 시스템 지침의 지식 파일을 보지 못했다.
+        실행기가 지식 본문을 임시 파일에 쓰고 경로를 자식 환경에 싣는다."""
+        from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
+        from slack_cli_agent.guard.finish_review import KNOWLEDGE_FILE_ENV
+
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        본문: list[str] = []
+        경로: list[str] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            경로.append(env[KNOWLEDGE_FILE_ENV])
+            본문.append(Path(env[KNOWLEDGE_FILE_ENV]).read_text(encoding="utf-8"))
+            return FakeCompleted(stdout="답변", returncode=0)
+
+        runner = EngineRunner(
+            SETTINGS, subprocess_runner=fake_subprocess,
+            environment_policy=ClaudeEnvironmentPolicy("test"), source_env={"PATH": "/bin"},
+        )
+        runner.run(engine, request(review_knowledge="status 4 = 배송완료"))
+
+        assert 본문 == ["status 4 = 배송완료"]
+        assert not Path(경로[0]).exists()
+
+    def test_지식이_없으면_물려받은_검수용_경로도_싣지_않는다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
+        from slack_cli_agent.guard.finish_review import KNOWLEDGE_FILE_ENV
+
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        잡힌환경: list[Any] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            잡힌환경.append(env)
+            return FakeCompleted(stdout="답변", returncode=0)
+
+        runner = EngineRunner(
+            SETTINGS, subprocess_runner=fake_subprocess,
+            environment_policy=ClaudeEnvironmentPolicy("test"),
+            source_env={"PATH": "/bin", KNOWLEDGE_FILE_ENV: "/tmp/other-call.md"},
+        )
+        runner.run(engine, request())
+
+        assert KNOWLEDGE_FILE_ENV not in 잡힌환경[0]
+
     def test_CLI_에_알리는_제한시간이_실제_제한과_같다(self, tmp_path: Path) -> None:
         """agy 는 --print-timeout 으로 자기 제한을 받는다. 실행기가 더 짧은
         값으로 죽이면 CLI 는 자기 제한 전이라 정리를 안 한 채 끊긴다.

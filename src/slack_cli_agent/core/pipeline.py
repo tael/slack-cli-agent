@@ -644,13 +644,14 @@ class RequestPipeline:
             },
         )
         reach = turn_reach(self._engine, request)
-        system_prompt, budget_report, header = self._compose_system_prompt(
+        system_prompt, budget_report, header, knowledge = self._compose_system_prompt(
             ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
             tier=tier, reach=reach,
         )
         request = replace(
             request, prompt=_with_request_header(header, prompt),
             system_prompt=system_prompt, budget_report=budget_report,
+            review_knowledge=knowledge,
             retarget=tier_note_retarget(principal, tier),
         )
         # Counted rather than derived: the reset is the only trace a broken
@@ -695,14 +696,17 @@ class RequestPipeline:
                     prompt = f"{prompt}\n\n{earlier_note}"
                 # The tier goes again: without it the retry lost the note while
                 # its audit row still named the tier (A12 review).
-                retry_prompt, retry_budget, retry_header = self._compose_system_prompt(
-                    ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
-                    tier=tier, reach=reach,
+                retry_prompt, retry_budget, retry_header, retry_knowledge = (
+                    self._compose_system_prompt(
+                        ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
+                        tier=tier, reach=reach,
+                    )
                 )
                 request = replace(
                     request, session_id=decision.session_id, resume=False,
                     prompt=_with_request_header(retry_header, prompt),
                     system_prompt=retry_prompt, budget_report=retry_budget,
+                    review_knowledge=retry_knowledge,
                 )
                 engine_start = self._timing_stamp()
                 response = self._invoker.invoke(request)
@@ -1021,8 +1025,11 @@ class RequestPipeline:
         *,
         tier: str = "",
         reach: tuple[bool, tuple[str, ...]] = (False, ()),
-    ) -> tuple[str, dict[str, Any], str]:
-        """System prompt, its budget report, and the user-prompt header.
+    ) -> tuple[str, dict[str, Any], str, str]:
+        """System prompt, its budget report, the user-prompt header, and the
+        knowledge text the prompt carried (for the Stop hook's verify,
+        EngineRequest.review_knowledge; "" from a composer whose report has
+        none).
 
         The header carries the per-request values (thread coordinates, watch
         run id, attachments) when the composer can build one. It goes on the
@@ -1040,7 +1047,8 @@ class RequestPipeline:
         )
         text, report = self._composer.compose_with_report(composition_ctx)
         header = build_header(composition_ctx) if callable(build_header) else ""
-        return text, report.as_audit_dict(), header
+        knowledge = getattr(report, "knowledge_text", "")
+        return text, report.as_audit_dict(), header, knowledge if isinstance(knowledge, str) else ""
 
     def _instruction_fingerprint(
         self,

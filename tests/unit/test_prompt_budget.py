@@ -127,6 +127,20 @@ class Test예산이_걸린_사실이_기록에_남는다:
         assert 보고.omitted_document_count == 0
         assert 보고.budget_bytes == 100_000
 
+    def test_실린_지식_본문을_검수용으로_따로_돌려준다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
+        """Stop 훅 검수가 이번 턴에 실린 지식을 근거로 읽는다 (2026-11-10).
+        감사 기록에는 본문을 넣지 않는다."""
+        write(지식폴더 / "_코드표.md", "status 4 = 배송완료")
+        본문, 보고 = self._보고(tmp_path, library, 예산=100_000)
+        assert "status 4 = 배송완료" in 보고.knowledge_text
+        assert "페르소나 본문" not in 보고.knowledge_text
+        assert "knowledge_text" not in 보고.as_audit_dict()
+
+    def test_예산에_걸려_빠진_지식은_검수용에도_없다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
+        write(지식폴더 / "_크다.md", "가" * 4000)
+        보고 = self._보고(tmp_path, library, 예산=3000)[1]
+        assert "가" * 4000 not in 보고.knowledge_text
+
     def test_뺀_건수와_바이트를_센다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
         write(지식폴더 / "_크다.md", "가" * 4000)
         write(지식폴더 / "_더크다.md", "나" * 4000)

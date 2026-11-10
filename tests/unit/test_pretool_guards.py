@@ -47,6 +47,7 @@ _DEADLINE_VARS = (
     "POST_CHANNEL", "ADVISOR_CHANNELS", "CODE_FIRST_CHANNELS",
     "RESTART_GUARD_LABELS", "RESTART_GUARD_MARKER",
     "SCA_FINISH_VERIFY", "SCA_FINISH_VERIFY_MODEL", "SCA_VERIFY_NESTED",
+    "SCA_FINISH_VERIFY_MAX_BLOCKS", "SCA_FINISH_KNOWLEDGE_FILE",
     "SLEEP_POLL_GUARD_LOG",
 )
 
@@ -479,6 +480,49 @@ class TestFinishHook:
         assert proc3.returncode == 0
         assert proc3.stdout.strip() == ""
         assert third is None
+
+    def _knowledge_payload(self, tmp_path: Path) -> dict[str, Any]:
+        transcript_path = tmp_path / "knowledge.jsonl"
+        transcript_path.write_text(
+            json.dumps({
+                "type": "user", "uuid": "kn-turn",
+                "message": {"role": "user", "content": "배차 정책 값 뜻 알려줘"},
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return {
+            "session_id": "fh-kn",
+            "transcript_path": str(transcript_path),
+            "last_assistant_message": (
+                "이번 턴 코드표를 처음부터 끝까지 자세히 정리해서 답한다. " * 12
+                + "배차 정책 값 47 은 LEGACY_AI 를 뜻한다."
+            ),
+        }
+
+    def test_지식_파일에_있는_코드표_문장은_막지_않는다(self, tmp_path: Path) -> None:
+        """2026-11-10 검수가 이번 턴에 실린 지식 파일을 보지 못해 코드표 해석을
+        근거 없음으로 4회 막았다. 엔진이 넘긴 지식 파일을 근거에 넣는다."""
+        knowledge = tmp_path / "knowledge.md"
+        knowledge.write_text("dispatch_policy 값 : 47 = LEGACY_AI\n", encoding="utf-8")
+        base_env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+            # 모델 검증 대신 숫자 휴리스틱으로 판정해 서브프로세스 모델을 띄우지 않는다.
+            "SCA_FINISH_VERIFY": "0",
+        }
+
+        without, _ = run_hook(finish_hook.HOOK_SCRIPT, self._knowledge_payload(tmp_path), base_env)
+        assert without is not None and without["decision"] == "block"
+
+        (tmp_path / "state").mkdir(exist_ok=True)
+        for leftover in (tmp_path / "state").glob("finish-hook-*"):
+            leftover.unlink()
+        with_knowledge, proc = run_hook(
+            finish_hook.HOOK_SCRIPT, self._knowledge_payload(tmp_path),
+            {**base_env, "SCA_FINISH_KNOWLEDGE_FILE": str(knowledge)},
+        )
+        assert proc.returncode == 0
+        assert with_knowledge is None
 
     def _advisor_payload(self, tmp_path: Path) -> dict[str, Any]:
         transcript_path = tmp_path / "advisor.jsonl"

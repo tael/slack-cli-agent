@@ -523,9 +523,11 @@ class TestModelVerify:
         runner = _fake_runner(stdout=payload)
         verifier = finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={})
 
+        # The prior_flagged filter applies only when the cap is raised back
+        # (SCA_FINISH_VERIFY_MAX_BLOCKS=4); at the default 2 the check stops.
         decision = finish_review.decide(
             self._turn(), claim_verifier=verifier, block_count=finish_review.VERIFY_MAX_BLOCKS,
-            prior_flagged=frozenset({"모두 제가 낸 검증 코드"}))
+            prior_flagged=frozenset({"모두 제가 낸 검증 코드"}), verify_hard_max_blocks=4)
 
         assert decision.action == "allow"
         assert len(runner.calls) == 1
@@ -540,7 +542,7 @@ class TestModelVerify:
 
         decision = finish_review.decide(
             self._turn(), claim_verifier=verifier, block_count=finish_review.VERIFY_MAX_BLOCKS,
-            prior_flagged=frozenset({"다른 문장"}))
+            prior_flagged=frozenset({"다른 문장"}), verify_hard_max_blocks=4)
 
         assert decision.action == "block"
         assert finish_review.verify_claim_keys(decision) == {claim}
@@ -603,6 +605,138 @@ class TestModelVerify:
 
         assert relevant in picked
         assert len(picked) <= 50_000 + 20
+
+
+class TestKnowledgeEvidence:
+    """2026-11-10: verify blocked code-table readings four times in one turn
+    (dispatch_policy 4 = LEGACY_AI, status 4 = 배송완료) although the mapping
+    sat in a knowledge file that turn's system prompt carried."""
+
+    KNOWLEDGE = (
+        "# lastmile 코드표\n\n"
+        "dispatch_policy 값 : 1 = MANUAL, 4 = LEGACY_AI, 7 = SMART_AI\n\n"
+        "orders.status 값 : 1 = 접수, 4 = 배송완료, 9 = 취소\n"
+    )
+    CODE_TABLE_SENTENCE = "dispatch_policy 값 47 은 LEGACY_AI 이고 status 47 은 배송완료라는 뜻이다."
+
+    def _answer(self, sentence: str) -> str:
+        return _LONG_PREFIX + sentence
+
+    def test_code_table_sentence_from_loaded_knowledge_is_not_blocked(self):
+        knowledge = self.KNOWLEDGE.replace("4 = LEGACY_AI", "47 = LEGACY_AI").replace("4 = 배송완료", "47 = 배송완료")
+        turn = _turn(
+            self._answer(self.CODE_TABLE_SENTENCE),
+            tool_calls=(ToolCall(name="Bash", input={}, result="dispatch_policy=47, status=47 인 주문 3건"),),
+            knowledge=knowledge,
+        )
+        no_knowledge = _turn(
+            self._answer("배차 정책 값 47 은 LEGACY_AI 를 뜻한다."),
+            tool_calls=(ToolCall(name="Bash", input={}, result="주문 3건"),),
+        )
+        with_knowledge = _turn(
+            self._answer("배차 정책 값 47 은 LEGACY_AI 를 뜻한다."),
+            tool_calls=(ToolCall(name="Bash", input={}, result="주문 3건"),),
+            knowledge=knowledge,
+        )
+
+        assert finish_review.unsupported_claims(turn) == []
+        assert finish_review.unsupported_claims(no_knowledge)
+        assert finish_review.unsupported_claims(with_knowledge) == []
+        assert finish_review.decide(with_knowledge).action == "allow"
+
+    def test_claim_in_neither_knowledge_nor_tool_results_still_blocks(self):
+        turn = _turn(
+            self._answer("오늘 배송완료 건수는 48291건이고 원인은 큐 적체 때문이다."),
+            tool_calls=(ToolCall(name="Bash", input={}, result="주문 3건 조회"),),
+            knowledge=self.KNOWLEDGE,
+        )
+
+        assert finish_review.unsupported_claims(turn)
+        assert finish_review.decide(turn).action == "block"
+
+    def test_model_verify_sees_knowledge_and_still_blocks_what_it_flags(self):
+        claim = "오늘 배송완료 건수는 48291건이다"
+        payload = json.dumps({"unsupported": [{"sentence": claim, "why": "조회에도 지식에도 없음"}]},
+                             ensure_ascii=False)
+        runner = _fake_runner(stdout=payload)
+        verifier = finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={})
+        turn = _turn(
+            self._answer(claim + "."),
+            tool_calls=(ToolCall(name="Bash", input={}, result="주문 3건 조회"),),
+            knowledge=self.KNOWLEDGE,
+        )
+
+        decision = finish_review.decide(turn, claim_verifier=verifier)
+
+        prompt = runner.calls[0]["input"]
+        assert "[이번 턴 지침에 실린 지식 파일]" in prompt
+        assert "4 = LEGACY_AI" in prompt and "주문 3건 조회" in prompt
+        assert "코드표" in finish_review._VERIFY_PROMPT
+        assert decision.action == "block"
+
+    def test_no_knowledge_leaves_evidence_unchanged(self):
+        turn = _turn(self._answer("x"), tool_calls=(ToolCall(name="Bash", input={}, result="결과"),))
+
+        assert "[이번 턴 지침에 실린 지식 파일]" not in finish_review._turn_evidence(turn)
+
+    def test_pick_knowledge_keeps_paragraphs_sharing_answer_identifiers(self):
+        relevant = "dispatch_policy 값 : 4 = LEGACY_AI"
+        filler = "\n\n".join("y" * 5000 for _ in range(20))
+        picked = finish_review.pick_knowledge(
+            "dispatch_policy 4 는 LEGACY_AI 다", filler + "\n\n" + relevant, limit=20_000)
+
+        assert relevant in picked
+        assert len(picked) <= 20_000 + 20
+
+    def test_read_knowledge_file(self, tmp_path):
+        path = tmp_path / "k.md"
+        path.write_text(self.KNOWLEDGE, encoding="utf-8")
+
+        assert finish_review.read_knowledge_file({finish_review.KNOWLEDGE_FILE_ENV: str(path)}) == self.KNOWLEDGE
+        assert finish_review.read_knowledge_file({}) == ""
+        assert finish_review.read_knowledge_file(
+            {finish_review.KNOWLEDGE_FILE_ENV: str(tmp_path / "missing.md")}) == ""
+
+
+class TestVerifyBlockCap:
+    def _turn(self):
+        return TestModelVerify()._turn()
+
+    def _verifier(self):
+        payload = json.dumps({"unsupported": [{"sentence": "새 문장", "why": "x"}]}, ensure_ascii=False)
+        runner = _fake_runner(stdout=payload)
+        return finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={}), runner
+
+    def test_default_cap_is_two(self):
+        assert finish_review.VERIFY_HARD_MAX_BLOCKS == 2
+        verifier, runner = self._verifier()
+
+        decision = finish_review.decide(self._turn(), claim_verifier=verifier, block_count=2)
+
+        assert decision.action == "allow" and runner.calls == []
+
+    def test_env_restores_the_old_cap(self):
+        cap = finish_review.resolve_verify_max_blocks({finish_review.VERIFY_MAX_BLOCKS_ENV: "4"})
+        verifier, runner = self._verifier()
+
+        decision = finish_review.decide(
+            self._turn(), claim_verifier=verifier, block_count=3, verify_hard_max_blocks=cap)
+
+        assert cap == 4
+        assert decision.action == "block" and len(runner.calls) == 1
+
+    def test_bad_env_value_falls_back_to_default(self):
+        for raw in ("", "x", "-1"):
+            assert finish_review.resolve_verify_max_blocks(
+                {finish_review.VERIFY_MAX_BLOCKS_ENV: raw}) == finish_review.VERIFY_HARD_MAX_BLOCKS
+        assert finish_review.resolve_verify_max_blocks({}) == finish_review.VERIFY_HARD_MAX_BLOCKS
+
+    def test_guidance_allows_dropping_unneeded_interpretation_but_not_ungrounded_facts(self):
+        text = finish_review._verify_guidance("문장")
+
+        assert "주장을 줄이거나 다른 추측으로 바꾸는 것으로 조회를 대신하지 않는다" not in text
+        assert "필요 없는 해석이나 부연이면 조회하지 않고 지운다" in text
+        assert "근거 없는 사실 단정을 남겨도 된다는 뜻이 아니다" in text
 
 
 class TestAllow:

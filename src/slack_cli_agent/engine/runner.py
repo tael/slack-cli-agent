@@ -16,6 +16,7 @@ import dataclasses
 import logging
 import os
 import subprocess
+import tempfile
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
@@ -27,6 +28,7 @@ from ..config.settings import RuntimeSettings
 from ..core.errors import ConfigError
 from ..core.secrets import redact
 from ..core.timezones import KST
+from ..guard.finish_review import KNOWLEDGE_FILE_ENV
 from ..observability.progress_hook import append_tool
 from ..session.manager import AUTH_FAILURE_REASON, CAPABILITY_UNMET_REASON
 from .base import (
@@ -321,6 +323,30 @@ class EngineRunner:
             **turn_budget_env(timeout, now_wall=time.time(), now_monotonic=time.monotonic()),
         }
 
+        # The knowledge text this turn's system prompt carried, for the Stop
+        # hook's verify (guard/finish_review.KNOWLEDGE_FILE_ENV). A file, not
+        # an env value: it runs to tens of KB. Lives for this one engine call.
+        knowledge_file = _write_review_knowledge(request.review_knowledge)
+        if knowledge_file is not None:
+            source[KNOWLEDGE_FILE_ENV] = str(knowledge_file)
+        else:
+            # An inherited value would point the hook at another call's file.
+            source.pop(KNOWLEDGE_FILE_ENV, None)
+        try:
+            return self._run_attempts(engine, request, policy, source, timeout)
+        finally:
+            if knowledge_file is not None:
+                try:
+                    knowledge_file.unlink()
+                except OSError:
+                    pass
+
+    def _run_attempts(
+        self, engine: Engine, request: EngineRequest, policy: EngineEnvironmentPolicy,
+        source: Mapping[str, str], timeout: float,
+    ) -> EngineResponse:
+        """The model-candidate loop of `run`, split out so `run` can remove
+        the per-call knowledge file however the loop ends."""
         # B9/B17 — 모델 하나의 일시 장애면 같은 엔진 안에서 폴백 모델로 순차
         # 재시도한다. 폴백 목록이 없으면(기본) candidates 가 요청 모델 하나뿐이라
         # 루프가 한 번만 돌아 예전과 같은 동작이다.
@@ -1022,6 +1048,9 @@ class FallbackEngine(Engine):
             # tokens for every turn served by the fallback (C10).
             turn_context=request.turn_context,
             engine_env=request.engine_env,
+            # The fallback engine's Stop hook verifies against the same
+            # loaded knowledge.
+            review_knowledge=request.review_knowledge,
             # The tier the capability record names. Dropped, a fallback turn's
             # record lost it (A12 review).
             turn_tier=request.turn_tier,
@@ -1077,3 +1106,19 @@ class FallbackEngine(Engine):
         if required.downgraded(unmet):
             return f" 다만 {axes} 은 이 엔진이 보장하지 못해 완화 기록을 남기고 실행한다."
         return f" 다만 {axes} 을 요구한 요청은 이 엔진에서 실행되지 않는다."
+
+
+def _write_review_knowledge(text: str) -> Path | None:
+    """Writes `text` to a private temp file and returns its path, or None
+    when there is nothing to write or the write fails. A failure only means
+    the Stop hook's verify runs without knowledge, as it did before."""
+    if not text:
+        return None
+    try:
+        fd, name = tempfile.mkstemp(prefix="sca-knowledge-", suffix=".md")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except OSError:
+        log.warning("검수용 지식 파일을 쓰지 못했다", exc_info=True)
+        return None
+    return Path(name)
