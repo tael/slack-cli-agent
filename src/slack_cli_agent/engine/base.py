@@ -148,6 +148,12 @@ class EngineRequest:
     #: only names that policy allowlists ever reach the child. Opaque here like
     #: turn_context; empty means the caller supplied none.
     engine_env: Mapping[str, str] = field(default_factory=dict)
+    #: The knowledge-file text this turn's system prompt carried, for the
+    #: built-in Stop hook's verify (guard/finish_review.Turn.knowledge).
+    #: EngineRunner writes it to a temp file for the life of one engine call
+    #: and names it in SCA_FINISH_KNOWLEDGE_FILE. Opaque here like
+    #: budget_report; empty means the caller composed no knowledge.
+    review_knowledge: str = field(default="", repr=False)
     #: 이 턴에 붙일 MCP 서버 이름 (core/mcp_routing.py 가 요청 문장으로 고른다).
     #: None 이면 고르지 않은 것이고, 허용목록이 연 서버를 전부 붙인다. 고른
     #: 묶음 밖의 서버는 도구 정의가 컨텍스트에 실리지 않는다 (S2 컨텍스트 다이어트).

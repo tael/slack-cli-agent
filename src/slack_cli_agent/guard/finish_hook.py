@@ -37,6 +37,7 @@ import os
 import re
 import sys
 import time
+from dataclasses import replace
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -45,8 +46,10 @@ from slack_cli_agent.guard.finish_review import (
     ModelClaimVerifier,
     decide,
     needs_verification,
+    read_knowledge_file,
     resolve_advisor_channel,
     resolve_code_first_channel,
+    resolve_verify_max_blocks,
     resolve_verify_settings,
     rows_since_last_human_input,
     time_left,
@@ -197,6 +200,12 @@ def main(argv: list[str]) -> int:
             is_advisor_channel=resolve_advisor_channel(os.environ),
             is_code_first_channel=resolve_code_first_channel(os.environ),
         )
+        # The knowledge files this turn's system prompt carried, as the
+        # engine runner wrote them (KNOWLEDGE_FILE_ENV). verify reads them as
+        # evidence alongside the tool results.
+        knowledge = read_knowledge_file(os.environ)
+        if knowledge:
+            turn = replace(turn, knowledge=knowledge)
 
         state_dir = _state_dir(payload)
         block_count = 0
@@ -216,6 +225,7 @@ def main(argv: list[str]) -> int:
         decision = decide(
             turn, block_count=block_count, seconds_left=seconds_left, claim_verifier=verifier,
             prior_flagged=prior_flagged,
+            verify_hard_max_blocks=resolve_verify_max_blocks(os.environ),
         )
         elapsed = round(time.monotonic() - started, 1)
         if decision.action == "block" and count_path is not None:
@@ -234,6 +244,7 @@ def main(argv: list[str]) -> int:
                 "decision": decision.action,
                 "elapsed_sec": elapsed,
                 "verify_sec": verifier.elapsed,
+                "knowledge_chars": len(turn.knowledge),
                 "findings": [f.detail for f in decision.findings if f.name == "verify"],
             })
 
