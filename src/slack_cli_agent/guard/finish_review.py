@@ -774,6 +774,12 @@ _VERIFY_PROMPT = (
     "확인하지 못했다는 한계 문장, 의견, 제안, 인사는 사실 주장이 아니므로 제외한다.\n"
     "[근거] 에 비슷한 단어가 있어도 문장이 말하는 관계 자체가 없으면 근거 없음이다. 예를 들어 "
     "A 정의만 조회했는데 답이 B 의 원천이 A 라고 하면 근거 없음이다.\n"
+    # 2026-11-10: a knowledge-file note dated 11/08 ("API허브 TCP 차단") went
+    # out as "차단 중임" with no lookup this turn; the check ranked it below
+    # three other findings. Stale-state claims now go first.
+    "차단, 장애, 진행, 정지, 실패 같은 상태를 '~중', '현재', '지금' 처럼 지금 상태로 단정한 문장은 "
+    "[근거] 의 조회 결과가 지금 그 상태임을 직접 보여 주지 않으면 근거 없음이다. 메모, 지식, 과거 기록에 "
+    "날짜와 함께 적힌 상태는 지금 상태의 근거가 아니다. 이런 문장은 다른 문장보다 먼저 낸다.\n"
     'JSON 한 개만 답한다. 형식 {"unsupported": [{"sentence": "답의 문장 그대로", "why": "한 문장"}]}. '
     "없으면 빈 배열.\n\n"
 )
