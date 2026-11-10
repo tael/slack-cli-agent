@@ -32,6 +32,60 @@
     "restart_command": "BOT_PROFILE=sibling ~/sibling-bot/restart.sh"
   },
   "plugins": [],
+  "_comment_agents": "claude 엔진 전용. 턴 도구 목록에 Agent 가 있을 때만 --agents 로 넘긴다. 작업자 도구는 이 tools 와 그 턴 도구의 교집합이고, MCP 승인은 턴의 --allowedTools 를 따른다. 정의 단위로 읽기 전용 Bash 를 만들 수 없어 lookup, verifier 에는 Bash 를 넣지 않는다. prompt_file 의 상대 경로는 이 프로필 파일 위치 기준이다. 실측 근거는 claude 2.1.321, 2026-11-10",
+  "agents": {
+    "lookup": {
+      "description": "조회 전용 작업자. 독립 갈래 하나의 파일, 로그, MCP 조회를 맡긴다. 도구 호출 3회 이상 예상되는 조회 갈래에 쓴다",
+      "model": "haiku",
+      "tools": [
+        "Read", "Grep", "Glob",
+        "mcp__snowflake__run_snowflake_query",
+        "mcp__metabase__execute_query",
+        "mcp__metabase__get_card",
+        "mcp__jira__jira_search",
+        "mcp__jira__jira_get_issue",
+        "mcp__slack__slack_search",
+        "mcp__slack__slack_thread_replies",
+        "mcp__notion__notion-search",
+        "mcp__notion__notion-fetch"
+      ],
+      "prompt_file": "agents/lookup.md"
+    },
+    "analyst": {
+      "description": "분석 작업자. 조회에 더해 집계 스크립트 실행이 필요한 갈래를 맡긴다. 외부 쓰기는 하지 않는다",
+      "model": "sonnet",
+      "tools": [
+        "Read", "Grep", "Glob", "Bash",
+        "mcp__snowflake__run_snowflake_query",
+        "mcp__metabase__execute_query",
+        "mcp__metabase__get_card",
+        "mcp__jira__jira_search",
+        "mcp__jira__jira_get_issue",
+        "mcp__slack__slack_search",
+        "mcp__slack__slack_thread_replies",
+        "mcp__notion__notion-search",
+        "mcp__notion__notion-fetch"
+      ],
+      "prompt_file": "agents/analyst.md"
+    },
+    "verifier": {
+      "description": "검증 작업자. 메인이 낸 결론 하나를 원천에 다시 대조한다. 조회 전용이다",
+      "model": "sonnet",
+      "tools": [
+        "Read", "Grep", "Glob",
+        "mcp__snowflake__run_snowflake_query",
+        "mcp__metabase__execute_query",
+        "mcp__metabase__get_card",
+        "mcp__jira__jira_search",
+        "mcp__jira__jira_get_issue",
+        "mcp__slack__slack_search",
+        "mcp__slack__slack_thread_replies",
+        "mcp__notion__notion-search",
+        "mcp__notion__notion-fetch"
+      ],
+      "prompt_file": "agents/verifier.md"
+    }
+  },
   "usage_check_command": [],
   "settings": {
     "request_timeout_sec": 900,

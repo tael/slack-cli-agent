@@ -127,6 +127,10 @@ def _server_wide_names(names: tuple[str, ...], servers: Iterable[str]) -> tuple[
 #: The built-in tool that loads deferred MCP tool schemas on demand.
 TOOL_SEARCH = "ToolSearch"
 
+#: The subagent tool under its current and former name. The init event lists
+#: it as Task when --tools names Agent (claude 2.1.321).
+AGENT_TOOLS = frozenset({"Agent", "Task"})
+
 
 def _builtin_names(names: tuple[str, ...]) -> list[str]:
     """The built-in tools among what the caller allowed.
@@ -490,6 +494,24 @@ class ClaudeEngine(Engine):
                 args += ["--disallowedTools", ",".join(denied)]
         return args
 
+    def _agent_args(self, request: EngineRequest) -> list[str]:
+        """--agents with the profile's subagent definitions, on closed turns
+        whose tool set has the Agent tool.
+
+        An unrestricted turn gets nothing: the profile's definitions are
+        written against the owner's closed set, and a turn with every tool
+        open is not the one they were measured for. A turn without Agent gets
+        nothing either -- the CLI lists the agents there but the model has no
+        tool to call them with (claude 2.1.321, w3_inheritance.md case E).
+        """
+        agents = self.profile.agents
+        if not agents or request.tools.access is not ToolAccess.ALLOWLIST:
+            return []
+        if not AGENT_TOOLS.intersection(_builtin_names(request.tools.names)):
+            return []
+        payload = {name: definition.cli_entry() for name, definition in agents.items()}
+        return ["--agents", json.dumps(payload, ensure_ascii=False)]
+
     @classmethod
     def configured_capabilities(
         cls, spec: EngineSpec, mcp_servers: Mapping[str, McpServerSpec]
@@ -601,6 +623,7 @@ class ClaudeEngine(Engine):
         # 거부 목록 계산은 붙이기 전 전체 목록으로 한다. 붙이지 않은 서버의
         # 거부 패턴은 남아도 해가 없다.
         cmd += self._tool_args(request, mcp_servers)
+        cmd += self._agent_args(request)
         mcp_servers = {name: entry for name, entry in mcp_servers.items() if name in attached}
         for path in request.readable_dirs:
             cmd += ["--add-dir", str(path)]
