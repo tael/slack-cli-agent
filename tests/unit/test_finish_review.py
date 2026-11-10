@@ -188,7 +188,8 @@ class TestAdvisorSkipped:
         turn = _turn("### 방안\n1. A안\n2. B안\n[[ASK]]", is_advisor_channel=True)
 
         assert finish_review.advisor_skipped(turn) is True
-        assert finish_review.decide(turn).action == "block"
+        # 2026-11-10 : 종료 검수에서 뺐으므로 판정이 True 여도 막지 않는다
+        assert finish_review.decide(turn).action != "block"
 
     def test_allows_when_fable_was_called_this_turn(self):
         turn = _turn(
@@ -696,7 +697,6 @@ class TestExtensionPoint:
             "offer",
             "handoff",
             "denied_unretried",
-            "advisor_skipped",
             "code_first",
             "named_turn",
             "verify",
