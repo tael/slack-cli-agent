@@ -159,7 +159,8 @@ def promise_search(text: str) -> re.Match[str] | None:
     return PROMISE_WITHOUT_WATCH_RE.search(_mask_quotes_and_code(text))
 
 
-PROMISE_FALLBACK_LINE = "확인이 더 필요하면 다시 말씀해 주세요."
+# 2026-11-10 : 해요체 권유문이 명사형 요약체 답 끝에 붙어 말투가 섞였다. 종결 형식에 덜 타는 명사형으로 둔다
+PROMISE_FALLBACK_LINE = "추가 확인은 재요청 필요."
 
 
 def cut_untagged_promise(body: str) -> str:
@@ -193,8 +194,8 @@ def promise_without_watch_prompt(body: str) -> str:
         "나중에 이 문장 하나만 보고 다시 조회할 수 있을 만큼 값을 담은 한국어 문장]] "
         "을 붙인다.\n"
         "2. 지켜볼 대상이 없으면 지켜보겠다, 끝나면 보고하겠다는 말 자체를 빼고, "
-        "지금까지 한 조치와 지금 상태만 말한 뒤 확인이 더 필요하면 다시 물어봐 "
-        "달라고 맺는다.\n"
+        "지금까지 한 조치와 지금 상태만 남기고 끝낸다. 다시 물어봐 달라는 권유 문장을 "
+        "붙이지 않는다. 문장 종결 형식은 방금 쓴 답의 것을 그대로 따른다.\n"
         "내용을 새로 지어내지 않는다. 방금 쓴 것을 이 규칙에 맞춰 다시 담는다."
     )
 

@@ -318,7 +318,7 @@ class TestWatchPromiseGuard:
         result = guard.apply(body, ctx)
         assert result.changed is True
         assert result.rerun is None
-        assert result.body == "확인이 더 필요하면 다시 말씀해 주세요."
+        assert result.body == "추가 확인은 재요청 필요."
         assert result.detail["promise_without_watch_retry_failed"] is True
 
     def test_regexes_match_original(self) -> None:
