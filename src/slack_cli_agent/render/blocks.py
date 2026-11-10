@@ -93,3 +93,49 @@ class BlockBuilder:
         if len(joined) > self.CONTEXT_MAX_CHARS:
             return text, ""
         return "\n".join(lines).rstrip(), joined
+
+    #: A list item line: "- x", "* x", "+ x", "1. x", "1) x", any indent.
+    _LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\S")
+
+    def split_after_lists(self, text: str) -> list[str]:
+        """Cuts the body where a plain paragraph follows a list.
+
+        Slack converts one markdown block into one rich_text block. A
+        paragraph right after a list lands in that same rich_text block as a
+        section whose leading newline the client drops, so it renders glued
+        under the last (often nested) bullet. 2026-11-10 private-taeil : the
+        closing bold question stuck to a sub-bullet even with a blank line
+        between them. Giving the paragraph its own markdown block makes Slack
+        store a separate rich_text block, which renders at block level.
+
+        A line starts a new part when it sits at column 0, is not a list item,
+        heading, quote, table row or fence, and the last non-blank line before
+        it belongs to a list (item or indented continuation). Fenced code is
+        never cut.
+        """
+        lines = text.split("\n")
+        parts: list[list[str]] = [[]]
+        in_fence = False
+        in_list = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+                in_list = False
+                parts[-1].append(line)
+                continue
+            if in_fence or not stripped:
+                parts[-1].append(line)
+                continue
+            if self._LIST_ITEM.match(line):
+                in_list = True
+            elif line[0] in " \t" and in_list:
+                pass  # indented continuation of the current item
+            else:
+                starts_block = stripped[0] in "#>|"
+                if in_list and not starts_block and any(x.strip() for x in parts[-1]):
+                    parts.append([])
+                in_list = False
+            parts[-1].append(line)
+        out = ["\n".join(p).strip("\n") for p in parts]
+        return [p for p in out if p.strip()] or [text]

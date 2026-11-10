@@ -179,7 +179,14 @@ class MessagePublisher:
             part, note = self._blocks.split_context(part)
         blocks: list[dict[str, Any]] = []
         if part.strip():
-            blocks.append({"type": "markdown", "text": part})
+            # A paragraph after a list gets its own markdown block, or Slack
+            # glues it under the last bullet (BlockBuilder.split_after_lists).
+            # Slack caps a message at 50 blocks; past a safe count keep one.
+            pieces = self._blocks.split_after_lists(part)
+            if len(pieces) > 20:
+                pieces = [part]
+            for piece in pieces:
+                blocks.append({"type": "markdown", "text": piece})
         if note:
             blocks.append({
                 "type": "context",
