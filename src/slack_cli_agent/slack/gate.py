@@ -17,7 +17,8 @@ from slack_cli_agent.core.markers import ELAPSED_LINE
 
 # Matches the bot's own text ending in a question mark or a Korean
 # question-ending suffix.
-ASKED_BACK = re.compile(r"(?:[?？]|까요|을까|ㄹ까|나요|린가요|드릴까)[\s.!]*$")
+# 2026-11-10 : 질문 문장을 굵게("**진행할까요?**") 쓰므로 끝의 강조 기호도 건너뛴다
+ASKED_BACK = re.compile(r"(?:[?？]|까요|을까|ㄹ까|나요|린가요|드릴까)[\s.!*_~]*$")
 
 # A plain-statement way of leaving a decision to the human, without a
 # question mark (bot.py:8251-8264, 2026-09-19). "진행할지 말씀 주시면 그때
