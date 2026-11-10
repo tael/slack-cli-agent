@@ -496,9 +496,8 @@ class TestFinishHook:
             "last_assistant_message": "### 방안\n1. A안\n2. B안\n[[ASK]]",
         }
 
-    def test_자문채널_결정형답에_조언자_미호출이면_막는다(self, tmp_path: Path) -> None:
-        """G16 배선: POST_CHANNEL 이 ADVISOR_CHANNELS 에 들면 종료검수가
-        advisor_skipped 로 차단한다."""
+    def test_자문채널이어도_조언자_미호출로_막지_않는다(self, tmp_path: Path) -> None:
+        """2026-11-10 조언자 강제 판정(advisor_skipped)을 걷어냈다."""
         env = {
             "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
             "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
@@ -507,7 +506,7 @@ class TestFinishHook:
         }
         result, proc = run_hook(finish_hook.HOOK_SCRIPT, self._advisor_payload(tmp_path), env)
         assert proc.returncode == 0
-        assert result is not None and result["decision"] == "block"
+        assert result is None
 
     def test_비자문채널이면_같은_결정형답도_통과한다(self, tmp_path: Path) -> None:
         env = {

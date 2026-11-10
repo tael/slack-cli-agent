@@ -183,49 +183,6 @@ class TestAbsenceUnopened:
         assert finish_review.absence_unopened(turn) is None
 
 
-class TestAdvisorSkipped:
-    def test_blocks_decision_request_in_advisor_channel_without_fable_call(self):
-        turn = _turn("### 방안\n1. A안\n2. B안\n[[ASK]]", is_advisor_channel=True)
-
-        assert finish_review.advisor_skipped(turn) is True
-        assert finish_review.decide(turn).action == "block"
-
-    def test_allows_when_fable_was_called_this_turn(self):
-        turn = _turn(
-            "### 방안\n1. A안\n2. B안\n[[ASK]]",
-            is_advisor_channel=True,
-            tool_calls=(ToolCall(name="Agent", input={"model": "fable"}, result="ok"),),
-        )
-
-        assert finish_review.advisor_skipped(turn) is False
-
-    def test_allows_when_fable_was_called_through_claude_cli(self):
-        # Agent 도구가 꺼진 세션에서 CLI 로 조언자를 부른 경우 (2026-11-06)
-        cmd = 'cd /tmp && timeout 300 ~/.local/bin/claude -p --model claude-fable-5-1 --tools "" < p.txt'
-        turn = _turn(
-            "### 방안\n1. A안\n2. B안\n[[ASK]]",
-            is_advisor_channel=True,
-            tool_calls=(ToolCall(name="Bash", input={"command": cmd}, result="ok"),),
-        )
-
-        assert finish_review.advisor_skipped(turn) is False
-
-    def test_blocks_when_cli_call_used_another_model(self):
-        cmd = "claude -p --model claude-sonnet-5-5 < p.txt"
-        turn = _turn(
-            "### 방안\n1. A안\n2. B안\n[[ASK]]",
-            is_advisor_channel=True,
-            tool_calls=(ToolCall(name="Bash", input={"command": cmd}, result="ok"),),
-        )
-
-        assert finish_review.advisor_skipped(turn) is True
-
-    def test_allows_outside_advisor_channel(self):
-        turn = _turn("### 방안\n1. A안\n2. B안\n[[ASK]]", is_advisor_channel=False)
-
-        assert finish_review.advisor_skipped(turn) is False
-
-
 class TestResolveAdvisorChannel:
     """G16 배선: POST_CHANNEL 이 ADVISOR_CHANNELS 에 들면 자문 채널로 본다."""
 
@@ -696,7 +653,6 @@ class TestExtensionPoint:
             "offer",
             "handoff",
             "denied_unretried",
-            "advisor_skipped",
             "code_first",
             "named_turn",
             "verify",

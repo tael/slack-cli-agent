@@ -11,8 +11,6 @@ built from this repo gets end-of-turn review with zero profile config:
 - offer: ended by offering to do the next step instead of doing it
 - handoff: handed a request to someone else without a real permission wall
 - denied_unretried: a tool denial that was never retried another way
-- advisor_skipped: gave a decision in an advisor channel without calling
-  the advisor this turn
 - verify: flags fact sentences the turn's own tool results don't support
 
 Domain-specific judgments (mametchi's lastmile enum codes, Snowflake vs.
@@ -489,43 +487,7 @@ def absence_unopened(turn: Turn) -> str | None:
     return None
 
 
-# --------------------------------------------------------------------------
-# advisor_skipped — gave a decision in an advisor channel, skipped the advisor
-# --------------------------------------------------------------------------
-
-_DECISION_MARK_RE = re.compile(
-    r"^\s*#{1,4}\s*(제안|추천|옵션|방안|비교|선택지)|^\s*\|\s*(번호|옵션|방안)\s*\|", re.MULTILINE
-)
 _ASK_LINE_RE = re.compile(r"^[ \t]*\[\[ASK\]\][ \t]*$", re.MULTILINE)
-
-
-#: A Bash call that ran the claude CLI with `--model <...advisor...>`. Some
-#: sessions run with the Agent tool disabled (2026-11-06 private-taeil: "Agent
-#: is disabled for this session"), so the advisor was called through the CLI
-#: and the old Agent/Task-only check blocked the answer three times with no
-#: way to pass. A CLI call with the advisor model is the same advisor call.
-_CLI_ADVISOR_RE = re.compile(r"\bclaude\b[^\n|;&]*--model[ =]\S*")
-
-
-def _is_advisor_call(call: ToolCall, hint: str) -> bool:
-    if call.name in ("Agent", "Task"):
-        return hint in str(call.input.get("model") or "")
-    if call.name == "Bash":
-        m = _CLI_ADVISOR_RE.search(str(call.input.get("command") or ""))
-        return bool(m and hint in m.group(0))
-    return False
-
-
-def advisor_skipped(turn: Turn, *, advisor_model_hint: str = "fable") -> bool:
-    """True when this channel requires an advisor call before a decision
-    ships, the answer reads as asking for / stating a decision, and no call
-    this turn used the advisor model — an `Agent`/`Task` call, or a Bash call
-    running the claude CLI with `--model` set to the advisor model."""
-    if not turn.answer or not turn.is_advisor_channel:
-        return False
-    if not _ASK_LINE_RE.search(turn.answer) and not _DECISION_MARK_RE.search(turn.answer):
-        return False
-    return not any(_is_advisor_call(call, advisor_model_hint) for call in turn.tool_calls)
 
 
 # --------------------------------------------------------------------------
@@ -536,7 +498,7 @@ def advisor_skipped(turn: Turn, *, advisor_model_hint: str = "fable") -> bool:
 #: tool (notion.*) or a doc link in the answer. These are organization-neutral
 #: defaults — a profile plugin that uses a different doc store can register a
 #: replacement rule rather than this module naming its tool, the same way
-#: advisor_skipped's model hint is a parameter, not a hardcoded org model.
+#: a channel's model hint is a parameter, not a hardcoded org model.
 _DOC_TOOL_RE = re.compile(r"notion", re.IGNORECASE)
 _DOC_LINK_RE = re.compile(r"notion\.(?:so|com)/", re.IGNORECASE)
 #: Default signal for "the answer cites the code host". GitHub is the common
@@ -897,10 +859,6 @@ def unsupported_claims(turn: Turn, *, verifier: ClaimVerifier = heuristic_claim_
     return list(verifier(turn.answer, _turn_evidence(turn)))
 
 
-def _advisor_skipped_check(turn: Turn) -> str | None:
-    return "결정 요청인데 조언자 호출이 없다" if advisor_skipped(turn) else None
-
-
 def _unsupported_claims_check(turn: Turn) -> str | None:
     claims = unsupported_claims(turn)
     return " | ".join(claims) if claims else None
@@ -967,12 +925,6 @@ def _absence_unopened_guidance(hit: str) -> str:
 def _denied_unretried_guidance(hit: str) -> str:
     return (
         f'"{hit}" 조회가 거부된 뒤 다른 방식으로 다시 부르지 않았다. 같은 대상을 다른 경로로 같은 턴에 다시 조회한다.'
-    )
-
-
-def _advisor_skipped_guidance(_hit: str) -> str:
-    return (
-        "결정을 구하는 답인데 이번 턴에 조언자를 부르지 않았다. 조언자를 부른 뒤 그 결과를 반영해 답을 다시 쓴다."
     )
 
 
@@ -1058,7 +1010,6 @@ def _build_common_registry() -> JudgmentRegistry:
     common.register("offer", offer, _offer_guidance)
     common.register("handoff", handoff, _handoff_guidance)
     common.register("denied_unretried", denied_unretried, _denied_unretried_guidance)
-    common.register("advisor_skipped", _advisor_skipped_check, _advisor_skipped_guidance)
     common.register("code_first", code_first_doc_only, _code_first_guidance)
     common.register("named_turn", named_turn, _named_turn_guidance)
     common.register("verify", _unsupported_claims_check, _verify_guidance)
@@ -1126,7 +1077,7 @@ def resolve_advisor_channel(env: Mapping[str, str]) -> bool:
     module only reads the resolved names — the same split of concerns
     `time_left` keeps with the deadline the engine stamped. False when
     either var is empty, so a deployment that configures neither simply
-    never trips the `advisor_skipped` judgment. Reads the caller-supplied
+    never marks the channel as an advisor channel. Reads the caller-supplied
     `env` mapping, not `os.environ`, so a test can call it directly."""
     current = (env.get("POST_CHANNEL") or "").strip()
     if not current:
