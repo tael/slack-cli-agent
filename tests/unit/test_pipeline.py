@@ -2782,14 +2782,15 @@ class Test현재_발언의_화자를_프롬프트에_넘긴다:
         assert deps["runner"].calls[0].prompt.startswith("[")
 
 
-class Test이번_턴_본문의_멘션도_이름으로_바꾼다:
-    """대화록에서는 이름이 나오고 지금 말에서는 <@U...> 가 나오면 같은 사람이
-    둘로 보인다 (sca-za2a). 대화록 쪽은 sca-hkmb 에서 바꿨다."""
+class Test이번_턴_본문은_멘션_원문을_둔다:
+    """지금 말 본문도 대화록 줄처럼 슬랙 원문 <@ID> 를 둔다. 불린 사람은 머리의
+    `-> 이름` 이 알린다. 본문에 이름을 넣으면 모델이 그 이름을 답에 옮겨 적어
+    링크도 알림도 없는 호출이 된다 (구 마메치 readable_mentions, bot.py:4577)."""
 
     def _프롬프트(self, deps: dict[str, Any]) -> str:
         return deps["runner"].calls[0].prompt
 
-    def test_사람_멘션이_이름으로_나간다(self, tmp_path: Path) -> None:
+    def test_사람_멘션이_원문으로_나간다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(
             responses=[ok_response()],
             name_resolver=lambda user_id: {"U9": "홍길동"}.get(user_id, ""),
@@ -2797,10 +2798,7 @@ class Test이번_턴_본문의_멘션도_이름으로_바꾼다:
         )
         pipeline.handle(make_ctx(user="U1", text="<@U9> 확인해줘"))
 
-        프롬프트 = self._프롬프트(deps)
-        assert "홍길동 확인해줘" in 프롬프트
-        # 원문이 함께 남으면 같은 사람이 둘로 보이는 문제가 그대로다
-        assert "<@U9>" not in 프롬프트
+        assert self._프롬프트(deps).strip().splitlines()[-1] == "<@U9> 확인해줘"
 
     def test_해석이_안_되면_원문을_남긴다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(

@@ -70,7 +70,6 @@ from ..slack.generated_images import (
     ImageUpload,
 )
 from ..slack.late_addendum import LateAddendumChecker, ThreadConsumption, late_addendum_prompt
-from ..slack.mentions import MentionRenderer
 from ..slack.origin_alive import OriginAliveChecker
 from ..slack.tool_post import ToolPostMerger
 from ..slack.transcribe import TranscribeFn, transcribe_files
@@ -368,10 +367,6 @@ class RequestPipeline:
         # for validating a BOT:id. Forces the leading mention for bot recipients
         # and drops a wrong leading bot-mention from owner/asker replies (D3).
         self._recipient_resolver = RecipientResolver(asker_is_bot)
-        # The prompt body only. Slack's addressee check and this bot's own
-        # mention removal read the raw text, so rendering earlier would break
-        # them (sca-za2a).
-        self._mentions = MentionRenderer(name_resolver, group_resolver)
         self._mention_table = mention_table
         self._slow_reporter = slow_reporter
         self._request_timing = request_timing
@@ -938,7 +933,12 @@ class RequestPipeline:
             transcript = self._transcript.thread_transcript(
                 ctx.channel, ctx.thread_ts, ctx.ts, scope=scope,
             )
-        body = self._mentions.render(ctx.text)
+        # The body keeps Slack's <@ID> markup, as past transcript lines do;
+        # who was called goes in the bracketed head (CalledNames). A body
+        # with names put in made the model copy the bare name into its reply,
+        # which neither links nor notifies (mametchi readable_mentions,
+        # bot.py:4577, incidents 2026-08-26 12:02 and 12:05).
+        body = ctx.text
         note = self._linked_thread_note(ctx)
         if note:
             body = f"{body}\n\n{note}"

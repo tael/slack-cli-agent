@@ -145,6 +145,12 @@ class CompositionContext:
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
+    def is_chat(self) -> bool:
+        """A chat channel: `chat: active` or `mode: chat`, the same test as
+        guard.figurative.is_chat_channel and mametchi is_chat_channel."""
+        return self.chat_level == "active" or self.channel_mode == "chat"
+
+    @property
     def is_owner(self) -> bool:
         return self.principal.trust is TrustLevel.OWNER
 
@@ -244,6 +250,7 @@ class KnowledgeSection(BudgetAwareSection):
         for_loader = None if budget < 0 else max(0, budget - len(self._SEPARATOR.encode("utf-8")))
         text, omitted = ctx._knowledge_or_raise().knowledge_selection(
             ctx.channel_slug, ctx.prompt, budget=for_loader, part=self._part,
+            chat=ctx.is_chat,
         )
         return BudgetedRender(
             text=f"{text}{self._SEPARATOR}" if text else "",
@@ -464,6 +471,13 @@ RECIPIENT_RULE = (
 )
 
 
+#: Slack shows a mention as the person's name, so a name written right
+#: after it reads twice ("@신영철 신영철님").
+MENTION_NAME_RULE = (
+    "\n\n꺾쇠 멘션 뒤에 같은 사람 이름을 다시 쓰지 않는다. 슬랙이 멘션을 이름으로 보여 준다."
+)
+
+
 class AskerSection(PromptSection):
     """States who's asking — without this, lookups for one person get answered as if they were about another.
 
@@ -484,7 +498,7 @@ class AskerSection(PromptSection):
         return True
 
     def render(self, ctx: CompositionContext) -> str:
-        return self._render(ctx) + RECIPIENT_RULE
+        return self._render(ctx) + MENTION_NAME_RULE + RECIPIENT_RULE
 
     def _render(self, ctx: CompositionContext) -> str:
         library = ctx._library_or_raise()
@@ -706,10 +720,14 @@ class AskSection(PromptSection):
     Not yet wired into any profile's section list — see
     `core/application.py`'s `_prompt_sections()`, which composition root
     this change doesn't touch.
+
+    Left out in a chat channel: mametchi carried the marker rule only in
+    WATCH_NOTE, which every turn here gets too, and this longer note with its
+    work-approval example was not in the old chat prompt (2026-11-10 비교).
     """
 
     def applies_to(self, ctx: CompositionContext) -> bool:
-        return not ctx.aside
+        return not ctx.aside and not ctx.is_chat
 
     def render(self, ctx: CompositionContext) -> str:
         return ctx._library_or_raise().text("ASK_NOTE")
@@ -723,11 +741,13 @@ class WorkStyleSection(PromptSection):
     Each response is one more round trip, so multi-step lookups are asked to
     go into one script run once, and independent calls into one response.
     Kept to a few lines on purpose: the prompt is resent every turn.
-    Skipped during postmortem/debug/format-review, which only look back.
+    Skipped during postmortem/debug/format-review, which only look back,
+    and in a chat channel: mametchi's chat prompt had no work-style note,
+    and its script-and-SQL steps steer small talk toward lookups.
     """
 
     def applies_to(self, ctx: CompositionContext) -> bool:
-        return not ctx.aside
+        return not ctx.aside and not ctx.is_chat
 
     def render(self, ctx: CompositionContext) -> str:
         return ctx._library_or_raise().text("WORK_STYLE_NOTE")
@@ -857,12 +877,18 @@ class PresentPeopleSection(PromptSection):
 
 
 class SilenceRuleSection(PromptSection):
+    #: mametchi silence_rule (bot.py:2482-2507), word for word. The paragraph
+    #: pinning the answer to the one triggering message keeps later replies
+    #: in the thread, addressed to someone else, out of the answer (2026-09-16).
     _INTRO = (
-        "\n\n이 말은 지목해 부른 것이 아니다. 스레드에서 오간 말이다.\n"
+        "\n\n이 말은 너를 지목해 부른 것이 아니다. 스레드에서 오간 말이다.\n"
         "답하기 전에 다음 두 가지를 먼저 점검한다.\n"
         "- 다른 사람을 명시적으로 멘션했거나 다른 사람에게 묻는 말인가. "
         "그렇다면 그 사람에게 하는 말이니 나서지 않는다\n"
-        "- 정보 요청이나 실행을 기대하는 말인가. 그래야 답할 값어치가 있는 자리다\n"
+        "- 너에게 정보 요청이나 실행을 기대하는 말인가. 그래야 답할 값어치가 있는 자리다\n"
+        "\n답할 대상은 지금 답할 말 하나다. 그 뒤에 달린 말은 맥락 참고용이다.\n"
+        "그 말이 다른 사람이나 다른 봇을 지목했으면 응답 대상에서 뺀다. "
+        "그 말에 답하거나 거절하지 않는다.\n"
     )
 
     def applies_to(self, ctx: CompositionContext) -> bool:
@@ -874,7 +900,8 @@ class SilenceRuleSection(PromptSection):
         return (
             self._INTRO
             + guide
-            + f"\n\n답하지 않기로 했으면 {ctx.silent_mark} 만 출력하고 끝내라. 다른 말을 붙이지 마라."
+            + f"\n\n답하지 않기로 했으면 {ctx.silent_mark} 만 출력하고 끝내라. 다른 말을 붙이지 마라. "
+            "왜 답하지 않는지 설명하는 문장도 쓰지 않는다. 그 설명이 그대로 게시된다."
         )
 
 
@@ -913,10 +940,11 @@ class TurnTierSection(PromptSection):
     tier change between turns of one thread reaches the model.
     """
 
-    _RULE = (
-        "권한 밖 수단은 '이 턴 권한 밖'이라고 적는다. '수단이 없다'고 쓰지 않는다. "
-        "조회로 답할 수 있는 질문은 붙은 조회 도구로 먼저 찾아 답한다"
-    )
+    #: mametchi turn_tier_note's closing sentence (bot.py:825), on every turn.
+    _RULE = "권한 밖 수단은 '이 턴 권한 밖'이라고 적는다. '수단이 없다'고 쓰지 않는다"
+    #: Added here for work turns. mametchi had no such line, and in a chat
+    #: channel it sends small talk to a lookup first (2026-11-10 비교).
+    _LOOKUP_FIRST = "조회로 답할 수 있는 질문은 붙은 조회 도구로 먼저 찾아 답한다"
 
     def applies_to(self, ctx: CompositionContext) -> bool:
         return ctx.turn_tier in TIER_NOTES
@@ -934,4 +962,5 @@ class TurnTierSection(PromptSection):
         return f"이 턴에 붙은 실행 도구는 {shown}{more} 이다. 그 밖의 실행은 이 턴 권한 밖이다"
 
     def render(self, ctx: CompositionContext) -> str:
-        return f"[이 턴 권한 : {TIER_NOTES[ctx.turn_tier]}. {self._reach(ctx)}. {self._RULE}]"
+        rule = self._RULE if ctx.is_chat else f"{self._RULE}. {self._LOOKUP_FIRST}"
+        return f"[이 턴 권한 : {TIER_NOTES[ctx.turn_tier]}. {self._reach(ctx)}. {rule}]"

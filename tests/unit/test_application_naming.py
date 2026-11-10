@@ -87,4 +87,5 @@ class Test이름판정주입:
         assert app._transcript_builder()._speaker._name_resolver is 판정
         assert app._late_addendum()._called._name is 판정
         assert app._participants()._name_resolver is 판정
-        assert app.pipeline()._mentions._name is 판정
+        # 이번 턴 본문은 원문 그대로 두고 불린 사람은 머리가 적는다
+        assert app.pipeline()._transcript._called._name is 판정

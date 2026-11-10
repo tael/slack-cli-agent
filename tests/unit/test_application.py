@@ -56,6 +56,7 @@ from slack_cli_agent.reliability.connection import ConnectionKind
 from slack_cli_agent.reliability.watchresult import WatchOutcome
 from slack_cli_agent.review.base import ReviewProgressPort, ReviewTarget
 from slack_cli_agent.slack.review_ports import ReviewProgressDisplay
+from slack_cli_agent.slack.transcript import CurrentMessage
 
 
 class FakeSlackClient:
@@ -2487,6 +2488,43 @@ class Test봇멘션가드연결:
         assert "<@U0TAEL>" in result.body
 
 
+class Test잡담채널봇멘션:
+    """사람이 다른 봇을 불러 달라고 하면 그 멘션이 살아 나가야 한다.
+
+    구 봇에는 이 가드가 없었다. 업무 채널은 bot_mentions 가 없으면 지금처럼 이름으로
+    바꾸고, 잡담 채널은 다른 봇 멘션을 남긴다. 물어본 봇을 되부르는 갈래는 계속 자른다.
+    """
+
+    def _app(self, tmp_path: Path, config: dict[str, Any]) -> Application:
+        client = FakeSlackClient()
+        client.users_info = lambda **kw: {  # type: ignore[method-assign]
+            "user": {"id": kw.get("user"), "is_bot": True, "profile": {"real_name": "구치파치"}}
+        }
+        profile = write_profile(tmp_path)
+        ChannelRegistry(profile.paths.channels).update("C_CHAT", config)
+        return Application.from_profile(profile, client=client)
+
+    def test_잡담_채널은_요청한_봇_호출을_남긴다(self, tmp_path: Path) -> None:
+        app = self._app(tmp_path, {"mode": "chat"})
+        ctx = GuardContext(
+            channel="C_CHAT", asker_id="U0HUMAN", request_text="구치파치 불러 줘 U0GUCHI",
+        )
+        result = app._guards().run("<@U0GUCHI> 신영철님이 찾으셔", ctx)
+        assert result.body.startswith("<@U0GUCHI>")
+
+    def test_잡담_채널도_물어본_봇은_되부르지_않는다(self, tmp_path: Path) -> None:
+        app = self._app(tmp_path, {"chat": "active"})
+        ctx = GuardContext(channel="C_CHAT", asker_id="U0GUCHI")
+        result = app._guards().run("<@U0GUCHI> 알았어", ctx)
+        assert "<@U0GUCHI>" not in result.body
+
+    def test_업무_채널은_그대로_이름으로_바꾼다(self, tmp_path: Path) -> None:
+        app = self._app(tmp_path, {"mode": "private"})
+        ctx = GuardContext(channel="C_CHAT", asker_id="U0HUMAN", request_text="<@U0GUCHI> 불러 줘")
+        result = app._guards().run("<@U0GUCHI> 확인 부탁", ctx)
+        assert "<@U0GUCHI>" not in result.body
+
+
 class Test수신자가드_예외_조립:
     """첫머리 멘션 예외(짝 봇, 봇 계정, 요청 본문 멘션)가 조립에서도 성립하는가 (B2)."""
 
@@ -2572,17 +2610,25 @@ class Test점검느린보고연결:
         assert reporter._settings.slow_report_sec == 111
 
 
-class Test멘션_치환이_조립에_꽂혀_있다:
+class Test멘션_이름이_조립에_꽂혀_있다:
     """부품을 만든 것과 조립에 연결한 것은 다르다. 단위 시험은 대역을 직접
-    넣으므로 주입이 빠져도 통과한다 (sca-za2a)."""
+    넣으므로 주입이 빠져도 통과한다 (sca-za2a). 본문은 원문을 두고 불린
+    사람 이름은 머리에 적으므로, 머리가 해석기를 받는지 본다."""
 
-    def test_파이프라인이_사용자_그룹_해석기를_받는다(self, app: Application) -> None:
+    def test_머리가_사용자_그룹_해석기를_받는다(self, app: Application) -> None:
         app._group_names._cache["S1"] = "데이터팀"  # type: ignore[attr-defined]
-        assert app.pipeline()._mentions.render("<!subteam^S1> 봐줘") == "@데이터팀 그룹 봐줘"
+        head = app.pipeline()._transcript.tag_current(
+            CurrentMessage(ts="1.0", user="U1", raw_text="<!subteam^S1> 봐줘", body="<!subteam^S1> 봐줘"),
+        )
+        assert "-> @데이터팀 그룹]" in head.splitlines()[0]
 
-    def test_파이프라인이_이름_해석기를_받는다(self, app: Application) -> None:
+    def test_머리가_이름_해석기를_받고_본문은_원문이다(self, app: Application) -> None:
         app._names._cache["U9"] = "홍길동"  # type: ignore[attr-defined]
-        assert app.pipeline()._mentions.render("<@U9> 봐줘") == "홍길동 봐줘"
+        head = app.pipeline()._transcript.tag_current(
+            CurrentMessage(ts="1.0", user="U1", raw_text="<@U9> 봐줘", body="<@U9> 봐줘"),
+        )
+        assert "-> 홍길동]" in head.splitlines()[0]
+        assert head.splitlines()[-1] == "<@U9> 봐줘"
 
 
 class Test들어온_본문에서_자기_멘션만_지운다:
