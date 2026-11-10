@@ -40,7 +40,7 @@ CASES = [
     ("PR 생성까지 완료했습니다.", False),
     ("이후 단계는 승인 후에 정합니다.", False),
     ("머지 확인했습니다.", False),
-    ("확인이 더 필요하면 다시 말씀해 주세요.", False),
+    ("추가 확인은 재요청 필요.", False),
     ("착수하실 거면 상태를 진행 중으로 올리고 워크플로 이식부터 진행하겠습니다.", False),
     ("수정과 재기동까지 진행할지 말씀 주시면 그때 실행하겠습니다.", False),
     # 위임만 서술한 답은 어휘로 잡지 않는다
@@ -91,7 +91,7 @@ def test_재시도_실패_시_인용_뒤의_본문_약속에서_자른다() -> N
     result = WatchPromiseGuard().apply(body, GuardContext(is_rewrite_retry=True))
     assert result.body == (
         "> 끝나면 보고하겠습니다\n위 인용은 예시입니다.\n재실행이\n\n"
-        "확인이 더 필요하면 다시 말씀해 주세요."
+        "추가 확인은 재요청 필요."
     )
 
 
@@ -99,12 +99,12 @@ def test_보정_프롬프트() -> None:
     out = promise_without_watch_prompt("완료되면 결과와 함께 보고할게요.")
     assert "완료되면 결과와 함께 보고할게요." in out
     assert "[[WATCH:" in out
-    assert "다시 물어봐" in out
+    assert "권유 문장을" in out
     assert "새로 지어내지 않는다" in out
 
 
 PROMISE_BODY = "인용 예시입니다.\n> 끝나면 보고하겠습니다\n재실행을 걸었습니다. 끝나면 다시 보고하겠습니다."
-CUT_BODY = "인용 예시입니다.\n> 끝나면 보고하겠습니다\n재실행을 걸었습니다.\n\n확인이 더 필요하면 다시 말씀해 주세요."
+CUT_BODY = "인용 예시입니다.\n> 끝나면 보고하겠습니다\n재실행을 걸었습니다.\n\n추가 확인은 재요청 필요."
 
 
 @pytest.mark.parametrize(
