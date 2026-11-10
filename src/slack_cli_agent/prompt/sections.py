@@ -753,6 +753,53 @@ class WorkStyleSection(PromptSection):
         return ctx._library_or_raise().text("WORK_STYLE_NOTE")
 
 
+#: Tiers whose turn holds the Agent tool: the owner, a channel operator, and a
+#: delegated turn, which gets the operator's tool set (ToolPolicy
+#: operator_level). FlowSection and the plan_gate hook apply only here; a
+#: flow that tells the model to delegate a branch is no use without Agent.
+FLOW_TIERS: frozenset[str] = frozenset({
+    TurnTier.OWNER_TRUSTED,
+    TurnTier.OWNER,
+    TurnTier.DELEGATED,
+    TurnTier.OPERATOR_FULL,
+    TurnTier.OPERATOR,
+})
+
+
+def flow_applies(tier: str, *, chat: bool, aside: bool = False) -> bool:
+    """Whether a turn gets the default flow note and the plan_gate hook.
+
+    One function for both so the hook never denies a call in a turn whose
+    prompt never asked for a plan. A chat channel is left out like
+    WorkStyleSection; postmortem, debug-trace, format-review and the watch
+    check only look back.
+    """
+    return tier in FLOW_TIERS and not chat and not aside
+
+
+class FlowSection(PromptSection):
+    """FLOW_NOTE: analyse, plan, run branches in parallel, refine.
+
+    2026-11-06..10 guchipachi: of 43 sessions with 30+ tool calls, 3 used a
+    lookup subagent. The note asks for a `[계획]` block before the third
+    tool-calling response and hands a branch of 3+ calls to
+    Agent(subagent_type="lookup"|"analyst"). The plan_gate PreToolUse hook
+    enforces the block; the pipeline turns it on with the same flow_applies.
+    `enabled` comes from the profile setting `plan_flow`.
+    """
+
+    def __init__(self, enabled: bool = True) -> None:
+        self._enabled = enabled
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return self._enabled and flow_applies(
+            ctx.turn_tier, chat=ctx.is_chat, aside=ctx.aside or ctx.watch_check,
+        )
+
+    def render(self, ctx: CompositionContext) -> str:
+        return ctx._library_or_raise().text("FLOW_NOTE")
+
+
 class AttachmentSection(PromptSection):
     """Tells the engine what got attached to this turn: bot.py:4699-4712's
     attachment_note ported. Attachments are downloaded and their local path
