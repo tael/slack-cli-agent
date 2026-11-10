@@ -276,7 +276,6 @@ class RequestPipeline:
         # component default stays off so a pipeline built without settings
         # publishes rather than goes quiet.
         require_recipient: bool = False,
-        group_resolver: Callable[[str], str] | None = None,
         mention_table: Callable[[], Mapping[str, str]] = dict,
         slow_reporter: SlowRequestReporter | None = None,
         # Splits each request's wall time into named items for its audit row

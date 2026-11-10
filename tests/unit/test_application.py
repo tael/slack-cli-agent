@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -2491,34 +2491,55 @@ class Test봇멘션가드연결:
 class Test잡담채널봇멘션:
     """사람이 다른 봇을 불러 달라고 하면 그 멘션이 살아 나가야 한다.
 
-    구 봇에는 이 가드가 없었다. 업무 채널은 bot_mentions 가 없으면 지금처럼 이름으로
-    바꾸고, 잡담 채널은 다른 봇 멘션을 남긴다. 물어본 봇을 되부르는 갈래는 계속 자른다.
+    구 봇에는 이 가드가 없었다. 잡담 채널은 이번 요청이 <@ID> 나 표시 이름으로
+    부른 봇의 멘션만 남긴다. 요청하지 않은 봇과 물어본 봇 자신은 이름으로 바꾼다.
+    봇 셋 이상이 서로를 계속 부르는 반복을 막는다 (리뷰 MEDIUM-1). 업무 채널은
+    bot_mentions 가 없으면 지금처럼 이름으로 바꾼다.
     """
+
+    _NAMES: ClassVar[dict[str, str]] = {"U0GUCHI": "구치파치", "U0DEAG": "데이전트"}
 
     def _app(self, tmp_path: Path, config: dict[str, Any]) -> Application:
         client = FakeSlackClient()
         client.users_info = lambda **kw: {  # type: ignore[method-assign]
-            "user": {"id": kw.get("user"), "is_bot": True, "profile": {"real_name": "구치파치"}}
+            "user": {
+                "id": kw.get("user"), "is_bot": True,
+                "profile": {"real_name": self._NAMES.get(kw.get("user") or "", "레이")},
+            }
         }
         profile = write_profile(tmp_path)
         ChannelRegistry(profile.paths.channels).update("C_CHAT", config)
         return Application.from_profile(profile, client=client)
 
-    def test_잡담_채널은_요청한_봇_호출을_남긴다(self, tmp_path: Path) -> None:
+    def test_잡담_채널은_ID로_요청한_봇_호출을_남긴다(self, tmp_path: Path) -> None:
         app = self._app(tmp_path, {"mode": "chat"})
-        ctx = GuardContext(
-            channel="C_CHAT", asker_id="U0HUMAN", request_text="구치파치 불러 줘 U0GUCHI",
-        )
+        ctx = GuardContext(channel="C_CHAT", asker_id="U0HUMAN", request_text="<@U0GUCHI> 불러 줘")
         result = app._guards().run("<@U0GUCHI> 신영철님이 찾으셔", ctx)
         assert result.body.startswith("<@U0GUCHI>")
 
+    def test_잡담_채널은_이름으로_요청한_봇_호출을_남긴다(self, tmp_path: Path) -> None:
+        app = self._app(tmp_path, {"chat": "active"})
+        ctx = GuardContext(channel="C_CHAT", asker_id="U0HUMAN", request_text="구치파치 불러 줘")
+        result = app._guards().run("<@U0GUCHI> 신영철님이 찾으셔", ctx)
+        assert result.body.startswith("<@U0GUCHI>")
+
+    def test_잡담_채널도_요청하지_않은_봇은_이름으로_바꾼다(self, tmp_path: Path) -> None:
+        app = self._app(tmp_path, {"mode": "chat"})
+        ctx = GuardContext(channel="C_CHAT", asker_id="U0HUMAN", request_text="구치파치 불러 줘")
+        result = app._guards().run("<@U0GUCHI> 와 <@U0DEAG> 둘 다 봐 줘", ctx)
+        assert "<@U0GUCHI>" in result.body
+        assert "<@U0DEAG>" not in result.body
+        assert "데이전트" in result.body
+
     def test_잡담_채널도_물어본_봇은_되부르지_않는다(self, tmp_path: Path) -> None:
         app = self._app(tmp_path, {"chat": "active"})
-        ctx = GuardContext(channel="C_CHAT", asker_id="U0GUCHI")
+        ctx = GuardContext(
+            channel="C_CHAT", asker_id="U0GUCHI", request_text="<@U0GUCHI> 가 묻는다 구치파치",
+        )
         result = app._guards().run("<@U0GUCHI> 알았어", ctx)
         assert "<@U0GUCHI>" not in result.body
 
-    def test_업무_채널은_그대로_이름으로_바꾼다(self, tmp_path: Path) -> None:
+    def test_업무_채널은_요청해도_이름으로_바꾼다(self, tmp_path: Path) -> None:
         app = self._app(tmp_path, {"mode": "private"})
         ctx = GuardContext(channel="C_CHAT", asker_id="U0HUMAN", request_text="<@U0GUCHI> 불러 줘")
         result = app._guards().run("<@U0GUCHI> 확인 부탁", ctx)

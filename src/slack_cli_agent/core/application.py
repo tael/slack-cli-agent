@@ -731,14 +731,6 @@ class Application:
         """Read per request, like `_bot_mentions_allowed`."""
         return is_chat_channel(self._channels.get(channel))
 
-    def _bot_mentions_kept(self, channel: str) -> bool:
-        """Where BotMentionGuard keeps other bots' mentions: a `bot_mentions`
-        channel, or a chat channel. mametchi had no such guard, so in a chat
-        channel "<봇> 불러 줘" reached the other bot; here the mention became a
-        plain name and the call never landed. The asker's own mention is still
-        cut, which is the bot-to-bot loop the guard exists to stop."""
-        return self._bot_mentions_allowed(channel) or self._is_chat_channel(channel)
-
     def _is_bot_or_peer(self, user_id: str) -> bool:
         """A controller is a bot even when users_info fails. Both mention
         guards read this one verdict, so a peer that AddresseeGuard keeps at
@@ -754,7 +746,9 @@ class Application:
             BotMentionGuard(
                 is_bot=self._is_bot_or_peer,
                 display_name=self._names.resolve,
-                allowed_in=self._bot_mentions_kept,
+                allowed_in=self._bot_mentions_allowed,
+                # A chat channel keeps a bot mention the request asked for.
+                requested_only_in=self._is_chat_channel,
             ),
             AddresseeGuard(is_bot=self._is_bot_or_peer),
             WatchPromiseGuard(),
@@ -989,7 +983,6 @@ class Application:
                 # S2: 요청 종류로 붙일 MCP 서버를 고른다. 없으면 전부.
                 mcp_routing=self._settings.mcp_routing,
                 mention_table=self._names.name_table,
-                group_resolver=self._group_names,
                 slow_reporter=self._slow_reporter(),
                 # Resolved per request like the slow report: the engine that
                 # answered decides the transcript format (S0 계측).

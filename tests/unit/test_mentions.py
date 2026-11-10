@@ -10,68 +10,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-import pytest
 from identity_support import fake_identity
 
-from slack_cli_agent.slack.mentions import MentionRenderer, SelfMentionStripper
+from slack_cli_agent.slack.mentions import SelfMentionStripper
 from slack_cli_agent.slack.names import UserGroupNameResolver
 
 
 def 이름표(표: dict[str, str]):
     return lambda user_id: 표.get(user_id, "")
-
-
-class Test사용자_멘션:
-    def test_이름으로_바꾼다(self) -> None:
-        보기 = MentionRenderer(이름표({"U1": "홍길동"}))
-        assert 보기.render("<@U1> 확인해줘") == "홍길동 확인해줘"
-
-    def test_표시이름이_붙어_있어도_해석한_이름을_쓴다(self) -> None:
-        보기 = MentionRenderer(이름표({"U1": "홍길동"}))
-        assert 보기.render("<@U1|gildong> 확인") == "홍길동 확인"
-
-    def test_못_풀면_붙어_있는_표시이름을_쓴다(self) -> None:
-        보기 = MentionRenderer(이름표({}))
-        assert 보기.render("<@U9|gildong> 확인") == "gildong 확인"
-
-    def test_아무것도_못_풀면_원본을_남긴다(self) -> None:
-        """지우면 누가 불렸는지가 사라진다."""
-        보기 = MentionRenderer(이름표({}))
-        assert 보기.render("<@U9> 확인") == "<@U9> 확인"
-
-    def test_여러_사람을_한_줄에서_바꾼다(self) -> None:
-        보기 = MentionRenderer(이름표({"U1": "홍길동", "U2": "임꺽정"}))
-        assert 보기.render("<@U1> 이 <@U2> 에게") == "홍길동 이 임꺽정 에게"
-
-
-class Test그룹_멘션:
-    def test_그룹_이름으로_바꾼다(self) -> None:
-        보기 = MentionRenderer(이름표({}), group_resolver=lambda gid: "데이터팀")
-        assert 보기.render("<!subteam^S1> 봐주세요") == "@데이터팀 그룹 봐주세요"
-
-    def test_못_풀면_붙어_있는_핸들을_쓴다(self) -> None:
-        보기 = MentionRenderer(이름표({}), group_resolver=lambda gid: "")
-        assert 보기.render("<!subteam^S1|@data> 봐주세요") == "@data 그룹 봐주세요"
-
-    def test_아무것도_못_풀면_원본을_남긴다(self) -> None:
-        보기 = MentionRenderer(이름표({}))
-        assert 보기.render("<!subteam^S1> 봐주세요") == "<!subteam^S1> 봐주세요"
-
-
-class Test특수_멘션은_건드리지_않는다:
-    @pytest.mark.parametrize("원본", ["<!here> 봐주세요", "<!channel> 공지", "<#C1|일반> 에서"])
-    def test_그대로_둔다(self, 원본: str) -> None:
-        보기 = MentionRenderer(이름표({"U1": "홍길동"}))
-        assert 보기.render(원본) == 원본
-
-
-class Test해석_실패는_요청을_깨지_않는다:
-    def test_해석기가_예외를_내도_원본을_남긴다(self) -> None:
-        def 터진다(_: str) -> str:
-            raise RuntimeError("조회 실패")
-
-        보기 = MentionRenderer(터진다, group_resolver=터진다)
-        assert 보기.render("<@U1> 과 <!subteam^S1>") == "<@U1> 과 <!subteam^S1>"
 
 
 class Test그룹_이름_해석기:
@@ -158,32 +104,6 @@ class Test대화록은_본문을_그대로_두고_머리에_방향을_적는다:
     def test_방송_멘션도_머리에_적는다(self) -> None:
         body = self.대화록("<!here> 잠깐만")
         assert "김철수 <@U1> -> 이 자리 모두]" in body
-
-
-class Test경계_입력:
-    """리뷰 지적 2026-09-19."""
-
-    def test_파이프_뒤가_비어_있으면_원본을_그대로_남긴다(self) -> None:
-        보기 = MentionRenderer(이름표({}))
-        assert 보기.render("<@U9|> 확인") == "<@U9|> 확인"
-
-    def test_연속된_멘션을_각각_바꾼다(self) -> None:
-        보기 = MentionRenderer(이름표({"U1": "홍길동", "U2": "임꺽정"}))
-        assert 보기.render("<@U1><@U2>") == "홍길동임꺽정"
-
-    def test_조사가_바로_붙어도_바꾼다(self) -> None:
-        보기 = MentionRenderer(이름표({"U1": "홍길동"}))
-        assert 보기.render("<@U1>님이 말했다") == "홍길동님이 말했다"
-
-    def test_W_로_시작하는_계정도_바꾼다(self) -> None:
-        """Enterprise Grid 의 사용자 ID 는 W 로 시작한다."""
-        보기 = MentionRenderer(이름표({"W1": "홍길동"}))
-        assert 보기.render("<@W1> 확인") == "홍길동 확인"
-
-    def test_해석한_이름에_멘션_표기가_들어_있어도_다시_바꾸지_않는다(self) -> None:
-        """한 번에 훑기 때문이다. 두 번 훑으면 이 자리가 또 치환된다."""
-        보기 = MentionRenderer(이름표({"U1": "<!subteam^S9>"}), group_resolver=lambda gid: "데이터팀")
-        assert 보기.render("<@U1> 확인") == "<!subteam^S9> 확인"
 
 
 class Test그룹_조회_실패_처리:
@@ -288,8 +208,10 @@ class Test2차_리뷰_지적:
     """2026-09-19 2차 리뷰."""
 
     def test_해석한_이름에_골뱅이가_붙어_있어도_한_번만_붙인다(self) -> None:
-        보기 = MentionRenderer(이름표({}), group_resolver=lambda gid: "@data")
-        assert 보기.render("<!subteam^S1> 확인") == "@data 그룹 확인"
+        from slack_cli_agent.slack.mentions import CalledNames
+
+        보기 = CalledNames(이름표({}), group_resolver=lambda gid: "@data")
+        assert 보기.called_in("<!subteam^S1> 확인") == ("@data 그룹",)
 
     def test_기동_뒤_생긴_그룹은_간격이_지나면_다시_조회한다(self) -> None:
         """한 번 성공하면 다시 안 보던 자리다. 새 그룹이 영영 원본으로 남았다."""
