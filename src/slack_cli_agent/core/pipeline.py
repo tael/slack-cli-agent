@@ -478,6 +478,20 @@ class RequestPipeline:
                 dirs.append(parent)
         return tuple(dirs)
 
+    def _restricted_bot(self, principal: Principal, from_bot: bool) -> bool:
+        """Whether this asker is a bot held to the bot tier.
+
+        A controller bot (profile controller_user_ids) is treated like an
+        ordinary user of the channel: the same operators list, "*" included,
+        the same tools and tier a person gets there. Only other bots stay on
+        the read-only bot tier. 2026-11-10 김태일 지시 "구치파치가 마메치와
+        데이전트를 어디서든 통제할 수 있어야 함, 일반 유저와 동일하게".
+        A delegated turn is decided before this and keeps its own tier.
+        """
+        if principal.trust is TrustLevel.OWNER or principal.is_controller:
+            return False
+        return bool(from_bot or self._asker_is_bot(principal.user_id))
+
     def _tools(
         self, principal: Principal, prompt: str, config: ChannelConfig | None,
         *, from_bot: bool = False,
@@ -488,9 +502,7 @@ class RequestPipeline:
         # names a bot (mametchi authz.is_operator). The event's bot_id decides
         # first; the users_info lookup reads a failed call as "a person", so
         # it only adds a bot the event did not mark (bot.py:7855).
-        is_bot = principal.trust is not TrustLevel.OWNER and (
-            from_bot or self._asker_is_bot(principal.user_id)
-        )
+        is_bot = self._restricted_bot(principal, from_bot)
         return ToolSelection.from_names(
             self._tool_policy.tool_list_for(
                 principal, prompt=prompt, skills_enabled=bool(config and config.skills),
@@ -551,8 +563,7 @@ class RequestPipeline:
             principal, config,
             full_authority=self._access.is_full_authority(principal),
             delegated=principal.delegated,
-            is_bot=principal.trust is not TrustLevel.OWNER
-            and (ctx.from_bot or self._asker_is_bot(ctx.user)),
+            is_bot=self._restricted_bot(principal, ctx.from_bot),
         ).value
 
         key = self._session_key(ctx, scope)
@@ -1110,7 +1121,7 @@ class RequestPipeline:
         # A delegated turn holds the operator tools (ToolPolicy.operator_level),
         # so it takes the operator note too (A11).
         operator = principal.delegated or is_channel_operator(
-            config, ctx.user, is_bot=asker_is_bot,
+            config, ctx.user, is_bot=asker_is_bot and not principal.is_controller,
         )
         return CompositionContext(
             principal=principal,
