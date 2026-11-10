@@ -574,11 +574,13 @@ class EngineRunner:
         if self._audit is None:
             return
         try:
+            tier = {"tier": request.turn_tier} if request.turn_tier else {}
             self._audit.record(
                 PAYLOAD_KIND,
                 engine=engine.name,
                 request_id=request.request_id,
                 resume=request.resume,
+                **tier,
                 **engine.footprint_for(request).as_audit_dict(),
                 # Absent rather than zeroed when the caller composed nothing:
                 # "not budget-limited" and "never went through the composer"

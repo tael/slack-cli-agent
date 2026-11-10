@@ -133,3 +133,30 @@ def test_이미_허용한_ToolSearch_는_두_번_싣지_않는다(tmp_path: Path
     )
     assert _arg(cmd, "--tools") == "ToolSearch"
     assert _arg(cmd, "--allowedTools").split(",").count("ToolSearch") == 1
+
+
+def test_footprint_records_closed_tool_names(tmp_path):
+    tools = ToolSelection.allow(["Read", "Bash(echo:*)", "mcp__jira__search"])
+    audit = _engine().footprint_for(_request(tmp_path, tools)).as_audit_dict()
+    assert audit["tools_builtin"] == ["Read", "Bash", "ToolSearch"]
+    assert audit["tools_allowed"] == ["Read", "Bash(echo:*)", "mcp__jira__search", "ToolSearch"]
+
+
+def test_footprint_marks_agent_presence_in_closed_set(tmp_path):
+    closed = _engine().footprint_for(_request(tmp_path, ToolSelection.allow(["Read", "Grep"])))
+    assert "Agent" not in closed.as_audit_dict()["tools_builtin"]
+    opened = _engine().footprint_for(_request(tmp_path, ToolSelection.allow(["Read", "Agent"])))
+    assert "Agent" in opened.as_audit_dict()["tools_builtin"]
+
+
+def test_footprint_omits_tool_keys_when_turn_is_open(tmp_path):
+    request = _request(tmp_path, ToolSelection.unrestricted())
+    audit = _engine().footprint_for(request).as_audit_dict()
+    assert not {"tools_builtin", "tools_allowed", "tools_disallowed"} & set(audit)
+
+
+def test_footprint_forbidden_turn_records_only_denial(tmp_path):
+    request = _request(tmp_path, ToolSelection.forbid_all())
+    audit = _engine().footprint_for(request).as_audit_dict()
+    assert audit["tools_disallowed"] == ["*"]
+    assert "tools_builtin" not in audit
