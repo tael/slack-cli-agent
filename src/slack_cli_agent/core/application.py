@@ -1952,6 +1952,7 @@ class Application:
                     # forever if the outgoing mention-strip ever misses.
                     peer_limiter=self._peer_exchange,
                     audit=self.audit().record,
+                    mark_silent=self.reactions().mark_silent,
                     peer_limit_notice=self._notify_peer_limit,
                 ),
                 # The one place the access check runs. Catch-up needs no second

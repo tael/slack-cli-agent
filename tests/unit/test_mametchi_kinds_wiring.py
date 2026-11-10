@@ -77,6 +77,53 @@ def test_gate_skip_in_a_joined_thread_is_recorded(tmp_path: Path) -> None:
     assert rows.kinds() == ["gate_skipped"]
 
 
+def test_skipped_message_in_a_joined_thread_gets_the_silent_mark(tmp_path: Path) -> None:
+    marks: list[tuple[str, str]] = []
+    peer_client = _ThreadClient([
+        {"ts": "1.0", "user": "U1", "text": "<@U0OTHERBOT> 검토해줘"},
+        {"ts": "1.1", "bot_id": "B_BOT", "text": "확인할게요"},
+    ])
+    peer = EventListener(
+        peer_client, _registry(tmp_path, {"C1": {"answer_unaddressed": True}}), ResponseGate(),
+        identity=fake_identity(), is_bot=_is_bot({"U0OTHERBOT"}),
+        mark_silent=lambda c, t: marks.append((c, t)),
+    )
+    event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0", "text": "그거 어떻게 됐어?"}
+    assert peer.from_message(event) is None
+    assert marks == [("C1", "2.0")]
+
+    gate_client = _ThreadClient([
+        {"ts": "1.0", "user": "U1", "text": "<@U_BOT> 봐줘"},
+        {"ts": "1.1", "bot_id": "B_BOT", "text": "확인했습니다."},
+    ])
+    gate = EventListener(
+        gate_client, _registry(tmp_path, {"C1": {"answer_unaddressed": True}}), ResponseGate(),
+        identity=fake_identity(), mark_silent=lambda c, t: marks.append((c, t)),
+    )
+    event = {"channel": "C1", "user": "U2", "ts": "3.0", "thread_ts": "1.0", "text": "ㅋㅋ"}
+    assert gate.from_message(event) is None
+    assert marks == [("C1", "2.0"), ("C1", "3.0")]
+
+
+def test_a_failing_silent_mark_does_not_lose_the_skip_row(tmp_path: Path) -> None:
+    rows = _Rows()
+
+    def boom(_c: str, _t: str) -> None:
+        raise RuntimeError("slack down")
+
+    client = _ThreadClient([
+        {"ts": "1.0", "user": "U1", "text": "<@U_BOT> 봐줘"},
+        {"ts": "1.1", "bot_id": "B_BOT", "text": "확인했습니다."},
+    ])
+    listener = EventListener(
+        client, _registry(tmp_path, {"C1": {"answer_unaddressed": True}}), ResponseGate(),
+        identity=fake_identity(), audit=rows, mark_silent=boom,
+    )
+    event = {"channel": "C1", "user": "U2", "ts": "2.0", "thread_ts": "1.0", "text": "ㅋㅋ"}
+    assert listener.from_message(event) is None
+    assert rows.kinds() == ["gate_skipped"]
+
+
 def _welcome(tmp_path: Path, body: Any, rows: _Rows, publisher: Any = None) -> WelcomeService:
     return WelcomeService(
         store=WelcomeStore(Database(tmp_path / "state.db")), client=_Client(),
