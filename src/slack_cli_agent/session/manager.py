@@ -104,15 +104,17 @@ class SessionManager:
         system prompt with its per-turn values left out. A prompt file edited
         after the session opened gives a different fingerprint, and resuming
         would keep the old text (2026-11-10: 11:55 prompt_chat.md edit, 12:17
-        answer still under the old one). An empty value on either side (a
-        caller without one, a row from before the column) skips the check
-        and resumes; such a row takes this turn's value so the next edit is
-        caught.
+        answer still under the old one). An empty `fingerprint` skips the
+        check: the caller has none, or its engine re-sends this turn's
+        instructions on a resumed turn anyway (codex, gemini). A row from
+        before the column holds "", which no fingerprint matches, so it opens
+        a new session once: which instructions it opened with is unknown,
+        and a session opened under the old text is cleared by the deploy.
         """
         now = self._now()
         record = self._store.get(key)
         if record is not None and self._is_valid(record, key.scope, now, engine, tier):
-            if fingerprint and record.prompt_fingerprint and record.prompt_fingerprint != fingerprint:
+            if fingerprint and record.prompt_fingerprint != fingerprint:
                 return replace(
                     self._start_new(key, engine, now, tier, fingerprint),
                     reset_reason=SYSTEM_PROMPT_RESET_REASON,
@@ -128,10 +130,7 @@ class SessionManager:
                         reset_reason=THRESHOLD_RESET_REASON,
                         previous_context_tokens=record.last_context_tokens,
                     )
-            renewed = self._renew(record, now)
-            if fingerprint and not record.prompt_fingerprint:
-                renewed = replace(renewed, prompt_fingerprint=fingerprint)
-            self._store.put(renewed)
+            self._store.put(self._renew(record, now))
             return SessionDecision(
                 session_id=record.session_id,
                 resume=True,

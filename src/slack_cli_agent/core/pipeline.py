@@ -561,8 +561,16 @@ class RequestPipeline:
         # non-owner turn must not pick up an owner's session (session/manager.py).
         # The instruction text decides it too, for the same reason: a prompt
         # file edited after the session opened never reaches a resumed turn.
-        fingerprint = self._instruction_fingerprint(
-            ctx, principal, channel_mode, channel_slug, rich, chat_level, tier=tier,
+        # Only on an engine that keeps the opening instructions (claude);
+        # codex and gemini re-send this turn's on resume, and comparing there
+        # would only cost the prompt cache.
+        keeps_opening = getattr(self._engine, "resumes_with_opening_instructions", None)
+        fingerprint = (
+            self._instruction_fingerprint(
+                ctx, principal, channel_mode, channel_slug, rich, chat_level, tier=tier,
+            )
+            if not callable(keeps_opening) or keeps_opening()
+            else ""
         )
         decision = self._sessions.resolve(
             key, engine=self._engine.name, tier=tier, fingerprint=fingerprint,
@@ -582,6 +590,8 @@ class RequestPipeline:
             # 새 세션이 스레드 기록을 처음부터 다시 읽었다(_build_prompt 의
             # 전체 재구성). 모델이 이어 가는 대화임을 알게 한 줄 붙인다.
             prompt = f"{_THRESHOLD_RESET_NOTE}\n\n{prompt}"
+        elif decision.reset_reason == SYSTEM_PROMPT_RESET_REASON:
+            prompt = f"{_SYSTEM_PROMPT_RESET_NOTE}\n\n{prompt}"
         tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
         # 재개 턴은 그 세션이 앞서 붙인 서버를 유지한다 (core/mcp_routing.py).
         mcp_selection = select_mcp_servers(
@@ -1956,6 +1966,12 @@ def _turn_model_usage(turn_calls: Sequence[EngineResponse]) -> _TurnModelUsage |
 _THRESHOLD_RESET_NOTE = (
     "[이전 세션의 컨텍스트가 커져 새 세션으로 이어 갑니다. 아래 스레드 기록이 "
     "지금까지의 대화이고, 앞선 답도 그 안에 있습니다.]"
+)
+#: 지침이 바뀌어 새 세션을 연 턴의 머리 문장. 앞선 답은 바뀌기 전 지침으로 쓴 것이다.
+_SYSTEM_PROMPT_RESET_NOTE = (
+    "[지침이 바뀌어 새 세션으로 이어 갑니다. 아래 스레드 기록이 지금까지의 "
+    "대화이고, 앞선 답도 그 안에 있습니다. 앞선 답은 바뀌기 전 지침으로 쓴 것이니 "
+    "이번 답은 지금 지침을 따릅니다.]"
 )
 
 

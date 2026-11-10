@@ -823,6 +823,11 @@ class FallbackEngine(Engine):
         # every capability record on a fallback turn false.
         return self._planned().capabilities_for(request)
 
+    def resumes_with_opening_instructions(self) -> bool:
+        # The engine this turn will run on, for the same reason as
+        # capabilities_for above.
+        return self._planned().resumes_with_opening_instructions()
+
     def _planned(self) -> Engine:
         if self.switcher.load() and self.switcher.is_approved():
             return self.secondary

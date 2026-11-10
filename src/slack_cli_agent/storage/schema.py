@@ -303,7 +303,8 @@ ALTER TABLE sessions ADD COLUMN prompt_fingerprint TEXT NOT NULL DEFAULT '';
 """
 """세션을 연 턴의 시스템 지침 지문. claude --resume 은 --append-system-prompt 를
 반영하지 않아 지침 파일을 고쳐도 열린 세션은 첫 턴 지침을 쓴다. 지문이 다른
-턴은 새 세션을 연다 (session/manager.py). 기존 행은 '' 이고 비교 없이 재개한다."""
+턴은 새 세션을 연다 (session/manager.py). 기존 행은 '' 이고, 지문을 쓰는
+claude 턴은 이 행을 이어받지 않아 배포 뒤 한 번 새 세션을 연다."""
 
 
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (

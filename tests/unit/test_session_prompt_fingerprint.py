@@ -56,19 +56,31 @@ class Test판정:
         # 새 지문으로 연 세션은 다음 턴에 이어진다.
         assert mgr.resolve(KEY, engine="claude", tier="owner", fingerprint="b").resume is True
 
-    def test_지문이_없는_기존_행은_이어받고_이번_지문을_남긴다(self, database) -> None:
-        store = SqliteSessionStore(database)
+    @staticmethod
+    def _old_row(store: SqliteSessionStore) -> None:
         store.put(SessionRecord(scope=KEY.scope, key=KEY.key, session_id="old", engine="claude",
                                 created_at=999.0, last_seen_ts="", updated_at=999.0,
                                 tier="owner"))
+
+    def test_지문이_없는_기존_행은_지문을_주는_턴이_이어받지_않는다(self, database) -> None:
+        """배포 직후 한 번 새 세션을 연다. 11:55 이전 옛 지침으로 열린 세션이 정리된다."""
+        store = SqliteSessionStore(database)
+        self._old_row(store)
         mgr = _manager(store)
         decision = mgr.resolve(KEY, engine="claude", tier="owner", fingerprint="a")
-        assert decision.resume is True
-        assert decision.session_id == "old"
+        assert decision.resume is False
+        assert decision.session_id != "old"
+        assert decision.reset_reason == SYSTEM_PROMPT_RESET_REASON
         record = store.get(KEY)
         assert record is not None and record.prompt_fingerprint == "a"
-        # 남긴 지문 덕에 그다음 지침 수정은 잡힌다.
-        assert mgr.resolve(KEY, engine="claude", tier="owner", fingerprint="b").resume is False
+        assert mgr.resolve(KEY, engine="claude", tier="owner", fingerprint="a").resume is True
+
+    def test_지문을_쓰지_않는_엔진은_기존_행을_이어받는다(self, database) -> None:
+        store = SqliteSessionStore(database)
+        self._old_row(store)
+        decision = _manager(store).resolve(KEY, engine="claude", tier="owner")
+        assert decision.resume is True
+        assert decision.session_id == "old"
 
     def test_지문을_주지_않는_호출은_비교하지_않는다(self, database) -> None:
         mgr = _manager(SqliteSessionStore(database))
@@ -147,6 +159,26 @@ class Test지문안정성:
         assert composer.instruction_fingerprint(ctx) != before
         app.close()
 
+    def test_학습_줄이_늘어도_지문이_같다(self, tmp_path: Path) -> None:
+        """학습 줄은 지침에서 빠지고 개수만 안내 문장에 남는다. 야간 학습 한 줄로
+        모든 세션이 리셋되면 안 된다."""
+        composer, _prompts, app = self._composer(tmp_path)
+        knowledge = app.profile.paths.knowledge
+        knowledge.mkdir(parents=True, exist_ok=True)
+        doc = knowledge / "_rules.md"
+        doc.write_text("규칙\n- 정정 1 <!-- learn:2026-11-09 -->\n", encoding="utf-8")
+        ctx = self._ctx(self.OWNER)
+        before_text = composer.compose(ctx)
+        before = composer.instruction_fingerprint(ctx)
+        doc.write_text(
+            "규칙\n- 정정 1 <!-- learn:2026-11-09 -->\n- 정정 2 <!-- learn:2026-11-10 -->\n",
+            encoding="utf-8",
+        )
+        assert "학습 기록 1줄" in before_text
+        assert "학습 기록 2줄" in composer.compose(ctx)
+        assert composer.instruction_fingerprint(ctx) == before
+        app.close()
+
     def test_고정_지식_문서를_고쳐도_지문이_바뀐다(self, tmp_path: Path) -> None:
         composer, _prompts, app = self._composer(tmp_path)
         knowledge = app.profile.paths.knowledge
@@ -199,6 +231,22 @@ class Test파이프라인:
         record = parts["audit"].records[-1]
         assert record["context_reset"] is True
         assert record["context_reset_reason"] == SYSTEM_PROMPT_RESET_REASON
+        # 임계 리셋처럼 이어 가는 대화라는 안내가 붙는다.
+        assert "지침이 바뀌어 새 세션으로 이어 갑니다" in second.prompt
+        assert "지침이 바뀌어" not in first.prompt
+
+    def test_지침을_다시_싣는_엔진은_지문을_비교하지_않는다(self) -> None:
+        """codex, gemini 는 재개 턴에도 이번 턴 지침을 싣는다 (dedups_resumed_instructions)."""
+        composer = _FingerprintComposer()
+        pipeline, parts = build_pipeline(
+            responses=[ok_response(), ok_response()], composer=composer,
+        )
+        pipeline._engine.dedups_resumed_instructions = True  # type: ignore[misc]
+        pipeline.handle(make_ctx(user="UOWNER", ts="1.1", thread_ts="1.1"))
+        composer.value = "fp-2"
+        pipeline.handle(make_ctx(user="UOWNER", ts="1.2", thread_ts="1.1"))
+        assert parts["runner"].calls[1].resume is True
+        assert composer.fingerprint_contexts == []
 
     def test_지문용_조립은_참석자와_이름을_조회하지_않는다(self) -> None:
         composer = _FingerprintComposer()
@@ -214,3 +262,44 @@ class Test파이프라인:
         pipeline.handle(make_ctx(user="UOWNER", ts="1.1", thread_ts="1.1"))
         pipeline.handle(make_ctx(user="UOWNER", ts="1.2", thread_ts="1.1"))
         assert parts["runner"].calls[1].resume is True
+
+
+class Test엔진범위:
+    def test_claude_계열만_첫_지침을_유지한다(self) -> None:
+        from slack_cli_agent.engine.claude import ClaudeEngine
+        from slack_cli_agent.engine.codex import CodexEngine
+        from slack_cli_agent.engine.gemini import GeminiEngine
+
+        assert ClaudeEngine.dedups_resumed_instructions is False
+        assert CodexEngine.dedups_resumed_instructions is True
+        assert GeminiEngine.dedups_resumed_instructions is True
+
+    def test_대체_엔진은_이번_턴에_쓸_엔진을_따른다(self) -> None:
+        from slack_cli_agent.engine.runner import FallbackEngine
+
+        class _Primary:
+            def resumes_with_opening_instructions(self) -> bool:
+                return True
+
+        class _Secondary:
+            def resumes_with_opening_instructions(self) -> bool:
+                return False
+
+        fallback = FallbackEngine.__new__(FallbackEngine)
+        fallback.primary = _Primary()  # type: ignore[assignment]
+        fallback.secondary = _Secondary()  # type: ignore[assignment]
+
+        class _Switch:
+            def __init__(self, on: bool) -> None:
+                self.on = on
+
+            def load(self) -> bool:
+                return self.on
+
+            def is_approved(self) -> bool:
+                return self.on
+
+        fallback.switcher = _Switch(False)  # type: ignore[assignment]
+        assert fallback.resumes_with_opening_instructions() is True
+        fallback.switcher = _Switch(True)  # type: ignore[assignment]
+        assert fallback.resumes_with_opening_instructions() is False

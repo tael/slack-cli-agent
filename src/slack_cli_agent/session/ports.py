@@ -50,7 +50,8 @@ class SessionRecord:
     # 세션을 연 턴의 시스템 지침 지문 (SystemPromptComposer.instruction_fingerprint).
     # claude --resume 은 --append-system-prompt 를 반영하지 않으므로 지침 파일을
     # 고친 뒤의 턴은 이 값이 달라 새 세션을 연다. "" 는 이 컬럼 이전의 행이거나
-    # 지문을 만들지 못한 경우이고, 비교를 건너뛴다.
+    # 지문을 쓰지 않는 엔진(codex, gemini)이 연 세션이다. 지문을 주는 턴은 ""
+    # 행을 이어받지 않는다.
     prompt_fingerprint: str = ""
 
 
