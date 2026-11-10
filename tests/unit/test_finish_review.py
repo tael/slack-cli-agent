@@ -517,13 +517,40 @@ class TestModelVerify:
         assert finish_review.decide(turn, claim_verifier=verifier).action == "allow"
         assert verifier.status == "error:no_json"
 
-    def test_stops_blocking_after_max_blocks(self):
+    def test_past_max_blocks_same_claim_already_flagged_passes(self):
         payload = json.dumps({"unsupported": [{"sentence": "모두 제가 낸 검증 코드", "why": "x"}]}, ensure_ascii=False)
         runner = _fake_runner(stdout=payload)
         verifier = finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={})
 
         decision = finish_review.decide(
-            self._turn(), claim_verifier=verifier, block_count=finish_review.VERIFY_MAX_BLOCKS)
+            self._turn(), claim_verifier=verifier, block_count=finish_review.VERIFY_MAX_BLOCKS,
+            prior_flagged=frozenset({"모두 제가 낸 검증 코드"}))
+
+        assert decision.action == "allow"
+        assert len(runner.calls) == 1
+
+    def test_past_max_blocks_new_unsupported_claim_still_blocks(self):
+        # 2026-11-10: a rewrite after two blocks carried a stale knowledge line
+        # ("사무실 IP 는 API허브에서 차단 중") and shipped with no model check.
+        claim = "이 IP는 11/08부터 기상청 API허브에서도 TCP 차단 중임"
+        payload = json.dumps({"unsupported": [{"sentence": claim, "why": "메모 한 줄뿐"}]}, ensure_ascii=False)
+        runner = _fake_runner(stdout=payload)
+        verifier = finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={})
+
+        decision = finish_review.decide(
+            self._turn(), claim_verifier=verifier, block_count=finish_review.VERIFY_MAX_BLOCKS,
+            prior_flagged=frozenset({"다른 문장"}))
+
+        assert decision.action == "block"
+        assert finish_review.verify_claim_keys(decision) == {claim}
+
+    def test_stops_verifying_at_hard_cap(self):
+        payload = json.dumps({"unsupported": [{"sentence": "모두 제가 낸 검증 코드", "why": "x"}]}, ensure_ascii=False)
+        runner = _fake_runner(stdout=payload)
+        verifier = finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={})
+
+        decision = finish_review.decide(
+            self._turn(), claim_verifier=verifier, block_count=finish_review.VERIFY_HARD_MAX_BLOCKS)
 
         assert decision.action == "allow"
         assert runner.calls == []
