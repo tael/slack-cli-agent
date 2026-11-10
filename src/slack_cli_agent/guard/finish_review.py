@@ -1058,7 +1058,8 @@ def _build_common_registry() -> JudgmentRegistry:
     common.register("offer", offer, _offer_guidance)
     common.register("handoff", handoff, _handoff_guidance)
     common.register("denied_unretried", denied_unretried, _denied_unretried_guidance)
-    common.register("advisor_skipped", _advisor_skipped_check, _advisor_skipped_guidance)
+    # advisor_skipped 는 등록하지 않는다. 2026-11-10 김태일 지시 "조언자 강제 훅을 제거하세요".
+    # 판정 함수(advisor_skipped)는 남겨 두고 종료 검수에서만 뺀다.
     common.register("code_first", code_first_doc_only, _code_first_guidance)
     common.register("named_turn", named_turn, _named_turn_guidance)
     common.register("verify", _unsupported_claims_check, _verify_guidance)
