@@ -68,6 +68,16 @@ _CHANNEL_ID_RE = re.compile(r"(?<![A-Z0-9])([CG][A-Z0-9]{8,12})(?![A-Z0-9])")
 _TS_RE = re.compile(r"(?<![0-9.])(\d{10}\.\d{6})(?![0-9])")
 #: How far after a channel ID its thread ts may sit and still belong to it.
 _PAIR_SPAN = 120
+# A thread named in the condition is a report target only when the words right
+# after its ts say so ("... 1794105022.126019 에 보고"). Naming a thread to look
+# at is not a request to post there: 2026-11-10 watch job 60's condition was
+# "C0AP4R78JMU 의 스레드 ts 1794287282.909599 에 고성진님 원인 답글이 달렸는지
+# 확인", and the runner posted the check report into that external support
+# thread, which the owner never asked for.
+_REPORT_INTENT_RE = re.compile(
+    r"\s*(?:에도|에|으로|로)?\s*(?:같이|함께|같은\s*내용으로)?\s*"
+    r"(?:보고|올려|올린|올리|게시|답글\s*(?:을|로)?\s*(?:달|남기|올))"
+)
 
 
 def extra_report_targets(job: WatchJob) -> list[tuple[str, str]]:
@@ -87,7 +97,7 @@ def extra_report_targets(job: WatchJob) -> list[tuple[str, str]]:
         end = ids[i + 1].start() if i + 1 < len(ids) else len(text)
         end = min(end, m.end() + _PAIR_SPAN)
         ts = _TS_RE.search(text, m.end(), end)
-        if ts is None:
+        if ts is None or not _REPORT_INTENT_RE.match(text, ts.end()):
             continue
         pair = (m.group(1), ts.group(1))
         if pair == (job.channel, job.thread_ts) or pair in found:

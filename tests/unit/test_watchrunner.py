@@ -1813,6 +1813,21 @@ class Test추가보고대상:
         )
         assert extra_report_targets(job) == []
 
+    def test_확인만_하는_스레드는_보고_대상이_아니다(self) -> None:
+        """2026-11-10 감시 60번이 확인 대상으로 적은 외부 문의 스레드에 보고를 올렸다."""
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.reliability.watchrunner import extra_report_targets
+        job = WatchJob(
+            id=1, channel="C01EWFYL077", thread_ts="1794287360.612909", created_at=0.0, last_run=None,
+            condition=(
+                "erp.vroong.com(1.224.189.147)과 uc.vroong.com(1.224.189.146)에 curl https 접속이 "
+                "다시 응답하는지, 그리고 부릉groupware-support 채널 C0AP4R78JMU 의 스레드 ts "
+                "1794287282.909599 에 고성진님 원인 답글이 달렸는지 확인"
+            ),
+            trust=TrustLevel.OWNER,
+        )
+        assert extra_report_targets(job) == []
+
     def test_확인턴_안내문에_실행기가_올린다고_적는다(self) -> None:
         from slack_cli_agent.reliability.watchrunner import extra_targets_note
         안내 = extra_targets_note([("C0CFYL69JDS", "1794105022.126019")])
