@@ -46,7 +46,13 @@ from ..engine.runner import EngineInvoker
 from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
 from ..guard.figurative import FigurativeGuard
-from ..guard.mentions import AddresseeGuard, PlainMentionGuard, Recipient, RecipientResolver
+from ..guard.mentions import (
+    AddresseeGuard,
+    PlainMentionGuard,
+    Recipient,
+    RecipientResolver,
+    leading_recipient_bot,
+)
 from ..guard.pipeline import GuardPipeline
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
@@ -1432,6 +1438,10 @@ class RequestPipeline:
             mention_names=self._mention_table(),
             request_text=ctx.text,
             previous_body=previous_body,
+            recipient_bot_id=leading_recipient_bot(
+                body, "" if ctx.user == self._owner_user_id else ctx.user,
+                self._recipient_resolver._is_bot,
+            ),
         )
         result = self._guards.run(body, guard_ctx)
         if result.rerun is None:
