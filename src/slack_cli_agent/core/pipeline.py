@@ -61,7 +61,12 @@ from ..reliability.restart import TURN_ID_ENV
 from ..reliability.watchjobs import WatchJobPort
 from ..reliability.watchresult import WatchResultReader
 from ..session.awaiting import AwaitingPort
-from ..session.manager import THRESHOLD_RESET_REASON, SessionDecision, SessionManager
+from ..session.manager import (
+    SYSTEM_PROMPT_RESET_REASON,
+    THRESHOLD_RESET_REASON,
+    SessionDecision,
+    SessionManager,
+)
 from ..session.ports import SessionKey, SessionScope
 from ..slack.gate import ResponseGate
 from ..slack.generated_images import (
@@ -554,7 +559,14 @@ class RequestPipeline:
         # The tier decides resumption too: a resumed session keeps the
         # instructions of the turn that opened it, so a delegated, bot or
         # non-owner turn must not pick up an owner's session (session/manager.py).
-        decision = self._sessions.resolve(key, engine=self._engine.name, tier=tier)
+        # The instruction text decides it too, for the same reason: a prompt
+        # file edited after the session opened never reaches a resumed turn.
+        fingerprint = self._instruction_fingerprint(
+            ctx, principal, channel_mode, channel_slug, rich, chat_level, tier=tier,
+        )
+        decision = self._sessions.resolve(
+            key, engine=self._engine.name, tier=tier, fingerprint=fingerprint,
+        )
 
         # Minted before the turn so the prompt can name the exact result file.
         # Leaving the name to the engine lets two watches share one file, and
@@ -634,7 +646,7 @@ class RequestPipeline:
         # Counted rather than derived: the reset is the only trace a broken
         # resume leaves, and without it nothing can say how often context is
         # lost (sca-er9n, bot.py:5142).
-        context_reset = decision.reset_reason == THRESHOLD_RESET_REASON
+        context_reset = decision.reset_reason in (THRESHOLD_RESET_REASON, SYSTEM_PROMPT_RESET_REASON)
         context_reset_reason = decision.reset_reason if context_reset else ""
         # The run_id of the attempt before a session reset, kept so its
         # background work stays watched after the retry mints a new name (C14).
@@ -653,7 +665,9 @@ class RequestPipeline:
             if not response.ok and self._sessions.should_retry_with_new_session(
                 response.failure_reason or ""
             ):
-                decision = self._sessions.reset(key, engine=self._engine.name, tier=tier)
+                decision = self._sessions.reset(
+                    key, engine=self._engine.name, tier=tier, fingerprint=fingerprint,
+                )
                 context_reset = True
                 context_reset_reason = "retry"
                 prompt = self._build_prompt(ctx, scope, decision)
@@ -1010,8 +1024,64 @@ class RequestPipeline:
         prompt as before and the header is "".
         """
         build_header = getattr(self._composer, "request_header", None)
+        composition_ctx = self._composition_context(
+            ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
+            tier=tier, reach=reach, request_header=callable(build_header),
+        )
+        text, report = self._composer.compose_with_report(composition_ctx)
+        header = build_header(composition_ctx) if callable(build_header) else ""
+        return text, report.as_audit_dict(), header
+
+    def _instruction_fingerprint(
+        self,
+        ctx: RequestContext,
+        principal: Principal,
+        channel_mode: str,
+        channel_slug: str,
+        rich: bool,
+        chat_level: str,
+        *,
+        tier: str,
+    ) -> str:
+        """The composer's fingerprint of this turn's instructions, for the
+        session decision (SystemPromptComposer.instruction_fingerprint). ""
+        when the composer has none (a test double, a plugin) or it fails:
+        SessionManager then resumes as before, and the real composition
+        later in the turn raises the same error where it is reported.
+        """
+        fingerprint = getattr(self._composer, "instruction_fingerprint", None)
+        if not callable(fingerprint):
+            return ""
+        try:
+            value = fingerprint(self._composition_context(
+                ctx, principal, channel_mode, channel_slug, rich, chat_level,
+                tier=tier, request_header=True, stable=True,
+            ))
+        except Exception:  # 지문이 없으면 비교만 건너뛴다
+            log.warning("시스템 지침 지문을 만들지 못했다", exc_info=True)
+            return ""
+        return value if isinstance(value, str) else ""
+
+    def _composition_context(
+        self,
+        ctx: RequestContext,
+        principal: Principal,
+        channel_mode: str,
+        channel_slug: str,
+        rich: bool,
+        chat_level: str,
+        run_id: str = "",
+        *,
+        tier: str = "",
+        reach: tuple[bool, tuple[str, ...]] = (False, ()),
+        request_header: bool = False,
+        stable: bool = False,
+    ) -> CompositionContext:
+        """`stable` skips the lookups whose values the fingerprint drops
+        anyway (who is present, the asker's display name), so working out
+        the fingerprint costs no Slack call."""
         is_owner = principal.trust is TrustLevel.OWNER
-        asker_name = "" if is_owner else (self._name_resolver(ctx.user) or ctx.user)
+        asker_name = "" if is_owner or stable else (self._name_resolver(ctx.user) or ctx.user)
         # controller_user_ids are bot accounts; that does not wait on bots_info.
         asker_is_bot = False if is_owner else (
             principal.is_controller or ctx.from_bot or self._asker_is_bot(ctx.user)
@@ -1024,7 +1094,7 @@ class RequestPipeline:
         operator = principal.delegated or is_channel_operator(
             config, ctx.user, is_bot=asker_is_bot,
         )
-        composition_ctx = CompositionContext(
+        return CompositionContext(
             principal=principal,
             prompt=ctx.text,
             channel_mode=channel_mode,
@@ -1047,7 +1117,7 @@ class RequestPipeline:
                 self._light_workdir_for(config, principal) is None
                 and _domain_applies(config.workdir if config else None, Path.home())
             ),
-            people=self._present_people(ctx),
+            people=() if stable else self._present_people(ctx),
             files=ctx.files,
             missed_files=ctx.missed_files,
             watch_run_id=run_id,
@@ -1059,11 +1129,8 @@ class RequestPipeline:
             turn_tier=tier,
             turn_reads_only=reach[0],
             turn_acting_tools=reach[1],
-            request_header=callable(build_header),
+            request_header=request_header,
         )
-        text, report = self._composer.compose_with_report(composition_ctx)
-        header = build_header(composition_ctx) if callable(build_header) else ""
-        return text, report.as_audit_dict(), header
 
     def _engine_env(self, channel: str, config: ChannelConfig | None) -> dict[str, str]:
         """Per-turn env the engine's built-in Stop hook reads (finish_review):

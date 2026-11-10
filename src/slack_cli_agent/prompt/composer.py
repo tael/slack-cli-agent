@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -130,6 +131,31 @@ class SystemPromptComposer:
             omitted_document_count=omitted_count,
             omitted_document_bytes=omitted_bytes,
         )
+
+    def instruction_fingerprint(self, ctx: CompositionContext) -> str:
+        """sha256 of the system prompt with its per-turn values cleared.
+
+        SessionManager compares this with the value the session opened with:
+        claude --resume drops --append-system-prompt, so a prompt file edited
+        after the session opened would never reach the resumed turns.
+
+        The values cleared here change from one turn of the same thread to
+        the next, and hashing them would open a new session (and lose the
+        prompt cache) every turn: the message text (it picks the triggered
+        knowledge documents and, through the tools it unlocks, the tier
+        note's reach), who is present, the asker's name and mention,
+        attachments, the unaddressed flag, the thread ts and the watch run id.
+        What stays is what a conversation keeps from turn to turn: the
+        persona, mode, format, authority and tier text, the fixed knowledge
+        documents, the channel and the speaker's grants.
+        """
+        stable = replace(
+            ctx, prompt="", thread_ts="", asker_name="", asker_id="", unaddressed=False,
+            watch_run_id="", turn_reads_only=False, turn_acting_tools=(),
+            people=(), files=(), missed_files=0,
+        )
+        text, _ = self.compose_with_report(stable)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def request_header(self, ctx: CompositionContext) -> str:
         """The user-prompt header for a ctx composed with request_header=True

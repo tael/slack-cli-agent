@@ -298,6 +298,14 @@ ALTER TABLE sessions ADD COLUMN last_context_tokens INTEGER NOT NULL DEFAULT 0;
 임계 리셋(session/manager.py)이 읽는다."""
 
 
+V15_SESSION_PROMPT_FINGERPRINT_SQL = """
+ALTER TABLE sessions ADD COLUMN prompt_fingerprint TEXT NOT NULL DEFAULT '';
+"""
+"""세션을 연 턴의 시스템 지침 지문. claude --resume 은 --append-system-prompt 를
+반영하지 않아 지침 파일을 고쳐도 열린 세션은 첫 턴 지침을 쓴다. 지문이 다른
+턴은 새 세션을 연다 (session/manager.py). 기존 행은 '' 이고 비교 없이 재개한다."""
+
+
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
@@ -313,6 +321,7 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (12, "그림자 평가 상태 추가", _statements(V12_SHADOW_SQL)),
     (13, "세션에 연 턴의 화자 등급 추가", _statements(V13_SESSION_TIER_SQL)),
     (14, "세션에 붙인 MCP 서버와 마지막 컨텍스트 토큰 추가", _statements(V14_SESSION_CONTEXT_SQL)),
+    (15, "세션에 연 턴의 시스템 지침 지문 추가", _statements(V15_SESSION_PROMPT_FINGERPRINT_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
