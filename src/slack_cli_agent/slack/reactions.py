@@ -122,6 +122,14 @@ class ReactionMarker:
         """Not answering is still a resolution — leave a trace of it."""
         self._settle(channel, ts, SILENT_MARK_EMOJI)
 
+    def mark_skipped(self, channel: str, ts: str) -> None:
+        """A message skipped before any eyes went on: one add, no clearing.
+
+        mark_silent also removes eyes, hourglass and x. A skipped message
+        never carried them, so those removes are all no_reaction calls.
+        """
+        self.add(channel, ts, SILENT_MARK_EMOJI)
+
     def mark_watch(self, channel: str, ts: str) -> None:
         """Handed off to a watch queue isn't done — white_check_mark
         would exclude it from recovery's unfinished scan."""

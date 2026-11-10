@@ -71,6 +71,11 @@ class EventListener:
         # Writes the peer-cap and skip rows (G7, mametchi peer_turn_limit,
         # peer_skipped, gate_skipped). None records nothing.
         audit: Callable[..., None] | None = None,
+        # Leaves the silent mark (and clears eyes) on a message this bot skips
+        # in a thread it already joined (mametchi bot.py:10526, 10551). Without
+        # it a skipped message carries no mark and looks undelivered. Takes
+        # (channel, ts); None marks nothing.
+        mark_silent: Callable[[str, str], None] | None = None,
         # Called once per run of denials when a thread first goes past the
         # peer cap (2026-11-08 김태일 지시 : 봇끼리 핑퐁이 한도에 걸려 멈추면
         # 어드민 채널에 알린다). Gets the event and the cap. None posts nothing.
@@ -82,6 +87,7 @@ class EventListener:
         self._awaiting = awaiting
         self._peer_limiter = peer_limiter
         self._audit = audit or (lambda *_a, **_k: None)
+        self._mark_silent = mark_silent
         self._peer_limit_notice = peer_limit_notice
         # Self-message detection and mention matching must use the
         # same identity source — holding it separately would let
@@ -202,6 +208,14 @@ class EventListener:
             # over (C18), so a later peer turn is answered again.
             self._peer_limiter.reset(self._thread_key(event))
         return self._context_from_event(event, unaddressed=False, is_dm=False)
+
+    def _silent_mark(self, event: Mapping[str, Any]) -> None:
+        if self._mark_silent is None:
+            return
+        try:
+            self._mark_silent(event.get("channel") or "", event.get("ts") or "")
+        except Exception:  # a reaction must not cost the skip row
+            log.warning("넘김 표식을 달지 못했다 : %s:%s", event.get("channel"), event.get("ts"), exc_info=True)
 
     def _audit_skip(self, kind: IncidentKind, event: Mapping[str, Any], bot_asked: bool) -> None:
         self._audit(
@@ -331,6 +345,8 @@ class EventListener:
         # if an earlier turn addressed a peer.
         if peer_talk and not bot_asked:
             self._audit_skip(IncidentKind.PEER_SKIPPED, event, bot_asked)
+            if joined:
+                self._silent_mark(event)
             return None
         has_files = bool(event.get("files"))
         if not self._policy.answers(
@@ -340,6 +356,13 @@ class EventListener:
             # remark in a registered channel would get a row.
             if joined:
                 self._audit_skip(IncidentKind.GATE_SKIPPED, event, bot_asked)
+                # Marked only where the old bot marked: when the vocabulary
+                # filter itself drops the message (bot.py:10546). Other
+                # refusals here (a leading mention of someone else, the
+                # `quiet` level) went to the model in the old bot, which
+                # decided and marked on its own.
+                if not self._gate.worth_answering(text, bot_asked, has_files=has_files):
+                    self._silent_mark(event)
             return None
 
         return self._context_from_event(event, unaddressed=True, is_dm=False)

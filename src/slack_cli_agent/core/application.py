@@ -1932,6 +1932,8 @@ class Application:
 
     def ingress(self) -> IngressService:
         if self._ingress is None:
+            spawner = ThreadTaskSpawner()
+            reactions = self.reactions()
             self._ingress = IngressService(
                 listener=EventListener(
                     client=self._client,
@@ -1952,6 +1954,11 @@ class Application:
                     # forever if the outgoing mention-strip ever misses.
                     peer_limiter=self._peer_exchange,
                     audit=self.audit().record,
+                    # One Slack call off the handler thread, after the skip row.
+                    mark_silent=lambda channel, ts: spawner.spawn(
+                        f"넘김표식:{channel}:{ts}",
+                        lambda: reactions.mark_skipped(channel, ts),
+                    ),
                     peer_limit_notice=self._notify_peer_limit,
                 ),
                 # The one place the access check runs. Catch-up needs no second
@@ -1974,13 +1981,13 @@ class Application:
                 strip_self_mention=SelfMentionStripper(self.identity).remove_self,
                 dedup=DeduplicationTracker(),
                 queue=self.queue(),
-                reactions=self.reactions(),
+                reactions=reactions,
                 attachments=self.attachments(),
                 admin=self._admin_admission(),
                 reply=self._reply,
                 allowed_reactions=self.allowed_reactions(),
                 on_reaction=self.on_reaction,
-                spawn=ThreadTaskSpawner(),
+                spawn=spawner,
                 notices=self._notices,
                 is_shutting_down=lambda: self._shutting_down,
                 extra_handlers=event_callbacks(
