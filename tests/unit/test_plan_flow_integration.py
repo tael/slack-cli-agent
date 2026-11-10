@@ -112,3 +112,28 @@ def test_작업자_호출은_plan_gate_가_판정하지_않는다(tmp_path: Path
     worker_call = {"transcript_path": str(transcript), "tool_use_id": "w1", "tool_name": "Read"}
     assert pg.decide(worker_call)[0] == "deny"
     assert pg.decide({**worker_call, "agent_id": "a1", "agent_type": "lookup"})[0] == "subagent"
+
+
+def test_전사에_남은_훅_거부_문구를_거부로_센다() -> None:
+    """claude 2.1.321 은 PreToolUse 거부를 "PreToolUse:<도구> hook error: <사유>" 로
+    tool_result 에 남긴다 (2026-11-10 W5 측정 전사). 접두를 떼지 않으면 거부가 0회로
+    세여 plan_gate 의 gave_up 과 serial_read_guard 의 재호출 허용이 동작하지 않았다."""
+    from slack_cli_agent.guard.pretool import plan_gate as pg
+    from slack_cli_agent.guard.pretool import serial_read_guard as srg
+
+    def turn(reason: str, n: int) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = [{"type": "user", "message": {"content": "조사해 줘"}}]
+        for i in range(n):
+            records.append({"type": "assistant", "message": {"id": f"m{i}", "content": [
+                {"type": "tool_use", "id": f"t{i}", "name": "Read", "input": {"file_path": "/x"}}]}})
+            records.append({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": f"t{i}", "is_error": True,
+                 "content": f"PreToolUse:Read hook error: {reason}"}]}})
+        return records
+
+    plan = turn(pg.REASON.format(count=3), 4)
+    responses = pg.responses_since_prompt(plan)
+    assert sum(1 for r in responses if r.denied) == 4
+    assert pg.judge(responses, None, 3)[0] == "gave_up"
+    serial = srg.responses_since_prompt(turn(srg.MARKER + " x", 2))
+    assert all(u.denied for r in serial for u in r.uses)

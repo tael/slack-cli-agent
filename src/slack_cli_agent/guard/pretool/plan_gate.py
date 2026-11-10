@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -132,6 +133,18 @@ def _result_text(block: dict[str, Any]) -> str:
     return ""
 
 
+#: Claude Code writes a PreToolUse deny into the transcript as
+#: "PreToolUse:<Tool> hook error: <reason>" (claude 2.1.321, 2026-11-10 W5).
+_HOOK_ERROR_PREFIX = re.compile(r"^PreToolUse:\S+ hook error:\s*")
+
+
+def is_denial(result: str) -> bool:
+    """A tool_result this guard produced. Without the prefix strip no denial
+    was ever counted, gave_up never tripped, and a model that kept retrying
+    without writing a plan was denied 8 times in one T1 turn (W5 probe)."""
+    return _HOOK_ERROR_PREFIX.sub("", result.lstrip(), count=1).startswith(MARKER)
+
+
 def responses_since_prompt(records: list[dict[str, Any]]) -> list[Response]:
     """This request's assistant messages grouped by message id, text-only ones
     included, with each response's count of uses this guard denied."""
@@ -152,7 +165,7 @@ def responses_since_prompt(records: list[dict[str, Any]]) -> list[Response]:
                 if not (isinstance(block, dict) and block.get("type") == "tool_result"):
                     continue
                 response = owner.get(str(block.get("tool_use_id")))
-                if response is not None and _result_text(block).lstrip().startswith(MARKER):
+                if response is not None and is_denial(_result_text(block)):
                     response.denied += 1
             continue
         if kind != "assistant" or not isinstance(content, list):
