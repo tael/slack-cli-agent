@@ -43,3 +43,24 @@ def test_원본_푸터까지_재현():
     text = "- q\n  - r\n\n**진행할까요?** 방식입니다.\n\n> 걸린 시간 : 72초\n> 실행 모델 : x"
     parts = B.split_after_lists(text)
     assert parts == ["- q\n  - r", "**진행할까요?** 방식입니다.\n\n> 걸린 시간 : 72초\n> 실행 모델 : x"]
+
+
+def test_목록_뒤_조각에_빈줄_표식을_붙인다():
+    """분리만으로는 슬랙이 위 불릿에 붙여 그린다. 두 번째 조각부터 ZWSP 줄을 앞에 둔다 (2026-11-10 재발)."""
+    from slack_cli_agent.slack.publisher import MessagePublisher
+
+    pub = MessagePublisher.__new__(MessagePublisher)
+    pub._blocks = B
+    payload = pub._rich_payload("- a\n  - b\n\n**진행할까요?** 뒤", split_note=False)
+    texts = [b["text"] for b in payload.blocks]
+    assert texts == ["- a\n  - b", "​\n**진행할까요?** 뒤"]
+    assert payload.body.startswith("- a")
+
+
+def test_목록이_없으면_표식도_없다():
+    from slack_cli_agent.slack.publisher import MessagePublisher
+
+    pub = MessagePublisher.__new__(MessagePublisher)
+    pub._blocks = B
+    payload = pub._rich_payload("첫 줄\n\n둘째", split_note=False)
+    assert [b["text"] for b in payload.blocks] == ["첫 줄\n\n둘째"]
