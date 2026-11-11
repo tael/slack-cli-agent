@@ -381,7 +381,7 @@ class WatchJobChecker:
             # The exit status decided this, not the reply. A failed engine call
             # still leaves the job open so the report gets another attempt.
             if response.ok:
-                self._finish(job, response.body, outcome, checked_at=now)
+                self._finish(job, response.body, outcome, checked_at=now, response=response)
             else:
                 log.warning(
                     "감시 완료 보고 생성 실패 : 작업 %d, 확인 %d회, 사유 %s",
@@ -416,7 +416,7 @@ class WatchJobChecker:
                     WATCH_FINISHED_KIND, job, outcome=outcome.name, deferred_to=newer,
                 )
                 return
-            self._finish(job, response.body, checked_at=now)
+            self._finish(job, response.body, checked_at=now, response=response)
             return
 
         # The body and the condition can carry Slack conversations or file
@@ -471,7 +471,7 @@ class WatchJobChecker:
 
     def _finish(
         self, job: WatchJob, raw_body: str, outcome: WatchOutcome = WatchOutcome.UNKNOWN,
-        checked_at: float | None = None,
+        checked_at: float | None = None, response: EngineResponse | None = None,
     ) -> None:
         # A reply that is nothing but the done tag leaves an empty body, and an
         # empty body posts nothing at all. The job is marked done either way, so
@@ -494,6 +494,10 @@ class WatchJobChecker:
                          message_ts=job.msg_ts, dropped_chars=len(body))
             return
 
+        # 2026-11-11 김태일 지적 "시간측정을 말안하고": 감시 보고만 stats_footer
+        # 를 거치지 않아 걸린 시간·모델·토큰 줄이 빠졌다. 본 답과 같은 푸터를 단다.
+        body = self._with_stats_footer(job, body, response)
+
         if not self._post_report(job.id, job.channel, job.thread_ts, body):
             # Marking done still happens -- rerunning the check would spend
             # another engine call on work already finished. The report is kept
@@ -515,6 +519,24 @@ class WatchJobChecker:
         self._queue.mark_done(job.id)
         self._settle_mark(job, failed=False)
         self._record(WATCH_FINISHED_KIND, job, outcome=outcome.name)
+
+    def _with_stats_footer(
+        self, job: WatchJob, body: str, response: EngineResponse | None
+    ) -> str:
+        """Same footer the main answer gets on a stats_footer channel."""
+        if response is None:
+            return body
+        config = self._channels.get(job.channel)
+        apply = getattr(self._publisher, "apply_stats_footer", None)
+        if config is None or not getattr(config, "stats_footer", False) or apply is None:
+            return body
+        model = response.model_asked or response.model_actual or ""
+        try:
+            return apply(body, model, channel_is_rich(config), elapsed=response.elapsed,
+                         effort=None, usage=response.usage)
+        except Exception as exc:  # noqa: BLE001 - a footer must never drop the report
+            log.warning("감시 보고 푸터 실패 : 작업 %d, %s", job.id, exc)
+            return body
 
     def _reported_already(self, job: WatchJob) -> bool:
         """The tool-less verdict on the thread since registration. An empty
