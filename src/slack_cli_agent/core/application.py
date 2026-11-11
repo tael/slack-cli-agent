@@ -757,10 +757,11 @@ class Application:
             RewriteLossGuard(self._settings),
             # safe to always include — a no-op when the drop-line list is empty
             ConfiguredLineDropGuard(self._settings),
+        ]
+        if not self._settings.figurative_after_post:
             # Last of the built-ins so it sees the body the other guards
             # settled on; a no-op unless `figurative_check` is on.
-            FigurativeGuard(self._settings, is_chat=self._is_chat_channel),
-        ]
+            guards.append(FigurativeGuard(self._settings, is_chat=self._is_chat_channel))
         guards.extend(g for p in self._plugins for g in p.output_guards())
         return GuardPipeline(guards)
 
@@ -967,6 +968,11 @@ class Application:
                 engine=self.engine,
                 invoker=self.engine_invoker,
                 guard_pipeline=self._guards(),
+                post_corrector=(
+                    FigurativeGuard(self._settings, is_chat=self._is_chat_channel)
+                    if self._settings.figurative_check and self._settings.figurative_after_post
+                    else None
+                ),
                 publisher=self.publisher(),
                 audit=self.audit(),
                 channels=self._channels,

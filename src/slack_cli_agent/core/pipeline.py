@@ -6,6 +6,7 @@ call, guard corrections, and posting to Slack. Implements
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -260,6 +261,10 @@ def should_rerun_owner_silence(
     )
 
 
+def _spawn_daemon(fn: Callable[[], None]) -> None:
+    threading.Thread(target=fn, name="post-correct", daemon=True).start()
+
+
 class RequestPipeline:
     def __init__(
         self,
@@ -361,7 +366,14 @@ class RequestPipeline:
         delegation_recorder: DelegationRecorder | None = None,
         # S2: settings.mcp_routing. None 이면 MCP 서버를 고르지 않는다 (전부).
         mcp_routing: Mapping[str, Any] | None = None,
+        # settings.figurative_after_post: the figurative check runs after the
+        # post and fixes the message in place. None keeps it in the guards.
+        post_corrector: FigurativeGuard | None = None,
+        # Runs the after-post correction. Injected so a test runs it inline.
+        spawn: Callable[[Callable[[], None]], None] | None = None,
     ) -> None:
+        self._post_corrector = post_corrector
+        self._spawn = spawn or _spawn_daemon
         self._mcp_routing = mcp_routing
         self._access = access_policy
         self._transcript = transcript_builder
@@ -862,13 +874,17 @@ class RequestPipeline:
         body = self._recover_unposted_render(body, ctx, request, decision, turn_calls)
         body, image_ts = self._post_generated_images(body, ctx, start, turn_calls, flat)
         footer_config = self._channels.get(ctx.channel)
-        if footer_config is not None and footer_config.stats_footer and hasattr(
-            self._publisher, "apply_stats_footer"
-        ):
-            body = self._publisher.apply_stats_footer(
-                body, model, rich, elapsed=elapsed, effort=effort, usage=response.usage)
-        else:
-            body = self._publisher.apply_elapsed_model_line(body, model, rich)
+
+        def with_footer(text: str) -> str:
+            if footer_config is not None and footer_config.stats_footer and hasattr(
+                self._publisher, "apply_stats_footer"
+            ):
+                return self._publisher.apply_stats_footer(
+                    text, model, rich, elapsed=elapsed, effort=effort, usage=response.usage)
+            return self._publisher.apply_elapsed_model_line(text, model, rich)
+
+        unfootered_body = body
+        body = with_footer(body)
         # Right before the post, confirm the question is still in its thread.
         # If the asker deleted it mid-turn, the intake coordinates now point at
         # whatever thread took its place, and posting there strands the answer
@@ -918,6 +934,8 @@ class RequestPipeline:
                 posted_body = receipt.body
         self._archive_response(ctx, body, response, elapsed)
         self._record_delegation(ctx, principal, recipient, answer_parts, posted_body)
+        if posted_body == body:
+            self._correct_after_post(ctx, principal, unfootered_body, with_footer, answer_parts, rich)
 
         self._record(ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,
                      turns=response.turns, model_actual=response.model_actual,
@@ -948,6 +966,41 @@ class RequestPipeline:
         # sca-t1g). watching=True keeps the message out of the done state, which
         # would exclude it from catch-up recovery.
         return HandleOutcome(ok=True, posted_ts=posted_ts, watching=watching)
+
+    def _correct_after_post(
+        self, ctx: RequestContext, principal: Any, body: str,
+        with_footer: Callable[[str], str], answer_parts: Sequence[str], rich: bool,
+    ) -> None:
+        """settings.figurative_after_post: run the figurative check on the
+        posted body and rewrite the message when it changed something. Only a
+        one-message reply: chat.update touches one ts. A failure keeps the
+        posted text and is logged; it never touches the turn's outcome."""
+        corrector = self._post_corrector
+        if corrector is None or len(answer_parts) != 1 or not body.strip():
+            return
+        ts = answer_parts[0]
+        guard_ctx = GuardContext(
+            channel=ctx.channel, thread_ts=ctx.thread_ts, asker_id=ctx.user,
+            is_owner=ctx.user == self._owner_user_id, owner_user_id=self._owner_user_id,
+            request_text=ctx.text,
+        )
+
+        def run() -> None:
+            started = self._monotonic()
+            try:
+                result = corrector.apply(body, guard_ctx)
+                if not result.changed:
+                    return
+                self._publisher.update(ctx.channel, ts, with_footer(result.body), rich)
+                self._audit.record(
+                    IncidentKind.FIGURATIVE_FIX.value, channel=ctx.channel, thread_ts=ctx.thread_ts,
+                    mode=result.detail.get("mode"), fixes=result.detail.get("fixes"),
+                    after_post=True, ts=ts, elapsed_sec=round(self._monotonic() - started, 1),
+                )
+            except Exception:  # noqa: BLE001 - the answer is already up
+                log.warning("게시 뒤 교정 실패 channel=%s ts=%s", ctx.channel, ts, exc_info=True)
+
+        self._spawn(run)
 
     def _archive_response(
         self, ctx: RequestContext, body: str, response: EngineResponse, elapsed: float,
