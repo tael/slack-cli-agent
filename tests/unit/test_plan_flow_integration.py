@@ -89,36 +89,10 @@ def test_FLOW_NOTE_가_부르는_작업자가_견본_정의에_있다() -> None:
         assert (REPO / "profiles" / "agents" / f"{name}.md").is_file()
 
 
-def test_작업자_호출은_plan_gate_가_판정하지_않는다(tmp_path: Path, monkeypatch: Any) -> None:
-    """작업자(Agent) 안의 도구 호출도 PreToolUse 훅을 거치고, 입력에는 메인 세션
-    transcript_path 와 agent_id 가 온다 (claude 2.1.321, 2026-11-10 확인). 메인이
-    계획 없이 2번째 응답에서 Agent 를 부르면 작업자 호출이 3번째로 세여 거부되고,
-    거부 기록이 메인 전사에 남지 않아 풀리지 않는다. 작업자 호출은 통과시킨다."""
-    import json
-
-    from slack_cli_agent.guard.pretool import plan_gate as pg
-
-    lines = [
-        {"type": "user", "message": {"content": "조사해 줘"}},
-        {"type": "assistant", "message": {"id": "m1", "content": [
-            {"type": "tool_use", "id": "u1", "name": "Read", "input": {}}]}},
-        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "u1", "content": "x"}]}},
-        {"type": "assistant", "message": {"id": "m2", "content": [
-            {"type": "tool_use", "id": "u2", "name": "Agent", "input": {}}]}},
-    ]
-    transcript = tmp_path / "main.jsonl"
-    transcript.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in lines) + "\n")
-    monkeypatch.setenv(PLAN_GATE_ENV, "3")
-    worker_call = {"transcript_path": str(transcript), "tool_use_id": "w1", "tool_name": "Read"}
-    assert pg.decide(worker_call)[0] == "deny"
-    assert pg.decide({**worker_call, "agent_id": "a1", "agent_type": "lookup"})[0] == "subagent"
-
-
 def test_전사에_남은_훅_거부_문구를_거부로_센다() -> None:
     """claude 2.1.321 은 PreToolUse 거부를 "PreToolUse:<도구> hook error: <사유>" 로
     tool_result 에 남긴다 (2026-11-10 W5 측정 전사). 접두를 떼지 않으면 거부가 0회로
-    세여 plan_gate 의 gave_up 과 serial_read_guard 의 재호출 허용이 동작하지 않았다."""
-    from slack_cli_agent.guard.pretool import plan_gate as pg
+    세여 serial_read_guard 의 재호출 허용이 동작하지 않았다."""
     from slack_cli_agent.guard.pretool import serial_read_guard as srg
 
     def turn(reason: str, n: int) -> list[dict[str, Any]]:
@@ -131,9 +105,5 @@ def test_전사에_남은_훅_거부_문구를_거부로_센다() -> None:
                  "content": f"PreToolUse:Read hook error: {reason}"}]}})
         return records
 
-    plan = turn(pg.REASON.format(count=3), 4)
-    responses = pg.responses_since_prompt(plan)
-    assert sum(1 for r in responses if r.denied) == 4
-    assert pg.judge(responses, None, 3)[0] == "gave_up"
     serial = srg.responses_since_prompt(turn(srg.MARKER + " x", 2))
     assert all(u.denied for r in serial for u in r.uses)

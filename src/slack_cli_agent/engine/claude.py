@@ -49,7 +49,7 @@ from typing import Any, ClassVar
 from ..auth.policy import OPERATOR_TOOLS
 from ..auth.principal import TrustLevel
 from ..config.profile import EngineSpec, McpServerSpec
-from ..guard import finish_hook
+from ..guard import finish_hook, plan_start
 from ..guard.posttool import parallel_nudge
 from ..guard.pretool import (
     install_guard,
@@ -374,9 +374,9 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
                 "matcher": "*",
                 "hooks": [
                     {"type": "command", "command": _hook_command(serial_read_guard.HOOK_SCRIPT)},
-                    # Denies a call from the third tool-calling response when no
-                    # `[계획]` block came first; only on turns the pipeline set
-                    # PLAN_GATE for (guard/pretool/plan_gate, W4).
+                    # Injects the engine's plan (guard/plan_start) once as
+                    # additionalContext; never denies. Only on turns the
+                    # pipeline set PLAN_GATE for (guard/pretool/plan_gate).
                     {"type": "command", "command": _hook_command(plan_gate.HOOK_SCRIPT)},
                     # Denies a call after the previous responses each made an
                     # essentially-same call (guard/pretool/repeat_guard).
@@ -400,6 +400,11 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
                 "hooks": [{"type": "command", "command": _hook_command(finish_hook.HOOK_SCRIPT)}],
             },
         ],
+        # Starts the tool-less planner call beside the turn and returns at
+        # once; plan_gate above injects its result (guard/plan_start).
+        "UserPromptSubmit": [
+            {"hooks": [{"type": "command", "command": _hook_command(plan_start.HOOK_SCRIPT)}]},
+        ],
     }
 }
 
@@ -409,6 +414,7 @@ def guard_hook_settings() -> dict[str, Any]:
     (turn_budget, restart_guard, install_guard, scan_guard, sleep_poll_guard -- guard/pretool/),
     the all-tools serial-read, plan and repeat guards (guard/pretool/serial_read_guard.py,
     guard/pretool/plan_gate.py, guard/pretool/repeat_guard.py),
+    the planner start hook (guard/plan_start.py, UserPromptSubmit),
     the parallel-nudge PostToolUse hook (guard/posttool/parallel_nudge.py)
     and the finish-review Stop hook (guard/finish_hook.py) as engine built-ins.
 

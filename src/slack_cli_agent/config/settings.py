@@ -258,9 +258,9 @@ class RuntimeSettings:
     # 운영자, 위임)의 작업 턴에 FLOW_NOTE 를 넣고 plan_gate 훅을 켠다.
     # 프로필에서 false 로 두면 지침과 훅이 함께 꺼진다.
     plan_flow: bool = True
-    # plan_gate 가 계획 블록을 요구하기 시작하는 도구 호출 응답 순번. 이번
-    # 요청에서 도구를 부른 응답이 이 값째인데 그 전 본문에 `[계획]` 이 없으면
-    # 호출을 거부한다. 0 이하는 훅만 끈다. 엔진에는 PLAN_GATE 로 넘어간다.
+    # 0 보다 크면 엔진 계획 호출(guard/plan_start)과 계획 주입(plan_gate)을
+    # 켠다. 0 이하는 두 훅만 끈다. 엔진에는 PLAN_GATE 로 넘어간다. 2026-11-11
+    # 부터 거부하지 않으므로 값의 크기는 쓰지 않는다.
     plan_gate_responses: int = 3
 
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:

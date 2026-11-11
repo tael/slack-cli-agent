@@ -275,6 +275,8 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # guard/pretool/plan_gate: the response number from which a call needs
         # a `[계획]` block first. Set per turn by the pipeline (W4); a number.
         "PLAN_GATE",
+        # guard/plan_start: planner model override (default haiku). A model name.
+        "SCA_PLAN_MODEL",
         # Stop hook model verify toggle and model (finish_review.
         # resolve_verify_settings). On by default; these only override.
         "SCA_FINISH_VERIFY",

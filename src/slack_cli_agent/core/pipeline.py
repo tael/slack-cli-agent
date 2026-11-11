@@ -288,8 +288,8 @@ class RequestPipeline:
         # component default stays off so a pipeline built without settings
         # publishes rather than goes quiet.
         require_recipient: bool = False,
-        # W4: the response number from which guard/pretool/plan_gate denies a
-        # call when no `[계획]` block came first. Set as PLAN_GATE on turns
+        # > 0 turns on the engine planner (guard/plan_start) and its one-time
+        # injection (guard/pretool/plan_gate). Set as PLAN_GATE on turns
         # FlowSection applies to; 0 (the component default) leaves it off.
         plan_gate_responses: int = 0,
         mention_table: Callable[[], Mapping[str, str]] = dict,
@@ -1184,10 +1184,9 @@ class RequestPipeline:
         }
 
     def _plan_gate_env(self, tier: str, config: ChannelConfig | None) -> dict[str, str]:
-        """PLAN_GATE for guard/pretool/plan_gate: the response number from
-        which a call is denied without a `[계획]` block. Only on a turn
-        FlowSection applies to (same flow_applies), so the hook never asks
-        for a plan the prompt never mentioned. Absent means off."""
+        """PLAN_GATE for guard/plan_start and guard/pretool/plan_gate. Only
+        on a turn FlowSection applies to (same flow_applies), so no plan is
+        injected where the prompt never mentions one. Absent means off."""
         chat = config is not None and (config.chat == "active" or config.mode == "chat")
         if self._plan_gate_responses <= 0 or not flow_applies(tier, chat=chat):
             return {}
