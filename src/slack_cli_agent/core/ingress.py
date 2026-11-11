@@ -116,6 +116,9 @@ class IngressService:
         # (channel, user, text) for a DM the access check refused (E1). None,
         # the default, keeps such a DM silent as before.
         dm_reply: Callable[[str, str, str], None] | None = None,
+        # (channel, user, text) for a refused DM when dm_reply is off: the
+        # attempt is only recorded, for the daily DM report. None drops it.
+        dm_attempt: Callable[[str, str, str], None] | None = None,
     ) -> None:
         self._listener = listener
         self._access = access
@@ -140,6 +143,7 @@ class IngressService:
         self._is_shutting_down = is_shutting_down
         self._extra_handlers = tuple(extra_handlers)
         self._dm_reply = dm_reply
+        self._dm_attempt = dm_attempt
 
     def register(self, gateway: SlackGateway) -> None:
         gateway.on("app_mention", self.handle_app_mention)
@@ -194,9 +198,11 @@ class IngressService:
     def _answers_refused_dm(self, ctx: RequestContext, event: Mapping[str, Any]) -> bool:
         """A person's refused DM with words in it, when DM replies are on.
         A bot's DM is never answered: two bots would answer each other."""
+        return self._dm_reply is not None and self._is_person_dm(ctx, event)
+
+    def _is_person_dm(self, ctx: RequestContext, event: Mapping[str, Any]) -> bool:
         return (
-            self._dm_reply is not None
-            and is_direct_message_channel(ctx.channel)
+            is_direct_message_channel(ctx.channel)
             and bool(ctx.user)
             and not event.get("bot_id")
             and not ctx.from_bot
@@ -226,6 +232,11 @@ class IngressService:
                     dm_channel, dm_user = ctx.channel, ctx.user
                     dm_text = self._strip_self_mention(ctx.text)
                     self._spawn.spawn(f"DM:{dm_user}", lambda: dm(dm_channel, dm_user, dm_text))
+                elif self._dm_attempt is not None and self._is_person_dm(ctx, event):
+                    try:
+                        self._dm_attempt(ctx.channel, ctx.user, self._strip_self_mention(ctx.text))
+                    except Exception:
+                        log.exception("DM 시도 기록 실패: %s", ctx.user)
                 return
 
             # 자기 멘션을 지운 본문만 넘기면 현재 줄 머리에 '-> 이 봇' 이 빠진다. 2026-11-10

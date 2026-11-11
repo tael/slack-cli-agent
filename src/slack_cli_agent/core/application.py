@@ -90,7 +90,7 @@ from ..learning.reactions import ReactionCollector
 from ..learning.render import ProposalRenderer
 from ..learning.schedule import DailyBatchSchedule
 from ..observability.app_snapshot import ApplicationSnapshotSource
-from ..observability.audit import AuditLog
+from ..observability.audit import AuditLog, IncidentKind
 from ..observability.model_cost import record_engine_spend
 from ..observability.notices import NoticeCatalog
 from ..observability.progress import ProgressCoordinator
@@ -1690,6 +1690,25 @@ class Application:
         service = self.dm_reply_service()
         return service.handle if service is not None else None
 
+    def _dm_attempt_logged(self) -> bool:
+        """Refused DMs are recorded instead of answered: `dm_reply` off,
+        `dm_attempt_log` on and an owner to report to (2026-11-11)."""
+        return (
+            not self._settings.dm_reply
+            and self._settings.dm_attempt_log
+            and bool(self._profile.owner_user_id)
+        )
+
+    def _dm_attempt_callback(self) -> Callable[[str, str, str], None] | None:
+        if not self._dm_attempt_logged():
+            return None
+        record = self.audit().record
+
+        def attempt(channel: str, user: str, text: str) -> None:
+            record(IncidentKind.DM_ATTEMPT, user=user, channel=channel, question=text)
+
+        return attempt
+
     def dm_turn_tools(self, user: str, channel: str) -> ToolSelection:
         """The read-only selection a non-owner's DM turn gets: A10's lookup
         bundle and read-only MCP tools, no Skill, no browser tool, no bare
@@ -1770,8 +1789,9 @@ class Application:
     def dm_report_runners(self) -> list[PeriodicRunner]:
         """The daily DM report as a G1 background job on the worker, so its
         engine call waits for the same slots as requests. Empty unless DM
-        replies are on."""
-        if self.dm_reply_service() is None:
+        replies are on, or attempts are recorded with replies off."""
+        attempts_only = self._dm_attempt_logged()
+        if self.dm_reply_service() is None and not attempts_only:
             return []
         report = DmDailyReport(
             rows=self.audit().rows_between,
@@ -1781,6 +1801,7 @@ class Application:
             notices=self._notices,
             state_path=self._profile.paths.root / "dm_daily_report.json",
             run_hour=self._settings.dm_report_hour,
+            skip_empty=attempts_only,
         )
         job = BackgroundJob(
             name="dm_daily_report", run=report.tick,
@@ -2000,6 +2021,7 @@ class Application:
                     self_user_id=lambda: self.identity.user_id,
                 ),
                 dm_reply=self._dm_reply_callback(),
+                dm_attempt=self._dm_attempt_callback(),
                 # The handler runs on one of slack-sdk's ten pool threads, so a
                 # long lock wait here delays every event behind it (sca-9l1).
                 lock_budget=lambda: self.database.latency_budget(
