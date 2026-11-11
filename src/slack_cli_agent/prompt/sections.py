@@ -781,10 +781,10 @@ class FlowSection(PromptSection):
     """FLOW_NOTE: analyse, plan, run branches in parallel, refine.
 
     2026-11-06..10 guchipachi: of 43 sessions with 30+ tool calls, 3 used a
-    lookup subagent. The note asks for a `[계획]` block before the third
-    tool-calling response and hands a branch of 3+ calls to
-    Agent(subagent_type="lookup"|"analyst"). The plan_gate PreToolUse hook
-    enforces the block; the pipeline turns it on with the same flow_applies.
+    lookup subagent. The note tells the model to follow the `[작업 순서]`
+    plan the engine makes (guard/plan_start) and plan_gate injects, and hands
+    a branch of 3+ calls to Agent(subagent_type="lookup"|"analyst"). The
+    pipeline turns both hooks on with the same flow_applies.
     `enabled` comes from the profile setting `plan_flow`.
     """
 

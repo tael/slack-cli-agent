@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.markers import strip_control_tags, strip_plan_blocks
 from slack_cli_agent.engine.claude import guard_hook_settings
 from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
+from slack_cli_agent.guard import plan_start as ps
 from slack_cli_agent.guard.pretool import plan_gate as pg
 from slack_cli_agent.guard.pretool import serial_read_guard as srg
 from slack_cli_agent.prompt.library import PromptLibrary
@@ -71,7 +73,8 @@ class TestFlowSection:
         text = FlowSection().render(_ctx())
         for word in ("1. 분석", "2. 계획", "3. 병렬 실행", "4. 다듬기", "단답형", "갈래형", "탐색형"):
             assert word in text
-        assert "[계획]" in text and "[계획 갱신]" in text
+        assert "[작업 순서]" in text and "[계획 갱신]" in text
+        assert "계획 확인 훅이 호출을 거부한다" not in text
         assert "갈래는 2-5개" in text
         assert 'Agent(subagent_type="lookup")' in text
         assert 'Agent(subagent_type="analyst")' in text
@@ -88,110 +91,173 @@ class TestFlowSection:
         assert flow_applies("read", chat=False) is False
 
 
-# ---- plan_gate ---------------------------------------------------------
+# ---- plan_start / plan_gate ------------------------------------------
 
 
-def _assistant(mid: str, *, text: str = "", uses: tuple[str, ...] = ()) -> list[dict[str, Any]]:
-    """Claude Code 기록 모양 : 한 응답의 text 와 tool_use 가 같은 message.id 의 별도 줄이다."""
-    lines: list[dict[str, Any]] = []
-    if text:
-        lines.append({"type": "assistant", "message": {"id": mid, "content": [{"type": "text", "text": text}]}})
-    for use in uses:
-        lines.append({"type": "assistant", "message": {"id": mid, "content": [
-            {"type": "tool_use", "id": use, "name": "Read", "input": {"file_path": f"/{use}"}},
-        ]}})
-    return lines
+_PLAN = {
+    "type": "branch",
+    "branches": [
+        {"goal": "어제 주문 수", "source": "DATAMART.ORDERS", "depends_on": [], "delegate": "none",
+         "returns": "수치"},
+        {"goal": "상점 목록", "source": "stores.csv", "depends_on": [], "delegate": "lookup",
+         "returns": "목록"},
+    ],
+}
 
 
-def _result(use: str, text: str = "ok") -> dict[str, Any]:
-    return {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": use, "content": text}]}}
+def _cli_result(plan: dict[str, Any] | None, **extra: Any) -> str:
+    return json.dumps({"is_error": False, "structured_output": plan, "total_cost_usd": 0.001, **extra})
 
 
-def _human(text: str = "조사해 줘") -> dict[str, Any]:
-    return {"type": "user", "message": {"content": text}}
+class TestPlannerParse:
+    def test_정상_출력에서_계획을_꺼낸다(self) -> None:
+        status, plan = ps.parse(_cli_result(_PLAN))
+        assert status == "ok" and plan is not None
+        assert [b["goal"] for b in plan["branches"]] == ["어제 주문 수", "상점 목록"]
+
+    def test_깨진_출력은_bad_output_이다(self) -> None:
+        assert ps.parse("not json") == ("bad_output", None)
+        assert ps.parse(_cli_result({"type": "모름", "branches": []})) == ("bad_output", None)
+        assert ps.parse(_cli_result(None)) == ("bad_output", None)
+
+    def test_CLI_오류는_error_cli_다(self) -> None:
+        assert ps.parse(json.dumps({"is_error": True}))[0] == "error:cli"
 
 
-def _step(i: int, text: str = "") -> list[dict[str, Any]]:
-    return [*_assistant(f"m{i}", text=text, uses=(f"t{i}",)), _result(f"t{i}")]
+class TestPlannerRun:
+    def _prepare(self, tmp_path: Path) -> str:
+        transcript = str(tmp_path / "s.jsonl")
+        ps.prompt_path(transcript).write_text("요청", encoding="utf-8")
+        return transcript
+
+    def test_성공하면_계획_파일에_ok_로_쓴다(self, tmp_path: Path) -> None:
+        transcript = self._prepare(tmp_path)
+        ok = subprocess.CompletedProcess([], 0, _cli_result(_PLAN), "")
+        record = ps.run(transcript, caller=lambda *_: ok)
+        saved = json.loads(ps.plan_path(transcript).read_text(encoding="utf-8"))
+        assert record["status"] == saved["status"] == "ok"
+        assert saved["type"] == "branch" and len(saved["branches"]) == 2
+        assert not ps.prompt_path(transcript).exists()
+
+    def test_시간_초과는_timeout_으로_남기고_계획을_만들지_않는다(self, tmp_path: Path) -> None:
+        transcript = self._prepare(tmp_path)
+
+        def slow(*_: Any) -> Any:
+            raise subprocess.TimeoutExpired("claude", 20)
+
+        record = ps.run(transcript, caller=slow)
+        assert record["status"] == "timeout"
+        assert "branches" not in json.loads(ps.plan_path(transcript).read_text(encoding="utf-8"))
+
+    def test_깨진_JSON_은_bad_output_으로_남긴다(self, tmp_path: Path) -> None:
+        transcript = self._prepare(tmp_path)
+        bad = subprocess.CompletedProcess([], 0, "{oops", "")
+        assert ps.run(transcript, caller=lambda *_: bad)["status"] == "bad_output"
 
 
-def _judge(records: list[dict[str, Any]], use: str, threshold: int = 3) -> str:
-    return pg.judge(pg.responses_since_prompt(records), use, threshold)[0]
+class TestPlannerStart:
+    def _data(self, tmp_path: Path, **extra: Any) -> dict[str, Any]:
+        return {"transcript_path": str(tmp_path / "s.jsonl"), "prompt": "조회해 줘", **extra}
+
+    def test_켜진_턴에서_앞_요청_파일을_지우고_분리_실행한다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        monkeypatch.setenv("PLAN_GATE", "3")
+        monkeypatch.delenv("SCA_PLAN_NESTED", raising=False)
+        monkeypatch.delenv("SCA_VERIFY_NESTED", raising=False)
+        data = self._data(tmp_path)
+        ps.injected_path(data["transcript_path"]).write_text("1")
+        calls: list[tuple[list[str], dict[str, Any]]] = []
+        assert ps.start(data, spawn=lambda cmd, **kw: calls.append((cmd, kw))) == "started"
+        assert not ps.injected_path(data["transcript_path"]).exists()
+        assert json.loads(ps.plan_path(data["transcript_path"]).read_text())["status"] == "pending"
+        assert ps.prompt_path(data["transcript_path"]).read_text() == "조회해 줘"
+        cmd, kw = calls[0]
+        assert cmd[-2:] == ["--run", data["transcript_path"]]
+        assert kw["start_new_session"] is True and kw["env"]["SCA_PLAN_NESTED"] == "1"
+
+    @pytest.mark.parametrize("env", [{}, {"PLAN_GATE": "0"}, {"PLAN_GATE": "3", "SCA_PLAN_NESTED": "1"},
+                                     {"PLAN_GATE": "3", "SCA_VERIFY_NESTED": "1"}])
+    def test_꺼졌거나_중첩_호출이면_실행하지_않는다(self, tmp_path: Path, monkeypatch: Any,
+                                       env: dict[str, str]) -> None:
+        for key in ("PLAN_GATE", "SCA_PLAN_NESTED", "SCA_VERIFY_NESTED"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        assert ps.start(self._data(tmp_path), spawn=lambda *a, **k: pytest.fail("spawned")) != "started"
+
+    def test_훅은_출력_없이_바로_끝난다(self, tmp_path: Path) -> None:
+        env = {**os.environ, "PYTHONPATH": str(SRC_ROOT), "PLAN_GATE": "0"}
+        proc = subprocess.run([sys.executable, str(ps.HOOK_SCRIPT)], input=json.dumps(self._data(tmp_path)),
+                              capture_output=True, text=True, env=env, timeout=15)
+        assert proc.returncode == 0 and proc.stdout == ""
 
 
-class TestPlanGateJudge:
-    def test_응답_2개로_끝나는_요청은_통과한다(self) -> None:
-        records = [_human(), *_step(0), *_assistant("m1", uses=("t1",))]
-        assert _judge(records, "t1") == "early"
+def _write_plan(transcript: str, **plan: Any) -> None:
+    ps.plan_path(transcript).write_text(json.dumps({"finished_at": time.time(), **plan}), encoding="utf-8")
 
-    def test_계획_없이_3번째_응답은_거부한다(self) -> None:
-        records = [_human(), *_step(0), *_step(1), *_assistant("m2", uses=("t2",))]
-        assert pg.judge(pg.responses_since_prompt(records), "t2") == ("deny", 3)
 
-    def test_같은_응답_본문에_계획이_있으면_통과한다(self) -> None:
-        records = [_human(), *_step(0), *_step(1), *_assistant("m2", text="[계획]\n1. 목표 : x", uses=("t2",))]
-        assert _judge(records, "t2") == "same_response_plan"
+class TestPlanGateInject:
+    @pytest.fixture(autouse=True)
+    def _on(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv("PLAN_GATE", "3")
 
-    def test_tool_use_줄이_아직_없어도_앞선_본문을_이_응답으로_본다(self) -> None:
-        records = [_human(), *_step(0), *_step(1), *_assistant("m2", text="[계획]\n1. 목표 : x")]
-        assert _judge(records, "t2") == "same_response_plan"
+    def _call(self, tmp_path: Path, **extra: Any) -> dict[str, Any]:
+        return {"transcript_path": str(tmp_path / "s.jsonl"), "tool_use_id": "t1", "tool_name": "Read", **extra}
 
-    def test_첫_응답에_적은_계획이면_이후_통과한다(self) -> None:
-        records = [_human(), *_step(0, text="[계획]\n1. a\n2. b"), *_step(1), *_step(2),
-                   *_assistant("m3", uses=("t3",))]
-        assert _judge(records, "t3") == "planned"
+    def test_계획이_준비되면_한_번만_주입한다(self, tmp_path: Path) -> None:
+        call = self._call(tmp_path)
+        _write_plan(call["transcript_path"], status="ok", **_PLAN)
+        verdict, context = pg.decide(call)
+        assert verdict == "inject"
+        assert context.startswith(pg.INJECT_HEAD)
+        assert "1. 목표 : 어제 주문 수" in context and "위임 : lookup" in context
+        assert "훅을 언급하지 않는다" in context
+        assert pg.decide(call) == ("already", "")
 
-    def test_계획_갱신도_계획으로_본다(self) -> None:
-        records = [_human(), *_step(0, text="[계획 갱신]\n3. c"), *_step(1), *_assistant("m2", uses=("t2",))]
-        assert _judge(records, "t2") == "planned"
+    def test_계획이_없거나_진행_중이면_아무것도_하지_않는다(self, tmp_path: Path) -> None:
+        call = self._call(tmp_path)
+        assert pg.decide(call)[0] == "no_plan"
+        _write_plan(call["transcript_path"], status="pending")
+        assert pg.decide(call)[0] == "pending"
 
-    def test_거부_뒤_계획을_적고_같은_호출을_다시_부르면_통과한다(self) -> None:
-        denied = pg.REASON.format(count=3)
-        records = [_human(), *_step(0), *_step(1), *_assistant("m2", uses=("t2",)), _result("t2", denied),
-                   *_assistant("m3", text="[계획]\n1. 목표 : x", uses=("t3",))]
-        assert _judge(records, "t3") == "same_response_plan"
+    def test_실패한_계획과_단답형은_주입하지_않는다(self, tmp_path: Path) -> None:
+        call = self._call(tmp_path)
+        _write_plan(call["transcript_path"], status="timeout")
+        assert pg.decide(call)[0] == "plan_failed"
+        _write_plan(call["transcript_path"], status="ok", type="short", branches=[])
+        assert pg.decide(call)[0] == "short"
 
-    def test_계획_없이_다시_부르면_또_거부한다(self) -> None:
-        denied = pg.REASON.format(count=3)
-        records = [_human(), *_step(0), *_step(1), *_assistant("m2", uses=("t2",)), _result("t2", denied),
-                   *_assistant("m3", uses=("t3",))]
-        assert _judge(records, "t3") == "deny"
+    def test_오래된_계획은_무시한다(self, tmp_path: Path) -> None:
+        call = self._call(tmp_path)
+        ps.plan_path(call["transcript_path"]).write_text(
+            json.dumps({"status": "ok", "finished_at": time.time() - 7200, **_PLAN}), encoding="utf-8")
+        assert pg.decide(call)[0] == "no_plan"
 
-    def test_거부가_상한에_닿으면_더_묻지_않는다(self) -> None:
-        denied = pg.REASON.format(count=3)
-        records = [_human(), *_step(0), *_step(1)]
-        for i in (2, 3):
-            records += [*_assistant(f"m{i}", uses=(f"t{i}",)), _result(f"t{i}", denied)]
-        records += _assistant("m4", uses=("t4",))
-        assert _judge(records, "t4") == "gave_up"
+    def test_작업자_호출은_건너뛴다(self, tmp_path: Path) -> None:
+        call = self._call(tmp_path, agent_id="a1")
+        _write_plan(call["transcript_path"], status="ok", **_PLAN)
+        assert pg.decide(call)[0] == "subagent"
 
-    def test_사람_입력이_요청을_나눈다(self) -> None:
-        records = [_human(), *_step(0), *_step(1), *_step(2), _human("다음"), *_assistant("m3", uses=("t3",))]
-        assert _judge(records, "t3") == "early"
-
-    def test_Stop_훅_피드백은_요청을_나누지_않는다(self) -> None:
-        meta = {"type": "user", "isMeta": True, "message": {"content": "Stop hook feedback:\n근거 없음"}}
-        records = [_human(), *_step(0, text="[계획]\n1. a"), meta, *_step(1), *_assistant("m2", uses=("t2",))]
-        assert _judge(records, "t2") == "planned"
-
-    def test_문턱값을_바꿀_수_있다(self) -> None:
-        records = [_human(), *_step(0), *_step(1), *_assistant("m2", uses=("t2",))]
-        assert _judge(records, "t2", threshold=4) == "early"
+    def test_꺼져_있으면_아무것도_하지_않는다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        monkeypatch.delenv("PLAN_GATE")
+        call = self._call(tmp_path)
+        _write_plan(call["transcript_path"], status="ok", **_PLAN)
+        assert pg.decide(call)[0] == "off"
 
     def test_환경값_해석(self) -> None:
         assert pg.threshold_from_env({}) == 0
-        assert pg.threshold_from_env({"PLAN_GATE": "3"}) == 3
+        assert pg.threshold_from_env({"PLAN_GATE": ""}) == 0
         assert pg.threshold_from_env({"PLAN_GATE": "x"}) == 0
+        assert pg.threshold_from_env({"PLAN_GATE": "3"}) == 3
 
 
-def _run_hook(path: Path, use: str, env_value: str | None) -> tuple[dict[str, Any] | None, int]:
+def _run_hook(transcript: str, env_value: str | None) -> tuple[dict[str, Any] | None, int]:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(SRC_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     env.pop("PLAN_GATE", None)
     if env_value is not None:
         env["PLAN_GATE"] = env_value
-    payload = {"hook_event_name": "PreToolUse", "transcript_path": str(path), "tool_use_id": use,
-               "tool_name": "Read", "tool_input": {"file_path": f"/{use}"}}
+    payload = {"hook_event_name": "PreToolUse", "transcript_path": transcript, "tool_use_id": "t1",
+               "tool_name": "Read", "tool_input": {"file_path": "/x"}}
     proc = subprocess.run([sys.executable, str(pg.HOOK_SCRIPT)], input=json.dumps(payload),
                           capture_output=True, text=True, env=env, timeout=15)
     out = proc.stdout.strip()
@@ -199,25 +265,20 @@ def _run_hook(path: Path, use: str, env_value: str | None) -> tuple[dict[str, An
 
 
 class TestPlanGateHook:
-    def _write(self, path: Path) -> None:
-        records = [_human(), *_step(0), *_step(1), *_assistant("m2", uses=("t2",))]
-        path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n", encoding="utf-8")
-
-    def test_PLAN_GATE_가_있으면_거부_JSON_을_낸다(self, tmp_path: Path) -> None:
-        path = tmp_path / "t.jsonl"
-        self._write(path)
-        result, code = _run_hook(path, "t2", "3")
-        assert code == 0
-        assert result is not None
+    def test_주입은_additionalContext_로만_내고_거부하지_않는다(self, tmp_path: Path) -> None:
+        transcript = str(tmp_path / "s.jsonl")
+        _write_plan(transcript, status="ok", **_PLAN)
+        result, code = _run_hook(transcript, "3")
+        assert code == 0 and result is not None
         out = result["hookSpecificOutput"]
-        assert out["permissionDecision"] == "deny"
-        assert out["permissionDecisionReason"].startswith(pg.MARKER)
-        assert "[계획]" in out["permissionDecisionReason"]
+        assert out["hookEventName"] == "PreToolUse"
+        assert "permissionDecision" not in out
+        assert out["additionalContext"].startswith(pg.INJECT_HEAD)
 
     def test_PLAN_GATE_가_없으면_아무것도_하지_않는다(self, tmp_path: Path) -> None:
-        path = tmp_path / "t.jsonl"
-        self._write(path)
-        assert _run_hook(path, "t2", None) == (None, 0)
+        transcript = str(tmp_path / "s.jsonl")
+        _write_plan(transcript, status="ok", **_PLAN)
+        assert _run_hook(transcript, None) == (None, 0)
 
     def test_깨진_입력에도_실패하지_않는다(self) -> None:
         proc = subprocess.run([sys.executable, str(pg.HOOK_SCRIPT)], input="not json",
@@ -226,12 +287,14 @@ class TestPlanGateHook:
         assert proc.returncode == 0 and proc.stdout == ""
 
     def test_엔진_기본_훅에_등록된다(self) -> None:
-        star = [g for g in guard_hook_settings()["hooks"]["PreToolUse"] if g["matcher"] == "*"]
-        commands = [h["command"] for h in star[0]["hooks"]]
-        assert any("plan_gate.py" in c for c in commands)
+        hooks = guard_hook_settings()["hooks"]
+        star = [g for g in hooks["PreToolUse"] if g["matcher"] == "*"]
+        assert any("plan_gate.py" in h["command"] for h in star[0]["hooks"])
+        assert any("plan_start.py" in h["command"] for g in hooks["UserPromptSubmit"] for h in g["hooks"])
 
     def test_엔진_환경_허용목록에_있다(self) -> None:
         assert pg.PLAN_GATE_ENV in ClaudeEnvironmentPolicy.ADDITIONAL_ALLOWED_VARS
+        assert ps.PLAN_MODEL_ENV in ClaudeEnvironmentPolicy.ADDITIONAL_ALLOWED_VARS
 
 
 # ---- serial_read_guard 문구 ---------------------------------------------
