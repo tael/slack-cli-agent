@@ -273,6 +273,12 @@ class RuntimeSettings:
     # 켠다. 0 이하는 두 훅만 끈다. 엔진에는 PLAN_GATE 로 넘어간다. 2026-11-11
     # 부터 거부하지 않으므로 값의 크기는 쓰지 않는다.
     plan_gate_responses: int = 3
+    # 단계 C (2026-11-11). 참이면 흐름 적용 턴에서 본 호출 전에 계획을 세우고,
+    # 의존 없는 갈래가 둘 이상이면 갈래마다 엔진 호출을 동시에 돌려 그 결과를
+    # 본 호출에 넘긴다(core/branch_workers). 측정 전이라 기본은 끈다.
+    plan_workers: bool = False
+    # 작업자 엔진 호출의 모델. 비우면 본 턴과 같은 모델이다.
+    plan_worker_model: str = ""
 
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """Overrides only the fields present in `values`; unknown keys are
