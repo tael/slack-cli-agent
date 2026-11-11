@@ -418,6 +418,44 @@ def stopped_unfinished(turn: Turn) -> str | None:
 
 
 # --------------------------------------------------------------------------
+# unable_unlooked — claimed "can't see / can't tell" with zero tool calls
+# (2026-11-10 sandbox-rnd 19:01 : "새 이미지는 직접 볼 수 없어 평가는 못 함" 을
+# 도구 호출 0회로 냈다. users.info → image_512 → curl → Read 로 열 수 있었다.
+# 2026-11-11 재생 시험에서 기존 검사 8종 모두 None 이었다)
+# --------------------------------------------------------------------------
+
+#: An inability claim. The judgment's weight is on "zero tool calls this
+#: turn", not on this list: any turn that called a tool at all passes, so the
+#: list only has to catch how an inability is phrased, not every variant of
+#: a wrong answer.
+_UNABLE_RE = re.compile(
+    r"(볼|알|열|읽을|확인할|조회할|판단할|평가할|파악할|접근할|열람할|비교할|확인될)\s?수(가|는|도)?\s?없"
+    r"|(보|알|열|읽|확인하|조회하|열람하|파악하|평가하|판단하)지\s?못"
+    r"|(확인|조회|열람|평가|판단|파악)\s?불가"
+    r"|(평가|판단|확인|조회|열람|파악|비교|검토|분석)(는|은|도)?\s?못\s?(함|했|해|합니다|해요)"
+    r"|못\s?(봄|봤|봐서|봅니다|봐요)"
+)
+
+
+def unable_unlooked(turn: Turn) -> str | None:
+    """The inability phrase, if the answer claims it can't see, open, or
+    tell something and this turn called no tool at all.
+
+    One tool call of any kind passes: whether that lookup was the right one
+    is other judgments' concern. A silent reply is exempt."""
+    answer = turn.answer
+    if not answer or turn.tool_calls or "[[침묵]]" in answer:
+        return None
+    for line in answer.splitlines():
+        if _TAG_LINE.match(line):
+            continue
+        match = _UNABLE_RE.search(_QUOTED.sub("", line))
+        if match:
+            return match.group(0)
+    return None
+
+
+# --------------------------------------------------------------------------
 # not_opened — admitted skipping an open it could have done
 # --------------------------------------------------------------------------
 
@@ -1022,6 +1060,14 @@ def _stopped_unfinished_guidance(hit: str) -> str:
     )
 
 
+def _unable_unlooked_guidance(hit: str) -> str:
+    return (
+        f'"{hit}" 로 볼 수 없다, 알 수 없다고 답했는데 이번 턴에 도구를 한 번도 부르지 않았다. '
+        "그 대상을 열 수 있는 경로(슬랙 API, 파일 내려받기 후 Read, 조회 도구)로 같은 턴에 실제로 조회하고, "
+        "조회한 결과로 답을 다시 쓴다. 실제로 막히면 그 호출의 오류 문구를 그대로 적는다."
+    )
+
+
 def _not_opened_guidance(hit: str) -> str:
     return (
         f'"{hit}" 로 열람을 생략했다고 답에 썼다. 열 수 있는 문서, 스레드, 첨부는 같은 턴에 열어 본문으로 판정한다. '
@@ -1131,6 +1177,7 @@ def _build_common_registry() -> JudgmentRegistry:
     common = JudgmentRegistry()
     common.register("gave_up", gave_up, _gave_up_guidance)
     common.register("not_opened", not_opened, _not_opened_guidance)
+    common.register("unable_unlooked", unable_unlooked, _unable_unlooked_guidance)
     common.register("stopped_unfinished", stopped_unfinished, _stopped_unfinished_guidance)
     common.register("absence_unopened", absence_unopened, _absence_unopened_guidance)
     common.register("offer", offer, _offer_guidance)

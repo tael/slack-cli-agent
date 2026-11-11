@@ -833,6 +833,7 @@ class TestExtensionPoint:
             "denied_unretried",
             "code_first",
             "named_turn",
+            "unable_unlooked",
             "verify",
         }
 
@@ -881,7 +882,11 @@ def test_run_killable_returns_on_timeout_even_with_lingering_child():
 
 
 def test_spent_gave_up_does_not_skip_verify_on_rewrite():
-    turn = _turn("현재 사용량은 확인하지 못했습니다. " + "주간 한도 사용 12% 입니다. " * 40)
+    # One lookup this turn, so unable_unlooked (zero calls) stays out of the way.
+    turn = _turn(
+        "현재 사용량은 확인하지 못했습니다. " + "주간 한도 사용 12% 입니다. " * 40,
+        tool_calls=(ToolCall(name="Bash", input={"command": "usage"}, result="ok"),),
+    )
     calls = []
 
     def verifier(answer, evidence):
