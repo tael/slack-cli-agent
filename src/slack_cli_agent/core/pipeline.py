@@ -5,6 +5,7 @@ call, guard corrections, and posting to Slack. Implements
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -55,6 +56,7 @@ from ..guard.mentions import (
 )
 from ..guard.pipeline import GuardPipeline
 from ..guard.pretool.plan_gate import PLAN_GATE_ENV
+from . import branch_workers
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
 from ..observability.audit import IncidentKind
@@ -298,6 +300,10 @@ class RequestPipeline:
         # injection (guard/pretool/plan_gate). Set as PLAN_GATE on turns
         # FlowSection applies to; 0 (the component default) leaves it off.
         plan_gate_responses: int = 0,
+        # Step C: on a flow turn, plan first and run independent branches as
+        # separate engine calls before the main call (core/branch_workers).
+        plan_workers: bool = False,
+        plan_worker_model: str = "",
         mention_table: Callable[[], Mapping[str, str]] = dict,
         slow_reporter: SlowRequestReporter | None = None,
         # Splits each request's wall time into named items for its audit row
@@ -384,6 +390,8 @@ class RequestPipeline:
         self._asker_is_bot = asker_is_bot
         self._require_recipient = require_recipient
         self._plan_gate_responses = plan_gate_responses
+        self._plan_workers = plan_workers
+        self._plan_worker_model = plan_worker_model
         # Reuses asker_is_bot as the is-bot oracle: resolving a RECIPIENT tag
         # needs the same "is this user a bot" lookup for the ASKER→BOT fold and
         # for validating a BOT:id. Forces the leading mention for bot recipients
@@ -699,6 +707,13 @@ class RequestPipeline:
             # Bracketing each engine call lets the audit row tell bot-side
             # preparation from engine startup (S0 계측). The retry overwrites
             # both, so a failed first attempt is booked as pre-engine time.
+            if self._plan_workers and PLAN_GATE_ENV in request.engine_env:
+                request, worker_run = branch_workers.prepare(
+                    self._invoker.invoke, request, ctx.text,
+                    worker_model=self._plan_worker_model or None,
+                )
+                log.info("작업자 단계 %s:%s %s", ctx.channel, ctx.ts,
+                         json.dumps(worker_run.timing(), ensure_ascii=False))
             engine_start = self._timing_stamp()
             response = self._invoker.invoke(request)
             engine_end = self._timing_stamp()
