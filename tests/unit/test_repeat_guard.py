@@ -152,6 +152,16 @@ class TestRepeatGuardHook:
         out, _ = run_guard(path, "t7", "Bash", {"command": CMD})
         assert _denied(out)
 
+    def test_전사의_훅_거부_접두가_붙어도_자기_거부로_본다(self, tmp_path: Path) -> None:
+        # claude 2.1.321 은 거부를 "PreToolUse:<도구> hook error: <사유>" 로 남긴다 (2026-11-10 W5).
+        path = tmp_path / "t.jsonl"
+        denied = "PreToolUse:Bash hook error: " + rg.REASON.format(run=3)
+        records = [_human(), *_bash(3),
+                   _assistant("m3", ("t3", "Bash", {"command": CMD})), _result("t3", denied, is_error=True)]
+        _write(path, records)
+        out, _ = run_guard(path, "t4", "Bash", {"command": CMD})
+        assert out is None
+
     def test_다른_가드의_거부는_끊지_않는다(self, tmp_path: Path) -> None:
         path = tmp_path / "t.jsonl"
         records = [_human(), *_bash(2),

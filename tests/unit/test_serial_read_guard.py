@@ -123,6 +123,19 @@ class TestSerialReadGuardHook:
         result, _ = run_guard(path, "t5", "Grep", {"pattern": "x"})
         assert result is None
 
+    def test_전사의_훅_거부_접두가_붙어도_재호출을_통과시킨다(self, tmp_path: Path) -> None:
+        # claude 2.1.321 은 거부를 "PreToolUse:<도구> hook error: <사유>" 로 남긴다 (2026-11-10 W5).
+        path = tmp_path / "t.jsonl"
+        records = [
+            _human(), *_singles(4),
+            _assistant("m4", ("t4", "Grep", {"pattern": "x"})),
+            _result("t4", "PreToolUse:Grep hook error: " + srg.REASON.format(run=4)),
+            _assistant("m5", ("t5", "Grep", {"pattern": "x"})),
+        ]
+        _write(path, records)
+        result, _ = run_guard(path, "t5", "Grep", {"pattern": "x"})
+        assert result is None
+
     def test_거부_뒤에는_다시_센다(self, tmp_path: Path) -> None:
         path = tmp_path / "t.jsonl"
         records = [
