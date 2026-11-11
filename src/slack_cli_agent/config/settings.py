@@ -108,6 +108,12 @@ class RuntimeSettings:
     figurative_min_chars: int = 80
     figurative_model: str = "sonnet"
     figurative_timeout_sec: float = 45
+    #: 2026-11-11 (orchestration D): run the figurative check after posting
+    #: and fix the message with chat.update, instead of holding the post for
+    #: the model call (7.7-18.4 s per work-channel reply, 4.6% of turn time
+    #: over 181 turns). The first notification preview then shows the
+    #: uncorrected text. Applies only to a reply that went up as one message.
+    figurative_after_post: bool = False
 
     #: E1-E8: answer a non-owner's DM with an isolated read-only turn
     #: instead of ignoring it (mametchi notify_dm_redirect). Off by default:

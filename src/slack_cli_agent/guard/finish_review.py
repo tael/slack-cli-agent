@@ -719,7 +719,14 @@ VERIFY_MIN_LEN = 400
 #: guchipachi's rewrite swapped the flagged claims for new unqueried
 #: guesses ("워크플로나 예약 발송") that went out unverified. 2 checks the
 #: rewrite once, matching mametchi's finish_work_hook.
-VERIFY_MAX_BLOCKS = 2
+VERIFY_MAX_BLOCKS = 1
+#: 2026-11-11 (orchestration D): lowered 2 -> 1. From 11-10 21:00 to 11-11
+#: 18:00 the model check blocked 146 of 150 runs; 75 checks of a rewrite
+#: blocked again, and 182 of the 278 sentences they flagged were already in
+#: the blocked draft (the check returns at most three per run, so the rest
+#: surfaced one rewrite later). Past this count the check now blocks only on
+#: sentences that are new in the rewrite (`prior_drafts`) and were not
+#: flagged before (`prior_flagged`).
 #: 2026-11-10: past VERIFY_MAX_BLOCKS the model check used to be skipped
 #: outright, and a rewrite carrying a stale knowledge-file line ("사무실 IP
 #: 는 API허브에서 차단 중") went out unchecked. Now the check keeps running up
@@ -833,10 +840,51 @@ def pick_knowledge(answer: str, knowledge: str, *, limit: int = VERIFY_KNOWLEDGE
     return pick_evidence(answer, paragraphs, limit=limit)
 
 
+#: Input fields that say what a call ran or opened, in the order shown.
+_INPUT_FIELDS = ("command", "file_path", "notebook_path", "path", "pattern", "url", "query",
+                 "sql", "subagent_type", "description", "old_string", "new_string", "content",
+                 "prompt")
+#: Per-field and total caps for the tool-input section.
+VERIFY_INPUT_FIELD_CHARS = 400
+VERIFY_INPUT_CHARS = 20_000
+
+
+def tool_inputs_text(turn: Turn, *, limit: int = VERIFY_INPUT_CHARS) -> str:
+    """One line per tool call: name and the input fields that say what it
+    ran, opened or wrote. 2026-11-11 (orchestration D): about a third of the
+    sentences verify flagged named a path, a line or a command the bot had
+    itself run or edited; the check saw only results, so "edited X and
+    restarted" had nothing to stand on."""
+    lines: list[str] = []
+    used = 0
+    for i, call in enumerate(turn.tool_calls, start=1):
+        parts = []
+        for key in _INPUT_FIELDS:
+            value = call.input.get(key) if isinstance(call.input, Mapping) else None
+            if value in (None, ""):
+                continue
+            text = " ".join(str(value).split())
+            if len(text) > VERIFY_INPUT_FIELD_CHARS:
+                text = text[:VERIFY_INPUT_FIELD_CHARS] + " ..."
+            parts.append(f"{key}={text}")
+        if not parts:
+            parts.append(_input_blob(call.input)[:VERIFY_INPUT_FIELD_CHARS])
+        line = f"{i}. {call.name} " + " / ".join(parts)
+        if used + len(line) > limit:
+            lines.append(f"... 호출 {len(turn.tool_calls) - i + 1}건 생략")
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines)
+
+
 def _turn_evidence(turn: Turn) -> str:
     results = [call.result for call in turn.tool_calls if call.result]
     prompt = (turn.user_prompt or "")[:VERIFY_PROMPT_CHARS]
     evidence = (prompt + "\n" if prompt else "") + pick_evidence(turn.answer, results)
+    inputs = tool_inputs_text(turn)
+    if inputs:
+        evidence += "\n\n[이번 턴 도구 호출 입력]\n" + inputs
     knowledge = pick_knowledge(turn.answer, turn.knowledge)
     if knowledge:
         evidence += "\n\n[이번 턴 지침에 실린 지식 파일]\n" + knowledge
@@ -864,6 +912,11 @@ _VERIFY_PROMPT = (
     "차단, 장애, 진행, 정지, 실패 같은 상태를 '~중', '현재', '지금' 처럼 지금 상태로 단정한 문장은 "
     "[근거] 의 조회 결과가 지금 그 상태임을 직접 보여 주지 않으면 근거 없음이다. 메모, 지식, 과거 기록에 "
     "날짜와 함께 적힌 상태는 지금 상태의 근거가 아니다. 이런 문장은 다른 문장보다 먼저 낸다.\n"
+    # 2026-11-11 (orchestration D): "edited X, restarted at 22:35" was flagged
+    # because the check saw results only, not the calls that made them.
+    "[이번 턴 도구 호출 입력] 은 봇이 이번 턴에 실행한 명령, 연 파일, 고친 내용이다. 무엇을 실행했다, "
+    "어느 파일을 열었다, 어느 파일을 어떻게 고쳤다는 보고 문장은 이 입력으로 확인되면 근거 있음이다. "
+    "그 실행의 결과, 수치, 상태는 조회 결과로만 판정한다.\n"
     'JSON 한 개만 답한다. 형식 {"unsupported": [{"sentence": "답의 문장 그대로", "why": "한 문장"}]}. '
     "없으면 빈 배열.\n\n"
 )
@@ -1298,6 +1351,7 @@ def decide(
     claim_verifier: ClaimVerifier | None = None,
     prior_flagged: frozenset[str] = frozenset(),
     verify_hard_max_blocks: int = VERIFY_HARD_MAX_BLOCKS,
+    prior_drafts: Sequence[str] = (),
 ) -> StopDecision:
     """The Stop-hook decision for one turn.
 
@@ -1315,6 +1369,10 @@ def decide(
 
     `verify_hard_max_blocks` is the most times the model verify may block
     one turn (resolve_verify_max_blocks reads the env override).
+
+    `prior_drafts` are the answers this turn already had blocked. Past
+    VERIFY_MAX_BLOCKS the check blocks only on sentences that are not in any
+    of them (`carried_over`).
     """
     if not turn.has_transcript:
         return StopDecision(action="allow")
@@ -1332,7 +1390,10 @@ def decide(
         if not findings and budget_ok and block_count < verify_hard_max_blocks:
             claims = unsupported_claims(turn, verifier=claim_verifier)
             if block_count >= VERIFY_MAX_BLOCKS:
-                claims = [c for c in claims if claim_key(c) not in prior_flagged]
+                claims = [
+                    c for c in claims
+                    if claim_key(c) not in prior_flagged and not carried_over(c, prior_drafts)
+                ]
             if claims:
                 hit = " | ".join(claims)
                 findings = (Finding(name="verify", detail=hit, guidance=_verify_guidance(hit)),)
@@ -1354,6 +1415,28 @@ def claim_key(finding_text: str) -> str:
     cut = text.rfind(" (")
     sentence = text[:cut] if cut > 0 else text
     return " ".join(sentence.split())[:160]
+
+
+def draft_key(text: str) -> str:
+    """An answer with all whitespace and markdown emphasis removed, so a
+    sentence can be looked up in it however the rewrite re-wrapped it."""
+    return re.sub(r"[\s*_`>]+", "", text or "")
+
+
+#: Shortest flagged-sentence key `carried_over` looks up. Shorter ones
+#: ("0", a bare date) match almost any draft.
+_CARRY_MIN_CHARS = 8
+
+
+def carried_over(finding_text: str, prior_drafts: Sequence[str]) -> bool:
+    """Whether the sentence a verify finding flagged was already in an
+    answer blocked earlier in this turn (`prior_drafts` hold draft_key
+    forms). A rewrite that keeps an earlier sentence is not re-blocked for
+    it: that sentence already had one check and one chance to be fixed."""
+    key = draft_key(claim_key(finding_text).lstrip("-• "))
+    if len(key) < _CARRY_MIN_CHARS:
+        return False
+    return any(key in draft for draft in prior_drafts)
 
 
 def verify_claim_keys(decision: StopDecision) -> set[str]:

@@ -1033,6 +1033,15 @@ class Test비유교정가드연결:
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
         assert any(isinstance(g, FigurativeGuard) for g in app._guards()._guards)
 
+    def test_게시_뒤_교정이_켜지면_가드에서_빠지고_파이프라인에_넘어간다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.guard.figurative import FigurativeGuard
+
+        app = Application.from_profile(
+            write_profile(tmp_path, settings={"figurative_check": True, "figurative_after_post": True}),
+            client=FakeSlackClient())
+        assert not any(isinstance(g, FigurativeGuard) for g in app._guards()._guards)
+        assert isinstance(app.pipeline()._post_corrector, FigurativeGuard)
+
     def test_기본값은_꺼져_있어_본문을_바꾸지_않는다(self, tmp_path: Path) -> None:
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
         body = "이번 배치는 정산 파이프라인과 맞닿은 지점에서 실패했습니다. " * 3

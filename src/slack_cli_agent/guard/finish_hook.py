@@ -32,6 +32,7 @@ nothing is printed, same as a `decide()` result of "allow" would do.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -45,6 +46,7 @@ from typing import Any
 from slack_cli_agent.guard.finish_review import (
     ModelClaimVerifier,
     decide,
+    draft_key,
     needs_verification,
     read_knowledge_file,
     resolve_advisor_channel,
@@ -111,6 +113,25 @@ def _count_path(state_dir: Path, key: str) -> Path:
 
 def _flagged_path(state_dir: Path, key: str) -> Path:
     return state_dir / f"finish-hook-{key}.flagged.json"
+
+
+def _drafts_path(state_dir: Path, key: str) -> Path:
+    return state_dir / f"finish-hook-{key}.drafts.json"
+
+
+def _read_drafts(path: Path | None) -> tuple[str, ...]:
+    if path is None:
+        return ()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - missing or bad file means no earlier draft
+        return ()
+    return tuple(str(v) for v in value) if isinstance(value, list) else ()
+
+
+def _write_drafts(path: Path, drafts: tuple[str, ...]) -> None:
+    with contextlib.suppress(OSError):
+        path.write_text(json.dumps(list(drafts), ensure_ascii=False), encoding="utf-8")
 
 
 def _read_flagged(path: Path | None) -> frozenset[str]:
@@ -211,12 +232,15 @@ def main(argv: list[str]) -> int:
         block_count = 0
         count_path: Path | None = None
         flagged_path: Path | None = None
+        drafts_path: Path | None = None
         if state_dir is not None:
             key = _turn_key(session_id, this_turn_rows)
             count_path = _count_path(state_dir, key)
             flagged_path = _flagged_path(state_dir, key)
+            drafts_path = _drafts_path(state_dir, key)
             block_count = _read_count(count_path)
         prior_flagged = _read_flagged(flagged_path)
+        prior_drafts = _read_drafts(drafts_path)
 
         seconds_left = time_left(os.environ)
         verify_on, verify_model = resolve_verify_settings(os.environ)
@@ -226,12 +250,15 @@ def main(argv: list[str]) -> int:
             turn, block_count=block_count, seconds_left=seconds_left, claim_verifier=verifier,
             prior_flagged=prior_flagged,
             verify_hard_max_blocks=resolve_verify_max_blocks(os.environ),
+            prior_drafts=prior_drafts,
         )
         elapsed = round(time.monotonic() - started, 1)
         if decision.action == "block" and count_path is not None:
             _write_count(count_path, block_count + 1)
             if flagged_path is not None:
                 _write_flagged(flagged_path, prior_flagged | verify_claim_keys(decision))
+            if drafts_path is not None:
+                _write_drafts(drafts_path, (*prior_drafts, draft_key(turn.answer)))
         if verifier is not None and turn.has_transcript and needs_verification(turn.answer):
             status = verifier.status
             if status == "not_run":
@@ -246,6 +273,7 @@ def main(argv: list[str]) -> int:
                 "verify_sec": verifier.elapsed,
                 "knowledge_chars": len(turn.knowledge),
                 "findings": [f.detail for f in decision.findings if f.name == "verify"],
+                "block_count": block_count,
             })
 
         result = decision.to_hook_json()

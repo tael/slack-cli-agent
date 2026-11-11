@@ -523,8 +523,7 @@ class TestModelVerify:
         runner = _fake_runner(stdout=payload)
         verifier = finish_review.ModelClaimVerifier(runner=runner, executable="claude", env={})
 
-        # The prior_flagged filter applies only when the cap is raised back
-        # (SCA_FINISH_VERIFY_MAX_BLOCKS=4); at the default 2 the check stops.
+        # Past VERIFY_MAX_BLOCKS (1) a sentence flagged before does not block again.
         decision = finish_review.decide(
             self._turn(), claim_verifier=verifier, block_count=finish_review.VERIFY_MAX_BLOCKS,
             prior_flagged=frozenset({"모두 제가 낸 검증 코드"}), verify_hard_max_blocks=4)
@@ -546,6 +545,49 @@ class TestModelVerify:
 
         assert decision.action == "block"
         assert finish_review.verify_claim_keys(decision) == {claim}
+
+    def test_rewrite_check_skips_sentence_carried_over_from_blocked_draft(self):
+        # 2026-11-11 (orchestration D): 182 of 278 sentences flagged on a
+        # rewrite were already in the blocked draft.
+        claim = "배정 경로별 건수는 **AI 제안 12건**, 셀프 3건임"
+        payload = json.dumps({"unsupported": [{"sentence": claim, "why": "x"}]}, ensure_ascii=False)
+        verifier = finish_review.ModelClaimVerifier(
+            runner=_fake_runner(stdout=payload), executable="claude", env={})
+        draft = finish_review.draft_key("앞 문장.\n- 배정 경로별 건수는 AI 제안 12건,\n  셀프 3건임\n")
+
+        decision = finish_review.decide(
+            self._turn(), claim_verifier=verifier, block_count=1, prior_drafts=(draft,))
+
+        assert decision.action == "allow"
+
+    def test_rewrite_check_blocks_sentence_new_in_rewrite(self):
+        claim = "재기동은 22:35 에 했고 반영을 확인했음"
+        payload = json.dumps({"unsupported": [{"sentence": claim, "why": "x"}]}, ensure_ascii=False)
+        verifier = finish_review.ModelClaimVerifier(
+            runner=_fake_runner(stdout=payload), executable="claude", env={})
+
+        decision = finish_review.decide(
+            self._turn(), claim_verifier=verifier, block_count=1,
+            prior_drafts=(finish_review.draft_key("다른 초안 문장이다"),))
+
+        assert decision.action == "block"
+
+    def test_first_check_ignores_prior_drafts(self):
+        claim = "배정 경로별 건수는 AI 제안 12건임"
+        payload = json.dumps({"unsupported": [{"sentence": claim, "why": "x"}]}, ensure_ascii=False)
+        verifier = finish_review.ModelClaimVerifier(
+            runner=_fake_runner(stdout=payload), executable="claude", env={})
+
+        decision = finish_review.decide(
+            self._turn(), claim_verifier=verifier, block_count=0,
+            prior_drafts=(finish_review.draft_key(claim),))
+
+        assert decision.action == "block"
+
+    def test_carried_over_ignores_short_keys(self):
+        assert not finish_review.carried_over("0 (x)", (finish_review.draft_key("값은 0 이다"),))
+        assert finish_review.carried_over(
+            "- 원천은 DATAMART.ORDERS 임 (x)", (finish_review.draft_key("원천은 DATAMART.ORDERS 임"),))
 
     def test_stops_verifying_at_hard_cap(self):
         payload = json.dumps({"unsupported": [{"sentence": "모두 제가 낸 검증 코드", "why": "x"}]}, ensure_ascii=False)
@@ -673,6 +715,26 @@ class TestKnowledgeEvidence:
         assert "4 = LEGACY_AI" in prompt and "주문 3건 조회" in prompt
         assert "코드표" in finish_review._VERIFY_PROMPT
         assert decision.action == "block"
+
+    def test_evidence_carries_tool_inputs(self):
+        turn = _turn(self._answer("x"), tool_calls=(
+            ToolCall(name="Edit", input={"file_path": "/w/deagent.json", "old_string": "a",
+                                         "new_string": "operator_tools"}, result="ok"),
+            ToolCall(name="Bash", input={"command": "launchctl kickstart -k gui/501/x"}, result=""),
+        ))
+
+        evidence = finish_review._turn_evidence(turn)
+
+        assert "[이번 턴 도구 호출 입력]" in evidence
+        assert "1. Edit file_path=/w/deagent.json" in evidence and "new_string=operator_tools" in evidence
+        assert "2. Bash command=launchctl kickstart -k gui/501/x" in evidence
+        assert "도구 호출 입력" in finish_review._VERIFY_PROMPT
+
+    def test_tool_inputs_text_caps_length(self):
+        calls = tuple(ToolCall(name="Bash", input={"command": "x" * 1000}) for _ in range(100))
+        text = finish_review.tool_inputs_text(_turn("a", tool_calls=calls), limit=2000)
+
+        assert len(text) < 2500 and "생략" in text
 
     def test_no_knowledge_leaves_evidence_unchanged(self):
         turn = _turn(self._answer("x"), tool_calls=(ToolCall(name="Bash", input={}, result="결과"),))

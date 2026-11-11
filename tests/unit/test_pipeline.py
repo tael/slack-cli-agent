@@ -204,9 +204,14 @@ class FakePublisher:
         self._posted_ts = posted_ts
         self._message_ts = message_ts
         self.posted: list[dict[str, Any]] = []
+        self.updated: list[dict[str, Any]] = []
 
     def apply_elapsed_model_line(self, body: str, model: str, rich: bool) -> str:
         return body
+
+    def update(self, channel: str, ts: str, text: str, rich: bool) -> list[str]:
+        self.updated.append({"channel": channel, "ts": ts, "text": text, "rich": rich})
+        return []
 
     def post(
         self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
@@ -388,6 +393,7 @@ def build_pipeline(
     transcriber: Any = None,
     delegation_recorder: Any = None,
     request_timing: Any = None,
+    post_corrector: Any = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -452,6 +458,9 @@ def build_pipeline(
         extra_kwargs["delegation_recorder"] = delegation_recorder
     if request_timing is not None:
         extra_kwargs["request_timing"] = request_timing
+    if post_corrector is not None:
+        extra_kwargs["post_corrector"] = post_corrector
+        extra_kwargs["spawn"] = lambda fn: fn()
     extra_kwargs.setdefault(
         "watch_results",
         WatchResultReader((tmp_path or Path("/tmp")) / ".watch-out"),
@@ -1098,6 +1107,44 @@ class Test가드사건기록:
         pipeline.handle(make_ctx())
 
         assert any(i["kind"] == IncidentKind.FIGURATIVE_FIX for i in deps["audit"].incidents)
+
+
+    def test_게시_뒤_교정은_먼저_게시하고_고친_본문으로_갱신한다(self, tmp_path: Path) -> None:
+        # 2026-11-11 (orchestration D): settings.figurative_after_post.
+        from slack_cli_agent.guard.figurative import FigurativeGuard
+
+        body = "이번 배치는 정산 파이프라인과 맞닿은 지점에서 실패했습니다. " * 3
+        fixed = body.replace("맞닿은", "연결된")
+        settings = RuntimeSettings().override({"figurative_check": True})
+        guard = FigurativeGuard(settings, is_chat=lambda _c: False,
+                                corrector=lambda text, *, work: {"changed": True, "text": fixed})
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body)], post_corrector=guard, tmp_path=tmp_path,
+        )
+        pipeline.handle(make_ctx())
+
+        publisher = deps["publisher"]
+        assert "맞닿은" in publisher.posted[0]["text"]
+        assert publisher.updated[0]["ts"] == "1700000000.000900"
+        assert "연결된" in publisher.updated[0]["text"] and "맞닿은" not in publisher.updated[0]["text"]
+        fix = [i for i in deps["audit"].incidents if i["kind"] == IncidentKind.FIGURATIVE_FIX]
+        assert fix and fix[0]["after_post"] is True
+
+    def test_게시_뒤_교정은_여러_조각_답을_고치지_않는다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.guard.figurative import FigurativeGuard
+
+        body = "이번 배치는 정산 파이프라인과 맞닿은 지점에서 실패했습니다. " * 3
+        settings = RuntimeSettings().override({"figurative_check": True})
+        calls: list[str] = []
+        guard = FigurativeGuard(settings, is_chat=lambda _c: False,
+                                corrector=lambda text, *, work: calls.append(text) or {"changed": False})
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body)], post_corrector=guard, tmp_path=tmp_path,
+            publisher=FakePublisher(message_ts=("1.1", "1.2")),
+        )
+        pipeline.handle(make_ctx())
+
+        assert calls == [] and deps["publisher"].updated == []
 
 
 class Test화자표시이름:
