@@ -121,12 +121,16 @@ def make_plan(
 
 def independent_branches(plan: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     """Branches a worker can take: a ``branch`` plan's branches with no
-    dependency, only when there are two or more of them."""
+    dependency that the planner marked for delegation (3+ tool calls), only
+    when there are two or more of them. W7 C1 (2026-11-11): running every
+    independent branch made a four-file read (T1) take 71 s instead of 25 s
+    and raised tokens 53%, since each worker loads the full system prompt."""
     if not plan or plan.get("type") != "branch":
         return []
     picked = [
         b for b in plan.get("branches") or []
         if isinstance(b, dict) and not b.get("depends_on") and str(b.get("goal", "")).strip()
+        and b.get("delegate") in plan_start.WORKERS
     ]
     return picked if len(picked) >= 2 else []
 

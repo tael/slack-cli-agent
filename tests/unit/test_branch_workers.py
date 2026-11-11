@@ -14,9 +14,9 @@ from slack_cli_agent.engine.base import EngineRequest, EngineResponse
 _PLAN = {
     "type": "branch",
     "branches": [
-        {"goal": "어제 주문 수", "source": "DATAMART.ORDERS", "depends_on": [], "delegate": "none",
+        {"goal": "어제 주문 수", "source": "DATAMART.ORDERS", "depends_on": [], "delegate": "analyst",
          "returns": "수치"},
-        {"goal": "상점 목록", "source": "stores.csv", "depends_on": [], "delegate": "none",
+        {"goal": "상점 목록", "source": "stores.csv", "depends_on": [], "delegate": "lookup",
          "returns": "목록"},
         {"goal": "둘의 비율", "source": "1, 2 결과", "depends_on": [1, 2], "delegate": "none",
          "returns": "수치"},
@@ -38,6 +38,10 @@ def _ok(body: str) -> EngineResponse:
 class TestBranches:
     def test_의존_없는_갈래만_둘_이상일_때_고른다(self) -> None:
         assert [b["goal"] for b in bw.independent_branches(_PLAN)] == ["어제 주문 수", "상점 목록"]
+
+    def test_위임_표시가_없는_갈래는_고르지_않는다(self) -> None:
+        plan = {"type": "branch", "branches": [{**b, "delegate": "none"} for b in _PLAN["branches"]]}
+        assert bw.independent_branches(plan) == []
 
     @pytest.mark.parametrize("plan", [None, {"type": "short", "branches": []},
                                       {"type": "explore", "branches": _PLAN["branches"]},
