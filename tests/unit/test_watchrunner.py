@@ -1833,3 +1833,37 @@ class Test추가보고대상:
         안내 = extra_targets_note([("C0CFYL69JDS", "1794105022.126019")])
         assert "C0CFYL69JDS" in 안내 and "권한 밖" in 안내
         assert extra_targets_note([]) == ""
+
+
+class Test감시보고통계푸터:
+    """2026-11-11 김태일 지적 "시간측정을 말안하고": stats_footer 채널의 감시 보고도
+    본 답과 같은 걸린 시간·모델 푸터를 단다."""
+
+    @dataclass
+    class 푸터채널(가짜채널설정):
+        stats_footer: bool = False
+
+    @dataclass
+    class 푸터발행(가짜발행):
+        def apply_stats_footer(self, body, model, rich, *, elapsed, effort, usage):
+            return f"{body}\n\n> 걸린 시간 : {elapsed:.0f}초\n> 실행 모델 : {model}"
+
+    def _돌린다(self, 큐, stats_footer: bool) -> str:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = self.푸터발행()
+        r = replace(응답(ok=True, body=f"끝{WATCH_DONE_TAG}"), elapsed=42.0, model_asked="m-1")
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: r, 발행=발행,
+            채널목록=가짜채널목록({"C1": self.푸터채널(rich=True, stats_footer=stats_footer)}),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        return 발행.게시내역[0][2]
+
+    def test_stats_footer_채널이면_감시보고에_걸린시간이_붙는다(self, 큐) -> None:
+        본문 = self._돌린다(큐, True)
+        assert "걸린 시간 : 42초" in 본문
+        assert "실행 모델 : m-1" in 본문
+
+    def test_stats_footer_꺼진_채널은_그대로다(self, 큐) -> None:
+        assert "걸린 시간" not in self._돌린다(큐, False)
