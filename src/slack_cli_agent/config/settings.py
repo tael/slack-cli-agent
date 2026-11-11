@@ -127,6 +127,11 @@ class RuntimeSettings:
     dm_report_hour: int = 9
     #: How often the report job checks whether it is due; the check is a file read.
     dm_report_interval_sec: float = 600
+    #: With `dm_reply` off, still record a colleague's refused DM (who and
+    #: what) and keep the daily report running so the owner sees the
+    #: attempts. A day without attempts sends nothing in this mode. On by
+    #: default: a silently dropped DM leaves no trace otherwise (2026-11-11).
+    dm_attempt_log: bool = True
 
     progress_tick_sec: float = 3
     progress_idle_sec: float = 45

@@ -216,6 +216,19 @@ class Test수신_경로:
         ingress.handle_message(dm_event(user="U_OWNER"))
         assert seen == [] and len(queue.enqueued) == 1
 
+    def test_꺼져_있으면_거절된_DM을_기록만_한다(self, listener, admin_router, tmp_path) -> None:
+        tried: list[tuple[str, str, str]] = []
+        queue = FakeJobQueue()
+        ingress = make_ingress(listener=listener, queue=queue, admin_router=admin_router,
+                               tmp_path=tmp_path, spawn=InlineTaskSpawner(),
+                               dm_attempt=lambda c, u, t: tried.append((c, u, t)))
+        ingress.handle_message(dm_event(user="U1", text="안녕하세요"))
+        bot = dm_event(user="U9")
+        bot["bot_id"] = "B9"
+        ingress.handle_message(bot)
+        assert tried == [("D1", "U1", "안녕하세요")]
+        assert queue.enqueued == []
+
     def test_봇의_DM에는_답하지_않는다(self, listener, admin_router, tmp_path) -> None:
         seen: list[Any] = []
         ingress, _ = self._ingress(tmp_path, listener, admin_router, lambda *a: seen.append(a))
@@ -265,11 +278,20 @@ class Test조립:
         })
         return Application(profile, FakeSlackClient(), settings=base)
 
-    def test_기본은_꺼져_있다(self, tmp_path: Path) -> None:
+    def test_기본은_응대_없이_시도만_기록한다(self, tmp_path: Path) -> None:
         app = self._app(tmp_path)
         assert app.dm_reply_service() is None
         assert app.ingress()._dm_reply is None
+        assert app.ingress()._dm_attempt is not None
+        assert "core:dm_daily_report" in app.worker_services(app.worker()).runner_names
+
+    def test_시도_기록을_끄면_보고도_없다(self, tmp_path: Path) -> None:
+        app = self._app(tmp_path, dm_attempt_log=False)
+        assert app.ingress()._dm_attempt is None
         assert "core:dm_daily_report" not in app.worker_services(app.worker()).runner_names
+
+    def test_응대를_켜면_시도_기록은_붙지_않는다(self, tmp_path: Path) -> None:
+        assert self._app(tmp_path, dm_reply=True).ingress()._dm_attempt is None
 
     def test_켜면_수신과_일일_보고가_붙는다(self, tmp_path: Path) -> None:
         app = self._app(tmp_path, dm_reply=True)
@@ -499,3 +521,27 @@ class Test일일_보고:
         assert report.due_day() == "2026-11-06"
         report.tick(free_slot)
         assert len(sent) == 1
+
+
+class Test시도만_기록할_때의_일일_보고:
+    def test_시도가_없는_날은_보내지_않는다(self, tmp_path: Path) -> None:
+        from contextlib import nullcontext
+
+        from slack_cli_agent.dm.daily_report import DmDailyReport
+        from slack_cli_agent.observability.notices import NoticeCatalog
+
+        sent: list[str] = []
+        audits: list[Any] = []
+        report = DmDailyReport(
+            rows=lambda start, end, prefix: [],
+            run_turn=lambda prompt: (_ for _ in ()).throw(AssertionError("턴을 돌리면 안 된다")),
+            notify_owner=sent.append,
+            audit=lambda kind, **f: audits.append((kind, f)),
+            notices=NoticeCatalog(),
+            state_path=tmp_path / "state.json",
+            run_hour=0,
+            skip_empty=True,
+        )
+        report.tick(nullcontext)
+        assert sent == []
+        assert audits and audits[0][1]["rows"] == 0

@@ -139,6 +139,8 @@ class Test묶음구성:
             "stale_reclaim",
             "welcome:retro",
             "shadow:loop",
+            # DM 응대가 꺼져 있어도 시도 기록을 보고한다 (dm_attempt_log 기본값).
+            "core:dm_daily_report",
         }
 
     def test_정체_작업_회수는_주기로_돈다(self, app: Application) -> None:
