@@ -8,5 +8,6 @@ PreToolUse hooks for the ``Bash`` matcher, in that order.
 
 serial_read_guard is the exception on two counts: it runs for every tool
 (matcher ``*``), and it imports parallel_nudge.is_read from the package so
-both hooks agree on what a lookup is.
+both hooks agree on what a lookup is. plan_gate also runs for every tool,
+but only does anything on a turn whose engine env carries PLAN_GATE.
 """

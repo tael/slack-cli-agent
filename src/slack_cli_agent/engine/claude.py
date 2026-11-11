@@ -36,22 +36,24 @@ from __future__ import annotations
 
 import dataclasses
 import fnmatch
+import itertools
 import json
 import logging
 import shlex
 import sys
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
 from ..auth.policy import OPERATOR_TOOLS
 from ..auth.principal import TrustLevel
 from ..config.profile import EngineSpec, McpServerSpec
-from ..guard import finish_hook
+from ..guard import finish_hook, plan_start
 from ..guard.posttool import parallel_nudge
 from ..guard.pretool import (
     install_guard,
+    plan_gate,
     repeat_guard,
     restart_guard,
     scan_guard,
@@ -126,6 +128,30 @@ def _server_wide_names(names: tuple[str, ...], servers: Iterable[str]) -> tuple[
 
 #: The built-in tool that loads deferred MCP tool schemas on demand.
 TOOL_SEARCH = "ToolSearch"
+
+#: The subagent tool under its current and former name. The init event lists
+#: it as Task when --tools names Agent (claude 2.1.321).
+AGENT_TOOLS = frozenset({"Agent", "Task"})
+
+
+def _closed_tool_names(args: Sequence[str]) -> dict[str, tuple[str, ...]]:
+    """The tool lists a turn's arguments carry, for the audit row (names only).
+
+    Reads _tool_args' output rather than rebuilding the lists, so the record
+    cannot disagree with the command that ran. A flag the turn did not pass is
+    left out: "not closed" and "closed to nothing" stay apart.
+    """
+    keys = {
+        "--tools": "tools_builtin",
+        "--allowedTools": "tools_allowed",
+        "--disallowedTools": "tools_disallowed",
+    }
+    found: dict[str, tuple[str, ...]] = {}
+    for flag, value in itertools.pairwise(args):
+        key = keys.get(flag)
+        if key is not None:
+            found[key] = tuple(name for name in value.split(",") if name)
+    return found
 
 
 def _builtin_names(names: tuple[str, ...]) -> list[str]:
@@ -348,6 +374,10 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
                 "matcher": "*",
                 "hooks": [
                     {"type": "command", "command": _hook_command(serial_read_guard.HOOK_SCRIPT)},
+                    # Injects the engine's plan (guard/plan_start) once as
+                    # additionalContext; never denies. Only on turns the
+                    # pipeline set PLAN_GATE for (guard/pretool/plan_gate).
+                    {"type": "command", "command": _hook_command(plan_gate.HOOK_SCRIPT)},
                     # Denies a call after the previous responses each made an
                     # essentially-same call (guard/pretool/repeat_guard).
                     {"type": "command", "command": _hook_command(repeat_guard.HOOK_SCRIPT)},
@@ -370,6 +400,11 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
                 "hooks": [{"type": "command", "command": _hook_command(finish_hook.HOOK_SCRIPT)}],
             },
         ],
+        # Starts the tool-less planner call beside the turn and returns at
+        # once; plan_gate above injects its result (guard/plan_start).
+        "UserPromptSubmit": [
+            {"hooks": [{"type": "command", "command": _hook_command(plan_start.HOOK_SCRIPT)}]},
+        ],
     }
 }
 
@@ -377,8 +412,9 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
 def guard_hook_settings() -> dict[str, Any]:
     """The settings fragment registering the Bash PreToolUse guards
     (turn_budget, restart_guard, install_guard, scan_guard, sleep_poll_guard -- guard/pretool/),
-    the all-tools serial-read and repeat guards (guard/pretool/serial_read_guard.py,
-    guard/pretool/repeat_guard.py),
+    the all-tools serial-read, plan and repeat guards (guard/pretool/serial_read_guard.py,
+    guard/pretool/plan_gate.py, guard/pretool/repeat_guard.py),
+    the planner start hook (guard/plan_start.py, UserPromptSubmit),
     the parallel-nudge PostToolUse hook (guard/posttool/parallel_nudge.py)
     and the finish-review Stop hook (guard/finish_hook.py) as engine built-ins.
 
@@ -490,6 +526,24 @@ class ClaudeEngine(Engine):
                 args += ["--disallowedTools", ",".join(denied)]
         return args
 
+    def _agent_args(self, request: EngineRequest) -> list[str]:
+        """--agents with the profile's subagent definitions, on closed turns
+        whose tool set has the Agent tool.
+
+        An unrestricted turn gets nothing: the profile's definitions are
+        written against the owner's closed set, and a turn with every tool
+        open is not the one they were measured for. A turn without Agent gets
+        nothing either -- the CLI lists the agents there but the model has no
+        tool to call them with (claude 2.1.321, w3_inheritance.md case E).
+        """
+        agents = self.profile.agents
+        if not agents or request.tools.access is not ToolAccess.ALLOWLIST:
+            return []
+        if not AGENT_TOOLS.intersection(_builtin_names(request.tools.names)):
+            return []
+        payload = {name: definition.cli_entry() for name, definition in agents.items()}
+        return ["--agents", json.dumps(payload, ensure_ascii=False)]
+
     @classmethod
     def configured_capabilities(
         cls, spec: EngineSpec, mcp_servers: Mapping[str, McpServerSpec]
@@ -538,8 +592,15 @@ class ClaudeEngine(Engine):
         # 않고 이름만 세므로 자격증명이 없어도 실패하지 않는다.
         base = super().footprint_for(request)
         names = [name for name, server in self.profile.mcp_servers.items() if not server.disabled]
+        tools = _closed_tool_names(
+            self._tool_args(request, _claude_mcp_servers(self.profile.mcp_servers))
+        )
         return dataclasses.replace(
-            base, mcp_servers_attached=len(_attached_mcp_servers(request, names))
+            base,
+            mcp_servers_attached=len(_attached_mcp_servers(request, names)),
+            tools_builtin=tools.get("tools_builtin"),
+            tools_allowed=tools.get("tools_allowed"),
+            tools_disallowed=tools.get("tools_disallowed"),
         )
 
     def prepare(self, request: EngineRequest) -> None:
@@ -601,6 +662,7 @@ class ClaudeEngine(Engine):
         # 거부 목록 계산은 붙이기 전 전체 목록으로 한다. 붙이지 않은 서버의
         # 거부 패턴은 남아도 해가 없다.
         cmd += self._tool_args(request, mcp_servers)
+        cmd += self._agent_args(request)
         mcp_servers = {name: entry for name, entry in mcp_servers.items() if name in attached}
         for path in request.readable_dirs:
             cmd += ["--add-dir", str(path)]

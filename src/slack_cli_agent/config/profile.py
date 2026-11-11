@@ -37,7 +37,7 @@ KNOWN_KEYS = frozenset(
         "plugins", "usage_check_command", "agent_greeting", "agent_prompts",
         "settings", "mcp_servers", "domain_file", "light_workdir", "airflow_ctl", "peer",
         "delegation_ledger", "delegation_by", "delegation_record", "delegation_reply_only",
-        "extra_readable_dirs",
+        "extra_readable_dirs", "agents",
     }
 )
 """Top-level keys `from_dict` reads. Anything else is dropped, so a mistyped
@@ -238,6 +238,110 @@ class AgentPrompt:
         return cls(title=title, message=message)
 
 
+# An agent name becomes the Agent tool's subagent_type. Lowercase, digits,
+# hyphen and underscore: the shape claude's own built-in agents use.
+_AGENT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
+
+
+@dataclass(frozen=True)
+class AgentDefinition:
+    """One subagent claude receives through --agents (W3).
+
+    Only the claude engine reads these; codex and gemini have no such flag and
+    leave the block unused. Measured 2026-11-10 (claude 2.1.321,
+    w3_inheritance.md): the subagent's tools are this list intersected with
+    the turn's --tools, MCP approval follows the turn's --allowedTools, and
+    --append-system-prompt does not reach the subagent -- `prompt` is all the
+    standing instruction it gets.
+    """
+
+    name: str
+    description: str
+    prompt: str
+    model: str = ""
+    #: None inherits every tool of the turn, the Agent tool included. A
+    #: definition should name its tools; None exists because the CLI accepts it.
+    tools: tuple[str, ...] | None = None
+    #: Where `prompt` came from. A relative path is resolved against the
+    #: profile file's directory when the profile is loaded from disk; until
+    #: then `prompt` stays empty.
+    prompt_file: Path | None = None
+
+    @classmethod
+    def from_dict(cls, name: str, data: Any) -> AgentDefinition:
+        if not _AGENT_NAME_RE.fullmatch(name):
+            raise ConfigError(f"agents 의 이름은 소문자, 숫자, -, _ 만 쓴다 : {redact(name)}")
+        if not isinstance(data, Mapping):
+            raise ConfigError(f"agents.{name} 은 객체여야 한다")
+        description = str(data.get("description") or "").strip()
+        if not description:
+            raise ConfigError(f"agents.{name} 에 description 이 없다")
+        prompt = data.get("prompt")
+        prompt_file = data.get("prompt_file")
+        if bool(prompt) == bool(prompt_file):
+            raise ConfigError(f"agents.{name} 에는 prompt 와 prompt_file 중 하나만 적는다")
+        model = data.get("model", "")
+        if not isinstance(model, str):
+            raise ConfigError(f"agents.{name}.model 은 문자열이어야 한다")
+        tools = data.get("tools")
+        if tools is not None:
+            if (
+                isinstance(tools, (str, bytes))
+                or not isinstance(tools, Sequence)
+                or not tools
+                or not all(isinstance(t, str) and t.strip() for t in tools)
+            ):
+                raise ConfigError(f"agents.{name}.tools 는 비어 있지 않은 도구 이름 목록이어야 한다")
+            tools = tuple(t.strip() for t in tools)
+        definition = cls(
+            name=name,
+            description=description,
+            prompt=str(prompt or "").strip(),
+            model=model.strip(),
+            tools=tools,
+            prompt_file=Path(str(prompt_file)).expanduser() if prompt_file else None,
+        )
+        # An absolute file can be read now; a relative one waits for the
+        # profile file's location (Profile._read).
+        if definition.prompt_file is not None and definition.prompt_file.is_absolute():
+            definition = definition.with_prompt_from(definition.prompt_file.parent)
+        return definition
+
+    def with_prompt_from(self, base_dir: Path) -> AgentDefinition:
+        """Reads prompt_file, relative to base_dir when it is not absolute."""
+        if self.prompt_file is None:
+            return self
+        path = self.prompt_file if self.prompt_file.is_absolute() else base_dir / self.prompt_file
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ConfigError(f"agents.{self.name}.prompt_file 을 읽지 못했다 : {path}") from exc
+        if not text:
+            raise ConfigError(f"agents.{self.name}.prompt_file 이 비어 있다 : {path}")
+        return replace(self, prompt=text, prompt_file=path)
+
+    def cli_entry(self) -> dict[str, Any]:
+        """This definition as one value of the --agents JSON object."""
+        if not self.prompt:
+            raise ConfigError(
+                f"agents.{self.name} 의 prompt_file 이 아직 읽히지 않았다 : {self.prompt_file}"
+            )
+        entry: dict[str, Any] = {"description": self.description, "prompt": self.prompt}
+        if self.model:
+            entry["model"] = self.model
+        if self.tools is not None:
+            entry["tools"] = list(self.tools)
+        return entry
+
+
+def _parse_agents(block: Any) -> dict[str, AgentDefinition]:
+    if not block:
+        return {}
+    if not isinstance(block, Mapping):
+        raise ConfigError("agents 는 이름을 키로 하는 객체여야 한다")
+    return {str(name): AgentDefinition.from_dict(str(name), data) for name, data in block.items()}
+
+
 @dataclass(frozen=True)
 class PeerProfile:
     """Where a sibling bot lives, so this bot can revive it on the owner's word.
@@ -385,6 +489,9 @@ class Profile:
     # no peer, and the revival guidance is left out of the prompt entirely
     # (PeerRecoverySection). Org-specific locations, so it lives in the profile.
     peer: PeerProfile | None = None
+    # Subagents passed to claude as --agents on turns whose tool set has the
+    # Agent tool. Empty sends nothing, which is every profile without the key.
+    agents: Mapping[str, AgentDefinition] = field(default_factory=dict)
     # The file this was read from. None when built straight from a dict, which
     # is every test and the init command -- checks about the file itself have
     # nothing to look at then.
@@ -455,7 +562,14 @@ class Profile:
             profile = cls.from_dict(data)
         except ConfigError as exc:
             raise ConfigError(f"{exc} : {path}") from exc
-        return replace(profile, source_file=path)
+        try:
+            agents = {
+                name: definition.with_prompt_from(path.parent)
+                for name, definition in profile.agents.items()
+            }
+        except ConfigError as exc:
+            raise ConfigError(f"{exc} : {path}") from exc
+        return replace(profile, source_file=path, agents=agents)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Profile:
@@ -546,6 +660,7 @@ class Profile:
             settings_override=dict(data.get("settings") or {}),
             mcp_servers=mcp_servers,
             peer=(PeerProfile.from_dict(data["peer"]) if data.get("peer") else None),
+            agents=_parse_agents(data.get("agents")),
         )
 
     @staticmethod

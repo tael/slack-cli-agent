@@ -127,6 +127,7 @@ from ..prompt.sections import (
     AuthoritySection,
     ChannelModeSection,
     CompositionContext,
+    FlowSection,
     KnowledgeSection,
     OwnerNoteSection,
     PeerRecoverySection,
@@ -679,6 +680,7 @@ class Application:
             AdvisorSection(),
             AskSection(),
             WorkStyleSection(),
+            FlowSection(enabled=self._settings.plan_flow),
             TurnTierSection(),
             # Documents picked by this request's `when:` words, after the
             # fixed sections so they do not split the shared prefix (S4).
@@ -982,6 +984,10 @@ class Application:
                 require_recipient=self._settings.require_recipient,
                 # S2: 요청 종류로 붙일 MCP 서버를 고른다. 없으면 전부.
                 mcp_routing=self._settings.mcp_routing,
+                # W4 plan_gate: 0 when the profile turned the flow off.
+                plan_gate_responses=(
+                    self._settings.plan_gate_responses if self._settings.plan_flow else 0
+                ),
                 mention_table=self._names.name_table,
                 slow_reporter=self._slow_reporter(),
                 # Resolved per request like the slow report: the engine that

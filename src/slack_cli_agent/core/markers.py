@@ -279,6 +279,45 @@ def _inside_open_fence(prefix: str) -> bool:
     return sum(1 for ln in prefix.split("\n") if ln.strip().startswith("```")) % 2 == 1
 
 
+# The default flow's plan block (prompt FLOW_NOTE, guard/pretool/plan_gate):
+# a `[계획]` or `[계획 갱신]` line and the list lines under it. It belongs in
+# the text of a tool-calling response, which never reaches Slack (claude's
+# result and codex's last agent_message carry only the final message), but a
+# model that puts it in its final message must not post its work notes.
+_PLAN_HEAD_RE = re.compile(r"\A[ \t]*\[계획(?: 갱신)?\]")
+_PLAN_ITEM_RE = re.compile(r"\A(?:[ \t]*(?:[-*]|\d+[.)])[ \t]|[ \t]+\S)")
+
+
+def strip_plan_blocks(text: str) -> tuple[str, list[str]]:
+    """Drops `[계획]` / `[계획 갱신]` blocks outside fenced code: the head
+    line and the list or indented lines right under it, up to the first
+    other line. Returns the dropped head lines for the audit log."""
+    if not text or "[계획" not in text:
+        return text, []
+    dropped: list[str] = []
+    out: list[str] = []
+    in_fence = False
+    in_block = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            in_block = False
+            out.append(line)
+            continue
+        if not in_fence and _PLAN_HEAD_RE.match(line):
+            dropped.append(stripped[:40])
+            in_block = True
+            continue
+        if in_block and stripped and _PLAN_ITEM_RE.match(line):
+            continue
+        in_block = False
+        out.append(line)
+    if not dropped:
+        return text, []
+    return "\n".join(out).strip("\n"), dropped
+
+
 def strip_control_tags(text: str) -> tuple[str, list[str]]:
     """Drops every internal marker line before publish and returns what it
     dropped, for the audit log (B4, bot.py:1586-1614 strip_control_tags).
@@ -289,9 +328,10 @@ def strip_control_tags(text: str) -> tuple[str, list[str]]:
     leak. Only whole-line markers outside fenced code count: a sentence that
     names a marker, or a code block showing one, is content.
     """
+    text, plans = strip_plan_blocks(text)
     if not text or "[[" not in text:
-        return text, []
-    dropped: list[str] = []
+        return text, plans
+    dropped: list[str] = list(plans)
     out: list[str] = []
     in_fence = False
     for line in text.split("\n"):
@@ -340,6 +380,7 @@ __all__ = [
     "resolve_recipient",
     "split_leaked_tags",
     "strip_control_tags",
+    "strip_plan_blocks",
     "strip_unknown_tags",
     "take_ask_tag",
     "take_nowatch_tag",

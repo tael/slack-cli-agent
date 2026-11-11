@@ -259,6 +259,15 @@ class RuntimeSettings:
     # 이어 가야 할 턴이 모두 새 세션이 된다. 프로필에서 켠다.
     context_reset_tokens: int = 0
 
+    # 기본 처리 흐름 (W4, 2026-11-10). True 면 Agent 가 열린 티어(소유자,
+    # 운영자, 위임)의 작업 턴에 FLOW_NOTE 를 넣고 plan_gate 훅을 켠다.
+    # 프로필에서 false 로 두면 지침과 훅이 함께 꺼진다.
+    plan_flow: bool = True
+    # 0 보다 크면 엔진 계획 호출(guard/plan_start)과 계획 주입(plan_gate)을
+    # 켠다. 0 이하는 두 훅만 끈다. 엔진에는 PLAN_GATE 로 넘어간다. 2026-11-11
+    # 부터 거부하지 않으므로 값의 크기는 쓰지 않는다.
+    plan_gate_responses: int = 3
+
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """Overrides only the fields present in `values`; unknown keys are
         ignored. Set-typed fields get converted, since JSON has no set
