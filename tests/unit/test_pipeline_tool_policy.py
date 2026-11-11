@@ -158,3 +158,64 @@ def test_위임_턴은_봇_화자이자_operator_로_지침을_조립한다() ->
     composed = parts["composer"].contexts[0]
     assert composed.asker_is_bot is True
     assert composed.operator is True
+
+
+def _controller_access(delegated: bool = False):
+    from test_pipeline import FakeAccessPolicy
+
+    from slack_cli_agent.auth.principal import Principal, TrustLevel
+
+    class Controller(FakeAccessPolicy):
+        def principal_for(self, channel: str, user: str, message_ts: str = "") -> Principal:
+            return Principal(user_id=user, channel=channel, trust=TrustLevel.GENERAL,
+                             is_direct_message=False, is_controller=True, delegated=delegated)
+
+    return Controller()
+
+
+def test_컨트롤러_봇은_위임_없이도_일반_사용자와_같은_도구를_받는다() -> None:
+    """2026-11-10 김태일 지시 : 구치파치가 마메치·데이전트를 어디서든 일반 사용자와
+    같게 부를 수 있어야 한다. 원장 없는 컨트롤러 멘션도 사람과 같은 도구와 operator 판정."""
+    policy = ToolPolicy(
+        base_tools=("Read",),
+        readonly_tools=("Bash(~/wrap/git_read.sh:*)",),
+        operator_level=lambda p, is_bot=False: "" if is_bot else "operator",
+        operator_tools=("mcp__jira__create_issue",),
+    )
+    pipeline, parts = build_pipeline(
+        responses=[ok_response()],
+        channels={"C1": ChannelConfig(channel_id="C1", name="테스트", operators=frozenset({"*"}))},
+        tool_policy=policy,
+    )
+    pipeline._access = _controller_access()
+    pipeline._asker_is_bot = lambda user: True
+
+    pipeline.handle(make_ctx(user="U_CTRL", from_bot=True))
+
+    names = parts["runner"].calls[0].tools.names
+    assert "Bash(~/wrap/git_read.sh:*)" in names
+    assert "mcp__jira__create_issue" in names
+    composed = parts["composer"].contexts[0]
+    assert composed.asker_is_bot is True  # 봇 화자 지침은 유지
+    assert composed.operator is True
+
+
+def test_컨트롤러가_아닌_봇은_여전히_봇_등급이다() -> None:
+    policy = ToolPolicy(
+        base_tools=("Read",),
+        readonly_tools=("Bash(~/wrap/git_read.sh:*)",),
+        operator_level=lambda p, is_bot=False: "" if is_bot else "operator",
+        operator_tools=("mcp__jira__create_issue",),
+    )
+    pipeline, parts = build_pipeline(
+        responses=[ok_response()],
+        channels={"C1": ChannelConfig(channel_id="C1", name="테스트", operators=frozenset({"*"}))},
+        tool_policy=policy,
+    )
+    pipeline._asker_is_bot = lambda user: True
+
+    pipeline.handle(make_ctx(user="U_OTHERBOT", from_bot=True))
+
+    names = parts["runner"].calls[0].tools.names
+    assert not [n for n in names if n.startswith("Bash")]
+    assert "mcp__jira__create_issue" not in names

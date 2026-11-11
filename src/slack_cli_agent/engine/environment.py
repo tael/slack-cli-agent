@@ -283,6 +283,12 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         "SCA_FINISH_VERIFY_MODEL",
         # Set inside the nested verify claude so its own run never re-verifies.
         "SCA_VERIFY_NESTED",
+        # Verify block cap override (finish_review.resolve_verify_max_blocks).
+        "SCA_FINISH_VERIFY_MAX_BLOCKS",
+        # Path of the temp file holding this turn's loaded knowledge text,
+        # written by EngineRunner for the Stop hook's verify. A path, not a
+        # credential.
+        "SCA_FINISH_KNOWLEDGE_FILE",
         # Where the self-restart guard points a turn instead (apply-request
         # marker) and which labels it treats as the bot itself (H3). Paths and
         # launchd labels, not credentials.

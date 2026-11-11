@@ -137,6 +137,11 @@ def _result_text(block: dict[str, Any]) -> str:
 _HOOK_ERROR_PREFIX = re.compile(r"^PreToolUse:\S+ hook error:\s*")
 
 
+def is_denial(result: str, marker: str = MARKER) -> bool:
+    """A tool_result a guard using ``marker`` produced."""
+    return _HOOK_ERROR_PREFIX.sub("", result.lstrip(), count=1).startswith(marker)
+
+
 def responses_since_prompt(records: list[dict[str, Any]], marker: str = MARKER) -> list[Response]:
     """Group this request's tool-calling assistant lines by message id, and
     mark the uses a guard denied (their tool_result starts with ``marker``,
@@ -162,7 +167,7 @@ def responses_since_prompt(records: list[dict[str, Any]], marker: str = MARKER) 
                     continue
                 use.result = _result_text(block)
                 use.is_error = bool(block.get("is_error"))
-                if _HOOK_ERROR_PREFIX.sub("", use.result.lstrip(), count=1).startswith(marker):
+                if is_denial(use.result, marker):
                     use.denied = True
             continue
         if kind != "assistant" or not isinstance(content, list):

@@ -120,6 +120,13 @@ class Turn:
     #: ships (G13). Resolved by the caller from channel config, same split as
     #: `is_advisor_channel` — this module only reads the already-resolved fact.
     is_code_first_channel: bool = False
+    #: The knowledge-file text this turn's system prompt actually carried
+    #: (KnowledgeSection's rendered output, handed over by the engine through
+    #: KNOWLEDGE_FILE_ENV). Only `verify` reads it: a code table or mapping
+    #: the bot answered from is in the prompt, not in any tool result, and
+    #: without it the check flagged those sentences as unsupported
+    #: (2026-11-10: dispatch_policy 4 = LEGACY_AI, status 4 = 배송완료).
+    knowledge: str = ""
 
 
 @dataclass(frozen=True)
@@ -411,6 +418,44 @@ def stopped_unfinished(turn: Turn) -> str | None:
 
 
 # --------------------------------------------------------------------------
+# unable_unlooked — claimed "can't see / can't tell" with zero tool calls
+# (2026-11-10 sandbox-rnd 19:01 : "새 이미지는 직접 볼 수 없어 평가는 못 함" 을
+# 도구 호출 0회로 냈다. users.info → image_512 → curl → Read 로 열 수 있었다.
+# 2026-11-11 재생 시험에서 기존 검사 8종 모두 None 이었다)
+# --------------------------------------------------------------------------
+
+#: An inability claim. The judgment's weight is on "zero tool calls this
+#: turn", not on this list: any turn that called a tool at all passes, so the
+#: list only has to catch how an inability is phrased, not every variant of
+#: a wrong answer.
+_UNABLE_RE = re.compile(
+    r"(볼|알|열|읽을|확인할|조회할|판단할|평가할|파악할|접근할|열람할|비교할|확인될)\s?수(가|는|도)?\s?없"
+    r"|(보|알|열|읽|확인하|조회하|열람하|파악하|평가하|판단하)지\s?못"
+    r"|(확인|조회|열람|평가|판단|파악)\s?불가"
+    r"|(평가|판단|확인|조회|열람|파악|비교|검토|분석)(는|은|도)?\s?못\s?(함|했|해|합니다|해요)"
+    r"|못\s?(봄|봤|봐서|봅니다|봐요)"
+)
+
+
+def unable_unlooked(turn: Turn) -> str | None:
+    """The inability phrase, if the answer claims it can't see, open, or
+    tell something and this turn called no tool at all.
+
+    One tool call of any kind passes: whether that lookup was the right one
+    is other judgments' concern. A silent reply is exempt."""
+    answer = turn.answer
+    if not answer or turn.tool_calls or "[[침묵]]" in answer:
+        return None
+    for line in answer.splitlines():
+        if _TAG_LINE.match(line):
+            continue
+        match = _UNABLE_RE.search(_QUOTED.sub("", line))
+        if match:
+            return match.group(0)
+    return None
+
+
+# --------------------------------------------------------------------------
 # not_opened — admitted skipping an open it could have done
 # --------------------------------------------------------------------------
 
@@ -668,7 +713,8 @@ _NUM_RE = re.compile(r"(?<![\w.])\d(?:[\d,]*\d)?(?:\.\d+)?")
 #: mametchi raised this 200 -> 400 after the median reply time tripled from
 #: block-then-rewrite loops on short answers.
 VERIFY_MIN_LEN = 400
-#: The verify judgment blocks a turn at most this many times. 2026-11-06:
+#: The verify judgment blocks a turn at most this many times before the
+#: `prior_flagged` filter starts. 2026-11-06:
 #: with 1, the rewrite after the first block was never checked, and
 #: guchipachi's rewrite swapped the flagged claims for new unqueried
 #: guesses ("워크플로나 예약 발송") that went out unverified. 2 checks the
@@ -680,7 +726,14 @@ VERIFY_MAX_BLOCKS = 2
 #: to this hard cap, but past VERIFY_MAX_BLOCKS it blocks only on sentences
 #: no earlier block in the same turn flagged (`prior_flagged`), so a rewrite
 #: can't keep bouncing on the same claim.
-VERIFY_HARD_MAX_BLOCKS = 4
+#: 2026-11-10: lowered 4 -> 2. 76% of one day's 368 checks blocked, and each
+#: block made the rewrite run more lookups and add new derived sentences that
+#: drew the next block; finish_review took 30% of 7 days' turn time.
+#: SCA_FINISH_VERIFY_MAX_BLOCKS=4 restores the old cap
+#: (resolve_verify_max_blocks).
+VERIFY_HARD_MAX_BLOCKS = 2
+#: Env var that overrides VERIFY_HARD_MAX_BLOCKS.
+VERIFY_MAX_BLOCKS_ENV = "SCA_FINISH_VERIFY_MAX_BLOCKS"
 #: Seconds the nested model call may take.
 VERIFY_TIMEOUT = 90
 #: Cap on tool-result text handed to the model.
@@ -689,6 +742,15 @@ VERIFY_EVIDENCE_CHARS = 120_000
 VERIFY_CHUNK_CHARS = 12_000
 #: Cap on the user prompt included as evidence.
 VERIFY_PROMPT_CHARS = 8_000
+#: Cap on knowledge-file text included as evidence. The system prompt budget
+#: is 64KiB (prompt/composer.py), so a full knowledge load can exceed this;
+#: then paragraphs sharing identifiers with the answer are kept first, the
+#: same packing pick_evidence does for tool results.
+VERIFY_KNOWLEDGE_CHARS = 40_000
+#: Env var naming the file that holds this turn's loaded knowledge text. The
+#: engine runner writes it for the life of one engine call
+#: (engine/runner.py) and the Stop hook reads it (guard/finish_hook.py).
+KNOWLEDGE_FILE_ENV = "SCA_FINISH_KNOWLEDGE_FILE"
 #: Default model for the nested check (settings: SCA_FINISH_VERIFY_MODEL).
 VERIFY_DEFAULT_MODEL = "sonnet"
 #: Set in the nested claude's env so a verify call never verifies itself.
@@ -760,20 +822,42 @@ def pick_evidence(answer: str, results: Sequence[str], *, limit: int = VERIFY_EV
     return "\n".join(chunks[i] for i in sorted(keep))
 
 
+def pick_knowledge(answer: str, knowledge: str, *, limit: int = VERIFY_KNOWLEDGE_CHARS) -> str:
+    """Knowledge text under `limit`: all of it when it fits, otherwise the
+    blank-line-separated paragraphs that share the most identifiers with the
+    answer, in their original order."""
+    text = (knowledge or "").strip()
+    if len(text) <= limit:
+        return text
+    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    return pick_evidence(answer, paragraphs, limit=limit)
+
+
 def _turn_evidence(turn: Turn) -> str:
     results = [call.result for call in turn.tool_calls if call.result]
     prompt = (turn.user_prompt or "")[:VERIFY_PROMPT_CHARS]
-    return (prompt + "\n" if prompt else "") + pick_evidence(turn.answer, results)
+    evidence = (prompt + "\n" if prompt else "") + pick_evidence(turn.answer, results)
+    knowledge = pick_knowledge(turn.answer, turn.knowledge)
+    if knowledge:
+        evidence += "\n\n[이번 턴 지침에 실린 지식 파일]\n" + knowledge
+    return evidence
 
 
 _VERIFY_PROMPT = (
-    "아래 [근거] 는 한 봇이 이번 턴에 실행한 조회 결과와 사용자 입력이다. [답] 은 그 봇이 게시하려는 답이다.\n"
+    "아래 [근거] 는 한 봇이 이번 턴에 실행한 조회 결과와 사용자 입력이고, 끝에 붙은 "
+    "[이번 턴 지침에 실린 지식 파일] 은 그 봇이 이번 턴 시스템 지침으로 받은 지식 파일 내용이다. "
+    "[답] 은 그 봇이 게시하려는 답이다.\n"
     "[답] 에서 사실 주장 문장만 본다. 사실 주장은 수치, 원천과 계보, 원인, 있음과 없음, 누가 무엇을 했다는 귀속, "
     "실행했다는 보고다.\n"
     "그 중 [근거] 에서 직접 확인되지 않는 문장을 가려낸다. 결론을 좌우하는 문장부터 최대 3개만 낸다.\n"
     "확인하지 못했다는 한계 문장, 의견, 제안, 인사는 사실 주장이 아니므로 제외한다.\n"
     "[근거] 에 비슷한 단어가 있어도 문장이 말하는 관계 자체가 없으면 근거 없음이다. 예를 들어 "
     "A 정의만 조회했는데 답이 B 의 원천이 A 라고 하면 근거 없음이다.\n"
+    # 2026-11-10: code-table readings (dispatch_policy 4 = LEGACY_AI) were
+    # flagged four times in one turn although the mapping sat in a knowledge
+    # file loaded that turn; the check never saw it.
+    "지식 파일에 적힌 코드표, 값과 이름의 대응, 용어 정의, 절차, 위치 같은 고정된 정의는 근거로 인정한다. "
+    "답의 문장이 지식 파일의 그 정의를 옮겨 쓴 것이면 근거 있음이다.\n"
     # 2026-11-10: a knowledge-file note dated 11/08 ("API허브 TCP 차단") went
     # out as "차단 중임" with no lookup this turn; the check ranked it below
     # three other findings. Stale-state claims now go first.
@@ -888,9 +972,35 @@ def resolve_verify_settings(env: Mapping[str, str]) -> tuple[bool, str]:
     return enabled, model
 
 
+def resolve_verify_max_blocks(env: Mapping[str, str]) -> int:
+    """The verify block cap from SCA_FINISH_VERIFY_MAX_BLOCKS, or
+    VERIFY_HARD_MAX_BLOCKS when unset or not a non-negative integer."""
+    raw = (env.get(VERIFY_MAX_BLOCKS_ENV) or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return VERIFY_HARD_MAX_BLOCKS
+    return value if value >= 0 else VERIFY_HARD_MAX_BLOCKS
+
+
+def read_knowledge_file(env: Mapping[str, str], *, limit: int = 4 * VERIFY_KNOWLEDGE_CHARS) -> str:
+    """This turn's loaded knowledge text from the file KNOWLEDGE_FILE_ENV
+    names, or "" when unset or unreadable. A missing file only means the
+    check runs without knowledge, as it did before."""
+    path = (env.get(KNOWLEDGE_FILE_ENV) or "").strip()
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read(limit)
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
 def unsupported_claims(turn: Turn, *, verifier: ClaimVerifier = heuristic_claim_verifier) -> list[str]:
     """Sentences in the answer that read as fact claims but aren't backed
-    by this turn's own tool results (and the user prompt). Empty when the
+    by this turn's own tool results, the user prompt or the knowledge files
+    this turn's system prompt carried (`Turn.knowledge`). Empty when the
     answer is too short to bother checking (`needs_verification`)."""
     if not needs_verification(turn.answer):
         return []
@@ -950,6 +1060,14 @@ def _stopped_unfinished_guidance(hit: str) -> str:
     )
 
 
+def _unable_unlooked_guidance(hit: str) -> str:
+    return (
+        f'"{hit}" 로 볼 수 없다, 알 수 없다고 답했는데 이번 턴에 도구를 한 번도 부르지 않았다. '
+        "그 대상을 열 수 있는 경로(슬랙 API, 파일 내려받기 후 Read, 조회 도구)로 같은 턴에 실제로 조회하고, "
+        "조회한 결과로 답을 다시 쓴다. 실제로 막히면 그 호출의 오류 문구를 그대로 적는다."
+    )
+
+
 def _not_opened_guidance(hit: str) -> str:
     return (
         f'"{hit}" 로 열람을 생략했다고 답에 썼다. 열 수 있는 문서, 스레드, 첨부는 같은 턴에 열어 본문으로 판정한다. '
@@ -986,12 +1104,18 @@ def _code_first_guidance(hit: str) -> str:
 
 
 def _verify_guidance(hit: str) -> str:
+    # 2026-11-10: the old text forbade dropping a claim instead of querying
+    # it, so the rewrite ran more lookups and added new derived sentences that
+    # drew the next block. A sentence the question does not need may now be
+    # dropped; a sentence that answers the question still has to be confirmed.
     return (
-        f"다음 문장은 이번 턴 조회 결과에 근거가 없다 : {hit}. "
-        "같은 턴에 그 문장이 말하는 대상을 원본 메시지, 코드, 데이터, 로그로 직접 조회해 확정하고 답을 다시 쓴다. "
-        "열려 있는 조회 도구로 확정할 수 있는 문장은 먼저 조회한다. "
-        "주장을 줄이거나 다른 추측으로 바꾸는 것으로 조회를 대신하지 않는다. "
-        "다시 쓴 답도 같은 검수를 다시 받는다. 같은 턴에 조회해도 확정되지 않는 문장만 답에서 뺀다. "
+        f"다음 문장은 이번 턴 조회 결과와 지식 파일에 근거가 없다 : {hit}. "
+        "그 문장이 질문에 답하는 데 필요 없는 해석이나 부연이면 조회하지 않고 지운다. "
+        "질문의 답을 이루는 사실 문장이면 같은 턴에 원본 메시지, 코드, 데이터, 로그로 직접 조회해 확정한다. "
+        "조회로 확정하지 못한 사실 문장은 답에서 빼고, 다른 추측으로 바꾸어 남기지 않는다. "
+        "지워도 된다는 것은 근거 없는 사실 단정을 남겨도 된다는 뜻이 아니다. 남기는 사실 문장은 모두 "
+        "이번 턴 조회 결과나 지식 파일에 근거가 있어야 한다. "
+        "다시 쓸 때 질문에 필요 없는 새 해석 문장을 덧붙이지 않는다. 다시 쓴 답도 같은 검수를 다시 받는다. "
         "이 차단으로 막힌 초안은 게시되지 않았다. 다시 쓴 답에서 그 초안을 앞선 답으로 가리키거나 정정하지 않는다."
     )
 
@@ -1053,6 +1177,7 @@ def _build_common_registry() -> JudgmentRegistry:
     common = JudgmentRegistry()
     common.register("gave_up", gave_up, _gave_up_guidance)
     common.register("not_opened", not_opened, _not_opened_guidance)
+    common.register("unable_unlooked", unable_unlooked, _unable_unlooked_guidance)
     common.register("stopped_unfinished", stopped_unfinished, _stopped_unfinished_guidance)
     common.register("absence_unopened", absence_unopened, _absence_unopened_guidance)
     common.register("offer", offer, _offer_guidance)
@@ -1172,6 +1297,7 @@ def decide(
     release_sec: int = 240,
     claim_verifier: ClaimVerifier | None = None,
     prior_flagged: frozenset[str] = frozenset(),
+    verify_hard_max_blocks: int = VERIFY_HARD_MAX_BLOCKS,
 ) -> StopDecision:
     """The Stop-hook decision for one turn.
 
@@ -1186,6 +1312,9 @@ def decide(
     A transcript-less turn (`has_transcript=False`) always allows: there's
     no evidence to judge, and judging anyway would block every such turn,
     including ones that did the work.
+
+    `verify_hard_max_blocks` is the most times the model verify may block
+    one turn (resolve_verify_max_blocks reads the env override).
     """
     if not turn.has_transcript:
         return StopDecision(action="allow")
@@ -1200,7 +1329,7 @@ def decide(
         # flagged the turn, at most VERIFY_MAX_BLOCKS blocks per request, and
         # never so close to the deadline that the rewrite can't land.
         budget_ok = seconds_left is None or seconds_left > release_sec + VERIFY_TIMEOUT
-        if not findings and budget_ok and block_count < VERIFY_HARD_MAX_BLOCKS:
+        if not findings and budget_ok and block_count < verify_hard_max_blocks:
             claims = unsupported_claims(turn, verifier=claim_verifier)
             if block_count >= VERIFY_MAX_BLOCKS:
                 claims = [c for c in claims if claim_key(c) not in prior_flagged]
@@ -1212,7 +1341,7 @@ def decide(
     if seconds_left is not None and seconds_left < release_sec:
         return StopDecision(action="release", findings=findings)
     only_verify = all(f.name == "verify" for f in findings)
-    if block_count >= max_blocks and not (only_verify and block_count < VERIFY_HARD_MAX_BLOCKS):
+    if block_count >= max_blocks and not (only_verify and block_count < verify_hard_max_blocks):
         return StopDecision(action="release", findings=findings)
     return StopDecision(action="block", findings=findings)
 

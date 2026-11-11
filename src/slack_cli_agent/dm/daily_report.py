@@ -53,6 +53,9 @@ class DmDailyReport:
         state_path: Path,
         run_hour: int = 9,
         clock: Callable[[], float] = time.time,
+        # True when DM replies are off and only attempts are recorded: a day
+        # without attempts sends nothing, so the owner is not told daily.
+        skip_empty: bool = False,
     ) -> None:
         if not 0 <= run_hour <= 23:
             raise ValueError(f"보고 시각은 0-23 이어야 한다 : {run_hour}")
@@ -64,6 +67,7 @@ class DmDailyReport:
         self._state_path = state_path
         self._run_hour = run_hour
         self._clock = clock
+        self._skip_empty = skip_empty
 
     def due_day(self) -> str | None:
         """Yesterday's date once today's run hour has passed and today has
@@ -82,6 +86,9 @@ class DmDailyReport:
         rows = self._day_rows(day)
         if not rows:
             self._mark_done()
+            if self._skip_empty:
+                self._record(day, 0, ok=True)
+                return
             self._send(self._notices.render(NoticeKey.DM_REPORT_EMPTY, day=day))
             self._record(day, 0, ok=True)
             return

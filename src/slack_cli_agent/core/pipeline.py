@@ -46,7 +46,13 @@ from ..engine.runner import EngineInvoker
 from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
 from ..guard.figurative import FigurativeGuard
-from ..guard.mentions import AddresseeGuard, PlainMentionGuard, Recipient, RecipientResolver
+from ..guard.mentions import (
+    AddresseeGuard,
+    PlainMentionGuard,
+    Recipient,
+    RecipientResolver,
+    leading_recipient_bot,
+)
 from ..guard.pipeline import GuardPipeline
 from ..guard.pretool.plan_gate import PLAN_GATE_ENV
 from ..guard.rewrite import RewriteLossGuard
@@ -490,6 +496,20 @@ class RequestPipeline:
                 dirs.append(parent)
         return tuple(dirs)
 
+    def _restricted_bot(self, principal: Principal, from_bot: bool) -> bool:
+        """Whether this asker is a bot held to the bot tier.
+
+        A controller bot (profile controller_user_ids) is treated like an
+        ordinary user of the channel: the same operators list, "*" included,
+        the same tools and tier a person gets there. Only other bots stay on
+        the read-only bot tier. 2026-11-10 김태일 지시 "구치파치가 마메치와
+        데이전트를 어디서든 통제할 수 있어야 함, 일반 유저와 동일하게".
+        A delegated turn is decided before this and keeps its own tier.
+        """
+        if principal.trust is TrustLevel.OWNER or principal.is_controller:
+            return False
+        return bool(from_bot or self._asker_is_bot(principal.user_id))
+
     def _tools(
         self, principal: Principal, prompt: str, config: ChannelConfig | None,
         *, from_bot: bool = False,
@@ -500,9 +520,7 @@ class RequestPipeline:
         # names a bot (mametchi authz.is_operator). The event's bot_id decides
         # first; the users_info lookup reads a failed call as "a person", so
         # it only adds a bot the event did not mark (bot.py:7855).
-        is_bot = principal.trust is not TrustLevel.OWNER and (
-            from_bot or self._asker_is_bot(principal.user_id)
-        )
+        is_bot = self._restricted_bot(principal, from_bot)
         return ToolSelection.from_names(
             self._tool_policy.tool_list_for(
                 principal, prompt=prompt, skills_enabled=bool(config and config.skills),
@@ -563,8 +581,7 @@ class RequestPipeline:
             principal, config,
             full_authority=self._access.is_full_authority(principal),
             delegated=principal.delegated,
-            is_bot=principal.trust is not TrustLevel.OWNER
-            and (ctx.from_bot or self._asker_is_bot(ctx.user)),
+            is_bot=self._restricted_bot(principal, ctx.from_bot),
         ).value
 
         key = self._session_key(ctx, scope)
@@ -657,13 +674,14 @@ class RequestPipeline:
             },
         )
         reach = turn_reach(self._engine, request)
-        system_prompt, budget_report, header = self._compose_system_prompt(
+        system_prompt, budget_report, header, knowledge = self._compose_system_prompt(
             ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
             tier=tier, reach=reach,
         )
         request = replace(
             request, prompt=_with_request_header(header, prompt),
             system_prompt=system_prompt, budget_report=budget_report,
+            review_knowledge=knowledge,
             retarget=tier_note_retarget(principal, tier),
         )
         # Counted rather than derived: the reset is the only trace a broken
@@ -708,14 +726,17 @@ class RequestPipeline:
                     prompt = f"{prompt}\n\n{earlier_note}"
                 # The tier goes again: without it the retry lost the note while
                 # its audit row still named the tier (A12 review).
-                retry_prompt, retry_budget, retry_header = self._compose_system_prompt(
-                    ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
-                    tier=tier, reach=reach,
+                retry_prompt, retry_budget, retry_header, retry_knowledge = (
+                    self._compose_system_prompt(
+                        ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
+                        tier=tier, reach=reach,
+                    )
                 )
                 request = replace(
                     request, session_id=decision.session_id, resume=False,
                     prompt=_with_request_header(retry_header, prompt),
                     system_prompt=retry_prompt, budget_report=retry_budget,
+                    review_knowledge=retry_knowledge,
                 )
                 engine_start = self._timing_stamp()
                 response = self._invoker.invoke(request)
@@ -1034,8 +1055,11 @@ class RequestPipeline:
         *,
         tier: str = "",
         reach: tuple[bool, tuple[str, ...]] = (False, ()),
-    ) -> tuple[str, dict[str, Any], str]:
-        """System prompt, its budget report, and the user-prompt header.
+    ) -> tuple[str, dict[str, Any], str, str]:
+        """System prompt, its budget report, the user-prompt header, and the
+        knowledge text the prompt carried (for the Stop hook's verify,
+        EngineRequest.review_knowledge; "" from a composer whose report has
+        none).
 
         The header carries the per-request values (thread coordinates, watch
         run id, attachments) when the composer can build one. It goes on the
@@ -1053,7 +1077,8 @@ class RequestPipeline:
         )
         text, report = self._composer.compose_with_report(composition_ctx)
         header = build_header(composition_ctx) if callable(build_header) else ""
-        return text, report.as_audit_dict(), header
+        knowledge = getattr(report, "knowledge_text", "")
+        return text, report.as_audit_dict(), header, knowledge if isinstance(knowledge, str) else ""
 
     def _instruction_fingerprint(
         self,
@@ -1115,7 +1140,7 @@ class RequestPipeline:
         # A delegated turn holds the operator tools (ToolPolicy.operator_level),
         # so it takes the operator note too (A11).
         operator = principal.delegated or is_channel_operator(
-            config, ctx.user, is_bot=asker_is_bot,
+            config, ctx.user, is_bot=asker_is_bot and not principal.is_controller,
         )
         return CompositionContext(
             principal=principal,
@@ -1435,6 +1460,10 @@ class RequestPipeline:
             mention_names=self._mention_table(),
             request_text=ctx.text,
             previous_body=previous_body,
+            recipient_bot_id=leading_recipient_bot(
+                body, "" if ctx.user == self._owner_user_id else ctx.user,
+                self._recipient_resolver._is_bot,
+            ),
         )
         result = self._guards.run(body, guard_ctx)
         if result.rerun is None:

@@ -161,6 +161,10 @@ class IncidentKind(StrEnum):
     DM_PROBE = "dm_probe"
     #: One daily DM report run (E8): `day`, `rows`, `ok`.
     DM_REPORT = "dm_report"
+    #: A colleague's DM that went unanswered because `dm_reply` is off.
+    #: `user` and `question` are kept so the daily report can show the
+    #: attempt (2026-11-11 김태일 지시 "DM 시도시 기록해두고 일일 리포트").
+    DM_ATTEMPT = "dm_attempt"
 
     #: Plain-text `@name` mentions turned into real ones (mametchi
     #: plain_mention). `names` lists who.
@@ -234,6 +238,7 @@ BASELINE_KINDS: tuple[IncidentKind, ...] = (
     IncidentKind.DM_REPLY_CAPPED,
     IncidentKind.DM_PROBE,
     IncidentKind.DM_REPORT,
+    IncidentKind.DM_ATTEMPT,
     # Routine traffic the mametchi kinds map onto (G7), not faults.
     IncidentKind.AWAITING_REPLY,
     IncidentKind.PEER_SKIPPED,

@@ -69,7 +69,7 @@ KNOWN_KEYS = frozenset(
         "light_context", "rich", "chat",
         "progress", "bot_mentions", "code_first", "peer_turn_limit", "stats_footer",
         "user_tools", "tool_enforcement",
-        "operators", "airflow_admins", "extra_tools",
+        "operators", "operator_bots", "airflow_admins", "extra_tools",
     }
 )
 """Channel-setting keys the core reads. Org-specific keys (like org_admins)
@@ -173,7 +173,12 @@ class ChannelConfig:
     """Users who may make this bot act here (mametchi operators). A non-owner
     listed here, or anyone when it holds ``"*"``, gets the profile's
     operator_tools minus the bare write tools (``operator_full`` returns
-    those). A bot never counts."""
+    those). A bot never counts here; see ``operator_bots``."""
+    operator_bots: frozenset[str] = frozenset()
+    """Bot accounts that act here as operators, named one by one ("*" is not
+    honored for bots). Standing, unlike the delegation ledger's 30 minutes,
+    so it is meant for an owner-only channel. 2026-11-10 김태일 지시로
+    private-taeil 에서 구치파치가 마메치·데이전트 설정을 바꿀 수 있게 했다."""
     airflow_admins: frozenset[str] = frozenset()
     """Users who get the profile's airflow_ctl wrapper as a scoped Bash grant."""
     extra_tools: tuple[str, ...] = ()
@@ -255,6 +260,7 @@ class ChannelConfig:
             full_authority=bool(data.get("full_authority", False)),
             operator_full=bool(data.get("operator_full", False)),
             operators=_id_set(data.get("operators")),
+            operator_bots=_id_set(data.get("operator_bots")),
             airflow_admins=_id_set(data.get("airflow_admins")),
             extra_tools=_tool_names(data.get("extra_tools")),
             skills=bool(data.get("skills", False)),
@@ -337,8 +343,11 @@ def is_channel_operator(config: ChannelConfig | None, user: str, *, is_bot: bool
     """True when the channel's ``operators`` list names the user or
     holds ``"*"``. A bot is never an operator: letting a bot's mention open the
     operator path erases the permission boundary (mametchi authz.is_operator)."""
-    if config is None or is_bot or not user:
+    if config is None or not user:
         return False
+    if is_bot:
+        # Only a bot the channel names in operator_bots; "*" never covers bots.
+        return user in config.operator_bots
     return "*" in config.operators or user in config.operators
 
 

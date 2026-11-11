@@ -2700,6 +2700,32 @@ class Test요청_상관관계_키:
         assert runner.calls[0].request_id != runner.calls[1].request_id
 
 
+class _지식을_싣는_조립기(FakeComposer):
+    def compose_with_report(self, ctx: Any) -> tuple[str, Any]:
+        from dataclasses import replace as _replace
+
+        text, report = super().compose_with_report(ctx)
+        return text, _replace(report, knowledge_text="status 4 = 배송완료")
+
+
+class Test검수용_지식이_요청에_실린다:
+    """Stop 훅 검수가 이번 턴 지침에 실린 지식을 근거로 읽는다 (2026-11-10)."""
+
+    def test_조립기가_낸_지식_본문이_요청에_실린다(self, tmp_path: Path) -> None:
+        pipeline, parts = build_pipeline(
+            responses=[ok_response()], tmp_path=tmp_path, composer=_지식을_싣는_조립기(),
+        )
+        pipeline.handle(make_ctx())
+        runner: Any = parts["runner"]
+        assert runner.calls[0].review_knowledge == "status 4 = 배송완료"
+
+    def test_지식_본문이_없는_조립기면_빈_값이다(self, tmp_path: Path) -> None:
+        pipeline, parts = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx())
+        runner: Any = parts["runner"]
+        assert runner.calls[0].review_knowledge == ""
+
+
 class Test감시_안내가_실제_결과_자리를_받는다:
     """안내문의 자리와 리더가 읽는 자리를 잇는 것은 파이프라인이다. 시험이
     손으로 치환하면 이 연결이 끊겨도 통과한다 (sca-vokt 리뷰 지적)."""

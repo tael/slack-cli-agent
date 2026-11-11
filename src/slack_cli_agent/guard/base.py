@@ -55,6 +55,10 @@ class GuardContext:
     # Whether this body is a rewrite from WatchPromiseGuard's rerun request.
     # If still failing on retry, the promise text gets cut and replaced.
     is_rewrite_retry: bool = False
+    # Bot the reply's trailing [[RECIPIENT]] tag names. BotMentionGuard keeps
+    # that bot's leading mention: swapping it for a name made RecipientResolver
+    # re-add the mention in front, so the name showed twice (2026-11-10).
+    recipient_bot_id: str = ""
 
 
 class OutputGuard(ABC):

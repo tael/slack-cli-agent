@@ -42,6 +42,7 @@ from slack_cli_agent.render.splitter import (
     extract_csv_blocks,
     split_by_block_budget,
 )
+from slack_cli_agent.render import table_blocks
 from slack_cli_agent.render.verifier import SplitVerifier
 
 log = logging.getLogger(__name__)
@@ -98,6 +99,10 @@ class RichPayload:
     note: str
     text: str
     blocks: list[dict[str, Any]] = field(default_factory=list)
+    # Same chunk as plain markdown blocks, set only when tables were turned
+    # into table blocks. A rejected table payload retries with these before
+    # dropping to plain text.
+    markdown_blocks: list[dict[str, Any]] | None = None
 
 
 class MessagePublisher:
@@ -178,6 +183,8 @@ class MessagePublisher:
         if split_note:
             part, note = self._blocks.split_context(part)
         blocks: list[dict[str, Any]] = []
+        markdown_blocks: list[dict[str, Any]] = []
+        converted = False
         if part.strip():
             # A paragraph after a list gets its own markdown block, or Slack
             # glues it under the last bullet (BlockBuilder.split_after_lists).
@@ -185,16 +192,59 @@ class MessagePublisher:
             pieces = self._blocks.split_after_lists(part)
             if len(pieces) > 20:
                 pieces = [part]
-            for piece in pieces:
-                blocks.append({"type": "markdown", "text": piece})
+            for i, piece in enumerate(pieces):
+                # A split alone still renders flush under the bullet; the
+                # zero-width line gives one blank line (BlockBuilder.LIST_GAP).
+                if i:
+                    piece = self._blocks.LIST_GAP + piece
+                markdown_blocks.append({"type": "markdown", "text": piece})
+                # Tables become table blocks with wrapped columns (table_blocks).
+                table = None
+                try:
+                    table = table_blocks.to_blocks(piece)
+                except Exception:  # noqa: BLE001 - a conversion bug must not cost the answer
+                    log.exception("표 블록 변환 실패, markdown 블록으로 보낸다")
+                if table:
+                    blocks.extend(table)
+                    converted = True
+                else:
+                    blocks.append({"type": "markdown", "text": piece})
+            if converted and len(blocks) > 45:
+                blocks, converted = list(markdown_blocks), False
         if note:
-            blocks.append({
+            ctx = {
                 "type": "context",
                 "elements": [{"type": "mrkdwn", "text": note}],
-            })
+            }
+            blocks.append(ctx)
+            markdown_blocks.append(ctx)
         return RichPayload(
-            body=part, note=note, text=self._blocks.preview(part or note), blocks=blocks
+            body=part, note=note, text=self._blocks.preview(part or note), blocks=blocks,
+            markdown_blocks=markdown_blocks if converted else None,
         )
+
+    def _audit_table_rejected(self, channel: str, thread_ts: str, exc: Exception) -> None:
+        log.warning("표 블록 거절, markdown 블록으로 다시 보낸다 : %s", exc)
+        self._audit(
+            kind=IncidentKind.BLOCKS_REJECTED.value, channel=channel,
+            thread_ts=thread_ts or "", error=str(exc), body="table_blocks",
+        )
+
+    def _post_with_table_fallback(
+        self, kwargs: dict[str, Any], payload: RichPayload | None,
+        channel: str, thread_ts: str,
+    ) -> Any:
+        """Posts; when built table blocks are rejected, retries once with the
+        plain markdown blocks Slack converts itself before the caller's
+        plain-text fallback takes over."""
+        try:
+            return self._client.chat_postMessage(**kwargs)
+        except Exception as exc:
+            if payload is None or not payload.markdown_blocks or not self._verifier.blocks_rejected(exc):
+                raise
+            self._audit_table_rejected(channel, thread_ts, exc)
+            kwargs["blocks"] = payload.markdown_blocks
+            return self._client.chat_postMessage(**kwargs)
 
     def _redact(self, channel: str, thread_ts: str, text: str) -> str:
         """Masks credentials before anything is sent (A17).
@@ -376,7 +426,8 @@ class MessagePublisher:
                 kwargs["thread_ts"] = parent_ts
 
             try:
-                res = self._client.chat_postMessage(**kwargs)
+                res = self._post_with_table_fallback(kwargs, payload if rich else None,
+                                                     channel, thread_ts)
             except Exception as exc:
                 if rich and self._verifier.block_limit_exceeded(exc):
                     pieces = self._resplit(part)
@@ -536,7 +587,17 @@ class MessagePublisher:
         self._backup_original(channel, ts)
 
         try:
-            self._client.chat_update(**kwargs)
+            if rich and payload.markdown_blocks:
+                try:
+                    self._client.chat_update(**kwargs)
+                except Exception as table_exc:
+                    if not self._verifier.blocks_rejected(table_exc):
+                        raise
+                    self._audit_table_rejected(channel, ts, table_exc)
+                    kwargs["blocks"] = payload.markdown_blocks
+                    self._client.chat_update(**kwargs)
+            else:
+                self._client.chat_update(**kwargs)
         except Exception as exc:
             # chat.update touches one ts, so a rejected block payload can't be
             # split the way post() does it. Dropping the blocks is the only
