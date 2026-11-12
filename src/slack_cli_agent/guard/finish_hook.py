@@ -59,6 +59,7 @@ from slack_cli_agent.guard.finish_review import (
     verify_claim_keys,
 )
 from slack_cli_agent.core.markers import missing_recipient_prompt
+from slack_cli_agent.guard.figurative import Precompute
 
 #: Absolute path to this file, for the engine adapter that builds the hook
 #: command (same pattern as observability/progress_hook.py's HOOK_SCRIPT).
@@ -245,6 +246,13 @@ def main(argv: list[str]) -> int:
         seconds_left = time_left(os.environ)
         verify_on, verify_model = resolve_verify_settings(os.environ)
         verifier = ModelClaimVerifier(model=verify_model) if verify_on else None
+        # The figurative corrector runs on this same draft while decide()
+        # (mostly the model verify) runs; see guard/figurative.Precompute.
+        figurative = None
+        with contextlib.suppress(Exception):
+            figurative = Precompute.start(
+                payload.get("last_assistant_message") or turn.answer or "", os.environ,
+            )
         started = time.monotonic()
         decision = decide(
             turn, block_count=block_count, seconds_left=seconds_left, claim_verifier=verifier,
@@ -253,6 +261,12 @@ def main(argv: list[str]) -> int:
             prior_drafts=prior_drafts,
         )
         elapsed = round(time.monotonic() - started, 1)
+        if figurative is not None:
+            with contextlib.suppress(Exception):
+                if decision.action == "block":
+                    figurative.cancel()
+                else:
+                    figurative.finish()
         if decision.action == "block" and count_path is not None:
             _write_count(count_path, block_count + 1)
             if flagged_path is not None:

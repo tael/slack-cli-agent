@@ -177,5 +177,12 @@ class TestWorkStyleSection:
         # 매 턴 다시 실리는 지침이라 몇 줄로 둔다. 지침 크기는 S2 과제가 따로 줄인다.
         # 800 에서 1200 으로 올렸다 : 번호 조회 줄(약 540 B, 150 토큰 안팎)이 더해졌다.
         # 1200 에서 1600 으로 올렸다 : 연관 조회 묶음 줄(약 370 B)이 더해졌다.
+        # 1600 에서 1900 으로 올렸다 : 코드 용어 표기 줄(약 250 B, prompt/code_terms.py).
         text = WorkStyleSection().render(_ctx())
-        assert len(text.encode("utf-8")) < 1600
+        assert len(text.encode("utf-8")) < 1900
+
+
+def test_작업_방식_지침에_코드_용어_표기가_붙는다() -> None:
+    # 2026-11-12: 교정 297문장 중 99개가 탈출구, 형제 호출이었다 (prompt/code_terms.py).
+    text = WorkStyleSection().render(_ctx())
+    assert "escape hatch 는 예외" in text

@@ -46,7 +46,8 @@ from ..engine.capability import EngineCapabilities, ExecutionIsolation
 from ..engine.runner import EngineInvoker
 from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
-from ..guard.figurative import FigurativeGuard
+from ..guard.figurative import OUT_ENV as FIGURATIVE_OUT_ENV
+from ..guard.figurative import FigurativeGuard, read_precomputed
 from ..guard.mentions import (
     AddresseeGuard,
     PlainMentionGuard,
@@ -371,8 +372,13 @@ class RequestPipeline:
         post_corrector: FigurativeGuard | None = None,
         # Runs the after-post correction. Injected so a test runs it inline.
         spawn: Callable[[Callable[[], None]], None] | None = None,
+        # settings.figurative_in_stop_hook: per-turn env that has the Stop hook
+        # run the figurative corrector beside verify (guard/figurative.
+        # Precompute). Returns {} for a turn the check does not apply to.
+        figurative_env: Callable[[ChannelConfig | None], Mapping[str, str]] | None = None,
     ) -> None:
         self._post_corrector = post_corrector
+        self._figurative_env = figurative_env
         self._spawn = spawn or _spawn_daemon
         self._mcp_routing = mcp_routing
         self._access = access_policy
@@ -680,6 +686,7 @@ class RequestPipeline:
                 ),
                 **self._engine_env(ctx.channel, config),
                 **self._plan_gate_env(tier, config),
+                **(self._figurative_env(config) if self._figurative_env is not None else {}),
                 # The marker's second line, so the worker can tell the turn
                 # that asked for a restart (reliability/restart.py).
                 TURN_ID_ENV: f"{ctx.channel}:{ctx.ts}",
@@ -1517,6 +1524,7 @@ class RequestPipeline:
                 body, "" if ctx.user == self._owner_user_id else ctx.user,
                 self._recipient_resolver._is_bot,
             ),
+            figurative_precomputed=read_precomputed(request.engine_env.get(FIGURATIVE_OUT_ENV)),
         )
         result = self._guards.run(body, guard_ctx)
         if result.rerun is None:
@@ -1588,6 +1596,7 @@ class RequestPipeline:
             self._audit.record(
                 IncidentKind.FIGURATIVE_FIX.value, channel=ctx.channel, thread_ts=ctx.thread_ts,
                 mode=fig.get("mode"), fixes=fig.get("fixes"),
+                source=fig.get("source"), dropped=fig.get("dropped"), rejected=fig.get("rejected"),
             )
 
     def _apply_ask_tag(self, body: str, ctx: RequestContext) -> str:

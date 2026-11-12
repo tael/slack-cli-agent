@@ -289,6 +289,14 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # written by EngineRunner for the Stop hook's verify. A path, not a
         # credential.
         "SCA_FINISH_KNOWLEDGE_FILE",
+        # guard/figurative.Precompute: where the Stop hook leaves its
+        # figurative verdict, the channel mode, length floor, model and time
+        # limit. A path, a word and numbers, not credentials.
+        "SCA_FIGURATIVE_OUT",
+        "SCA_FIGURATIVE_MODE",
+        "SCA_FIGURATIVE_MIN_CHARS",
+        "SCA_FIGURATIVE_MODEL",
+        "SCA_FIGURATIVE_TIMEOUT",
         # Where the self-restart guard points a turn instead (apply-request
         # marker) and which labels it treats as the bot itself (H3). Paths and
         # launchd labels, not credentials.

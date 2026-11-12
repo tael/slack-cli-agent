@@ -1042,6 +1042,20 @@ class Test비유교정가드연결:
         assert not any(isinstance(g, FigurativeGuard) for g in app._guards()._guards)
         assert isinstance(app.pipeline()._post_corrector, FigurativeGuard)
 
+    def test_켜면_Stop_훅_교정_환경을_턴마다_새_경로로_넘긴다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.guard.figurative import MODE_ENV, OUT_ENV
+
+        app = Application.from_profile(
+            write_profile(tmp_path, settings={"figurative_check": True}), client=FakeSlackClient())
+        make_env = app.pipeline()._figurative_env
+        assert make_env is not None
+        first, second = make_env(None), make_env(None)
+        assert first[MODE_ENV] == "work" and first[OUT_ENV] != second[OUT_ENV]
+
+    def test_교정이_꺼져_있으면_Stop_훅_교정도_없다(self, tmp_path: Path) -> None:
+        app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
+        assert app.pipeline()._figurative_env is None
+
     def test_기본값은_꺼져_있어_본문을_바꾸지_않는다(self, tmp_path: Path) -> None:
         app = Application.from_profile(write_profile(tmp_path), client=FakeSlackClient())
         body = "이번 배치는 정산 파이프라인과 맞닿은 지점에서 실패했습니다. " * 3
