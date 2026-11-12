@@ -605,6 +605,37 @@ class ClaudeEngine(Engine):
 
     def prepare(self, request: EngineRequest) -> None:
         self._ensure_skill_discovery_link()
+        self._ensure_skill_plugin()
+
+    #: Folder under StatePaths.skills that holds the bot's skills as a plugin.
+    SKILL_PLUGIN_DIR: ClassVar[str] = "plugin"
+
+    def _skill_plugin(self) -> Path:
+        return self.profile.paths.skills / self.SKILL_PLUGIN_DIR
+
+    def _ensure_skill_plugin(self) -> None:
+        """2026-11-12 (orchestration E): with --setting-sources "" Claude Code
+        2.1.322 lists no skill from an --add-dir's .claude/skills, and the
+        Skill tool answers "Unknown skill" (4 of 4 runs). --plugin-dir is
+        read regardless of setting sources, so the same files are exposed as
+        a plugin: a manifest plus a `skills` link to StatePaths.skill_files."""
+        paths = self.profile.paths
+        if not paths.skill_files.is_dir():
+            return
+        plugin = self._skill_plugin()
+        manifest = plugin / ".claude-plugin" / "plugin.json"
+        try:
+            if not manifest.exists():
+                manifest.parent.mkdir(parents=True, exist_ok=True)
+                manifest.write_text(json.dumps({
+                    "name": self.profile.name, "version": "1.0.0",
+                    "description": "Skills installed for this bot",
+                }, ensure_ascii=False), encoding="utf-8")
+            link = plugin / "skills"
+            if not link.is_symlink() and not link.exists():
+                link.symlink_to(paths.skill_files, target_is_directory=True)
+        except OSError as exc:
+            log.warning("스킬 플러그인 경로를 만들지 못했다 : %s", exc)
 
     def _ensure_skill_discovery_link(self) -> None:
         paths = self.profile.paths
@@ -669,6 +700,9 @@ class ClaudeEngine(Engine):
         skills_dir = self.profile.paths.skills
         if skills_dir.exists():
             cmd += ["--add-dir", str(skills_dir)]
+        plugin = self._skill_plugin()
+        if (plugin / ".claude-plugin" / "plugin.json").exists():
+            cmd += ["--plugin-dir", str(plugin)]
         if mcp_servers:
             cmd += ["--mcp-config", json.dumps({"mcpServers": mcp_servers}, ensure_ascii=False)]
         # Unconditional: it used to ride along with --mcp-config, so a profile
@@ -679,7 +713,13 @@ class ClaudeEngine(Engine):
         settings = self._settings_value(request)
         if settings:
             cmd += ["--settings", json.dumps(settings, ensure_ascii=False)]
-        cmd += ["--append-system-prompt", request.system_prompt]
+        # settings.system_prompt_split: replace the default system prompt so
+        # the composer's cache boundary marker splits the cached block. With
+        # --append-system-prompt the marker reaches the model as plain text
+        # and the whole block is rewritten when any of it differs
+        # (2026-11-12 CLI 2.1.322, prompt/sections.CACHE_BOUNDARY).
+        flag = "--system-prompt" if self.settings.system_prompt_split else "--append-system-prompt"
+        cmd += [flag, request.system_prompt]
         cmd += (["--resume", request.require_session_id()] if request.resume
                 else ["--session-id", request.require_session_id()])
         # Keep the prompt after --. Otherwise user input starting

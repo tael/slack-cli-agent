@@ -145,6 +145,7 @@ from ..prompt.sections import (
     RosterSection,
     SensitiveGuardSection,
     SilenceRuleSection,
+    CacheBoundarySection,
     SlackFormatSection,
     ThreadCoordsSection,
     TrustedSection,
@@ -695,6 +696,7 @@ class Application:
             # new request's prefix ended ~8 KB early, and 309 distinct
             # instruction blocks in 598 turns each rewrote the cached block.
             WatchSection(),
+            CacheBoundarySection(enabled=self._settings.system_prompt_split),
             AskerSection(peer_bot_ids=self._profile.controller_user_ids),
             PresentPeopleSection(),
             ThreadCoordsSection(),
