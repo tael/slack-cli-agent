@@ -58,7 +58,7 @@ class Test학습줄:
     def test_업무_채널은_학습_줄을_뺀다(self, tmp_path: Path) -> None:
         text, _ = _loader(tmp_path).knowledge_selection("잡담", "점심 추천")
         assert "<!-- learn:" not in text
-        assert "학습 기록 1줄은 지침에서 뺐다" in text
+        assert "학습 기록은 지침에서 뺐다" in text
 
     def test_섹션이_채널_모드를_넘긴다(self, tmp_path: Path) -> None:
         loader = _loader(tmp_path)

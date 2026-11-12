@@ -689,15 +689,19 @@ class Application:
             WorkStyleSection(),
             FlowSection(enabled=self._settings.plan_flow),
             TurnTierSection(),
-            # Documents picked by this request's `when:` words, after the
-            # fixed sections so they do not split the shared prefix (S4).
-            KnowledgeSection(part="selected"),
+            # Fixed text first, then what changes per speaker, then what
+            # changes per request. 2026-11-12 (orchestration E): the selected
+            # documents sat before WatchSection and AskerSection, so every
+            # new request's prefix ended ~8 KB early, and 309 distinct
+            # instruction blocks in 598 turns each rewrote the cached block.
+            WatchSection(),
             AskerSection(peer_bot_ids=self._profile.controller_user_ids),
             PresentPeopleSection(),
             ThreadCoordsSection(),
-            WatchSection(),
             AttachmentSection(),
             SilenceRuleSection(),
+            # Documents picked by this request's `when:` words, last.
+            KnowledgeSection(part="selected"),
         ]
         sections.extend(s for p in self._plugins for s in p.prompt_sections())
         return sections
