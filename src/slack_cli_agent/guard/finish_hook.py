@@ -59,6 +59,7 @@ from slack_cli_agent.guard.finish_review import (
     verify_claim_keys,
 )
 from slack_cli_agent.core.markers import missing_recipient_prompt
+from slack_cli_agent.guard.figurative import Precompute
 
 #: Absolute path to this file, for the engine adapter that builds the hook
 #: command (same pattern as observability/progress_hook.py's HOOK_SCRIPT).
@@ -165,14 +166,15 @@ def _write_count(path: Path, value: int) -> None:
         pass
 
 
-def _log_verify(state_dir: Path | None, record: dict[str, Any]) -> None:
+def _log_verify(state_dir: Path | None, record: dict[str, Any],
+                name: str = "finish-hook-verify.jsonl") -> None:
     """Appends one verify record (status, findings, decision) so a skipped
     or failed model check is visible afterwards instead of silent."""
     if state_dir is None:
         return
     try:
         state_dir.mkdir(parents=True, exist_ok=True)
-        with open(state_dir / "finish-hook-verify.jsonl", "a", encoding="utf-8") as handle:
+        with open(state_dir / name, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError:
         pass
@@ -245,6 +247,13 @@ def main(argv: list[str]) -> int:
         seconds_left = time_left(os.environ)
         verify_on, verify_model = resolve_verify_settings(os.environ)
         verifier = ModelClaimVerifier(model=verify_model) if verify_on else None
+        # The figurative corrector runs on this same draft while decide()
+        # (mostly the model verify) runs; see guard/figurative.Precompute.
+        figurative = None
+        with contextlib.suppress(Exception):
+            figurative = Precompute.start(
+                payload.get("last_assistant_message") or turn.answer or "", os.environ,
+            )
         started = time.monotonic()
         decision = decide(
             turn, block_count=block_count, seconds_left=seconds_left, claim_verifier=verifier,
@@ -253,6 +262,25 @@ def main(argv: list[str]) -> int:
             prior_drafts=prior_drafts,
         )
         elapsed = round(time.monotonic() - started, 1)
+        figurative_log: dict[str, Any] = {}
+        if figurative is not None:
+            # A blocked draft's check keeps running detached: the rewrite
+            # carries most of its lines, so the next Stop reuses it.
+            figurative_log = {"figurative": "left_running" if figurative.started else "no_new_lines"}
+            if decision.action != "block":
+                waited = time.monotonic()
+                with contextlib.suppress(Exception):
+                    record = figurative.finish()
+                    figurative_log = {
+                        "figurative": "written" if record else "no_verdict",
+                        "new_lines": figurative.started,
+                        "figurative_sec": (record or {}).get("elapsed_sec"),
+                        "figurative_wait_sec": round(time.monotonic() - waited, 1),
+                    }
+            _log_verify(state_dir, {
+                "t": time.strftime("%Y-%m-%d %H:%M:%S"), "session": str(session_id or ""),
+                "decision": decision.action, "decide_sec": elapsed, **figurative_log,
+            }, name="finish-hook-figurative.jsonl")
         if decision.action == "block" and count_path is not None:
             _write_count(count_path, block_count + 1)
             if flagged_path is not None:

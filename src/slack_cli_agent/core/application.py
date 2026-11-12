@@ -15,7 +15,9 @@ import logging
 import os
 import shlex
 import sys
+import tempfile
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
@@ -69,6 +71,11 @@ from ..engine.transcript import (
 )
 from ..guard.base import OutputGuard
 from ..guard.dropline import ConfiguredLineDropGuard
+from ..guard.figurative import MIN_CHARS_ENV as FIGURATIVE_MIN_CHARS_ENV
+from ..guard.figurative import MODE_ENV as FIGURATIVE_MODE_ENV
+from ..guard.figurative import MODEL_ENV as FIGURATIVE_MODEL_ENV
+from ..guard.figurative import OUT_ENV as FIGURATIVE_OUT_ENV
+from ..guard.figurative import TIMEOUT_ENV as FIGURATIVE_TIMEOUT_ENV
 from ..guard.figurative import FigurativeGuard, is_chat_channel
 from ..guard.mentions import (
     AddresseeGuard,
@@ -729,6 +736,19 @@ class Application:
         config = self._channels.get(channel)
         return bool(config and config.bot_mentions)
 
+    def _figurative_env(self, config: ChannelConfig | None) -> dict[str, str]:
+        """Per-turn env for the Stop hook's figurative precompute
+        (guard/figurative.Precompute). A fresh file path each turn: the guard
+        reads and removes it, so no turn sees another turn's verdict."""
+        out = Path(tempfile.gettempdir()) / "sca-figurative" / f"{uuid.uuid4().hex}.json"
+        return {
+            FIGURATIVE_OUT_ENV: str(out),
+            FIGURATIVE_MODE_ENV: "chat" if is_chat_channel(config) else "work",
+            FIGURATIVE_MIN_CHARS_ENV: str(self._settings.figurative_min_chars),
+            FIGURATIVE_MODEL_ENV: self._settings.figurative_model,
+            FIGURATIVE_TIMEOUT_ENV: str(self._settings.figurative_timeout_sec),
+        }
+
     def _is_chat_channel(self, channel: str) -> bool:
         """Read per request, like `_bot_mentions_allowed`."""
         return is_chat_channel(self._channels.get(channel))
@@ -971,6 +991,12 @@ class Application:
                 post_corrector=(
                     FigurativeGuard(self._settings, is_chat=self._is_chat_channel)
                     if self._settings.figurative_check and self._settings.figurative_after_post
+                    else None
+                ),
+                figurative_env=(
+                    self._figurative_env
+                    if self._settings.figurative_check and self._settings.figurative_in_stop_hook
+                    and not self._settings.figurative_after_post
                     else None
                 ),
                 publisher=self.publisher(),

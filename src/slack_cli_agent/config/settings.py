@@ -114,6 +114,10 @@ class RuntimeSettings:
     #: over 181 turns). The first notification preview then shows the
     #: uncorrected text. Applies only to a reply that went up as one message.
     figurative_after_post: bool = False
+    #: 2026-11-12: run the corrector inside the Stop hook beside verify, on
+    #: the same draft, and use its verdict in the guard (guard/figurative.
+    #: Precompute). The guard runs it itself when the body differs.
+    figurative_in_stop_hook: bool = True
 
     #: E1-E8: answer a non-owner's DM with an isolated read-only turn
     #: instead of ignoring it (mametchi notify_dm_redirect). Off by default:

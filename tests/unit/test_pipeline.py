@@ -394,6 +394,7 @@ def build_pipeline(
     delegation_recorder: Any = None,
     request_timing: Any = None,
     post_corrector: Any = None,
+    figurative_env: Any = None,
 ):
     access = FakeAccessPolicy()
     transcript = FakeTranscriptBuilder()
@@ -461,6 +462,8 @@ def build_pipeline(
     if post_corrector is not None:
         extra_kwargs["post_corrector"] = post_corrector
         extra_kwargs["spawn"] = lambda fn: fn()
+    if figurative_env is not None:
+        extra_kwargs["figurative_env"] = figurative_env
     extra_kwargs.setdefault(
         "watch_results",
         WatchResultReader((tmp_path or Path("/tmp")) / ".watch-out"),
@@ -1097,10 +1100,10 @@ class Test가드사건기록:
         from slack_cli_agent.guard.figurative import FigurativeGuard
 
         body = "이번 배치는 정산 파이프라인과 맞닿은 지점에서 실패했습니다. " * 3
-        fixed = body.replace("맞닿은", "연결된")
         settings = RuntimeSettings().override({"figurative_check": True})
         guard = FigurativeGuard(settings, is_chat=lambda _c: False,
-                                corrector=lambda text, *, work: {"changed": True, "text": fixed})
+                                corrector=lambda text, *, work: {
+                                    "changed": True, "fixes": [{"before": "맞닿은", "after": "연결된"}]})
         pipeline, deps = build_pipeline(
             responses=[ok_response(body)], guards=[guard], tmp_path=tmp_path,
         )
@@ -1117,7 +1120,8 @@ class Test가드사건기록:
         fixed = body.replace("맞닿은", "연결된")
         settings = RuntimeSettings().override({"figurative_check": True})
         guard = FigurativeGuard(settings, is_chat=lambda _c: False,
-                                corrector=lambda text, *, work: {"changed": True, "text": fixed})
+                                corrector=lambda text, *, work: {
+                                    "changed": True, "fixes": [{"before": "맞닿은", "after": "연결된"}]})
         pipeline, deps = build_pipeline(
             responses=[ok_response(body)], post_corrector=guard, tmp_path=tmp_path,
         )
@@ -1129,6 +1133,32 @@ class Test가드사건기록:
         assert "연결된" in publisher.updated[0]["text"] and "맞닿은" not in publisher.updated[0]["text"]
         fix = [i for i in deps["audit"].incidents if i["kind"] == IncidentKind.FIGURATIVE_FIX]
         assert fix and fix[0]["after_post"] is True
+
+    def test_Stop_훅_판정이_있으면_가드가_교정기를_부르지_않는다(self, tmp_path: Path) -> None:
+        # 2026-11-12: guard/figurative.Precompute writes the verdict beside verify.
+        import json as _json
+
+        from slack_cli_agent.guard.figurative import OUT_ENV, FigurativeGuard, body_key
+
+        body = "이번 배치는 정산 파이프라인과 맞닿은 지점에서 실패했습니다. " * 3
+        out = tmp_path / "fig.json"
+        out.write_text(_json.dumps({"key": body_key(body), "mode": "work", "verdict": {
+            "changed": True, "fixes": [{"before": "맞닿은", "after": "연결된"}]}}), encoding="utf-8")
+        calls: list[str] = []
+        settings = RuntimeSettings().override({"figurative_check": True})
+        guard = FigurativeGuard(settings, is_chat=lambda _c: False,
+                                corrector=lambda text, *, work: calls.append(text) or {"changed": False})
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(body)], guards=[guard], tmp_path=tmp_path,
+            figurative_env=lambda config: {OUT_ENV: str(out)},
+        )
+        pipeline.handle(make_ctx())
+
+        assert deps["runner"].calls[0].engine_env[OUT_ENV] == str(out)
+        assert calls == [] and not out.exists()
+        assert "연결된" in deps["publisher"].posted[0]["text"]
+        fix = [i for i in deps["audit"].incidents if i["kind"] == IncidentKind.FIGURATIVE_FIX]
+        assert fix and fix[0]["source"] == "stop_hook"
 
     def test_게시_뒤_교정은_여러_조각_답을_고치지_않는다(self, tmp_path: Path) -> None:
         from slack_cli_agent.guard.figurative import FigurativeGuard

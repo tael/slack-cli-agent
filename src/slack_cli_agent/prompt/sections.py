@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..auth.principal import Principal, TrustLevel, TurnTier
+from .code_terms import CODE_TERM_NOTE
 
 if TYPE_CHECKING:
     from ..config.profile import PeerProfile
@@ -758,7 +759,10 @@ class WorkStyleSection(PromptSection):
         return not ctx.aside and not ctx.is_chat
 
     def render(self, ctx: CompositionContext) -> str:
-        return ctx._library_or_raise().text("WORK_STYLE_NOTE")
+        # Code-term wording (prompt/code_terms.py) rides on the work-style
+        # note: same turns, and the figurative corrector stopped having to fix
+        # the same two words in a third of its rewrites.
+        return ctx._library_or_raise().text("WORK_STYLE_NOTE") + "\n\n" + CODE_TERM_NOTE
 
 
 #: Tiers whose turn holds the Agent tool: the owner, a channel operator, and a

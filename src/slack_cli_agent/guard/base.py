@@ -59,6 +59,10 @@ class GuardContext:
     # that bot's leading mention: swapping it for a name made RecipientResolver
     # re-add the mention in front, so the name showed twice (2026-11-10).
     recipient_bot_id: str = ""
+    # The Stop hook's figurative verdict for this turn's draft
+    # (guard/figurative.Precompute), read by FigurativeGuard. None runs the
+    # corrector in the guard.
+    figurative_precomputed: Mapping[str, Any] | None = None
 
 
 class OutputGuard(ABC):
