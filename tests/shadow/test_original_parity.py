@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -243,7 +244,8 @@ class Test첨부_저장_상수:
 
     def _store(self, tmp_path: Path) -> AttachmentStore:
         return AttachmentStore(
-            attach_dir=tmp_path, token_provider=lambda: "tok",
+            attach_dir=tmp_path,
+            token_provider=lambda: "tok",
             downloader=lambda url, token: DownloadResult(content_type="text/plain", data=b""),
         )
 
@@ -313,17 +315,31 @@ class Test감시_태그와_정규식:
         # 기한 그룹이 없었지만, 그 기능은 2026-09-19 에 이미 들어갔다 — 대조
         # 문서가 낡았을 뿐, 지금 원본에는 @YYYY-MM-DD 기한 그룹이 있다
         # (gaps_A.md 참고). 코드 직접 대조로 갱신한다.
-        assert WATCH_RE.pattern == (
-            r"\n{0,2}\[\[WATCH(?:@(?P<due>\d{4}-\d{2}-\d{2}))?:\s*(?P<desc>.+?)\s*\]\]\s*\Z"
-        )
+        # 2026-11-03 #11 이 표식 뒤 수신자 표식 줄을 trailing 으로 받도록 넓혔다.
+        # 원문 일치 대신 원본이 잡던 입력을 같은 값으로 잡는지 본다.
+        original = re.compile(r"\n{0,2}\[\[WATCH(?:@(?P<due>\d{4}-\d{2}-\d{2}))?:\s*(?P<desc>.+?)\s*\]\]\s*\Z")
+        for text in (
+            "답\n\n[[WATCH: dag_id=a run_id=b 확인]]",
+            "답\n[[WATCH@2026-09-26: 그날 확인할 대상]]\n",
+        ):
+            want, got = original.search(text), WATCH_RE.search(text)
+            assert want and got
+            assert (got.group("due"), got.group("desc")) == (want.group("due"), want.group("desc"))
+        got = WATCH_RE.search("답\n[[WATCH: 대상]]\n[[RECIPIENT:ASKER]]")
+        assert got and got.group("desc") == "대상"
 
     def test_빈_약속_검출_정규식_원문이_같다(self) -> None:
         # 원본 bot.py:1632-1636 (2026-09-19 어휘 확장판)
-        assert PROMISE_WITHOUT_WATCH_RE.pattern == (
+        # 554a046(11/09), 99e0221(11/10) 이 조건 없는 선언과 명사형 "예정" 을
+        # 더했다. 원본 패턴은 지금 패턴의 앞부분으로 남아 있어야 한다.
+        original = (
             r"(지켜보|끝나면|완료되면|확인되면|반영되면|반영후|배포\s*후|결과가\s*나오"
             r"|나오는\s*대로|돌고\s*있|들어오는\s*대로|회신이\s*(들어오|오)|나오면)"
             r"[^\n]{0,60}?(보고|말씀|알려|다시\s*답|올리|공유|정리해|전달|내겠|드리겠)"
         )
+        assert PROMISE_WITHOUT_WATCH_RE.pattern.startswith(original + "|")
+        assert PROMISE_WITHOUT_WATCH_RE.search("끝나면 결과를 보고드리겠습니다")
+        assert PROMISE_WITHOUT_WATCH_RE.search("집계 결과를 공유 예정")
 
 
 class Test되물음과_맞장구_판정:
@@ -331,7 +347,13 @@ class Test되물음과_맞장구_판정:
 
     def test_asked_back_정규식_원문이_같다(self) -> None:
         # 원본 bot.py:5416 ASKED_BACK
-        assert ASKED_BACK.pattern == r"(?:[?？]|까요|을까|ㄹ까|나요|린가요|드릴까)[\s.!]*$"
+        # 99e0221(11/10) 이 굵게 감싼 질문(**진행할까요?**)도 되물음으로 보도록
+        # 끝 문자에 * _ ~ 를 더했다. 원본이 잡던 입력은 그대로 잡는다.
+        assert ASKED_BACK.pattern == r"(?:[?？]|까요|을까|ㄹ까|나요|린가요|드릴까)[\s.!*_~]*$"
+        original = re.compile(r"(?:[?？]|까요|을까|ㄹ까|나요|린가요|드릴까)[\s.!]*$")
+        for text in ("진행할까요?", "이걸로 할까요.", "맞나요 !", "보고드림."):
+            assert bool(ASKED_BACK.search(text)) == bool(original.search(text))
+        assert ASKED_BACK.search("**옵션 2로 진행할까요?**")
 
     def test_반응_최대_길이가_120자다(self) -> None:
         # 원본 bot.py:5476 REACTION_MAX_LEN = 120
@@ -440,8 +462,13 @@ class RecordingEngine(Engine):
         if self._response is not None:
             return self._response
         return EngineResponse(
-            ok=(returncode == 0), body=stdout, session_id=None, model_actual=None,
-            elapsed=0.0, turns=None, usage=None,
+            ok=(returncode == 0),
+            body=stdout,
+            session_id=None,
+            model_actual=None,
+            elapsed=0.0,
+            turns=None,
+            usage=None,
         )
 
     def new_session_id(self) -> str:
@@ -454,21 +481,29 @@ class RecordingEngine(Engine):
 
 
 def _profile(tmp_path: Path) -> Profile:
-    return Profile.from_dict({
-        "name": "example",
-        "primary_engine": {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
-        "fallback_engine": {"type": "codex", "binary": "codex", "model": "gpt-5.6-sol", "options": {}},
-        "owner_user_id": "U1",
-        "troubleshoot_channel": "C1",
-        "state_dir": str(tmp_path / "state"),
-    })
+    return Profile.from_dict(
+        {
+            "name": "example",
+            "primary_engine": {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            "fallback_engine": {"type": "codex", "binary": "codex", "model": "gpt-5.6-sol", "options": {}},
+            "owner_user_id": "U1",
+            "troubleshoot_channel": "C1",
+            "state_dir": str(tmp_path / "state"),
+        }
+    )
 
 
 def _request() -> EngineRequest:
     return EngineRequest(
-        prompt="안녕", system_prompt="", session_id="s", resume=False,
-        model="claude-sonnet-5", effort="medium", workdir=Path("/tmp/work"),
-        readable_dirs=(), trust_level=TrustLevel.GENERAL,
+        prompt="안녕",
+        system_prompt="",
+        session_id="s",
+        resume=False,
+        model="claude-sonnet-5",
+        effort="medium",
+        workdir=Path("/tmp/work"),
+        readable_dirs=(),
+        trust_level=TrustLevel.GENERAL,
     )
 
 
@@ -478,11 +513,18 @@ class TestEngineProbe_타임아웃:
         요청에만 걸리는지 확인한다. 정상 요청은 여전히 900초를 쓴다.
         """
         limit_response = EngineResponse(
-            ok=False, body="한도 소진", session_id=None, model_actual=None,
-            elapsed=0, turns=None, usage=None, failure_reason="usage_limit",
+            ok=False,
+            body="한도 소진",
+            session_id=None,
+            model_actual=None,
+            elapsed=0,
+            turns=None,
+            usage=None,
+            failure_reason="usage_limit",
         )
-        probe_ok = EngineResponse(ok=True, body="OK", session_id=None,
-                                  model_actual=None, elapsed=0, turns=None, usage=None)
+        probe_ok = EngineResponse(
+            ok=True, body="OK", session_id=None, model_actual=None, elapsed=0, turns=None, usage=None
+        )
         profile = _profile(tmp_path)
         primary = named(RecordingEngine, "claude")(profile, SETTINGS, response=limit_response)
         secondary = named(RecordingEngine, "codex")(profile, SETTINGS, response=probe_ok)
@@ -526,6 +568,7 @@ class Test사용량_노출_규칙:
         """원본 bot.py:3400 근처 `session_context()` 의 한도 None 경로다.
         표에 없는 모델에 임의 한도를 쓰면 소진 임박 판정이 틀린다.
         """
+
         class 빈기록(SessionTranscriptReader):
             def read(self, session_id: str) -> list[TranscriptEvent]:
                 return []
