@@ -4,9 +4,13 @@ A turn can't restart its own bot (reliability/restart.py), so it leaves an
 apply-request marker. This loop runs as its own launchd job, outside any
 turn's sandbox: it claims the marker by renaming it to apply-running,
 runs the pre-restart check if one is configured (H3, the py_compile and
-regression run mametchi apply.sh did inside the turn), kickstarts every service, and judges success by PID replacement. When
-nothing is left serving it runs the rollback step, if one is configured,
-and starts the services again. The outcome goes to the owner's DM.
+regression run mametchi apply.sh did inside the turn), kickstarts every
+service, and judges success by PID replacement. When nothing is left
+serving it runs the rollback step, if one is configured, and starts the
+services again. The outcome goes to the owner's DM.
+
+It also writes the request itself when the install checkout moves on main,
+since not every bot sharing an editable install restarts after an update.
 
 Until now mametchi watchdog.py take_over_sca_apply did this for the bot from
 another repository, so stopping mametchi would have taken it away.
@@ -18,6 +22,7 @@ import json
 import logging
 import os
 import sqlite3
+import subprocess
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -41,6 +46,11 @@ CHECK_TAIL_LINES = 15
 #: An ingress restart also ends that process's review threads. A "진행" row
 #: newer than this defers the restart (watchdog.py SCA_REVIEW_ACTIVE_SEC).
 REVIEW_ACTIVE_SEC = 1800.0
+#: How often the install checkout's HEAD is read again.
+INSTALL_CHECK_SEC = 60.0
+GIT_TIMEOUT_SEC = 5.0
+
+GitRunner = Callable[[list[str]], str | None]
 
 
 @dataclass(frozen=True)
@@ -81,6 +91,38 @@ def active_reviews(db_path: Path, *, now: float, window_sec: float = REVIEW_ACTI
     return count
 
 
+def git_in(directory: Path) -> GitRunner:
+    """Runs git in `directory`; any failure (no git, not a checkout, hang) is None."""
+
+    def run(args: list[str]) -> str | None:
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(directory), *args],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=GIT_TIMEOUT_SEC, check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    return run
+
+
+def install_root(package_dir: Path) -> Path | None:
+    """The git checkout the package is installed from, for an editable install.
+
+    A wheel inside some other repository (a venv under a project) is not
+    this package's checkout, so the package must sit at <root>/src/<name>.
+    """
+    top = git_in(package_dir)(["rev-parse", "--show-toplevel"])
+    if not top:
+        return None
+    root = Path(top).resolve()
+    if (root / "src" / package_dir.name).resolve() != package_dir.resolve():
+        return None
+    return root
+
+
 class ApplySupervisor:
     def __init__(
         self,
@@ -100,6 +142,10 @@ class ApplySupervisor:
         run_ttl_sec: float = APPLY_RUN_TTL_SEC,
         confirm_timeout_sec: float = CONFIRM_TIMEOUT_SEC,
         poll_sec: float = 1.0,
+        install_dir: Path | None = None,
+        auto_apply: bool = True,
+        git: GitRunner | None = None,
+        install_check_sec: float = INSTALL_CHECK_SEC,
     ) -> None:
         self._request = request_path
         self._running = running_path
@@ -117,9 +163,16 @@ class ApplySupervisor:
         self._ttl = run_ttl_sec
         self._timeout = confirm_timeout_sec
         self._poll = poll_sec
+        self._git = None
+        if auto_apply and install_dir is not None:
+            self._git = git or git_in(install_dir)
+        self._install_every = install_check_sec
+        self._install_checked = self._now()
+        self._baseline = self._git(["rev-parse", "HEAD"]) if self._git else None
 
     def tick(self) -> str | None:
         """One pass. Returns the outcome, or None when there was nothing to do."""
+        self._watch_install()
         if not self._due():
             return None
         reviews = self._busy()
@@ -145,6 +198,46 @@ class ApplySupervisor:
             except Exception:
                 log.exception("재기동 감독 회차 실패")
             self._sleep(interval_sec)
+
+    def _watch_install(self) -> None:
+        """Requests a restart when the install checkout moved on main.
+
+        Bots sharing one editable install don't all restart after an update;
+        without this a worker keeps the code it booted with while hook
+        scripts already run the new code. Off a main branch a turn may be
+        editing the checkout, so nothing is requested and the baseline is
+        kept until main is back.
+        """
+        if self._git is None or self._now() - self._install_checked < self._install_every:
+            return
+        self._install_checked = self._now()
+        head = self._git(["rev-parse", "HEAD"])
+        if not head:
+            return
+        if self._baseline is None:
+            self._baseline = head
+            return
+        if head == self._baseline:
+            return
+        if self._git(["rev-parse", "--abbrev-ref", "HEAD"]) != "main":
+            return
+        if self._git(["status", "--porcelain", "--untracked-files=no"]) != "":
+            return
+        if self._request.exists() or self._running.exists():
+            # That restart loads this HEAD too, unless it began before the
+            # commit; a second restart for it would only drain the worker again.
+            self._baseline = head
+            return
+        request = ApplyRequest(
+            requested_at=self._now(),
+            note=f"설치본 갱신 {self._baseline[:7]} -> {head[:7]}",
+        )
+        self._request.parent.mkdir(parents=True, exist_ok=True)
+        staging = self._request.with_name(self._request.name + ".tmp")
+        staging.write_text(request.render(), encoding="utf-8")
+        staging.replace(self._request)
+        log.info("설치본 갱신 감지, 재기동 요청 : %s -> %s", self._baseline[:7], head[:7])
+        self._baseline = head
 
     def _age(self, path: Path) -> float | None:
         try:

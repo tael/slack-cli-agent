@@ -796,9 +796,11 @@ def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
     import shlex
     import time
 
-    from .reliability.supervisor import ApplySupervisor, Service, active_reviews
+    from .config.settings import RuntimeSettings
+    from .reliability.supervisor import ApplySupervisor, Service, active_reviews, install_root
 
     paths = profile.paths
+    settings = RuntimeSettings().override(profile.settings_override)
     request, running = paths.apply_requests
     rollback = None
     if args.rollback_command:
@@ -827,6 +829,8 @@ def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
         busy=lambda: active_reviews(paths.database, now=time.time()),
         rollback=rollback,
         check=check,
+        install_dir=install_root(Path(__file__).resolve().parent),
+        auto_apply=settings.supervisor_auto_apply,
     )
 
 

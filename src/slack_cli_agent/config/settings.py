@@ -288,6 +288,13 @@ class RuntimeSettings:
     # 부터 거부하지 않으므로 값의 크기는 쓰지 않는다.
     plan_gate_responses: int = 3
 
+    #: The restart supervisor writes an apply-request itself when the install
+    #: checkout's HEAD moves on main with a clean tree. 2026-11-12: bots share
+    #: one editable install, and mametchi has no restart after an update, so
+    #: its worker kept the code it booted with at 11/11 18:39 and never loaded
+    #: fbee38f, 9ea87d9 or 6b953e4 while hook scripts already ran them.
+    supervisor_auto_apply: bool = True
+
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """Overrides only the fields present in `values`; unknown keys are
         ignored. Set-typed fields get converted, since JSON has no set
