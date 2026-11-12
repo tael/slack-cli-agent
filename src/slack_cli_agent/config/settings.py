@@ -119,6 +119,16 @@ class RuntimeSettings:
     #: Precompute). The guard runs it itself when the body differs.
     figurative_in_stop_hook: bool = True
 
+    #: 2026-11-12 (orchestration E): pass the system prompt with
+    #: --system-prompt and put a cache boundary between the fixed sections
+    #: and the per-speaker / per-request ones. Claude Code then caches the
+    #: fixed part on its own, so a new thread in the same channel reads it
+    #: instead of rewriting ~100k tokens (290 of 290 new threads whose
+    #: instruction block had not been seen rewrote it, 11/7-11/12). It also
+    #: drops Claude Code's default instructions (~2.9k tokens), so off until
+    #: measured.
+    system_prompt_split: bool = False
+
     #: E1-E8: answer a non-owner's DM with an isolated read-only turn
     #: instead of ignoring it (mametchi notify_dm_redirect). Off by default:
     #: a colleague sees the bot answer, so a profile opts in.

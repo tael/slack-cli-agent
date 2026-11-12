@@ -18,7 +18,7 @@ def test_learn_lines_leave_the_prompt_with_a_pointer(tmp_path: Path) -> None:
     text = _loader(tmp_path).knowledge_text("ch")
     assert "늘 지킨다" in text and "채널 규칙" in text
     assert "learn:2026" not in text
-    assert "학습 기록 2줄" in text and "_rules.md" in text
+    assert "학습 기록은 지침에서 뺐다" in text and "_rules.md" in text
 
 
 def test_document_without_learn_lines_is_unchanged(tmp_path: Path) -> None:

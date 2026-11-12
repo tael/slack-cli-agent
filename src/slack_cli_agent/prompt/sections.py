@@ -935,6 +935,28 @@ class PresentPeopleSection(PromptSection):
         return "\n".join(lines)
 
 
+#: Claude Code's marker between the cached and the per-turn part of a custom
+#: system prompt. Honoured only with --system-prompt (CLI 2.1.322): there a
+#: second session whose text after the marker differed read ~39k tokens from
+#: cache in 4 of 4 runs, and the model did not see the marker.
+CACHE_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
+
+
+class CacheBoundarySection(PromptSection):
+    """Puts CACHE_BOUNDARY after the sections that stay the same within a
+    channel and tier. Off unless settings.system_prompt_split, since with
+    --append-system-prompt the marker would reach the model as text."""
+
+    def __init__(self, enabled: bool = False) -> None:
+        self._enabled = enabled
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return self._enabled
+
+    def render(self, ctx: CompositionContext) -> str:
+        return "\n\n" + CACHE_BOUNDARY + "\n\n"
+
+
 class SilenceRuleSection(PromptSection):
     #: mametchi silence_rule (bot.py:2482-2507), word for word. The paragraph
     #: pinning the answer to the one triggering message keeps later replies

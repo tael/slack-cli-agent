@@ -177,7 +177,11 @@ class Test지문안정성:
             "규칙\n- 정정 1 <!-- learn:2026-11-09 -->\n- 정정 2 <!-- learn:2026-11-10 -->\n",
             encoding="utf-8",
         )
-        assert composer.compose(ctx) != before_text
+        # 2026-11-12: the deferred note no longer carries the count, so a
+        # learned line added at night leaves a work-channel prompt unchanged;
+        # a chat channel still carries the lines themselves.
+        if channel_mode == "chat":
+            assert composer.compose(ctx) != before_text
         assert composer.instruction_fingerprint(ctx) == before
         app.close()
 

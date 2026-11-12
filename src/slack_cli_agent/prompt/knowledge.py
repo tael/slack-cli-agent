@@ -292,8 +292,11 @@ def _defer_learn_lines(doc: KnowledgeDocument) -> KnowledgeDocument:
     moved = len(lines) - len(kept)
     if moved == 0:
         return doc
+    # No line count: a learned line added at night changed the number and
+    # with it the system prompt from ~38 KB on, so every new thread rewrote
+    # the whole cached block (2026-11-12, orchestration E).
     note = (
-        f"\n(학습 기록 {moved}줄은 지침에서 뺐다. 이 주제의 과거 정정이 필요하면 "
+        "\n(학습 기록은 지침에서 뺐다. 이 주제의 과거 정정이 필요하면 "
         f"Grep 으로 {doc.path} 에서 키워드와 'learn:' 을 찾는다.)\n"
     )
     return dataclasses.replace(doc, text="\n".join(kept).rstrip() + "\n" + note)
