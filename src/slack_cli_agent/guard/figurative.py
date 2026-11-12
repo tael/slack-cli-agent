@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import difflib
+import hashlib
 import json
 import logging
 import os
@@ -25,7 +26,7 @@ import re
 import shutil
 import signal
 import subprocess
-import threading
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -258,10 +259,13 @@ class ModelFigurativeCorrector:
 #
 # 2026-11-12: the corrector call took 6.7-9.2 s on 1,000-1,200 character
 # replies it left unchanged (sonnet emits 700-1,200 hidden thinking tokens
-# for an 18-character answer; MAX_THINKING_TOKENS=0, --effort low and
-# alwaysThinkingEnabled=false did not remove them). The Stop hook's verify
-# already holds the turn for about 20 s on the same draft, so the hook runs
-# the corrector beside it and leaves the verdict in a file for this guard.
+# for an 18-character answer; MAX_THINKING_TOKENS=0, --effort low,
+# alwaysThinkingEnabled=false and older models did not remove them), and
+# 3.7-4.1 s on a 200-character one. Production verify blocks the first draft
+# 97% of the time, and the rewrite carries most lines over. So every Stop
+# starts a detached corrector on the lines no earlier draft of this turn has
+# had checked; a blocked draft's check finishes while the model rewrites,
+# and the final draft waits only for its new lines, or for nothing.
 
 #: Set per turn by the pipeline: where the hook writes, the channel mode
 #: (``work``/``chat``), the work-channel length floor, model and time limit.
@@ -271,6 +275,10 @@ MIN_CHARS_ENV = "SCA_FIGURATIVE_MIN_CHARS"
 MODEL_ENV = "SCA_FIGURATIVE_MODEL"
 TIMEOUT_ENV = "SCA_FIGURATIVE_TIMEOUT"
 ENV_NAMES = (OUT_ENV, MODE_ENV, MIN_CHARS_ENV, MODEL_ENV, TIMEOUT_ENV)
+#: New text shorter than this after a rewrite is not sent to the model.
+_NEW_MIN_CHARS = 10
+
+HOOK_SCRIPT = Path(__file__).resolve()
 
 
 def _needs_check(main: str, *, chat: bool, min_chars: int) -> bool:
@@ -279,28 +287,76 @@ def _needs_check(main: str, *, chat: bool, min_chars: int) -> bool:
     return chat or len(main) >= min_chars
 
 
-class Precompute:
-    """One draft's corrector call, started in a thread by the Stop hook."""
+def _line_keys(text: str) -> list[str]:
+    return [k for k in (body_key(line) for line in text.split("\n")) if k]
 
-    def __init__(self, answer: str, env: Mapping[str, str], *,
-                 corrector: FigurativeCorrector | None = None) -> None:
-        self.out = Path(env[OUT_ENV])
-        self.mode = "chat" if env.get(MODE_ENV) == "chat" else "work"
-        main, _, _ = prepare(answer)
+
+def _draft_dir(out: Path) -> Path:
+    return out.with_name(out.name + ".d")
+
+
+def _write_json(path: Path, value: Mapping[str, Any]) -> None:
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def run_worker(job_path: Path, *, corrector: FigurativeCorrector | None = None) -> dict[str, Any]:
+    """Detached body: correct one draft's new lines and write
+    ``<draft>.json`` next to the job file: the line keys it checked and the
+    fixes, or ``ok: false`` when the call failed."""
+    job = _read_json(job_path) or {}
+    text = str(job.get("text") or "")
+    corrector = corrector or ModelFigurativeCorrector(
+        model=str(job.get("model") or "sonnet"), timeout=float(job.get("timeout") or 45),
+    )
+    started = time.monotonic()
+    try:
+        verdict = corrector(text, work=bool(job.get("work", True)))
+    except Exception:  # noqa: BLE001 - recorded as a failed check
+        verdict = None
+    ok = isinstance(verdict, Mapping)
+    fixes = [dict(f) for f in ((verdict or {}).get("fixes") or []) if isinstance(f, Mapping)] if ok else []
+    record = {"ok": ok, "lines": _line_keys(text) if ok else [], "fixes": fixes,
+              "elapsed_sec": round(time.monotonic() - started, 1)}
+    _write_json(job_path.with_suffix(".json"), record)
+    with contextlib.suppress(OSError):
+        job_path.unlink()
+    return record
+
+
+def _spawn_worker(job_path: Path) -> None:
+    subprocess.Popen(
+        [sys.executable, str(HOOK_SCRIPT), "--worker", str(job_path)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+class Precompute:
+    """One Stop of a turn: starts the check of this draft's unchecked lines
+    and, when the draft is final, merges every draft's fixes into the record
+    the guard reads (`OUT_ENV`)."""
+
+    def __init__(self, main: str, out: Path, mode: str, draft_id: str, started: bool) -> None:
+        self.main = main
+        self.out = out
+        self.mode = mode
+        self.draft_id = draft_id
+        self.started = started
         self.key = body_key(main)
-        try:
-            timeout = float(env.get(TIMEOUT_ENV) or 45)
-        except ValueError:
-            timeout = 45.0
-        self._corrector = corrector or ModelFigurativeCorrector(
-            model=env.get(MODEL_ENV) or "sonnet", timeout=timeout,
-        )
-        self._verdict: Mapping[str, Any] | None = None
-        self._elapsed = 0.0
-        self._thread = threading.Thread(target=self._run, args=(main,), daemon=True)
 
     @classmethod
-    def start(cls, answer: str, env: Mapping[str, str], **kw: Any) -> Precompute | None:
+    def start(cls, answer: str, env: Mapping[str, str], *,
+              spawn: Callable[[Path], None] = _spawn_worker) -> Precompute | None:
         if not env.get(OUT_ENV) or not env.get(MODE_ENV):
             return None
         chat = env.get(MODE_ENV) == "chat"
@@ -311,54 +367,72 @@ class Precompute:
         main, _, _ = prepare(answer or "")
         if not _needs_check(main, chat=chat, min_chars=min_chars):
             return None
-        job = cls(answer, env, **kw)
-        job._thread.start()
-        return job
+        out = Path(env[OUT_ENV])
+        folder = _draft_dir(out)
+        folder.mkdir(parents=True, exist_ok=True)
+        checked: set[str] = set()
+        for done in folder.glob("*.json"):
+            record = _read_json(done)
+            if record and record.get("ok"):
+                checked.update(record.get("lines") or [])
+        new = "\n".join(line for line in main.split("\n") if body_key(line) and body_key(line) not in checked)
+        draft_id = hashlib.sha1(body_key(main).encode("utf-8")).hexdigest()[:16]
+        started = len(new.strip()) >= _NEW_MIN_CHARS
+        if started:
+            job = folder / f"{draft_id}.job"
+            _write_json(job, {"text": new, "work": not chat, "model": env.get(MODEL_ENV) or "sonnet",
+                              "timeout": env.get(TIMEOUT_ENV) or 45})
+            spawn(job)
+        return cls(main, out, "chat" if chat else "work", draft_id, started)
 
-    def _run(self, main: str) -> None:
-        started = time.monotonic()
-        try:
-            self._verdict = self._corrector(main, work=self.mode == "work")
-        except Exception:  # noqa: BLE001 - recorded as no verdict
-            self._verdict = None
-        self._elapsed = time.monotonic() - started
-
-    def cancel(self) -> None:
-        cancel = getattr(self._corrector, "cancel", None)
-        if callable(cancel):
-            cancel()
-
-    def finish(self, timeout: float | None = None) -> dict[str, Any] | None:
-        """Wait for the call and write the record. A failed or unfinished
-        call writes nothing: the guard then runs the corrector itself."""
-        self._thread.join(timeout)
-        if self._thread.is_alive() or not isinstance(self._verdict, Mapping):
+    def finish(self, timeout: float = 45) -> dict[str, Any] | None:
+        """Wait for this draft's check, then write the turn's record from the
+        fixes of every draft that still apply. A failed check of this draft
+        writes nothing: the guard then corrects the body itself."""
+        folder = _draft_dir(self.out)
+        mine = folder / f"{self.draft_id}.json"
+        deadline = time.monotonic() + timeout
+        while self.started and not mine.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if self.started and not (_read_json(mine) or {}).get("ok"):
             return None
-        record = {"key": self.key, "mode": self.mode, "verdict": dict(self._verdict),
-                  "elapsed_sec": round(self._elapsed, 1), "at": time.time()}
-        tmp = self.out.with_name(self.out.name + f".{os.getpid()}.tmp")
+        fixes: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for done in sorted(folder.glob("*.json"), key=lambda p: p.stat().st_mtime):
+            for fix in (_read_json(done) or {}).get("fixes") or []:
+                before = str(fix.get("before") or "")
+                if before and before in self.main and before not in seen:
+                    seen.add(before)
+                    fixes.append(fix)
+        record = {"key": self.key, "mode": self.mode,
+                  "verdict": {"changed": bool(fixes), "fixes": fixes},
+                  "elapsed_sec": (_read_json(mine) or {}).get("elapsed_sec") if self.started else 0.0,
+                  "new_lines": self.started, "at": time.time()}
         try:
-            self.out.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(self.out)
+            _write_json(self.out, record)
         except OSError:
             return None
         return record
 
 
 def read_precomputed(path: str | None) -> dict[str, Any] | None:
-    """The Stop hook's record for this turn, removed once read."""
+    """The Stop hook's record for this turn. The record and the per-draft
+    folder are removed once read."""
     if not path:
         return None
     file = Path(path)
-    try:
-        record = json.loads(file.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    finally:
-        with contextlib.suppress(OSError):
-            file.unlink()
-    return record if isinstance(record, dict) else None
+    record = _read_json(file)
+    with contextlib.suppress(OSError):
+        file.unlink()
+    shutil.rmtree(_draft_dir(file), ignore_errors=True)
+    return record
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) >= 3 and argv[1] == "--worker":
+        with contextlib.suppress(Exception):  # detached; nothing to report to
+            run_worker(Path(argv[2]))
+    return 0
 
 
 class FigurativeGuard(OutputGuard):
@@ -431,3 +505,7 @@ class FigurativeGuard(OutputGuard):
             detail={"mode": mode, "fixes": [*term_fixes, *applied][:10], "source": source,
                     "dropped": dropped},
         )
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

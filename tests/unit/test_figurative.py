@@ -296,37 +296,64 @@ class Test미리계산:
 
 
 class TestStop훅계산:
-    def test_판정을_파일로_남기고_읽으면_지운다(self, tmp_path) -> None:
-        out = tmp_path / "f.json"
-        env = {OUT_ENV: str(out), MODE_ENV: "work"}
-        job = Precompute.start(WORK_BODY + "\n[[WATCH: x]]", env, corrector=FakeCorrector({"changed": False}))
+    """2026-11-12: each Stop checks only the lines no earlier draft had checked."""
+
+    def _env(self, tmp_path) -> dict[str, str]:
+        return {OUT_ENV: str(tmp_path / "f.json"), MODE_ENV: "work"}
+
+    def _inline(self, corrector):
+        from slack_cli_agent.guard.figurative import run_worker
+        seen: list[str] = []
+
+        def spawn(job):
+            seen.append(json.loads(job.read_text(encoding="utf-8"))["text"])
+            run_worker(job, corrector=corrector)
+        return spawn, seen
+
+    def test_판정을_파일로_남기고_읽으면_폴더까지_지운다(self, tmp_path) -> None:
+        spawn, _ = self._inline(FakeCorrector({"changed": False}))
+        job = Precompute.start(WORK_BODY + "\n[[WATCH: x]]", self._env(tmp_path), spawn=spawn)
         assert job is not None
         record = job.finish(5)
         assert record is not None and record["key"] == body_key(WORK_BODY)
-        assert read_precomputed(str(out))["verdict"] == {"changed": False}
-        assert not out.exists()
+        assert read_precomputed(str(tmp_path / "f.json"))["verdict"]["changed"] is False
+        assert not (tmp_path / "f.json").exists() and not (tmp_path / "f.json.d").exists()
+
+    def test_재작성본은_새_줄만_교정기에_넘기고_앞_초안의_교정을_이어_쓴다(self, tmp_path) -> None:
+        first = "첫 줄은 정산 파이프라인과 맞닿은 지점입니다 " * 2 + "\n둘째 줄은 그대로 둡니다 아주 길게 씁니다 " * 2
+        spawn, seen = self._inline(FakeCorrector({"changed": True, "fixes": [{"before": "맞닿은", "after": "연결된"}]}))
+        Precompute.start(first, self._env(tmp_path), spawn=spawn)
+        final = first + "\n셋째 줄은 재작성에서 새로 생긴 문장입니다"
+        spawn2, seen2 = self._inline(FakeCorrector({"changed": False}))
+        job = Precompute.start(final, self._env(tmp_path), spawn=spawn2)
+        record = job.finish(5)
+        assert seen2 == ["셋째 줄은 재작성에서 새로 생긴 문장입니다"]
+        assert record["verdict"]["fixes"] == [{"before": "맞닿은", "after": "연결된"}]
+
+    def test_새_줄이_없으면_모델을_부르지_않는다(self, tmp_path) -> None:
+        spawn, _ = self._inline(FakeCorrector({"changed": False}))
+        Precompute.start(WORK_BODY, self._env(tmp_path), spawn=spawn)
+        spawn2, seen2 = self._inline(FakeCorrector({"changed": False}))
+        job = Precompute.start(WORK_BODY + " ", self._env(tmp_path), spawn=spawn2)
+        assert seen2 == [] and not job.started
+        assert job.finish(5)["verdict"] == {"changed": False, "fixes": []}
+
+    def test_사라진_구절의_교정은_버린다(self, tmp_path) -> None:
+        spawn, _ = self._inline(FakeCorrector({"changed": True, "fixes": [{"before": "맞닿은", "after": "연결된"}]}))
+        Precompute.start(WORK_BODY, self._env(tmp_path), spawn=spawn)
+        spawn2, _ = self._inline(FakeCorrector({"changed": False}))
+        job = Precompute.start(WORK_BODY.replace("맞닿은", "이어진"), self._env(tmp_path), spawn=spawn2)
+        assert job.finish(5)["verdict"]["fixes"] == []
 
     def test_짧은_업무_답과_설정_없음은_시작하지_않는다(self, tmp_path) -> None:
-        env = {OUT_ENV: str(tmp_path / "f.json"), MODE_ENV: "work"}
-        assert Precompute.start("네", env, corrector=FakeCorrector({})) is None
-        assert Precompute.start(WORK_BODY, {}, corrector=FakeCorrector({})) is None
+        spawn, _ = self._inline(FakeCorrector({}))
+        assert Precompute.start("네", self._env(tmp_path), spawn=spawn) is None
+        assert Precompute.start(WORK_BODY, {}, spawn=spawn) is None
 
     def test_교정기_실패면_파일을_남기지_않는다(self, tmp_path) -> None:
-        out = tmp_path / "f.json"
-        job = Precompute.start(WORK_BODY, {OUT_ENV: str(out), MODE_ENV: "work"}, corrector=FakeCorrector(None))
-        assert job is not None and job.finish(5) is None and not out.exists()
-
-    def test_중단하면_교정기_cancel_을_부른다(self, tmp_path) -> None:
-        class Slow(FakeCorrector):
-            cancelled = False
-
-            def cancel(self) -> None:
-                self.cancelled = True
-        corrector = Slow({"changed": False})
-        job = Precompute.start(WORK_BODY, {OUT_ENV: str(tmp_path / "f"), MODE_ENV: "work"}, corrector=corrector)
-        assert job is not None
-        job.cancel()
-        assert corrector.cancelled
+        spawn, _ = self._inline(FakeCorrector(None))
+        job = Precompute.start(WORK_BODY, self._env(tmp_path), spawn=spawn)
+        assert job is not None and job.finish(5) is None and not (tmp_path / "f.json").exists()
 
     def test_없는_파일은_None(self, tmp_path) -> None:
         assert read_precomputed(str(tmp_path / "none.json")) is None

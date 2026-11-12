@@ -166,14 +166,15 @@ def _write_count(path: Path, value: int) -> None:
         pass
 
 
-def _log_verify(state_dir: Path | None, record: dict[str, Any]) -> None:
+def _log_verify(state_dir: Path | None, record: dict[str, Any],
+                name: str = "finish-hook-verify.jsonl") -> None:
     """Appends one verify record (status, findings, decision) so a skipped
     or failed model check is visible afterwards instead of silent."""
     if state_dir is None:
         return
     try:
         state_dir.mkdir(parents=True, exist_ok=True)
-        with open(state_dir / "finish-hook-verify.jsonl", "a", encoding="utf-8") as handle:
+        with open(state_dir / name, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError:
         pass
@@ -261,12 +262,25 @@ def main(argv: list[str]) -> int:
             prior_drafts=prior_drafts,
         )
         elapsed = round(time.monotonic() - started, 1)
+        figurative_log: dict[str, Any] = {}
         if figurative is not None:
-            with contextlib.suppress(Exception):
-                if decision.action == "block":
-                    figurative.cancel()
-                else:
-                    figurative.finish()
+            # A blocked draft's check keeps running detached: the rewrite
+            # carries most of its lines, so the next Stop reuses it.
+            figurative_log = {"figurative": "left_running" if figurative.started else "no_new_lines"}
+            if decision.action != "block":
+                waited = time.monotonic()
+                with contextlib.suppress(Exception):
+                    record = figurative.finish()
+                    figurative_log = {
+                        "figurative": "written" if record else "no_verdict",
+                        "new_lines": figurative.started,
+                        "figurative_sec": (record or {}).get("elapsed_sec"),
+                        "figurative_wait_sec": round(time.monotonic() - waited, 1),
+                    }
+            _log_verify(state_dir, {
+                "t": time.strftime("%Y-%m-%d %H:%M:%S"), "session": str(session_id or ""),
+                "decision": decision.action, "decide_sec": elapsed, **figurative_log,
+            }, name="finish-hook-figurative.jsonl")
         if decision.action == "block" and count_path is not None:
             _write_count(count_path, block_count + 1)
             if flagged_path is not None:
