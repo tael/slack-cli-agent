@@ -1069,6 +1069,14 @@ class FallbackEngine(Engine):
         """
         self._active = self.primary
         response = self.runner.run(self.primary, self._fit(self.primary, request))
+        if not response.ok and request.resume:
+            # 전환 중에 이 스레드에 기록된 세션은 2차 엔진 것이다. 1차로 그
+            # ID 를 이으면 "No conversation found" 로 실패하고, 그 실패를
+            # 1차 미복구로 읽어 2차에 계속 머문다 (2026-11-13 19:51 구치파치).
+            # 1차 세션이 맞았던 경우를 위해 먼저 이어 보고, 실패하면 새 세션으로
+            # 한 번 더 확인한다.
+            fresh = dataclasses.replace(request, session_id=None, resume=False)
+            response = self.runner.run(self.primary, self._fit(self.primary, fresh))
         self.switcher.mark_probed(time.time())
         if response.ok and self.primary.detect_usage_limit(response) is None:
             self.switcher.recover()
