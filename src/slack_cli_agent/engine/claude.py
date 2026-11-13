@@ -799,9 +799,12 @@ class ClaudeEngine(Engine):
     #: authenticate. API Error: 401 OAuth access token has expired.' 였다. 같은
     #: 상태를 만료·폐기 문구만으로 내는 응답도 잡도록 OAuth 문구 둘을 더한다.
     #: 'OAuth' 로 시작하는 전체 구절이라 gh·aws 의 짧은 인증 오류와 겹치지 않는다.
+    #: 'Failed to authenticate.' 하나만으로는 판정하지 않는다. 2026-11-13
+    #: Cloudflare 가 일시적으로 403 Attention Required 를 돌려준 응답도 같은
+    #: 문구로 시작했고, 이를 로그인 만료로 보면 새 세션 재시도까지 막힌다.
+    #: 구조화된 401 또는 아래의 만료·폐기·로그인 필요 문구만 영구 실패다.
     AUTH_FAILURE_MARKERS: ClassVar[tuple[str, ...]] = (
         "Please run /login",
-        "Failed to authenticate.",
         "OAuth access token has expired",
         "OAuth token has been revoked",
     )
