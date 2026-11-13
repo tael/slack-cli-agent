@@ -290,6 +290,22 @@ class Test조립:
         assert app.ingress()._dm_attempt is None
         assert "core:dm_daily_report" not in app.worker_services(app.worker()).runner_names
 
+    def test_꺼짐_안내가_있으면_DM_에_그_문구를_보내고_기록한다(self, tmp_path: Path) -> None:
+        app = self._app(tmp_path, dm_off_notice="마메치에게 물어봐 주세요.")
+        attempt = app.ingress()._dm_attempt
+        assert attempt is not None
+        attempt("D1", "U9", "배차 이력 알려줘")
+        sent = [kw for name, kw in app._client.calls if name == "chat_postMessage"]
+        assert [(kw["channel"], kw["text"]) for kw in sent] == [("D1", "마메치에게 물어봐 주세요.")]
+
+    def test_꺼짐_안내가_없으면_DM_에_아무것도_보내지_않는다(self, tmp_path: Path) -> None:
+        app = self._app(tmp_path)
+        attempt = app.ingress()._dm_attempt
+        assert attempt is not None
+        attempt("D1", "U9", "배차 이력 알려줘")
+        sent = [kw for name, kw in app._client.calls if name == "chat_postMessage"]
+        assert not [kw for kw in sent if kw.get("channel") == "D1"]
+
     def test_응대를_켜면_시도_기록은_붙지_않는다(self, tmp_path: Path) -> None:
         assert self._app(tmp_path, dm_reply=True).ingress()._dm_attempt is None
 

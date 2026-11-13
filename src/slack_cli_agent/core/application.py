@@ -1744,12 +1744,32 @@ class Application:
         )
 
     def _dm_attempt_callback(self) -> Callable[[str, str, str], None] | None:
-        if not self._dm_attempt_logged():
+        """A refused DM with replies off: recorded when `dm_attempt_log` is on,
+        answered with the profile's `dm_off_notice` when it has one. Before
+        2026-11-13 the person got nothing back and took the bot for broken
+        (11/12 조한솔님 "왜 답변이 지워지는거야")."""
+        if self._settings.dm_reply:
             return None
-        record = self.audit().record
+        logged = self._dm_attempt_logged()
+        notice = self._settings.dm_off_notice.strip()
+        if not logged and not notice:
+            return None
+        record = self.audit().record if logged else None
+        client = self._client
 
         def attempt(channel: str, user: str, text: str) -> None:
-            record(IncidentKind.DM_ATTEMPT, user=user, channel=channel, question=text)
+            notified = False
+            if notice:
+                try:
+                    client.chat_postMessage(channel=channel, text=notice, unfurl_links=False)
+                    notified = True
+                except Exception:  # the attempt is still recorded
+                    log.exception("DM 응대 꺼짐 안내를 보내지 못했다 : %s", user)
+            if record is not None:
+                record(
+                    IncidentKind.DM_ATTEMPT, user=user, channel=channel, question=text,
+                    notified=notified,
+                )
 
         return attempt
 
