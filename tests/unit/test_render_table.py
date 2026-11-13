@@ -24,3 +24,10 @@ class Test표조립도우미:
 
     def test_머리말을바꿀수있다(self) -> None:
         assert as_table([("a", "b")], head=("왼", "오")) == "| 왼 | 오 |\n|---|---|\n| a | b |"
+
+    def test_긴URL은라벨링크로바꾼다(self) -> None:
+        url = "https://vroongcorp.slack.com/archives/C01EWFYL077/p1794540142293209?thread_ts=1794534205.728389"
+        assert cell(url) == f"[링크]({url})"
+
+    def test_짧은값은그대로둔다(self) -> None:
+        assert cell("private-taeil") == "private-taeil"
