@@ -766,6 +766,28 @@ class TestWorkerCommand:
         )
         assert worker.catch_up_calls == [["C1", "C2"]]
 
+    def test_상시_실행은_캐치업을_기다리지_않고_바로_집는다(self, tmp_path: Path) -> None:
+        """기동 캐치업은 worker_services 의 startup_catchup 실행기가 맡는다.
+        여기서 동기로 한 번 더 쓸면 첫 집기가 53-96초 늦었다(2026-11-13)."""
+        profiles = tmp_path / "profiles"
+        write_profile(profiles, tmp_path / "state")
+        worker = FakeWorker(stop_after_run_once=1)
+        app = FakeApplication(worker=worker, channel_ids=["C1", "C2"])
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
+        cli.run(
+            ["worker", "--profile", "example", "--profile-dir", str(profiles)],
+            stdout=io.StringIO(),
+        )
+        assert worker.catch_up_calls == []
+        assert worker.calls[:2] == ["reclaim", "run_forever"]
+
     def test_no_catch_up_을_주면_안_캐치업한다(self, tmp_path: Path) -> None:
         """캐치업은 슬랙 기록 조회를 동반한다. 끌 수단은 남긴다."""
         profiles = tmp_path / "profiles"
