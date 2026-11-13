@@ -268,8 +268,8 @@ def test_HEAD가_기준으로_돌아오면_대기를_거둔다(tmp_path: Path) -
     assert not (tmp_path / "apply-request").exists()
 
 
-def test_대기_상한_기본값은_1800초다() -> None:
-    assert RuntimeSettings().restart_idle_max_wait_sec == 1800
+def test_대기_상한_기본값은_600초다() -> None:
+    assert RuntimeSettings().restart_idle_max_wait_sec == 600
 
 
 def test_진행_중_작업은_박동이_살아_있는_RUNNING_만_센다(tmp_path: Path) -> None:

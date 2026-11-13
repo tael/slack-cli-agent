@@ -302,7 +302,9 @@ class RuntimeSettings:
     #: How long that request waits for the worker to have no running job.
     #: Past it the request is written anyway, so a busy bot still updates.
     #: 2026-11-07..11-13: restarts during turns lost four turns (2,981s).
-    restart_idle_max_wait_sec: float = 1800
+    #: 600 s covers most turns (p90 about 5 min) and keeps the window where
+    #: hook scripts run new code beside an old worker short.
+    restart_idle_max_wait_sec: float = 600
 
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """Overrides only the fields present in `values`; unknown keys are
