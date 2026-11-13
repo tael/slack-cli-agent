@@ -72,7 +72,7 @@ class Test예산을_넘으면_선택_지식부터_뺀다:
 
     def test_뺀_파일을_예산_헤더로_알린다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
         write(지식폴더 / "_크다.md", "가" * 4000)
-        본문 = 조립(tmp_path, library, 예산=3000)
+        본문 = 조립(tmp_path, library, 예산=4000)
         assert BUDGET_OMITTED_HEADER in 본문
         assert "크다" in 본문
 
@@ -81,7 +81,7 @@ class Test예산을_넘으면_선택_지식부터_뺀다:
         같은 헤더로 알리면 모델에게 거짓을 말하는 것이 된다."""
         write(지식폴더 / "_낱말.md", "<!-- when: 없는낱말 -->\n안 맞는 지식")
         write(지식폴더 / "_크다.md", "가" * 4000)
-        본문 = 조립(tmp_path, library, 예산=3000)
+        본문 = 조립(tmp_path, library, 예산=4000)
         assert "지금 싣지 않은 주제별 지식" in 본문
         assert BUDGET_OMITTED_HEADER in 본문
 
@@ -138,13 +138,13 @@ class Test예산이_걸린_사실이_기록에_남는다:
 
     def test_예산에_걸려_빠진_지식은_검수용에도_없다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
         write(지식폴더 / "_크다.md", "가" * 4000)
-        보고 = self._보고(tmp_path, library, 예산=3000)[1]
+        보고 = self._보고(tmp_path, library, 예산=4000)[1]
         assert "가" * 4000 not in 보고.knowledge_text
 
     def test_뺀_건수와_바이트를_센다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
         write(지식폴더 / "_크다.md", "가" * 4000)
         write(지식폴더 / "_더크다.md", "나" * 4000)
-        보고 = self._보고(tmp_path, library, 예산=3000)[1]
+        보고 = self._보고(tmp_path, library, 예산=4000)[1]
         assert 보고.budget_limited is True
         assert 보고.omitted_document_count == 2
         assert 보고.omitted_document_bytes == 2 * len(("가" * 4000).encode("utf-8"))
@@ -152,7 +152,7 @@ class Test예산이_걸린_사실이_기록에_남는다:
     def test_자르기_전후_크기를_함께_낸다(self, tmp_path: Path, 지식폴더: Path, library) -> None:
         """이 둘이 있어야 상한이 실제로 무엇을 줄였는지 말할 수 있다."""
         write(지식폴더 / "_크다.md", "가" * 4000)
-        본문, 보고 = self._보고(tmp_path, library, 예산=3000)
+        본문, 보고 = self._보고(tmp_path, library, 예산=4000)
         assert 보고.bytes_after == len(본문.encode("utf-8"))
         assert 보고.bytes_before > 보고.bytes_after
 
