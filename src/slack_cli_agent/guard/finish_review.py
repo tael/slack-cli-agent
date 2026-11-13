@@ -120,6 +120,9 @@ class Turn:
     #: ships (G13). Resolved by the caller from channel config, same split as
     #: `is_advisor_channel` — this module only reads the already-resolved fact.
     is_code_first_channel: bool = False
+    #: True only for the configured owner's own turn. Authorization carried
+    #: by another user must never unlock an external write.
+    is_owner_turn: bool = False
     #: The knowledge-file text this turn's system prompt actually carried
     #: (KnowledgeSection's rendered output, handed over by the engine through
     #: KNOWLEDGE_FILE_ENV). Only `verify` reads it: a code table or mapping
@@ -227,6 +230,7 @@ def turn_from_transcript_rows(
     user_prompt: str = "",
     is_advisor_channel: bool = False,
     is_code_first_channel: bool = False,
+    is_owner_turn: bool = False,
 ) -> Turn:
     """Builds a `Turn` from raw Claude Code transcript JSONL rows.
 
@@ -237,6 +241,16 @@ def turn_from_transcript_rows(
     """
     this_turn = rows_since_last_human_input(rows)
     answer = last_assistant_message if last_assistant_message is not None else _last_assistant_text(this_turn)
+    if not user_prompt:
+        user_prompt = next(
+            (
+                _message_text(entry)
+                for entry in this_turn
+                if entry.get("type") == "user"
+                and not _message_text(entry).lstrip().startswith(STOP_HOOK_FEEDBACK_PREFIX)
+            ),
+            "",
+        )
     return Turn(
         answer=answer or "",
         user_prompt=user_prompt,
@@ -244,6 +258,7 @@ def turn_from_transcript_rows(
         has_transcript=bool(rows),
         is_advisor_channel=is_advisor_channel,
         is_code_first_channel=is_code_first_channel,
+        is_owner_turn=is_owner_turn,
     )
 
 
@@ -414,6 +429,63 @@ def stopped_unfinished(turn: Turn) -> str | None:
     if not answer or _ASK_LINE_RE.search(answer):
         return None
     match = _STOPPED_RE.search(_QUOTED.sub("", answer))
+    return match.group(0) if match else None
+
+
+# --------------------------------------------------------------------------
+# redundant_approval — asked again after the owner already authorized work
+# --------------------------------------------------------------------------
+
+_PAST_CONVERSATION_END = "===== 여기까지가 지난 대화다 ====="
+_CURRENT_SLACK_LINE_RE = re.compile(
+    r"^\s*\[(?:\d{1,2}:\d{2}(?::\d{2})?)[^\]]*\]\n(?P<body>[\s\S]*)\Z"
+)
+_OWNER_AUTHORIZATION_RE = re.compile(
+    r"(?:완료까지|끝까지|즉시|긴급|재발\s*방지|"
+    r"(?:해결|조치|진행|적용|반영|수정|복구|고쳐|올려|보내)\s*(?:해라|할\s*것|해\s*줘|해\s*주세요|해))"
+)
+_SHORT_APPROVAL_RE = re.compile(r"^(?:완|완료|승인|진행|응|네|예|ㅇㅇ|좋아|그래)[.!\s]*$")
+_ASK_APPROVAL_AGAIN_RE = re.compile(
+    r"(?:(?:올릴|보낼|진행할|반영할|적용할)까요|"
+    r"승인(?:해|하여|을\s*해|\s*부탁|\s*필요)|"
+    r"(?:진행|반영|적용|push|푸시|올리|보내)[^\n]{0,24}(?:(?:할|릴)까요|승인해\s*주세요|승인\s*부탁))",
+    re.IGNORECASE,
+)
+
+
+def _current_request(user_prompt: str) -> str:
+    """Returns only the live Slack input from the assembled prompt.
+
+    The engine wraps the request with policy text and a past-conversation
+    transcript. Searching the whole prompt for an authorization word makes
+    every turn look pre-approved, so the guard deliberately starts after the
+    transcript terminator and then takes the final timestamped Slack block.
+    """
+    text = user_prompt.rsplit(_PAST_CONVERSATION_END, 1)[-1]
+    match = _CURRENT_SLACK_LINE_RE.search(text)
+    return (match.group("body") if match else text).strip()
+
+
+def redundant_approval(turn: Turn) -> str | None:
+    """Blocks a second approval request when this turn already authorizes it.
+
+    Human-only authentication instructions remain valid: this check targets
+    answers that ask permission to execute, not answers that ask the person to
+    complete an identity-provider step only they can perform.
+    """
+    if not turn.is_owner_turn:
+        return None
+    request = _current_request(turn.user_prompt)
+    # A current message can quote an older timestamped Slack line. Words in
+    # that quote are evidence, not fresh authorization; only the text before
+    # the first nested timestamp can authorize execution.
+    authorization_text = re.split(r"\n\[\d{1,2}:\d{2}(?::\d{2})?[^\]]*\]\n", request, maxsplit=1)[0]
+    if not (
+        _SHORT_APPROVAL_RE.fullmatch(authorization_text)
+        or _OWNER_AUTHORIZATION_RE.search(authorization_text)
+    ):
+        return None
+    match = _ASK_APPROVAL_AGAIN_RE.search(_QUOTED.sub("", turn.answer))
     return match.group(0) if match else None
 
 
@@ -1113,6 +1185,14 @@ def _stopped_unfinished_guidance(hit: str) -> str:
     )
 
 
+def _redundant_approval_guidance(hit: str) -> str:
+    return (
+        f'답이 "{hit}" 로 이미 승인된 실행을 다시 승인 요청으로 바꿨다. '
+        "현재 요청의 실행 지시나 짧은 승인 응답을 승인으로 사용해 작업을 즉시 이어간다. "
+        "사람만 할 수 있는 본인 인증이 남았으면 실행 승인 대신 필요한 인증 동작만 정확히 요청한다."
+    )
+
+
 def _unable_unlooked_guidance(hit: str) -> str:
     return (
         f'"{hit}" 로 볼 수 없다, 알 수 없다고 답했는데 이번 턴에 도구를 한 번도 부르지 않았다. '
@@ -1385,6 +1465,7 @@ def _build_common_registry() -> JudgmentRegistry:
     common.register("not_opened", not_opened, _not_opened_guidance)
     common.register("unable_unlooked", unable_unlooked, _unable_unlooked_guidance)
     common.register("stopped_unfinished", stopped_unfinished, _stopped_unfinished_guidance)
+    common.register("redundant_approval", redundant_approval, _redundant_approval_guidance)
     common.register("absence_unopened", absence_unopened, _absence_unopened_guidance)
     common.register("offer", offer, _offer_guidance)
     common.register("handoff", handoff, _handoff_guidance)
@@ -1484,6 +1565,11 @@ def resolve_code_first_channel(env: Mapping[str, str]) -> bool:
         return False
     configured = {c for c in re.split(r"[,\s]+", env.get("CODE_FIRST_CHANNELS") or "") if c}
     return current in configured
+
+
+def resolve_owner_turn(env: Mapping[str, str]) -> bool:
+    """Whether this request has the configured owner's execution authority."""
+    return (env.get("TURN_TIER") or "").strip() in {"owner", "owner_trusted"}
 
 
 def _drop_spent_gave_up(findings: tuple[Finding, ...], block_count: int) -> tuple[Finding, ...]:

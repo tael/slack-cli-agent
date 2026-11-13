@@ -51,6 +51,7 @@ from slack_cli_agent.guard.finish_review import (
     read_knowledge_file,
     resolve_advisor_channel,
     resolve_code_first_channel,
+    resolve_owner_turn,
     resolve_verify_max_blocks,
     resolve_verify_settings,
     rows_since_last_human_input,
@@ -222,6 +223,7 @@ def main(argv: list[str]) -> int:
             last_assistant_message=payload.get("last_assistant_message"),
             is_advisor_channel=resolve_advisor_channel(os.environ),
             is_code_first_channel=resolve_code_first_channel(os.environ),
+            is_owner_turn=resolve_owner_turn(os.environ),
         )
         # The knowledge files this turn's system prompt carried, as the
         # engine runner wrote them (KNOWLEDGE_FILE_ENV). verify reads them as

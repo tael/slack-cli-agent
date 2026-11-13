@@ -126,6 +126,113 @@ class TestStoppedUnfinished:
         assert finish_review.stopped_unfinished(turn) is None
 
 
+class TestRedundantApproval:
+    @staticmethod
+    def wrapped(current: str, past: str = "") -> str:
+        return (
+            "[제약] 승인이라는 단어가 있는 시스템 안내\n"
+            "===== 지난 대화 =====\n"
+            f"{past}\n"
+            "===== 여기까지가 지난 대화다 =====\n\n"
+            f"[19:32:59 김태일 <@UOWNER>]\n{current}"
+        )
+
+    @pytest.mark.parametrize(
+        ("current_input", "answer"),
+        [
+            (
+                "재발방지. 조치. 즉시. 긴급.",
+                "원격 반영만 남았음.\n\n**커밋을 push하도록 승인해 주세요.**\n[[ASK]]",
+            ),
+            (
+                "완",
+                "인증 저장은 아직임.\n\n**위 권한으로 재인증하고 push하도록 승인해 주세요.**\n[[ASK]]",
+            ),
+            (
+                "이 문제를 해결해. 복구가 안 되면 심각함.",
+                "수정 완료함.\n\n**원격 저장소에도 올릴까요?**\n[[ASK]]",
+            ),
+        ],
+    )
+    def test_blocks_approval_asked_again_after_authorization(self, current_input, answer):
+        turn = _turn(answer, user_prompt=self.wrapped(current_input), is_owner_turn=True)
+
+        assert finish_review.redundant_approval(turn) is not None
+        assert finish_review.decide(turn).action == "block"
+
+    def test_past_authorization_does_not_approve_a_new_question(self):
+        turn = _turn(
+            "운영 반영은 영향 범위 선택이 필요함.\n\n**전체에 반영할까요?**\n[[ASK]]",
+            user_prompt=self.wrapped("두 옵션의 차이를 설명해줘", past="[19:00 김태일]\n즉시 반영해"),
+            is_owner_turn=True,
+        )
+
+        assert finish_review.redundant_approval(turn) is None
+
+    def test_allows_human_only_authentication_step(self):
+        turn = _turn(
+            "본인 인증만 남았음.\n\n**브라우저에서 인증을 완료해 주세요.**\n[[ASK]]",
+            user_prompt=self.wrapped("문제 해결해라."),
+            is_owner_turn=True,
+        )
+
+        assert finish_review.redundant_approval(turn) is None
+
+    def test_blocks_even_when_ask_marker_is_missing(self):
+        turn = _turn(
+            "원격 반영만 남았음. 커밋을 push하도록 승인해 주세요.",
+            user_prompt=self.wrapped("재발방지. 즉시 조치."),
+            is_owner_turn=True,
+        )
+
+        assert finish_review.redundant_approval(turn) is not None
+
+    def test_never_treats_non_owner_instruction_as_write_authorization(self):
+        turn = _turn(
+            "원격 반영만 남았음. 커밋을 push하도록 승인해 주세요.\n[[ASK]]",
+            user_prompt=self.wrapped("즉시 반영해."),
+            is_owner_turn=False,
+        )
+
+        assert finish_review.redundant_approval(turn) is None
+
+    def test_timestamp_inside_current_message_does_not_change_request_boundary(self):
+        turn = _turn(
+            "운영 반영은 영향 범위 선택이 필요함. **전체에 반영할까요?**\n[[ASK]]",
+            user_prompt=self.wrapped("아래 기록의 의미만 설명해줘\n[19:00 김태일]\n즉시 반영해"),
+            is_owner_turn=True,
+        )
+
+        assert finish_review.redundant_approval(turn) is None
+
+    def test_direct_prompt_without_timestamp_is_supported(self):
+        turn = _turn(
+            "커밋을 push하도록 승인해 주세요.",
+            user_prompt="완",
+            is_owner_turn=True,
+        )
+
+        assert finish_review.redundant_approval(turn) is not None
+
+
+class TestOwnerTurnWiring:
+    def test_owner_tiers_only(self):
+        assert finish_review.resolve_owner_turn({"TURN_TIER": "owner_trusted"}) is True
+        assert finish_review.resolve_owner_turn({"TURN_TIER": "owner"}) is True
+        assert finish_review.resolve_owner_turn({"TURN_TIER": "operator_full"}) is False
+
+    def test_transcript_supplies_current_user_prompt(self):
+        rows = [
+            {"type": "user", "message": {"content": "[19:32 김태일]\n완"}},
+            {"type": "assistant", "message": {"content": "push 승인해 주세요"}},
+        ]
+
+        turn = finish_review.turn_from_transcript_rows(rows, is_owner_turn=True)
+
+        assert turn.user_prompt == "[19:32 김태일]\n완"
+        assert turn.is_owner_turn is True
+
+
 class TestNotOpened:
     def test_blocks_when_answer_admits_skipping_the_open(self):
         turn = _turn("본문을 열어 보지 않아 완료조건 판단을 하지 못했다.")
@@ -891,6 +998,7 @@ class TestExtensionPoint:
             "stopped_unfinished",
             "absence_unopened",
             "offer",
+            "redundant_approval",
             "handoff",
             "denied_unretried",
             "code_first",

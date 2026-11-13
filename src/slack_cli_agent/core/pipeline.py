@@ -684,7 +684,7 @@ class RequestPipeline:
                     if principal.trust is TrustLevel.OWNER and not principal.delegated
                     else {}
                 ),
-                **self._engine_env(ctx.channel, config),
+                **self._engine_env(ctx.channel, config, tier),
                 **self._plan_gate_env(tier, config),
                 **(self._figurative_env(config) if self._figurative_env is not None else {}),
                 # The marker's second line, so the worker can tell the turn
@@ -1240,7 +1240,7 @@ class RequestPipeline:
             request_header=request_header,
         )
 
-    def _engine_env(self, channel: str, config: ChannelConfig | None) -> dict[str, str]:
+    def _engine_env(self, channel: str, config: ChannelConfig | None, tier: str) -> dict[str, str]:
         """Per-turn env the engine's built-in Stop hook reads (finish_review):
         POST_CHANNEL is this turn's channel, ADVISOR_CHANNELS and
         CODE_FIRST_CHANNELS the comma-separated channel IDs whose channels.json
@@ -1256,6 +1256,7 @@ class RequestPipeline:
             list_all() if callable(list_all) else ({channel: config} if config else {})
         )
         return {
+            "TURN_TIER": tier,
             "POST_CHANNEL": channel,
             "ADVISOR_CHANNELS": ",".join(
                 sorted(cid for cid, c in configs.items() if advisor_enabled(c))
