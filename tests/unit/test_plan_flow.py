@@ -154,6 +154,33 @@ class TestPlannerRun:
         bad = subprocess.CompletedProcess([], 0, "{oops", "")
         assert ps.run(transcript, caller=lambda *_: bad)["status"] == "bad_output"
 
+    @pytest.mark.parametrize("text", ["서버 부하 관점으로 5why", "5 Why 로 봐줘", "장애 부검해줘",
+                                      "근본 원인 찾아", "재발방지 대책", "RCA 정리"])
+    def test_원인_분석_요청이_short_면_한_번_더_묻는다(self, tmp_path: Path, text: str) -> None:
+        transcript = str(tmp_path / "s.jsonl")
+        ps.prompt_path(transcript).write_text(text, encoding="utf-8")
+        short = subprocess.CompletedProcess([], 0, _cli_result({"type": "short", "branches": []}), "")
+        ok = subprocess.CompletedProcess([], 0, _cli_result(_PLAN), "")
+        prompts: list[str] = []
+
+        def caller(prompt: str, *_: Any) -> Any:
+            prompts.append(prompt)
+            return short if len(prompts) == 1 else ok
+
+        record = ps.run(transcript, caller=caller)
+        assert len(prompts) == 2 and ps.RCA_RETRY_NOTE in prompts[1]
+        assert record["type"] == "branch" and record["rca_retry"] is True
+
+    def test_원인_분석이_아닌_short_는_다시_묻지_않는다(self, tmp_path: Path) -> None:
+        transcript = self._prepare(tmp_path)
+        short = subprocess.CompletedProcess([], 0, _cli_result({"type": "short", "branches": []}), "")
+        calls: list[str] = []
+        record = ps.run(transcript, caller=lambda p, *_: calls.append(p) or short)
+        assert len(calls) == 1 and record["type"] == "short" and "rca_retry" not in record
+
+    def test_planner_지시문이_원인_분석을_short_에서_뺀다(self) -> None:
+        assert "5why" in ps.PLANNER_PROMPT and "short 가 아니다" in ps.PLANNER_PROMPT
+
 
 class TestPlannerStart:
     def _data(self, tmp_path: Path, **extra: Any) -> dict[str, Any]:

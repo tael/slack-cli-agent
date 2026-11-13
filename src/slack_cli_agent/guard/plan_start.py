@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import os
 import shutil
 import signal
@@ -84,6 +85,8 @@ PLANNER_PROMPT = (
     "너는 슬랙 업무 봇의 작업 계획만 세운다. 도구는 없다. 아래 [요청]을 읽고 JSON 으로만 답한다.\n"
     "1. type 을 정한다\n"
     "- short : 조회 1-2회로 답이 나온다. branches 는 빈 배열이다\n"
+    "- 5why, 부검, RCA, 근본원인, 장애·오류 원인 분석, 재발방지 요청은 short 가 아니다. "
+    "원천별(로그, 메트릭, k8s 이벤트, DB, 코드, 슬랙) 갈래로 나눠 branch 로 적는다\n"
     "- branch : 서로 독립된 조회나 작업이 둘 이상이다. branches 는 2-5개다\n"
     "- explore : 무엇이 문제인지 모르고 앞 결과가 다음 조회를 정한다. branches 는 첫 갈래 1-2개만 적는다\n"
     "2. 갈래마다 적는다\n"
@@ -96,6 +99,25 @@ PLANNER_PROMPT = (
     "3. 요청에 없는 작업을 만들지 않는다. 쓰기, 게시, 삭제가 요청에 없으면 갈래에 넣지 않는다\n\n"
     "[요청]\n"
 )
+
+
+#: Root-cause requests are never "short". On 2026-11-13 haiku planned a
+#: "서버 부하 관점으로 5why" request as short with no branches, so no plan was
+#: injected and the turn ran without workers (김태일 지시 "5why를 short 단답형
+#: 으로 간주하면 안됨"). The prompt rule above asks for it; this pattern is the
+#: final check: a short verdict on such a request gets one more planner call.
+RCA_PATTERN = re.compile(
+    r"5\s*-?\s*why|부검|rca\b|근본\s*원인|재발\s*방지|원인\s*(분석|규명|조사)",
+    re.IGNORECASE,
+)
+RCA_RETRY_NOTE = (
+    "\n\n[계획 재요청] 이 요청은 원인 분석이다. short 로 답하지 말고 "
+    "원천별 갈래 2-5개를 branch 로 적는다.\n"
+)
+
+
+def is_rca(prompt: str) -> bool:
+    return bool(RCA_PATTERN.search(prompt))
 
 
 def plan_path(transcript_path: str) -> Path:
@@ -196,6 +218,10 @@ def run(transcript: str, *, caller: Any = _call_planner) -> dict[str, Any]:
         prompt = prompt_path(transcript).read_text(encoding="utf-8")
         proc = caller(prompt, model, TIMEOUT_SEC)
         status, plan = parse(proc.stdout or "")
+        if plan is not None and plan.get("type") == "short" and is_rca(prompt):
+            record["rca_retry"] = True
+            proc = caller(prompt + RCA_RETRY_NOTE, model, TIMEOUT_SEC)
+            status, plan = parse(proc.stdout or "")
         if plan is not None:
             record.update(plan)
     except subprocess.TimeoutExpired:
