@@ -884,13 +884,15 @@ class RequestPipeline:
         body, image_ts = self._post_generated_images(body, ctx, start, turn_calls, flat)
         footer_config = self._channels.get(ctx.channel)
 
+        shown_model = self._footer_model(model, response)
+
         def with_footer(text: str) -> str:
             if footer_config is not None and footer_config.stats_footer and hasattr(
                 self._publisher, "apply_stats_footer"
             ):
                 return self._publisher.apply_stats_footer(
-                    text, model, rich, elapsed=elapsed, effort=effort, usage=response.usage)
-            return self._publisher.apply_elapsed_model_line(text, model, rich)
+                    text, shown_model, rich, elapsed=elapsed, effort=effort, usage=response.usage)
+            return self._publisher.apply_elapsed_model_line(text, shown_model, rich)
 
         unfootered_body = body
         body = with_footer(body)
@@ -1502,6 +1504,22 @@ class RequestPipeline:
             return None
         thread_ts = None if flat else ctx.thread_ts
         return self._generated_images.upload(ctx.channel, thread_ts, images)
+
+    def _footer_model(self, model: str, response: EngineResponse) -> str:
+        """하단에 적을 모델. 채널 설정값이 아니라 실제로 돈 모델이다.
+
+        대체 실행기로 넘어간 턴에 설정값(claude-opus-5-5)을 그대로 적어,
+        사람과 봇 모두 Codex 턴을 Opus 턴으로 읽었다 (2026-11-13 20:39).
+        CLI 가 모델을 알려 주면 그 값을, 2차 엔진 턴이면 2차에 요청한 모델과
+        엔진 이름을 적는다.
+        """
+        if response.model_actual:
+            return response.model_actual
+        secondary = getattr(self._engine, "secondary", None)
+        if secondary is not None and response.engine == getattr(secondary, "name", None):
+            asked = response.model_asked or "기본 모델"
+            return f"{asked} ({response.engine} 대체 실행기)"
+        return model
 
     def _resumable(self, response: EngineResponse) -> bool:
         # A fallback turn ran on the secondary, which opens a fresh session on
