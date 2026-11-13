@@ -3070,3 +3070,14 @@ class Test요청값머리블록:
 
         assert not deps["runner"].calls[0].prompt.startswith("[머리]")
         assert deps["composer"].contexts[0].request_header is False
+
+
+def test_소유자_턴은_검수_차단을_한_번으로_묶는다() -> None:
+    # 2026-11-13: 개선 후 운영 104턴 중 62턴이 검수에서 두 번 막혔다.
+    from slack_cli_agent.core.pipeline import RequestPipeline
+    from slack_cli_agent.guard.finish_review import VERIFY_MAX_BLOCKS_ENV
+
+    env = RequestPipeline.__new__(RequestPipeline)._verify_cap_env
+    assert env( "owner_trusted") == {VERIFY_MAX_BLOCKS_ENV: "1"}
+    assert env("owner") == {VERIFY_MAX_BLOCKS_ENV: "1"}
+    assert env("read") == {} and env("delegated") == {}

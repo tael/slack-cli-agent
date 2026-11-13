@@ -48,6 +48,7 @@ from ..engine.tool_selection import ToolSelection
 from ..guard.base import GuardContext
 from ..guard.figurative import OUT_ENV as FIGURATIVE_OUT_ENV
 from ..guard.figurative import FigurativeGuard, read_precomputed
+from ..guard.finish_review import VERIFY_MAX_BLOCKS_ENV
 from ..guard.mentions import (
     AddresseeGuard,
     PlainMentionGuard,
@@ -686,6 +687,7 @@ class RequestPipeline:
                 ),
                 **self._engine_env(ctx.channel, config),
                 **self._plan_gate_env(tier, config),
+                **self._verify_cap_env(tier),
                 **(self._figurative_env(config) if self._figurative_env is not None else {}),
                 # The marker's second line, so the worker can tell the turn
                 # that asked for a restart (reliability/restart.py).
@@ -1267,6 +1269,20 @@ class RequestPipeline:
             # without 님 (2026-11-09 private-taeil: 오너를 실명으로 특정).
             "OWNER_NAME": self._owner_name(),
         }
+
+    #: Tiers whose turn the Stop hook's model verify blocks at most once.
+    #: 2026-11-13: after D, 62 of 104 production turns were still blocked
+    #: twice (finish_review 22.9% of turn time); each block costs a check and
+    #: a rewrite. The owner reads these answers and asked for speed over the
+    #: second check; other tiers keep the default cap.
+    VERIFY_ONE_BLOCK_TIERS: frozenset[str] = frozenset({"owner_trusted", "owner"})
+
+    def _verify_cap_env(self, tier: str) -> dict[str, str]:
+        """SCA_FINISH_VERIFY_MAX_BLOCKS for guard/finish_review
+        (resolve_verify_max_blocks): 1 on an owner turn, unset otherwise."""
+        if tier in self.VERIFY_ONE_BLOCK_TIERS:
+            return {VERIFY_MAX_BLOCKS_ENV: "1"}
+        return {}
 
     def _plan_gate_env(self, tier: str, config: ChannelConfig | None) -> dict[str, str]:
         """PLAN_GATE for guard/plan_start and guard/pretool/plan_gate. Only
