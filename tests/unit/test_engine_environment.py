@@ -241,12 +241,18 @@ class TestClaudeEnvironmentPolicy:
         """G16: Stop 훅이 자문 채널을 판정하도록 POST_CHANNEL/ADVISOR_CHANNELS 를
         허용 목록으로 통과시킨다."""
         policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
-        source = {**_rich_source_env(), "POST_CHANNEL": "C002", "ADVISOR_CHANNELS": "C001,C002"}
+        source = {
+            **_rich_source_env(),
+            "POST_CHANNEL": "C002",
+            "ADVISOR_CHANNELS": "C001,C002",
+            "TURN_TIER": "owner_trusted",
+        }
 
         env = policy.build(source)
 
         assert env["POST_CHANNEL"] == "C002"
         assert env["ADVISOR_CHANNELS"] == "C001,C002"
+        assert env["TURN_TIER"] == "owner_trusted"
 
     def test_carries_code_first_channel_vars_for_the_stop_hook(self):
         """G13: Stop 훅이 코드 우선 채널을 판정하도록 CODE_FIRST_CHANNELS 를

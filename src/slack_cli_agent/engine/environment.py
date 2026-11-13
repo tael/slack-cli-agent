@@ -267,6 +267,7 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # MCP tool-call limit; defaulted below when the parent sets none.
         "MCP_TOOL_TIMEOUT",
         "POST_CHANNEL",
+        "TURN_TIER",
         "ADVISOR_CHANNELS",
         "CODE_FIRST_CHANNELS",
         # finish_review.named_turn: the owner's display name, so "<이름> 턴"
