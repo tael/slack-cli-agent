@@ -1788,6 +1788,7 @@ class TestEngineRunner:
             "POST_CHANNEL": "C_ADV",
             "ADVISOR_CHANNELS": "C_ADV,C_OTHER",
             "CODE_FIRST_CHANNELS": "C_CODE",
+            "TURN_TIER": "owner_trusted",
             "NOT_ALLOWED": "x",
         }))
 
@@ -1795,6 +1796,7 @@ class TestEngineRunner:
         assert env["POST_CHANNEL"] == "C_ADV"
         assert env["ADVISOR_CHANNELS"] == "C_ADV,C_OTHER"
         assert env["CODE_FIRST_CHANNELS"] == "C_CODE"
+        assert env["TURN_TIER"] == "owner_trusted"
         assert "NOT_ALLOWED" not in env
 
     def test_실린_지식이_검수용_파일로_넘어가고_호출_뒤_지워진다(self, tmp_path: Path) -> None:

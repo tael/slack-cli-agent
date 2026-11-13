@@ -85,12 +85,13 @@ class Test엔진_환경:
         pipeline, deps = build_pipeline(
             responses=[ok_response()], channels=channels, tmp_path=tmp_path,
         )
-        pipeline.handle(make_ctx(channel="C1"))
+        pipeline.handle(make_ctx(channel="C1", user="UOWNER"))
 
         env = deps["runner"].calls[0].engine_env
         assert env["POST_CHANNEL"] == "C1"
         assert env["ADVISOR_CHANNELS"] == "C1,C2"
         assert env["CODE_FIRST_CHANNELS"] == "C2"
+        assert env["TURN_TIER"] == "owner"
 
     def test_advisor_없는_채널은_빈_집합이다(self, tmp_path: Path) -> None:
         channels = ListingChannels({"C1": _config("C1")})
