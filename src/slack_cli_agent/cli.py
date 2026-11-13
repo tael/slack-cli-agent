@@ -792,6 +792,31 @@ def _owner_dm_sender(profile: Profile) -> Callable[[str], object]:
     return send
 
 
+def _admin_sender(profile: Profile) -> Callable[[str], object]:
+    """Posts the restart report to the admin channel (troubleshoot_channel),
+    falling back to the owner DM when it is unset or the post fails.
+    2026-11-13 김태일 지시 : 재기동 결과 보고는 admin 채널로 보낸다."""
+    owner = _owner_dm_sender(profile)
+
+    def send(text: str) -> None:
+        channel = profile.troubleshoot_channel
+        if channel:
+            try:
+                from slack_sdk import WebClient  # lazy import, like the application
+
+                WebClient(token=resolver_for(profile).bot_token()).chat_postMessage(
+                    channel=channel, text=text
+                )
+                return
+            except Exception:  # fall back to the owner DM so the report is not lost
+                logging.getLogger(__name__).exception(
+                    "admin 채널 재기동 보고 실패, 소유자 DM 으로 보낸다"
+                )
+        owner(text)
+
+    return send
+
+
 def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
     import shlex
     import time
@@ -825,7 +850,7 @@ def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
         ],
         kickstart=_kickstart,
         alive=_pid_alive,
-        notify=_owner_dm_sender(profile),
+        notify=_admin_sender(profile),
         busy=lambda: active_reviews(paths.database, now=time.time()),
         rollback=rollback,
         check=check,

@@ -1110,7 +1110,7 @@ class Application:
                 progress=self._learning_progress_store(),
                 applier=LearningApplier(paths.learned, self._profile.display_name),
                 renderer=ProposalRenderer(),
-                notify=self._notify_owner,
+                notify=self._notify_admin,
                 clock=lambda: datetime.now(KST),
             )
         return self._learning_batch
@@ -1422,6 +1422,23 @@ class Application:
             self.pending_report().save(text)
             return False
         return True
+
+    def _notify_admin(self, text: str) -> bool:
+        """Posts a routine operational report to the admin channel
+        (troubleshoot_channel), falling back to the owner DM.
+
+        2026-11-13 김태일 지시 : 학습 보고, DM 일일 점검, 재기동 결과 세 보고를
+        admin 채널로 보낸다. troubleshoot_channel 이 비었거나 발송이 실패하면
+        기존 소유자 DM 경로(실패 시 pending_report 저장)로 넘겨 보고를 잃지 않는다.
+        """
+        channel = self._profile.troubleshoot_channel
+        if channel:
+            try:
+                self.publisher().post(channel, "", text, False)
+                return True
+            except Exception as exc:  # noqa: BLE001 — any Slack/network failure falls back to the owner DM
+                log.warning("admin 채널 보고 발송 실패, 소유자 DM 으로 보낸다 : %s", exc)
+        return self._notify_owner(text)
 
     def _watch_run_check(self, job: WatchJob, outcome: WatchOutcome) -> EngineResponse:
         """Runs the check with a fresh session ID — the check happens well
@@ -1860,7 +1877,7 @@ class Application:
         report = DmDailyReport(
             rows=self.audit().rows_between,
             run_turn=self._run_dm_report_turn,
-            notify_owner=self._notify_owner,
+            notify_owner=self._notify_admin,
             audit=self.audit().record,
             notices=self._notices,
             state_path=self._profile.paths.root / "dm_daily_report.json",
