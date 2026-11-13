@@ -186,6 +186,25 @@ class Test클로드_API_상태코드_401:
             응답 = claude.parse(json.dumps(결과), "", 종료코드)
             assert claude.detect_auth_failure(응답) is None, 종료코드
 
+    def test_Cloudflare_403은_새_세션_재시도를_막지_않는다(self, 엔진들) -> None:
+        """Cloudflare 의 일시적 403도 'Failed to authenticate.'로 시작한다.
+
+        로그인 만료로 오분류하면 DirectInvoker가 auth_failure로 바꿔 pipeline의
+        새 세션 재시도를 막는다. 2026-11-13 운영에서는 같은 호스트와 계정의
+        다음 최소 호출이 성공했으므로 이 응답은 일시 실패로 남겨야 한다.
+        """
+        import json
+
+        claude = 엔진들["claude"]
+        결과 = {
+            **self.운영결과,
+            "api_error_status": 403,
+            "result": "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare",
+        }
+        for 종료코드 in (0, 1):
+            응답 = claude.parse(json.dumps(결과), "", 종료코드)
+            assert claude.detect_auth_failure(응답) is None, 종료코드
+
     def test_다른_엔진은_401_필드로_판정하지_않는다(self, 엔진들) -> None:
         for 이름 in ("codex", "gemini"):
             응답 = 실패(raw={"api_error_status": 401, "stderr": "boom"})
