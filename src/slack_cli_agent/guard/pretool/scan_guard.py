@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import re
 import shlex
 import subprocess
@@ -52,7 +53,13 @@ from typing import Any
 #: command (same pattern as observability/progress_hook.py's HOOK_SCRIPT).
 HOOK_SCRIPT = Path(__file__).resolve()
 
-HOME = os.path.expanduser("~")
+# Codex profiles override HOME with their private config directory. Using
+# expanduser("~") then makes /Users/<account> look like an ordinary subtree
+# and lets a real account-home scan bypass the guard. Resolve the login home
+# from the OS account instead; this is the directory whose recursive scan is
+# expensive and whose protected children can trigger macOS TCC prompts.
+HOME = pwd.getpwuid(os.getuid()).pw_dir
+ENV_HOME = os.environ.get("HOME", HOME)
 SCANNERS = {"find", "grep", "egrep", "rg", "fd", "du", "ls", "tree", "ag", "gfind"}
 # Subdirectories under ~/Library that are not TCC-protected. A scan rooted
 # only here passes.
@@ -74,9 +81,9 @@ def _log_path(argv: list[str]) -> Path | None:
 
 def norm(path: str) -> str:
     path = path.strip().strip("'\"")
-    path = path.replace("$HOME", HOME).replace("${HOME}", HOME)
+    path = path.replace("${HOME}", ENV_HOME).replace("$HOME", ENV_HOME)
     if path == "~" or path.startswith("~/"):
-        path = HOME + path[1:]
+        path = ENV_HOME + path[1:]
     if path.startswith("/"):
         # /Users/Shared/../taeil.kim and /System/Volumes/Data/Users/... are
         # aliases for the same place.
@@ -188,7 +195,6 @@ def check_segment(seg: str) -> str | None:
         m = re.search(r"-L\s+(\d+)", joined) or m
     if m:
         maxdepth = int(m.group(1))
-    excludes_lib = bool(re.search(r"Library", joined) and re.search(r"-prune|--exclude|-g\s*!|--glob\s*!|-E\s", joined))
     prev = ""
     for a in args:
         if prev in (
@@ -208,8 +214,8 @@ def check_segment(seg: str) -> str | None:
             return f"{prog} 가 ~/Library 의 보호 경로({norm(a)})를 훑는다"
         if maxdepth is not None and allowed >= 0 and maxdepth <= allowed:
             continue
-        if kind == "home" and excludes_lib:
-            continue
+        # Excluding Library avoids TCC prompts but not the cost of traversing
+        # the rest of an account home, so it must not bypass the broad-scan guard.
         return f"{prog} 가 {norm(a)} 전체를 훑는다"
     return None
 
@@ -364,8 +370,8 @@ def deny(reason: str, data: dict[str, Any], log_path: Path | None) -> None:
     })
     msg = (
         f"거부 : {reason}. 디스크 전체, 홈 전체, ~/Library 를 훑으면 macOS 가 '다른 앱의 데이터에 접근' 창을 띄우고 "
-        "사람이 누를 때까지 봇이 멈춘다. 후보 디렉터리를 지정해 다시 찾는다. "
-        "홈을 꼭 훑어야 하면 find ~ -path ~/Library -prune -o -name <이름> -print 형태로 Library 를 뺀다."
+        "사람이 누를 때까지 봇이 멈추거나 수 분간 턴을 점유한다. 등록 설정과 코드 상수에서 위치를 역추적하고, "
+        "그래도 없으면 후보 디렉터리를 하나씩 지정해 다시 찾는다."
     )
     print(json.dumps({
         "hookSpecificOutput": {

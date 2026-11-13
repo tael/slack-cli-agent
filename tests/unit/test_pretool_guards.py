@@ -44,7 +44,7 @@ SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
 #: 수 있는 변수들. 서브프로세스마다 지우고 테스트가 명시한 값만 준다.
 _DEADLINE_VARS = (
     "TURN_DEADLINE", "TURN_DEADLINE_MONO", "TURN_WRAPUP_SEC", "TURN_BUDGET_LOG",
-    "POST_CHANNEL", "ADVISOR_CHANNELS", "CODE_FIRST_CHANNELS",
+    "POST_CHANNEL", "TURN_TIER", "ADVISOR_CHANNELS", "CODE_FIRST_CHANNELS",
     "RESTART_GUARD_LABELS", "RESTART_GUARD_MARKER",
     "SCA_FINISH_VERIFY", "SCA_FINISH_VERIFY_MODEL", "SCA_VERIFY_NESTED",
     "SCA_FINISH_VERIFY_MAX_BLOCKS", "SCA_FINISH_KNOWLEDGE_FILE",
@@ -310,6 +310,31 @@ class TestInstallGuard:
 
 
 class TestScanGuard:
+    def test_library를_제외해도_rg_홈_전체_스캔은_거부한다(self, tmp_path: Path) -> None:
+        """전용 HOME 환경에서도 실제 계정 홈 699.6초 지연 명령을 차단한다."""
+        log_path = tmp_path / "scan_guard.jsonl"
+        payload = {
+            "tool_name": "Bash",
+            "session_id": "sg-wide-rg",
+            "cwd": "/Users/Shared/guchipachi-work",
+            "tool_input": {
+                "command": (
+                    f"rg -n 'goal_unfinished' {scan_guard.HOME} --glob '*.py' "
+                    "--glob '!Library/**' --glob '!**/.git/**' 2>/dev/null | head -80"
+                ),
+            },
+        }
+        result, proc = run_hook(
+            scan_guard.HOOK_SCRIPT, payload, {"SCAN_GUARD_LOG": str(log_path)}
+        )
+        assert proc.returncode == 0
+        assert result is not None
+        hook_out = result["hookSpecificOutput"]
+        assert hook_out["permissionDecision"] == "deny"
+        assert "홈 전체" in hook_out["permissionDecisionReason"]
+        assert "699.6" not in hook_out["permissionDecisionReason"]
+        assert len(log_path.read_text(encoding="utf-8").strip().splitlines()) == 1
+
     def test_find_루트_전체_스캔은_prune_재작성되고_로그가_한_줄_남는다(self, tmp_path: Path) -> None:
         log_path = tmp_path / "scan_guard.jsonl"
         payload = {
@@ -480,6 +505,43 @@ class TestFinishHook:
         assert proc3.returncode == 0
         assert proc3.stdout.strip() == ""
         assert third is None
+
+    def test_대화이력없는_오너의_완_뒤_재승인요청을_막는다(self, tmp_path: Path) -> None:
+        transcript_path = tmp_path / "owner-approval.jsonl"
+        transcript_path.write_text(
+            json.dumps({
+                "type": "user",
+                "uuid": "owner-approval-turn",
+                "message": {
+                    "role": "user",
+                    "content": (
+                        "[제약] 이번 턴 도구 안내\n"
+                        "[이 요청의 값. 사람이 쓴 말이 아니라 봇이 붙인 것이다]\n\n"
+                        "[19:32:59 김태일 <@UOWNER>]\n완"
+                    ),
+                },
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        payload = {
+            "session_id": "fh-owner-approval",
+            "transcript_path": str(transcript_path),
+            "last_assistant_message": (
+                "인증 저장은 아직임.\n\n"
+                "**위 권한으로 재인증하고 push하도록 승인해 주세요.**\n[[ASK]]"
+            ),
+        }
+        env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+            "TURN_TIER": "owner",
+        }
+
+        result, proc = run_hook(finish_hook.HOOK_SCRIPT, payload, env)
+
+        assert proc.returncode == 0
+        assert result is not None and result["decision"] == "block"
+        assert "이미 승인된 실행" in result["reason"]
 
     def _knowledge_payload(self, tmp_path: Path) -> dict[str, Any]:
         transcript_path = tmp_path / "knowledge.jsonl"
@@ -680,6 +742,8 @@ def test_오너_턴에는_스스로_해결_규칙이_실린다() -> None:
 
     assert "터미널 명령" in OWNER_SELF_RESOLVE
     assert "승인을 묻지 않고" in OWNER_SELF_RESOLVE
+    assert "git push와 원격 반영은 맡은 작업의 실행 범위" in OWNER_SELF_RESOLVE
+    assert "삭제, 원격 반영" not in OWNER_SELF_RESOLVE
 
 
 def test_restart_guard_env_에_서비스_라벨이_있다() -> None:

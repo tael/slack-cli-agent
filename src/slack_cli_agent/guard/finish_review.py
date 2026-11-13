@@ -438,7 +438,8 @@ def stopped_unfinished(turn: Turn) -> str | None:
 
 _PAST_CONVERSATION_END = "===== 여기까지가 지난 대화다 ====="
 _CURRENT_SLACK_LINE_RE = re.compile(
-    r"^\s*\[(?:\d{1,2}:\d{2}(?::\d{2})?)[^\]]*\]\n(?P<body>[\s\S]*)\Z"
+    r"^\s*\[(?:\d{1,2}:\d{2}(?::\d{2})?)[^\]]*\]\n(?P<body>[\s\S]*)\Z",
+    re.MULTILINE,
 )
 _OWNER_AUTHORIZATION_RE = re.compile(
     r"(?:완료까지|끝까지|즉시|긴급|재발\s*방지|"
@@ -462,6 +463,10 @@ def _current_request(user_prompt: str) -> str:
     transcript terminator and then takes the final timestamped Slack block.
     """
     text = user_prompt.rsplit(_PAST_CONVERSATION_END, 1)[-1]
+    # The current Slack line follows request metadata even when there is no
+    # past-conversation block. Search from any line boundary, while keeping
+    # the first match: a timestamp quoted inside the current message belongs
+    # to its body and must not replace the live request boundary.
     match = _CURRENT_SLACK_LINE_RE.search(text)
     return (match.group("body") if match else text).strip()
 
