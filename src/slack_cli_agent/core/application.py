@@ -1373,7 +1373,8 @@ class Application:
         if self._pending_report is None:
             self._pending_report = PendingReportStore(
                 path=self._profile.state_dir / "pending_report.json",
-                sender=self._post_owner_dm,
+                # 2026-11-13 김태일 지시 : 소유자 알림은 admin 채널 우선
+                sender=self._post_admin_or_owner,
             )
         return self._pending_report
 
@@ -1407,8 +1408,25 @@ class Application:
             raise AgentError("소유자 DM 방을 찾지 못했다")
         self.publisher().post(channel, "", text, False)
 
+    def _post_admin_or_owner(self, text: str) -> None:
+        """Posts to the admin channel (troubleshoot_channel), falling back to
+        the owner DM when it is unset or the post fails. Raises only when
+        both fail.
+
+        2026-11-13 김태일 지시 : 소유자 DM 으로 가던 알림은 모두 admin 채널로 보낸다.
+        """
+        channel = self._profile.troubleshoot_channel
+        if channel:
+            try:
+                self.publisher().post(channel, "", text, False)
+                return
+            except Exception as exc:  # noqa: BLE001 — any Slack/network failure falls back to the owner DM
+                log.warning("admin 채널 알림 발송 실패, 소유자 DM 으로 보낸다 : %s", exc)
+        self._post_owner_dm(text)
+
     def _notify_owner(self, text: str) -> bool:
-        """Notifies the owner's DM; returns whether it actually landed.
+        """Notifies the owner — via the admin channel first, then the owner
+        DM; returns whether it actually landed.
 
         On failure, saves the report to disk instead of just logging —
         this matters most exactly when reporting a restart, since the
@@ -1416,7 +1434,7 @@ class Application:
         fallback so callers can't mistake a queued report for a delivered one.
         """
         try:
-            self._post_owner_dm(text)
+            self._post_admin_or_owner(text)
         except Exception as exc:  # noqa: BLE001 — failures range from Slack SDK errors to network errors; any of them should fall through to saving the report
             log.warning("소유자 알림 발송 실패, 보고를 남긴다 : %s", exc)
             self.pending_report().save(text)
@@ -1424,20 +1442,7 @@ class Application:
         return True
 
     def _notify_admin(self, text: str) -> bool:
-        """Posts a routine operational report to the admin channel
-        (troubleshoot_channel), falling back to the owner DM.
-
-        2026-11-13 김태일 지시 : 학습 보고, DM 일일 점검, 재기동 결과 세 보고를
-        admin 채널로 보낸다. troubleshoot_channel 이 비었거나 발송이 실패하면
-        기존 소유자 DM 경로(실패 시 pending_report 저장)로 넘겨 보고를 잃지 않는다.
-        """
-        channel = self._profile.troubleshoot_channel
-        if channel:
-            try:
-                self.publisher().post(channel, "", text, False)
-                return True
-            except Exception as exc:  # noqa: BLE001 — any Slack/network failure falls back to the owner DM
-                log.warning("admin 채널 보고 발송 실패, 소유자 DM 으로 보낸다 : %s", exc)
+        """학습 보고, DM 일일 점검이 쓰는 이름. 소유자 알림과 같은 경로다."""
         return self._notify_owner(text)
 
     def _watch_run_check(self, job: WatchJob, outcome: WatchOutcome) -> EngineResponse:

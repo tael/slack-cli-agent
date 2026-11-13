@@ -3218,3 +3218,16 @@ class Test운영_보고_admin_채널:
 
         posted = [kw for name, kw in client.calls if name == "chat_postMessage"]
         assert [p["channel"] for p in posted] == ["D_FIXED"]
+
+    def test_모든_소유자_알림이_admin_채널로_간다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        # 2026-11-13 김태일 지시 : 오너 DM 으로 가던 알림도 모두 admin 채널로
+        app = Application(write_profile(tmp_path, owner_dm="D_FIXED"), client=client)
+
+        assert app._notify_owner("엔진 전환") is True
+        app.pending_report().save("밀린 보고")
+        app.pending_report().flush()
+
+        posted = [kw for name, kw in client.calls if name == "chat_postMessage"]
+        assert [p["channel"] for p in posted] == ["C_TROUBLE", "C_TROUBLE"]
