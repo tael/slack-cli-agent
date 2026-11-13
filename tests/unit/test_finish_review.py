@@ -958,3 +958,20 @@ def test_spent_gave_up_does_not_skip_verify_on_rewrite():
 
     d = finish_review.decide(turn, block_count=1, claim_verifier=verifier)
     assert calls and d.action == "block" and d.findings[0].name == "verify"
+
+
+def test_hard_cap_one_lets_the_rewrite_through_without_a_check():
+    # 2026-11-13: SCA_FINISH_VERIFY_MAX_BLOCKS=1 on owner turns.
+    calls: list[str] = []
+
+    def verifier(answer, evidence):
+        calls.append(answer)
+        return ["근거 없는 문장이 있다 (조회 없음)"]
+
+    answer = "조회 결과 정산 건수는 1,234건이고 원인은 배치 지연이다. " * 12
+    turn = _turn(answer, has_transcript=True)
+    first = finish_review.decide(turn, claim_verifier=verifier, block_count=0, verify_hard_max_blocks=1)
+    second = finish_review.decide(turn, claim_verifier=verifier, block_count=1, verify_hard_max_blocks=1)
+    assert first.action == "block" and second.action == "allow"
+    assert len(calls) == 1
+    assert finish_review.resolve_verify_max_blocks({"SCA_FINISH_VERIFY_MAX_BLOCKS": "1"}) == 1
