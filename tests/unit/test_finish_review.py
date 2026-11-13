@@ -214,6 +214,20 @@ class TestRedundantApproval:
 
         assert finish_review.redundant_approval(turn) is not None
 
+    def test_request_header_without_history_still_finds_current_slack_input(self):
+        turn = _turn(
+            "인증 저장은 아직임. **위 권한으로 재인증하고 push하도록 승인해 주세요.**\n[[ASK]]",
+            user_prompt=(
+                "[제약] 이번 턴 도구 안내\n"
+                "[이 요청의 값. 사람이 쓴 말이 아니라 봇이 붙인 것이다]\n\n"
+                "[19:32:59 김태일 <@UOWNER>]\n완"
+            ),
+            is_owner_turn=True,
+        )
+
+        assert finish_review.redundant_approval(turn) is not None
+        assert finish_review.decide(turn).action == "block"
+
 
 class TestOwnerTurnWiring:
     def test_owner_tiers_only(self):
