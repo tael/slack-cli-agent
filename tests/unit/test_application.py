@@ -297,6 +297,29 @@ class TestWiring:
         group = app.worker_services(app.worker())
         assert "startup_catchup" in group.runner_names
 
+
+    def test_기동_캐치업_첫_회차는_실행기가_뜨자마자_돈다(self, app: Application) -> None:
+        """워커 명령이 동기 캐치업을 하지 않으므로 이 첫 회차가 기동 캐치업이다."""
+        import threading
+
+        from slack_cli_agent.reliability.catchup import CatchupReport
+
+        swept = threading.Event()
+
+        class 캐치업기록:
+            def catch_up(self, channels: list[str], window_sec: float | None = None) -> object:
+                swept.set()
+                return CatchupReport(missed=[], skipped=[], unchecked_channels=[])
+
+        runner = app.startup_catchup_runner(캐치업기록())  # type: ignore[arg-type]
+        assert runner.initial_delay_sec == 0
+        runner.start()
+        try:
+            assert swept.wait(timeout=2)
+        finally:
+            runner.stop()
+            runner.join(timeout=2)
+
     def test_접수기와_워커가_같은_큐를_쓴다(self, app: Application) -> None:
         ingress = app.ingress()
         worker = app.worker()

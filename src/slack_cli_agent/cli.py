@@ -485,7 +485,7 @@ class WorkerCommand(PreflightGatedServiceCommand):
             "--no-catch-up",
             dest="catch_up",
             action="store_false",
-            help="시작 시 캐치업을 건너뛴다. 기본은 캐치업한다",
+            help="--once 실행에서 처리 전 캐치업을 건너뛴다. 상시 실행의 기동 캐치업은 주기 실행기가 맡는다",
         )
         parser.set_defaults(catch_up=True)
 
@@ -517,10 +517,13 @@ class WorkerCommand(PreflightGatedServiceCommand):
             # been forgotten before.
             with PidFile(profile.paths.pid_file(args.worker_id)), app.worker_services(worker):
                 worker.reclaim()
-                # Catch-up defaults to on: a mention that arrives during a
-                # restart doesn't replay as a socket event, so skipping this
-                # silently drops it.
-                if args.catch_up:
+                # A mention that arrives during a restart doesn't replay as a
+                # socket event, so the startup_catchup runner in
+                # worker_services sweeps on its first tick, right as the
+                # services start. Sweeping here as well held the first claim
+                # back 53-96s after every start (2026-11-13). --once has no
+                # loop for the runner to feed, so it still sweeps first.
+                if args.once and args.catch_up:
                     worker.catch_up(app.channel_ids())
                 try:
                     if args.once:
@@ -822,7 +825,13 @@ def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
     import time
 
     from .config.settings import RuntimeSettings
-    from .reliability.supervisor import ApplySupervisor, Service, active_reviews, install_root
+    from .reliability.supervisor import (
+        ApplySupervisor,
+        Service,
+        active_reviews,
+        install_root,
+        running_jobs,
+    )
 
     paths = profile.paths
     settings = RuntimeSettings().override(profile.settings_override)
@@ -856,6 +865,10 @@ def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
         check=check,
         install_dir=install_root(Path(__file__).resolve().parent),
         auto_apply=settings.supervisor_auto_apply,
+        inflight=lambda: running_jobs(
+            paths.database, now=time.time(), stale_sec=settings.heartbeat_stale_sec
+        ),
+        idle_max_wait_sec=settings.restart_idle_max_wait_sec,
     )
 
 

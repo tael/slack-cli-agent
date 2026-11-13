@@ -500,6 +500,38 @@ class TestCatchUpDedup:
         # 대표건이 실행 중이었으므로 다시 등록되지 않는다 — pending 에 새 행이 없다
         assert queue.pending() == []
 
+    def test_소켓으로_들어와_끝난_건은_캐치업이_다시_돌리지_않는다(self, database) -> None:
+        """기동 캐치업이 워커 루프와 함께 돌아, 소켓 이벤트로 이미 처리한
+        메시지를 캐치업이 다시 찾을 수 있다. (channel, message_ts) UNIQUE 가
+        완료 행으로 막는다(job_retention_sec 7일 > catchup_window_sec 2시간)."""
+        handler = FakeHandler(outcome=HandleOutcome(ok=True))
+        worker, queue, _client = make_worker(database=database, handler=handler)
+        assert queue.enqueue(ctx("1.1", "T1")) is True  # 소켓 경로
+        assert worker.run_once() is True
+
+        worker._catchup = FakeCatchup(
+            CatchupReport(missed=[ctx("1.1", "T1")], skipped=[], unchecked_channels=[])
+        )
+        worker.catch_up(["C1"])
+
+        assert queue.pending() == []
+        assert worker.run_once() is False
+        assert [c.ts for c in handler.received] == ["1.1"]
+
+    def test_캐치업이_먼저_넣은_건은_소켓_이벤트가_다시_넣지_않는다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=True))
+        worker, queue, _client = make_worker(database=database, handler=handler)
+        worker._catchup = FakeCatchup(
+            CatchupReport(missed=[ctx("1.1", "T1")], skipped=[], unchecked_channels=[])
+        )
+        worker.catch_up(["C1"])
+
+        # 접수기(IngressService._store)도 같은 queue.enqueue 를 부른다
+        assert queue.enqueue(ctx("1.1", "T1")) is False
+        assert worker.run_once() is True
+        assert worker.run_once() is False
+        assert [c.ts for c in handler.received] == ["1.1"]
+
     def test_skipped는_큐에_안_들어간다(self, database) -> None:
         worker, queue, _client = make_worker(database=database)
         rep = ctx("1.2", "T1")

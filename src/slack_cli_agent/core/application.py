@@ -2685,12 +2685,17 @@ class Application:
 
         The interval is that grace plus a margin, so the second pass sees the
         mentions the first one skipped for being too recent.
+
+        The first pass runs as soon as the runner starts, on its own thread.
+        This is the only startup sweep: the worker command no longer sweeps
+        before its claim loop, which held the first claim back 53-96s.
         """
         catchup = StartupCatchup(lambda: self._startup_catchup_tick(worker))
         return PeriodicRunner(
             catchup.tick,
             self._settings.catchup_grace_sec + 5,
             name="startup_catchup",
+            initial_delay_sec=0.0,
         )
 
     def channel_join_runner(self) -> PeriodicRunner:
