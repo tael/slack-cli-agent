@@ -2375,7 +2375,9 @@ class Application:
             # 코드 위치를 work_root 로 알려 주고 실제 코드 폴더는 읽기 경로에 없어 Read 가 거부됐다.
             scoped=scoped,
             owner_tools=owner_format_tools if format_review else None,
-            readable_dirs=(paths.persona, paths.prompts, _CODE_ROOT),
+            # 2026-11-13 키키 대조 : persona/knowledge 가 ~/.mametchi/persona 로 가는 링크라
+            # 부검 턴의 지식 파일 Read 가 dontAsk 로 거부됐다. 일반 턴과 같은 읽기 경로를 준다.
+            readable_dirs=(*self.readable_dirs, _CODE_ROOT),
             tools=review_tools,
             turn_tier=tier,
             # 부검만 전용 모델이다 (마메치 model_for postmortem=True). 디버그

@@ -1817,7 +1817,7 @@ class Test폴백엔진연결:
         for task in application.review_tasks().values():
             # 부검이 자기 코드를 열 수 있게 소스 리포 루트도 읽는다 (2026-11-07)
             from slack_cli_agent.core.application import _CODE_ROOT
-            assert task._engine._readable_dirs == (paths.persona, paths.prompts, _CODE_ROOT)
+            assert task._engine._readable_dirs == (*application.readable_dirs, _CODE_ROOT)
             assert (_CODE_ROOT / "src" / "slack_cli_agent").is_dir()
         application.close()
 
