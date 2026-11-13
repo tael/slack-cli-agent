@@ -11,6 +11,8 @@ services again. The outcome goes to the owner's DM.
 
 It also writes the request itself when the install checkout moves on main,
 since not every bot sharing an editable install restarts after an update.
+That request waits until no job is running, so an update doesn't cut a turn
+short; past a ceiling it is written anyway, so a busy bot still updates.
 
 Until now mametchi watchdog.py take_over_sca_apply did this for the bot from
 another repository, so stopping mametchi would have taken it away.
@@ -49,6 +51,9 @@ REVIEW_ACTIVE_SEC = 1800.0
 #: How often the install checkout's HEAD is read again.
 INSTALL_CHECK_SEC = 60.0
 GIT_TIMEOUT_SEC = 5.0
+#: How long an install update waits for the worker to have no running job
+#: before it asks for the restart anyway. RuntimeSettings.restart_idle_max_wait_sec.
+RESTART_IDLE_MAX_WAIT_SEC = 1800.0
 
 GitRunner = Callable[[list[str]], str | None]
 
@@ -89,6 +94,39 @@ def active_reviews(db_path: Path, *, now: float, window_sec: float = REVIEW_ACTI
         except (TypeError, ValueError, AttributeError):
             continue
     return count
+
+
+def running_jobs(db_path: Path, *, now: float, stale_sec: float) -> int:
+    """Counts jobs a worker is handling right now. Read-only.
+
+    A RUNNING row whose heartbeat stopped belongs to a dead worker and is
+    left to stale reclaim, so it does not hold an update back. A missing or
+    unreadable database counts as none, the same as active_reviews.
+    """
+    if not db_path.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status = 'RUNNING'"
+                " AND COALESCE(heartbeat_ts, started_at, 0) >= ?",
+                (now - stale_sec,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 0
+    return int(row[0]) if row else 0
+
+
+@dataclass
+class _PendingUpdate:
+    """An install update seen on main, waiting for an idle worker."""
+
+    head: str
+    since: float
+    logged: bool = False
 
 
 def git_in(directory: Path) -> GitRunner:
@@ -146,6 +184,8 @@ class ApplySupervisor:
         auto_apply: bool = True,
         git: GitRunner | None = None,
         install_check_sec: float = INSTALL_CHECK_SEC,
+        inflight: Callable[[], int] = lambda: 0,
+        idle_max_wait_sec: float = RESTART_IDLE_MAX_WAIT_SEC,
     ) -> None:
         self._request = request_path
         self._running = running_path
@@ -169,6 +209,9 @@ class ApplySupervisor:
         self._install_every = install_check_sec
         self._install_checked = self._now()
         self._baseline = self._git(["rev-parse", "HEAD"]) if self._git else None
+        self._inflight = inflight
+        self._idle_max_wait = idle_max_wait_sec
+        self._update: _PendingUpdate | None = None
 
     def tick(self) -> str | None:
         """One pass. Returns the outcome, or None when there was nothing to do."""
@@ -207,10 +250,37 @@ class ApplySupervisor:
         scripts already run the new code. Off a main branch a turn may be
         editing the checkout, so nothing is requested and the baseline is
         kept until main is back.
+
+        The request waits for a moment with no running job. Writing it makes
+        the worker stop claiming, and the kickstart's TERM kills a turn that
+        outlasts the shutdown grace, which then reruns from scratch
+        (2026-11-07..11-13: four turns lost 2,981s). HEAD is read every
+        install_check_sec; the idle check runs on every tick.
         """
-        if self._git is None or self._now() - self._install_checked < self._install_every:
+        if self._git is None:
             return
-        self._install_checked = self._now()
+        if self._now() - self._install_checked >= self._install_every:
+            self._install_checked = self._now()
+            self._detect_install_change()
+        if self._update is not None:
+            self._request_when_idle()
+
+    def _eligible_head(self) -> str | None:
+        """HEAD when the checkout is on main with no tracked change, else None."""
+        head = self._git(["rev-parse", "HEAD"]) if self._git else None
+        if not head or self._git is None:
+            return None
+        if self._git(["rev-parse", "--abbrev-ref", "HEAD"]) != "main":
+            return None
+        if self._git(["status", "--porcelain", "--untracked-files=no"]) != "":
+            return None
+        return head
+
+    def _markers_present(self) -> bool:
+        return self._request.exists() or self._running.exists()
+
+    def _detect_install_change(self) -> None:
+        assert self._git is not None
         head = self._git(["rev-parse", "HEAD"])
         if not head:
             return
@@ -218,26 +288,66 @@ class ApplySupervisor:
             self._baseline = head
             return
         if head == self._baseline:
+            if self._update is not None:
+                log.info("설치본이 기동 때 HEAD 로 돌아와 갱신 재기동을 거둔다")
+                self._update = None
             return
-        if self._git(["rev-parse", "--abbrev-ref", "HEAD"]) != "main":
+        if self._eligible_head() != head:
+            # Off main or dirty: the same as before, nothing is requested
+            # until main is back. The wait ceiling starts over from there.
+            self._update = None
             return
-        if self._git(["status", "--porcelain", "--untracked-files=no"]) != "":
-            return
-        if self._request.exists() or self._running.exists():
+        if self._markers_present():
             # That restart loads this HEAD too, unless it began before the
             # commit; a second restart for it would only drain the worker again.
             self._baseline = head
+            self._update = None
             return
-        request = ApplyRequest(
-            requested_at=self._now(),
-            note=f"설치본 갱신 {self._baseline[:7]} -> {head[:7]}",
-        )
+        if self._update is None:
+            self._update = _PendingUpdate(head=head, since=self._now())
+        else:
+            self._update = _PendingUpdate(
+                head=head, since=self._update.since, logged=self._update.logged
+            )
+
+    def _request_when_idle(self) -> None:
+        update = self._update
+        assert update is not None
+        if self._markers_present():
+            self._baseline = update.head
+            self._update = None
+            return
+        try:
+            running = self._inflight()
+        except Exception:
+            # Unknown counts as busy; the ceiling still bounds the wait.
+            log.exception("진행 중 작업 수 조회 실패")
+            running = 1
+        waited = self._now() - update.since
+        if running > 0 and waited < self._idle_max_wait:
+            if not update.logged:
+                log.info(
+                    "진행 중 작업 %d건, 설치본 갱신 재기동을 유휴 때까지 미룬다 (최대 %.0f초)",
+                    running, self._idle_max_wait,
+                )
+                update.logged = True
+            return
+        # Checked again here: the checkout may have left main since detection.
+        head = self._eligible_head()
+        if head is None or head == self._baseline:
+            return
+        assert self._baseline is not None
+        note = f"설치본 갱신 {self._baseline[:7]} -> {head[:7]}"
+        if running > 0:
+            note += f" (진행 중 작업 {running}건, {waited:.0f}초 대기 상한 도달)"
+        request = ApplyRequest(requested_at=self._now(), note=note)
         self._request.parent.mkdir(parents=True, exist_ok=True)
         staging = self._request.with_name(self._request.name + ".tmp")
         staging.write_text(request.render(), encoding="utf-8")
         staging.replace(self._request)
-        log.info("설치본 갱신 감지, 재기동 요청 : %s -> %s", self._baseline[:7], head[:7])
+        log.info("설치본 갱신 재기동 요청 : %s (%.0f초 대기)", note, waited)
         self._baseline = head
+        self._update = None
 
     def _age(self, path: Path) -> float | None:
         try:

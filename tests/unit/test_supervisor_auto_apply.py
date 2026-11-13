@@ -144,3 +144,157 @@ def test_설치본_루트는_패키지가_체크아웃_안에_있을_때만_찾�
     stray.mkdir(parents=True)
     assert install_root(stray) is None
     assert install_root(tmp_path / "nowhere") is None
+
+
+class 시계:
+    def __init__(self, t: float = 5000.0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def test_진행_중_작업이_있으면_요청을_미루고_유휴가_되면_쓴다(tmp_path: Path) -> None:
+    """요청을 쓰면 워커가 집기를 멈추고 TERM 이 긴 턴을 끊는다(11-07..11-13 턴 4건
+    2,981초 손실). 그래서 진행 중 작업이 0일 때만 쓴다."""
+    git = 가짜git()
+    clock = 시계()
+    running = {"n": 2}
+    sup = 감독(tmp_path, git, now=clock, inflight=lambda: running["n"])
+    git.head = NEW
+    sup.tick()
+    assert not (tmp_path / "apply-request").exists()
+    clock.t += 600
+    sup.tick()
+    assert not (tmp_path / "apply-request").exists()
+    running["n"] = 0
+    sup.tick()
+    request = ApplyRequest.parse((tmp_path / "apply-request").read_text())
+    assert request is not None
+    assert request.note == "설치본 갱신 aaaaaaa -> bbbbbbb"
+
+
+def test_HEAD_재조회_간격과_무관하게_유휴를_매회차_본다(tmp_path: Path) -> None:
+    git = 가짜git()
+    clock = 시계()
+    running = {"n": 1}
+    sup = 감독(tmp_path, git, now=clock, inflight=lambda: running["n"], install_check_sec=60)
+    git.head = NEW
+    clock.t += 61
+    sup.tick()
+    assert not (tmp_path / "apply-request").exists()
+    clock.t += 5
+    running["n"] = 0
+    sup.tick()
+    assert (tmp_path / "apply-request").exists()
+
+
+def test_대기_상한을_넘기면_진행_중이어도_쓴다(tmp_path: Path) -> None:
+    """바쁜 봇도 결국 갱신된다. 상한을 넘긴 뒤는 기존 동작과 같다."""
+    git = 가짜git()
+    clock = 시계()
+    sup = 감독(tmp_path, git, now=clock, inflight=lambda: 1, idle_max_wait_sec=1800)
+    git.head = NEW
+    sup.tick()
+    clock.t += 1799
+    sup.tick()
+    assert not (tmp_path / "apply-request").exists()
+    clock.t += 1
+    sup.tick()
+    request = ApplyRequest.parse((tmp_path / "apply-request").read_text())
+    assert request is not None
+    assert request.note.startswith("설치본 갱신 aaaaaaa -> bbbbbbb")
+    assert "대기 상한" in request.note
+
+
+def test_작업_수_조회가_실패하면_진행_중으로_본다(tmp_path: Path) -> None:
+    def 실패() -> int:
+        raise RuntimeError("조회 실패")
+
+    git = 가짜git()
+    clock = 시계()
+    sup = 감독(tmp_path, git, now=clock, inflight=실패, idle_max_wait_sec=100)
+    git.head = NEW
+    sup.tick()
+    assert not (tmp_path / "apply-request").exists()
+    clock.t += 100
+    sup.tick()
+    assert (tmp_path / "apply-request").exists()
+
+
+def test_기다리는_동안_main을_벗어나면_쓰지_않는다(tmp_path: Path) -> None:
+    git = 가짜git()
+    clock = 시계()
+    running = {"n": 1}
+    sup = 감독(tmp_path, git, now=clock, inflight=lambda: running["n"], install_check_sec=60)
+    git.head = NEW
+    clock.t += 61
+    sup.tick()
+    git.branch = "fix/x"
+    running["n"] = 0
+    clock.t += 5
+    sup.tick()
+    assert not (tmp_path / "apply-request").exists()
+
+
+def test_기다리는_동안_턴이_쓴_요청은_건드리지_않는다(tmp_path: Path) -> None:
+    """소유자가 턴에서 요청한 재기동은 기존 경로 그대로다. 그 재기동이 같은
+    HEAD 를 싣으므로 기준만 옮긴다."""
+    git = 가짜git()
+    clock = 시계()
+    running = {"n": 1}
+    sup = 감독(tmp_path, git, now=clock, inflight=lambda: running["n"])
+    git.head = NEW
+    sup.tick()
+    (tmp_path / "apply-request").write_text(f"{int(clock.t)}\nC1:1.2\n턴이 쓴 요청\n")
+    running["n"] = 0
+    sup.tick()
+    assert "턴이 쓴 요청" in (tmp_path / "apply-request").read_text()
+    (tmp_path / "apply-request").unlink()
+    sup.tick()
+    assert not (tmp_path / "apply-request").exists()
+
+
+def test_HEAD가_기준으로_돌아오면_대기를_거둔다(tmp_path: Path) -> None:
+    git = 가짜git()
+    clock = 시계()
+    running = {"n": 1}
+    sup = 감독(tmp_path, git, now=clock, inflight=lambda: running["n"])
+    git.head = NEW
+    sup.tick()
+    git.head = OLD
+    running["n"] = 0
+    sup.tick()
+    assert not (tmp_path / "apply-request").exists()
+
+
+def test_대기_상한_기본값은_1800초다() -> None:
+    assert RuntimeSettings().restart_idle_max_wait_sec == 1800
+
+
+def test_진행_중_작업은_박동이_살아_있는_RUNNING_만_센다(tmp_path: Path) -> None:
+    """감독은 별도 프로세스라 워커의 inflight 를 못 본다. 같은 DB 를 읽는다."""
+    import sqlite3
+
+    from slack_cli_agent.reliability.supervisor import running_jobs
+    from slack_cli_agent.storage.database import Database
+
+    db = tmp_path / "state.db"
+    assert running_jobs(db, now=1000.0, stale_sec=15) == 0
+    Database(db).migrate()
+    conn = sqlite3.connect(db)
+    rows = [
+        ("1.1", "RUNNING", 995.0),  # 박동 살아 있음
+        ("1.2", "RUNNING", 900.0),  # 죽은 워커가 남긴 행
+        ("1.3", "QUEUED", None),
+        ("1.4", "COMPLETED", 999.0),
+    ]
+    for ts, status, beat in rows:
+        conn.execute(
+            "INSERT INTO jobs (channel, thread_ts, message_ts, user_id, payload, status,"
+            " created_at, heartbeat_ts) VALUES ('C1', ?, ?, 'U1', '{}', ?, 0, ?)",
+            (ts, ts, status, beat),
+        )
+    conn.commit()
+    conn.close()
+    assert running_jobs(db, now=1000.0, stale_sec=15) == 1

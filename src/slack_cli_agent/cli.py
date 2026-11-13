@@ -822,7 +822,13 @@ def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
     import time
 
     from .config.settings import RuntimeSettings
-    from .reliability.supervisor import ApplySupervisor, Service, active_reviews, install_root
+    from .reliability.supervisor import (
+        ApplySupervisor,
+        Service,
+        active_reviews,
+        install_root,
+        running_jobs,
+    )
 
     paths = profile.paths
     settings = RuntimeSettings().override(profile.settings_override)
@@ -856,6 +862,10 @@ def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
         check=check,
         install_dir=install_root(Path(__file__).resolve().parent),
         auto_apply=settings.supervisor_auto_apply,
+        inflight=lambda: running_jobs(
+            paths.database, now=time.time(), stale_sec=settings.heartbeat_stale_sec
+        ),
+        idle_max_wait_sec=settings.restart_idle_max_wait_sec,
     )
 
 
