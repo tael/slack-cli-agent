@@ -897,6 +897,7 @@ class TestExtensionPoint:
             "named_turn",
             "unable_unlooked",
             "verify",
+            "causal_chain",
         }
 
     def test_registering_on_default_registry_is_seen_by_decide(self):

@@ -1226,6 +1226,159 @@ class JudgmentRegistry:
         return findings
 
 
+# --------------------------------------------------------------------------
+# causal_chain — a "- 왜" bullet chain whose steps aren't backed by this
+# turn's tool results
+# --------------------------------------------------------------------------
+#
+# 2026-11-13 sandbox-rnd 14:48 "서버 부하 관점으로 5why" 답이 남의 슬랙 보고만
+# 옮기고 k8s, 로그 조회를 한 번도 하지 않은 채 게시됐다. mametchi 의
+# finish_work_hook.py causal_problems(2026-10-25) 가 막던 유형인데, sca 로
+# 옮길 때 review/five_why.py 의 표 형식 검사만 넘어와 불릿 형식 사슬은 아무
+# 검사도 받지 않았다. 그 판정을 이식하고 "확인 필요" 로 넘긴 검증 항목을 더한다.
+
+_CC_WHY_LINE_RE = re.compile(r"^-\s*(왜|why)\b", re.I)
+_CC_HEDGE_RE = re.compile(
+    r"(못했|하지 못|확인되지 않|확인 못|알 수 없|모르겠|모르는 상태|추정|가설|가능성이\s*(커|크|높|있)"
+    r"|로 보여요|로 보입니다|로 봐요|로 봄|것 같|듯해|듯합|아닐까|미확인|여지가|배제할 수 없|단정할 수 없|단정하기 어렵)"
+)
+_CC_UNVERIFIED_HEAD_RE = re.compile(r"^#+\s*[^\n]*(확인하지 못|미확인|확인 못|모르는 것)", re.M)
+_CC_NUM_RE = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
+_CC_DATE_LIKE_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}|\d{1,2}:\d{2}|\d{1,2}-\d{1,2}\s*시|\d+\s*why", re.I
+)
+_CC_IDENT_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[_.\-][A-Za-z0-9]+)+")
+#: 바이트→MB·GB, 천 단위, 비율→%.
+_CC_SCALES = (1, 1000, 1024, 1024**2, 1024**3, 1000**2, 1000**3, 0.01)
+#: "k8s 이벤트로 확인 필요" 처럼 사람 지목 없이 넘긴 검증 항목. 사람이나 팀이
+#: 할 일("서비스개발1팀 확인 대상")은 넘겨도 된다.
+_CC_DEFERRED_RE = re.compile(r"(확인|비교|조회|대조|측정)\s?필요")
+_CC_OWNER_RE = re.compile(r"(님|팀|담당)")
+
+
+_CC_SECONDARY_TOOLS = ("mcp__slack__", "ToolSearch", "Skill", "mcp__notion__notion-search")
+
+
+def _cc_is_primary(name: str) -> bool:
+    return not name.startswith(_CC_SECONDARY_TOOLS)
+
+
+def _cc_tool_numbers(turn: Turn) -> set[float]:
+    out: set[float] = set()
+    for call in turn.tool_calls:
+        for n in _CC_NUM_RE.findall(call.result or ""):
+            try:
+                out.add(float(n.replace(",", "")))
+            except ValueError:
+                pass
+    return out
+
+
+def _cc_grounded(text: str, nums: set[float]) -> bool:
+    """True if any number in text matches a tool-result number, allowing
+    unit scaling and rounding. Single-digit integers don't count."""
+    for n in _CC_NUM_RE.findall(_CC_DATE_LIKE_RE.sub(" ", text)):
+        raw = n.replace(",", "")
+        if len(raw) < 2 and "." not in raw:
+            continue
+        x = float(raw)
+        if "." in raw:
+            tol = 10 ** -len(raw.split(".")[1])
+        elif raw.endswith("0"):
+            tol = max(1.0, 0.03 * x)
+        else:
+            tol = 1.0
+        if any(abs(t / s - x) <= tol for t in nums for s in _CC_SCALES):
+            return True
+    return False
+
+
+def _cc_why_blocks(answer: str) -> list[str]:
+    blocks: list[list[str]] = []
+    cur: list[str] | None = None
+    for line in answer.splitlines():
+        if _CC_WHY_LINE_RE.match(line):
+            if cur:
+                blocks.append(cur)
+            cur = [line]
+        elif cur is not None and (line.startswith("#") or line.startswith("- ")):
+            blocks.append(cur)
+            cur = None
+        elif cur is not None:
+            cur.append(line)
+    if cur:
+        blocks.append(cur)
+    return ["\n".join(b) for b in blocks]
+
+
+def _cc_refute_block(answer: str) -> str | None:
+    lines = answer.splitlines()
+    for i, line in enumerate(lines):
+        if "반증" in line and not line.startswith("#"):
+            out = [line]
+            for nxt in lines[i + 1 :]:
+                if nxt.startswith(("  ", "\t")):
+                    out.append(nxt)
+                else:
+                    break
+            return "\n".join(out)
+    return None
+
+
+def causal_chain(turn: Turn) -> str | None:
+    """Problems of a '- 왜' chain answer, joined; None if not a chain or clean."""
+    answer = turn.answer
+    if not answer or "[[침묵]]" in answer:
+        return None
+    body = _QUOTED.sub("", answer)
+    blocks = _cc_why_blocks(body)
+    if len(blocks) < 2:
+        return None
+    nums = _cc_tool_numbers(turn)
+    corpus = "\n".join(call.result or "" for call in turn.tool_calls)
+    probs: list[str] = []
+    # 슬랙 보고만 읽은 사슬은 남의 분석을 옮긴 것이다. 14:48 답의 72,001건,
+    # 4-7초 같은 수치는 전부 장애 채널 보고에서 왔고 원천 조회는 0회였다.
+    if not any(_cc_is_primary(call.name) for call in turn.tool_calls):
+        probs.append("원천 조회 0회. 슬랙 보고만 읽고 사슬을 세움")
+    for b in blocks:
+        head = b.splitlines()[0].strip()[:40]
+        h = _CC_HEDGE_RE.search(b)
+        if h:
+            probs.append(f'단계 "{head}" 에 추정 표현 "{h.group(0)}"')
+        if not _cc_grounded(b, nums) and not any(
+            len(t) >= 8 and t in corpus for t in _CC_IDENT_RE.findall(b)
+        ):
+            probs.append(f'단계 "{head}" 에 이번 턴 도구 결과로 뒷받침되는 수치나 식별자가 없음')
+    rb = _cc_refute_block(body)
+    if rb is None:
+        probs.append("반증 확인 줄이 없음")
+    else:
+        if not _cc_grounded(rb, nums):
+            probs.append("반증 줄에 도구 결과 수치가 없음")
+        # 반증 줄에서 "가설은 깨짐" 은 정상 서술이라 가설 단어만 빼고 본다
+        h = _CC_HEDGE_RE.search(rb.replace("가설", ""))
+        if h:
+            probs.append(f'반증 줄에 추정 표현 "{h.group(0)}"')
+    u = _CC_UNVERIFIED_HEAD_RE.search(body)
+    if u:
+        probs.append(f'미확인 섹션 제목 "{u.group(0).strip()}"')
+    for line in body.splitlines():
+        if _CC_DEFERRED_RE.search(line) and not _CC_OWNER_RE.search(line):
+            probs.append(f'직접 할 수 있는 검증을 넘김 "{line.strip()[:60]}"')
+    return "; ".join(probs) if probs else None
+
+
+def _causal_chain_guidance(hit: str) -> str:
+    return (
+        "인과 사슬 답에 결함이 있다 : " + hit + ". "
+        "각 단계는 이번 턴 도구 결과의 수치로 뒷받침한다. 다른 사람의 슬랙 보고를 옮긴 것은 근거가 아니다. "
+        "원천(k8s 이벤트, 로그, 지표, 코드, DB)을 이번 턴에 조회해 확정하고, '확인 필요' 로 남긴 항목은 지금 조회한다. "
+        "조회 수단이 정말 없는 것만 사슬에서 빼고 '누가 무엇을 실행' 한 줄로 남긴다. "
+        "'- 반증 확인' 줄에 반대 가설을 깨는 수치를 쓴다. 반증에서 인과가 깨지면 사슬과 결론을 고친다."
+    )
+
+
 def _build_common_registry() -> JudgmentRegistry:
     common = JudgmentRegistry()
     common.register("gave_up", gave_up, _gave_up_guidance)
@@ -1241,6 +1394,7 @@ def _build_common_registry() -> JudgmentRegistry:
     common.register("code_first", code_first_doc_only, _code_first_guidance)
     common.register("named_turn", named_turn, _named_turn_guidance)
     common.register("verify", _unsupported_claims_check, _verify_guidance)
+    common.register("causal_chain", causal_chain, _causal_chain_guidance)
     return common
 
 
