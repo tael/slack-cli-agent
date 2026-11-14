@@ -86,3 +86,35 @@ class TestClaudeSkillDiscovery:
 
         assert "--add-dir" in cmd
         assert str(profile.paths.skills) in cmd, "스킬 경로가 실행 인자에 없다"
+
+
+class TestClaudeSkillPlugin:
+    """2026-11-12: --setting-sources "" 에서는 --add-dir 의 스킬이 목록에 안 뜬다.
+    같은 파일을 --plugin-dir 로 넘긴다."""
+
+    def test_prepare_makes_plugin_with_skills_link(self, tmp_path):
+        profile = _profile(tmp_path)
+        profile.paths.ensure()
+        engine = ClaudeEngine(profile, RuntimeSettings())
+        engine.prepare(_request(tmp_path))
+        plugin = profile.paths.skills / "plugin"
+        assert (plugin / ".claude-plugin" / "plugin.json").is_file()
+        assert (plugin / "skills").resolve() == profile.paths.skill_files.resolve()
+        cmd = engine.build_command(_request(tmp_path))
+        assert cmd[cmd.index("--plugin-dir") + 1] == str(plugin)
+
+    def test_no_plugin_flag_before_prepare(self, tmp_path):
+        engine = ClaudeEngine(_profile(tmp_path), RuntimeSettings())
+        assert "--plugin-dir" not in engine.build_command(_request(tmp_path))
+
+
+class TestSystemPromptSplit:
+    def test_split_uses_system_prompt_flag(self, tmp_path):
+        on = RuntimeSettings().override({"system_prompt_split": True})
+        cmd = ClaudeEngine(_profile(tmp_path), on).build_command(_request(tmp_path))
+        assert cmd[cmd.index("--system-prompt") + 1] == "s"
+        assert "--append-system-prompt" not in cmd
+
+    def test_default_keeps_append(self, tmp_path):
+        cmd = ClaudeEngine(_profile(tmp_path), RuntimeSettings()).build_command(_request(tmp_path))
+        assert "--append-system-prompt" in cmd and "--system-prompt" not in cmd

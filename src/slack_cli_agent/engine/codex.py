@@ -43,17 +43,17 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
-from ..auth.principal import TrustLevel
-from ..auth.tools import READ_ONLY_TOOLS
+from ..auth.tools import SKILL_TOOL
 from ..config.profile import EngineSpec, McpServerSpec
 from .base import (
-    UNTRUSTED_INPUT_MARK,
     Engine,
     EngineRequest,
     EngineResponse,
     FailureDetail,
     Usage,
     UsageLimit,
+    acts_for_owner,
+    input_mark_for,
     json_object_line,
 )
 from .capability import (
@@ -67,7 +67,7 @@ from .footprint import (
     PayloadFootprint,
     utf8_bytes,
 )
-from .tool_selection import ToolAccess
+from .tool_selection import ToolAccess, ToolSelection
 
 # sca-dyb.4 — confirmed 2026-09-16 against the real CLI's turn.completed
 # event: Codex doesn't use Claude's cache_read_input_tokens/
@@ -84,10 +84,66 @@ CODEX_USAGE_KEY_MAP: Mapping[str, str] = {
 }
 
 
-def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec], *, owner: bool) -> list[str]:
+def _is_skill_grant(name: str) -> bool:
+    """Skill or Skill(<name>). codex has no Skill tool: the grant opens nothing
+    and closes nothing, so it must not decide whether the turn may write."""
+    return name == SKILL_TOOL or (name.startswith(f"{SKILL_TOOL}(") and name.endswith(")"))
+
+
+def _codex_reads_only(tools: ToolSelection) -> bool:
+    """An allowlist whose non-skill entries are all read tools.
+
+    always_skills puts Skill(<name>) on every turn, a non-owner's included.
+    Counted as a write tool, it turned a read-only turn into workspace-write
+    with network and --approve-for-me (W1).
+    """
+    # A turn with no tools at all reads nothing either; left to the profile
+    # sandbox it ran workspace-write with network and --approve-for-me.
+    if tools.access is ToolAccess.FORBIDDEN:
+        return True
+    return tools.access is ToolAccess.ALLOWLIST and all(
+        tools.reads(name) for name in tools.names if not _is_skill_grant(name)
+    )
+
+
+def _codex_can_act(tools: ToolSelection) -> bool:
+    return tools.can_act and not _codex_reads_only(tools)
+
+
+def _non_owner_reads_only(request: EngineRequest) -> bool:
+    """A non-owner turn always runs read-only, operator_full channel included.
+
+    codex enforces no allowlist and gets every profile MCP server, so a
+    non-owner turn under workspace-write with network and --approve-for-me
+    could send or delete mail, delete pods or click in the owner's browser
+    whatever its tool list said (A9 review). An operator_full exception for a
+    bare Bash/Edit/Write reopened the same hole, and channel extra_tools hand
+    that bare name to every non-owner in the channel, operators list or not.
+    mametchi passes can_act = is_owner or operator to codex_sandbox
+    (bot.py:2797), and operator includes a delegated turn, so a delegated
+    codex turn there runs workspace-write with network. This engine keeps it
+    read-only on purpose -- codex still enforces no allowlist -- and tells the
+    model so (DELEGATED_READONLY_NOTE): the system prompt says a delegated
+    turn has execution tools. A read-only turn cannot call MCP tools at all
+    (build_command).
+    An unrestricted selection means no tool policy is wired at all, which no
+    profile Application builds runs under; it keeps the profile sandbox.
+    """
+    if acts_for_owner(request):
+        return False
+    return request.tools.access is ToolAccess.ALLOWLIST
+
+
+def _codex_mcp_config_args(
+    mcp_servers: Mapping[str, McpServerSpec],
+    *,
+    can_act: bool = False,
+    is_owner: bool = False,
+    turn_context: Mapping[str, str] | None = None,
+) -> list[str]:
     args: list[str] = []
     for name, server in mcp_servers.items():
-        if server.owner_only and not owner:
+        if server.owner_only and not is_owner:
             continue
         prefix = f"mcp_servers.{name}"
         if server.disabled:
@@ -109,6 +165,13 @@ def _codex_mcp_config_args(mcp_servers: Mapping[str, McpServerSpec], *, owner: b
             # branch the same profile ran differently per engine (sca-wdzh).
             for key, value in server.resolved_env().items():
                 args += ["-c", f"{prefix}.env.{key}={CodexEngine._toml_string(value)}"]
+            # Same stdio-only placement as env: a read-only turn omits the gate
+            # var so the spawned server sees no write clearance (H6/H7/H8), and
+            # the channel var is omitted when no channel token is in context.
+            for key, value in server.turn_env_for(
+                can_act=can_act, is_owner=is_owner, turn_context=turn_context
+            ).items():
+                args += ["-c", f"{prefix}.env.{key}={CodexEngine._toml_string(value)}"]
         if server.disabled_tools:
             args += ["-c", f"{prefix}.disabled_tools={json.dumps(list(server.disabled_tools))}"]
     return args
@@ -123,6 +186,12 @@ class _CodexStream:
     usage: dict[str, Any]
     tool_errors: list[str]
     malformed: bool
+    #: 이번 턴에 부른 도구 이름. 진행 표시와 트러블슈팅이 쓴다.
+    tools: list[str]
+    #: 샌드박스가 쓰기를 막은 자리. 턴은 성공으로 끝나도 시킨 일은 못 했다.
+    blocked: list[str]
+    #: 샌드박스 밖 도구로 돌아간 자리. 막힌 것보다 무겁다.
+    bypass: list[str]
 
 
 #: options.sandbox values that mean something is actually enforced.
@@ -135,6 +204,9 @@ _SANDBOX_ISOLATION = {
 class CodexEngine(Engine):
     name = "codex"
     shell_always_attached = True
+    #: Only the first turn's developer_instructions stay fixed in the thread,
+    #: so only that turn's blocks are referenced later (C15).
+    dedups_resumed_instructions = True
 
     # developer_instructions is a separate field from the prompt. Isolation is
     # whatever options.sandbox says, which the default (danger-full-access)
@@ -180,9 +252,7 @@ class CodexEngine(Engine):
         allowlist would otherwise reach it as a sentence the model may
         ignore; the sandbox is the OS refusing the write (sca-f9k0).
         """
-        if request.tools.access is ToolAccess.ALLOWLIST and all(
-            name in READ_ONLY_TOOLS for name in request.tools.names
-        ):
+        if _codex_reads_only(request.tools) or _non_owner_reads_only(request):
             return "read-only"
         return str(self.spec.options.get("sandbox", "danger-full-access"))
 
@@ -212,7 +282,7 @@ class CodexEngine(Engine):
             ))
         return dataclasses.replace(
             base,
-            adapter_added_bytes=base.adapter_added_bytes + utf8_bytes(UNTRUSTED_INPUT_MARK),
+            adapter_added_bytes=base.adapter_added_bytes + utf8_bytes(input_mark_for(request)),
             instruction_transport=INSTRUCTION_TRANSPORT_USER_PROMPT,
             instruction_replayed_on_resume=True,
         )
@@ -229,19 +299,38 @@ class CodexEngine(Engine):
     def build_command(self, request: EngineRequest) -> list[str]:
         binary = str(self.spec.binary)
         sandbox = self._sandbox_for(request)
+        # codex exec hardcodes approval_policy=never in non-interactive JSON
+        # mode -- no -c override changes it, confirmed against codex-cli
+        # 0.153.4 -- and under that policy every MCP-backed tool call fails
+        # outright with "MCP tool call requires approval, but approval
+        # policy is never" even though the server started fine and the
+        # model picked the right tool (2026-09-30, DE에이전트 시험). --approve-for-me
+        # routes approval through automatic review instead, which is the
+        # only path found that lets MCP tools actually run headless. It
+        # always runs under workspace-write, so it only substitutes when
+        # that's the sandbox this turn already wanted; a read-only turn
+        # keeps the stricter path and simply cannot call MCP tools, same as
+        # before this fix.
+        auto_approve = sandbox == "workspace-write"
         cmd: list[str] = [binary, "exec"]
+        if auto_approve:
+            cmd.append("--approve-for-me")
         if request.resume:
             cmd.append("resume")
         cmd += ["--json", "--skip-git-repo-check"]
-        if self.spec.options.get("network"):
-            # The read-only sandbox blocks network too; the profile decides whether to open it.
+        if self.spec.options.get("network") and sandbox == "workspace-write":
+            # The key only lifts workspace-write; a read-only turn keeps it off
+            # so the command shows the network closed, not just the sandbox.
             cmd += ["-c", "sandbox_workspace_write.network_access=true"]
         cmd += ["-m", request.require_model()]
         # Always sent, never omitted: leaving it out lets the CLI pick its own
         # default while the audit records the requested value (sca-3kzk).
         cmd += ["-c", f"model_reasoning_effort={self._toml_string(self.resolve_effort(request))}"]
         cmd += _codex_mcp_config_args(
-            self.profile.mcp_servers, owner=request.trust_level is TrustLevel.OWNER
+            self.profile.mcp_servers,
+            can_act=_codex_can_act(request.tools) and sandbox != "read-only",
+            is_owner=acts_for_owner(request),
+            turn_context=request.turn_context,
         )
         if not request.resume:
             instructions = request.system_prompt + self._session_path_note(request)
@@ -253,7 +342,12 @@ class CodexEngine(Engine):
             cmd += ["-c", f"sandbox_mode={self._toml_string(sandbox)}",
                    request.require_session_id(), "--", self._resume_prompt(request)]
         else:
-            cmd += ["--sandbox", sandbox, "-C", str(request.workdir), "--",
+            # -c sandbox_mode=, not the --sandbox flag: the flag form errors
+            # with "cannot be used with '--approve-for-me'" while the config
+            # override doesn't, and both restrict the turn the same way
+            # (confirmed 2026-09-30).
+            cmd += ["-c", f"sandbox_mode={self._toml_string(sandbox)}",
+                    "-C", str(request.workdir), "--",
                     self._turn_constraint_prefix(request) + request.prompt]
         return cmd
 
@@ -277,8 +371,28 @@ class CodexEngine(Engine):
         Carries the allowlist wording too: codex has no tool argument, so this
         is the only place an ALLOWLIST request reaches the model (sca-f9k0).
         """
-        note = self.tool_ban_note(request) + self.tool_allow_note(request)
-        return f"{note}{UNTRUSTED_INPUT_MARK}" if note else ""
+        note = (
+            self.tool_ban_note(request) + self.tool_allow_note(request)
+            + self._delegated_readonly_note(request)
+        )
+        return f"{note}{input_mark_for(request)}" if note else ""
+
+    #: The system prompt tells a delegated turn it has execution tools
+    #: (prompt/sections.py AskerSection). On codex the turn runs read-only
+    #: (_non_owner_reads_only), so without this the model takes the work on
+    #: and then fails at the first write (A7 review).
+    DELEGATED_READONLY_NOTE = (
+        "\n\n[제약] 이번 위임 턴은 대체 엔진에서 읽기 전용으로 돈다. 위 지침에 "
+        "실행 도구가 붙어 있다고 적혀 있어도 이 턴에는 없다. 파일을 고치거나 "
+        "만들지 않고, 바깥에 쓰는 도구도 부르지 않는다. 넘겨받은 일 중 실행이 "
+        "필요한 단계는 하겠다고 답하지 않고, 실행하지 못한 할 일로 적어 넘긴 봇에게 "
+        "돌려준다.\n"
+    )
+
+    def _delegated_readonly_note(self, request: EngineRequest) -> str:
+        if not request.delegated or self._sandbox_for(request) != "read-only":
+            return ""
+        return self.DELEGATED_READONLY_NOTE
 
     def _resume_prompt(self, request: EngineRequest) -> str:
         """Carries this turn's instructions in the prompt on a resumed turn.
@@ -295,12 +409,13 @@ class CodexEngine(Engine):
         without the untrusted-input marker.
         """
         return (
-            request.system_prompt
+            self.instructions_for(request)
             + self.readable_paths_note(request.readable_dirs)
             + self.write_paths_note(request)
             + self.tool_ban_note(request)
             + self.tool_allow_note(request)
-            + UNTRUSTED_INPUT_MARK
+            + self._delegated_readonly_note(request)
+            + input_mark_for(request)
             + request.prompt
         )
 
@@ -369,7 +484,10 @@ class CodexEngine(Engine):
         # elapsed stays 0.0/"unknown" — confirmed 2026-09-16 that codex exec
         # --json never emits a duration field on any event. EngineRunner
         # fills it from wall-clock time instead.
-        raw = {"thread_id": thread_id, "tool_errors": tool_errors, "usage": usage_data}
+        raw = {
+            "thread_id": thread_id, "tool_errors": tool_errors, "usage": usage_data,
+            "tools": stream.tools, "blocked": stream.blocked, "bypass": stream.bypass,
+        }
         usage = Usage.from_native(usage_data, CODEX_USAGE_KEY_MAP)
         if not body:
             return EngineResponse(
@@ -384,8 +502,129 @@ class CodexEngine(Engine):
             turns=None, usage=usage, raw=raw, failure_reason=None,
         )
 
+    #: 워크스페이스 크레딧 소진 문구. 마메치 bot.py 의 CODEX_CREDIT_HINTS 와 같다.
+    #: 이 요청도 다음 요청도 똑같이 막히는 계정 벽이라 대체 엔진 전환 계기다.
+    CREDIT_HINTS: ClassVar[tuple[str, ...]] = (
+        "workspace is out of credits",
+        "out of credits",
+    )
+
     def detect_usage_limit(self, response: EngineResponse) -> UsageLimit | None:
-        # Codex has no subscription weekly-limit concept; the original doesn't check for it either.
+        """크레딧 소진을 사용량 한도로 돌려준다. 다른 실패는 None 이다.
+
+        Codex 는 크레딧 소진을 종료코드 1 과 JSONL 오류 이벤트로 알린다.
+        CLI 자신이 낸 오류만 본다 - stderr, 최상위 ``error`` 이벤트의 message,
+        ``turn.failed`` 의 error.message 다. stdout 의 나머지(도구 출력, MCP
+        결과, 모델 메시지)와 본문은 보지 않는다. 이 문구를 담은 코드를 읽고
+        다른 이유로 실패한 턴이 크레딧 소진으로 읽혀 엔진이 바뀐다.
+        """
+        if response.ok:
+            return None
+        raw = response.raw if isinstance(response.raw, Mapping) else {}
+        lines = [*self._cli_error_messages(str(raw.get("stdout") or "")),
+                 *str(raw.get("stderr") or "").splitlines()]
+        for line in lines:
+            low = line.lower()
+            if any(hint in low for hint in self.CREDIT_HINTS):
+                return UsageLimit(detail=line.strip(), source="hint")
+        return None
+
+    @staticmethod
+    def _cli_error_messages(stdout: str) -> list[str]:
+        """JSONL 에서 CLI 가 낸 오류 문구만 꺼낸다. item 안의 텍스트는 뺀다."""
+        messages: list[str] = []
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(event, Mapping):
+                continue
+            kind = event.get("type")
+            if kind == "error":
+                message = event.get("message")
+            elif kind == "turn.failed":
+                error = event.get("error")
+                message = error.get("message") if isinstance(error, Mapping) else None
+            else:
+                continue
+            if isinstance(message, str):
+                messages.append(message)
+        return messages
+
+    #: 모델 하나가 지금 요청을 못 받는 상태를 알리는 문구. 2026-10-19 sol
+    #: 장애에서 모았다 - 15:57 은 "Selected model is at capacity", 23:46 은
+    #: 재시도를 다 쓴 429 로 끝났다. 계정 벽과 달리 모델을 바꾸면 풀린다.
+    MODEL_OUTAGE_HINTS: ClassVar[tuple[str, ...]] = (
+        "selected model is at capacity",
+        "429 too many requests",
+    )
+    #: 계정 단위 벽. 모델을 바꿔도 같으므로 모델 장애로 읽지 않는다.
+    ACCOUNT_LIMIT_HINTS: ClassVar[tuple[str, ...]] = (
+        "workspace is out of credits",
+        "out of credits",
+        "usage limit",
+    )
+    #: 출력에 이 표식이 있으면 그 턴은 이미 도구를 돌렸다. 다른 모델로 다시
+    #: 돌리면 같은 쓰기가 두 번 난다 - 폴백하지 않는다.
+    TOOL_EVENT_MARKS: ClassVar[tuple[str, ...]] = (
+        'command_execution"',
+        '"mcp_tool_call"',
+        '"file_change"',
+    )
+
+    def detect_model_outage(self, stdout: str, stderr: str = "") -> bool:
+        """Codex 실패가 모델 하나의 일시 장애인지 가른다 (B9). 계정 한도는 제외.
+
+        계정 크레딧 소진·사용 한도가 먼저 걸리면 모델을 바꿔도 같으므로 False
+        다 - 429 가 섞여 있어도 계정 벽이면 폴백하지 않는다.
+        """
+        text = f"{stdout or ''}\n{stderr or ''}".lower()
+        if any(hint in text for hint in self.ACCOUNT_LIMIT_HINTS):
+            return False
+        return any(hint in text for hint in self.MODEL_OUTAGE_HINTS)
+
+    def tools_already_ran(self, stdout: str) -> bool:
+        return any(mark in (stdout or "") for mark in self.TOOL_EVENT_MARKS)
+
+    #: 샌드박스가 쓰기를 막았을 때 출력에 나오는 문구 (2026-09-16 세션에서 수집,
+    #: 마메치 codex_runner.SANDBOX_BLOCKED_MARKS). 이 문구가 있으면 모델은
+    #: 시킨 일을 못 했는데 턴은 성공으로 끝나므로, 잡아서 남기지 않으면 실패가
+    #: 성공으로 집계된다. codex CLI 공통 문구라 조직 값이 아니다.
+    SANDBOX_BLOCKED_MARKS: ClassVar[tuple[str, ...]] = (
+        "blocked by read-only sandbox",
+        "patch rejected",
+        "rejected by user approval settings",
+        "Read-only file system",
+    )
+    #: 샌드박스 밖에서 파일을 쓸 수 있는 도구. 셸이 막히면 모델이 이쪽으로
+    #: 돌아간다 — 샌드박스를 지나지 않아 무엇을 고쳤는지 기록에 안 남는다.
+    SANDBOX_BYPASS_TOOLS: ClassVar[tuple[str, ...]] = (
+        "browser.browser_run_code_unsafe",
+    )
+
+    @staticmethod
+    def _item_text(item: Mapping[str, Any]) -> str:
+        """아이템에서 차단 문구를 찾을 텍스트를 모은다. 명령 자체(command/
+        parsed_cmd/arguments)는 뺀다 — 모델이 검색한 낱말이 그대로 걸려 오탐이
+        되기 때문이다 (마메치 codex_runner._item_text)."""
+        parts: list[str] = []
+        for key, value in (item or {}).items():
+            if key in ("command", "parsed_cmd", "arguments"):
+                continue
+            if isinstance(value, str):
+                parts.append(value)
+            elif isinstance(value, (dict, list)):
+                parts.append(json.dumps(value, ensure_ascii=False))
+        return "\n".join(parts)
+
+    @classmethod
+    def _blocked_mark(cls, item: Mapping[str, Any]) -> str | None:
+        """샌드박스 차단 문구가 있으면 그 문구를 돌려준다."""
+        text = cls._item_text(item).lower()
+        for mark in cls.SANDBOX_BLOCKED_MARKS:
+            if mark.lower() in text:
+                return mark
         return None
 
     #: 토큰이 폐기됐을 때만 나오는 문구다. CLI 는 인증 실패도 다른 실패도
@@ -400,8 +639,8 @@ class CodexEngine(Engine):
     )
     AUTH_FAILURE_NOTE = "codex 로그인이 풀렸다. codex login 으로 다시 로그인해야 한다."
 
-    @staticmethod
-    def _parse_jsonl(output: str) -> _CodexStream:
+    @classmethod
+    def _parse_jsonl(cls, output: str) -> _CodexStream:
         """Reads as far as the stream allows and says whether anything was
         unreadable, rather than raising. A run cut off mid-write leaves a
         truncated last line, and that is exactly when the events before it
@@ -410,6 +649,9 @@ class CodexEngine(Engine):
         text = ""
         usage: dict[str, Any] = {}
         tool_errors: list[str] = []
+        tools: list[str] = []
+        blocked: list[str] = []
+        bypass: list[str] = []
         malformed = False
         for line in output.splitlines():
             if not line.strip():
@@ -437,15 +679,35 @@ class CodexEngine(Engine):
                     malformed = True
                     continue
                 item = item or {}
-                if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+                item_type = item.get("type")
+                if item_type == "agent_message" and isinstance(item.get("text"), str):
                     text = item["text"]
-                elif item.get("type") == "error" and isinstance(item.get("message"), str):
+                elif item_type == "mcp_tool_call":
+                    label = f"{item.get('server', '?')}.{item.get('tool', '?')}"
+                    tools.append(label)
+                    if item.get("status") == "failed":
+                        error = item.get("error") or {}
+                        message = error.get("message") if isinstance(error, Mapping) else None
+                        tool_errors.append(f"{label} : {message or '실패'}")
+                    if label in cls.SANDBOX_BYPASS_TOOLS and item.get("status") != "failed":
+                        bypass.append(label)
+                    mark = cls._blocked_mark(item)
+                    if mark:
+                        blocked.append(f"{label} : {mark}")
+                elif item_type in ("command_execution", "async_command_execution"):
+                    tools.append("shell")
+                    mark = cls._blocked_mark(item)
+                    if mark:
+                        blocked.append(f"shell : {mark}")
+                elif item_type == "error" and isinstance(item.get("message"), str):
                     tool_errors.append(item["message"])
             elif kind == "turn.completed":
                 event_usage = event.get("usage")
                 if isinstance(event_usage, dict):
                     usage = event_usage
-        return _CodexStream(thread_id, text, usage, tool_errors, malformed)
+        return _CodexStream(
+            thread_id, text, usage, tool_errors, malformed, tools, blocked, bypass,
+        )
 
     @staticmethod
     def _toml_string(value: str) -> str:

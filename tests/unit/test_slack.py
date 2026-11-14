@@ -63,6 +63,7 @@ class FakeWebClient:
         self._raise_on_reaction_add: set[str] = set()
         self._replies_response: dict = {"messages": []}
         self.auth_test_response: dict = {"team": "", "user": ""}
+        self._upload_responses: list[Any] = []
 
     def auth_test(self) -> dict:
         return self.auth_test_response
@@ -97,6 +98,16 @@ class FakeWebClient:
     def chat_update(self, **kwargs):
         self.calls.append(("chat_update", kwargs))
         result = self._update_responses.pop(0) if self._update_responses else {"ok": True}
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def queue_upload(self, response: Any) -> None:
+        self._upload_responses.append(response)
+
+    def files_upload_v2(self, **kwargs):
+        self.calls.append(("files_upload_v2", kwargs))
+        result = self._upload_responses.pop(0) if self._upload_responses else {"ok": True}
         if isinstance(result, Exception):
             raise result
         return result
@@ -200,19 +211,6 @@ class TestHistoryReader:
             reader.read_history("C1", "100.000000", 40)
         assert len(client.calls) == settings.history_read_tries + 1
 
-    def test_다_비고_확인조회도_비면_빈_목록을_돌려준다(
-        self, settings: RuntimeSettings
-    ) -> None:
-        """메시지가 하나도 없는 채널을 판정 불가로 두면 캐치업이 그 채널을
-        무한 재시도에 두고 30분마다 거짓 경보를 낸다."""
-        client = FakeWebClient()
-        for _ in range(settings.history_read_tries):
-            client.queue_history({"ok": True, "messages": []})
-        client.queue_history({"ok": True, "messages": []})
-        clock = FakeClock()
-        reader = HistoryReader(client, settings, clock=clock.time, sleep=clock.sleep)
-        assert reader.read_history("C1", "100.000000", 40) == []
-
     def test_확인조회_최신_메시지가_구간보다_오래되면_빈_목록을_돌려준다(
         self, settings: RuntimeSettings
     ) -> None:
@@ -232,11 +230,39 @@ class TestHistoryReader:
         client = FakeWebClient()
         for _ in range(settings.history_read_tries):
             client.queue_history({"ok": True, "messages": []})
+        client.queue_history({"ok": True, "messages": []})  # oldest 없는 확인도 비었다
         clock = FakeClock()
         reader = HistoryReader(client, settings, clock=clock.time, sleep=clock.sleep)
         # 확인 조회용 응답을 큐에 안 넣어 두면 대역이 IndexError 를 낸다
         with pytest.raises(HistoryUnavailable):
-            reader.read_history("C1", "100.000000", 40)
+            reader.read_history("C1", "0.000000", 40)
+        assert len(client.calls) == settings.history_read_tries + 1
+
+    def test_최신글이_창보다_오래됐으면_조용한_채널로_보고_빈_목록을_준다(
+        self, settings: RuntimeSettings
+    ) -> None:
+        """2026-11-09 법영-api-헬프데스크 : 마지막 글이 18일 전이라 7일 창이
+        매번 비었고, 판정 불가로 30분 뒤 경보가 났다."""
+        client = FakeWebClient()
+        for _ in range(settings.history_read_tries):
+            client.queue_history({"ok": True, "messages": []})
+        client.queue_history({"ok": True, "messages": [{"ts": "1792637775.380219"}]})
+        clock = FakeClock()
+        reader = HistoryReader(client, settings, clock=clock.time, sleep=clock.sleep)
+        assert reader.read_history("C1", "1793615645.000000", 40) == []
+        assert "oldest" not in client.calls[-1][1]
+
+    def test_최신글이_창_안인데_비어오면_여전히_판정불가다(
+        self, settings: RuntimeSettings
+    ) -> None:
+        client = FakeWebClient()
+        for _ in range(settings.history_read_tries):
+            client.queue_history({"ok": True, "messages": []})
+        client.queue_history({"ok": True, "messages": [{"ts": "1794220000.000000"}]})
+        clock = FakeClock()
+        reader = HistoryReader(client, settings, clock=clock.time, sleep=clock.sleep)
+        with pytest.raises(HistoryUnavailable):
+            reader.read_history("C1", "1793615645.000000", 40)
 
 
 # ReactionMarker
@@ -370,6 +396,51 @@ class TestMessagePublisher:
         assert kwargs["thread_ts"] == "100.0"
         assert "blocks" not in kwargs
 
+    def test_게시_영수증은_스레드_부모가_아니라_올린_메시지_ts_를_담는다(
+        self, settings, markdown, verifier, block_builder
+    ) -> None:
+        """서식 점검은 지목한 메시지 ts 로 답 기록을 찾는다. 스레드 부모 ts 를
+        답 ts 로 남기면 부모를 지목했을 때 다른 답 기록이 골라진다(B6 검토)."""
+
+        class 두조각(ContentSplitter):
+            def chunk(self, text: str, size: int | None = None) -> list[str]:
+                return ["앞 조각", "뒤 조각"]
+
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        client.queue_post({"ts": "222.000000"})
+        pub = make_publisher(
+            client, settings, markdown, 두조각(settings, block_builder), verifier, block_builder
+        )
+        receipt = pub.post_receipt("C1", "100.0", "본문", rich=False)
+        assert receipt is not None
+        assert receipt.parent_ts == "100.0"
+        assert receipt.message_ts == ("111.000000", "222.000000")
+
+    def test_게시_영수증은_csv_를_뺀_실제_게시_본문을_담는다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        """서식 점검은 기록된 본문으로 메시지를 덮는다. csv 블록이 남은 원문을
+        기록하면 교정이 파일로 뺀 csv 를 메시지에 되살린다(B6 검토 case2)."""
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        receipt = pub.post_receipt("C1", "100.0", "표\n\n```csv\na,b\n1,2\n```", rich=True)
+        assert receipt is not None
+        assert "a,b" not in receipt.body
+        assert "csv_1.csv" in receipt.body
+
+    def test_DM_게시_영수증의_첫_메시지는_스레드_부모와_같다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        receipt = pub.post_receipt("D1", "100.0", "안녕", rich=False)
+        assert receipt is not None
+        assert receipt.parent_ts == "111.000000"
+        assert receipt.message_ts == ("111.000000",)
+
     def test_스레드_없이_채널에_올리면_첫_조각의_ts_를_돌려준다(
         self, settings, markdown, splitter, verifier, block_builder
     ) -> None:
@@ -392,6 +463,76 @@ class TestMessagePublisher:
         pub.post("D1", "100.0", "안녕", rich=False)
         _, kwargs = client.calls[0]
         assert "thread_ts" not in kwargs
+
+    def test_flat_채널은_스레드로_접지_않고_채널에_바로_올린다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        # flat_reply (A17): 일반 채널이라도 스레드를 열지 않고 채널에 바로 쓴다.
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        parent_ts = pub.post("C1", "100.0", "본문", rich=False, flat=True)
+        _, kwargs = client.calls[0]
+        assert "thread_ts" not in kwargs
+        # parent_ts 가 None 이었으므로 첫 조각의 ts 를 돌려준다.
+        assert parent_ts == "111.000000"
+
+    def test_flat이_아니면_여전히_스레드에_접는다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        pub.post("C1", "100.0", "본문", rich=False, flat=False)
+        _, kwargs = client.calls[0]
+        assert kwargs["thread_ts"] == "100.0"
+
+    def test_csv_코드블록은_본문대신_BOM_파일로_올린다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        # J14: ```csv 블록은 길이와 무관하게 파일로 올린다.
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        body = "집계입니다:\n```csv\n이름,수량\n김,3\n```"
+        pub.post("C1", "100.0", body, rich=False)
+        posted = client.calls[0][1]["text"]
+        assert "```" not in posted  # 코드블록이 본문에 안 남는다
+        assert "파일" in posted  # 대체 안내문이 남는다
+        uploads = [k for k in client.calls if k[0] == "files_upload_v2"]
+        assert len(uploads) == 1
+        up = uploads[0][1]
+        assert up["filename"].endswith(".csv")
+        assert up["thread_ts"] == "100.0"
+        # 엑셀이 한글을 깨뜨리지 않게 BOM 으로 시작한다.
+        assert up["content"].startswith(b"\xef\xbb\xbf")
+        assert "이름,수량" in up["content"].decode("utf-8-sig")
+
+    def test_csv가_아닌_코드블록은_본문에_그대로_둔다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        pub = make_publisher(client, settings, markdown, splitter, verifier, block_builder)
+        pub.post("C1", "100.0", "코드:\n```python\nprint(1)\n```", rich=False)
+        assert not [k for k in client.calls if k[0] == "files_upload_v2"]
+
+    def test_csv_업로드가_실패하면_본문으로_되돌려_올린다(
+        self, settings, markdown, splitter, verifier, block_builder
+    ) -> None:
+        client = FakeWebClient()
+        client.queue_post({"ts": "111.000000"})
+        client.queue_upload(RuntimeError("upload down"))
+        client.queue_post({"ts": "222.000000"})  # 대체 본문 게시
+        audit: list = []
+        pub = make_publisher(
+            client, settings, markdown, splitter, verifier, block_builder, audit=audit
+        )
+        pub.post("C1", "100.0", "집계:\n```csv\n이름,수량\n김,3\n```", rich=False)
+        assert any(a.get("kind") == "csv_upload_failed" for a in audit)
+        # 업로드 실패 뒤 원본 csv 가 본문으로 다시 올라간다.
+        reposts = [k for k in client.calls if k[0] == "chat_postMessage"]
+        assert any("이름,수량" in (c[1].get("text") or "") for c in reposts)
 
     def test_리치_채널은_markdown_블록으로_넘긴다(
         self, settings, markdown, splitter, verifier, block_builder
@@ -748,6 +889,31 @@ class TestSlackGatewayConnection:
             gateway.handle_events_api({"event": {"type": "message"}})
         assert caplog.records
 
+    def test_앱_멘션은_INFO_로_남긴다(self, caplog: pytest.LogCaptureFixture) -> None:
+        gateway = SlackGateway(client=FakeWebClient())
+        with caplog.at_level(logging.INFO):
+            gateway.handle_events_api(
+                {"event": {"type": "app_mention", "channel": "C1", "ts": "1.0", "bot_id": "B1"}}
+            )
+        기록 = [r for r in caplog.records if r.levelno == logging.INFO and "이벤트 수신" in r.getMessage()]
+        assert len(기록) == 1
+        assert "C1" in 기록[0].getMessage() and "1.0" in 기록[0].getMessage()
+
+    def test_봇_명의_message_는_INFO_사람_message_는_INFO_로_남기지_않는다(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        gateway = SlackGateway(client=FakeWebClient())
+        with caplog.at_level(logging.INFO):
+            gateway.handle_events_api(
+                {"event": {"type": "message", "channel": "C1", "ts": "2.0", "user": "U1"}}
+            )
+        assert not [r for r in caplog.records if "이벤트 수신" in r.getMessage()]
+        with caplog.at_level(logging.INFO):
+            gateway.handle_events_api(
+                {"event": {"type": "message", "channel": "C1", "ts": "3.0", "bot_id": "B2"}}
+            )
+        assert len([r for r in caplog.records if "이벤트 수신" in r.getMessage()]) == 1
+
     def test_토큰이_비어_있으면_연결하지_않는다(self) -> None:
         gateway = SlackGateway(client=FakeWebClient())
         with pytest.raises(ConfigError):
@@ -866,6 +1032,123 @@ class TestEventListener:
         assert ctx.unaddressed is False
         assert ctx.thread_ts == "1.0"
 
+    def test_언퍼얼_첨부를_컨텍스트에_싣는다(self, gate: ResponseGate) -> None:
+        """사람이 링크를 붙이면 슬랙이 그 메시지를 펼쳐 event['attachments'] 에
+        싣는다. 봇이 못 읽는 채널 링크라도 이 본문으로 복원하려면(C39) 컨텍스트가
+        이를 들고 파이프라인까지 가야 한다."""
+        registry = ChannelRegistry(Path("/nonexistent.json"))
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
+        att = [{"from_url": "https://x.slack.com/archives/C9/p1", "text": "저쪽 본문"}]
+        event = {"channel": "C1", "user": "U1", "ts": "1.0", "text": "<@U_BOT> 봐",
+                 "attachments": att}
+        assert listener.from_app_mention(event).unfurl_attachments == tuple(att)
+        msg = {"channel": "C1", "user": "U1", "ts": "2.0", "text": "<@U_BOT> 봐",
+               "attachments": att, "channel_type": "im"}
+        assert listener.from_message(msg).unfurl_attachments == tuple(att)
+
+    def test_첨부가_없으면_빈_튜플이다(self, gate: ResponseGate) -> None:
+        registry = ChannelRegistry(Path("/nonexistent.json"))
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "1.0", "text": "<@U_BOT> 안녕"}
+        assert listener.from_app_mention(event).unfurl_attachments == ()
+
+    def test_user_없이_bot_id만_온_멘션은_bots_info로_사용자를_찾는다(
+        self, gate: ResponseGate
+    ) -> None:
+        """chat:write.customize 로 올린 봇 메시지는 user 필드가 없다. 그대로 두면
+        controller_user_ids 에 적힌 봇도 낯선 사람으로 판정된다."""
+
+        class BotsInfoClient(FakeWebClient):
+            def bots_info(self, **kwargs: Any) -> dict:
+                self.calls.append(("bots_info", kwargs))
+                return {"bot": {"user_id": "U_CTRL"}}
+
+        client = BotsInfoClient()
+        listener = EventListener(client, ChannelRegistry(Path("/nonexistent.json")), gate,
+                                 identity=fake_identity())
+        event = {"channel": "C1", "bot_id": "B_CTRL", "ts": "1.0", "text": "<@U_BOT> 봐줘"}
+        assert listener.from_app_mention(event).user == "U_CTRL"
+        assert listener.from_app_mention(event).user == "U_CTRL"
+        assert [name for name, _ in client.calls] == ["bots_info"]
+
+    def test_bots_info가_실패하면_사용자는_비어_있다(self, gate: ResponseGate) -> None:
+        class FailingClient(FakeWebClient):
+            def bots_info(self, **kwargs: Any) -> dict:
+                raise RuntimeError("ratelimited")
+
+        listener = EventListener(FailingClient(), ChannelRegistry(Path("/nonexistent.json")), gate,
+                                 identity=fake_identity())
+        event = {"channel": "C1", "bot_id": "B_CTRL", "ts": "1.0", "text": "<@U_BOT> 봐줘"}
+        assert listener.from_app_mention(event).user == ""
+
+    def test_bots_info_일시_실패는_그_자리에서_한_번_더_물어_복원한다(
+        self, gate: ResponseGate
+    ) -> None:
+        """한 번의 일시 실패로 user 가 비면 답 첫머리 멘션이 빠져 부른 봇이
+        답을 받지 못한다 (C5). 같은 이벤트 처리 안에서 한 번 더 묻는다."""
+
+        class FlakyClient(FakeWebClient):
+            def bots_info(self, **kwargs: Any) -> dict:
+                self.calls.append(("bots_info", kwargs))
+                if len(self.calls) == 1:
+                    raise RuntimeError("connection reset")
+                return {"bot": {"user_id": "U_CTRL"}}
+
+        client = FlakyClient()
+        listener = EventListener(client, ChannelRegistry(Path("/nonexistent.json")), gate,
+                                 identity=fake_identity())
+        event = {"channel": "C1", "bot_id": "B_CTRL", "ts": "1.0", "text": "<@U_BOT> 봐줘"}
+        assert listener.from_app_mention(event).user == "U_CTRL"
+        assert listener.from_app_mention(event).user == "U_CTRL"
+        assert [name for name, _ in client.calls] == ["bots_info", "bots_info"]
+
+    def test_bots_info_연속_실패는_간격을_두고_다시_묻고_성공은_캐시한다(
+        self, gate: ResponseGate
+    ) -> None:
+        """실패를 캐시하지 않되 매 이벤트마다 묻지도 않는다. 간격이 지나면 다시
+        물어 복원하고, 복원한 값은 이후 호출 없이 쓴다."""
+        now = [1000.0]
+
+        class OutageClient(FakeWebClient):
+            down = True
+
+            def bots_info(self, **kwargs: Any) -> dict:
+                self.calls.append(("bots_info", kwargs))
+                if self.down:
+                    raise RuntimeError("ratelimited")
+                return {"bot": {"user_id": "U_CTRL"}}
+
+        client = OutageClient()
+        listener = EventListener(client, ChannelRegistry(Path("/nonexistent.json")), gate,
+                                 identity=fake_identity(), clock=lambda: now[0],
+                                 bot_user_retry_interval_sec=60.0)
+        event = {"channel": "C1", "bot_id": "B_CTRL", "ts": "1.0", "text": "<@U_BOT> 봐줘"}
+        assert listener.from_app_mention(event).user == ""
+        assert len(client.calls) == 2
+        now[0] += 30
+        assert listener.from_app_mention(event).user == ""
+        assert len(client.calls) == 2
+        client.down = False
+        now[0] += 31
+        assert listener.from_app_mention(event).user == "U_CTRL"
+        assert len(client.calls) == 3
+        assert listener.from_app_mention(event).user == "U_CTRL"
+        assert len(client.calls) == 3
+
+    def test_bots_info_실패는_경고_로그로_남긴다(
+        self, gate: ResponseGate, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        class FailingClient(FakeWebClient):
+            def bots_info(self, **kwargs: Any) -> dict:
+                raise RuntimeError("ratelimited")
+
+        listener = EventListener(FailingClient(), ChannelRegistry(Path("/nonexistent.json")), gate,
+                                 identity=fake_identity())
+        event = {"channel": "C1", "bot_id": "B_CTRL", "ts": "1.0", "text": "<@U_BOT> 봐줘"}
+        with caplog.at_level(logging.WARNING):
+            listener.from_app_mention(event)
+        assert any("B_CTRL" in r.getMessage() for r in caplog.records)
+
     def test_DM_메시지는_바로_컨텍스트가_된다(self, gate: ResponseGate) -> None:
         registry = ChannelRegistry(Path("/nonexistent.json"))
         listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
@@ -900,6 +1183,52 @@ class TestEventListener:
                  "text": "고마워"}
         assert listener.from_message(event) is None
 
+    def test_answer_top_level_채널은_멘션없는_최상위글도_받는다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        # A18: 스레드가 아닌 최상위 글(thread_ts 없음)도 answer_top_level 채널은 받는다.
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_top_level": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "text": "오늘 배포 어떻게 됐어"}
+        ctx = listener.from_message(event)
+        assert ctx is not None
+        assert ctx.unaddressed is True
+
+    def test_answer_top_level이_꺼진_채널의_최상위글은_거른다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_unaddressed": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "text": "오늘 배포 어떻게 됐어"}
+        assert listener.from_message(event) is None
+
+    def test_answer_top_level_채널이라도_자기멘션_최상위글은_app_mention에_맡긴다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_top_level": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        listener = EventListener(FakeWebClient(), registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "text": "<@U_BOT> 봐줘"}
+        assert listener.from_message(event) is None
+
+    def test_answer_top_level_채널에서_다른봇을_부른_최상위글은_그봇에_맡긴다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_top_level": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        listener = EventListener(
+            FakeWebClient(), registry, gate, identity=fake_identity(),
+            is_bot=lambda uid: uid == "UOTHERBOT",
+        )
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "text": "<@UOTHERBOT> 봐줘"}
+        assert listener.from_message(event) is None
+
     def test_answer_unaddressed가_켜진_채널에서_봇이_낀_스레드의_되물음답은_받는다(
         self, gate: ResponseGate, tmp_path: Path
     ) -> None:
@@ -918,6 +1247,76 @@ class TestEventListener:
         ctx = listener.from_message(event)
         assert ctx is not None
         assert ctx.unaddressed is True
+
+    def test_채널에도_보낸_스레드_답글도_봇이_낀_스레드면_받는다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        """"채널에도 보내기" 로 올린 답글은 subtype thread_broadcast 가 붙는다.
+        멘션이 없어도 봇이 낀 스레드의 이어진 말이면 일반 답글과 같이 받는다."""
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text(
+            '{"C1": {"answer_unaddressed": true}}', encoding="utf-8"
+        )
+        registry = ChannelRegistry(channels_file)
+        client = FakeWebClient()
+        client.set_replies_response({
+            "messages": [{"user": "U_BOT", "text": "지금 반영할까요?"}]
+        })
+        listener = EventListener(client, registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
+                 "subtype": "thread_broadcast", "text": "네"}
+        ctx = listener.from_message(event)
+        assert ctx is not None
+        assert ctx.thread_ts == "1.0"
+        assert ctx.unaddressed is True
+
+    def test_표식만으로_물은_뒤_온_짧은_승인도_영속_플래그로_받는다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        """봇이 [[ASK]] 표식으로만 물으면 게시된 본문엔 질문 어휘가 없다.
+        라이브 asked_back 은 놓치지만, 파이프라인이 적어둔 is_awaiting 플래그로
+        뒤이은 "좋아" 를 승인으로 받아야 한다 (bot.py AWAITING_FILE 상당)."""
+
+        class FakeAwaiting:
+            def set_awaiting(self, channel: str, thread_ts: str, waiting: bool) -> None:
+                pass
+
+            def is_awaiting(self, channel: str, thread_ts: str) -> bool:
+                return (channel, thread_ts) == ("C1", "1.0")
+
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_unaddressed": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        client = FakeWebClient()
+        # 질문 어휘가 전혀 없는 평서문 — 표식만으로 결정을 기다렸던 턴.
+        client.set_replies_response({
+            "messages": [{"user": "U_BOT", "text": "확인했습니다."}]
+        })
+        listener = EventListener(
+            client, registry, gate, identity=fake_identity(), awaiting=FakeAwaiting()
+        )
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
+                 "text": "좋아"}
+        ctx = listener.from_message(event)
+        assert ctx is not None
+        assert ctx.unaddressed is True
+
+    def test_영속_플래그가_없으면_질문어휘_없는_짧은_답은_거른다(
+        self, gate: ResponseGate, tmp_path: Path
+    ) -> None:
+        """awaiting 포트를 주입하지 않으면 라이브 asked_back 만으로 판정한다 —
+        기존 호출자·테스트가 그대로 동작하는지 확인한다."""
+        channels_file = tmp_path / "channels.json"
+        channels_file.write_text('{"C1": {"answer_unaddressed": true}}', encoding="utf-8")
+        registry = ChannelRegistry(channels_file)
+        client = FakeWebClient()
+        client.set_replies_response({
+            "messages": [{"user": "U_BOT", "text": "확인했습니다."}]
+        })
+        listener = EventListener(client, registry, gate, identity=fake_identity())
+        event = {"channel": "C1", "user": "U1", "ts": "2.0", "thread_ts": "1.0",
+                 "text": "좋아"}
+        assert listener.from_message(event) is None
 
     def test_봇이_안_낀_스레드는_거른다(self, gate: ResponseGate, tmp_path: Path) -> None:
         channels_file = tmp_path / "channels.json"
@@ -1437,3 +1836,37 @@ class Test감시표식_제거_실패는_운영_로그에_남는다:
     def test_no_reaction이면_제거된_것으로_본다(self) -> None:
         client = self.일부실패클라이언트(WATCH_MARK_EMOJI, 사유="no_reaction")
         assert ReactionMarker(client).remove("C1", "1.0", WATCH_MARK_EMOJI) is True
+
+
+class Test제거_한번_실패하면_재시도한다:
+    """요청이 몰리면 reactions_remove 가 일시적으로 실패한다. 한 번 더 부르면
+    대개 성공하는데, 재시도가 없으면 눈 같은 미완료 표식이 완료 표식 옆에
+    영영 남아 사람 눈에 아직 처리 중으로 보인다 (sca-3p6 연장)."""
+
+    class 첫호출만실패클라이언트:
+        """지정한 이름의 첫 reactions_remove 만 실패하고 재시도부터 성공한다."""
+
+        def __init__(self, 실패이름: str) -> None:
+            self.실패이름 = 실패이름
+            self.call_count: dict[str, int] = {}
+            self.removed: list[str] = []
+            self.added: list[str] = []
+
+        def reactions_remove(self, *, channel: str, timestamp: str, name: str) -> None:
+            self.call_count[name] = self.call_count.get(name, 0) + 1
+            if name == self.실패이름 and self.call_count[name] == 1:
+                raise RuntimeError("ratelimited")
+            self.removed.append(name)
+
+        def reactions_add(self, *, channel: str, timestamp: str, name: str) -> None:
+            self.added.append(name)
+
+    def test_일시_실패는_재시도로_지워지고_경고가_없다(self, caplog) -> None:
+        client = self.첫호출만실패클라이언트("eyes")
+        with caplog.at_level(logging.WARNING, logger="slack_cli_agent.slack.reactions"):
+            ReactionMarker(client).mark_done("C1", "1.0")
+
+        assert "eyes" in client.removed  # 재시도로 결국 지워졌다
+        assert client.call_count["eyes"] == 2  # 한 번만 더 시도한다
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+        assert client.added == ["white_check_mark"]

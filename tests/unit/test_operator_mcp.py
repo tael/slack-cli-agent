@@ -112,14 +112,19 @@ class Test클로드_소유자_전용_서버:
         engine = ClaudeEngine(owner_profile(tmp_path, CLAUDE), SETTINGS)
         owner = engine.build_command(request(trust_level=TrustLevel.OWNER, tools=OWNER_TOOLS))
         general = engine.build_command(request(trust_level=TrustLevel.GENERAL))
-        assert set(mcp_config(owner)) == {"jira", "google-workspace"}
-        assert set(mcp_config(general)) == {"jira"}
+        # 허용목록 턴은 허용 이름이 하나도 없는 서버를 붙이지 않으므로
+        # (claude.py _attached_mcp_servers) 소유자 턴에는 와일드카드가 가리킨
+        # 소유자 전용 서버만 남고, 어떤 MCP 이름도 없는 비소유자 턴에는
+        # 프로필 서버도 붙지 않는다.
+        assert set(mcp_config(owner)) == {"google-workspace"}
+        assert set(mcp_config(general)) == set()
         assert "--strict-mcp-config" in owner and "--strict-mcp-config" in general
 
     def test_소유자_턴에서_와일드카드가_서버를_연다(self, tmp_path: Path) -> None:
         engine = ClaudeEngine(owner_profile(tmp_path, CLAUDE), SETTINGS)
         cmd = engine.build_command(request(trust_level=TrustLevel.OWNER, tools=OWNER_TOOLS))
-        assert cmd[cmd.index("--allowedTools") + 1] == "Read,mcp__google-workspace__*"
+        # ToolSearch 는 MCP 서버가 붙은 턴에 엔진이 더하는 이름이다.
+        assert cmd[cmd.index("--allowedTools") + 1] == "Read,mcp__google-workspace__*,ToolSearch"
         assert cmd[cmd.index("--disallowedTools") + 1] == "mcp__jira__*"
 
     def test_비소유자_턴의_거부목록에_소유자_서버가_안_나온다(self, tmp_path: Path) -> None:

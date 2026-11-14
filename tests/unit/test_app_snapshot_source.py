@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from slack_cli_agent.core.lifecycle import InflightCounter
+from slack_cli_agent.core.lifecycle import InflightCounter, InflightRegistry
 from slack_cli_agent.observability.app_snapshot import ApplicationSnapshotSource
 
 
@@ -64,6 +64,18 @@ class TestApplicationSnapshotSource:
         source = make_source()
         assert source.socket_error_timestamps() == (1.0, 2.0)
         assert source.socket_reconnect_timestamps() == (3.0,)
+
+    def test_처리중_요청을_레지스트리에서_읽는다(self) -> None:
+        active = InflightRegistry()
+        active.enter("C1", "1.1", now=100.0)
+        source = make_source(active=active)
+        assert source.active_events(now=130.0) == [
+            {"channel": "C1", "ts": "1.1", "elapsed_sec": 30.0}
+        ]
+
+    def test_레지스트리가_없으면_빈_목록이다(self) -> None:
+        """소켓만 있고 요청을 처리하지 않는 프로세스는 남길 처리 건이 없다."""
+        assert make_source().active_events(now=0.0) == []
 
     def test_감시_작업_수를_읽는다(self) -> None:
         assert make_source().watch_job_count() == 4

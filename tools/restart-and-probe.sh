@@ -19,8 +19,25 @@ QUESTION="${RESTART_PROBE_TEXT:-지금 UTC 시각만 한 줄로 답해라}"
 WARMUP="${RESTART_PROBE_WARMUP_SEC:-5}"
 
 bots=("$@")
+# 이름을 박지 않는다. 기본값은 이 리포 프로필 중 상태 디렉터리가 이 머신에 있는 봇이다.
 if [ ${#bots[@]} -eq 0 ]; then
-  bots=(shinji rei asuka)
+  REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  while IFS= read -r name; do
+    [ -n "$name" ] && bots+=("$name")
+  done < <(python3 - "$REPO_DIR/profiles" <<'PY'
+import json, sys
+from pathlib import Path
+for p in sorted(Path(sys.argv[1]).glob("*.json")):
+    if p.stem.startswith("example"):
+        continue
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8")).get("state_dir") or f"~/.{p.stem}"
+    except Exception:
+        continue
+    if Path(raw).expanduser().is_dir():
+        print(p.stem)
+PY
+)
 fi
 
 # 점검 도구가 슬랙에 못 닿았을 때의 종료코드. 봇 실패와 고칠 자리가 다르다

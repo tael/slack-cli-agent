@@ -17,7 +17,25 @@ from slack_cli_agent.core.markers import ELAPSED_LINE
 
 # Matches the bot's own text ending in a question mark or a Korean
 # question-ending suffix.
-ASKED_BACK = re.compile(r"(?:[?？]|까요|을까|ㄹ까|나요|린가요|드릴까)[\s.!]*$")
+# 2026-11-10 : 질문 문장을 굵게("**진행할까요?**") 쓰므로 끝의 강조 기호도 건너뛴다
+ASKED_BACK = re.compile(r"(?:[?？]|까요|을까|ㄹ까|나요|린가요|드릴까)[\s.!*_~]*$")
+
+# A plain-statement way of leaving a decision to the human, without a
+# question mark (bot.py:8251-8264, 2026-09-19). "진행할지 말씀 주시면 그때
+# 실행하겠습니다." isn't a question by ASKED_BACK's pattern, so a "좋아"
+# answering it got discarded as a reaction — this workspace's default way of
+# asking for approval is the plain-statement form, not a question mark.
+# Second-line defense: the model's own `[[ASK]]` tag (core/markers.py) is
+# the first.
+AWAITING_DECISION = re.compile(
+    r"(?:말씀\s*(?:주시면|주세요|주시는\s*대로|부탁)"
+    r"|알려\s*주(?:시면|세요)"
+    r"|지시\s*(?:주시면|주세요|해\s*주세요)"
+    r"|결정(?:해)?\s*주(?:시면|세요)"
+    r"|(?:진행|반영|적용|실행|추가|삭제|정리)할지"
+    r"|(?:확인|검토|판단|결정)\s*부탁)"
+    r"[^\n]{0,40}$"
+)
 
 # Reaction words that don't expect a reply. A message made up only of
 # these is just an acknowledgment.
@@ -54,7 +72,9 @@ MUTTER_ONLY = re.compile(r"^[\(（].*[\)）]$", re.DOTALL)
 
 
 class ResponseGate:
-    def worth_answering(self, text: str, bot_asked: bool = False) -> bool:
+    def worth_answering(
+        self, text: str, bot_asked: bool = False, has_files: bool = False
+    ) -> bool:
         """Decide whether to jump into a thread the bot wasn't addressed in.
 
         Filters by vocabulary, not length — Korean commands are short
@@ -63,7 +83,15 @@ class ResponseGate:
         2026-08-25. Anything that isn't purely reaction words gets
         forwarded to the model, including the judgment that this
         isn't a place to speak up.
+
+        `has_files` overrides every filter below, including the empty-text
+        and mutter-only checks (bot.py:8402-8417, 2026-10-22: "메시지가
+        없다고 입막음하면 안 된다" — a screenshot or file that answered a
+        question was silently dropped because the body alone looked empty
+        or reaction-only) (E7).
         """
+        if has_files:
+            return True
         t = (text or "").strip()
         if not t:
             return False
@@ -88,6 +116,10 @@ class ResponseGate:
         Strips the timing footer first — on 2026-09-02 a trailing "네"
         after "지금 반영할까요." was misread as a reaction because the
         footer sat between them.
+
+        Checks both a question-ending suffix (ASKED_BACK) and the
+        plain-statement approval request (AWAITING_DECISION) — either one
+        means the last turn was waiting on a decision.
         """
         t = ELAPSED_LINE.sub("", (text or "").strip()).strip()
-        return bool(ASKED_BACK.search(t))
+        return bool(ASKED_BACK.search(t) or AWAITING_DECISION.search(t))

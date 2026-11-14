@@ -55,10 +55,14 @@ class ChannelNameResolver:
             return name
         cached = self._cache.get(channel)
         if cached is not None and self._now() - cached[1] < self._ttl_of(cached[0]):
-            return cached[0]
+            return cached[0] or channel
         found = self._lookup(channel)
         self._cache[channel] = (found, self._now())
-        return found
+        # 조회에 실패하면 빈 문자열 대신 채널 ID 를 돌려준다 (bot.py:3634
+        # fetch_channel_name). 캐시에는 실패를 뜻하는 빈 문자열을 그대로 남겨
+        # 짧은 만료 뒤 다시 조회하게 둔다 — 채널 ID 를 성공으로 캐시하면 잠깐의
+        # rate limit 이 그 채널을 ID 표기로 굳히고 rename 도 못 잡는다.
+        return found or channel
 
     def _ttl_of(self, name: str) -> float:
         return self._ttl_sec if name else self._failure_ttl_sec

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+import re
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +12,19 @@ from pathlib import Path
 # request text contains one of the trigger words listed after it; files
 # without this marker are always loaded.
 WHEN_MARK = "<!-- when:"
+#: A line the nightly learner appended ("- ... <!-- learn:2026-10-22 -->").
+#: These are dated incident notes, not standing rules, and they were 41% of
+#: an owner turn's always-loaded knowledge (135KB of 330KB, 2026-11-07 실측).
+#: Every API call in a turn re-reads the whole system prompt, and a 159k-token
+#: cached prefix measured 6.4-8.5s per call against 1.1-2.2s for a 2.8k one,
+#: so they leave the prompt and stay one Grep away in the file they live in.
+LEARN_MARK = "<!-- learn:"
+
+#: The wiki index the knowledge mirror writes into `knowledge/` for a loader
+#: that could not read `wiki/index.md` itself. Once the loader reads the index,
+#: this copy would put the same text in the prompt twice, so it is skipped
+#: whenever the index itself is there (H5).
+WIKI_INDEX_MIRROR = "_위키목차.md"
 
 _SKIPPED_HEADER = (
     "# 지금 싣지 않은 주제별 지식\n\n"
@@ -26,6 +40,13 @@ BUDGET_OMITTED_HEADER = (
     "그 주제를 다루게 되면 파일을 직접 읽는다. 없는 것으로 답하지 않는다.\n\n"
 )
 _CHANNEL_HEADER = "# 이 채널의 지식\n\n앞에 적힌 것과 다르게 적힌 항목이 있으면 여기를 따른다.\n\n"
+#: A per-bot channel rule that the knowledge mirror must not overwrite. The
+#: mirror copies a sibling bot's `knowledge/` over this bot's every night, so a
+#: rule meant for one bot only lives in `local/` instead and loads last, over
+#: everything the mirror could have replaced (마메치 load_persona 대응).
+_LOCAL_HEADER = (
+    "# 이 봇만의 채널 규정\n\n앞에 적힌 것과 다르게 적힌 항목이 있으면 여기를 따른다.\n\n"
+)
 _LEARNED_HEADER = (
     "# 학습이 쌓은 지식\n\n"
     "대화에서 확인한 것을 날짜와 함께 쌓은 것이다. 사람이 쓴 지식과 어긋나면\n"
@@ -48,10 +69,21 @@ class KnowledgeDocument:
     #: Learned knowledge gets one shared header, printed once above the first
     #: of them that survives the budget.
     learned: bool = False
+    #: Loaded because its `when:` words matched this request, not on every
+    #: turn. The system prompt puts these after the fixed sections so the
+    #: part every request in a channel shares stays byte-identical for the
+    #: prompt cache (S4 2nd round, KnowledgeSection part="selected").
+    selected: bool = False
 
     @property
     def size(self) -> int:
         return len(self.text.encode("utf-8"))
+
+
+#: KnowledgeLoader.knowledge_selection parts.
+KNOWLEDGE_ALL = "all"
+KNOWLEDGE_FIXED = "fixed"
+KNOWLEDGE_SELECTED = "selected"
 
 
 class KnowledgeLoader:
@@ -61,13 +93,35 @@ class KnowledgeLoader:
         knowledge_dir: Path,
         domain_file: Path | None = None,
         learned_dir: Path | None = None,
+        local_dir: Path | None = None,
+        always_skills: Collection[str] = (),
+        wiki_dir: Path | None = None,
+        defer_learn_lines: bool = True,
     ) -> None:
+        # True keeps learner-appended lines out of the prompt and leaves a
+        # pointer to grep them (LEARN_MARK). False is the pre-2026-11-07 shape.
+        self._defer_learn_lines = defer_learn_lines
         self._persona_file = persona_file
         self._knowledge_dir = knowledge_dir
         self._domain_file = domain_file
         # None means this bot has no separate learned directory, which is the
         # shape every caller had before the two sources were split.
         self._learned_dir = learned_dir
+        # None means this bot keeps no mirror-exempt overlay. When set, a
+        # `<channel>.md` here loads last, after knowledge and learned, so it wins
+        # over anything the nightly mirror could have replaced. Channel-scoped
+        # only: common `_*.md` belongs in the mirrored `knowledge/` (sca).
+        self._local_dir = local_dir
+        # Common knowledge files named after one of these (stem with its
+        # leading "_" stripped, e.g. "_metabase.md" -> "metabase") load even
+        # when their own `when:` marker doesn't match this request's words.
+        # A trigger match is one way in; standing clearance named here is
+        # another, and the two don't cancel each other out.
+        self._always_skills = frozenset(always_skills)
+        # None means this bot keeps no wiki. When set, `index.md` here loads on
+        # every turn regardless of `when:` words, after common knowledge and
+        # before the channel file; the pages it lists are opened by the model.
+        self._wiki_dir = wiki_dir
 
     def persona_text(self, include_domain: bool = False) -> str:
         parts: list[str] = []
@@ -94,20 +148,36 @@ class KnowledgeLoader:
 
     def knowledge_selection(
         self, channel_slug: str, prompt: str = "", budget: int | None = None,
+        part: str = KNOWLEDGE_ALL, chat: bool = False,
     ) -> tuple[str, tuple[KnowledgeDocument, ...]]:
         """The text plus what the budget left out, for the caller that has to
         report it. A budget of 0 or less renders nothing at all -- printing the
         omission list there would add bytes to a prompt that already has none
-        to spare (리뷰 2026-09-19)."""
+        to spare (리뷰 2026-09-19).
+
+        `part` narrows it to the documents that load on every turn
+        (KNOWLEDGE_FIXED) or to the ones this request's words picked plus the
+        list of the ones they did not (KNOWLEDGE_SELECTED). The two together
+        carry what KNOWLEDGE_ALL carries.
+
+        `chat` is a chat channel's request (`mode: chat` or `chat: active`),
+        which loads the way mametchi load_persona did (bot.py:3596): learner
+        lines stay in, and `always_skills` does not pull in a topic file its
+        `when:` words did not match. Both were added for work turns; in a
+        chat channel they cut the incident notes the old bot answered from
+        and added lookup guidance it never had (2026-11-10 비교)."""
+        documents, skipped = self.documents(channel_slug, prompt, chat=chat)
+        if part == KNOWLEDGE_FIXED:
+            documents, skipped = tuple(d for d in documents if not d.selected), ()
+        elif part == KNOWLEDGE_SELECTED:
+            documents = tuple(d for d in documents if d.selected)
         if budget is not None and budget <= 0:
-            documents, _ = self.documents(channel_slug, prompt)
             return "", documents
-        documents, skipped = self.documents(channel_slug, prompt)
         kept, omitted = _within_budget(documents, budget, skipped)
         return _render(kept, omitted, skipped), tuple(omitted)
 
     def documents(
-        self, channel_slug: str, prompt: str = "",
+        self, channel_slug: str, prompt: str = "", chat: bool = False,
     ) -> tuple[tuple[KnowledgeDocument, ...], tuple[Path, ...]]:
         """Every document this request would carry, in send order.
 
@@ -115,28 +185,79 @@ class KnowledgeLoader:
         place that knows where documents come from and how they are labelled.
         """
         skipped: list[Path] = []
-        documents = list(self._from_dir(self._knowledge_dir, channel_slug, prompt, skipped))
+        wiki = self._wiki_index()
+        always = frozenset() if chat else self._always_skills
+        documents = list(self._from_dir(
+            self._knowledge_dir, channel_slug, prompt, skipped,
+            after_common=wiki, skip_names={WIKI_INDEX_MIRROR} if wiki else frozenset(),
+            always_skills=always,
+        ))
         learned = (
-            self._from_dir(self._learned_dir, channel_slug, prompt, skipped)
+            self._from_dir(
+                self._learned_dir, channel_slug, prompt, skipped, always_skills=always,
+            )
             if self._learned_dir is not None
             else []
         )
         documents += [dataclasses.replace(doc, learned=True) for doc in learned]
+        documents += self._local_overlay(channel_slug)
+        if self._defer_learn_lines and not chat:
+            documents = [_defer_learn_lines(doc) for doc in documents]
         return tuple(documents), tuple(skipped)
+
+    def _local_overlay(self, channel_slug: str) -> list[KnowledgeDocument]:
+        """The per-bot channel rule, headed and placed last. Empty when there is
+        no local directory, no channel, or no file: a missing overlay is the
+        normal case, not an error."""
+        if self._local_dir is None or not channel_slug:
+            return []
+        local_file = self._local_dir / f"{channel_slug}.md"
+        text = _read_or_none(local_file)
+        if text is None:
+            return []
+        return [KnowledgeDocument(path=local_file, text=_LOCAL_HEADER + text)]
+
+    def _wiki_index(self) -> list[KnowledgeDocument]:
+        """The wiki index with `~/` paths spelled out. Read takes absolute paths
+        only, so a `~/.<bot>/persona/wiki/<page>.md` left as written is a page
+        the model cannot open (마메치 load_persona 의 replace 대응)."""
+        if self._wiki_dir is None:
+            return []
+        index = self._wiki_dir / "index.md"
+        text = _read_or_none(index)
+        if text is None:
+            return []
+        home = Path.home()
+        try:
+            tilde = "~/" + str(self._wiki_dir.relative_to(home))
+        except ValueError:
+            tilde = None
+        if tilde is not None:
+            text = text.replace(tilde, str(self._wiki_dir))
+        return [KnowledgeDocument(path=index, text=text)]
 
     def _from_dir(
         self, directory: Path, channel_slug: str, prompt: str, skipped: list[Path],
+        after_common: Sequence[KnowledgeDocument] = (),
+        skip_names: Collection[str] = frozenset(),
+        always_skills: Collection[str] = frozenset(),
     ) -> list[KnowledgeDocument]:
         parts: list[KnowledgeDocument] = []
         low = (prompt or "").lower()
         if directory.is_dir():
             for common in sorted(directory.glob("_*.md")):
+                if common.name in skip_names:
+                    continue
                 text = common.read_text(encoding="utf-8")
                 triggers = self._triggers(text)
-                if triggers is not None and not any(t in low for t in triggers):
+                always = common.stem.lstrip("_") in always_skills
+                if triggers is not None and not always and not any(t in low for t in triggers):
                     skipped.append(common)
                     continue
-                parts.append(KnowledgeDocument(path=common, text=text))
+                parts.append(KnowledgeDocument(
+                    path=common, text=text, selected=triggers is not None and not always,
+                ))
+        parts.extend(after_common)
         if channel_slug:
             channel_file = directory / f"{channel_slug}.md"
             channel_text = _read_or_none(channel_file)
@@ -154,6 +275,31 @@ class KnowledgeLoader:
             return None
         body = first[len(WHEN_MARK) :].split("-->", 1)[0]
         return [w.strip().lower() for w in body.split(",") if w.strip()]
+
+
+#: The line count in the deferred-learning note. SystemPromptComposer's
+#: fingerprint replaces it with a fixed value so one learned line added at
+#: night does not reset every open session.
+LEARN_NOTE_COUNT = re.compile(r"\(학습 기록 \d+줄은 지침에서 뺐다")
+LEARN_NOTE_COUNT_FIXED = "(학습 기록 N줄은 지침에서 뺐다"
+
+
+def _defer_learn_lines(doc: KnowledgeDocument) -> KnowledgeDocument:
+    """The document without its learner lines, plus one line saying where
+    they went. Unchanged when it has none."""
+    lines = doc.text.split("\n")
+    kept = [line for line in lines if LEARN_MARK not in line]
+    moved = len(lines) - len(kept)
+    if moved == 0:
+        return doc
+    # No line count: a learned line added at night changed the number and
+    # with it the system prompt from ~38 KB on, so every new thread rewrote
+    # the whole cached block (2026-11-12, orchestration E).
+    note = (
+        "\n(학습 기록은 지침에서 뺐다. 이 주제의 과거 정정이 필요하면 "
+        f"Grep 으로 {doc.path} 에서 키워드와 'learn:' 을 찾는다.)\n"
+    )
+    return dataclasses.replace(doc, text="\n".join(kept).rstrip() + "\n" + note)
 
 
 def _read_or_none(path: Path) -> str | None:

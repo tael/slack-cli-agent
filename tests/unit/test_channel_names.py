@@ -54,16 +54,17 @@ def test_두_번째_조회는_캐시에서_나온다() -> None:
     assert client.call_count == 1
 
 
-def test_조회에_실패하면_빈_문자열이고_다시_조회하지_않는다() -> None:
+def test_조회에_실패하면_채널ID를_돌려주고_다시_조회하지_않는다() -> None:
+    # bot.py:3634 fetch_channel_name 은 실패 시 채널 ID 를 그대로 쓴다.
     client = _FakeSlackClient({})
     resolver = ChannelNameResolver(client, _configured({}))
 
-    assert resolver.resolve("C1") == ""
-    assert resolver.resolve("C1") == ""
+    assert resolver.resolve("C1") == "C1"
+    assert resolver.resolve("C1") == "C1"
     assert client.call_count == 1
 
 
-def test_이름_없는_응답은_빈_문자열로_본다() -> None:
+def test_이름_없는_응답은_채널ID로_본다() -> None:
     class _NoName:
         call_count = 0
 
@@ -72,7 +73,7 @@ def test_이름_없는_응답은_빈_문자열로_본다() -> None:
 
     resolver = ChannelNameResolver(_NoName(), _configured({}))
 
-    assert resolver.resolve("C1") == ""
+    assert resolver.resolve("C1") == "C1"
 
 
 def test_빈_채널_ID_는_조회하지_않는다() -> None:
@@ -109,12 +110,23 @@ class Test캐시만료:
         client = _FakeSlackClient({})
         resolver = self._resolver(client, 시각)
 
-        assert resolver.resolve("C1") == ""
+        assert resolver.resolve("C1") == "C1"
         시각[0] = 61.0
         client._names["C1"] = "일반"
 
         assert resolver.resolve("C1") == "일반"
         assert client.call_count == 2
+
+    def test_실패_캐시중에도_채널ID를_돌려준다(self) -> None:
+        # 실패는 빈 문자열로 캐시하지만(짧은 만료), 호출자에게는 채널 ID 를 준다.
+        시각 = [0.0]
+        client = _FakeSlackClient({})
+        resolver = self._resolver(client, 시각)
+
+        assert resolver.resolve("C1") == "C1"
+        시각[0] = 30.0
+        assert resolver.resolve("C1") == "C1"
+        assert client.call_count == 1
 
     def test_실패는_만료_전에는_다시_조회하지_않는다(self) -> None:
         시각 = [0.0]

@@ -16,17 +16,21 @@ import dataclasses
 import logging
 import os
 import subprocess
+import tempfile
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..auth.principal import TrustLevel
 from ..config.settings import RuntimeSettings
 from ..core.errors import ConfigError
+from ..core.secrets import redact
+from ..core.timezones import KST
+from ..guard.finish_review import KNOWLEDGE_FILE_ENV
 from ..observability.progress_hook import append_tool
-from ..session.manager import CAPABILITY_UNMET_REASON
+from ..session.manager import AUTH_FAILURE_REASON, CAPABILITY_UNMET_REASON
 from .base import (
     CallOrigin,
     ElapsedSource,
@@ -45,7 +49,7 @@ from .capability import (
     InstructionBoundary,
     ToolRestriction,
 )
-from .environment import EngineEnvironmentPolicy
+from .environment import EngineEnvironmentPolicy, turn_budget_env
 from .stream import run_streaming
 from .switcher import EngineSwitcher
 
@@ -63,6 +67,44 @@ PAYLOAD_KIND = "payload"
 #: name so the audit does not count a settings fault as a CLI crash, and so
 #: the new-session retry does not run it again at the same disadvantage.
 ENGINE_CONFIG_REASON = "engine_config"
+
+#: How much of a timed-out turn's output to keep. The whole stream can be
+#: huge; the tail holds what the engine was doing when it stopped, which is
+#: what a human reads to find the cause (B11, bot.py 의 800자 꼬리와 같은 폭).
+TAIL_CHARS = 800
+
+#: 모델 폴백 재시도에 최소로 필요한 남은 시간(초). 이보다 적게 남았으면 다음
+#: 모델을 돌리지 않는다 - 시작하자마자 또 끊겨 슬롯만 축낸다 (B17).
+MODEL_RETRY_MIN_SEC = 60
+
+
+#: How much of a nonzero-exit run's output to keep. A CLI that exits early
+#: writes why at the top - usage, a config error, a stack trace - so the head
+#: is what a human reads, not the tail (C8, bot.py 의 stdout 앞 2000자와 같은 폭).
+HEAD_CHARS = 2000
+
+
+def head_chars(text: str | None, limit: int = HEAD_CHARS) -> str:
+    """First `limit` characters of `text`; empty for None/empty."""
+    if not text:
+        return ""
+    return text[:limit]
+
+
+def tail_chars(text: str | None, limit: int = TAIL_CHARS) -> str:
+    """Last `limit` characters of `text`; empty for None/empty."""
+    if not text:
+        return ""
+    return text[-limit:]
+
+
+def _as_text(raw: str | bytes | None) -> str:
+    """TimeoutExpired carries str under text=True, but tolerate bytes too."""
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", "replace")
+    return raw
 
 #: For the notice the person who asked reads. Axis names and levels are
 #: internal identifiers; putting them in a Slack reply tells nobody anything.
@@ -93,6 +135,32 @@ OUTCOME_DOWNGRADED = "downgraded"
 OUTCOME_BLOCKED = "blocked"
 
 
+#: TURN_ID for a call made outside a Slack turn, same as mametchi's
+#: MAMETCHI_TURN=unknown (bot.py), which restart.ApplyRequest reads as no turn.
+UNKNOWN_TURN_ID = "unknown"
+
+
+def _with_default_turn_id(request: EngineRequest) -> EngineRequest:
+    """Give a request without a turn key one, so helper wrappers and MCP
+    servers still record which call ran them (C10).
+
+    Watch, review and learning calls build their EngineRequest without the
+    pipeline's TURN_ID; their audit rows then read the same empty turn as a
+    person's terminal call. The request_id (watch-<id>-<run_id> and the like)
+    names the call; "unknown" is left for a request with none. A caller's own
+    TURN_ID or turn_context turn_id is never replaced."""
+    turn = request.engine_env.get("TURN_ID") or request.turn_context.get("turn_id")
+    if not turn:
+        turn = request.request_id or UNKNOWN_TURN_ID
+    engine_env = request.engine_env
+    turn_context = request.turn_context
+    if not engine_env.get("TURN_ID"):
+        engine_env = {**engine_env, "TURN_ID": turn}
+    if not turn_context.get("turn_id"):
+        turn_context = {**turn_context, "turn_id": turn}
+    return dataclasses.replace(request, engine_env=engine_env, turn_context=turn_context)
+
+
 def _outcome(unmet: Sequence[str], downgraded: Sequence[str]) -> str:
     if not unmet:
         return OUTCOME_COMPATIBLE
@@ -103,6 +171,67 @@ def _level(value: ToolRestriction | ExecutionIsolation | InstructionBoundary | N
     if value is None:
         return "요구 없음"
     return LEVEL_NAMES.get(value, str(value))
+
+
+def _switch_time(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, KST).strftime("%m-%d %H:%M")
+
+
+def switch_dm_body(*, bot_name: str, from_engine: str, to_engine: str,
+                   reason: str, detail: str, probe_ok: bool,
+                   probe_detail: str, switched_at: float,
+                   approved: bool = False) -> str:
+    """전환을 시작했음을 소유자에게 알리는 DM 본문 (B24).
+
+    사유·시각·확인결과를 담는다. 마메치 bot.py 의 engine_switch_notice 와
+    같은 구성이되, 한도 소진과 로그인 만료 두 계기를 구분한다 - 사람이 할 일이
+    다르기 때문이다(한도는 기다리면 풀리고 로그인은 다시 로그인해야 한다).
+    승인 전에는 전환 사유와 똑같이 답하므로, 바로 쓰려면 승인/거부를 안내한다.
+    """
+    cause = "로그인 만료" if reason == AUTH_FAILURE_REASON else "구독 한도 소진"
+    lines = [
+        f"*{bot_name} 실행기를 {to_engine} 로 바꿨습니다*",
+        "",
+        f"- 사유 : {from_engine} {cause}",
+        f"- 시각 : {_switch_time(switched_at)} KST",
+    ]
+    detail = (detail or "").strip()
+    if detail:
+        lines.append(f"- 원문 : {detail}")
+    if probe_ok and approved:
+        lines += [
+            f"- 전환 확인 : {to_engine} 가 응답합니다",
+            "",
+            f"이 요청부터 {to_engine} 로 답합니다. {from_engine} 가 돌아오면 자동으로 되돌립니다.",
+        ]
+        if reason == AUTH_FAILURE_REASON:
+            # 로그인 만료는 기다려도 풀리지 않는다. 사람이 할 일을 적는다.
+            lines.append(f"{from_engine} 는 다시 로그인하거나 토큰을 다시 발급해야 돌아옵니다.")
+        lines.append("쓰지 않으려면 `엔진 거부` 를 보내주세요.")
+    elif probe_ok:
+        lines += [
+            f"- 전환 확인 : {to_engine} 가 응답합니다",
+            "",
+            "지금은 승인 전이라 전환 사유와 똑같이 답합니다.",
+            f"{to_engine} 로 답하게 하려면 이 대화에서 `엔진 승인` 을,",
+            "쓰지 않으려면 `엔진 거부` 를 보내주세요.",
+        ]
+    else:
+        lines += [
+            f"- 전환 확인 실패 : {probe_detail}",
+            "",
+            f"{to_engine} 도 지금은 쓸 수 없습니다. 복구될 때까지 기다려야 합니다.",
+        ]
+    return "\n".join(lines)
+
+
+def recovery_dm_body(*, bot_name: str, primary_engine: str, recovered_at: float) -> str:
+    """기본 실행기가 돌아와 되돌렸음을 알리는 DM 본문 (B26)."""
+    return (
+        f"*{bot_name} 실행기를 {primary_engine} 로 되돌렸습니다*\n\n"
+        f"- {primary_engine} 가 정상 복귀해 원래 실행기로 답합니다\n"
+        f"- 시각 : {_switch_time(recovered_at)} KST"
+    )
 
 
 class CapabilityAuditPort(Protocol):
@@ -178,52 +307,178 @@ class EngineRunner:
         # Set before build_command: an engine that passes its own limit to the
         # CLI has to name the one enforced here (sca-ocie).
         request = dataclasses.replace(request, timeout_sec=timeout)
+        request = _with_default_turn_id(request)
         self._record_payload(engine, request)
+        base_source = self._source_env if self._source_env is not None else os.environ
+        # Stamp the turn deadline so the child engine's Stop hook and Bash
+        # PreToolUse guard can see how much turn budget is left (A28). Computed
+        # once per turn from the enforced timeout; the env policy's allowlist
+        # carries TURN_DEADLINE[_MONO] through to the child. The caller's
+        # per-turn facts (request.engine_env: current channel, advisor and
+        # code-first channel sets) go on the same way; the policy still decides
+        # which names pass.
+        source = {
+            **base_source,
+            **request.engine_env,
+            **turn_budget_env(timeout, now_wall=time.time(), now_monotonic=time.monotonic()),
+        }
+
+        # The knowledge text this turn's system prompt carried, for the Stop
+        # hook's verify (guard/finish_review.KNOWLEDGE_FILE_ENV). A file, not
+        # an env value: it runs to tens of KB. Lives for this one engine call.
+        knowledge_file = _write_review_knowledge(request.review_knowledge)
+        if knowledge_file is not None:
+            source[KNOWLEDGE_FILE_ENV] = str(knowledge_file)
+        else:
+            # An inherited value would point the hook at another call's file.
+            source.pop(KNOWLEDGE_FILE_ENV, None)
         try:
-            engine.prepare(request)
-            cmd = engine.build_command(request)
-        except ConfigError as e:
-            return self._config_error_response(engine, request, e)
-        source = self._source_env if self._source_env is not None else os.environ
-        extra: dict[str, Any] = {"env": policy.build(source)}
-        sink = self._progress_sink(engine, request)
-        if sink is not None:
-            extra["on_stdout_line"] = sink
-        started = time.monotonic()
-        try:
-            completed = self._run(
-                cmd, cwd=str(request.workdir), timeout=timeout, **extra,
-            )
-        except subprocess.TimeoutExpired:
-            timeout_int = int(timeout)
-            return EngineResponse(
-                ok=False,
-                body=f"시간이 오래 걸려 중단했습니다. {timeout_int}초 안에 끝나지 않았습니다.",
-                session_id=None, model_actual=None,
-                elapsed=timeout, turns=None, usage=None,
-                raw={}, failure_reason="timeout",
-                failure_detail=FailureDetail(timeout_sec=timeout_int),
-                elapsed_source=ElapsedSource.RUNNER,
+            return self._run_attempts(engine, request, policy, source, timeout)
+        finally:
+            if knowledge_file is not None:
+                try:
+                    knowledge_file.unlink()
+                except OSError:
+                    pass
+
+    def _run_attempts(
+        self, engine: Engine, request: EngineRequest, policy: EngineEnvironmentPolicy,
+        source: Mapping[str, str], timeout: float,
+    ) -> EngineResponse:
+        """The model-candidate loop of `run`, split out so `run` can remove
+        the per-call knowledge file however the loop ends."""
+        # B9/B17 — 모델 하나의 일시 장애면 같은 엔진 안에서 폴백 모델로 순차
+        # 재시도한다. 폴백 목록이 없으면(기본) candidates 가 요청 모델 하나뿐이라
+        # 루프가 한 번만 돌아 예전과 같은 동작이다.
+        candidates = self._model_candidates(engine, request)
+        loop_started = time.monotonic()
+        last: EngineResponse | None = None
+        for index, model in enumerate(candidates):
+            is_last = index == len(candidates) - 1
+            if index == 0:
+                attempt_timeout = timeout
+            else:
+                # 폴백 시도는 남은 시간 안에서만 돈다. 시도마다 처음 상한을 새로
+                # 주지 않는다 - 한 요청이 슬롯을 끝없이 쥐지 않게 한다.
+                remaining = timeout - (time.monotonic() - loop_started)
+                if remaining < MODEL_RETRY_MIN_SEC:
+                    break
+                attempt_timeout = remaining
+            attempt = dataclasses.replace(request, model=model, timeout_sec=attempt_timeout)
+            try:
+                engine.prepare(attempt)
+                cmd = engine.build_command(attempt)
+            except ConfigError as e:
+                return self._config_error_response(engine, attempt, e)
+            extra: dict[str, Any] = {"env": policy.build(source)}
+            sink = self._progress_sink(engine, attempt)
+            if sink is not None:
+                extra["on_stdout_line"] = sink
+            started = time.monotonic()
+            try:
+                completed = self._run(
+                    cmd, cwd=str(attempt.workdir), timeout=attempt_timeout, **extra,
+                )
+            except subprocess.TimeoutExpired as expired:
+                # 타임아웃은 모델 장애 폴백 계기가 아니다 - 다른 모델도 비슷한
+                # 시간이 걸릴 수 있고 남은 시간은 더 짧다. 그대로 중단 응답을 낸다.
+                return self._timeout_response(engine, attempt, expired, attempt_timeout)
+            wall_elapsed = time.monotonic() - started
+            # Stamped here rather than in each Engine.parse() so every engine
+            # reports it the same way, including ones added later.
+            response = dataclasses.replace(
+                engine.parse(completed.stdout, completed.stderr, completed.returncode),
                 engine=engine.name,
-                model_asked=request.model or "",
+                model_asked=attempt.model or "",
             )
-        wall_elapsed = time.monotonic() - started
-        # Stamped here rather than in each Engine.parse() so every engine reports
-        # it the same way, including ones added later.
-        response = dataclasses.replace(
-            engine.parse(completed.stdout, completed.stderr, completed.returncode),
+            # sca-cfa — some engines (Codex) never report their own elapsed time.
+            # Only fill in the runner's wall-clock measurement when the engine
+            # left it unknown; an engine-reported value is more precise (it can
+            # exclude time this process itself spent, e.g. queueing).
+            if response.elapsed_source == ElapsedSource.UNKNOWN:
+                response = dataclasses.replace(
+                    response, elapsed=wall_elapsed, elapsed_source=ElapsedSource.RUNNER
+                )
+            last = response
+            if completed.returncode != 0:
+                # 종료코드만으로는 왜 실패했는지 알 수 없다. 원문은 로그-세이프
+                # 경계를 지켜 FailureDetail 엔 넣지 않고 앞 2KB 만 로그로 남긴다 (C8).
+                log.warning(
+                    "엔진 %s 가 종료코드 %d 로 끝났습니다 (%s). 출력(앞 %d자)"
+                    " stdout=%r stderr=%r",
+                    engine.name, completed.returncode,
+                    response.failure_reason or "실패 사유 없음", HEAD_CHARS,
+                    redact(head_chars(_as_text(completed.stdout))),
+                    redact(head_chars(_as_text(completed.stderr))),
+                )
+            # C15 — 성공한 턴이 세션에 실은 지침을 적어 둔다. 다음 재개 턴은
+            # 그중 바뀌지 않은 블록을 다시 싣지 않는다.
+            engine.note_delivered(attempt, response)
+            # 모델 하나의 장애이고, 도구가 안 돌았고, 다음 모델이 남았으면 넘어간다.
+            # 도구가 이미 돈 턴을 다시 돌리면 같은 쓰기가 두 번 난다.
+            if (not response.ok and not is_last
+                    and engine.detect_model_outage(completed.stdout, completed.stderr)
+                    and not engine.tools_already_ran(completed.stdout)):
+                log.warning(
+                    "엔진 %s 모델 장애, 다음 모델로 넘어갑니다 : %s -> %s",
+                    engine.name, model, candidates[index + 1],
+                )
+                continue
+            return response
+        # 폴백을 돌 시간이 모자라 멈춘 경우 - 마지막 실패를 그대로 돌려준다.
+        assert last is not None  # candidates 는 최소 요청 모델 하나라 늘 채워진다
+        return last
+
+    @staticmethod
+    def _model_candidates(engine: Engine, request: EngineRequest) -> list[str]:
+        """이번 턴에 순서대로 시도할 모델들. 첫 모델은 요청 모델, 이어서 겹치지
+        않는 폴백 모델들이다. 폴백이 없으면 요청 모델 하나뿐이다 (B17)."""
+        primary = request.model or ""
+        try:
+            spec = engine.spec
+        except ConfigError:
+            return [primary]
+        # getattr 기본값으로 둔다 - model_fallbacks 가 없는 엔진 구현이나 대역도
+        # 폴백 없이 요청 모델 하나로만 돈다.
+        fallbacks = getattr(spec, "model_fallbacks", ())
+        candidates = [primary]
+        for model in fallbacks:
+            if model and model != primary and model not in candidates:
+                candidates.append(model)
+        return candidates
+
+    @staticmethod
+    def _timeout_response(
+        engine: Engine, request: EngineRequest,
+        expired: subprocess.TimeoutExpired, timeout: float,
+    ) -> EngineResponse:
+        timeout_int = int(timeout)
+        # 중단될 때 받은 출력은 '무엇을 하다 멈췄나'의 유일한 단서다.
+        # 원문은 로그-세이프 경계를 지켜 FailureDetail 엔 넣지 않고(수만 센다)
+        # 꼬리 800자만 로그로 남긴다 (B11).
+        out_text = _as_text(expired.stdout)
+        err_text = _as_text(expired.stderr)
+        if out_text or err_text:
+            log.warning(
+                "엔진 %s 가 %d초 안에 안 끝나 중단했습니다. 마지막 출력(꼬리 %d자)"
+                " stdout=%r stderr=%r",
+                engine.name, timeout_int, TAIL_CHARS,
+                tail_chars(out_text), tail_chars(err_text),
+            )
+        stdout_chars = len(out_text) if out_text else None
+        return EngineResponse(
+            ok=False,
+            body=f"시간이 오래 걸려 중단했습니다. {timeout_int}초 안에 끝나지 않았습니다.",
+            session_id=None, model_actual=None,
+            elapsed=timeout, turns=None, usage=None,
+            raw={}, failure_reason="timeout",
+            failure_detail=FailureDetail(
+                timeout_sec=timeout_int, stdout_chars=stdout_chars
+            ),
+            elapsed_source=ElapsedSource.RUNNER,
             engine=engine.name,
-            # request.model is the resolved one: the branch above fills it from
-            # the engine spec when the caller left it empty.
             model_asked=request.model or "",
         )
-        # sca-cfa — some engines (Codex) never report their own elapsed time.
-        # Only fill in the runner's wall-clock measurement when the engine
-        # left it unknown; an engine-reported value is more precise (it can
-        # exclude time this process itself spent, e.g. queueing).
-        if response.elapsed_source == ElapsedSource.UNKNOWN:
-            response = dataclasses.replace(response, elapsed=wall_elapsed, elapsed_source=ElapsedSource.RUNNER)
-        return response
 
     @staticmethod
     def _config_error_response(
@@ -345,11 +600,13 @@ class EngineRunner:
         if self._audit is None:
             return
         try:
+            tier = {"tier": request.turn_tier} if request.turn_tier else {}
             self._audit.record(
                 PAYLOAD_KIND,
                 engine=engine.name,
                 request_id=request.request_id,
                 resume=request.resume,
+                **tier,
                 **engine.footprint_for(request).as_audit_dict(),
                 # Absent rather than zeroed when the caller composed nothing:
                 # "not budget-limited" and "never went through the composer"
@@ -402,6 +659,8 @@ class EngineRunner:
             # decision, not how the request ended.
             "outcome": _outcome(unmet, downgraded),
         }
+        if request.turn_tier:
+            record_fields["tier"] = request.turn_tier
         try:
             self._audit.record(CAPABILITY_KIND, **record_fields)
         except Exception:
@@ -451,17 +710,61 @@ class EngineRunPort(Protocol):
     def run(self, engine: Engine, request: EngineRequest) -> EngineResponse: ...
 
 
-class DirectInvoker(EngineInvoker):
-    """No fallback configured — runs that one engine via the runner."""
+#: 단일 엔진에서 로그인이 풀렸을 때 스레드에 남기는 한 줄.
+DIRECT_AUTH_FAILURE_REPLY = "엔진 로그인이 풀려 이 요청을 처리하지 못했습니다. 관리자에게 알렸습니다."
 
-    def __init__(self, runner: EngineRunPort, engine: Engine) -> None:
+#: 로그인이 풀린 동안 들어오는 요청마다 DM 이 나가지 않게 막는 간격.
+DIRECT_AUTH_NOTIFY_INTERVAL_SEC = 3600.0
+
+
+class DirectInvoker(EngineInvoker):
+    """No fallback configured — runs that one engine via the runner.
+
+    로그인이 풀린 실패는 여기서 사람에게 보이게 바꾼다. 폴백이 없으면
+    FallbackEngine 의 인증 실패 감지가 돌지 않아, codex 의 종료코드 1 이
+    비공개 실패로 남고 스레드에는 아무 답도 없었다. 2026-10-20 데이전트가
+    갱신 토큰 무효로 17:46 요청에 침묵한 사례다.
+    """
+
+    def __init__(self, runner: EngineRunPort, engine: Engine,
+                 notify: Callable[[str], object] | None = None,
+                 clock: Callable[[], float] = time.time) -> None:
         self._runner = runner
         self._engine = engine
+        self._notify = notify
+        self._clock = clock
+        self._last_auth_notice = float("-inf")
 
     def invoke(self, request: EngineRequest,
                origin: CallOrigin = CallOrigin.INTERACTIVE) -> EngineResponse:
         # No fallback means no recovery probe, so origin has nothing to gate.
-        return self._runner.run(self._engine, request)
+        response = self._runner.run(self._engine, request)
+        # 성공은 판정할 것이 없다. 실행기 대역이 응답 아닌 값을 돌려주는 시험도
+        # 그대로 통과시킨다.
+        if not isinstance(response, EngineResponse) or response.ok:
+            return response
+        note = self._engine.detect_auth_failure(response)
+        if note is None:
+            return response
+        self._notify_auth_failure(note)
+        # auth_failure 는 NO_RETRY_REASONS 에 있어 새 세션 재시도로 같은
+        # 자격을 한 번 더 태우지 않는다.
+        return dataclasses.replace(
+            response, body=DIRECT_AUTH_FAILURE_REPLY, user_facing=True,
+            failure_reason=AUTH_FAILURE_REASON,
+        )
+
+    def _notify_auth_failure(self, note: str) -> None:
+        if self._notify is None:
+            return
+        now = self._clock()
+        if now - self._last_auth_notice < DIRECT_AUTH_NOTIFY_INTERVAL_SEC:
+            return
+        self._last_auth_notice = now
+        try:
+            self._notify(f"*{self._engine.name} 로그인이 풀렸습니다*\n\n- {note}")
+        except Exception:  # 알림 실패가 요청 처리를 끝내면 안 된다
+            log.exception("로그인 풀림 알림에 실패했다")
 
 
 class FallbackInvoker(EngineInvoker):
@@ -498,12 +801,18 @@ class FallbackEngine(Engine):
     PROBE_TIMEOUT_SEC = 120.0
 
     def __init__(self, primary: Engine, secondary: Engine, switcher: EngineSwitcher,
-               runner: EngineRunner) -> None:
+               runner: EngineRunner,
+               notify: Callable[[str], object] | None = None,
+               clock: Callable[[], float] = time.time) -> None:
         super().__init__(primary.profile, primary.settings)
         self.primary = primary
         self.secondary = secondary
         self.switcher = switcher
         self.runner = runner
+        # 전환·복귀를 소유자 DM 으로 알린다. 없으면(소유자 미설정) 발송만 생략하고
+        # 전환 자체는 그대로 일어난다. 알림 실패가 요청 처리를 끝내선 안 된다.
+        self._notify = notify
+        self._clock = clock
         # Delegate target for callers that invoke build_command/parse
         # directly on this class. run() decides which engine is
         # actually active and updates this.
@@ -536,9 +845,41 @@ class FallbackEngine(Engine):
         return self._active.readable_paths_note(paths)
 
     def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
-        # A fallback turn runs the secondary. Reporting this class's own
-        # default would make every capability record on that turn false.
-        return self._active.capabilities_for(request)
+        # Asked before run() (pipeline.turn_reach), so it answers for the
+        # engine run() will pick from the switch state, not the one the last
+        # turn left in _active: that was stale at boot and after another
+        # process switched. Reporting this class's own default would make
+        # every capability record on a fallback turn false.
+        return self._planned().capabilities_for(request)
+
+    def resumes_with_opening_instructions(self) -> bool:
+        # The engine this turn will run on, for the same reason as
+        # capabilities_for above.
+        return self._planned().resumes_with_opening_instructions()
+
+    def _planned(self) -> Engine:
+        if self.switcher.load() and self.switcher.is_approved():
+            return self.secondary
+        return self.primary
+
+    @staticmethod
+    def _fit(engine: Engine, request: EngineRequest) -> EngineRequest:
+        """The request as the engine about to run it must see it.
+
+        A turn can change engine after its prompt was written: a usage limit
+        mid-turn, a recovery probe, a failed probe falling to the secondary.
+        The fallback engine is always a different kind (profile.validate), so
+        the other engine's sandbox would otherwise be described (A12 review).
+        """
+        if request.retarget is None:
+            return request
+        try:
+            return request.retarget(request, engine.capabilities_for(request))
+        except Exception:
+            # The runner raises the same capability error on the run itself;
+            # failing here would only hide it behind this one.
+            log.warning("실행 엔진에 맞춰 요청을 고치지 못했다", exc_info=True)
+            return request
 
     # -- The real entry point.
     def run(self, request: EngineRequest,
@@ -580,14 +921,26 @@ class FallbackEngine(Engine):
         아니다 - 그것까지 넣으면 한 번 끊긴 것으로 엔진이 바뀐다.
         """
         self._active = self.primary
-        response = self.runner.run(self.primary, request)
+        response = self.runner.run(self.primary, self._fit(self.primary, request))
         limit = self.primary.detect_usage_limit(response)
         if limit is not None:
-            self._begin_switch(request, EngineSwitcher.USAGE_LIMIT, limit.detail)
+            # 한도는 승인을 기다릴 일이 아니다 (2026-10-25, 2026-11-06 김태일 지시).
+            # 2차가 확인 요청에 답하면 바로 승인하고, 한도를 만난 이 턴부터
+            # 2차로 답한다. 2차도 답하지 않을 때만 안내문을 낸다.
+            state = self._begin_switch(request, EngineSwitcher.USAGE_LIMIT, limit.detail,
+                                       auto_approve=True)
+            if state.get("approval") == "approved":
+                return self._run_secondary(request)
             return self._announce_switch(response)
         auth_failure = self.primary.detect_auth_failure(response)
         if auth_failure is not None:
-            self._begin_switch(request, EngineSwitcher.AUTH_FAILURE, auth_failure)
+            # 로그인 만료도 한도와 같이 바로 2차로 답한다 (2026-11-07 김태일 지시).
+            # 승인 대기로 두면 2026-11-07 07:49-15:44 처럼 2차가 확인 요청에 답하는데도
+            # 모든 요청이 안내문으로 끝난다. 다시 로그인하는 일은 소유자 DM 이 알린다.
+            state = self._begin_switch(request, EngineSwitcher.AUTH_FAILURE, auth_failure,
+                                       auto_approve=True)
+            if state.get("approval") == "approved":
+                return self._run_secondary(request)
             return self._announce_switch(response)
         return response
 
@@ -609,32 +962,79 @@ class FallbackEngine(Engine):
             failure_reason=self.switcher.reason(),
         )
 
-    def _begin_switch(self, request: EngineRequest, reason: str, detail: str) -> None:
+    def _begin_switch(self, request: EngineRequest, reason: str, detail: str,
+                      auto_approve: bool = False) -> Mapping[str, Any]:
         probe_ok, probe_detail = self._probe_secondary(request)
-        self.switcher.begin_switch(
+        state = self.switcher.begin_switch(
             detail, engine_name=self.secondary.name, reason=reason,
             probe_ok=probe_ok, probe_detail=probe_detail,
+            # 확인 요청이 실패한 2차를 승인하면 모든 요청이 2차 실패로 끝난다.
+            auto_approve=auto_approve and probe_ok,
         )
+        self._notify_switch(state, reason, detail, probe_ok, probe_detail)
+        return state
+
+    def _bot_name(self) -> str:
+        return self.primary.profile.display_name or self.primary.profile.name
+
+    def _send(self, body: str, what: str) -> None:
+        """소유자 DM 을 보내되, 실패가 요청 처리를 끝내지 않게 삼킨다."""
+        if self._notify is None:
+            return
+        try:
+            self._notify(body)
+        except Exception:
+            log.exception("%s 알림에 실패했다", what)
+
+    def _notify_switch(self, state: Mapping[str, Any], reason: str, detail: str,
+                       probe_ok: bool, probe_detail: str) -> None:
+        """전환이 시작되면 소유자 DM 으로 사유·시각·확인결과를 push 한다 (B24·B25).
+
+        '엔진 상태' 를 조회하지 않아도 전환 사실이 바로 소유자에게 닿게 한다.
+        """
+        if self._notify is None:
+            return
+        body = switch_dm_body(
+            bot_name=self._bot_name(), from_engine=self.primary.name,
+            to_engine=self.secondary.name, reason=reason, detail=detail,
+            probe_ok=probe_ok, probe_detail=probe_detail,
+            switched_at=float(state.get("switched_at", self._clock())),
+            approved=state.get("approval") == "approved",
+        )
+        self._send(body, "실행기 전환")
+
+    def _notify_recovery(self) -> None:
+        """기본 엔진이 복귀하면 되돌렸다는 DM 을 발송한다 (B26)."""
+        if self._notify is None:
+            return
+        body = recovery_dm_body(
+            bot_name=self._bot_name(), primary_engine=self.primary.name,
+            recovered_at=self._clock(),
+        )
+        self._send(body, "실행기 복귀")
 
     def _run_secondary(self, request: EngineRequest) -> EngineResponse:
         """Handles this turn on the approved fallback engine.
 
         A different engine can't continue a session, so this opens a
-        new one. Model naming also differs per engine, so it uses the
-        secondary's own configured model -- the owner grade included, or
-        the owner's request would quietly drop to the secondary's general
-        model (sca-14h). A channel's explicitly named model can't carry
-        over at all; engine model names don't correspond.
+        new one. Model naming also differs per engine, so a channel's model
+        can't carry over; every requester gets the secondary's default model.
+        The owner is not raised to the secondary's owner model any more: the
+        primary picks one model for every requester (A13, 김태일 2026-10-22),
+        and raising only here split the grades again (supersedes sca-14h).
         """
         self._active = self.secondary
-        owner = request.trust_level is TrustLevel.OWNER
-        model = self.secondary.spec.model_for_owner() if owner else None
         fallback_request = EngineRequest(
             prompt=request.prompt, system_prompt=request.system_prompt,
             session_id=None, resume=False,
-            model=model, effort=request.effort,
+            model=None, effort=request.effort,
             workdir=request.workdir, readable_dirs=request.readable_dirs,
             tools=request.tools, trust_level=request.trust_level,
+            # codex and gemini are the engines that read input_mark_for, so
+            # this is the one path where the delegated mark is used at all.
+            # Dropped, the turn keeps its tools and delegated note but gets
+            # the "read it as material" mark.
+            delegated=request.delegated,
             # The boundary the caller asked for does not stop applying because
             # the primary ran out of quota. Dropping it turned a rate limit into
             # a permission bypass (sca-93u).
@@ -646,8 +1046,20 @@ class FallbackEngine(Engine):
             # The same reason in the audit: this is the next attempt at one
             # request, not a second request (sca-4ol).
             request_id=request.request_id,
+            # Per-turn facts are the same turn's on either engine: dropping them
+            # lost TURN_ID, the Stop hook's channel sets and the MCP turn_env
+            # tokens for every turn served by the fallback (C10).
+            turn_context=request.turn_context,
+            engine_env=request.engine_env,
+            # The fallback engine's Stop hook verifies against the same
+            # loaded knowledge.
+            review_knowledge=request.review_knowledge,
+            # The tier the capability record names. Dropped, a fallback turn's
+            # record lost it (A12 review).
+            turn_tier=request.turn_tier,
+            retarget=request.retarget,
         )
-        return self.runner.run(self.secondary, fallback_request)
+        return self.runner.run(self.secondary, self._fit(self.secondary, fallback_request))
 
     def _probe_primary_recovery(self, request: EngineRequest) -> EngineResponse | None:
         """Probes whether the primary has recovered, using a real request.
@@ -657,10 +1069,19 @@ class FallbackEngine(Engine):
         and this turn can be handled immediately.
         """
         self._active = self.primary
-        response = self.runner.run(self.primary, request)
+        response = self.runner.run(self.primary, self._fit(self.primary, request))
+        if not response.ok and request.resume:
+            # 전환 중에 이 스레드에 기록된 세션은 2차 엔진 것이다. 1차로 그
+            # ID 를 이으면 "No conversation found" 로 실패하고, 그 실패를
+            # 1차 미복구로 읽어 2차에 계속 머문다 (2026-11-13 19:51 구치파치).
+            # 1차 세션이 맞았던 경우를 위해 먼저 이어 보고, 실패하면 새 세션으로
+            # 한 번 더 확인한다.
+            fresh = dataclasses.replace(request, session_id=None, resume=False)
+            response = self.runner.run(self.primary, self._fit(self.primary, fresh))
         self.switcher.mark_probed(time.time())
         if response.ok and self.primary.detect_usage_limit(response) is None:
             self.switcher.recover()
+            self._notify_recovery()
             return response
         return None
 
@@ -696,3 +1117,19 @@ class FallbackEngine(Engine):
         if required.downgraded(unmet):
             return f" 다만 {axes} 은 이 엔진이 보장하지 못해 완화 기록을 남기고 실행한다."
         return f" 다만 {axes} 을 요구한 요청은 이 엔진에서 실행되지 않는다."
+
+
+def _write_review_knowledge(text: str) -> Path | None:
+    """Writes `text` to a private temp file and returns its path, or None
+    when there is nothing to write or the write fails. A failure only means
+    the Stop hook's verify runs without knowledge, as it did before."""
+    if not text:
+        return None
+    try:
+        fd, name = tempfile.mkstemp(prefix="sca-knowledge-", suffix=".md")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except OSError:
+        log.warning("검수용 지식 파일을 쓰지 못했다", exc_info=True)
+        return None
+    return Path(name)

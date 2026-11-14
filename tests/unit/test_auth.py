@@ -64,6 +64,22 @@ class TestPrincipalFor:
         principal = policy.principal_for("C1", STRANGER)
         assert principal.trust is TrustLevel.GENERAL
 
+    def test_controller_user_ids는_접수만_하고_OWNER로_올리지_않는다(self, tmp_path: Path) -> None:
+        """A7. 봇이 말을 거는 것만으로 소유자 권한이 열리면 안 된다. 실행 도구는
+        위임 원장이 정한다 (test_delegation.py)."""
+        profile = Profile.from_dict({**MINIMAL_PROFILE, "controller_user_ids": ["U_CTRL"]})
+        policy = AccessPolicy(profile, make_channels(tmp_path / "c.json", {}))
+        ctrl = policy.principal_for("C1", "U_CTRL")
+        assert ctrl.trust is TrustLevel.GENERAL and ctrl.is_controller
+        assert policy.accepts_request(ctrl) is True
+        assert policy.principal_for("C1", STRANGER).trust is TrustLevel.GENERAL
+
+    def test_controller_user_ids가_없으면_소유자만_OWNER다(self, tmp_path: Path) -> None:
+        profile = make_profile()
+        assert profile.controller_user_ids == frozenset()
+        policy = AccessPolicy(profile, make_channels(tmp_path / "c.json", {}))
+        assert policy.principal_for("C1", "U_CTRL").trust is TrustLevel.GENERAL
+
 
 class TestFullAuthorityAndMechanism:
     def test_소유자_DM은_최고권한이라_구조를_밝힌다(self, tmp_path: Path) -> None:
@@ -99,13 +115,72 @@ class TestFullAuthorityAndMechanism:
         assert policy.may_see_usage(mechanism_open_principal) is False
         assert policy.may_see_usage(owner_dm_principal) is True
 
+    def test_채널이_full_authority면_소유자는_DM처럼_최고권한이다(self, tmp_path: Path) -> None:
+        """소유자가 자기 콘솔처럼 쓰는 채널이다. DM 과 같은 축이라 구조공개·
+        사용현황·자기설정까지 열린다. 특정 채널 ID 하드코딩이 아니라 플래그다."""
+        channels = make_channels(tmp_path / "c.json", {"C1": {"full_authority": True}})
+        policy = AccessPolicy(make_profile(), channels)
+        principal = policy.principal_for("C1", OWNER)
+        assert policy.is_full_authority(principal) is True
+        assert policy.may_disclose_mechanism(principal) is True
+        assert policy.may_see_usage(principal) is True
+
+    def test_full_authority_채널이라도_소유자가_아니면_최고권한이_아니다(self, tmp_path: Path) -> None:
+        """플래그는 소유자(컨트롤러 포함) 에게만 작동한다. 남에게는 아무 효과 없다."""
+        channels = make_channels(tmp_path / "c.json", {"C1": {"full_authority": True}})
+        policy = AccessPolicy(make_profile(), channels)
+        principal = policy.principal_for("C1", STRANGER)
+        assert policy.is_full_authority(principal) is False
+        assert policy.may_see_usage(principal) is False
+
+    def test_컨트롤러는_full_authority_채널에서도_최고권한이_아니다(self, tmp_path: Path) -> None:
+        """A7: controller_user_ids 는 접수 목록이다. 최고권한은 소유자에게만 간다."""
+        profile = Profile.from_dict({**MINIMAL_PROFILE, "controller_user_ids": ["U_CTRL"]})
+        channels = make_channels(tmp_path / "c.json", {"C1": {"full_authority": True}})
+        policy = AccessPolicy(profile, channels)
+        principal = policy.principal_for("C1", "U_CTRL")
+        assert policy.is_full_authority(principal) is False
+        assert policy.may_see_usage(principal) is False
+
 
 class TestModelFor:
-    def test_소유자는_채널과_무관하게_소유자용_모델이다(self, tmp_path: Path) -> None:
+    def test_소유자도_채널이_정한_모델을_쓴다(self, tmp_path: Path) -> None:
+        """마메치 model_for (bot.py, 2026-10-22) : 소유자 opus 강제를 걷어냈다."""
         channels = make_channels(tmp_path / "c.json", {"C1": {"model": "haiku"}})
         policy = AccessPolicy(make_profile(), channels)
         principal = policy.principal_for("C1", OWNER)
-        assert policy.model_for(principal) == "opus"
+        assert policy.model_for(principal) == "haiku"
+
+    def test_소유자도_채널_설정이_없으면_기본_모델이다(self, tmp_path: Path) -> None:
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", {}))
+        assert policy.model_for(policy.principal_for("C1", OWNER)) == "sonnet"
+        assert policy.model_for(policy.principal_for("D1", OWNER)) == "sonnet"
+
+    def test_어드바이저_채널은_실행자_모델이_채널_모델보다_앞선다(
+        self, tmp_path: Path
+    ) -> None:
+        channels = make_channels(
+            tmp_path / "c.json",
+            {"C1": {"model": "haiku", "advisor": {"executor": "small"}}},
+        )
+        policy = AccessPolicy(make_profile(), channels)
+        assert policy.model_for(policy.principal_for("C1", OWNER)) == "small"
+        assert policy.model_for(policy.principal_for("C1", STRANGER)) == "small"
+
+    def test_어드바이저에_실행자가_없으면_기본_모델이다(self, tmp_path: Path) -> None:
+        """bot.py advisor_executor : executor 가 비면 MODEL 이다. 채널 model 이 아니다."""
+        channels = make_channels(
+            tmp_path / "c.json", {"C1": {"model": "haiku", "advisor": {}}}
+        )
+        policy = AccessPolicy(make_profile(), channels)
+        assert policy.model_for(policy.principal_for("C1", OWNER)) == "sonnet"
+
+    def test_advisor가_dict가_아니면_무시한다(self, tmp_path: Path) -> None:
+        channels = make_channels(
+            tmp_path / "c.json", {"C1": {"model": "haiku", "advisor": "small"}}
+        )
+        policy = AccessPolicy(make_profile(), channels)
+        assert policy.model_for(policy.principal_for("C1", OWNER)) == "haiku"
 
     def test_일반_사용자는_채널이_정한_모델을_쓴다(self, tmp_path: Path) -> None:
         channels = make_channels(tmp_path / "c.json", {"C1": {"model": "haiku"}})
@@ -313,3 +388,77 @@ class Test채널별사용자도구:
         tools = ToolPolicy(("Read",), ("Bash",), channel_tools=policy.channel_tools_for)
 
         assert tools.tools_for(principal) == "Read,Bash"
+
+
+class Test오너전권_채널플래그와_도구이름:
+    """gaps_D 3절 — operator_full 이 꺼진 채널에서 user_tools 에 맨 이름으로
+    Bash/Edit/Write/NotebookEdit 를 적어도 비오너에게는 나가지 않는다. 그
+    이름이 engine/claude.py 의 settings 축까지 뚫는 유일한 통로라서, 여기서
+    막아야 "이름은 허용, settings 는 차단" 불일치(2026-10-02~10-14 마메치
+    버그)가 재발하지 않는다. 범위를 좁힌 이름(`Bash(airflow_ctl.sh:*)`)은
+    원래부터 걸리지 않는다 — Test채널별사용자도구 가 이미 그 경로를 본다."""
+
+    def _채널(self, tmp_path: Path, **채널설정: object) -> AccessPolicy:
+        channels = {"C1": {"user_tools": {STRANGER: ["Bash", "Edit", "Read"]}, **채널설정}}
+        return AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", channels))
+
+    def test_operator_full이_꺼져있으면_맨_이름_도구가_빠진다(self, tmp_path: Path) -> None:
+        policy = self._채널(tmp_path)
+        principal = policy.principal_for("C1", STRANGER)
+        assert policy.channel_tools_for(principal) == ("Read",)
+
+    def test_operator_full이_켜지면_맨_이름_도구도_나간다(self, tmp_path: Path) -> None:
+        policy = self._채널(tmp_path, operator_full=True)
+        principal = policy.principal_for("C1", STRANGER)
+        assert policy.channel_tools_for(principal) == ("Bash", "Edit", "Read")
+
+    def test_범위를_좁힌_Bash는_operator_full과_무관하게_나간다(self, tmp_path: Path) -> None:
+        """`Bash(x:*)` 는 OPERATOR_TOOLS 의 원소가 아니다 — 이미 안전한 모양."""
+        channels = {"C1": {"user_tools": {STRANGER: ["Bash(airflow_ctl.sh:*)"]}}}
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", channels))
+        principal = policy.principal_for("C1", STRANGER)
+        assert policy.channel_tools_for(principal) == ("Bash(airflow_ctl.sh:*)",)
+
+    def test_트러스티드여도_operator_full이_꺼져있으면_빠진다(self, tmp_path: Path) -> None:
+        """TRUSTED 는 더 신뢰된 사람이지만, 쓰기 도구를 실제로 여는 결정은
+        channel 수준의 operator_full 하나뿐이다 — trust 등급과는 별개 축."""
+        channels = {"C1": {"trusted_users": [TRUSTED_USER], "user_tools": {TRUSTED_USER: ["Bash"]}}}
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", channels))
+        principal = policy.principal_for("C1", TRUSTED_USER)
+        assert principal.trust is TrustLevel.TRUSTED
+        assert policy.channel_tools_for(principal) == ()
+
+
+class TestReadOnlyMcpTools:
+    """감시 확인 턴은 읽기 전용이다. 슬랙·지라·Snowflake 조회 도구가 빠지면
+    결과를 볼 수 없어 "아직" 만 답한다 (2026-11-06 구치파치 감시 22)."""
+
+    def _principal(self, tmp_path: Path):
+        policy = AccessPolicy(make_profile(), make_channels(tmp_path / "c.json", {}))
+        return policy.principal_for("D1", OWNER)
+
+    def test_서버_와일드카드가_있으면_조회_도구만_남는다(self, tmp_path: Path) -> None:
+        tools = ToolPolicy(("Read", "Bash", "mcp__slack__*", "mcp__snowflake__*", "mcp__metabase__*"))
+        붙은것 = tools.tool_list_for(self._principal(tmp_path), readonly=True)
+        assert "mcp__slack__slack_thread_replies" in 붙은것
+        assert "mcp__snowflake__run_snowflake_query" in 붙은것
+        assert "mcp__slack__slack_post_message" not in 붙은것
+        assert not any(name.startswith("mcp__metabase__") for name in 붙은것)
+        assert "Bash" not in 붙은것
+
+    def test_프로필에_없는_서버는_더하지_않는다(self, tmp_path: Path) -> None:
+        tools = ToolPolicy(("Read", "mcp__snowflake-rw__*"))
+        붙은것 = tools.tool_list_for(self._principal(tmp_path), readonly=True)
+        assert not any(name.startswith("mcp__") for name in 붙은것)
+
+    def test_조회_도구만_있는_턴은_행동_턴이_아니다(self) -> None:
+        from slack_cli_agent.engine.tool_selection import ToolSelection
+
+        assert not ToolSelection.allow(["Read", "mcp__slack__slack_thread_replies"]).can_act
+        assert ToolSelection.allow(["Read", "mcp__slack__slack_post_message"]).can_act
+
+    def test_소유자_도구에_둔_서버도_소유자_감시에는_남는다(self, tmp_path: Path) -> None:
+        tools = ToolPolicy(("Read", "Grep"), ("Bash", "mcp__slack__*"))
+        붙은것 = tools.tool_list_for(self._principal(tmp_path), readonly=True)
+        assert "mcp__slack__slack_thread_replies" in 붙은것
+        assert "Bash" not in 붙은것

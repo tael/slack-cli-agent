@@ -30,7 +30,7 @@ from slack_cli_agent.web.metrics import CONTEXT_RESET_RAW_KEY, MetricsCollector
 TOP_LEVEL_KEYS = {
     "generated_at", "window_days", "bot", "snapshot", "last_answer_kst",
     "channels", "responsiveness", "reliability", "quality", "usage", "followup",
-    "tools", "queue_wait", "usage_block", "session_total", "payload",
+    "tools", "queue_wait", "usage_block", "session_total", "payload", "dm",
 }
 
 
@@ -79,6 +79,7 @@ def insert_request(
     turns: object = _UNSET,
     truncated: object = _UNSET,
     context_reset: object = _UNSET,
+    context_reset_reason: str = "",
 ) -> None:
     payload: dict[str, object] = {
         "message_ts": thread_ts,
@@ -102,6 +103,8 @@ def insert_request(
         payload[TRUNCATED_RAW_KEY] = truncated
     if context_reset is not _UNSET:
         payload[CONTEXT_RESET_RAW_KEY] = context_reset
+    if context_reset_reason:
+        payload["context_reset_reason"] = context_reset_reason
     db.connect().execute(
         "INSERT INTO audit (at, kind, channel, thread_ts, payload) VALUES (?, ?, ?, ?, ?)",
         (at, REQUEST_KIND, channel, thread_ts, json.dumps(payload, ensure_ascii=False)),
@@ -315,6 +318,18 @@ class Test신뢰성:
         assert reliability["tracked_since"]["context_reset"] == metrics_module._kst(1_000.0)
         assert "reliability.context_reset" not in result["bot"]["not_applicable"]
 
+    def test_지침_변경_리셋은_끊긴_재개로_세지_않는다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1", context_reset=True,
+                       context_reset_reason="threshold")
+        insert_request(db, at=1_001.0, channel="C1", context_reset=True,
+                       context_reset_reason="system_prompt")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        reliability = collector.collect(days=7)["reliability"]
+        assert reliability["context_reset"] == 1
+        assert reliability["context_reset_pct"] == 50.0
+
     def test_재설정_기록_이전이면_0이_아니라_None이다(self, tmp_path: Path) -> None:
         profile = make_profile(tmp_path)
         db = open_db(profile)
@@ -393,6 +408,75 @@ class Test검수_원장_기반_품질:
         assert quality["post_failed"] == 0
         assert quality["silent"] == 0
         assert quality["rewrites"] == 0
+
+
+class TestNOWATCH_판정률:
+    """J9: 발행마다 남는 watch_verdict 기록(watch/nowatch/missing)을
+    집계해 '봇이 후속관찰 필요 여부를 명시적으로 판정한 비율'(판정률)을 낸다.
+    """
+
+    def test_판정_종류별_건수와_판정률을_낸다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        for v, at in (("watch", 1_000.0), ("nowatch", 1_001.0),
+                      ("nowatch", 1_002.0), ("missing", 1_003.0)):
+            insert_incident(db, kind=IncidentKind.WATCH_VERDICT.value, at=at, verdict=v)
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        nowatch = collector.collect(days=7)["quality"]["nowatch"]
+        assert nowatch["watch"] == 1
+        assert nowatch["nowatch"] == 2
+        assert nowatch["missing"] == 1
+        assert nowatch["total"] == 4
+        # watch+nowatch=3 중 4건 → 명시 판정률 75.0, 미판정률 25.0
+        assert nowatch["decided_pct"] == 75.0
+        assert nowatch["missing_pct"] == 25.0
+
+    def test_창_밖_판정은_빠진다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        # now=1_000_000, 7일창 → cutoff≈395_200. 100.0 은 창 밖, 999_000 은 창 안.
+        insert_incident(db, kind=IncidentKind.WATCH_VERDICT.value, at=100.0, verdict="watch")
+        insert_incident(db, kind=IncidentKind.WATCH_VERDICT.value, at=999_000.0, verdict="missing")
+        collector = MetricsCollector(profile, now=lambda: 1_000_000.0)
+        nowatch = collector.collect(days=7)["quality"]["nowatch"]
+        assert nowatch["total"] == 1
+        assert nowatch["missing"] == 1
+
+    def test_기록이_하나도_없으면_판정불가다(self, tmp_path: Path) -> None:
+        """기록 이전이면 0이 아니라 None(판정불가) — tracked_since 가 없다."""
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        nowatch = collector.collect(days=7)["quality"]["nowatch"]
+        assert nowatch["total"] == 0
+        assert nowatch["decided_pct"] is None
+        assert nowatch["missing_pct"] is None
+        assert nowatch["tracked_since"] is None
+
+    def test_판정값이_깨진_행은_건너뛴다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_incident(db, kind=IncidentKind.WATCH_VERDICT.value, at=1_000.0, verdict="watch")
+        # verdict 값이 알 수 없는 문자열이면 세 종류 어디에도 안 들어간다
+        insert_incident(db, kind=IncidentKind.WATCH_VERDICT.value, at=1_001.0, verdict="garbage")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        nowatch = collector.collect(days=7)["quality"]["nowatch"]
+        assert nowatch["watch"] == 1
+        assert nowatch["total"] == 1
+
+    def test_판정_집계는_사고_건수를_오염시키지_않는다(self, tmp_path: Path) -> None:
+        """watch_verdict 는 기준 트래픽이라 품질 사고 집계에 섞이면 안 된다."""
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=1_000.0, channel="C1")
+        insert_incident(db, kind=IncidentKind.WATCH_VERDICT.value, at=1_001.0, verdict="missing")
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        result = collector.collect(days=7)
+        reliability = result["reliability"]
+        # 성공률/실패사유에 watch_verdict 가 사고로 섞이지 않는다
+        assert all(i.get("kind") != IncidentKind.WATCH_VERDICT.value
+                   for i in reliability.get("incidents", []))
 
 
 class Test사고_종류별_건수:
@@ -742,6 +826,29 @@ class Test채널별_행:
         assert rows["C1"]["listed"] is True
         assert rows["C1"]["name"] == "일번 채널"
         assert rows["C9"]["listed"] is False
+
+    def test_어드바이저_채널은_실행자_모델을_보인다(self, tmp_path: Path) -> None:
+        """A13 부터 advisor 채널은 모든 요청이 실행자 모델로 돈다. 표의 model
+        칸이 channel model 을 보이면 실제 실행 모델과 다르다."""
+        profile = make_profile(tmp_path)
+        registry = ChannelRegistry(profile.paths.channels)
+        registry.update("C1", {"name": "조언방", "model": "m-ch",
+                               "advisor": {"executor": "m-exec"}})
+        registry.update("C2", {"name": "빈조언", "advisor": {}})
+        collector = MetricsCollector(profile, now=lambda: 1_100.0)
+        rows = {r["channel"]: r for r in collector.collect(days=7)["channels"]}
+        assert rows["C1"]["model"] == "m-exec"
+        assert rows["C1"]["model_inherited"] is False
+        assert rows["C2"]["model"] == profile.primary_engine.model
+        assert rows["C2"]["model_inherited"] is True
+
+    def test_봇_정보는_소유자_모델이_아니라_부검_모델을_낸다(self, tmp_path: Path) -> None:
+        """A13 부터 소유자 대화는 채널 model 이나 기본 model 로 돈다.
+        model_owner 는 부검 기본값으로만 쓰이므로 안내문도 부검 모델을 보인다."""
+        profile = make_profile(tmp_path)
+        bot = MetricsCollector(profile, now=lambda: 1_100.0).collect(days=7)["bot"]
+        assert "owner_model" not in bot
+        assert bot["postmortem_model"] == "model-owner"
 
     def test_대기줄_건수는_jobs_표에서_읽는다(self, tmp_path: Path) -> None:
         profile = make_profile(tmp_path)
@@ -1173,3 +1280,60 @@ class Test전송량_행이_깨져도_집계가_선다:
         ])
         assert 결과["replayed_count"] == 1
         assert 결과["replayed_instruction_bytes_total"] == 100
+
+
+class Test모델별_비용:
+    """A14 : 웹 콘솔 지표에 모델별 토큰과 엔진이 보고한 비용."""
+
+    @staticmethod
+    def _table(sonnet: tuple[int, float], opus: tuple[int, float]) -> dict[str, object]:
+        def row(out: int, cost: float) -> dict[str, object]:
+            return {"input_tokens": 1, "output_tokens": out, "cache_creation_tokens": 0,
+                    "cache_read_tokens": 0, "cost_usd": cost}
+        return {"claude-sonnet-5-5": row(*sonnet), "claude-opus-5-5": row(*opus)}
+
+    def _insert(self, db: Database, at: float, kind: str, table: dict[str, object],
+                session: str = "sid") -> None:
+        insert_incident(db, kind=kind, at=at, channel="C1",
+                        session_id=session, model_usage=table)
+
+    def test_요청과_점검을_모델별로_합산한다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        now = 1_800_000_000.0
+        self._insert(db, now - 300, REQUEST_KIND, self._table((100, 0.1), (50, 0.5)))
+        self._insert(db, now - 200, REQUEST_KIND, self._table((160, 0.16), (90, 0.9)))
+        self._insert(db, now - 100, "review", self._table((0, 0.0), (40, 0.4)), session="rv")
+        db.close()
+
+        result = MetricsCollector(profile, now=lambda: now).collect(days=7)
+        usage = result["usage"]
+        by = {m["model"]: m for m in usage["by_model_usage"]}
+        assert by["claude-sonnet-5-5"]["output_tokens"] == 160
+        assert by["claude-opus-5-5"]["output_tokens"] == 130
+        assert by["claude-opus-5-5"]["cost_usd"] == pytest.approx(1.3)
+        assert usage["cost_total_usd"] == pytest.approx(1.46)
+        assert usage["cost_by_kind"] == {"request": pytest.approx(1.06), "review": pytest.approx(0.4)}
+        assert "usage.cost_total_usd" not in result["bot"]["not_applicable"]
+
+    def test_창_앞의_행을_빼서_창_안의_몫만_센다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        now = 1_800_000_000.0
+        self._insert(db, now - 10 * 86400, REQUEST_KIND, self._table((100, 1.0), (0, 0.0)))
+        self._insert(db, now - 100, REQUEST_KIND, self._table((130, 1.3), (0, 0.0)))
+        db.close()
+
+        usage = MetricsCollector(profile, now=lambda: now).collect(days=7)["usage"]
+        assert usage["cost_total_usd"] == pytest.approx(0.3)
+
+    def test_모델별_기록이_없으면_비용은_미계측이다(self, tmp_path: Path) -> None:
+        profile = make_profile(tmp_path)
+        db = open_db(profile)
+        insert_request(db, at=900.0, channel="C1")
+        db.close()
+
+        result = MetricsCollector(profile, now=lambda: 1_000.0).collect(days=7)
+        assert result["usage"]["cost_total_usd"] is None
+        assert result["usage"]["by_model_usage"] == []
+        assert "usage.cost_total_usd" in result["bot"]["not_applicable"]

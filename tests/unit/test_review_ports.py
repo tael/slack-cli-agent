@@ -27,7 +27,7 @@ class 엔진호출:
     effort = "medium"
 
     def run(self, prompt: str, session_id: str, resume: bool, progress_log=None,
-            request_id: str = "") -> EngineResponse:
+            request_id: str = "", requester: Any = None) -> EngineResponse:
         raise NotImplementedError
 
 

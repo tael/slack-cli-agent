@@ -21,6 +21,7 @@ class FakeSource:
 
     def __init__(self) -> None:
         self.inflight = 0
+        self.active: list[dict] = []
         self.queued: dict[str, int] = {}
         # None 은 이 프로세스가 소켓을 못 본다는 뜻이다(sca-qi5.3)
         self.socket_errors: list[float] | None = []
@@ -32,6 +33,9 @@ class FakeSource:
 
     def inflight_count(self) -> int:
         return self.inflight
+
+    def active_events(self, now: float):
+        return list(self.active)
 
     def queued_threads(self):
         return dict(self.queued)
@@ -78,6 +82,18 @@ class TestStateSnapshotBuilder:
         assert snap["catchup_pending"] == 5
         assert snap["watch_jobs"] == 7
         assert snap["shutting_down"] is False
+
+    def test_처리중인_요청_목록이_담긴다(self) -> None:
+        source = FakeSource()
+        source.active = [{"channel": "C1", "ts": "1.1", "elapsed_sec": 12.0}]
+        builder = StateSnapshotBuilder(source, now=lambda: 1_100.0, pid=lambda: 1)
+        snap = builder.build()
+        assert snap["active"] == [{"channel": "C1", "ts": "1.1", "elapsed_sec": 12.0}]
+
+    def test_처리중인_요청이_없으면_빈_목록이다(self) -> None:
+        source = FakeSource()
+        builder = StateSnapshotBuilder(source, now=lambda: 0.0, pid=lambda: 1)
+        assert builder.build()["active"] == []
 
     def test_대기줄에서_빈_항목은_제외되고_합계가_계산된다(self) -> None:
         source = FakeSource()

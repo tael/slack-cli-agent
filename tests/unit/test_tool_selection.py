@@ -112,8 +112,10 @@ class Test엔진이_도구_금지를_다루는_법:
         요청 = request(tools=ToolSelection.forbid_all())
         codex = CodexEngine(codex_profile(tmp_path), SETTINGS)
         gemini = GeminiEngine(gemini_profile(tmp_path), SETTINGS)
-        # codex 는 샌드박스가 꺼진 기본값이라 NONE 이고, agy 는 언제나 NONE 이다.
-        assert codex.capabilities_for(요청).tool_restriction is ToolRestriction.NONE
+        # codex 는 금지 턴을 read-only 샌드박스로 내리므로 COARSE_SANDBOX 까지만
+        # 선언한다. 도구 자체를 막지는 못하므로 ALL_FORBIDDEN 은 아니다.
+        # agy 는 언제나 NONE 이다.
+        assert codex.capabilities_for(요청).tool_restriction is ToolRestriction.COARSE_SANDBOX
         assert gemini.capabilities_for(요청).tool_restriction is ToolRestriction.NONE
 
 
@@ -324,7 +326,12 @@ class Test강제할_수_없는_엔진은_말로_전한다:
             assert 차이 > 0
             보낸것 = codex.build_command(금지)[-1]
             안보낸것 = codex.build_command(없음)[-1]
-            assert 차이 == len(보낸것.encode("utf-8")) - len(안보낸것.encode("utf-8"))
+            # 금지 턴은 read-only 로 내려가 바깥 쓰기 수단 안내가
+            # developer_instructions 에 함께 실린다. 그 바이트도 실제로 보낸다.
+            지침차이 = (len(codex._session_path_note(금지).encode("utf-8"))
+                    - len(codex._session_path_note(없음).encode("utf-8")))
+            assert 차이 == (len(보낸것.encode("utf-8")) - len(안보낸것.encode("utf-8"))
+                          + 지침차이)
 
     def test_금지문이_뒤_입력으로_풀리지_않는다고_적는다(self, tmp_path) -> None:
         """사용자 입력이 제약 해제를 요구하는 것이 가장 흔한 우회다."""
@@ -396,6 +403,14 @@ class Test허용목록은_tools_로_건다:
         assert self.tools_arg(cmd) == "Read"
         assert cmd[cmd.index("--allowedTools") + 1] == "Read,mcp__slack__channels_list"
 
+    def test_범위_지정_Bash_는_tools_에_맨_이름으로_싣는다(self, tmp_path) -> None:
+        """--tools 는 내장 도구 이름만 받는다. Bash(echo:*) 를 그대로 넣으면 claude
+        가 Bash 를 끈다 (claude 2.1.319 실측, NO_BASH). 범위는 --allowedTools 가
+        지키고, 맨 Bash 를 승인 목록에 넣지 않으므로 dontAsk 가 다른 명령을 거부한다."""
+        cmd = self.cmd(tmp_path, ToolSelection.allow(["Read", "Bash(echo:*)", "Bash(ls:*)"]))
+        assert self.tools_arg(cmd) == "Read,Bash"
+        assert cmd[cmd.index("--allowedTools") + 1] == "Read,Bash(echo:*),Bash(ls:*)"
+
     def test_MCP_만_허용하면_tools_를_비운다(self, tmp_path) -> None:
         """내장 도구를 하나도 안 허용한 것이므로 빈 값이 맞다. 인자를 빼면
         전체 내장 도구가 열린다."""
@@ -425,7 +440,7 @@ class Test전역_MCP_서버가_안_붙는다:
     settings 의 allow 에 들어가면 열린다 (sca-mo4g).
     """
 
-    def cmd(self, tmp_path, **kwargs):
+    def cmd(self, tmp_path, tools=None, **kwargs):
         from test_engine import profile_with, request
         from test_engine_capability import SETTINGS
 
@@ -436,13 +451,18 @@ class Test전역_MCP_서버가_안_붙는다:
             tmp_path=tmp_path,
             **kwargs,
         )
-        return ClaudeEngine(profile, SETTINGS).build_command(request())
+        overrides = {"tools": tools} if tools is not None else {}
+        return ClaudeEngine(profile, SETTINGS).build_command(request(**overrides))
 
     def test_서버가_없어도_붙인다(self, tmp_path) -> None:
         assert "--strict-mcp-config" in self.cmd(tmp_path)
 
     def test_서버가_있으면_그것만_붙인다(self, tmp_path) -> None:
-        cmd = self.cmd(tmp_path, mcp_servers={"jira": {"command": "jira-mcp"}})
+        # 허용목록이 이 서버를 가리켜야 붙는다 (S2: 이름 없는 서버는 안 붙인다).
+        cmd = self.cmd(
+            tmp_path, tools=ToolSelection.allow(["Read", "mcp__jira__search"]),
+            mcp_servers={"jira": {"command": "jira-mcp"}},
+        )
         assert "--strict-mcp-config" in cmd
         assert "jira" in cmd[cmd.index("--mcp-config") + 1]
 
@@ -702,9 +722,14 @@ class Test허용문구가_실제_명령에_실린다:
         어긋남이 크게 드러난다."""
         from test_engine import request
 
+        from slack_cli_agent.auth.principal import TrustLevel
+
+        # 두 요청 모두 소유자다. codex 는 비소유자 허용목록 턴을 read-only 로 내려 (A9)
+        # developer_instructions 의 쓰기 경로 안내가 무제한 요청과 달라진다. 그 차이는
+        # 프롬프트 밖에 실리므로 여기서 비교하려는 바이트가 아니다.
         engine = self._엔진들(tmp_path)[자리]
-        실은것 = self._요청(resume=resume)
-        안실은것 = request(tools=ToolSelection.unrestricted(), resume=resume)
+        실은것 = self._요청(resume=resume, trust_level=TrustLevel.OWNER)
+        안실은것 = request(tools=ToolSelection.unrestricted(), resume=resume, trust_level=TrustLevel.OWNER)
         차이 = (engine.footprint_for(실은것).adapter_added_bytes
                 - engine.footprint_for(안실은것).adapter_added_bytes)
         보낸것 = engine.build_command(실은것)[-1]

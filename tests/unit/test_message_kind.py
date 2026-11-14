@@ -52,4 +52,30 @@ class Test받아들이는_subtype을_바꿀_수_있다:
         assert kind.is_human({"user": "U1", "subtype": "thread_broadcast"})
 
     def test_기본_목록에_없으면_거른다(self) -> None:
-        assert not MessageKind().is_human({"user": "U1", "subtype": "thread_broadcast"})
+        assert not MessageKind().is_human({"user": "U1", "subtype": "message_changed"})
+
+
+class Test받아들이는_subtype_목록은_한_벌이다:
+    """A15. 같은 목록이 message_kind 와 guard/mentions 에 따로 있었고 갈렸다.
+
+    message_kind 는 file_share 만, mentions 는 thread_broadcast 까지 받았다.
+    "채널에도 보내기" 로 올린 스레드 답글은 소켓 접수와 캐치업에서 버려지고
+    호명 판정에서만 사람 말로 세어졌다. 마메치 bot.py HUMAN_SUBTYPES 는 두
+    subtype 을 모두 받는다.
+    """
+
+    def test_채널에도_보낸_스레드_답글은_사람_말이다(self) -> None:
+        assert MessageKind().is_human(
+            {"user": "U1", "subtype": "thread_broadcast", "thread_ts": "1.0", "text": "이것도"}
+        )
+
+    def test_호명_판정과_같은_상수를_쓴다(self) -> None:
+        from slack_cli_agent.guard import mentions
+        from slack_cli_agent.slack import message_kind
+
+        assert mentions.HUMAN_SUBTYPES is message_kind.HUMAN_SUBTYPES
+
+    def test_마메치와_같은_목록이다(self) -> None:
+        from slack_cli_agent.slack.message_kind import HUMAN_SUBTYPES
+
+        assert frozenset({"file_share", "thread_broadcast"}) == HUMAN_SUBTYPES

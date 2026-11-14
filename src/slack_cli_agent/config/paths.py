@@ -92,6 +92,13 @@ class StatePaths:
         return self.root / "watch-out"
 
     @property
+    def format_originals(self) -> Path:
+        """Pre-edit message bodies, saved before a format-fix rewrite overwrites
+        them (J7). Lets a wrong rewrite be compared against what the message
+        said, which chat.update otherwise erases (mametchi post_rich.py)."""
+        return self.root / "format_originals"
+
+    @property
     def responses(self) -> Path:
         """Bot replies, logged per channel into per-day files."""
         return self.root / "responses"
@@ -115,6 +122,21 @@ class StatePaths:
         per channel.
         """
         return self.persona / "learned"
+
+    @property
+    def local(self) -> Path:
+        """Per-bot channel rules the knowledge mirror must not touch. The mirror
+        copies a sibling bot's `knowledge/` and `prompts/` over this bot's every
+        night, so a rule meant for one bot only lives here and loads last, over
+        everything the mirror could have replaced (sca). Only `<channel>.md`.
+        """
+        return self.persona / "local"
+
+    @property
+    def wiki(self) -> Path:
+        """Topic pages of domain facts. Only `index.md` is sent every turn; the
+        model opens a page itself when the topic matches (마메치 WIKI_DIR)."""
+        return self.persona / "wiki"
 
     @property
     def skills(self) -> Path:
@@ -151,6 +173,11 @@ class StatePaths:
         return self.root / "state.db"
 
     @property
+    def unregistered_channels(self) -> Path:
+        """When the owner was last called in each unregistered channel."""
+        return self.root / "unregistered_channels.json"
+
+    @property
     def audit_log(self) -> Path:
         """Audit log copy, kept alongside the DB since external tools read this format."""
         return self.root / "audit.jsonl"
@@ -162,6 +189,21 @@ class StatePaths:
 
     def engine_settings(self, engine_type: str) -> Path:
         return self.engine_dir / f"settings-{engine_type}.json"
+
+    @property
+    def apply_requests(self) -> tuple[Path, Path]:
+        """Restart request marker a turn leaves, and the name a supervisor
+        renames it to once it has picked it up (reliability/restart.py)."""
+        return (self.root / "apply-request", self.root / "apply-running")
+
+    def pid_file(self, role: str) -> Path:
+        """PID of a running service process, one file per role.
+
+        bot.py kept a single `bot.pid`; this engine runs ingress and worker as
+        separate processes, so each records its own `<role>.pid` to avoid one
+        overwriting the other (reliability/pidfile.py).
+        """
+        return self.root / f"{role}.pid"
 
     @property
     def progress(self) -> Path:

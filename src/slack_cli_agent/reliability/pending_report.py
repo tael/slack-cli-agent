@@ -13,6 +13,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -37,9 +38,7 @@ class PendingReportStore:
         # most recent one, not a history.
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(
-                json.dumps({"at": self._now(), "text": text}, ensure_ascii=False)
-            )
+            self._path.write_text(json.dumps({"at": self._now(), "text": text}, ensure_ascii=False))
         except OSError as exc:
             log.error("보고를 남기지 못했다 : %s", exc)
 
@@ -87,3 +86,75 @@ class PendingReportStore:
             claimed.rename(self._path)
         except OSError as exc:
             log.error("보고를 되돌리지 못했다 : %s", exc)
+
+
+@dataclass(frozen=True)
+class PendingWork:
+    description: str
+    started_at: float
+
+
+class PendingWorkMarker:
+    """Marks what was being worked on, so a crash mid-turn can be surfaced
+    on recovery instead of silently dropping the asker's request.
+
+    A restart reason alone (SelfRestarter's announcement) says what
+    happened to the *bot*; it says nothing about what was in flight for
+    the *asker*. This records a description before starting work that
+    could outlive the process and clears it once that work finishes
+    normally, so anything still on record when the bot comes back up was
+    truly interrupted.
+    """
+
+    def __init__(self, *, path: Path, now: Callable[[], float] = time.time) -> None:
+        self._path = path
+        self._now = now
+
+    def start(self, description: str) -> None:
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(
+                json.dumps(
+                    {"description": description, "started_at": self._now()},
+                    ensure_ascii=False,
+                )
+            )
+        except OSError as exc:
+            log.error("진행 중 표식을 남기지 못했다 : %s", exc)
+
+    def clear(self) -> None:
+        with contextlib.suppress(OSError):
+            self._path.unlink()
+
+    def peek(self) -> PendingWork | None:
+        try:
+            data = json.loads(self._path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        description = data.get("description")
+        started_at = data.get("started_at")
+        if not description or started_at is None:
+            return None
+        return PendingWork(description=description, started_at=started_at)
+
+
+def assemble_recovery_report(
+    *,
+    reason: str,
+    now: float,
+    pending: PendingWork | None = None,
+    network_outage_sec: float | None = None,
+) -> str:
+    """Builds the text a recovery announcement sends, folding in whatever
+    the plain restart reason wouldn't otherwise say: work that was cut off
+    mid-turn, and -- when the cause was network-level -- how long that
+    outage ran (G59 widens notification scope to DNS/Wi-Fi outages, not
+    just Slack-API-level ones).
+    """
+    lines = [f"- 사유 : {reason}"]
+    if network_outage_sec is not None:
+        lines.append(f"- 네트워크 장애 : {network_outage_sec / 60:.0f}분")
+    if pending is not None:
+        age_min = max(0.0, (now - pending.started_at) / 60)
+        lines.append(f"- 중단된 작업 : {pending.description} (시작 후 {age_min:.0f}분)")
+    return "\n".join(lines)

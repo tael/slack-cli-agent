@@ -22,6 +22,12 @@ class SnapshotSource(Protocol):
 
     def inflight_count(self) -> int: ...
 
+    def active_events(self, now: float) -> Sequence[Mapping[str, Any]]:
+        """The in-flight requests with channel, ts, and elapsed seconds, so an
+        operator can see what is being handled right now (B51). Empty is a
+        valid answer -- nothing in flight."""
+        ...
+
     def queued_threads(self) -> Mapping[str, int]: ...
 
     def socket_error_timestamps(self) -> Sequence[float] | None:
@@ -70,6 +76,7 @@ class StateSnapshotBuilder:
             "uptime_sec": now - started_at,
             "shutting_down": self._source.is_shutting_down(),
             "inflight": self._source.inflight_count(),
+            "active": [dict(ev) for ev in self._source.active_events(now)],
             "queued_threads": len(queued),
             "queued_total": sum(queued.values()),
             "queued": queued,

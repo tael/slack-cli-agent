@@ -7,26 +7,32 @@ node` shebang silently fail, dropping the tool without any error.
 
 from __future__ import annotations
 
+import ast
+import importlib
+import importlib.util
 import json
 import os
 import re
 import shutil
 import stat
-from collections.abc import Mapping
+import subprocess
+import sys
+import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import ClassVar
 
 from ..auth.policy import EFFORT_LEVELS, OWNER_EFFORT_MIN
 from ..auth.principal import TrustLevel
 from ..config.channel import ChannelConfig, ChannelRegistry
+from ..config.profile import EXAMPLE_SUFFIX, Profile
 from ..config.profile import KNOWN_KEYS as PROFILE_KNOWN_KEYS
-from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
 from ..core.errors import ConfigError
 from ..engine.capability import ToolRestriction
 from ..engine.claude_settings import load_merged_settings
 from ..engine.environment import registry
-from ..engine.mcp_health import broken_mcp_servers
+from ..engine.mcp_health import broken_mcp_servers, foreign_bot_mcp_paths, foreign_bot_skill_links
 from ..engine.registry import default_registry
 from .check import CheckResult, PreflightCheck, PreflightContext
 
@@ -221,25 +227,26 @@ class ProfileUnknownKeysCheck(PreflightCheck):
 class OwnerSettingsInertCheck(PreflightCheck):
     """Warns once at boot about channel settings that are silently ignored for the owner.
 
-    `EngineSpec.model_for_owner()` and `OWNER_EFFORT_MIN` always win over a
-    channel's `model`/`effort` for the owner, so a value in channels.json can
-    look active while never actually applying. `fatal=False` — this only
-    prevents misreading the config, it doesn't block boot.
+    `OWNER_EFFORT_MIN` always wins over a lower channel `effort` for the
+    owner, so a value in channels.json can look active while never actually
+    applying. `fatal=False` — this only prevents misreading the config, it
+    doesn't block boot.
 
-    Engine-agnostic on purpose: AccessPolicy overrides the owner's model and
-    effort whatever the engine is, so an engine exception here would only hide
-    the same dead setting for that bot.
+    A channel's `model` (and `advisor.executor`) is not checked: since A13
+    AccessPolicy.model_for applies it to the owner too, so warning about it
+    would say the opposite of what happens.
+
+    Engine-agnostic on purpose: AccessPolicy raises the owner's effort whatever
+    the engine is, so an engine exception here would only hide the same dead
+    setting for that bot.
     """
 
     name: ClassVar[str] = "owner_settings_inert"
 
     def run(self, ctx: PreflightContext) -> CheckResult:
-        model_owner = ctx.profile.primary_engine.model_for_owner()
         registry = ChannelRegistry(ctx.profile.paths.channels)
         dead: list[str] = []
         for config in registry.all().values():
-            if config.model and config.model != model_owner:
-                dead.append(f"{config.name} model={config.model}")
             if config.effort in EFFORT_LEVELS and (
                 EFFORT_LEVELS.index(config.effort) < EFFORT_LEVELS.index(OWNER_EFFORT_MIN)
             ):
@@ -408,6 +415,23 @@ class McpServerCheck(PreflightCheck):
         return CheckResult(ok=True, detail="MCP 기동 점검 통과")
 
 
+class McpOwnDirCheck(PreflightCheck):
+    """Checks MCP servers don't run out of another bot's state directory.
+
+    Non-fatal so a peer still on an old layout keeps booting; the warning
+    names the server and path to move into this bot's state_dir.
+    """
+
+    name: ClassVar[str] = "mcp_own_dir"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        found = foreign_bot_mcp_paths(ctx.profile.mcp_servers, ctx.profile.state_dir)
+        found += foreign_bot_skill_links(ctx.profile.state_dir)
+        if found:
+            return CheckResult(ok=False, detail="; ".join(found), fatal=False)
+        return CheckResult(ok=True, detail="MCP 서버와 스킬이 다른 봇 디렉터리에 기대지 않음")
+
+
 class EngineSettingsCheck(PreflightCheck):
     """Checks the bot's own claude settings load before a request needs them.
 
@@ -506,3 +530,754 @@ class EngineHomeCredentialCheck(PreflightCheck):
                 # engine fails at request time either way (코덱스 리뷰).
                 bad.append(f"{label} 엔진 자격 파일을 소유자가 읽을 수 없다 : {path}")
         return bad
+
+
+# ---------------------------------------------------------------------------
+# 마메치 check.py 기동 점검의 이식. 아래 9종은 그 소스를 읽고 관측 동작에
+# 맞춰 일반화한 것이다 — 조직 특화 값(어떤 낱말이 어떤 도구를 약속하는지,
+# 어떤 서버 이름이 같은 시스템을 가리키는지, 등급 체계 자체)은 생성자
+# 주입점으로 남겨 조직이 채우도록 하고, 공통 골격에는 박지 않는다.
+# ---------------------------------------------------------------------------
+
+
+def _undefined_name_lines(tree: ast.AST) -> dict[str, int]:
+    """Names referenced (``Load``) that nothing in the module ever defines.
+
+    Mirrors the two-pass walk the original ``check.py`` does over ``bot.py``:
+    collect every name assignment, def, import, argument, except-binding and
+    comprehension target first, then flag any ``Load`` not in that set. A
+    plain compile only catches a bad name once execution reaches that line;
+    this catches it before the process starts (코덱스 리뷰 — 원본 참고).
+    """
+    import builtins as _builtins
+
+    defined = set(dir(_builtins)) | {"__file__", "__name__", "__doc__", "__spec__"}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defined.add(node.name)
+            args = getattr(node, "args", None)
+            if args is not None:
+                defined.update(a.arg for a in getattr(args, "args", []))
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            defined.add(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                defined.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.arg):
+            defined.add(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            defined.add(node.name)
+        elif isinstance(node, ast.comprehension):
+            for inner in ast.walk(node.target):
+                if isinstance(inner, ast.Name):
+                    defined.add(inner.id)
+
+    missing: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in defined:
+            missing.setdefault(node.id, node.lineno)
+    return missing
+
+
+#: Modules the long-running commands import only after the gate has passed.
+#: `cli._default_application` pulls in `core.application` lazily. That module
+#: does not import the Slack SDK at module level: `Application.from_profile`
+#: imports `slack_sdk.WebClient` and the ingress connector imports
+#: `slack_sdk.socket_mode` inside the call, so both are listed explicitly.
+CORE_BOOT_MODULES: tuple[str, ...] = (
+    "slack_cli_agent.core.application",
+    "slack_sdk",
+    "slack_sdk.socket_mode",
+    "slack_sdk.socket_mode.response",
+)
+
+
+class CoreImportCheck(PreflightCheck):
+    """Imports the core modules boot needs, before boot.
+
+    worker and ingress import `core.application` only after the suite reports
+    기동 가능. A broken core (a syntax error, a missing dependency, an
+    exception at module level) therefore passed every check and then died with
+    an ImportError, exit code 1, which launchd answers with a restart every
+    10 seconds. Restarting does not fix a broken install, so the failure has
+    to surface here, where a fatal result becomes EX_CONFIG (78) and run.sh
+    leaves a block marker.
+    """
+
+    name: ClassVar[str] = "core_import"
+
+    def __init__(self, modules: Sequence[str] = CORE_BOOT_MODULES) -> None:
+        self._modules = tuple(modules)
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        bad: list[str] = []
+        for module in self._modules:
+            try:
+                importlib.import_module(module)
+            except Exception as exc:  # noqa: BLE001 - any module-level failure blocks boot
+                bad.append(f"{module} : {exc!r}")
+        if bad:
+            return CheckResult(ok=False, detail="코어 모듈 import 실패 - " + "; ".join(bad))
+        return CheckResult(ok=True, detail="코어 모듈 import 점검 통과")
+
+
+def _package_source_root() -> Path | None:
+    """The directory this package was imported from, or None.
+
+    For an editable install this is `src/slack_cli_agent` inside the working
+    tree; for a wheel install it is site-packages, which is not a git tree and
+    makes SourceTreeCheck pass. Tests replace this to keep the suite offline.
+    """
+    return Path(__file__).resolve().parents[1]
+
+
+class SourceTreeCheck(PreflightCheck):
+    """Warns when the tree the bot runs from has drifted from origin/main.
+
+    An editable install runs whatever is checked out. A branch switched in the
+    operational tree, or an uncommitted edit left there, reaches the next boot
+    without review. The check fetches origin, then asks two things: is HEAD an
+    ancestor of origin/main (being behind is fine, local commits are not), and
+    is the tree clean, untracked files included. Every finding is a warning:
+    the point is to make the drift visible at boot, not to keep the bot down,
+    and a failed fetch says nothing about the tree itself.
+    """
+
+    name: ClassVar[str] = "source_tree"
+
+    def __init__(
+        self,
+        root: Path | None = None,
+        *,
+        remote: str = "origin",
+        branch: str = "main",
+        timeout: float = 15.0,
+    ) -> None:
+        self._root = root
+        self._remote = remote
+        self._branch = branch
+        self._timeout = timeout
+
+    def _git(self, top: Path, *args: str, timeout: float = 10.0) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(top), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        root = self._root if self._root is not None else _package_source_root()
+        if root is None or shutil.which("git") is None:
+            return CheckResult(ok=True, detail="git 작업 트리가 아니라 점검하지 않는다")
+        try:
+            found = self._git(root, "rev-parse", "--show-toplevel")
+        except (OSError, subprocess.TimeoutExpired):
+            return CheckResult(ok=True, detail="git 작업 트리가 아니라 점검하지 않는다")
+        if found.returncode != 0:
+            return CheckResult(ok=True, detail="git 작업 트리가 아니라 점검하지 않는다")
+        top = Path(found.stdout.strip())
+        target = f"{self._remote}/{self._branch}"
+        problems: list[str] = []
+
+        try:
+            fetched = self._git(top, "fetch", "--quiet", self._remote, self._branch, timeout=self._timeout)
+            fetch_error = None if fetched.returncode == 0 else (fetched.stderr or fetched.stdout).strip()
+        except subprocess.TimeoutExpired:
+            fetch_error = f"{self._timeout:g}초 안에 끝나지 않았다"
+        except OSError as exc:
+            fetch_error = str(exc)
+        if fetch_error is not None:
+            last = fetch_error.splitlines()[-1][:200] if fetch_error else "원인 미상"
+            problems.append(f"원격 조회 실패, 로컬 {target} 기준으로 판정했다 ({last})")
+
+        try:
+            ancestor = self._git(top, "merge-base", "--is-ancestor", "HEAD", f"refs/remotes/{target}")
+            status = self._git(top, "status", "--porcelain")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            problems.append(f"git 상태를 읽지 못했다 : {exc}")
+            return CheckResult(ok=False, detail=f"{top} : " + "; ".join(problems), fatal=False)
+
+        if ancestor.returncode == 1:
+            head = self._git(top, "rev-parse", "--short", "HEAD").stdout.strip()
+            problems.append(f"HEAD {head} 가 {target} 의 조상이 아니다")
+        elif ancestor.returncode != 0:
+            problems.append(f"{target} 와 비교하지 못했다 : {ancestor.stderr.strip()[:200]}")
+        if status.returncode != 0:
+            problems.append(f"작업 트리 상태를 읽지 못했다 : {status.stderr.strip()[:200]}")
+        else:
+            dirty = [line[3:] for line in status.stdout.splitlines() if line.strip()]
+            if dirty:
+                shown = ", ".join(dirty[:5]) + (f" 외 {len(dirty) - 5}건" if len(dirty) > 5 else "")
+                problems.append(f"커밋하지 않은 변경 {len(dirty)}건 : {shown}")
+
+        if problems:
+            return CheckResult(ok=False, detail=f"{top} : " + "; ".join(problems), fatal=False)
+        return CheckResult(ok=True, detail=f"{top} : HEAD 가 {target} 의 조상이고 작업 트리가 깨끗하다")
+
+
+class CompileCheck(PreflightCheck):
+    """`py_compile`s every configured plugin module before boot.
+
+    Parity with the original `apply.sh`/`restart.sh` gate `python -m
+    py_compile bot.py`, which refused to restart the bot on a syntax error.
+    The org-written code imported at boot here is the set of `profile.plugins`
+    modules, not one monolithic file, so each is compiled in turn.
+
+    This sits deliberately *before* `PluginAstCheck` in the suite — the same
+    order `apply.sh` ran `py_compile` and then `check.py`. It matters: an
+    `ast.parse` of broken source raises `SyntaxError`, and PluginAstCheck
+    treats that as "can't read, not my job" and passes (its concern is
+    undefined names, not whether the file compiles). So without this check a
+    plugin that does not even parse sails through preflight and blows up at
+    import — long after boot has reported 기동 가능.
+
+    Degrades to a pass when a module can't be found or its source can't be
+    read, for the same reason PluginAstCheck does: locating and loading the
+    module is `PluginLoader`'s job and must not be reported twice. A syntax
+    error, by contrast, is exactly what this check exists to catch.
+    """
+
+    name: ClassVar[str] = "plugin_compile"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        if not ctx.profile.plugins:
+            return CheckResult(ok=True, detail="컴파일할 플러그인이 없다")
+        bad: list[str] = []
+        for entry in ctx.profile.plugins:
+            module_path = entry.partition(":")[0]
+            try:
+                spec = importlib.util.find_spec(module_path)
+            except (ImportError, ValueError, ModuleNotFoundError, AttributeError):
+                continue
+            if spec is None or not spec.origin or not spec.origin.endswith(".py"):
+                continue
+            try:
+                source = Path(spec.origin).read_text(encoding="utf-8")
+            except OSError:
+                continue
+            try:
+                compile(source, spec.origin, "exec")
+            except SyntaxError as exc:
+                where = f"{exc.lineno}행" if exc.lineno else "위치 미상"
+                bad.append(f"{module_path} : 구문 오류 - {exc.msg} ({where})")
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="플러그인 컴파일 점검 통과")
+
+
+class PluginAstCheck(PreflightCheck):
+    """Checks every configured plugin module for a Load of a name nothing defines.
+
+    A syntax error is caught at compile time; an undefined name is not — it
+    passes `python -m py_compile` and blows up the first time the branch that
+    references it actually runs, which may be long after boot (sca parity
+    with the original `check.py`'s scan of `bot.py`). Here the equivalent
+    org-written code loaded at boot is a plugin module, not a single
+    monolithic file, so each `profile.plugins` entry is scanned in turn.
+
+    Degrades to a pass when a module can't be found or its source can't be
+    read: locating the module is `PluginLoader`'s job, and this check must
+    not duplicate that failure under a different name.
+    """
+
+    name: ClassVar[str] = "plugin_ast_names"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        if not ctx.profile.plugins:
+            return CheckResult(ok=True, detail="점검할 플러그인이 없다")
+        bad: list[str] = []
+        for entry in ctx.profile.plugins:
+            module_path = entry.partition(":")[0]
+            try:
+                spec = importlib.util.find_spec(module_path)
+            except (ImportError, ValueError, ModuleNotFoundError, AttributeError):
+                continue
+            if spec is None or not spec.origin or not spec.origin.endswith(".py"):
+                continue
+            try:
+                source = Path(spec.origin).read_text(encoding="utf-8")
+                tree = ast.parse(source, filename=spec.origin)
+            except (OSError, SyntaxError):
+                continue
+            missing = _undefined_name_lines(tree)
+            if missing:
+                detail = ", ".join(
+                    f"{name} ({lineno}행)"
+                    for name, lineno in sorted(missing.items(), key=lambda kv: kv[1])
+                )
+                bad.append(f"{module_path} : 정의되지 않은 이름 참조 - {detail}")
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="플러그인 이름 참조 점검 통과")
+
+
+class SkillSymlinkCheck(PreflightCheck):
+    """Checks that a skill symlink under `paths.skill_files` actually resolves.
+
+    A skill granted through the engine's permission system but missing its
+    directory leaves the tool with nowhere to read its instructions from —
+    the skill silently has nothing in it. Only symlinks are inspected: a
+    copied-in directory isn't the failure mode this guards against, and
+    scanning it too would turn every ordinary install into a warning.
+    """
+
+    name: ClassVar[str] = "skill_symlinks"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        root = ctx.profile.paths.skill_files
+        if not root.is_dir():
+            return CheckResult(ok=True, detail="스킬 설치 자리가 없다")
+        bad: list[str] = []
+        seen_any = False
+        for entry in sorted(root.iterdir()):
+            if not entry.is_symlink():
+                continue
+            seen_any = True
+            if not entry.exists():
+                bad.append(f"{entry.name} : 심링크가 깨졌다 (대상 없음)")
+                continue
+            skill_md = entry / "SKILL.md"
+            if not skill_md.exists():
+                bad.append(f"{entry.name} : SKILL.md 가 없다 : {skill_md}")
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        if not seen_any:
+            return CheckResult(ok=True, detail="점검할 스킬 심링크가 없다")
+        return CheckResult(ok=True, detail="스킬 심링크 점검 통과")
+
+
+class CodexConfigLoadCheck(PreflightCheck):
+    """Checks that a configured Codex home's config actually loads.
+
+    `config.toml` existing proves nothing about whether Codex can parse it
+    with the arguments this bot would actually pass — a bad MCP server
+    block only shows up when something calls `codex mcp list` against it.
+    Left unchecked, the first real request is where that surfaces, as a
+    silently missing tool rather than a boot failure (parity with the
+    original `check_codex_config_loads()`, minus the org-specific extra
+    CLI flags it passed — those are the caller's own arguments to add via
+    a subclass or a plugin-supplied check, not this package's concern).
+    """
+
+    name: ClassVar[str] = "codex_config_load"
+
+    def __init__(self, timeout: float = 30.0) -> None:
+        self._timeout = timeout
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        specs = [ctx.profile.primary_engine]
+        if ctx.profile.fallback_engine:
+            specs.append(ctx.profile.fallback_engine)
+        targets = [spec for spec in specs if spec.type == "codex" and spec.home_dir is not None]
+        if not targets:
+            return CheckResult(ok=True, detail="봇별 홈을 가른 codex 엔진이 없다")
+        bad: list[str] = []
+        for spec in targets:
+            home_dir = spec.home_dir
+            assert home_dir is not None  # narrowed by the filter above
+            config = home_dir / "config.toml"
+            if not config.exists():
+                bad.append(f"Codex 설정 없음 : {config}")
+                continue
+            if spec.binary.is_absolute():
+                if not spec.binary.exists():
+                    bad.append(f"codex 실행 파일이 없다 : {spec.binary}")
+                    continue
+                exe = str(spec.binary)
+            else:
+                found = shutil.which(str(spec.binary))
+                if found is None:
+                    bad.append(f"codex 실행 파일을 PATH 에서 못 찾는다 : {spec.binary}")
+                    continue
+                exe = found
+            try:
+                done = subprocess.run(
+                    [exe, "mcp", "list"],
+                    env={**os.environ, "CODEX_HOME": str(home_dir)},
+                    capture_output=True,
+                    text=True,
+                    timeout=self._timeout,
+                )
+            except subprocess.TimeoutExpired:
+                bad.append(f"Codex 설정 읽기가 {self._timeout}초 안에 끝나지 않았다 : {config}")
+                continue
+            except OSError as exc:
+                bad.append(f"Codex 설정을 실행하지 못했다 : {exc}")
+                continue
+            if done.returncode != 0:
+                tail = (done.stderr or done.stdout).strip().replace("\n", " ")[-300:]
+                bad.append(f"Codex 설정을 읽지 못한다 ({config}) : {tail}")
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="Codex 설정 로드 점검 통과")
+
+
+class McpScriptOwnershipCheck(PreflightCheck):
+    """Checks that a local MCP script doesn't hardcode another bot's state path.
+
+    An MCP server runs as its own process, separate from this one, so it
+    never receives the profile object a bot-side check reads from. Any path
+    it needs is written straight into the script, and copying one bot's
+    server to start another's carries that path along silently -- the clone
+    posts to Slack, or returns data, under the original bot's identity
+    (parity with the original `check_mcp_ownership()`; sca found this exact
+    shape costing six days of undetected cross-posting).
+
+    Comparison needs another profile to compare against, which only exists
+    once this profile was itself loaded from a file -- a profile built in
+    memory (`Profile.from_dict`, every test) has nothing on disk to find
+    siblings next to, and the check correctly has nothing to say then.
+    """
+
+    name: ClassVar[str] = "mcp_script_ownership"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        scripts = [
+            Path(spec.command)
+            for spec in ctx.profile.mcp_servers.values()
+            if not spec.is_remote and spec.command and Path(spec.command).suffix == ".py"
+            and Path(spec.command).is_file()
+        ]
+        if not scripts:
+            return CheckResult(ok=True, detail="점검할 로컬 MCP 스크립트가 없다")
+        others = self._other_state_dir_names(ctx.profile)
+        if not others:
+            return CheckResult(ok=True, detail="비교할 다른 프로필이 없다")
+        bad: list[str] = []
+        for script in scripts:
+            text = script.read_text(encoding="utf-8", errors="replace")
+            for other_name, state_name in others:
+                if state_name and state_name in text:
+                    bad.append(
+                        f"{script.name} 이 {other_name} 의 자리 {state_name} 를 참조한다. "
+                        "그 봇의 자격으로 나간다"
+                    )
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="MCP 스크립트 명의 점검 통과")
+
+    @staticmethod
+    def _other_state_dir_names(profile: Profile) -> list[tuple[str, str]]:
+        source = profile.source_file
+        if source is None:
+            return []
+        pairs: list[tuple[str, str]] = []
+        for path in sorted(source.parent.glob("*.json")):
+            if path == source or path.name.endswith(EXAMPLE_SUFFIX):
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, Mapping):
+                continue
+            other_name = str(data.get("name") or path.stem)
+            if other_name == profile.name:
+                continue
+            state_dir = data.get("state_dir")
+            state_name = Path(str(state_dir)).expanduser().name if state_dir else f".{other_name}"
+            pairs.append((other_name, state_name))
+        return pairs
+
+
+class PromptToolConsistencyCheck(PreflightCheck):
+    """Checks that a feature a prompt file promises has its tool in the
+    common tool list -- the one every requester gets, not just the owner's.
+
+    A prompt is read by every principal, so a feature it claims to perform
+    ("I can search the web") has to work for every principal too. If the
+    tool that feature needs only lives in an owner-only extra list, the
+    first non-owner who asks gets a refusal the bot then has to explain,
+    which risks explaining internal configuration to them (parity with the
+    original `check_prompt_tools()`). Which words promise which tools is
+    org-specific persona writing, not something this package should guess
+    at, so both the promise table and what counts as "the common tool list"
+    are constructor arguments -- empty by default, meaning nothing is
+    checked until the caller supplies them.
+    """
+
+    name: ClassVar[str] = "prompt_tool_consistency"
+
+    def __init__(
+        self,
+        promises: Mapping[str, Sequence[str]] | None = None,
+        base_tools: Sequence[str] = (),
+    ) -> None:
+        self._promises = {word: tuple(tools) for word, tools in (promises or {}).items()}
+        self._base_tools = tuple(base_tools)
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        if not self._promises:
+            return CheckResult(ok=True, detail="점검할 프롬프트-도구 약속이 없다")
+        prompts_dir = ctx.profile.paths.prompts
+        if not prompts_dir.is_dir():
+            return CheckResult(ok=True, detail="프롬프트 자리가 없다")
+        bad: list[str] = []
+        for path in sorted(prompts_dir.glob("*.md")):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for word, tools in self._promises.items():
+                if word not in text:
+                    continue
+                for tool in tools:
+                    if tool in self._base_tools:
+                        continue
+                    bad.append(
+                        f"{path.name} : '{word}' 를 약속하는데 {tool} 이 공통 도구 목록에 없다"
+                    )
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="프롬프트 약속 대 도구 점검 통과")
+
+
+class DuplicateMcpSystemCheck(PreflightCheck):
+    """Checks that no more than one enabled MCP server points at the same
+    backend system.
+
+    When two servers answer for the same system, which one a request lands
+    on is whichever the model happens to pick, and the two don't always
+    return the same shape of answer -- a field present on one is silently
+    missing from the other's response (parity with the original
+    `check_duplicate_systems()`, which hardcoded `jira`/`confluence`). Which
+    server names refer to the same system is org knowledge this package has
+    no way to infer from a bare name, so the grouping table is a
+    constructor argument -- empty by default, meaning nothing is grouped
+    until the caller supplies it.
+    """
+
+    name: ClassVar[str] = "duplicate_mcp_systems"
+
+    def __init__(self, groups: Mapping[str, Sequence[str]] | None = None) -> None:
+        self._groups = {system: tuple(patterns) for system, patterns in (groups or {}).items()}
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        if not self._groups:
+            return CheckResult(ok=True, detail="점검할 중복 시스템 그룹이 없다")
+        enabled = [name for name, spec in ctx.profile.mcp_servers.items() if not spec.disabled]
+        bad: list[str] = []
+        for system, patterns in self._groups.items():
+            hits = sorted({
+                name for name in enabled
+                for pattern in patterns
+                if pattern.lower() in name.lower()
+            })
+            if len(hits) > 1:
+                bad.append(f"{system} 조회 MCP 서버가 {hits} 로 둘 이상 열려 있다. 하나만 남긴다")
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="MCP 서버 중복 점검 통과")
+
+
+class FullDiskAccessCheck(PreflightCheck):
+    """Warns, without blocking boot, when the engine's own process can't
+    read past macOS's TCC-guarded folders, and tracks the binary path that
+    was checked.
+
+    A turn that touches a protected folder makes macOS pop a "python3.13
+    wants to access another app's data" dialog, and that read then blocks
+    until a person at the keyboard clicks it -- on a headless bot, nobody
+    ever will (parity with the original `check_fda()`). Granting Full Disk
+    Access ahead of time avoids the dialog, but the grant is tied to one
+    binary's exact path, and `uv`-managed interpreters move when `uv`
+    re-provisions one, silently invalidating a grant that still looks fine
+    in System Settings. This never blocks boot -- it has nothing to offer
+    but the path and a warning.
+    """
+
+    name: ClassVar[str] = "full_disk_access"
+
+    def __init__(
+        self,
+        *,
+        binary: Path | None = None,
+        tcc_db: Path | None = None,
+        platform_name: str | None = None,
+        now: str | None = None,
+    ) -> None:
+        self._binary = binary or Path(os.path.realpath(sys.executable))
+        self._tcc_db = tcc_db or (Path.home() / "Library/Application Support/com.apple.TCC/TCC.db")
+        self._platform = platform_name if platform_name is not None else sys.platform
+        self._now = now
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        if self._platform != "darwin":
+            return CheckResult(ok=True, detail="macOS 가 아니라 해당 없음", fatal=False)
+        fda: bool | None
+        try:
+            with open(self._tcc_db, "rb") as f:
+                f.read(16)
+            fda = True
+        except PermissionError:
+            fda = False
+        except OSError:
+            fda = None
+
+        record_path = ctx.profile.state_dir / "fda_binary.json"
+        try:
+            prev = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            prev = {}
+
+        notes: list[str] = []
+        if prev.get("path") and prev["path"] != str(self._binary):
+            notes.append(
+                f"봇 python 바이너리가 바뀌었다 : {prev['path']} → {self._binary}. "
+                "전체 디스크 접근 권한을 새 경로에 다시 줘야 한다"
+            )
+        if fda is False:
+            notes.append(f"전체 디스크 접근 권한 없음 : {self._binary}. 보호 폴더 접근 시 허용 창이 뜰 수 있다")
+
+        try:
+            record_path.parent.mkdir(parents=True, exist_ok=True)
+            record_path.write_text(
+                json.dumps(
+                    {
+                        "path": str(self._binary),
+                        "fda": fda,
+                        "checked": self._now or time.strftime("%Y-%m-%d %H:%M:%S"),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+        if notes:
+            return CheckResult(ok=False, detail="; ".join(notes), fatal=False)
+        status = "있음" if fda else "없음" if fda is False else "판정 불가"
+        return CheckResult(ok=True, detail=f"전체 디스크 접근 점검 : {self._binary} → {status}")
+
+
+class ScriptCapabilityGradeCheck(PreflightCheck):
+    """Checks that every top-level script in a directory carries a tier in
+    a capabilities registry, and that the registry doesn't name a tier
+    outside the allowed set or a script that isn't actually there.
+
+    A shell tool with no declared tier is reachable by whatever default the
+    permission system falls back to, which on more than one occasion was
+    wide open rather than closed -- a new operational script four different
+    times reached everyone's turn before anyone meant it to (parity with the
+    original `check_capabilities()`; the cross-check against a specific
+    allowlist constant it also did is org-specific wiring left for the
+    caller's own check). The directory and registry file are constructor
+    arguments; either being unset means there's nothing declared yet to
+    check against, not a failure.
+    """
+
+    name: ClassVar[str] = "script_capability_grade"
+
+    DEFAULT_VALID_TIERS: ClassVar[tuple[str, ...]] = ("all", "owner", "internal")
+
+    def __init__(
+        self,
+        scripts_dir: Path | None = None,
+        capabilities_file: Path | None = None,
+        valid_tiers: Sequence[str] | None = None,
+    ) -> None:
+        self._scripts_dir = scripts_dir
+        self._capabilities_file = capabilities_file
+        self._valid_tiers = tuple(valid_tiers) if valid_tiers else self.DEFAULT_VALID_TIERS
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        if self._scripts_dir is None or self._capabilities_file is None:
+            return CheckResult(ok=True, detail="점검할 스크립트 등급 설정이 없다")
+        if not self._capabilities_file.is_file():
+            return CheckResult(ok=False, detail=f"등급 등록부가 없다 : {self._capabilities_file}")
+        try:
+            raw = json.loads(self._capabilities_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return CheckResult(ok=False, detail=f"등급 등록부를 읽지 못했다 : {exc}")
+        caps = raw.get("capabilities", {}) if isinstance(raw, Mapping) else {}
+
+        bad: list[str] = []
+        if self._scripts_dir.is_dir():
+            for path in sorted(self._scripts_dir.iterdir()):
+                if path.suffix not in (".sh", ".py") or ".bak" in path.name:
+                    continue
+                if path.name.startswith("test_"):
+                    continue
+                if path.name not in caps:
+                    bad.append(f"{path.name} 의 등급이 등록부에 없다")
+        for script_name, cap in caps.items():
+            if not isinstance(cap, Mapping):
+                bad.append(f"{script_name} 의 등록 내용이 올바르지 않다")
+                continue
+            tier = cap.get("tier")
+            if tier not in self._valid_tiers:
+                bad.append(f"{script_name} 의 등급이 올바르지 않다 : {tier}")
+            elif not cap.get("external") and not (self._scripts_dir / script_name).exists():
+                bad.append(f"등록부에 있는 {script_name} 이 자리에 없다 : {self._scripts_dir / script_name}")
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="스크립트 등급 점검 통과")
+
+
+class SlackApiRegistrationCheck(PreflightCheck):
+    """Checks that every raw `api_call("...")` name found in the given
+    source files is registered, documented, and never one marked as
+    banned.
+
+    Calling the Slack Web API by a hand-typed method name skips whatever
+    validation the higher-level client would have done -- it passes syntax
+    and name-reference checks just as easily misspelled as correct, and a
+    method that silently doesn't work in the context it's called from (a
+    thread, say) only shows up once nobody is watching the error logs
+    (parity with the original `check_slack_api()`). Which files make these
+    calls and where the registry lives are constructor arguments; with
+    neither given there's nothing to scan yet, not a failure.
+    """
+
+    name: ClassVar[str] = "slack_api_registration"
+
+    _CALL_RE = re.compile(r'api_call\(\s*"([A-Za-z0-9_.]+)"')
+
+    def __init__(
+        self,
+        source_files: Sequence[Path] = (),
+        registry_file: Path | None = None,
+    ) -> None:
+        self._source_files = tuple(source_files)
+        self._registry_file = registry_file
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        if not self._source_files and self._registry_file is None:
+            return CheckResult(ok=True, detail="점검할 슬랙 API 등록부가 없다")
+        if self._registry_file is None or not self._registry_file.is_file():
+            return CheckResult(
+                ok=False, detail=f"등록부가 없다 : {self._registry_file}"
+            )
+        try:
+            registry_data = json.loads(self._registry_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return CheckResult(ok=False, detail=f"등록부를 읽지 못했다 : {exc}")
+        banned = registry_data.get("_banned") or registry_data.get("_쓰지_않는다") or {}
+        known = {
+            method: item
+            for method, item in registry_data.items()
+            if not str(method).startswith("_")
+        }
+
+        called: set[str] = set()
+        for path in self._source_files:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            called.update(self._CALL_RE.findall(text))
+
+        bad: list[str] = []
+        for method in sorted(called):
+            if method in banned:
+                reason = banned[method].get("이유", "") if isinstance(banned[method], Mapping) else ""
+                bad.append(f"쓰지 않기로 한 API 를 부른다 : {method} ({reason})")
+            elif method not in known:
+                bad.append(f"등록부에 없는 API 를 부른다 : {method}")
+        for method, item in known.items():
+            if not isinstance(item, Mapping) or not item.get("doc") or not item.get("verified"):
+                bad.append(f"문서 주소나 실측 날짜가 비었다 : {method}")
+
+        if bad:
+            return CheckResult(ok=False, detail="; ".join(bad))
+        return CheckResult(ok=True, detail="슬랙 API 등록 점검 통과")

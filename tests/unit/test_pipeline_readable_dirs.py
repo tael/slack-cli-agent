@@ -42,3 +42,30 @@ def test_Application이_상태_경로를_파이프라인에_넘긴다(tmp_path) 
     assert app.pipeline().readable_dirs == (
         profile.paths.persona, profile.paths.prompts, profile.paths.watch_out,
     )
+
+
+def test_프로필_추가_읽기_경로가_상태_경로_뒤에_붙는다(tmp_path) -> None:
+    """구 봇은 연동 API 스펙 저장소 같은 작업 폴더 밖 경로를 매 턴 --add-dir 로
+    열었다(마메치 bot.py:473-477). 조직 고유 경로라 프로필에서 받는다."""
+    from test_application import FakeSlackClient, write_profile
+
+    from slack_cli_agent.core.application import Application
+
+    extra = [str(tmp_path / "spec-a"), "~/spec-b"]
+    profile = write_profile(tmp_path, extra_readable_dirs=extra)
+    app = Application(profile, FakeSlackClient())
+
+    assert app.pipeline().readable_dirs == (
+        profile.paths.persona, profile.paths.prompts, profile.paths.watch_out,
+        tmp_path / "spec-a", Path("~/spec-b").expanduser(),
+    )
+
+
+def test_추가_읽기_경로는_상대경로를_거부한다(tmp_path) -> None:
+    import pytest
+    from test_application import write_profile
+
+    from slack_cli_agent.config.profile import ConfigError
+
+    with pytest.raises(ConfigError):
+        write_profile(tmp_path, extra_readable_dirs=["relative/dir"])

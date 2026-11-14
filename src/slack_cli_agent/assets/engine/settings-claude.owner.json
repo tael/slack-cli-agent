@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(~/Library/Keychains/**)",
+      "Read(~/.*api*key*)",
+      "Read(~/.*token*)",
+      "Write(~/.*token*)",
+      "Edit(~/.*token*)",
+      "Read(~/**/secret*)"
+    ]
+  }
+}

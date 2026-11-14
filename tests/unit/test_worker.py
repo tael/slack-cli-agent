@@ -122,6 +122,8 @@ def make_worker(
     now=time.time,
     heartbeat_queue=None,
     admin=None,
+    active=None,
+    slots=None,
 ):
     from slack_cli_agent.core.worker import Worker
 
@@ -140,6 +142,8 @@ def make_worker(
         now=now,
         sleep=sleep,
         admin=admin,
+        active=active,
+        slots=slots,
     )
     return worker, queue, client
 
@@ -153,17 +157,65 @@ class TestRunOnceEmpty:
         assert handler.received == []
 
 
+class TestActiveRegistry:
+    """처리 중인 요청이 레지스트리에 담겼다가(B51) 끝나면 빠진다."""
+
+    def test_처리하는_동안_레지스트리에_담기고_끝나면_빠진다(self, database) -> None:
+        from slack_cli_agent.core.lifecycle import InflightRegistry
+
+        registry = InflightRegistry()
+        seen: list[dict] = []
+
+        @dataclass
+        class SnapshotHandler:
+            def handle(self, context: RequestContext) -> HandleOutcome:
+                # 처리 도중에는 이 요청이 레지스트리에 보여야 한다.
+                seen.extend(registry.snapshot(now=1000.0))
+                return HandleOutcome(ok=True)
+
+        worker, queue, _client = make_worker(
+            database=database, handler=SnapshotHandler(), now=lambda: 1000.0, active=registry
+        )
+        queue.enqueue(ctx("1.1", channel="C9"))
+
+        worker.run_once()
+
+        assert seen == [{"channel": "C9", "ts": "1.1", "elapsed_sec": 0.0}]
+        # 처리가 끝나면 목록에서 빠진다.
+        assert registry.snapshot(now=1000.0) == []
+
+
 class TestRunOnceSuccess:
-    def test_작업을_집으면_처리기에_맥락이_그대로_넘어가고_성공완료가_불린다(self, database) -> None:
+    def test_작업을_집으면_처리기에_맥락이_넘어가고_성공완료가_불린다(self, database) -> None:
         handler = FakeHandler(outcome=HandleOutcome(ok=True))
-        worker, queue, _client = make_worker(database=database, handler=handler)
+        worker, queue, _client = make_worker(database=database, handler=handler, now=lambda: 1000.0)
         original = ctx("1.1")
         queue.enqueue(original)
 
         assert worker.run_once() is True
 
-        assert handler.received == [original]
+        # 첫 반응 시각(B38)만 더 찍히고 나머지는 그대로다.
+        assert handler.received == [original.with_first_reaction(1000.0)]
         assert queue.counts() == {"COMPLETED": 1}
+
+    def test_처리를_시작하면_첫_반응_시각이_맥락에_찍힌다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=True))
+        worker, queue, _client = make_worker(database=database, handler=handler, now=lambda: 1000.0)
+        queue.enqueue(ctx("1.1"))
+
+        worker.run_once()
+
+        assert len(handler.received) == 1
+        assert handler.received[0].first_reaction_at == 1000.0
+
+    def test_이미_찍힌_첫_반응_시각은_재처리때_밀리지_않는다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=True))
+        worker, queue, _client = make_worker(database=database, handler=handler, now=lambda: 2000.0)
+        queue.enqueue(ctx("1.1").with_first_reaction(1500.0))
+
+        worker.run_once()
+
+        assert handler.received[0].first_reaction_at == 1500.0
 
     def test_성공하면_처리_표식과_완료_표식이_남는다(self, database) -> None:
         handler = FakeHandler(outcome=HandleOutcome(ok=True))
@@ -495,6 +547,38 @@ class TestCatchUpDedup:
         # 대표건이 실행 중이었으므로 다시 등록되지 않는다 — pending 에 새 행이 없다
         assert queue.pending() == []
 
+    def test_소켓으로_들어와_끝난_건은_캐치업이_다시_돌리지_않는다(self, database) -> None:
+        """기동 캐치업이 워커 루프와 함께 돌아, 소켓 이벤트로 이미 처리한
+        메시지를 캐치업이 다시 찾을 수 있다. (channel, message_ts) UNIQUE 가
+        완료 행으로 막는다(job_retention_sec 7일 > catchup_window_sec 2시간)."""
+        handler = FakeHandler(outcome=HandleOutcome(ok=True))
+        worker, queue, _client = make_worker(database=database, handler=handler)
+        assert queue.enqueue(ctx("1.1", "T1")) is True  # 소켓 경로
+        assert worker.run_once() is True
+
+        worker._catchup = FakeCatchup(
+            CatchupReport(missed=[ctx("1.1", "T1")], skipped=[], unchecked_channels=[])
+        )
+        worker.catch_up(["C1"])
+
+        assert queue.pending() == []
+        assert worker.run_once() is False
+        assert [c.ts for c in handler.received] == ["1.1"]
+
+    def test_캐치업이_먼저_넣은_건은_소켓_이벤트가_다시_넣지_않는다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=True))
+        worker, queue, _client = make_worker(database=database, handler=handler)
+        worker._catchup = FakeCatchup(
+            CatchupReport(missed=[ctx("1.1", "T1")], skipped=[], unchecked_channels=[])
+        )
+        worker.catch_up(["C1"])
+
+        # 접수기(IngressService._store)도 같은 queue.enqueue 를 부른다
+        assert queue.enqueue(ctx("1.1", "T1")) is False
+        assert worker.run_once() is True
+        assert worker.run_once() is False
+        assert [c.ts for c in handler.received] == ["1.1"]
+
     def test_skipped는_큐에_안_들어간다(self, database) -> None:
         worker, queue, _client = make_worker(database=database)
         rep = ctx("1.2", "T1")
@@ -520,6 +604,40 @@ class TestCatchUpDedup:
 
         assert ("add", "C1", "1.2", "white_check_mark") in client.calls
         assert ("add", "C1", "1.1", "white_check_mark") in client.calls
+
+
+class TestQueue대표건묶음:
+    """상시 큐에 같은 스레드로 밀린 요청은 최신 1건만 돌고 나머지는 표식만
+    받는다 (A30). catch_up 의 묶음 처리를 접수 경로에도 적용한 것이다."""
+
+    def test_같은_스레드_3건은_1건_처리_2건_표식만_남는다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=True))
+        worker, queue, client = make_worker(database=database, handler=handler)
+        for i in range(3):
+            queue.enqueue(ctx(f"1.{i}", "T1"))
+            time.sleep(0.001)
+
+        assert worker.run_once() is True
+
+        # 최신 1건만 처리기에 넘어간다
+        assert [c.ts for c in handler.received] == ["1.2"]
+        # 나머지 2건은 대표와 같은 완료 표식을 받는다
+        assert ("add", "C1", "1.2", "white_check_mark") in client.calls
+        assert ("add", "C1", "1.1", "white_check_mark") in client.calls
+        assert ("add", "C1", "1.0", "white_check_mark") in client.calls
+        assert queue.counts() == {"COMPLETED": 3}
+
+    def test_침묵_대표건의_묻힌_건은_입다문_표식을_받는다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=True, silent=True))
+        worker, queue, client = make_worker(database=database, handler=handler)
+        queue.enqueue(ctx("1.0", "T1"))
+        time.sleep(0.001)
+        queue.enqueue(ctx("1.1", "T1"))
+
+        worker.run_once()
+
+        assert ("add", "C1", "1.1", "zipper_mouth_face") in client.calls
+        assert ("add", "C1", "1.0", "zipper_mouth_face") in client.calls
 
 
 class TestShutdown:
@@ -880,6 +998,35 @@ class Test동시처리상한:
         멈춤 = [False, True]
         worker.run_forever(lambda: 멈춤.pop(0) if 멈춤 else True)
         assert handler.끝났다
+
+
+class Test점검과_상한을_나눠_쓴다:
+    """접수 프로세스의 점검과 워커의 요청이 같은 상한을 쓴다. 원본은 둘을
+    한 `_slots` 로 묶었다 (bot.py:1166, A16)."""
+
+    def test_점검이_자리를_다_쓰면_요청을_집지_않는다(self, database, tmp_path) -> None:
+        from slack_cli_agent.core.slots import FileSlots
+
+        handler = FakeHandler()
+        settings = RuntimeSettings(heartbeat_interval_sec=0.01, max_concurrent=2)
+        # 다른 프로세스(접수)의 점검 둘이 자리를 다 쥔 상태다.
+        review = FileSlots(tmp_path / "slots", 2)
+        held = [review.acquire(timeout=0), review.acquire(timeout=0)]
+        worker, queue, _client = make_worker(
+            database=database, handler=handler, settings=settings,
+            slots=FileSlots(tmp_path / "slots", 2),
+        )
+        queue.enqueue(ctx("1.0"))
+
+        turns = [False] * 3 + [True]
+        worker.run_forever(lambda: turns.pop(0))
+        assert handler.received == []
+
+        review.release(held.pop())
+        turns = [False] * 20 + [True]
+        worker.run_forever(lambda: turns.pop(0) if turns else True)
+        assert [c.ts for c in handler.received] == ["1.0"]
+        review.release(held.pop())
 
 
 class Test캐치업도_관리_명령_판정을_거친다:

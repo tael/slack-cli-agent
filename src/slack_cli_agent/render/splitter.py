@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from itertools import count
 
 from slack_cli_agent.config.settings import RuntimeSettings
 
@@ -20,6 +22,61 @@ HEADING_LINE = re.compile(r"^\s{0,3}#{1,6}\s")
 #: run (200 of them still posted fine). The headroom covers the context
 #: block the publisher attaches to the last chunk.
 MAX_BLOCKS = 45
+
+
+@dataclass(frozen=True)
+class CsvFilePayload:
+    """An outgoing ```csv fenced block, rendered for upload instead of display.
+
+    `content` is already UTF-8-with-BOM encoded (`str.encode("utf-8-sig")`)
+    so Excel opens Korean headers without mangling them -- mirrors
+    bot.py:6288-6290's manual `"﻿" + content`, done through the codec
+    rather than a literal character. Actually calling `files_upload_v2` with
+    this payload is the publisher's job (slack/publisher.py, not owned by
+    this bundle); this only produces the bytes and the note left in the body.
+    """
+
+    filename: str
+    content: bytes
+    note: str
+
+
+# A fenced block's info string (the text right after the opening fence),
+# captured loosely like bot.py:6263's `FENCE_BLOCK` -- only the first
+# whitespace-separated token of it is checked against "csv" below, so an
+# info string with extra words after the language name still counts.
+_FENCE_BLOCK_RE = re.compile(r"```([^\n`]*)\n(.*?)\n```[ \t]*(?:\n|\Z)", re.DOTALL)
+
+
+def extract_csv_blocks(text: str, *, start_index: int = 1) -> tuple[str, list[CsvFilePayload]]:
+    """Pulls every ```csv fenced block out of outgoing text into a file
+    payload, leaving a one-line note in its place.
+
+    Matches bot.py:6279-6296's rule: csv is always converted regardless of
+    length ("csv 원하면 무조건 csv 주면 됨", 2026-10-18 지시) -- unlike other
+    fenced languages, which only become a file past a size floor (gap D27,
+    out of this bundle's scope). A short csv block left inline can't be
+    downloaded and opened in Excel, so there's no floor to check here.
+    """
+    payloads: list[CsvFilePayload] = []
+    numbers = count(start_index)
+
+    def take(m: re.Match[str]) -> str:
+        info = (m.group(1) or "").strip()
+        lang = info.split()[0].lower() if info else ""
+        if lang != "csv":
+            return m.group(0)
+        body = m.group(2)
+        filename = f"csv_{next(numbers)}.csv"
+        content = body.rstrip("\n") + "\n"
+        note = f"CSV는 파일 {filename} 로 올렸습니다. 이 메시지 아래에 첨부됩니다."
+        payloads.append(
+            CsvFilePayload(filename=filename, content=content.encode("utf-8-sig"), note=note)
+        )
+        return note
+
+    out = _FENCE_BLOCK_RE.sub(take, text)
+    return out, payloads
 
 
 def _block_kinds(text: str) -> list[str]:

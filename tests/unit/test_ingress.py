@@ -26,6 +26,7 @@ from slack_cli_agent.core.access import RequestAccess
 from slack_cli_agent.core.context import RequestContext
 from slack_cli_agent.core.ingress import IngressService
 from slack_cli_agent.core.spawn import InlineTaskSpawner, TaskSpawner
+from slack_cli_agent.core.unregistered import UnregisteredNoticeLog
 from slack_cli_agent.jobs.ports import Job, JobQueue, ReclaimResult
 from slack_cli_agent.observability.notices import NoticeCatalog, NoticeKey
 from slack_cli_agent.reliability.dedup import DeduplicationTracker
@@ -90,6 +91,11 @@ class FakeJobQueue:
         return self._enqueue_result
 
     def claim_next(self, worker_id: str) -> Job | None:
+        raise NotImplementedError
+
+    def claim_next_representative(
+        self, worker_id: str
+    ) -> tuple[Job | None, list[RequestContext]]:
         raise NotImplementedError
 
     def heartbeat(self, job_id: int, lease: str) -> None:
@@ -197,6 +203,8 @@ def make_ingress(
     lock_budget: Any = None,
     channels: ChannelRegistry | None = None,
     is_shutting_down: Callable[[], bool] | None = None,
+    dm_reply: Callable[[str, str, str], None] | None = None,
+    dm_attempt: Callable[[str, str, str], None] | None = None,
 ) -> IngressService:
     profile = make_profile(tmp_path)
     channels = channels if channels is not None else make_channels(tmp_path)
@@ -227,6 +235,10 @@ def make_ingress(
             channel_name=lambda channel: f"이름-{channel}",
             notices=NoticeCatalog(),
             reply=reply,
+            owner_user_id="U_OWNER",
+            bot_name="예시봇",
+            self_user_id=lambda: "U_BOT",
+            notice_log=UnregisteredNoticeLog(tmp_path / "unregistered.json"),
         ),
         strip_self_mention=SelfMentionStripper(fake_identity()).remove_self,
         dedup=dedup if dedup is not None else DeduplicationTracker(),
@@ -255,6 +267,8 @@ def make_ingress(
         lock_budget=lock_budget,
         notices=NoticeCatalog(),
         is_shutting_down=is_shutting_down,
+        dm_reply=dm_reply,
+        dm_attempt=dm_attempt,
     )
 
 
@@ -379,8 +393,8 @@ class Test접근_판정:
     """원본 bot.py:3695 `is_allowed` 를 접수 경로에 되살린 것이다.
 
     소유자는 어디서든 통과하고, 그 밖의 DM 은 거절하고, 채널은 등록된 것만
-    통과한다. 거절은 조용하다 - 안내를 올리면 모르는 사람에게 봇이 있다는 것을
-    알리게 되고 원본과도 달라진다.
+    통과한다. DM 거절은 조용하다. 미등록 채널에서 이름을 부른 사람에게는
+    소유자를 불러 등록을 유도한다(원본 2026-11-05).
     """
 
     def test_소유자는_미등록_채널에서도_통과한다(self, listener, admin_router, tmp_path) -> None:
@@ -394,7 +408,11 @@ class Test접근_판정:
 
         assert len(queue.enqueued) == 1
 
-    def test_미등록_채널의_제삼자는_무시된다(self, listener, admin_router, tmp_path) -> None:
+    def test_미등록_채널의_제삼자_멘션은_접수하지_않고_소유자를_부른다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """2026-11-05 원본 bot.py notify_unregistered_channel. 전에는 무응답이라
+        부른 사람은 봇이 고장 난 줄 알았다."""
         queue = FakeJobQueue()
         replies: list[tuple[str, str, str]] = []
         client = FakeWebClient()
@@ -404,11 +422,65 @@ class Test접근_판정:
             channels=make_channels(tmp_path, NO_CHANNELS),
         )
 
-        ingress.handle_app_mention(mention_event(channel="C9", user="U1"))
+        ingress.handle_app_mention(mention_event(channel="C9", user="U1", ts="5.0"))
 
         assert queue.enqueued == []
-        assert replies == [], "거절을 알리면 모르는 사람에게 봇을 알리게 된다"
         assert client.reaction_add_calls == []
+        assert len(replies) == 1
+        channel, thread_ts, body = replies[0]
+        assert (channel, thread_ts) == ("C9", "5.0")
+        assert "<@U_OWNER>" in body and "<@U1>님" in body
+
+    def test_미등록_채널의_봇_멘션은_소유자를_부르지_않는다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, replies=replies,
+            channels=make_channels(tmp_path, NO_CHANNELS),
+        )
+        event = mention_event(channel="C9", user="U_PEER")
+        event["bot_id"] = "B_PEER"
+
+        ingress.handle_app_mention(event)
+
+        assert replies == []
+
+    def test_봇_자신이_미등록_채널에_초대되면_소유자를_부른다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        queue = FakeJobQueue()
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path,
+            replies=replies, channels=make_channels(tmp_path, NO_CHANNELS),
+        )
+
+        ingress.handle_message({
+            "type": "message", "subtype": "channel_join", "channel": "C9",
+            "user": "U_BOT", "inviter": "U9", "ts": "6.0", "text": "<@U_BOT> 님이 채널에 참여함",
+        })
+
+        assert queue.enqueued == []
+        assert len(replies) == 1
+        channel, thread_ts, body = replies[0]
+        assert (channel, thread_ts) == ("C9", "")
+        assert "<@U_OWNER>" in body and "<@U9>님이" in body
+
+    def test_소유자가_봇을_초대하면_부르지_않는다(self, listener, admin_router, tmp_path) -> None:
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=FakeJobQueue(), admin_router=admin_router,
+            tmp_path=tmp_path, replies=replies, channels=make_channels(tmp_path, NO_CHANNELS),
+        )
+
+        ingress.handle_message({
+            "type": "message", "subtype": "channel_join", "channel": "C9",
+            "user": "U_BOT", "inviter": "U_OWNER", "ts": "6.0",
+        })
+
+        assert replies == []
 
     def test_등록된_채널의_제삼자는_통과한다(self, listener, admin_router, tmp_path) -> None:
         queue = FakeJobQueue()
@@ -472,7 +544,7 @@ class Test접근_판정:
 
         ingress.handle_app_mention(mention_event(channel="C9", user="U1", text="!ping"))
 
-        assert replies == []
+        assert all("pong" not in body for _, _, body in replies)
 
 
 class Test소유자_호출로_채널이_등록된다:
@@ -997,8 +1069,8 @@ class Test멘션이_붙은_관리_명령:
         assert queue.enqueued[0].text == "배포 상태 알려줘"
 
     def test_남을_부른_멘션은_큐에_남는다(self, listener, admin_router, tmp_path) -> None:
-        """전부 지우면 누구를 불렀는지가 모델에게 안 간다. 이름으로 바꾸는
-        것은 프롬프트를 만드는 자리가 한다 (sca-za2a)."""
+        """전부 지우면 누구를 불렀는지가 모델에게 안 간다. 본문은 원문을
+        두고 불린 사람 이름은 대화록 머리가 적는다 (sca-za2a)."""
         queue = FakeJobQueue()
         ingress = make_ingress(
             listener=listener, queue=queue, admin_router=admin_router, tmp_path=tmp_path
@@ -1326,6 +1398,25 @@ class Test빈_본문은_되묻는다:
         )
 
         ingress.handle_app_mention(mention_event())
+
+        assert replies == []
+        assert len(queue.enqueued) == 1
+
+    def test_첨부만_있는_멘션은_되묻지_않고_접수된다(
+        self, listener, admin_router, tmp_path
+    ) -> None:
+        """음성 메모는 보통 본문이 비었거나 멘션뿐이다. 마메치는 2026-10-22 부터
+        첨부만 있는 말도 요청으로 받는다(bot.py:7705, G6 검토)."""
+        queue = FakeJobQueue()
+        replies: list[tuple[str, str, str]] = []
+        ingress = make_ingress(
+            listener=listener, queue=queue, admin_router=admin_router,
+            tmp_path=tmp_path, replies=replies,
+        )
+
+        ingress.handle_app_mention(mention_event(
+            text="<@U_BOT>", files=[{"name": "voice.m4a", "mimetype": "audio/mp4"}],
+        ))
 
         assert replies == []
         assert len(queue.enqueued) == 1

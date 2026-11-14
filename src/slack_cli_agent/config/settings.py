@@ -41,6 +41,11 @@ class RuntimeSettings:
     history_read_pause_sec: float = 2.0
     history_max_msgs: int = 40
     history_max_chars: int = 12000
+    #: How many conversations_replies pages read_full_thread follows via next_cursor
+    #: before stopping. A thread longer than one page (history_max_msgs) returns
+    #: its replies oldest-first, so without this the most recent replies are
+    #: dropped (F17, mametchi bot.py 되짚기 페이지네이션). Caps a runaway thread.
+    history_max_pages: int = 10
     #: Cap on the assembled system prompt, in UTF-8 bytes. 0 or less turns the
     #: cap off. Where the default comes from: docs/지침-예산.md.
     system_prompt_budget_bytes: int = DEFAULT_SYSTEM_PROMPT_BUDGET_BYTES
@@ -94,6 +99,64 @@ class RuntimeSettings:
 
     late_rewrite_min_ratio: float = 0.6
     late_rewrite_min_chars: int = 200
+
+    #: B9: a separate model rewrites figurative wording before posting
+    #: (bot.py:8162-8176). Off by default because it adds one model call per
+    #: reply; a profile turns it on. Work-channel replies shorter than
+    #: figurative_min_chars are skipped, chat-channel replies never are.
+    figurative_check: bool = False
+    figurative_min_chars: int = 80
+    figurative_model: str = "sonnet"
+    figurative_timeout_sec: float = 45
+    #: 2026-11-11 (orchestration D): run the figurative check after posting
+    #: and fix the message with chat.update, instead of holding the post for
+    #: the model call (7.7-18.4 s per work-channel reply, 4.6% of turn time
+    #: over 181 turns). The first notification preview then shows the
+    #: uncorrected text. Applies only to a reply that went up as one message.
+    figurative_after_post: bool = False
+    #: 2026-11-12: run the corrector inside the Stop hook beside verify, on
+    #: the same draft, and use its verdict in the guard (guard/figurative.
+    #: Precompute). The guard runs it itself when the body differs.
+    figurative_in_stop_hook: bool = True
+
+    #: 2026-11-12 (orchestration E): pass the system prompt with
+    #: --system-prompt and put a cache boundary between the fixed sections
+    #: and the per-speaker / per-request ones. Claude Code then caches the
+    #: fixed part on its own, so a new thread in the same channel reads it
+    #: instead of rewriting ~100k tokens (290 of 290 new threads whose
+    #: instruction block had not been seen rewrote it, 11/7-11/12). It also
+    #: drops Claude Code's default instructions (~2.9k tokens), so off until
+    #: measured.
+    system_prompt_split: bool = False
+
+    #: E1-E8: answer a non-owner's DM with an isolated read-only turn
+    #: instead of ignoring it (mametchi notify_dm_redirect). Off by default:
+    #: a colleague sees the bot answer, so a profile opts in.
+    dm_reply: bool = False
+    #: Replies one person gets a day; the first DM past it gets one notice,
+    #: later ones are only recorded. 0 means no cap. mametchi raised 10 to 50
+    #: on 2026-10-27.
+    dm_daily_limit: int = 50
+    #: A person's probe count for the day that warns the owner (mametchi
+    #: DM_PROBE_WARN_AT).
+    dm_probe_warn_at: tuple[int, ...] = (2, 5)
+    #: Empty uses the engine's own model. mametchi used opus: on 2026-10-14
+    #: sonnet misread ordinary questions as probes.
+    dm_model: str = ""
+    #: KST hour the daily DM report goes out, for yesterday (mametchi 09시).
+    dm_report_hour: int = 9
+    #: How often the report job checks whether it is due; the check is a file read.
+    dm_report_interval_sec: float = 600
+    #: With `dm_reply` off, still record a colleague's refused DM (who and
+    #: what) and keep the daily report running so the owner sees the
+    #: attempts. A day without attempts sends nothing in this mode. On by
+    #: default: a silently dropped DM leaves no trace otherwise (2026-11-11).
+    dm_attempt_log: bool = True
+    #: With `dm_reply` off, the line posted back to a colleague's DM so the
+    #: refusal is not silent. Empty posts nothing. Each bot sends people to a
+    #: different place, so the text comes from the profile (2026-11-13 김태일
+    #: 지시 : 봇마다 답 안 보내는 메시지가 다르다, 다른 안내를 줘야 한다).
+    dm_off_notice: str = ""
 
     progress_tick_sec: float = 3
     progress_idle_sec: float = 45
@@ -180,10 +243,71 @@ class RuntimeSettings:
     # Owner turns also get the MCP servers of the operator's own Claude Code
     # (~/.claude.json), read at boot. See config/operator_mcp.py (sca-kf6j).
     inherit_operator_mcp: bool = False
+    # Tools a channel operator gets, named one by one (mametchi
+    # OWNER_EXTRA_TOOLS). Not derived from owner_tools: that list names whole
+    # servers, and an operator then got the owner's mail and cluster. Server
+    # wildcards in any spelling (mcp__s__*, mcp__s, a bare server name) and
+    # browser actions here are dropped. Empty by default, so an
+    # operator gets nothing until the profile names it.
+    operator_tools: tuple[str, ...] = ()
+    # The lookup bundle every non-owner turn gets on top of base_tools
+    # (mametchi ALLOWED_TOOLS + READ_SHELL_TOOLS): read-only MCP tools and
+    # scoped read wrappers, named one by one. Server wildcards, browser actions
+    # and the bare write tools are dropped. Empty by default; the tool names
+    # are organisation configuration and come from the profile.
+    readonly_tools: tuple[str, ...] = ()
+
+    # Skills granted on every ordinary turn as `Skill(<name>)` entries, even in
+    # a channel with skills disabled -- a read-only query skill a bot should
+    # always be able to reach. The mechanism is common; which skills (if any)
+    # get standing clearance is organisation configuration, so empty by default.
+    always_skills: tuple[str, ...] = ()
 
     # Line prefixes stripped from replies. Defaults to empty since the
     # actual prefix text is org-specific and doesn't belong in code.
     dropped_line_heads: tuple[str, ...] = ()
+
+    # J11/B1: when True, a reply carrying no `[[RECIPIENT:...]]` tag is held
+    # while the tag alone is re-asked once with no tools; still none, and the
+    # turn ends silent so the wrong person never receives a reply the model
+    # never addressed. On by default: every turn's system prompt now demands
+    # the tag (prompt/sections.py RECIPIENT_RULE). A profile can set it false.
+    require_recipient: bool = True
+
+    # S2 MCP 2단계 라우팅. 요청 문장으로 이 턴에 붙일 MCP 서버 묶음을 고른다.
+    # {"always": [...], "groups": {이름: {"when": [키워드 또는 "re:정규식"],
+    # "servers": [...]}}, "fallback": "all"}. 없으면 지금처럼 전부 붙인다.
+    # 형식은 core/mcp_routing.py 가 읽는다.
+    mcp_routing: Mapping[str, Any] | None = field(default=None, hash=False, compare=False)
+
+    # S2 컨텍스트 임계 리셋. 세션 마지막 턴의 호출당 컨텍스트 토큰
+    # (input + cache_read + cache_creation) 이 이 값 이상이면 다음 요청은 새
+    # 세션으로 시작하고 스레드 기록을 다시 읽어 이어 간다. 0 이하는 끈다.
+    # 기본은 끔이다. 첫 호출 바닥이 봇마다 달라(구치파치 S0 268k) 한 값으로 켜면
+    # 이어 가야 할 턴이 모두 새 세션이 된다. 프로필에서 켠다.
+    context_reset_tokens: int = 0
+
+    # 기본 처리 흐름 (W4, 2026-11-10). True 면 Agent 가 열린 티어(소유자,
+    # 운영자, 위임)의 작업 턴에 FLOW_NOTE 를 넣고 plan_gate 훅을 켠다.
+    # 프로필에서 false 로 두면 지침과 훅이 함께 꺼진다.
+    plan_flow: bool = True
+    # 0 보다 크면 엔진 계획 호출(guard/plan_start)과 계획 주입(plan_gate)을
+    # 켠다. 0 이하는 두 훅만 끈다. 엔진에는 PLAN_GATE 로 넘어간다. 2026-11-11
+    # 부터 거부하지 않으므로 값의 크기는 쓰지 않는다.
+    plan_gate_responses: int = 3
+
+    #: The restart supervisor writes an apply-request itself when the install
+    #: checkout's HEAD moves on main with a clean tree. 2026-11-12: bots share
+    #: one editable install, and mametchi has no restart after an update, so
+    #: its worker kept the code it booted with at 11/11 18:39 and never loaded
+    #: fbee38f, 9ea87d9 or 6b953e4 while hook scripts already ran them.
+    supervisor_auto_apply: bool = True
+    #: How long that request waits for the worker to have no running job.
+    #: Past it the request is written anyway, so a busy bot still updates.
+    #: 2026-11-07..11-13: restarts during turns lost four turns (2,981s).
+    #: 600 s covers most turns (p90 about 5 min) and keeps the window where
+    #: hook scripts run new code beside an old worker short.
+    restart_idle_max_wait_sec: float = 600
 
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """Overrides only the fields present in `values`; unknown keys are

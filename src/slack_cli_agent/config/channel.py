@@ -63,14 +63,40 @@ def _now() -> float:
 KNOWN_KEYS = frozenset(
     {
         "name", "mode", "workdir", "model", "effort", "persona", "knowledge",
-        "trusted_users", "answer_unaddressed", "session_scope",
-        "disclose_mechanism", "skills", "light_context", "rich", "chat",
-        "progress", "bot_mentions",
+        "trusted_users", "answer_unaddressed", "answer_top_level", "flat_reply",
+        "session_scope",
+        "disclose_mechanism", "full_authority", "operator_full", "skills",
+        "light_context", "rich", "chat",
+        "progress", "bot_mentions", "code_first", "peer_turn_limit", "stats_footer",
         "user_tools", "tool_enforcement",
+        "operators", "operator_bots", "airflow_admins", "extra_tools",
     }
 )
 """Channel-setting keys the core reads. Org-specific keys (like org_admins)
-aren't here — plugins read those from `extra`."""
+aren't here — plugins read those from `extra`.
+
+I82 — disposition of mametchi channels.json keys that are *not* core fields:
+
+* ``advisor`` — routing key. The advisor model belongs to the org, so it
+  stays in ``extra``; the core reads it only through advisor_enabled below.
+* ``operators`` / ``airflow_admins`` / ``extra_tools`` — promoted to core
+  fields (A9): they now decide the turn's tool list (auth/policy.py), so a
+  bad value must be caught by preflight rather than read silently.
+* ``broadcast`` — a per-channel flag an org's post MCP reads (mametchi
+  mermaid_render.py) to allow posting into the channel body, not just a
+  thread; ``extra`` only.
+* ``shadow_source`` — the paired source channel a shadow/mirror channel
+  mirrors (mametchi shadow_source_api); ``extra`` only. shadow/service.py
+  reads it, and ``shadow_judge`` beside it, to run shadow evaluation (G4).
+* ``mention_only`` — *not* a replacement key: answering only mentions is the
+  core default (``answer_unaddressed`` and ``answer_top_level`` both off), so
+  this is absorbed by the default rather than needing its own field.
+* ``added_at`` — bookkeeping metadata the join flow writes, never
+  behaviour; harmless in ``extra``.
+* ``join`` — ``true`` makes the bot call conversations.join on the channel at
+  every start (mametchi join_registered_channels); ``extra`` only.
+  reliability/channel_join.py reads it (G3).
+"""
 
 #: How hard an engine must enforce this channel's tool list. `audited` lets an
 #: engine that can't hold an exact allowlist run anyway with the downgrade
@@ -103,8 +129,61 @@ class ChannelConfig:
     """Per-user extra tools. The org-specific value (an ops script, say) lives
     in the channel file, not in the installed package (sca-ww4)."""
     answer_unaddressed: bool = False
+    peer_turn_limit: int | None = None
+    """Bot-to-bot exchange cap for this channel's threads. None keeps the
+    process default, 0 turns the cap off (2026-11-08 김태일 "무제한턴 방지를
+    끄는 옵션을 채널별로 두어야겠네")."""
+    answer_top_level: bool = False
+    """Answers a mention-less *top-level* message (not a thread reply) in this
+    channel. `answer_unaddressed` only releases thread replies; a top-level
+    message with no mention is otherwise dropped unconditionally. A team
+    channel where people talk to each other must leave this off so the bot
+    doesn't butt in -- a separate key from `answer_unaddressed` for exactly
+    that reason (mametchi answer_top_level, bot.py:10089)."""
+    stats_footer: bool = False
+    """Ends each reply with elapsed time, model, effort, token count and cache
+    hit rate instead of the short elapsed/model line."""
+    flat_reply: bool = False
+    """Posts the reply straight to the channel instead of opening a thread off
+    the triggering message. DMs already post flat; this extends that to a
+    channel that reads as a feed rather than a conversation (mametchi
+    flat_reply, bot.py:6458)."""
     session_scope: str = "thread"
     disclose_mechanism: bool = False
+    full_authority: bool = False
+    """Grants the owner full authority in this channel as if it were their own
+    DM -- mechanism disclosure, usage figures, self-configuration. Off by
+    default, so a normal channel still confines full authority to the DM. A
+    channel the owner treats as their own console turns it on. `disclose_mechanism`
+    is the narrower flag (explanations only); this is the DM-equivalent."""
+    operator_full: bool = False
+    """Lets a non-owner this channel names in `user_tools` actually use a
+    write-capable tool it granted by its bare name (`Bash`, `Edit`, `Write`,
+    `NotebookEdit`). Off by default, so naming one of those tools for someone
+    in an ordinary channel still does nothing -- AccessPolicy.channel_tools_for
+    drops it before it reaches the engine's tool list. Both axes key off this
+    one flag: it also tells engine/claude.py's settings overlay not to deny
+    the tool once the name axis let it through, so naming a tool and actually
+    getting it never disagree again (that disagreement is the mametchi bug
+    this is named after, bot.py's `operator_full`, closed 2026-10-14 there
+    after being open 2026-10-02~10-14). Scoped grants like
+    `Bash(ops_ctl.sh:*)` are unaffected either way -- only the bare tool name
+    needs this flag."""
+    operators: frozenset[str] = frozenset()
+    """Users who may make this bot act here (mametchi operators). A non-owner
+    listed here, or anyone when it holds ``"*"``, gets the profile's
+    operator_tools minus the bare write tools (``operator_full`` returns
+    those). A bot never counts here; see ``operator_bots``."""
+    operator_bots: frozenset[str] = frozenset()
+    """Bot accounts that act here as operators, named one by one ("*" is not
+    honored for bots). Standing, unlike the delegation ledger's 30 minutes,
+    so it is meant for an owner-only channel. 2026-11-10 김태일 지시로
+    private-taeil 에서 구치파치가 마메치·데이전트 설정을 바꿀 수 있게 했다."""
+    airflow_admins: frozenset[str] = frozenset()
+    """Users who get the profile's airflow_ctl wrapper as a scoped Bash grant."""
+    extra_tools: tuple[str, ...] = ()
+    """Tools every turn in this channel gets, owner included (mametchi
+    extra_tools). A bare write tool still needs ``operator_full`` for a non-owner."""
     skills: bool = False
     light_context: bool = False
     rich: bool = DEFAULT_RICH
@@ -125,6 +204,13 @@ class ChannelConfig:
     keep each other awake. A channel where bots hand work to each other turns
     it on; BotMentionGuard still strips the mention of whoever asked, which is
     the leg that closes the loop."""
+    code_first: bool = False
+    """Whether an answer leaning on documents must first look at the code and
+    cite the code host (G13). Off by default: only a channel whose questions
+    are about current behaviour (where a tracker can lag the code) wants it.
+    The deployment turns the set of code-first channels into the
+    CODE_FIRST_CHANNELS env the Stop hook reads (finish_review.code_first_doc_only);
+    mametchi code_first_hook.py, bot.py."""
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -165,8 +251,18 @@ class ChannelConfig:
                 for user, tools in (data.get("user_tools") or {}).items()
             },
             answer_unaddressed=bool(data.get("answer_unaddressed", False)),
+            answer_top_level=bool(data.get("answer_top_level", False)),
+            peer_turn_limit=_peer_turn_limit(data.get("peer_turn_limit")),
+            stats_footer=bool(data.get("stats_footer", False)),
+            flat_reply=bool(data.get("flat_reply", False)),
             session_scope=str(data.get("session_scope") or "thread"),
             disclose_mechanism=bool(data.get("disclose_mechanism", False)),
+            full_authority=bool(data.get("full_authority", False)),
+            operator_full=bool(data.get("operator_full", False)),
+            operators=_id_set(data.get("operators")),
+            operator_bots=_id_set(data.get("operator_bots")),
+            airflow_admins=_id_set(data.get("airflow_admins")),
+            extra_tools=_tool_names(data.get("extra_tools")),
             skills=bool(data.get("skills", False)),
             light_context=bool(data.get("light_context", False)),
             rich=bool(data.get("rich", DEFAULT_RICH)),
@@ -174,6 +270,7 @@ class ChannelConfig:
             tool_enforcement=enforcement,
             progress=bool(data.get("progress", DEFAULT_PROGRESS)),
             bot_mentions=bool(data.get("bot_mentions", False)),
+            code_first=bool(data.get("code_first", False)),
             extra={k: v for k, v in data.items() if k not in KNOWN_KEYS},
         ), rejected
 
@@ -206,6 +303,52 @@ def channel_is_rich(config: HasRich | None) -> bool:
     "plain text" -- reading it as the latter stripped every answer of a bot with
     no channel file (sca-75v)."""
     return ChannelConfig(channel_id="").rich if config is None else config.rich
+
+
+def advisor_enabled(config: ChannelConfig | None) -> bool:
+    """Whether the channel turned the advisor structure on.
+
+    The key lives in ``extra`` as ``"advisor": {"executor": "<model>"}``
+    (I82: the model name belongs to the org). Only the dict shape counts,
+    same as mametchi advisor_executor (bot.py): a stray ``true`` or string
+    does not switch the advisor prompt and the Stop-hook judgement on.
+    """
+    return config is not None and isinstance(config.extra.get("advisor"), Mapping)
+
+
+def _id_set(raw: Any) -> frozenset[str]:
+    """A list of user IDs; anything that isn't a list reads as nobody."""
+    if not isinstance(raw, (list, tuple)):
+        return frozenset()
+    return frozenset(str(u) for u in raw if str(u).strip())
+
+
+def _tool_names(raw: Any) -> tuple[str, ...]:
+    """A list of tool names; non-strings and blanks are dropped (mametchi
+    channel_extra_tools), and a non-list reads as none."""
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(t.strip() for t in raw if isinstance(t, str) and t.strip())
+
+
+def airflow_admins(config: ChannelConfig | None) -> frozenset[str]:
+    """Slack user IDs the channel lists under ``airflow_admins``.
+    Unlisted channels give nobody the Airflow role (mametchi authz.airflow_admins)."""
+    if config is None:
+        return frozenset()
+    return config.airflow_admins
+
+
+def is_channel_operator(config: ChannelConfig | None, user: str, *, is_bot: bool = False) -> bool:
+    """True when the channel's ``operators`` list names the user or
+    holds ``"*"``. A bot is never an operator: letting a bot's mention open the
+    operator path erases the permission boundary (mametchi authz.is_operator)."""
+    if config is None or not user:
+        return False
+    if is_bot:
+        # Only a bot the channel names in operator_bots; "*" never covers bots.
+        return user in config.operator_bots
+    return "*" in config.operators or user in config.operators
 
 
 class ChannelRegistry:
@@ -266,7 +409,16 @@ class ChannelRegistry:
         """
         with self._lock:
             raw = self._read_raw()
-            if channel_id in raw:
+            existing = raw.get(channel_id)
+            if existing is not None:
+                # 이전 조회 실패로 이름 자리에 채널 ID(또는 빈 값)가 남아 있으면
+                # 실제 이름이 들어온 지금 보정한다 (bot.py:3645 register_channel).
+                # 새 등록은 아니므로 False 를 돌려 재안내를 막는다.
+                if name and name != channel_id and existing.get("name") in ("", channel_id):
+                    entry = dict(existing)
+                    entry["name"] = name
+                    raw[channel_id] = entry
+                    self._write_raw(raw)
                 return False
             raw[channel_id] = {"name": name or channel_id, "mode": "default"}
             self._write_raw(raw)
@@ -475,3 +627,14 @@ def channel_slug(channel: str, config: ChannelConfig | None) -> str:
     if config is None:
         return channel
     return config.knowledge or config.name or channel
+
+
+def _peer_turn_limit(value: object) -> int | None:
+    """channels.json peer_turn_limit : 없으면 None (기본값), 0 은 한도 끔, 양수는 그 값."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None

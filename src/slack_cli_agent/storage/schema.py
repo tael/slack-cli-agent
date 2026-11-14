@@ -225,6 +225,88 @@ retention has to outlast the catch-up window for that reason.
 """
 
 
+V10_WATCH_JOB_DUE_AT_SQL = """
+ALTER TABLE watch_jobs ADD COLUMN due_at REAL;
+"""
+"""Deadline for a `[[WATCH@YYYY-MM-DD: ...]]` promise, as an epoch timestamp.
+
+NULL means no deadline — checked on the usual min-gap cadence, same as every
+row written before this column existed. When set, `due()` leaves the job
+alone until that time arrives, so a week-long promise doesn't get polled
+every five minutes for nothing, and `expired()` measures the job's age from
+the deadline rather than from registration — the waiting period before the
+deadline must not eat into the time budget for giving up (bot.py:11028-11030).
+"""
+
+
+V11_AWAITING_REPLY_SQL = """
+CREATE TABLE awaiting_replies (
+  channel    TEXT NOT NULL,
+  thread_ts  TEXT NOT NULL,
+  marked_at  REAL NOT NULL,
+  PRIMARY KEY (channel, thread_ts)
+);
+"""
+"""Per-thread "waiting on a human decision" flag, surviving a restart.
+
+Ports bot.py:1515-1518's AWAITING_FILE/set_awaiting/is_awaiting. A short
+approval ("좋아") only reads as answering a pending decision, not a stray
+reaction, when the bot's own last turn in that thread actually asked for
+one — and the decision can come hours later, so this has to survive a
+restart the same way a session record does. Overwritten on every turn
+rather than explicitly cleared: a turn that isn't awaiting a reply removes
+the row, so there is nothing to garbage-collect beyond what age (checked by
+the reader, not stored) already excludes.
+"""
+
+
+V12_SHADOW_SQL = """
+CREATE TABLE shadow_seen (
+  source  TEXT PRIMARY KEY,
+  last_ts TEXT NOT NULL
+);
+CREATE TABLE shadow_items (
+  source     TEXT NOT NULL,
+  ts         TEXT NOT NULL,
+  payload    TEXT NOT NULL,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY (source, ts)
+);
+"""
+"""Shadow evaluation (G4, bot.py shadow_qa.json): how far each source
+channel was read, and one row per mirrored question with its link post,
+blind answer and verdict. A file rewritten whole by parallel answer threads
+lost rows; a row per question does not."""
+
+
+V13_SESSION_TIER_SQL = """
+ALTER TABLE sessions ADD COLUMN tier TEXT NOT NULL DEFAULT '';
+"""
+"""The speaker tier of the turn that opened a session. A resumed engine
+session keeps that turn's instructions, so a turn of another tier opens a new
+session instead (session/manager.py). Existing rows get '' and are not
+resumed by a turn that names its tier."""
+
+
+V14_SESSION_CONTEXT_SQL = """
+ALTER TABLE sessions ADD COLUMN mcp_servers TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN last_context_tokens INTEGER NOT NULL DEFAULT 0;
+"""
+"""S2 컨텍스트 다이어트. mcp_servers 는 이 세션에서 지금까지 붙인 MCP 서버
+이름(쉼표 구분, '*' 는 전부, '' 는 기록 없음)이라 재개 턴이 앞서 쓴 도구를
+잃지 않게 한다. last_context_tokens 는 마지막 턴의 호출당 컨텍스트 토큰으로,
+임계 리셋(session/manager.py)이 읽는다."""
+
+
+V15_SESSION_PROMPT_FINGERPRINT_SQL = """
+ALTER TABLE sessions ADD COLUMN prompt_fingerprint TEXT NOT NULL DEFAULT '';
+"""
+"""세션을 연 턴의 시스템 지침 지문. claude --resume 은 --append-system-prompt 를
+반영하지 않아 지침 파일을 고쳐도 열린 세션은 첫 턴 지침을 쓴다. 지문이 다른
+턴은 새 세션을 연다 (session/manager.py). 기존 행은 '' 이고, 지문을 쓰는
+claude 턴은 이 행을 이어받지 않아 배포 뒤 한 번 새 세션을 연다."""
+
+
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "초기 스키마", _statements(V1_INITIAL_SQL)),
     (2, "세션에 실행 환경 컬럼 추가", _statements(V2_SESSION_RUNTIME_SQL)),
@@ -235,6 +317,12 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (7, "감시 완료 보고의 미발송분 보관", _statements(V7_WATCH_JOB_PENDING_REPORT_SQL)),
     (8, "작업 점유마다 고유한 표를 둔다", _statements(V8_JOB_LEASE_SQL)),
     (9, "관리 명령 점유 원장 추가", _statements(V9_ADMIN_CLAIMS_SQL)),
+    (10, "감시 작업에 기한 추가", _statements(V10_WATCH_JOB_DUE_AT_SQL)),
+    (11, "답 대기 중인 스레드 표시 추가", _statements(V11_AWAITING_REPLY_SQL)),
+    (12, "그림자 평가 상태 추가", _statements(V12_SHADOW_SQL)),
+    (13, "세션에 연 턴의 화자 등급 추가", _statements(V13_SESSION_TIER_SQL)),
+    (14, "세션에 붙인 MCP 서버와 마지막 컨텍스트 토큰 추가", _statements(V14_SESSION_CONTEXT_SQL)),
+    (15, "세션에 연 턴의 시스템 지침 지문 추가", _statements(V15_SESSION_PROMPT_FINGERPRINT_SQL)),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

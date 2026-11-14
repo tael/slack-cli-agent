@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
@@ -78,6 +79,7 @@ class SlackBotIdentity(BotIdentity):
         self._bot_id = ""
         self._team_id = ""
         self._attempted_at: float | None = None
+        self._lock = threading.Lock()
 
     @property
     def user_id(self) -> str:
@@ -143,15 +145,21 @@ class SlackBotIdentity(BotIdentity):
     def _load(self) -> None:
         if self._has_identity():
             return
-        now = self._clock()
-        if self._attempted_at is not None and now - self._attempted_at < self._retry_interval_sec:
-            return
-        self._attempted_at = now
-        try:
-            info = self._client.auth_test() or {}
-        except Exception:  # noqa: BLE001 - a failed lookup here shouldn't block everything downstream
-            log.warning("봇 신원을 조회하지 못했다")
-            info = {}
-        self._user_id = str(info.get("user_id") or "")
-        self._bot_id = str(info.get("bot_id") or "")
-        self._team_id = str(info.get("team_id") or "")
+        # Double-checked under a lock: without it a second thread arriving
+        # while auth_test is in flight reads the empty identity and drops the
+        # first bot-authored mention after a (re)connect.
+        with self._lock:
+            if self._has_identity():
+                return
+            now = self._clock()
+            if self._attempted_at is not None and now - self._attempted_at < self._retry_interval_sec:
+                return
+            self._attempted_at = now
+            try:
+                info = self._client.auth_test() or {}
+            except Exception:  # noqa: BLE001 - a failed lookup here shouldn't block everything downstream
+                log.warning("봇 신원을 조회하지 못했다")
+                info = {}
+            self._user_id = str(info.get("user_id") or "")
+            self._bot_id = str(info.get("bot_id") or "")
+            self._team_id = str(info.get("team_id") or "")

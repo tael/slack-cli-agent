@@ -137,6 +137,12 @@ class Database:
             if version <= current:
                 continue
             with self.transaction() as tx:
+                # Read again under the write lock: ingress and worker boot
+                # together, and the one that read the old version first would
+                # re-run what the other just applied, failing on a duplicate
+                # column (2026-11-09 tier column).
+                if int(tx.execute("PRAGMA user_version").fetchone()[0]) >= version:
+                    continue
                 for statement in statements:
                     tx.execute(statement)
                 # PRAGMA doesn't accept parameter binding; version is a code constant.

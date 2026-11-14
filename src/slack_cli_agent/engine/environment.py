@@ -32,11 +32,80 @@ directly, so tests aren't coupled to the real process environment.
 
 from __future__ import annotations
 
+import re
+
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
 
 from ..core.errors import ConfigError
+
+#: Fixed values that stop git and gh from waiting on a terminal (C11). A bot
+#: turn has no one at the keyboard: a credential prompt or a gh confirmation
+#: holds the process until the turn timeout kills it. Ported from mametchi's
+#: turn_budget_env (bot.py). Not credentials, so every engine gets them, and
+#: they overwrite whatever the parent process had.
+NON_INTERACTIVE_ENV: Mapping[str, str] = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GH_PROMPT_DISABLED": "1",
+    "CI": "1",
+}
+
+#: Seconds left at the end of a turn for writing the answer. Must equal
+#: guard/pretool/turn_budget.DEFAULT_WRAPUP_SEC; a test pins the two together.
+TURN_WRAPUP_SEC = 60
+
+#: Claude Code's MCP tool-call limit in ms when the parent sets none. Matches
+#: mametchi (bot.py MCP_TOOL_TIMEOUT 300000): slow Snowflake/CSV tools run up to
+#: 280 s inside, so the default would cut them off first.
+DEFAULT_MCP_TOOL_TIMEOUT_MS = "300000"
+
+
+#: Comma-separated extra names the turn ID is also exported under, read from
+#: the bot process's own environment (the profile's run.sh). Helper scripts
+#: written for another runtime read the turn key under their own name --
+#: mametchi's mb_card.py writes MAMETCHI_TURN into its audit row -- and would
+#: otherwise log an empty turn (C10). The list itself is not passed on.
+TURN_ID_ALIASES_ENV = "SCA_TURN_ID_ALIASES"
+
+_ALIAS_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+
+#: Names an alias may never take even when the policy left them unset: the
+#: fixed base env and engine homes (build() sets CODEX_HOME/HOME after
+#: _base_env). Everything else the policy fills is protected by
+#: _with_turn_id() reading the env it already built.
+_RESERVED_ALIAS_NAMES = frozenset({
+    "PATH", "LANG", "HOME", "USER", "SHELL", "BOT_PROFILE", "TURN_ID",
+    "CODEX_HOME", "TMPDIR",
+})
+
+
+def _with_turn_id(
+    env: dict[str, str],
+    source_env: Mapping[str, str],
+    guarded: frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    """Add TURN_ID ("channel:ts") when the runner stamped one: a turn writes it
+    as the apply-request marker's second line (reliability/restart.py), the
+    same as mametchi apply.sh with MAMETCHI_TURN. Not a credential.
+
+    Each valid name in SCA_TURN_ID_ALIASES gets the same value, so a wrapper
+    launched from the engine's shell finds the turn under the name it reads.
+    An alias never replaces a name the policy owns: anything already in env,
+    NON_INTERACTIVE_ENV, or `guarded` (the policy's allowlist, which covers
+    guard vars that are unset this turn -- an empty SCA_VERIFY_NESTED is what
+    keeps the Stop hook's model verify on). Invalid or owned names are skipped
+    rather than failing the turn."""
+    turn = source_env.get("TURN_ID")
+    if not turn:
+        return env
+    owned = set(env) | set(NON_INTERACTIVE_ENV) | guarded | _RESERVED_ALIAS_NAMES
+    env["TURN_ID"] = turn
+    for name in (source_env.get(TURN_ID_ALIASES_ENV) or "").split(","):
+        name = name.strip()
+        if name and _ALIAS_NAME_RE.fullmatch(name) and name not in owned:
+            env[name] = turn
+    return env
 
 
 class EngineEnvironmentPolicy(ABC):
@@ -92,7 +161,7 @@ class CodexEnvironmentPolicy(EngineEnvironmentPolicy):
         # leaks that path into this bot's process even though CODEX_HOME
         # is correctly overridden below by build().
         home = str(self.home_dir) if self.home_dir is not None else source_env.get("HOME", "")
-        return {
+        return _with_turn_id({
             "PATH": source_env.get("PATH", "/usr/bin:/bin"),
             "LANG": source_env.get("LANG", "ko_KR.UTF-8"),
             "HOME": home,
@@ -100,7 +169,8 @@ class CodexEnvironmentPolicy(EngineEnvironmentPolicy):
             # they're running as — without this, they'd pick the wrong
             # bot's token and channel config.
             "BOT_PROFILE": self.profile_name,
-        }
+            **NON_INTERACTIVE_ENV,
+        }, source_env, _GUARD_VAR_NAMES)
 
 
 class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
@@ -118,12 +188,46 @@ class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
     CREDENTIAL_FILES = ((_AGY_TOKEN, _AGY_TOKEN),)
 
     def _base_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
-        return {
+        return _with_turn_id({
             "PATH": source_env.get("PATH", "/usr/bin:/bin"),
             "LANG": source_env.get("LANG", "ko_KR.UTF-8"),
             "HOME": source_env.get("HOME", ""),
             "BOT_PROFILE": self.profile_name,
-        }
+            **NON_INTERACTIVE_ENV,
+        }, source_env, _GUARD_VAR_NAMES)
+
+
+def _account_file_token(source_env: Mapping[str, str]) -> tuple[str, str] | None:
+    """Re-read the Claude subscription token named by CLAUDE_ACCOUNT_FILE, per turn.
+
+    The launcher used to read the token once into CLAUDE_CODE_OAUTH_TOKEN, so
+    switching accounts (a bot account vs a personal one, e.g. when one hits its
+    usage limit) needed a restart. When CLAUDE_ACCOUNT_FILE names a file holding
+    an account name, the token is looked up as <dir>/<name> in each directory of
+    CLAUDE_TOKEN_DIRS (colon-separated) on every turn, so an external switcher
+    only rewrites that one file. Any miss keeps the launcher's token. The token
+    value is never logged. Returns (account name, token).
+    """
+    account_file = source_env.get("CLAUDE_ACCOUNT_FILE")
+    token_dirs = source_env.get("CLAUDE_TOKEN_DIRS")
+    if not account_file or not token_dirs:
+        return None
+    try:
+        name = Path(account_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not name or "/" in name or name.startswith("."):
+        return None
+    for d in token_dirs.split(":"):
+        if not d:
+            continue
+        try:
+            token = (Path(d) / name).read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if token:
+            return name, token
+    return None
 
 
 class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
@@ -146,6 +250,61 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # even with HOME set (checked against the real CLI 2026-09-15).
         # SHELL, LOGNAME and TMPDIR made no difference.
         "USER",
+        # guard/finish_review.py's built-in Stop hook reads these to decide
+        # block vs. release (time_left()) and to resolve whether the
+        # current channel requires an advisor call (resolve_advisor_channel:
+        # POST_CHANNEL is the current channel, ADVISOR_CHANNELS the set that
+        # requires one) or a code lookup before a doc-based answer
+        # (resolve_code_first_channel: CODE_FIRST_CHANNELS, G13). All read-only
+        # facts the hook needs, not credentials, so they're safe to let through
+        # the same allowlist as everything else here.
+        "TURN_DEADLINE",
+        "TURN_DEADLINE_MONO",
+        # From turn_budget_env (C11): the wrap-up margin the PreToolUse guard
+        # subtracts, and Claude Code's own Bash timeout ceiling for this turn.
+        "TURN_WRAPUP_SEC",
+        "BASH_MAX_TIMEOUT_MS",
+        # MCP tool-call limit; defaulted below when the parent sets none.
+        "MCP_TOOL_TIMEOUT",
+        "POST_CHANNEL",
+        "TURN_TIER",
+        "ADVISOR_CHANNELS",
+        "CODE_FIRST_CHANNELS",
+        # finish_review.named_turn: the owner's display name, so "<이름> 턴"
+        # without 님 is caught too. A name, not a credential.
+        "OWNER_NAME",
+        # guard/pretool/plan_gate: the response number from which a call needs
+        # a `[계획]` block first. Set per turn by the pipeline (W4); a number.
+        "PLAN_GATE",
+        # guard/plan_start: planner model override (default haiku). A model name.
+        "SCA_PLAN_MODEL",
+        # Stop hook model verify toggle and model (finish_review.
+        # resolve_verify_settings). On by default; these only override.
+        "SCA_FINISH_VERIFY",
+        "SCA_FINISH_VERIFY_MODEL",
+        # Set inside the nested verify claude so its own run never re-verifies.
+        "SCA_VERIFY_NESTED",
+        # Verify block cap override (finish_review.resolve_verify_max_blocks).
+        "SCA_FINISH_VERIFY_MAX_BLOCKS",
+        # Path of the temp file holding this turn's loaded knowledge text,
+        # written by EngineRunner for the Stop hook's verify. A path, not a
+        # credential.
+        "SCA_FINISH_KNOWLEDGE_FILE",
+        # guard/figurative.Precompute: where the Stop hook leaves its
+        # figurative verdict, the channel mode, length floor, model and time
+        # limit. A path, a word and numbers, not credentials.
+        "SCA_FIGURATIVE_OUT",
+        "SCA_FIGURATIVE_MODE",
+        "SCA_FIGURATIVE_MIN_CHARS",
+        "SCA_FIGURATIVE_MODEL",
+        "SCA_FIGURATIVE_TIMEOUT",
+        # Where the self-restart guard points a turn instead (apply-request
+        # marker) and which labels it treats as the bot itself (H3). Paths and
+        # launchd labels, not credentials.
+        "RESTART_GUARD_MARKER",
+        "RESTART_GUARD_LABELS",
+        "RESTART_GUARD_SERVICES",
+        # TURN_ID ("channel:ts") and its aliases go through _with_turn_id().
     })
 
     #: Empty on purpose: claude keeps its subscription credentials in the
@@ -162,7 +321,20 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         for key in self.ADDITIONAL_ALLOWED_VARS:
             if key in source_env:
                 env[key] = source_env[key]
-        return env
+        account = _account_file_token(source_env)
+        if account:
+            # Claude Code drops CLAUDE_CODE_OAUTH_TOKEN from its Bash children;
+            # a shell-side claude wrapper picks the same token by this name.
+            env["CLAUDE_ACCOUNT"], env["CLAUDE_CODE_OAUTH_TOKEN"] = account
+        env.setdefault("MCP_TOOL_TIMEOUT", DEFAULT_MCP_TOOL_TIMEOUT_MS)
+        env.update(NON_INTERACTIVE_ENV)
+        return _with_turn_id(env, source_env, self.ADDITIONAL_ALLOWED_VARS)
+
+
+#: Guard and turn-fact var names the built-in hooks read (finish_review,
+#: turn_budget). Codex and Gemini do not pass them through, but an alias must
+#: not mint one there either: the names mean the same thing to any hook.
+_GUARD_VAR_NAMES = ClaudeEnvironmentPolicy.ADDITIONAL_ALLOWED_VARS
 
 
 class EngineEnvironmentPolicyRegistry:
@@ -232,3 +404,35 @@ def create_environment_policy(
     actual lookup is delegated to the module-level registry.
     """
     return registry.create(engine_name, profile_name=profile_name, home_dir=home_dir)
+
+
+def turn_budget_env(
+    timeout_sec: float, *, now_wall: float, now_monotonic: float,
+) -> dict[str, str]:
+    """The turn deadline as env vars for the engine child process (A28).
+
+    The engine's own Stop hook (guard/finish_review.time_left) and the Bash
+    PreToolUse guard (guard/pretool/turn_budget) both read TURN_DEADLINE_MONO
+    first (sleep-proof, system-wide monotonic clock) and fall back to
+    TURN_DEADLINE (wall clock). Both are absolute epochs, not durations, so a
+    child that re-reads them mid-turn still computes the right remaining time.
+
+    Ported from mametchi's MAMETCHI_TURN_DEADLINE[_MONO] (bot.py), renamed to
+    organization-neutral names. ClaudeEnvironmentPolicy's allowlist already
+    carries both names through, so stamping them here is all the child needs to
+    finish inside its budget rather than being killed mid-write at timeout.
+
+    TURN_WRAPUP_SEC and BASH_MAX_TIMEOUT_MS come from mametchi too (C11). A
+    single Bash call may not use the wrap-up margin, so Claude Code's Bash
+    ceiling is the budget minus that margin, floored at 60 s as in bot.py.
+
+    A pure function (clocks are passed in, not read) so a test can assert the
+    exact deadline without touching the wall or monotonic clock.
+    """
+    usable = max(int(timeout_sec) - TURN_WRAPUP_SEC, 60)
+    return {
+        "TURN_DEADLINE": str(now_wall + timeout_sec),
+        "TURN_DEADLINE_MONO": str(now_monotonic + timeout_sec),
+        "TURN_WRAPUP_SEC": str(TURN_WRAPUP_SEC),
+        "BASH_MAX_TIMEOUT_MS": str(usable * 1000),
+    }

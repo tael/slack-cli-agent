@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import replace
 from typing import Any, ClassVar
@@ -22,6 +22,7 @@ from ..slack.gateway import SlackGateway
 from ..slack.listener import EventListener
 from ..slack.reactions import ReactionMarker
 from .access import RequestAccess
+from .channel_kind import is_direct_message_channel
 from .context import RequestContext
 from .spawn import TaskSpawner
 
@@ -109,6 +110,15 @@ class IngressService:
         # None means this caller has no shutdown flag to read, so no restart
         # notice goes out. The request is queued either way.
         is_shutting_down: Callable[[], bool] | None = None,
+        # Plugin event hooks (G1), registered after the core handlers so a
+        # plugin sees an event only once the core has taken it.
+        extra_handlers: Sequence[tuple[str, Callable[[Mapping[str, Any]], None]]] = (),
+        # (channel, user, text) for a DM the access check refused (E1). None,
+        # the default, keeps such a DM silent as before.
+        dm_reply: Callable[[str, str, str], None] | None = None,
+        # (channel, user, text) for a refused DM when dm_reply is off: the
+        # attempt is only recorded, for the daily DM report. None drops it.
+        dm_attempt: Callable[[str, str, str], None] | None = None,
     ) -> None:
         self._listener = listener
         self._access = access
@@ -131,6 +141,9 @@ class IngressService:
         self._clock = time.monotonic
         self._assistant = assistant
         self._is_shutting_down = is_shutting_down
+        self._extra_handlers = tuple(extra_handlers)
+        self._dm_reply = dm_reply
+        self._dm_attempt = dm_attempt
 
     def register(self, gateway: SlackGateway) -> None:
         gateway.on("app_mention", self.handle_app_mention)
@@ -138,11 +151,23 @@ class IngressService:
         gateway.on("reaction_added", self.handle_reaction)
         if self._assistant is not None:
             gateway.on("assistant_thread_started", self.handle_assistant_thread_started)
+        for event_type, handler in self._extra_handlers:
+            gateway.on(event_type, handler)
 
     def handle_app_mention(self, event: Mapping[str, Any]) -> None:
-        self._process(self._listener.from_app_mention(event), event)
+        self._process(self._listener.from_app_mention(event), event, mentioned=True)
 
     def handle_message(self, event: Mapping[str, Any]) -> None:
+        # Ahead of the listener: its human-message filter drops channel_join,
+        # and the join event may carry this bot's bot_id.
+        joined = self._access.self_join(event)
+        if joined is not None:
+            channel, inviter = joined
+            self._spawn.spawn(
+                f"초대:{channel}",
+                lambda: self._access.call_owner(channel, inviter, "", "invite"),
+            )
+            return
         self._process(self._listener.from_message(event), event)
 
     def handle_assistant_thread_started(self, event: Mapping[str, Any]) -> None:
@@ -170,7 +195,23 @@ class IngressService:
         except Exception:
             log.exception("리액션 이벤트 처리 실패: %s", event.get("reaction"))
 
-    def _process(self, ctx: RequestContext | None, event: Mapping[str, Any]) -> None:
+    def _answers_refused_dm(self, ctx: RequestContext, event: Mapping[str, Any]) -> bool:
+        """A person's refused DM with words in it, when DM replies are on.
+        A bot's DM is never answered: two bots would answer each other."""
+        return self._dm_reply is not None and self._is_person_dm(ctx, event)
+
+    def _is_person_dm(self, ctx: RequestContext, event: Mapping[str, Any]) -> bool:
+        return (
+            is_direct_message_channel(ctx.channel)
+            and bool(ctx.user)
+            and not event.get("bot_id")
+            and not ctx.from_bot
+            and bool((ctx.text or "").strip())
+        )
+
+    def _process(
+        self, ctx: RequestContext | None, event: Mapping[str, Any], *, mentioned: bool = False
+    ) -> None:
         # Exceptions are swallowed (one queue-storage failure shouldn't block all
         # later requests) but always logged, so a dropped request is distinguishable
         # from nothing having happened.
@@ -182,14 +223,34 @@ class IngressService:
             # Same position as the original (bot.py:4969): ahead of admin
             # dispatch, so a third party cannot run commands either.
             if not self._access.allows(ctx.channel, ctx.user):
+                if mentioned and not event.get("bot_id"):
+                    self._access.call_owner(ctx.channel, ctx.user, ctx.thread_ts, "mention")
+                elif self._answers_refused_dm(ctx, event):
+                    # Off the socket thread: the turn takes as long as a request.
+                    dm = self._dm_reply
+                    assert dm is not None
+                    dm_channel, dm_user = ctx.channel, ctx.user
+                    dm_text = self._strip_self_mention(ctx.text)
+                    self._spawn.spawn(f"DM:{dm_user}", lambda: dm(dm_channel, dm_user, dm_text))
+                elif self._dm_attempt is not None and self._is_person_dm(ctx, event):
+                    try:
+                        self._dm_attempt(ctx.channel, ctx.user, self._strip_self_mention(ctx.text))
+                    except Exception:
+                        log.exception("DM 시도 기록 실패: %s", ctx.user)
                 return
 
-            ctx = replace(ctx, text=self._strip_self_mention(ctx.text))
+            # 자기 멘션을 지운 본문만 넘기면 현재 줄 머리에 '-> 이 봇' 이 빠진다. 2026-11-10
+            # 14:10 김태일이 마메치와 대화하던 스레드에서 구치파치를 멘션해 지시했는데, 머리가
+            # 수신자 없는 말로 보여 [[침묵]] 으로 끝났다. 원문을 extra 에 남겨 머리를 그린다.
+            ctx = replace(
+                ctx, text=self._strip_self_mention(ctx.text),
+                extra={**dict(ctx.extra), "raw_text": ctx.text},
+            )
 
-            # bot.py:4973. Asked back instead of queued, so a mention with no
-            # request in it never costs an engine turn (sca-yb8q). Attachments
-            # do not count: the original checks the text before it saves them
-            # (bot.py:5075), so a file with no words is asked back too.
+            # bot.py:7705. Asked back instead of queued, so a mention with no
+            # request in it never costs an engine turn (sca-yb8q). A message
+            # with attachments is queued even with no words, as in the
+            # original since 2026-10-22 (voice memos, G6).
             if ctx.has_no_request:
                 self._reply(
                     ctx.channel, ctx.thread_ts, self._notices.render(NoticeKey.ASK_WHAT)

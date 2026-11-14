@@ -25,20 +25,25 @@ from pathlib import Path
 from typing import Any
 
 from ..auth.policy import DEFAULT_EFFORT
-from ..config.channel import ChannelConfig, ChannelRegistry
+from ..config.channel import ChannelConfig, ChannelRegistry, advisor_enabled
 from ..config.profile import Profile
 from ..config.settings import RuntimeSettings
 from ..core.channel_kind import is_direct_message_channel
-from ..engine.base import CONTEXT_RESET_RAW_KEY, TRUNCATED_RAW_KEY, USAGE_FIELDS
+from ..engine.base import CONTEXT_RESET_RAW_KEY, MODEL_USAGE_KEY, TRUNCATED_RAW_KEY, USAGE_FIELDS
 from ..engine.registry import registry_for_profile
 from ..jobs.ports import JobStatus
 from ..observability.audit import (
     BASELINE_KIND_VALUES,
     PAYLOAD_KIND,
+    ENGINE_SPEND_KIND,
     REQUEST_KIND,
+    REVIEW_KIND,
+    WATCH_CHECKED_KIND,
     IncidentKind,
     normalize_kind,
 )
+from ..observability import model_cost
+from ..session.manager import SYSTEM_PROMPT_RESET_REASON
 from ..storage.database import Database
 
 KST = timezone(timedelta(hours=9))
@@ -66,7 +71,10 @@ NOT_APPLICABLE_REASONS: dict[str, str] = {
     # here would bake in a stale rate with no way to tell when it applied.
     # Token counts (usage.tokens) are recorded instead; deriving cost from
     # those is left to a reporting layer that can date its price table.
-    "usage.cost_total_usd": "감사 기록에 비용 필드가 없다(단가는 모델·시점마다 달라 토큰 수만 남긴다)",
+    # The cost shown is the engine's own costUSD per model (A14), never one
+    # computed here from a price table. An engine that reports none (codex,
+    # gemini) keeps this reason.
+    "usage.cost_total_usd": "감사 기록에 엔진이 보고한 모델별 비용이 없다",
     "usage.turns_median": "감사 기록에 턴 수가 없다",
     "usage.question_len_median": "감사 기록에 질문 원문이 없다",
     "usage.answer_len_median": "감사 기록에 답변 원문이 없다",
@@ -100,6 +108,10 @@ _SLOW_EDGES = (10, 30, 60, 120, 300, 600, 900)
 
 def _kst(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, KST).isoformat(timespec="seconds")
+
+
+def _kst_day(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, KST).strftime("%Y-%m-%d")
 
 
 def _pct(part: int, whole: int) -> float | None:
@@ -226,9 +238,12 @@ class MetricsCollector:
         requests, incident_counts, payload_rows = self._read_requests(db, cutoff)
         first_seen = self._kind_first_seen_map(db)
         field_first_seen = self._usage_field_first_seen(db)
+        model_spend = self._model_spend(db, cutoff)
         reviews = self._read_reviews(db)
         sessions = self._read_sessions(db)
         queued_by_channel = self._read_queued_by_channel(db)
+        watch_verdicts = self._watch_verdicts(db, cutoff)
+        dm = self._dm(db, cutoff)
         channels = ChannelRegistry(paths.channels).all()
 
         latest = max((str(r.get("ts_kst") or "") for r in requests), default="")
@@ -236,20 +251,23 @@ class MetricsCollector:
         return {
             "generated_at": _kst(now),
             "window_days": days,
-            "bot": self._bot_fields(field_first_seen),
+            "bot": self._bot_fields(field_first_seen, model_spend),
             "snapshot": snapshot,
             "last_answer_kst": latest or None,
             "channels": self._channel_rows(requests, channels, sessions, queued_by_channel, now),
             "responsiveness": self._responsiveness(requests),
             "reliability": self._reliability(requests, incident_counts, field_first_seen),
-            "quality": self._quality(reviews, requests, incident_counts, first_seen),
-            "usage": self._usage(requests, channels, field_first_seen),
+            "quality": self._quality(
+                reviews, requests, incident_counts, first_seen, watch_verdicts
+            ),
+            "usage": self._usage(requests, channels, field_first_seen, model_spend),
             "followup": self._followup(requests),
             "tools": {"available": False, "reason": NOT_APPLICABLE_REASONS["tools"]},
             "queue_wait": self._queue_wait(requests),
             "payload": self._payload(payload_rows),
             "usage_block": self._usage_block(),
             "session_total": len(sessions),
+            "dm": dm,
         }
 
     # --- 원천 읽기 -----------------------------------------------------
@@ -302,6 +320,103 @@ class MetricsCollector:
             record["ts_kst"] = _kst(row["at"])
             out.append(record)
         return out, incidents, payloads
+
+    def _model_spend(self, db: Database, cutoff: float) -> dict[str, Any]:
+        """Per-model tokens and engine-reported cost in the window (A14).
+
+        Request, review, watch-check and engine-spend rows carry the session-cumulative
+        table. Rows from LOOKBACK_SEC before the window are read too, only so
+        a session's first in-window row has its previous row to subtract.
+        """
+        rows = db.connect().execute(
+            "SELECT at, kind, channel, payload FROM audit"
+            " WHERE at >= ? AND kind IN (?, ?, ?, ?) AND payload LIKE ? ORDER BY at, id",
+            (
+                cutoff - model_cost.LOOKBACK_SEC,
+                REQUEST_KIND, REVIEW_KIND, WATCH_CHECKED_KIND, ENGINE_SPEND_KIND,
+                f'%"{MODEL_USAGE_KEY}"%',
+            ),
+        ).fetchall()
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            payload["at"] = row["at"]
+            payload["kind"] = normalize_kind(row["kind"])
+            payload.setdefault("channel", row["channel"])
+            records.append(payload)
+        return model_cost.rollup(model_cost.row_spends(records), cutoff, _kst_day)
+
+    def _watch_verdicts(self, db: Database, cutoff: float) -> dict[str, int]:
+        """Counts how published replies landed on the watch question in the
+        window, by the `verdict` field of each watch_verdict row (J9).
+
+        watch_verdict is baseline traffic, so _read_requests only tallies it
+        by kind; the per-verdict breakdown lives in the payload and is read
+        here. An unparseable or unknown verdict is dropped — a bad row must
+        not inflate any of the three buckets.
+        """
+        rows = db.connect().execute(
+            "SELECT payload FROM audit WHERE kind = ? AND at >= ?",
+            (IncidentKind.WATCH_VERDICT.value, cutoff),
+        ).fetchall()
+        counts = {"watch": 0, "nowatch": 0, "missing": 0}
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            verdict = payload.get("verdict")
+            if verdict in counts:
+                counts[verdict] += 1
+        return counts
+
+    def _dm(self, db: Database, cutoff: float) -> dict[str, Any]:
+        """Non-owner DM traffic in the window (E7): rows per dm_ kind, the
+        model's classes, how many got the fixed notice, the people who
+        wrote and the probe count. Reads payloads, so a bad row is skipped
+        rather than counted."""
+        rows = db.connect().execute(
+            "SELECT kind, payload FROM audit WHERE kind LIKE 'dm%' AND at >= ?",
+            (cutoff,),
+        ).fetchall()
+        kinds: collections.Counter[str] = collections.Counter()
+        classes: collections.Counter[str] = collections.Counter()
+        people: set[str] = set()
+        fallback = 0
+        for row in rows:
+            kind = str(row["kind"])
+            if not kind.startswith("dm_"):
+                continue
+            kinds[kind] += 1
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("user"):
+                people.add(str(payload["user"]))
+            if kind == IncidentKind.DM_REPLY.value:
+                classes[str(payload.get("dm_kind") or "미분류")] += 1
+                if payload.get("fallback"):
+                    fallback += 1
+        return {
+            "replies": kinds.get(IncidentKind.DM_REPLY.value, 0),
+            "capped": kinds.get(IncidentKind.DM_REPLY_CAPPED.value, 0),
+            "failed": kinds.get(IncidentKind.DM_REPLY_FAILED.value, 0),
+            "probes": kinds.get(IncidentKind.DM_PROBE.value, 0),
+            "reports": kinds.get(IncidentKind.DM_REPORT.value, 0),
+            "fallback": fallback,
+            "people": len(people),
+            "by_class": dict(classes.most_common()),
+        }
 
     def _kind_first_seen_map(self, db: Database) -> dict[str, float]:
         """Earliest `at` ever recorded for each kind, unbounded by the
@@ -398,9 +513,13 @@ class MetricsCollector:
 
     # --- 지표 계산 -------------------------------------------------------
 
-    def _bot_fields(self, field_first_seen: Mapping[str, float]) -> dict[str, Any]:
+    def _bot_fields(
+        self, field_first_seen: Mapping[str, float], model_spend: Mapping[str, Any],
+    ) -> dict[str, Any]:
         engine = self._profile.primary_engine
         not_applicable = dict(NOT_APPLICABLE_REASONS)
+        if model_spend.get("cost_total_usd") is not None:
+            not_applicable.pop("usage.cost_total_usd", None)
         if "by_user" in field_first_seen:
             not_applicable.pop("usage.by_user", None)
         if "turns_median" in field_first_seen:
@@ -416,7 +535,9 @@ class MetricsCollector:
             "display_name": self._profile.display_name,
             "engine": engine.type,
             "default_model": engine.model,
-            "owner_model": engine.model_for_owner(),
+            # A13 부터 소유자 대화도 채널 model 이나 기본 model 로 돈다.
+            # model_owner 는 부검 기본값으로만 남아 있어 부검 모델을 보인다.
+            "postmortem_model": engine.model_for_postmortem(),
             "not_applicable": not_applicable,
         }
 
@@ -494,7 +615,13 @@ class MetricsCollector:
         truncated_tracked = "truncated" in field_first_seen
         truncated = sum(1 for r in requests if r.get(TRUNCATED_RAW_KEY) is True)
         context_reset_tracked = "context_reset" in field_first_seen
-        context_reset = sum(1 for r in requests if r.get(CONTEXT_RESET_RAW_KEY) is True)
+        # A reset because the instructions changed is deliberate, not a resume
+        # that broke, so it stays out of this count.
+        context_reset = sum(
+            1 for r in requests
+            if r.get(CONTEXT_RESET_RAW_KEY) is True
+            and r.get("context_reset_reason") != SYSTEM_PROMPT_RESET_REASON
+        )
         return {
             "total": len(requests),
             "ok": len(ok),
@@ -525,6 +652,7 @@ class MetricsCollector:
         requests: Sequence[Mapping[str, Any]],
         incident_counts: collections.Counter[str],
         first_seen: Mapping[str, float],
+        watch_verdicts: Mapping[str, int],
     ) -> dict[str, Any]:
         kinds = collections.Counter(str(r["kind"]) for r in reviews)
         asked = collections.Counter(str(r.get("channel") or "") for r in requests)
@@ -540,6 +668,24 @@ class MetricsCollector:
                 "requests": total,
                 "rate_pct": _pct(hits, total) if total else None,
             })
+        watch_n = watch_verdicts.get("watch", 0)
+        nowatch_n = watch_verdicts.get("nowatch", 0)
+        missing_n = watch_verdicts.get("missing", 0)
+        watch_total = watch_n + nowatch_n + missing_n
+        watch_first = first_seen.get(IncidentKind.WATCH_VERDICT.value)
+        # 판정률: of every published reply, how often the model made an explicit
+        # watch call (registered a watch or said [[NOWATCH]]) rather than
+        # leaving it ambiguous. None before any verdict was ever recorded —
+        # a 0 would read as "always ambiguous" instead of "not instrumented".
+        nowatch_block = {
+            "watch": watch_n,
+            "nowatch": nowatch_n,
+            "missing": missing_n,
+            "total": watch_total,
+            "decided_pct": _pct(watch_n + nowatch_n, watch_total),
+            "missing_pct": _pct(missing_n, watch_total),
+            "tracked_since": _kst(watch_first) if watch_first is not None else None,
+        }
         silent = incident_counts.get(IncidentKind.SILENT.value, 0)
         tracked_since = {
             kind.value: (_kst(first_seen[kind.value]) if kind.value in first_seen else None)
@@ -562,6 +708,8 @@ class MetricsCollector:
                 IncidentKind.PROGRESS_UNKNOWN_TOOL.value, 0
             ),
             "blocks_resplit": incident_counts.get(IncidentKind.BLOCKS_RESPLIT.value, 0),
+            # NOWATCH 판정률 (J9): per-verdict breakdown + explicit-decision rate.
+            "nowatch": nowatch_block,
             # Per sca-qi5.1 item 5: None means this kind has never fired in
             # this store, so a 0 count in the window can't be told apart
             # from "not instrumented yet" without this.
@@ -573,6 +721,7 @@ class MetricsCollector:
         requests: Sequence[Mapping[str, Any]],
         channels: Mapping[str, ChannelConfig],
         field_first_seen: Mapping[str, float],
+        model_spend: Mapping[str, Any],
     ) -> dict[str, Any]:
         total = len(requests)
         by_channel: collections.Counter[str] = collections.Counter(
@@ -629,10 +778,18 @@ class MetricsCollector:
             "user_count": len(by_user_counter) if user_tracked_since else None,
             "by_model": [{"model": m, "count": n} for m, n in by_model.most_common()],
             "by_effort": [{"effort": e, "count": n} for e, n in by_effort.most_common()],
-            "cost_total_usd": None,
-            "cost_median_usd": None,
-            "cost_by_day": [],
-            "cost_by_channel": [],
+            # Engine-reported cost, summed per model from each row's own
+            # spend (A14). The advisor model is its own line here.
+            "cost_total_usd": model_spend.get("cost_total_usd"),
+            "cost_median_usd": model_spend.get("cost_median_usd"),
+            "cost_by_day": list(model_spend.get("cost_by_day") or []),
+            "cost_by_channel": [
+                {**row, "name": channels[row["channel"]].name if row["channel"] in channels else row["channel"]}
+                for row in model_spend.get("cost_by_channel") or []
+            ],
+            "cost_by_kind": dict(model_spend.get("cost_by_kind") or {}),
+            "by_model_usage": list(model_spend.get("by_model") or []),
+            "model_usage_sample": int(model_spend.get("sample") or 0),
             "turns_median": _quantile(turns_values, 0.5) if turns_tracked_since else None,
             "question_len_median": None,
             "answer_len_median": None,
@@ -793,14 +950,15 @@ class MetricsCollector:
             conf = channels.get(channel)
             entries = [entry for _, entry in sorted(live.get(channel, []), key=lambda x: x[0])]
             dm = is_direct_message_channel(channel)
+            model = _explicit_model(conf)
             rows.append({
                 "channel": channel,
                 "name": conf.name if conf else channel,
                 "is_dm": dm,
                 "listed": conf is not None,
                 "mode": conf.mode if conf else "default",
-                "model": (conf.model if conf and conf.model else self._profile.primary_engine.model),
-                "model_inherited": not (conf and conf.model),
+                "model": model or self._profile.primary_engine.model,
+                "model_inherited": not model,
                 "effort": (conf.effort if conf and conf.effort else DEFAULT_EFFORT),
                 "effort_inherited": not (conf and conf.effort),
                 "answer_unaddressed": bool(conf and conf.answer_unaddressed),
@@ -886,3 +1044,17 @@ class MetricsCollector:
             "models": block.get("models") or [],
             "scope": "이 노트북 기록만",
         }
+
+
+def _explicit_model(conf: ChannelConfig | None) -> str:
+    """The model the channel names itself, empty when it inherits the default.
+
+    Same order as AccessPolicy.model_for (A13): an advisor channel runs on its
+    executor, and an advisor without an executor falls back to the default,
+    not to the channel's model.
+    """
+    if conf is None:
+        return ""
+    if advisor_enabled(conf):
+        return str(conf.extra["advisor"].get("executor") or "")
+    return conf.model or ""

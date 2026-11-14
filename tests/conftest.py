@@ -71,6 +71,9 @@ def isolate_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pa
     for 이름 in _CREDENTIAL_ENV:
         monkeypatch.delenv(이름, raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # 표준 점검의 운영 트리 점검은 저장소 원격을 fetch 한다. 시험은 네트워크를 쓰지
+    # 않게 git 트리가 없는 것으로 둔다. 그 점검 자체는 root 를 직접 넘겨 시험한다.
+    monkeypatch.setattr("slack_cli_agent.preflight.checks._package_source_root", lambda: None)
     reset_engine_state()
     yield tmp_path
     _ALLOWED_PREFIXES.clear()

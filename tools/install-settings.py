@@ -26,9 +26,21 @@ sys.path.insert(0, str(REPO / "src"))
 
 from slack_cli_agent.engine.claude_settings import load_settings_file  # noqa: E402
 
-#: 본보기 파일 이름. 공통 파일과 general 덧씌움 둘뿐이다. owner·trusted 는
-#: 공통 파일 내용이 그대로 걸리므로 덧씌움을 두지 않는다.
-ASSET_NAMES = ("settings-claude.json", "settings-claude.general.json")
+#: 본보기 파일 이름. 공통 파일, 신뢰 수준별 덧씌움(general·trusted·owner),
+#: operator_full 채널 전용 덧씌움까지 전부 깐다. owner·trusted·operator_full
+#: 셋 다 지금은 빈 조각(`{}`)이거나 자격증명류만 더 막아 공통 파일의 Bash/
+#: Edit/Write 비차단을 바꾸지 않는다 — 도구 전면 차단은 general 에만 있다.
+#: operator_full 은 engine/claude.py 의 _settings_value 가 GENERAL 요청인데
+#: 도구 이름에 Bash/Edit/Write/NotebookEdit 가 이미 있을 때만 general 대신
+#: 골라 쓴다(그 이름은 auth/policy.py 의 channel_tools_for 가 채널의
+#: operator_full 플래그를 봤을 때만 내준다 — 두 축이 한 플래그로 묶여 있다).
+ASSET_NAMES = (
+    "settings-claude.json",
+    "settings-claude.general.json",
+    "settings-claude.trusted.json",
+    "settings-claude.owner.json",
+    "settings-claude.operator_full.json",
+)
 
 
 def permission_path(state_dir: Path, home: Path) -> str:

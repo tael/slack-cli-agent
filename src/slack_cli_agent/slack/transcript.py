@@ -238,9 +238,7 @@ class TranscriptBuilder:
                 ).get("messages", [])
                 msgs = list(reversed(msgs))
             else:
-                msgs = self._client.conversations_replies(
-                    channel=channel, ts=thread_ts, limit=limit
-                ).get("messages", [])
+                msgs = self._read_all_replies(channel, thread_ts, limit)
         except Exception as exc:  # noqa: BLE001 - a failed history read falls back to empty rather than raising
             log.warning("대화록 조회 실패 : channel=%s scope=%s error=%s", channel, scope, exc)
             return TranscriptRead(body="", read_ok=False)
@@ -277,6 +275,28 @@ class TranscriptBuilder:
                 break
             kept.append(line)
         return TranscriptRead(body="\n\n".join(reversed(kept)), read_ok=True)
+
+    def _read_all_replies(
+        self, channel: str, thread_ts: str, limit: int
+    ) -> list[dict[str, Any]]:
+        """Follows conversations_replies' next_cursor so replies past the
+        first page aren't lost (F17). Replies come oldest-first, so a thread
+        longer than `limit` would otherwise drop its most recent messages —
+        the ones that matter most. Bounded by history_max_pages."""
+        msgs: list[dict[str, Any]] = []
+        cursor = ""
+        for _ in range(max(1, self._settings.history_max_pages)):
+            kwargs: dict[str, Any] = {"channel": channel, "ts": thread_ts, "limit": limit}
+            if cursor:
+                kwargs["cursor"] = cursor
+            resp = self._client.conversations_replies(**kwargs)
+            msgs.extend(resp.get("messages", []))
+            if not resp.get("has_more"):
+                break
+            cursor = (resp.get("response_metadata") or {}).get("next_cursor") or ""
+            if not cursor:
+                break
+        return msgs
 
     def tag_current(self, current: CurrentMessage) -> str:
         """Puts the speaker head on the message being answered.

@@ -9,14 +9,31 @@ tells the model something different about each (sca-678).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
-from .permalinks import parse_slack_links
+from .attachments import unfurl_matches
+from .blocks import block_text
+from .permalinks import SlackLink, parse_slack_links
 from .transcript import TranscriptRead
 
 log = logging.getLogger(__name__)
+
+
+def _unfurl_body(attachment: Mapping[str, Any]) -> str:
+    """An unfurled message's body: its blocks flattened, else the preview.
+
+    Slack puts the shared message's blocks either on the attachment itself or
+    under `message_blocks[].message.blocks`; both are read before `text`.
+    """
+    blocks: list[Any] = list(attachment.get("blocks") or [])
+    for mb in attachment.get("message_blocks") or ():
+        if isinstance(mb, Mapping):
+            blocks.extend((mb.get("message") or {}).get("blocks") or [])
+    parts = [p for p in (block_text(b) for b in blocks) if p]
+    body = "\n".join(parts).strip()
+    return body or str(attachment.get("text") or attachment.get("fallback") or "")
 
 
 class ThreadTranscript(Protocol):
@@ -38,12 +55,31 @@ class LinkedThreadReader:
         transcript: ThreadTranscript,
         channel_name: Callable[[str], str],
         max_links: int = 3,
+        owner_transcript: ThreadTranscript | None = None,
+        owner_channel_name: Callable[[str], str] | None = None,
     ) -> None:
         self._transcript = transcript
         self._channel_name = channel_name
         self._max_links = max_links
+        # 소유자 사용자 세션으로 읽는 대화록. 봇이 초대되지 않은 비공개 대화는
+        # 봇 토큰으로 channel_not_found 가 나지만 소유자가 멤버면 열린다.
+        # 소유자 턴(as_owner)에서만 쓴다. 비소유자 턴에 쓰면 소유자만 볼 수
+        # 있는 대화가 그 사람의 답에 실린다(D5, 마메치 linked_thread_context).
+        self._owner_transcript = owner_transcript
+        self._owner_channel_name = owner_channel_name
 
-    def of(self, text: str, self_channel: str = "") -> tuple[LinkedThread, ...]:
+    def of(
+        self,
+        text: str,
+        self_channel: str = "",
+        attachments: Sequence[Mapping[str, Any]] = (),
+        *,
+        as_owner: bool = False,
+    ) -> tuple[LinkedThread, ...]:
+        """`attachments` is the triggering event's own unfurl attachments (not
+        the linked thread's), used only when the live read fails — e.g. a
+        public channel the bot was never invited to shares a message whose
+        link Slack already unfurled for us (gaps.md C39/C40)."""
         blocks: list[LinkedThread] = []
         # The cap applies to the links found, not to the ones kept — same as the
         # original, so a self-link doesn't pull a further link into the window.
@@ -51,23 +87,55 @@ class LinkedThreadReader:
             # A link back into this very conversation is already attached as past history.
             if self_channel and link.channel == self_channel:
                 continue
-            read = self._read_of(link.channel, link.thread_ts)
-            blocks.append(
-                LinkedThread(
-                    name=self._name_of(link.channel), body=read.body, read_ok=read.read_ok
-                )
-            )
+            read = self._read_of(self._transcript, link.channel, link.thread_ts)
+            name = self._name_of(self._channel_name, link.channel)
+            if not read.read_ok and as_owner:
+                if self._owner_transcript is None:
+                    # 꺼진 이유가 로그에 없으면 실측 실패를 추적하지 못한다(D5).
+                    log.warning(
+                        "소유자 턴이지만 소유자 세션이 설정되지 않아 다시 읽지 않았다 : %s",
+                        link.channel,
+                    )
+                elif link.channel.startswith("D"):
+                    # 개인 대화 링크는 소유자 세션으로도 읽지 않는다. 비공개 채널을
+                    # 읽게 하려는 경로이고, 소유자의 DM 이 다른 사람이 보는 답에 실릴
+                    # 수 있다. MCP 조회도 개인 대화를 열지 않는다(D5).
+                    log.info("개인 대화 링크라 소유자 세션으로 읽지 않는다 : %s", link.channel)
+                else:
+                    read = self._read_of(self._owner_transcript, link.channel, link.thread_ts)
+                    if read.read_ok and name == link.channel and self._owner_channel_name:
+                        name = self._name_of(self._owner_channel_name, link.channel)
+            body, read_ok = read.body, read.read_ok
+            if not read_ok:
+                fallback = self._attachment_fallback(link, attachments)
+                if fallback:
+                    body, read_ok = fallback, True
+            blocks.append(LinkedThread(name=name, body=body, read_ok=read_ok))
         return tuple(blocks)
 
-    def _name_of(self, channel: str) -> str:
+    @staticmethod
+    def _attachment_fallback(link: SlackLink, attachments: Sequence[Mapping[str, Any]]) -> str:
+        for a in attachments or ():
+            if not unfurl_matches(a, link.channel, link.thread_ts):
+                continue
+            # A rich message's unfurl keeps its full body in blocks and only a
+            # preview in `text` (C2, bot.py unfurled_message_blocks).
+            body = _unfurl_body(a)
+            if body:
+                return body
+        return ""
+
+    @staticmethod
+    def _name_of(resolve: Callable[[str], str], channel: str) -> str:
         try:
-            return self._channel_name(channel) or channel
+            return resolve(channel) or channel
         except Exception:  # noqa: BLE001 - a name lookup failure falls back to the id
             return channel
 
-    def _read_of(self, channel: str, thread_ts: str) -> TranscriptRead:
+    @staticmethod
+    def _read_of(transcript: ThreadTranscript, channel: str, thread_ts: str) -> TranscriptRead:
         try:
-            return self._transcript.read_thread(channel, thread_ts, None)
+            return transcript.read_thread(channel, thread_ts, None)
         except Exception as exc:  # noqa: BLE001 - a failed read must not block the reply
             log.warning("링크된 스레드를 읽지 못했다 : %s %s", channel, exc)
             return TranscriptRead(body="", read_ok=False)

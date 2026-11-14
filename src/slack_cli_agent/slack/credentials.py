@@ -12,6 +12,7 @@ credentials file it does not use.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 from collections.abc import Mapping
@@ -25,10 +26,19 @@ from ..core.secrets import redact
 if TYPE_CHECKING:
     from ..config.profile import Profile
 
+log = logging.getLogger(__name__)
+
 BOT_TOKEN_ENV = "SLACK_BOT_TOKEN"
 APP_TOKEN_ENV = "SLACK_APP_TOKEN"
+# 오너 개인 세션 토큰. 봇 토큰으로 못 보는 채널(미초대 공개 채널)을 읽을 때만
+# 쓰는 폴백이라 다른 둘과 성질이 다르지만, 같은 파일·같은 우선순위 규칙을
+# 쓰는 것이 그 파일이 둘로 갈라지는 것보다 낫다(gaps.md C40).
+USER_TOKEN_ENV = "SLACK_USER_TOKEN"
+# 브라우저 세션 토큰(xoxc)은 d 쿠키(xoxd)가 함께 가야 통한다. 소유자 턴의
+# 링크 선읽기가 쓴다(D5). xoxp 토큰이면 비워 둔다.
+USER_COOKIE_ENV = "SLACK_USER_COOKIE"
 
-_ALLOWED_KEYS = frozenset({"bot_token", "app_token"})
+_ALLOWED_KEYS = frozenset({"bot_token", "app_token", "user_token", "user_cookie"})
 # Anything readable by group or other. An 0400 file is stricter than 0600 and
 # is accepted; requiring exactly 0600 would reject it.
 _SHARED_BITS = stat.S_IRWXG | stat.S_IRWXO
@@ -40,6 +50,8 @@ _MAX_FILE_BYTES = 64 * 1024
 class SlackCredentials:
     bot_token: str = ""
     app_token: str = ""
+    user_token: str = ""
+    user_cookie: str = ""
 
 
 class CredentialResolver:
@@ -70,6 +82,15 @@ class CredentialResolver:
 
     def app_token(self, given: str | None = None) -> str:
         return self._resolve(given, APP_TOKEN_ENV, "app_token")
+
+    def user_token(self, given: str | None = None) -> str:
+        """오너 개인 세션 토큰. 설정돼 있지 않으면 빈 문자열이다 — 그 자체가
+        폴백을 끄는 스위치다(gaps.md C40, 기본값 아니오)."""
+        return self._resolve(given, USER_TOKEN_ENV, "user_token")
+
+    def user_cookie(self, given: str | None = None) -> str:
+        """user_token 이 xoxc 일 때 함께 보내는 d 쿠키 값(xoxd)."""
+        return self._resolve(given, USER_COOKIE_ENV, "user_cookie")
 
     def _resolve(self, given: str | None, env_name: str, field: str) -> str:
         if given:
@@ -137,7 +158,8 @@ class CredentialResolver:
         unknown = len(set(data) - _ALLOWED_KEYS)
         if unknown:
             raise ConfigError(
-                f"자격 파일에 모르는 키가 {unknown}개 있다. bot_token 과 app_token 만 쓴다 : {path}"
+                f"자격 파일에 모르는 키가 {unknown}개 있다. "
+                f"bot_token, app_token, user_token, user_cookie 만 쓴다 : {path}"
             )
         for key in sorted(data):
             value = data[key]
@@ -146,7 +168,44 @@ class CredentialResolver:
         return SlackCredentials(
             bot_token=str(data.get("bot_token", "")),
             app_token=str(data.get("app_token", "")),
+            user_token=str(data.get("user_token", "")),
+            user_cookie=str(data.get("user_cookie", "")),
         )
+
+
+def owner_session_client(resolver: CredentialResolver, *, owner_user_id: str = "") -> object | None:
+    """소유자 사용자 세션으로 슬랙을 읽는 클라이언트. user_token 이 없으면 None 이고,
+    그러면 소유자 턴의 링크 선읽기도 봇 토큰만 쓴다(D5).
+
+    호출하는 쪽이 소유자 턴에서만 쓴다. 이 클라이언트는 소유자가 멤버인 비공개
+    대화까지 읽는다.
+
+    owner_user_id 가 있는데 세션을 만들지 못하면 경고를 남긴다. 2026-11-07 실측에서
+    #114 머지 뒤에도 운영 자격 파일에 user_token 이 없어 이 경로가 꺼진 채 떴고,
+    그 사실이 로그에 없어 원인을 바로 찾지 못했다.
+    """
+    token = resolver.user_token()
+    if not token:
+        if owner_user_id:
+            log.warning(
+                "소유자 세션 토큰이 없다. 자격 파일 user_token 또는 %s 가 비어 있어 "
+                "봇이 초대되지 않은 비공개 링크는 소유자 턴에도 읽지 않는다",
+                USER_TOKEN_ENV,
+            )
+        return None
+    cookie = resolver.user_cookie()
+    if token.startswith("xoxc-") and not cookie:
+        # 브라우저 세션 토큰은 d 쿠키 없이 invalid_auth 다. 매 링크마다 실패할
+        # 클라이언트를 만드는 대신 기동 시점에 한 번 밝히고 끈다.
+        log.warning(
+            "소유자 세션 토큰이 xoxc 인데 user_cookie(%s) 가 없어 소유자 세션을 끈다",
+            USER_COOKIE_ENV,
+        )
+        return None
+    from slack_sdk import WebClient  # lazy import so assembly tests don't need the SDK
+
+    headers = {"Cookie": "d=" + cookie} if cookie else {}
+    return WebClient(token=token, headers=headers)
 
 
 def resolver_for(profile: Profile, env: Mapping[str, str] | None = None) -> CredentialResolver:

@@ -7,6 +7,7 @@ import json
 import subprocess
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -362,10 +363,31 @@ class TestClaudeEngineBuildCommand:
         cmd = ClaudeEngine(claude_profile(tmp_path), SETTINGS).build_command(request())
         assert cmd[cmd.index("--setting-sources") + 1] == ""
 
-    def test_기본_파일도_진행_로그도_없으면_settings를_안_붙인다(self, tmp_path: Path) -> None:
+    def test_기본_파일도_진행_로그도_없어도_가드_훅은_실린다(self, tmp_path: Path) -> None:
+        """B4 — Bash 가드 5종(turn_budget/restart_guard/install_guard/scan_guard/sleep_poll_guard)과
+        Stop 종료검수 훅은 엔진 기본값이라 설정 파일이나 진행 로그가 없어도 매 턴
+        --settings 로 실린다(sca-kos.B4, G50). 권한 deny 는 여기 없다 — 가드는
+        훅이지 권한이 아니다."""
         profile = claude_profile(tmp_path)
         engine = ClaudeEngine(profile, SETTINGS)
-        assert "--settings" not in engine.build_command(request())
+        cmd = engine.build_command(request())
+        실린것 = json.loads(cmd[cmd.index("--settings") + 1])
+        pretool = 실린것["hooks"]["PreToolUse"]
+        assert any(g["matcher"] == "Bash" and len(g["hooks"]) == 5 for g in pretool)
+        assert 실린것["hooks"]["Stop"]
+        assert not (실린것.get("permissions") or {}).get("deny")
+
+    def test_PR과_커밋_귀속_문구를_끈다(self, tmp_path: Path) -> None:
+        """--setting-sources "" 로 사용자 settings 의 attribution 이 빠져 PR 본문에
+        Generated with Claude Code 가 붙었다(airflow #729, #730, 2026-11-05).
+        프로필 파일이 켜려 해도 엔진 기본값이 마지막에 덮는다."""
+        profile = claude_profile(tmp_path)
+        path = profile.paths.engine_settings("claude")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"attribution": {"pr": "켜기"}}), encoding="utf-8")
+        cmd = ClaudeEngine(profile, SETTINGS).build_command(request())
+        실린것 = json.loads(cmd[cmd.index("--settings") + 1])
+        assert 실린것["attribution"] == {"commit": "", "pr": ""}
 
     @staticmethod
     def 기본_settings를_쓴다(profile, 내용: dict) -> None:
@@ -402,7 +424,9 @@ class TestClaudeEngineBuildCommand:
         engine = ClaudeEngine(profile, SETTINGS)
         cmd = engine.build_command(request(progress_log=tmp_path / "p.log"))
         실린것 = json.loads(cmd[cmd.index("--settings") + 1])
-        assert len(실린것["hooks"]["PreToolUse"]) == 2
+        # 운영자 훅 + 진행 훅 + B4 Bash 가드 그룹 + 연속 단건 조회 가드 = 4
+        assert len(실린것["hooks"]["PreToolUse"]) == 4
+        assert any(g["matcher"] == "Bash" for g in 실린것["hooks"]["PreToolUse"])
 
     @staticmethod
     def 덧씌움을_쓴다(profile, 수준: str, 내용: dict) -> None:
@@ -438,6 +462,172 @@ class TestClaudeEngineBuildCommand:
             request(trust_level=TrustLevel.GENERAL)
         )
         assert json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"] == ["공통"]
+
+    def test_OWNER_요청은_소유자_덧씌움을_받는다(self, tmp_path: Path) -> None:
+        """_settings_value 는 request.trust_level 만 읽는다. controller 봇은
+        A7 이후 OWNER 로 오지 않는다 (auth/policy.py)."""
+        profile = claude_profile(tmp_path)
+        self.기본_settings를_쓴다(profile, {"permissions": {"deny": ["공통"]}})
+        self.덧씌움을_쓴다(profile, "owner", {"permissions": {"deny": ["소유자전용"]}})
+        engine = ClaudeEngine(profile, SETTINGS)
+
+        cmd = engine.build_command(request(trust_level=TrustLevel.OWNER))
+        assert json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"] == [
+            "공통", "소유자전용",
+        ]
+
+
+class Test위임_원장_쓰기_차단:
+    """위임 원장은 같은 OS 사용자 소유의 JSON 이라 by 판정은 정직한 기록자만
+    거른다. operator_full 채널의 위임 턴이 맨 Write 로 원장에 줄을 넣으면
+    다음 controller 메시지를 스스로 위임으로 만든다 (A7 검토)."""
+
+    @staticmethod
+    def _엔진(tmp_path: Path) -> Any:
+        primary = {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"}
+        data: dict[str, Any] = {
+            "name": "example", "primary_engine": primary, "owner_user_id": "U1",
+            "troubleshoot_channel": "C1", "state_dir": str(tmp_path / "state"),
+            "delegation_ledger": str(tmp_path / "delegations.json"),
+            "delegation_by": "mametchi",
+            "delegation_record": str(tmp_path / "record.json"),
+        }
+        profile = Profile.from_dict(data)
+        TestClaudeEngineBuildCommand.기본_settings를_쓴다(profile, {"permissions": {"deny": ["공통"]}})
+        return ClaudeEngine(profile, SETTINGS)
+
+    def test_비소유자_턴은_원장_파일_쓰기를_거부받는다(self, tmp_path: Path) -> None:
+        engine = self._엔진(tmp_path)
+        cmd = engine.build_command(request(
+            trust_level=TrustLevel.GENERAL, delegated=True,
+            tools=ToolSelection.allow(["Read", "Bash", "Write", "Edit"]),
+        ))
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        원장 = (tmp_path / "delegations.json").resolve()
+        assert f"Edit(/{원장})" in deny
+        assert f"Write(/{원장})" in deny
+        assert "공통" in deny
+
+    def test_비소유자_턴은_이_봇이_쓰는_위임_기록_쓰기도_거부받는다(self, tmp_path: Path) -> None:
+        """delegation_record 는 짝 봇이 읽는 원장이다. 비소유자 턴이 여기에 줄을
+        넣으면 짝 봇에 위임을 위조한다 (A8 이후 진입 경로)."""
+        engine = self._엔진(tmp_path)
+        cmd = engine.build_command(request(
+            trust_level=TrustLevel.GENERAL, delegated=True,
+            tools=ToolSelection.allow(["Read", "Bash", "Write", "Edit"]),
+        ))
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        기록 = (tmp_path / "record.json").resolve()
+        assert f"Edit(/{기록})" in deny
+        assert f"Write(/{기록})" in deny
+
+    def test_소유자_턴은_원장_차단을_받지_않는다(self, tmp_path: Path) -> None:
+        engine = self._엔진(tmp_path)
+        cmd = engine.build_command(request(trust_level=TrustLevel.OWNER))
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        assert deny == ["공통"]
+
+
+class Test오너전권_설정_덧씌움:
+    """gaps_D 3절 — operator_full 채널 비오너에게 Bash/Edit 를 실제로 허용하려면
+    auth/tools.py 의 이름 축만으로는 안 되고 engine/claude.py 의 --settings
+    deny 축도 함께 풀려야 한다. 2026-10-02~10-14 마메치가 겪은 "이름은 허용,
+    settings 는 그대로 차단" 버그가 sca 에서 재발하지 않는지 여기서 본다."""
+
+    @staticmethod
+    def _엔진(tmp_path: Path, 일반_덧씌움: dict, 운영자전권_덧씌움: dict | None = None) -> Any:
+        profile = claude_profile(tmp_path)
+        TestClaudeEngineBuildCommand.기본_settings를_쓴다(profile, {})
+        TestClaudeEngineBuildCommand.덧씌움을_쓴다(profile, "general", 일반_덧씌움)
+        if 운영자전권_덧씌움 is not None:
+            TestClaudeEngineBuildCommand.덧씌움을_쓴다(profile, "operator_full", 운영자전권_덧씌움)
+        return ClaudeEngine(profile, SETTINGS)
+
+    def test_보통_GENERAL_요청은_general_덧씌움의_차단을_그대로_받는다(
+        self, tmp_path: Path
+    ) -> None:
+        engine = self._엔진(
+            tmp_path, {"permissions": {"deny": ["Bash", "Edit", "Write", "NotebookEdit"]}}
+        )
+        cmd = engine.build_command(
+            request(trust_level=TrustLevel.GENERAL, tools=ToolSelection.allow(["Read"]))
+        )
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        assert "Bash" in deny
+
+    def test_이름으로_Bash가_허용된_GENERAL_요청은_operator_full_덧씌움을_받아_안_막힌다(
+        self, tmp_path: Path
+    ) -> None:
+        """단위시험 — operator_full 채널 비오너가 받는 최종 settings 에
+        Bash/Edit deny 가 없다. 허용 목록에 Bash/Edit 가 이미 있는 것은
+        auth/policy.py 의 channel_tools_for 가 그 채널의 operator_full 을
+        보고 이미 내줬다는 뜻이다(engine 계층은 채널을 직접 보지 않는다)."""
+        engine = self._엔진(
+            tmp_path,
+            {"permissions": {"deny": ["Bash", "Edit", "Write", "NotebookEdit"]}},
+            운영자전권_덧씌움={"permissions": {"deny": []}},
+        )
+        cmd = engine.build_command(
+            request(
+                trust_level=TrustLevel.GENERAL,
+                tools=ToolSelection.allow(["Read", "Bash", "Edit"]),
+            )
+        )
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        assert "Bash" not in deny
+        assert "Edit" not in deny
+
+    def test_공통_파일의_자격증명_차단은_operator_full_에서도_남는다(
+        self, tmp_path: Path
+    ) -> None:
+        profile = claude_profile(tmp_path)
+        TestClaudeEngineBuildCommand.기본_settings를_쓴다(
+            profile, {"permissions": {"deny": ["공통자격증명"]}}
+        )
+        TestClaudeEngineBuildCommand.덧씌움을_쓴다(
+            profile, "general", {"permissions": {"deny": ["Bash", "Edit"]}}
+        )
+        engine = ClaudeEngine(profile, SETTINGS)
+        cmd = engine.build_command(
+            request(trust_level=TrustLevel.GENERAL, tools=ToolSelection.allow(["Read", "Bash"]))
+        )
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        assert deny == ["공통자격증명"]
+
+    def test_OWNER_요청은_도구_이름과_무관하게_general_로_안_바뀐다(
+        self, tmp_path: Path
+    ) -> None:
+        """신호(Bash 가 허용 목록에 있음)는 GENERAL 요청에서만 본다. 소유자는
+        이미 owner 수준이라 이 분기를 탈 일이 없다."""
+        engine = self._엔진(
+            tmp_path, {"permissions": {"deny": ["Bash", "Edit", "Write", "NotebookEdit"]}}
+        )
+        cmd = engine.build_command(
+            request(trust_level=TrustLevel.OWNER, tools=ToolSelection.allow(["Read", "Bash"]))
+        )
+        assert "--settings" not in cmd or json.loads(
+            cmd[cmd.index("--settings") + 1]
+        ).get("permissions", {}).get("deny", []) == []
+
+    def test_TRUSTED_요청은_신호와_무관하게_trusted_덧씌움을_그대로_받는다(
+        self, tmp_path: Path
+    ) -> None:
+        """TRUSTED 는 애초에 차단 덧씌움이 없어 신호를 볼 필요가 없다 — general
+        로도 operator_full 로도 바뀌지 않고 자기 수준(trusted) 그대로 간다."""
+        profile = claude_profile(tmp_path)
+        TestClaudeEngineBuildCommand.기본_settings를_쓴다(profile, {})
+        TestClaudeEngineBuildCommand.덧씌움을_쓴다(
+            profile, "trusted", {"permissions": {"deny": ["신뢰전용"]}}
+        )
+        TestClaudeEngineBuildCommand.덧씌움을_쓴다(
+            profile, "general", {"permissions": {"deny": ["Bash", "Edit"]}}
+        )
+        engine = ClaudeEngine(profile, SETTINGS)
+        cmd = engine.build_command(
+            request(trust_level=TrustLevel.TRUSTED, tools=ToolSelection.allow(["Read", "Bash"]))
+        )
+        deny = json.loads(cmd[cmd.index("--settings") + 1])["permissions"]["deny"]
+        assert deny == ["신뢰전용"]
 
     def test_기본_파일이_깨졌으면_ConfigError_다(self, tmp_path: Path) -> None:
         from slack_cli_agent.core.errors import ConfigError
@@ -683,7 +873,7 @@ class TestCodexEngineBuildCommand:
         assert cmd[1] == "exec"
         assert "resume" not in cmd
         assert any(tok.startswith("developer_instructions=") for tok in cmd)
-        assert "--sandbox" in cmd
+        assert any(tok.startswith("sandbox_mode=") for tok in cmd)
         assert "-C" in cmd
         # 제약 문구가 앞에 붙으므로 끝으로 본다 (sca-f9k0).
         assert cmd[-1].endswith("안녕")
@@ -696,7 +886,9 @@ class TestCodexEngineBuildCommand:
         cmd = engine.build_command(
             request(resume=False, model="gpt-5.6-sol", tools=ToolSelection.allow(["Read", "Grep"]))
         )
-        assert cmd[cmd.index("--sandbox") + 1] == "read-only"
+        assert 'sandbox_mode="read-only"' in cmd
+        # read-only never gets automatic approval -- it doesn't need MCP writes.
+        assert "--approve-for-me" not in cmd
 
     def test_읽기_전용_허용목록은_재개_턴에서도_내려간다(self, tmp_path: Path) -> None:
         engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
@@ -708,20 +900,142 @@ class TestCodexEngineBuildCommand:
 
     def test_쓰기_도구가_섞이면_프로필_값을_그대로_쓴다(self, tmp_path: Path) -> None:
         engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
-        cmd = engine.build_command(
-            request(resume=False, model="gpt-5.6-sol", tools=ToolSelection.allow(["Read", "Write"]))
+        cmd = engine.build_command(request(
+            resume=False, model="gpt-5.6-sol", trust_level=TrustLevel.OWNER,
+            tools=ToolSelection.allow(["Read", "Write"]),
+        ))
+        assert 'sandbox_mode="danger-full-access"' in cmd
+
+    @pytest.mark.parametrize("trust_level", [TrustLevel.OWNER])
+    def test_workspace_write_프로필의_소유자와_controller_턴은_쓰기를_유지한다(
+        self, tmp_path: Path, trust_level: TrustLevel,
+    ) -> None:
+        """Fallback turns for the owner and configured controller carry write
+        tools.  A read-only profile once overrode that authority after an
+        automatic engine switch, so pin the trust path to the configured
+        workspace-write sandbox. A controller is OWNER (AccessPolicy
+        principal_for); TRUSTED is a channel's trusted_users, a non-owner, and
+        runs read-only like mametchi's non-owner (A9 review).
+        """
+        engine = CodexEngine(
+            codex_profile(tmp_path, options={"sandbox": "workspace-write", "network": True}),
+            SETTINGS,
         )
-        assert cmd[cmd.index("--sandbox") + 1] == "danger-full-access"
+        cmd = engine.build_command(request(
+            resume=False,
+            trust_level=trust_level,
+            tools=ToolSelection.allow(["Read", "Write", "Edit", "Bash"]),
+        ))
+
+        assert 'sandbox_mode="workspace-write"' in cmd
+        assert "sandbox_workspace_write.network_access=true" in cmd
+        assert "--approve-for-me" in cmd
+
+    @pytest.mark.parametrize("skills", [["Skill(daily-quote)", "Skill(jira)"], ["Skill"]])
+    def test_비소유자_읽기_턴은_스킬_허가가_붙어도_read_only_로_돈다(
+        self, tmp_path: Path, skills: list[str],
+    ) -> None:
+        """always_skills 의 Skill(<name>) 과 채널 Skill 은 읽기 도구 목록에
+        없어 읽기 턴을 쓰기 턴으로 바꿨다. codex 에는 Skill 도구가 없어 그
+        허가가 막을 것도 열 것도 없는데, workspace-write, 통신, 자동 승인이
+        함께 열렸다."""
+        engine = CodexEngine(
+            codex_profile(tmp_path, options={"sandbox": "workspace-write", "network": True}),
+            SETTINGS,
+        )
+        tools = ToolSelection.allow(["Read", "Grep", "Glob", *skills])
+        요청 = request(resume=False, trust_level=TrustLevel.GENERAL, tools=tools)
+        cmd = engine.build_command(요청)
+
+        assert 'sandbox_mode="read-only"' in cmd
+        assert "sandbox_workspace_write.network_access=true" not in cmd
+        assert "--approve-for-me" not in cmd
+        assert engine.blocks_outbound_writes(요청)
+
+    def test_비소유자_읽기_턴은_스킬_허가가_붙어도_MCP_쓰기_게이트를_닫는다(
+        self, tmp_path: Path,
+    ) -> None:
+        profile = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            fallback={"type": "codex", "binary": "codex", "model": "gpt-5.6-sol",
+                      "options": {"sandbox": "workspace-write", "network": True}},
+            tmp_path=tmp_path,
+            mcp_servers={"jira": {"command": "jira-mcp",
+                                  "turn_env": {"WRITE_ENABLED": "can_act"}}},
+        )
+        engine = CodexEngine(profile, SETTINGS)
+        cmd = engine.build_command(request(
+            resume=False, trust_level=TrustLevel.GENERAL,
+            tools=ToolSelection.allow(["Read", "Grep", "Skill(jira)"]),
+        ))
+
+        assert not any("WRITE_ENABLED" in tok for tok in cmd)
+
+    def test_도구_금지_턴은_read_only_로_돈다(self, tmp_path: Path) -> None:
+        """감시 중복 판정 턴처럼 도구를 하나도 쓰지 않는 턴이다. 허용 목록이
+        아니라는 이유로 프로필 샌드박스를 받으면 workspace-write, 통신,
+        자동 승인이 열린다."""
+        profile = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            fallback={"type": "codex", "binary": "codex", "model": "gpt-5.6-sol",
+                      "options": {"sandbox": "workspace-write", "network": True}},
+            tmp_path=tmp_path,
+            mcp_servers={"jira": {"command": "jira-mcp",
+                                  "turn_env": {"WRITE_ENABLED": "can_act"}}},
+        )
+        engine = CodexEngine(profile, SETTINGS)
+        요청 = request(resume=False, trust_level=TrustLevel.GENERAL,
+                     tools=ToolSelection.forbid_all())
+        cmd = engine.build_command(요청)
+
+        assert 'sandbox_mode="read-only"' in cmd
+        assert "sandbox_workspace_write.network_access=true" not in cmd
+        assert "--approve-for-me" not in cmd
+        assert not any("WRITE_ENABLED" in tok for tok in cmd)
+        assert engine.blocks_outbound_writes(요청)
+
+    def _위임_codex(self, tmp_path: Path) -> CodexEngine:
+        profile = profile_with(
+            {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            fallback={"type": "codex", "binary": "codex", "model": "gpt-5.6-sol",
+                      "options": {"sandbox": "workspace-write", "network": True}},
+            tmp_path=tmp_path,
+            mcp_servers={"jira": {"command": "jira-mcp",
+                                  "turn_env": {"WRITE_ENABLED": "can_act"}}},
+        )
+        return CodexEngine(profile, SETTINGS)
+
+    def test_위임_턴은_소유자처럼_샌드박스를_내리지_않는다(self, tmp_path: Path) -> None:
+        """위임 턴은 소유자 턴에서 시작된 일이라 대체 엔진에서도 소유자와 같은
+        샌드박스로 돈다 (2026-11-08 김태일 지시). 읽기 전용 안내도 붙지 않는다."""
+        engine = self._위임_codex(tmp_path)
+        for resume in (False, True):
+            cmd = engine.build_command(request(
+                resume=resume, trust_level=TrustLevel.GENERAL, delegated=True,
+                tools=ToolSelection.allow(["Read", "Bash", "mcp__jira__create_issue"]),
+            ))
+            assert 'sandbox_mode="read-only"' not in cmd
+            assert CodexEngine.DELEGATED_READONLY_NOTE not in cmd[-1]
+
+    def test_위임이_아닌_비소유자_턴에는_위임_안내가_없다(self, tmp_path: Path) -> None:
+        engine = self._위임_codex(tmp_path)
+        cmd = engine.build_command(request(
+            resume=False, trust_level=TrustLevel.GENERAL,
+            tools=ToolSelection.allow(["Read", "Bash"]),
+        ))
+        assert CodexEngine.DELEGATED_READONLY_NOTE not in cmd[-1]
 
     def test_MCP_도구가_섞이면_내리지_않는다(self, tmp_path: Path) -> None:
         """READ_ONLY_TOOLS 는 내장 도구만 담는다. MCP 도구가 밖으로 쓰는지를
-        코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰)."""
+        코드가 모르므로 읽기 전용으로 단정하지 않는다 (코덱스 리뷰).
+        소유자 턴으로 본다 - 비소유자 턴은 operator_full 이 아니면 도구와
+        무관하게 read-only 다 (A9 검토)."""
         engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
         cmd = engine.build_command(request(
-            resume=False, model="gpt-5.6-sol",
+            resume=False, model="gpt-5.6-sol", trust_level=TrustLevel.OWNER,
             tools=ToolSelection.allow(["Read", "mcp__github__search_code"]),
         ))
-        assert cmd[cmd.index("--sandbox") + 1] == "danger-full-access"
+        assert 'sandbox_mode="danger-full-access"' in cmd
 
     def test_요청_때문에_내려간_턴에도_바깥_쓰기_안내가_붙는다(self, tmp_path: Path) -> None:
         """프로필이 아니라 요청이 내린 경우에도 같은 안내가 나가야 한다."""
@@ -737,7 +1051,7 @@ class TestCodexEngineBuildCommand:
         engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
         요청 = request(resume=False, model="gpt-5.6-sol", tools=ToolSelection.allow(["Read"]))
         assert engine.capabilities_for(요청).execution_isolation is ExecutionIsolation.READONLY_SANDBOX
-        assert engine.build_command(요청)[engine.build_command(요청).index("--sandbox") + 1] == "read-only"
+        assert 'sandbox_mode="read-only"' in engine.build_command(요청)
 
     def test_재개_스레드는_resume과_sandbox_mode를_쓴다(self, tmp_path: Path) -> None:
         profile = codex_profile(tmp_path)
@@ -780,6 +1094,30 @@ class TestCodexEngineBuildCommand:
         assert UNTRUSTED_INPUT_MARK in cmd[-1]
         assert cmd[-1].endswith("안녕")
 
+    def test_소유자와_제어_봇의_요청은_지시로_표시한다(self, tmp_path: Path) -> None:
+        """2026-11-06 데이전트가 마메치(제어 봇)의 지시를 "슬랙 입력은 자료"
+        라는 표식을 근거로 거절했다. OWNER 턴은 지시 표식을 쓴다."""
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.engine.base import OWNER_INPUT_MARK
+        profile = codex_profile(tmp_path)
+        engine = CodexEngine(profile, SETTINGS)
+        req = replace(request(resume=True, model="gpt-5.6-sol", session_id="thread-abc",
+                              system_prompt="지침"), trust_level=TrustLevel.OWNER)
+        cmd = engine.build_command(req)
+        assert OWNER_INPUT_MARK in cmd[-1]
+        assert UNTRUSTED_INPUT_MARK not in cmd[-1]
+
+    def test_소유자가_아닌_요청은_자료_표식을_유지한다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.engine.base import OWNER_INPUT_MARK
+        profile = codex_profile(tmp_path)
+        engine = CodexEngine(profile, SETTINGS)
+        req = replace(request(resume=True, model="gpt-5.6-sol", session_id="thread-abc",
+                              system_prompt="지침"), trust_level=TrustLevel.TRUSTED)
+        cmd = engine.build_command(req)
+        assert UNTRUSTED_INPUT_MARK in cmd[-1]
+        assert OWNER_INPUT_MARK not in cmd[-1]
+
     def test_재개_턴의_지침은_슬랙_입력과_같은_계층이다(self, tmp_path: Path) -> None:
         """프롬프트 한 문자열 안에 든 지침은 native 경계가 아니다. 선언을
         그대로 두면 요구 대조가 거짓이 된다."""
@@ -801,8 +1139,7 @@ class TestCodexEngineBuildCommand:
         cmd = engine.build_command(request(
             resume=False, model="gpt-5.6-sol", tools=ToolSelection.unrestricted(),
         ))
-        idx = cmd.index("--sandbox")
-        assert cmd[idx + 1] == "danger-full-access"
+        assert 'sandbox_mode="danger-full-access"' in cmd
 
     def test_옵션의_sandbox값을_쓴다(self, tmp_path: Path) -> None:
         profile = codex_profile(tmp_path, options={"sandbox": "workspace-write"})
@@ -810,8 +1147,10 @@ class TestCodexEngineBuildCommand:
         cmd = engine.build_command(request(
             resume=False, model="gpt-5.6-sol", tools=ToolSelection.unrestricted(),
         ))
-        idx = cmd.index("--sandbox")
-        assert cmd[idx + 1] == "workspace-write"
+        assert 'sandbox_mode="workspace-write"' in cmd
+        # workspace-write is the one mode that needs MCP tools to actually
+        # run under codex's headless approval_policy=never (2026-09-30).
+        assert "--approve-for-me" in cmd
 
     def test_effort가_비어도_추론_강도를_명시한다(self, tmp_path: Path) -> None:
         """생략하면 CLI 기본값으로 돌면서 감사 기록의 effort 와 어긋난다(sca-3kzk)."""
@@ -930,6 +1269,74 @@ class TestCodexEngineParse:
         resp = engine.parse("\n".join(lines), "", 0)
         assert resp.elapsed == 0.0
         assert resp.elapsed_source == "unknown"
+
+
+class TestCodexEngineSandboxSignals:
+    """codex exec 가 성공으로 끝났어도 샌드박스가 쓰기를 막았거나(blocked)
+    샌드박스 밖 도구로 돌아갔으면(bypass) 그 턴은 시킨 일을 못 한 것이다.
+    마메치 codex_runner.parse_codex_jsonl 패리티 — 성공 집계에 묻히지 않게
+    raw 에 신호를 남긴다 (H52)."""
+
+    def _parse(self, tmp_path: Path, items: list[dict]) -> EngineResponse:
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        lines = [json.dumps({"type": "thread.started", "thread_id": "th-1"})]
+        lines += [json.dumps({"type": "item.completed", "item": it}) for it in items]
+        lines.append(json.dumps({"type": "item.completed",
+                                 "item": {"type": "agent_message", "text": "답"}}))
+        return engine.parse("\n".join(lines), "", 0)
+
+    def test_도구_호출_이름을_raw에_모은다(self, tmp_path: Path) -> None:
+        resp = self._parse(tmp_path, [
+            {"type": "mcp_tool_call", "server": "jira", "tool": "search", "status": "completed"},
+        ])
+        assert resp.ok is True
+        assert resp.raw["tools"] == ["jira.search"]
+
+    def test_셸_차단_문구를_blocked에_담는다(self, tmp_path: Path) -> None:
+        resp = self._parse(tmp_path, [
+            {"type": "command_execution",
+             "aggregated_output": "sed: /etc/x: Read-only file system"},
+        ])
+        assert resp.ok is True
+        assert resp.raw["blocked"] == ["shell : Read-only file system"]
+
+    def test_mcp_도구_차단_문구를_blocked에_담는다(self, tmp_path: Path) -> None:
+        resp = self._parse(tmp_path, [
+            {"type": "mcp_tool_call", "server": "fs", "tool": "write", "status": "completed",
+             "output": "patch rejected"},
+        ])
+        assert resp.raw["blocked"] == ["fs.write : patch rejected"]
+
+    def test_명령줄의_낱말은_차단으로_오탐하지_않는다(self, tmp_path: Path) -> None:
+        # 모델이 검색한 명령 문자열에 차단 문구가 들어 있어도 잡지 않는다.
+        resp = self._parse(tmp_path, [
+            {"type": "command_execution",
+             "command": "grep 'Read-only file system' log.txt",
+             "aggregated_output": "no matches"},
+        ])
+        assert resp.raw["blocked"] == []
+
+    def test_우회_도구가_성공하면_bypass에_담는다(self, tmp_path: Path) -> None:
+        resp = self._parse(tmp_path, [
+            {"type": "mcp_tool_call", "server": "browser",
+             "tool": "browser_run_code_unsafe", "status": "completed"},
+        ])
+        assert resp.raw["bypass"] == ["browser.browser_run_code_unsafe"]
+
+    def test_우회_도구가_실패하면_bypass가_아니다(self, tmp_path: Path) -> None:
+        resp = self._parse(tmp_path, [
+            {"type": "mcp_tool_call", "server": "browser",
+             "tool": "browser_run_code_unsafe", "status": "failed",
+             "error": {"message": "nope"}},
+        ])
+        assert resp.raw["bypass"] == []
+
+    def test_깨끗한_턴은_신호가_비어_있다(self, tmp_path: Path) -> None:
+        resp = self._parse(tmp_path, [
+            {"type": "mcp_tool_call", "server": "jira", "tool": "search", "status": "completed"},
+        ])
+        assert resp.raw["blocked"] == []
+        assert resp.raw["bypass"] == []
 
 
 class Test지침이_비어도_경로_안내는_실린다:
@@ -1330,7 +1737,111 @@ class TestEngineRunner:
         assert resp.body == "답변"
         assert calls[0][0] == ["fake-bin", "안녕"]
         # timeout_sec 은 실행기가 채운다 - 그 값이 실제로 적용되는 제한이다 (sca-ocie).
-        assert engine.built == [request(timeout_sec=SETTINGS.request_timeout_sec)]
+        # 턴 밖 호출에는 턴키가 없어 "unknown" 이 채워진다 (C10).
+        assert engine.built == [request(
+            timeout_sec=SETTINGS.request_timeout_sec,
+            engine_env={"TURN_ID": "unknown"}, turn_context={"turn_id": "unknown"},
+        )]
+
+    def test_자식_환경에_턴_마감시각을_싣는다(self, tmp_path: Path) -> None:
+        """A28 — Stop 훅·Bash 가드가 남은 턴 시간을 읽도록 실행기가 자식
+        프로세스 환경에 TURN_DEADLINE[_MONO] 를 절대 에폭으로 넣는다."""
+        import time as _time
+
+        profile = claude_profile(tmp_path)
+        engine = RecordingEngine(profile, SETTINGS)
+        잡힌환경: list[Any] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            잡힌환경.append(env)
+            return FakeCompleted(stdout="답변", returncode=0)
+
+        runner = EngineRunner(SETTINGS, subprocess_runner=fake_subprocess, environment_policy=통과정책())
+        before = _time.monotonic()
+        runner.run(engine, request(), timeout_sec=900.0)
+        after = _time.monotonic()
+
+        env = 잡힌환경[0]
+        assert "TURN_DEADLINE" in env
+        assert "TURN_DEADLINE_MONO" in env
+        # 마감시각은 (지금 + 제한) 이므로, 남은 시간이 제한과 거의 같아야 한다.
+        remaining = float(env["TURN_DEADLINE_MONO"]) - before
+        assert 900.0 <= remaining <= 900.0 + (after - before) + 1.0
+
+    def test_요청의_engine_env_가_claude_허용목록을_거쳐_자식에_실린다(self, tmp_path: Path) -> None:
+        """G16 — Stop 훅의 advisor 판정이 돌려면 POST_CHANNEL 과 ADVISOR_CHANNELS
+        가 claude 자식 환경에 있어야 한다. 허용목록에 없는 이름은 걸러진다."""
+        from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
+
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        잡힌환경: list[Any] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            잡힌환경.append(env)
+            return FakeCompleted(stdout="답변", returncode=0)
+
+        runner = EngineRunner(
+            SETTINGS, subprocess_runner=fake_subprocess,
+            environment_policy=ClaudeEnvironmentPolicy("test"), source_env={"PATH": "/bin"},
+        )
+        runner.run(engine, request(engine_env={
+            "POST_CHANNEL": "C_ADV",
+            "ADVISOR_CHANNELS": "C_ADV,C_OTHER",
+            "CODE_FIRST_CHANNELS": "C_CODE",
+            "TURN_TIER": "owner_trusted",
+            "NOT_ALLOWED": "x",
+        }))
+
+        env = 잡힌환경[0]
+        assert env["POST_CHANNEL"] == "C_ADV"
+        assert env["ADVISOR_CHANNELS"] == "C_ADV,C_OTHER"
+        assert env["CODE_FIRST_CHANNELS"] == "C_CODE"
+        assert env["TURN_TIER"] == "owner_trusted"
+        assert "NOT_ALLOWED" not in env
+
+    def test_실린_지식이_검수용_파일로_넘어가고_호출_뒤_지워진다(self, tmp_path: Path) -> None:
+        """2026-11-10 Stop 훅 검수가 시스템 지침의 지식 파일을 보지 못했다.
+        실행기가 지식 본문을 임시 파일에 쓰고 경로를 자식 환경에 싣는다."""
+        from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
+        from slack_cli_agent.guard.finish_review import KNOWLEDGE_FILE_ENV
+
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        본문: list[str] = []
+        경로: list[str] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            경로.append(env[KNOWLEDGE_FILE_ENV])
+            본문.append(Path(env[KNOWLEDGE_FILE_ENV]).read_text(encoding="utf-8"))
+            return FakeCompleted(stdout="답변", returncode=0)
+
+        runner = EngineRunner(
+            SETTINGS, subprocess_runner=fake_subprocess,
+            environment_policy=ClaudeEnvironmentPolicy("test"), source_env={"PATH": "/bin"},
+        )
+        runner.run(engine, request(review_knowledge="status 4 = 배송완료"))
+
+        assert 본문 == ["status 4 = 배송완료"]
+        assert not Path(경로[0]).exists()
+
+    def test_지식이_없으면_물려받은_검수용_경로도_싣지_않는다(self, tmp_path: Path) -> None:
+        from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
+        from slack_cli_agent.guard.finish_review import KNOWLEDGE_FILE_ENV
+
+        engine = RecordingEngine(claude_profile(tmp_path), SETTINGS)
+        잡힌환경: list[Any] = []
+
+        def fake_subprocess(cmd, cwd, timeout, env=None):
+            잡힌환경.append(env)
+            return FakeCompleted(stdout="답변", returncode=0)
+
+        runner = EngineRunner(
+            SETTINGS, subprocess_runner=fake_subprocess,
+            environment_policy=ClaudeEnvironmentPolicy("test"),
+            source_env={"PATH": "/bin", KNOWLEDGE_FILE_ENV: "/tmp/other-call.md"},
+        )
+        runner.run(engine, request())
+
+        assert KNOWLEDGE_FILE_ENV not in 잡힌환경[0]
 
     def test_CLI_에_알리는_제한시간이_실제_제한과_같다(self, tmp_path: Path) -> None:
         """agy 는 --print-timeout 으로 자기 제한을 받는다. 실행기가 더 짧은
@@ -1530,13 +2041,13 @@ class TestFallbackEngine:
         switcher.approve()
         return FallbackEngine(primary, secondary, switcher, runner), secondary
 
-    def test_소유자_요청은_2차에서도_소유자_모델을_받는다(self, tmp_path: Path) -> None:
-        """1차에서 등급을 올려 보낸 요청이 2차의 일반 모델로 떨어지면
-        그 등급이 조용히 사라진다(sca-14h). 엔진마다 모델명이 달라 1차 이름을
-        그대로 옮길 수는 없으므로 2차의 소유자 모델을 쓴다."""
+    def test_소유자_요청도_2차의_기본_모델을_받는다(self, tmp_path: Path) -> None:
+        """A13 부터 1차는 요청자와 무관하게 같은 모델로 돈다. 2차에서만
+        소유자를 소유자 모델로 올리면 등급별 모델이 다시 갈린다. 엔진마다
+        모델명이 달라 1차 이름은 옮길 수 없으므로 2차 기본 모델을 쓴다."""
         fallback, secondary = self._소유자모델폴백(tmp_path)
         fallback.run(request(model="claude-opus-5", trust_level=TrustLevel.OWNER))
-        assert [r.model for r in secondary.built] == ["gpt-5.6-pro"]
+        assert [r.model for r in secondary.built] == ["gpt-5.6-sol"]
 
     def test_일반_요청은_2차의_일반_모델을_받는다(self, tmp_path: Path) -> None:
         fallback, secondary = self._소유자모델폴백(tmp_path)
@@ -1624,7 +2135,9 @@ class TestFallbackEngine:
         assert switcher.is_switched() is False
         assert len(secondary.parsed) == 0
 
-    def test_1차가_한도_소진이면_전환_상태를_즉시_남기고_이번_답은_그대로_낸다(self, tmp_path: Path) -> None:
+    def test_1차가_한도_소진이면_자동_승인하고_이번_턴부터_2차로_답한다(self, tmp_path: Path) -> None:
+        """한도는 승인을 기다릴 일이 아니다 (2026-11-06 김태일 지시).
+        2차가 확인 요청에 답하면 바로 승인하고 한도를 만난 이 턴을 2차로 답한다."""
         limit_response = EngineResponse(
             ok=False, body="한도 소진", session_id=None, model_actual=None,
             elapsed=0, turns=None, usage=None, failure_reason="usage_limit",
@@ -1638,6 +2151,21 @@ class TestFallbackEngine:
         fallback, _primary, _secondary, switcher = self._fallback(
             tmp_path, primary_response=limit_response, secondary_response=probe_response)
         resp = fallback.run(request())
+        assert resp.body == "OK"
+        assert switcher.is_switched() is True
+        assert switcher.is_approved() is True
+
+    def test_2차_확인이_실패하면_승인하지_않고_한도_안내를_낸다(self, tmp_path: Path) -> None:
+        limit_response = EngineResponse(
+            ok=False, body="한도 소진", session_id=None, model_actual=None,
+            elapsed=0, turns=None, usage=None, failure_reason="usage_limit",
+            user_facing=True,
+        )
+        probe_fail = EngineResponse(ok=False, body="", session_id=None,
+                                    model_actual=None, elapsed=0, turns=None, usage=None)
+        fallback, _primary, _secondary, switcher = self._fallback(
+            tmp_path, primary_response=limit_response, secondary_response=probe_fail)
+        resp = fallback.run(request())
         assert resp.body == "한도 소진"
         assert switcher.is_switched() is True
         assert switcher.is_approved() is False
@@ -1645,8 +2173,10 @@ class TestFallbackEngine:
     def test_전환을_시작한_첫_요청도_사람에게_답을_낸다(self, tmp_path: Path) -> None:
         """1차의 실패 응답은 기본이 비공개다. 그대로 돌려주면 전환을 만든 그
         요청만 아무 답도 없이 끝나 봇이 멈춘 것으로 보인다 (sca-3hh4).
-        두 번째 요청부터는 승인 대기 분기가 같은 문구를 낸다."""
-        fallback, _primary, _secondary, _switcher = self._인증실패_1차(tmp_path)
+        두 번째 요청부터는 승인 대기 분기가 같은 문구를 낸다.
+        2차가 답하면 자동 승인되어 2차 답이 나가므로, 2차도 못 쓰는 경우를 본다."""
+        fallback, _primary, _secondary, _switcher = self._인증실패_1차(
+            tmp_path, secondary_ok=False)
 
         resp = fallback.run(request())
 
@@ -1656,13 +2186,13 @@ class TestFallbackEngine:
 
     def test_1차가_이미_사람에게_낼_답을_냈으면_그대로_쓴다(self, tmp_path: Path) -> None:
         """한도 안내는 엔진이 직접 낸다. 덮어쓰면 남은 한도 시각 같은 내용이
-        사라진다."""
+        사라진다. 2차 확인이 실패해 자동 승인하지 못한 경우다."""
         limit_response = EngineResponse(
             ok=False, body="주간 한도를 다 썼습니다. 목요일에 풀립니다.", session_id=None,
             model_actual=None, elapsed=0, turns=None, usage=None,
             failure_reason="usage_limit", user_facing=True,
         )
-        probe = EngineResponse(ok=True, body="OK", session_id=None, model_actual=None,
+        probe = EngineResponse(ok=False, body="", session_id=None, model_actual=None,
                                elapsed=0, turns=None, usage=None)
         fallback, _primary, _secondary, _switcher = self._fallback(
             tmp_path, primary_response=limit_response, secondary_response=probe)
@@ -1707,16 +2237,20 @@ class TestFallbackEngine:
 
     # -- 로그인 만료로 전환하는 경로 (2026-09-19 asuka 실측)
 
-    def _인증실패_1차(self, tmp_path: Path):
-        """1차가 종료코드 1 로 끝나고 그 실패가 로그인 만료인 경우."""
+    def _인증실패_1차(self, tmp_path: Path, secondary_ok: bool = True):
+        """1차가 종료코드 1 로 끝나고 그 실패가 로그인 만료인 경우.
+
+        secondary_ok=False 면 2차도 확인 요청에 답하지 않아 자동 승인되지 않는다.
+        """
         failed = EngineResponse(
             ok=False, body="Codex 실행에 실패했습니다.", session_id=None, model_actual=None,
             elapsed=0, turns=None, usage=None, failure_reason="nonzero_exit",
         )
-        probe_ok = EngineResponse(ok=True, body="OK", session_id=None, model_actual=None,
-                                  elapsed=0, turns=None, usage=None)
+        probe = EngineResponse(ok=secondary_ok, body="OK" if secondary_ok else "",
+                               session_id=None, model_actual=None,
+                               elapsed=0, turns=None, usage=None)
         fallback, primary, secondary, switcher = self._fallback(
-            tmp_path, primary_response=failed, secondary_response=probe_ok)
+            tmp_path, primary_response=failed, secondary_response=probe)
         primary.detect_auth_failure = (  # type: ignore[method-assign]
             lambda response: "codex 로그인이 풀렸다."
         )
@@ -1743,7 +2277,21 @@ class TestFallbackEngine:
         resp = fallback.run(request())
 
         assert switcher.reason() == EngineSwitcher.AUTH_FAILURE
-        assert resp.user_facing is True
+        assert switcher.is_approved() is True
+        assert resp.ok is True
+
+    def test_로그인이_풀리면_그_요청부터_2차로_답한다(self, tmp_path: Path) -> None:
+        """2026-11-07 claude 토큰 만료 때 2차가 확인에 답했는데도 승인 대기로 남아
+        07:49-15:44 동안 모든 요청이 안내문으로 끝났다. 한도와 같이 자동 승인한다."""
+        fallback, _primary, secondary, switcher = self._인증실패_1차(tmp_path)
+
+        resp = fallback.run(request())
+
+        assert switcher.reason() == EngineSwitcher.AUTH_FAILURE
+        assert switcher.is_approved() is True
+        assert resp.ok is True and resp.body == "OK"
+        # 확인 요청 1회와 실제 요청 1회
+        assert len(secondary.built) == 2
 
     def test_1차_로그인이_풀리면_전환_상태를_남긴다(self, tmp_path: Path) -> None:
         """한도가 아니어도 1차가 당분간 아무 요청도 못 받는 상태면 전환한다.
@@ -1757,8 +2305,10 @@ class TestFallbackEngine:
         assert switcher.reason() == EngineSwitcher.AUTH_FAILURE
 
     def test_로그인이_풀린_전환은_한도와_다른_안내를_낸다(self, tmp_path: Path) -> None:
-        """한도로 안내하면 기다리면 되는 것으로 읽혀 아무도 다시 로그인하지 않는다."""
-        fallback, _primary, _secondary, _switcher = self._인증실패_1차(tmp_path)
+        """한도로 안내하면 기다리면 되는 것으로 읽혀 아무도 다시 로그인하지 않는다.
+        2차도 못 써 승인되지 않은 경우의 안내문을 본다."""
+        fallback, _primary, _secondary, _switcher = self._인증실패_1차(
+            tmp_path, secondary_ok=False)
         fallback.run(request())
 
         resp = fallback.run(request())
@@ -1909,6 +2459,60 @@ class Test엔진호출부품:
         invoker = DirectInvoker(실행기대역(), engine)  # type: ignore[arg-type]
         assert invoker.invoke(요청) is 응답
         assert 부른것 == [(engine, 요청)]
+
+    def _인증실패_실행(self, tmp_path: Path, stderr: str, notify: Any, clock: Any = None) -> Any:
+        from slack_cli_agent.engine.runner import DirectInvoker
+
+        engine = CodexEngine(codex_profile(tmp_path), SETTINGS)
+        실패 = engine.parse(stdout="", stderr=stderr, returncode=1)
+
+        class 실행기대역:
+            def run(self, engine: Engine, request: EngineRequest,
+                    timeout_sec: float | None = None) -> EngineResponse:
+                return 실패
+
+        kwargs: dict[str, Any] = {"notify": notify}
+        if clock is not None:
+            kwargs["clock"] = clock
+        return DirectInvoker(실행기대역(), engine, **kwargs)  # type: ignore[arg-type]
+
+    def test_직접실행도_로그인_풀림을_사람에게_보인다(self, tmp_path: Path) -> None:
+        """폴백이 없으면 codex 종료코드 1 이 비공개로 남아 스레드가 침묵했다 (2026-10-20)."""
+        알림: list[str] = []
+        invoker = self._인증실패_실행(
+            tmp_path,
+            "ERROR: Your access token could not be refreshed because your refresh token "
+            "was already used. Please log out and sign in again.",
+            알림.append,
+        )
+        응답 = invoker.invoke(request())
+        assert 응답.ok is False
+        assert 응답.user_facing is True
+        assert 응답.failure_reason == "auth_failure"
+        assert "로그인" in 응답.body
+        assert len(알림) == 1
+
+    def test_로그인_풀림_알림은_간격_안에서_한_번만_나간다(self, tmp_path: Path) -> None:
+        알림: list[str] = []
+        시각 = [1000.0]
+        invoker = self._인증실패_실행(
+            tmp_path, "Please log out and sign in again", 알림.append, clock=lambda: 시각[0]
+        )
+        invoker.invoke(request())
+        시각[0] += 60
+        invoker.invoke(request())
+        assert len(알림) == 1
+        시각[0] += 3600
+        invoker.invoke(request())
+        assert len(알림) == 2
+
+    def test_다른_실패는_직접실행이_건드리지_않는다(self, tmp_path: Path) -> None:
+        알림: list[str] = []
+        invoker = self._인증실패_실행(tmp_path, "some other crash", 알림.append)
+        응답 = invoker.invoke(request())
+        assert 응답.failure_reason == "nonzero_exit"
+        assert 응답.user_facing is False
+        assert 알림 == []
 
     def test_폴백실행은_엔진자신의_run_을_부른다(self) -> None:
         """실행기를 거치면 전환 판정이 건너뛰어진다."""
@@ -2798,3 +3402,51 @@ class Test보장_조회는_MCP_서버를_밝혀야_한다:
         profile = claude_profile(tmp_path)
         보장 = ClaudeEngine.configured_capabilities(profile.primary_engine, {})
         assert 보장.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+
+
+class Test모델별_사용량_표를_보존한다:
+    """A14 : model_actual 은 모델 하나만 남겨, 조언자로 부른 모델의 토큰과
+    비용이 감사 기록에서 사라졌다. 표 전체를 응답에 싣는다."""
+
+    def _payload(self, **extra: Any) -> dict[str, Any]:
+        return {"result": "답", "session_id": "s1", "is_error": False, **extra}
+
+    def test_조언자_모델까지_모든_행과_비용을_싣는다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = self._payload(modelUsage={
+            "claude-sonnet-5-5": {"inputTokens": 10, "outputTokens": 200,
+                                  "cacheReadInputTokens": 3000,
+                                  "cacheCreationInputTokens": 40, "costUSD": 0.12},
+            "claude-opus-5-5": {"inputTokens": 5, "outputTokens": 900, "costUSD": 1.5},
+        })
+        table = engine.parse(json.dumps(payload), "", 0).model_usage
+        assert table is not None
+        assert set(table) == {"claude-sonnet-5-5", "claude-opus-5-5"}
+        sonnet = table["claude-sonnet-5-5"]
+        assert (sonnet.input_tokens, sonnet.output_tokens, sonnet.cache_read_tokens,
+                sonnet.cache_creation_tokens, sonnet.cost_usd) == (10, 200, 3000, 40, 0.12)
+        assert table["claude-opus-5-5"].cost_usd == 1.5
+
+    def test_비용이_없으면_0_이_아니라_None_이다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = self._payload(modelUsage={"m": {"outputTokens": "x", "costUSD": "?"}})
+        row = engine.parse(json.dumps(payload), "", 0).model_usage["m"]
+        assert row.output_tokens == 0
+        assert row.cost_usd is None
+
+    def test_표가_없으면_None_이다(self, tmp_path: Path) -> None:
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        assert engine.parse(json.dumps(self._payload()), "", 0).model_usage is None
+        bad = self._payload(modelUsage={"a": None})
+        assert engine.parse(json.dumps(bad), "", 0).model_usage is None
+
+    def test_실패한_실행도_싣는다(self, tmp_path: Path) -> None:
+        """실패한 턴도 토큰을 쓴다 (sca-3g3a 와 같은 이유)."""
+        engine = ClaudeEngine(claude_profile(tmp_path), SETTINGS)
+        payload = {"is_error": True, "subtype": "error_max_turns", "session_id": "s1",
+                   "modelUsage": {"m": {"outputTokens": 7, "costUSD": 0.01}}}
+        resp = engine.parse(json.dumps(payload), "", 1)
+        assert resp.ok is False
+        assert resp.model_usage["m"].output_tokens == 7
+        empty = engine.parse(json.dumps(self._payload(result="", modelUsage={"m": {}})), "", 0)
+        assert empty.ok is False and "m" in empty.model_usage

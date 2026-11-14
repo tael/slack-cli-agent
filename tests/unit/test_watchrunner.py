@@ -16,7 +16,7 @@ import pytest
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import NO_DETAIL, EngineResponse, FailureDetail
-from slack_cli_agent.guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG
+from slack_cli_agent.guard.watch import WATCH_DONE_TAG, WATCH_STILL_TAG, WATCH_SUPERSEDED_TAG
 from slack_cli_agent.observability.audit import (
     WATCH_ABANDONED_KIND,
     WATCH_CHECKED_KIND,
@@ -24,7 +24,7 @@ from slack_cli_agent.observability.audit import (
 )
 from slack_cli_agent.reliability.watchjobs import WatchJob, WatchJobQueue
 from slack_cli_agent.reliability.watchresult import WatchOutcome
-from slack_cli_agent.reliability.watchrunner import WatchJobChecker
+from slack_cli_agent.reliability.watchrunner import WatchJobChecker, watch_supersede_prompt
 from slack_cli_agent.storage.database import Database
 
 
@@ -56,6 +56,7 @@ def 큐(database: Database) -> 시계달린큐:
 @dataclass
 class 가짜채널설정:
     rich: bool = False
+    flat_reply: bool = False
 
 
 class 가짜채널목록:
@@ -70,11 +71,15 @@ class 가짜채널목록:
 class 가짜발행:
     실패: bool = False
     게시내역: list[tuple[str, str, str, bool]] = field(default_factory=list)
+    flat내역: list[bool] = field(default_factory=list)
 
-    def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None:
+    def post(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> str | None:
         if self.실패:
             raise RuntimeError("발신 실패")
         self.게시내역.append((channel, thread_ts, text, rich))
+        self.flat내역.append(flat)
         return "999.9"
 
 
@@ -109,7 +114,7 @@ def 기록하고_응답(
 
 
 def 체커(*, 큐, run_check, 발행=None, 채널목록=None, 설정값=None, 리액션=None, notify_owner=None,
-        판정기=None, 감사=None):
+        판정기=None, 감사=None, 스레드활동=None, run_supersede_check=None):
     return WatchJobChecker(
         queue=큐,
         run_check=run_check,
@@ -120,8 +125,27 @@ def 체커(*, 큐, run_check, 발행=None, 채널목록=None, 설정값=None, �
         reactions=리액션,
         notify_owner=notify_owner,
         audit=감사,
+        thread_activity=스레드활동,
+        run_supersede_check=run_supersede_check,
         now=lambda: 큐.시각["값"],
     )
+
+
+@dataclass
+class 가짜스레드활동:
+    """`ThreadActivityPort` 의 최소 대역. 본답변이 다시 말을 올렸는지와
+    등록 뒤 스레드 내용을 고정값으로 돌려준다."""
+
+    다시_말함: bool = True
+    대화록: str = "본답변이 이미 결과를 말했습니다."
+    받은인자: list[tuple[str, str, float]] = field(default_factory=list)
+
+    def replied_since(self, channel: str, thread_ts: str, since: float) -> bool:
+        self.받은인자.append((channel, thread_ts, since))
+        return self.다시_말함
+
+    def transcript_since(self, channel: str, thread_ts: str, since: float) -> str:
+        return self.대화록
 
 
 class Test완료처리:
@@ -191,6 +215,32 @@ class Test완료처리:
         c.check_once()
 
         assert 발행.게시내역[0][3] is True
+
+    def test_flat채널이면감시보고가스레드없이나간다(self, 큐) -> None:
+        # B3: flat_reply 채널은 본답변이 채널 최상위에 올라가므로 감시 보고도
+        # 스레드에 숨기지 않고 같은 위치에 올린다.
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
+            발행=발행, 채널목록=가짜채널목록({"C1": 가짜채널설정(flat_reply=True)}),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.flat내역 == [True]
+
+    def test_일반채널이면감시보고가스레드로나간다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝{WATCH_DONE_TAG}"),
+            발행=발행, 채널목록=가짜채널목록({"C1": 가짜채널설정()}),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.flat내역 == [False]
 
     def test_게시가예외를내도완료표시는된다(self, 큐) -> None:
         큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
@@ -1338,3 +1388,482 @@ class Test감시_기록의_모델_칸:
         응답값 = 응답(ok=True, body=f"아직입니다 {WATCH_STILL_TAG}")
         기록 = self._기록(큐, replace(응답값, model_asked="claude-opus-5"))
         assert "model_actual" not in 기록
+
+
+class TestWatchSupersedePrompt:
+    def test_설명_대화록_초안을_모두_담는다(self) -> None:
+        prompt = watch_supersede_prompt("배포 확인", "대화 내용", "완료 보고 초안")
+        assert "배포 확인" in prompt
+        assert "대화 내용" in prompt
+        assert "완료 보고 초안" in prompt
+        assert WATCH_SUPERSEDED_TAG in prompt
+        assert WATCH_DONE_TAG in prompt
+
+
+class Test발송직전_중복_판정:
+    """`_finish` 가 완료 보고를 올리기 직전, 확인이 도는 사이 본답변이 이미
+    같은 결과를 말했는지 재확인한다 (bot.py:10974-11001, 2026-09-30 재발방지).
+    """
+
+    def test_본답변이_이미_말했으면_보고를_올리지_않는다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        발행 = 가짜발행()
+        스레드활동 = 가짜스레드활동(다시_말함=True)
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행,
+            스레드활동=스레드활동,
+            run_supersede_check=lambda job, transcript, draft: 응답(
+                ok=True, body=WATCH_SUPERSEDED_TAG,
+            ),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == []
+        assert 큐.due(now=99999.0, min_gap=0.0) == []
+        assert 큐.expired(now=99999.0, max_age=0.0) == []
+
+    def test_본답변이_말한적_없으면_평소대로_올린다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        스레드활동 = 가짜스레드활동(다시_말함=False)
+        불린판정 = {"값": False}
+
+        def run_supersede_check(job, transcript, draft):
+            불린판정["값"] = True
+            return 응답(ok=True, body=WATCH_SUPERSEDED_TAG)
+
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행, 스레드활동=스레드활동, run_supersede_check=run_supersede_check,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
+        # 재확인 자체를 안 돈다 — 본답변이 없었으니 비교할 대상이 없다.
+        assert 불린판정["값"] is False
+
+    def test_재확인에서_완료라고_하면_평소대로_올린다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행, 스레드활동=가짜스레드활동(다시_말함=True),
+            run_supersede_check=lambda job, transcript, draft: 응답(ok=True, body=WATCH_DONE_TAG),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
+
+    def test_재확인_호출이_실패해도_보고는_나간다(self, 큐) -> None:
+        """재확인을 잃는 쪽이 드문 중복보다 낫다."""
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+
+        def 터지는_재확인(job, transcript, draft):
+            raise RuntimeError("재확인 엔진 오류")
+
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행, 스레드활동=가짜스레드활동(다시_말함=True),
+            run_supersede_check=터지는_재확인,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
+
+    def test_재확인_엔진_응답이_실패여도_보고는_나간다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행, 스레드활동=가짜스레드활동(다시_말함=True),
+            run_supersede_check=lambda job, transcript, draft: 응답(ok=False, body=""),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
+
+    def test_콜라보레이터가_없으면_재확인_없이_평소대로_돈다(self, 큐) -> None:
+        """thread_activity 나 run_supersede_check 중 하나라도 없으면 전체를
+        건너뛴다 — 조립하지 않은 환경에서는 기존 동작 그대로다."""
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            발행=발행,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == [("C1", "111.1", "배포됐습니다", True)]
+
+    def test_교체된_건도_완료로_표시되고_표식도_정리된다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        리액션 = 가짜리액션()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            리액션=리액션, 스레드활동=가짜스레드활동(다시_말함=True),
+            run_supersede_check=lambda job, transcript, draft: 응답(
+                ok=True, body=WATCH_SUPERSEDED_TAG,
+            ),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 리액션.완료내역 == [("C1", "222.2")]
+        assert 큐.due(now=99999.0, min_gap=0.0) == []
+
+    def test_교체는_감사에_superseded로_남는다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        감사 = 가짜감사()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            감사=감사, 스레드활동=가짜스레드활동(다시_말함=True),
+            run_supersede_check=lambda job, transcript, draft: 응답(
+                ok=True, body=WATCH_SUPERSEDED_TAG,
+            ),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        기록 = dict(감사.기록)
+        assert 기록[WATCH_FINISHED_KIND]["superseded"] is True
+
+    def test_등록_뒤_대화록을_재확인_프롬프트에_넘긴다(self, 큐) -> None:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        스레드활동 = 가짜스레드활동(다시_말함=True, 대화록="등록 뒤 오간 말")
+        받은_대화록 = []
+
+        def run_supersede_check(job, transcript, draft):
+            받은_대화록.append(transcript)
+            return 응답(ok=True, body=WATCH_DONE_TAG)
+
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            스레드활동=스레드활동, run_supersede_check=run_supersede_check,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 받은_대화록 == ["등록 뒤 오간 말"]
+
+    def test_결과파일로_끝난_경로에도_재확인이_걸린다(self, 큐) -> None:
+        """outcome 이 터미널이라 태그 없이 끝나는 경로도 같은 재확인을 거친다."""
+        from slack_cli_agent.reliability.watchresult import WatchOutcome
+
+        큐.enqueue("C1", "111.1", "배포 확인", workdir="/w", run_id="r1")
+        발행 = 가짜발행()
+        고정판정기값 = 고정판정기(WatchOutcome.SUCCEEDED)
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body="배포됐습니다"),
+            발행=발행, 판정기=고정판정기값,
+            스레드활동=가짜스레드활동(다시_말함=True),
+            run_supersede_check=lambda job, transcript, draft: 응답(
+                ok=True, body=WATCH_SUPERSEDED_TAG,
+            ),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+
+        assert 발행.게시내역 == []
+
+
+class Test같은_스레드_감시_완료_계약:
+    """2026-11-06 test-agent 재기동 감시 재현.
+
+    작업 25 는 pid 파일, 요청 파일, 계정값만 보았고 2분 뒤 작업 26 이 이전
+    worker 종료 확인을 더했다. 25 가 혼자 끝나 "재기동 확인" 을 올린 것이 사고다.
+    """
+
+    조건25 = "구치파치 재기동 확인 : bot.pid 값 변경, apply-request 소멸, claude_account taeil.kim"
+    조건26 = "이전 worker 34667, 42173 종료를 ps 로 확인"
+
+    def test_뒤에_등록한_조건_감시가_앞_조건을_물려받는다(self, 큐: 시계달린큐) -> None:
+        첫 = 큐.enqueue("C1", "100.1", self.조건25, msg_ts="100.2")
+        큐.시각["값"] += 109
+        둘 = 큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3")
+        열린 = 큐.due(큐.시각["값"] + 10_000, 0)
+        assert [j.id for j in 열린] == [둘]
+        assert 첫 != 둘
+        assert self.조건25 in 열린[0].condition
+        assert self.조건26 in 열린[0].condition
+
+    def test_앞_조건만_충족돼도_완료_보고가_나가지_않는다(self, 큐: 시계달린큐) -> None:
+        큐.enqueue("C1", "100.1", self.조건25, msg_ts="100.2")
+        큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3")
+        발행 = 가짜발행()
+        본조건: list[str] = []
+
+        def run(job: WatchJob, outcome: WatchOutcome) -> EngineResponse:
+            본조건.append(job.condition)
+            # 합쳐진 감시 하나만 확인되고, 이전 worker 종료가 아직이라 미완료.
+            return 응답(ok=True, body=WATCH_STILL_TAG)
+
+        큐.시각["값"] += 10_000
+        체커(큐=큐, run_check=run, 발행=발행).check_once()
+        assert 발행.게시내역 == []
+        assert len(본조건) == 1
+
+    def test_뒤_감시가_열려_있으면_앞_감시는_조용히_닫힌다(
+        self, 큐: 시계달린큐, database: Database,
+    ) -> None:
+        # 병합 전에 이미 두 행이 열려 있던 경우(이전 버전이 쓴 행)를 직접 만든다.
+        앞 = 큐.enqueue("C1", "100.1", self.조건25, msg_ts="100.2")
+        with database.connect() as 연결:
+            연결.execute(
+                "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at, last_run, "
+                "done, msg_ts, checks, trust_level, extra, workdir, run_id, due_at) "
+                "VALUES ('C1', '100.1', ?, 1001, NULL, 0, '100.3', 0, 0, '', '', '', NULL)",
+                (self.조건26,),
+            )
+        감사 = 가짜감사()
+        발행 = 가짜발행()
+
+        def run(job: WatchJob, outcome: WatchOutcome) -> EngineResponse:
+            if job.id == 앞:
+                return 응답(ok=True, body="재기동을 확인했습니다 " + WATCH_DONE_TAG)
+            return 응답(ok=True, body=WATCH_STILL_TAG)
+
+        큐.시각["값"] += 10_000
+        체커(큐=큐, run_check=run, 발행=발행, 감사=감사).check_once()
+        assert 발행.게시내역 == []
+        남은 = 큐.due(큐.시각["값"] + 10_000, 0)
+        assert [j.condition for j in 남은] == [self.조건26]
+        assert any(r[0] == WATCH_FINISHED_KIND and r[1].get("deferred_to") for r in 감사.기록)
+
+    def test_합쳐진_감시가_전부_충족되면_한_번만_보고한다(self, 큐: 시계달린큐) -> None:
+        큐.enqueue("C1", "100.1", self.조건25, msg_ts="100.2")
+        큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3")
+        발행 = 가짜발행()
+        큐.시각["값"] += 10_000
+        체커(
+            큐=큐, 발행=발행,
+            run_check=기록하고_응답([], 응답(ok=True, body="모두 확인했습니다 " + WATCH_DONE_TAG)),
+        ).check_once()
+        assert len(발행.게시내역) == 1
+        assert 큐.due(큐.시각["값"] + 10_000, 0) == []
+
+    def test_결과_파일_감시는_합치지_않는다(self, 큐: 시계달린큐) -> None:
+        큐.enqueue("C1", "100.1", "배치 A", msg_ts="100.2", run_id="aaa")
+        큐.enqueue("C1", "100.1", "배치 B", msg_ts="100.3", run_id="bbb")
+        assert len(큐.due(큐.시각["값"] + 10_000, 0)) == 2
+
+    def test_대상이_다른_뒤_감시는_앞_감시_보고를_막지_않는다(self, 큐: 시계달린큐) -> None:
+        큐.enqueue("C1", "100.1", "dag_id=ingest_orders_daily run 확인", msg_ts="100.2")
+        큐.enqueue("C1", "100.1", "dag_id=billing_export_weekly run 확인", msg_ts="100.3")
+        발행 = 가짜발행()
+
+        def run(job: WatchJob, outcome: WatchOutcome) -> EngineResponse:
+            if "ingest" in job.condition:
+                return 응답(ok=True, body="ingest 끝났습니다 " + WATCH_DONE_TAG)
+            return 응답(ok=True, body=WATCH_STILL_TAG)
+
+        큐.시각["값"] += 10_000
+        체커(큐=큐, run_check=run, 발행=발행).check_once()
+        assert len(발행.게시내역) == 1
+
+    def test_확인_지시문이_조건별_직접_확인을_요구한다(self) -> None:
+        from slack_cli_agent.reliability.watchrunner import watch_check_prompt
+
+        지시 = watch_check_prompt("재기동")
+        assert "이전 프로세스가 종료" in 지시
+        assert "하나라도 확인하지 못했으면 끝나지 않은 것" in 지시
+
+    def test_권한이_다른_앞_감시는_합치지_않는다(self, 큐: 시계달린큐) -> None:
+        # 감시 확인 턴은 행의 trust 로 돈다. 일반 사용자 조건을 소유자 행에 합치면
+        # 그 조건이 소유자 권한 턴에서 실행된다.
+        from slack_cli_agent.auth.principal import TrustLevel
+
+        큐.enqueue("C1", "100.1", self.조건25, msg_ts="100.2", trust=TrustLevel.GENERAL)
+        큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3", trust=TrustLevel.OWNER)
+        열린 = 큐.due(큐.시각["값"] + 10_000, 0)
+        assert len(열린) == 2
+        소유자행 = next(j for j in 열린 if j.trust is TrustLevel.OWNER)
+        assert self.조건25 not in 소유자행.condition
+        assert 큐.open_siblings(next(j for j in 열린 if j.trust is TrustLevel.GENERAL)) == []
+
+    def test_같은_메시지_재실행은_다른_감시를_닫지_않는다(
+        self, 큐: 시계달린큐, database: Database,
+    ) -> None:
+        둘 = 큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3")
+        with database.connect() as 연결:
+            연결.execute(
+                "INSERT INTO watch_jobs (channel, thread_ts, condition, created_at, last_run, "
+                "done, msg_ts, checks, trust_level, extra, workdir, run_id, due_at) "
+                "VALUES ('C1', '100.1', ?, 1001, NULL, 0, '100.9', 0, 0, '', '', '', NULL)",
+                (self.조건25,),
+            )
+        assert 큐.enqueue("C1", "100.1", self.조건26, msg_ts="100.3") == 둘
+        assert len(큐.due(큐.시각["값"] + 10_000, 0)) == 2
+
+
+class Test감시_기록의_모델별_사용량:
+    """A14 : 감시 확인도 엔진 호출이다. 모델별 집계에 들어가야 한다."""
+
+    def test_모델별_표와_세션을_남긴다(self, 큐) -> None:
+        from slack_cli_agent.engine.base import ModelUsage
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        응답값 = replace(
+            응답(ok=True, body=f"아직입니다 {WATCH_STILL_TAG}"), session_id="ws1",
+            model_usage={"claude-haiku-4-5": ModelUsage(output_tokens=9, cost_usd=0.002)},
+        )
+        감사 = 가짜감사()
+        c = 체커(큐=큐, run_check=lambda job, outcome: 응답값, 감사=감사)
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        기록 = dict(감사.기록)[WATCH_CHECKED_KIND]
+        assert 기록["model_usage"]["claude-haiku-4-5"]["output_tokens"] == 9
+        assert 기록["session_id"] == "ws1"
+
+    def test_중복_판정_호출의_사용량도_따로_남긴다(self, 큐) -> None:
+        """판정 호출은 결과 행이 따로 없어 집계에서 빠졌다 (A14)."""
+        from slack_cli_agent.engine.base import ModelUsage
+        from slack_cli_agent.observability.audit import ENGINE_SPEND_KIND
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        감사 = 가짜감사()
+        판정 = replace(
+            응답(ok=True, body=WATCH_SUPERSEDED_TAG), session_id="v1",
+            model_usage={"claude-haiku-4-5": ModelUsage(output_tokens=3, cost_usd=0.001)},
+        )
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            스레드활동=가짜스레드활동(다시_말함=True), 감사=감사,
+            run_supersede_check=lambda job, transcript, draft: 판정,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        [기록] = [f for k, f in 감사.기록 if k == ENGINE_SPEND_KIND]
+        assert 기록["purpose"] == "watch_supersede_check"
+        assert 기록["model_usage"]["claude-haiku-4-5"]["output_tokens"] == 3
+
+    def test_표가_없으면_사용량_행을_안_남긴다(self, 큐) -> None:
+        from slack_cli_agent.observability.audit import ENGINE_SPEND_KIND
+        큐.enqueue("C1", "111.1", "배포 확인", msg_ts="222.2")
+        감사 = 가짜감사()
+        c = 체커(
+            큐=큐,
+            run_check=lambda job, outcome: 응답(ok=True, body=f"배포됐습니다 {WATCH_DONE_TAG}"),
+            스레드활동=가짜스레드활동(다시_말함=True), 감사=감사,
+            run_supersede_check=lambda job, transcript, draft: 응답(ok=True, body=WATCH_SUPERSEDED_TAG),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        assert not [k for k, _ in 감사.기록 if k == ENGINE_SPEND_KIND]
+
+
+class Test추가보고대상:
+    """감시 조건이 자기 스레드 말고 다른 채널 스레드도 보고 대상으로 적으면,
+    읽기 전용 확인 턴 대신 실행기가 같은 보고를 거기에도 올린다.
+    2026-11-08 감시 35번이 "착수 글 스레드 게시는 이 턴 권한 밖" 으로 끝났다."""
+
+    조건 = (
+        "재판정 결과를 C01EWFYL077 스레드와 test-weather-simul(C0CFYL69JDS) "
+        "착수 글 스레드 1794105022.126019 에 보고"
+    )
+
+    def _실행(self, 큐, trust) -> 가짜발행:
+        from slack_cli_agent.auth.principal import TrustLevel  # noqa: F401
+        큐.enqueue("C01EWFYL077", "1794052435.911239", self.조건, trust=trust)
+        발행 = 가짜발행()
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: 응답(ok=True, body=f"끝났습니다 {WATCH_DONE_TAG}"),
+            발행=발행,
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        return 발행
+
+    def test_소유자_감시는_다른_스레드에도_같은_보고를_올린다(self, 큐) -> None:
+        from slack_cli_agent.auth.principal import TrustLevel
+        발행 = self._실행(큐, TrustLevel.OWNER)
+        assert [(c, t) for c, t, _, _ in 발행.게시내역] == [
+            ("C01EWFYL077", "1794052435.911239"),
+            ("C0CFYL69JDS", "1794105022.126019"),
+        ]
+        assert 발행.게시내역[0][2] == 발행.게시내역[1][2] == "끝났습니다"
+
+    def test_소유자가_아니면_자기_스레드에만_올린다(self, 큐) -> None:
+        from slack_cli_agent.auth.principal import TrustLevel
+        발행 = self._실행(큐, TrustLevel.GENERAL)
+        assert [(c, t) for c, t, _, _ in 발행.게시내역] == [("C01EWFYL077", "1794052435.911239")]
+
+    def test_스레드_ts_없는_채널_언급은_대상이_아니다(self) -> None:
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.reliability.watchrunner import extra_report_targets
+        job = WatchJob(
+            id=1, channel="C1", thread_ts="1.1", created_at=0.0, last_run=None,
+            condition="C0CFYL69JDS 채널 착수 글 확인 후 보고", trust=TrustLevel.OWNER,
+        )
+        assert extra_report_targets(job) == []
+
+    def test_확인만_하는_스레드는_보고_대상이_아니다(self) -> None:
+        """2026-11-10 감시 60번이 확인 대상으로 적은 외부 문의 스레드에 보고를 올렸다."""
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.reliability.watchrunner import extra_report_targets
+        job = WatchJob(
+            id=1, channel="C01EWFYL077", thread_ts="1794287360.612909", created_at=0.0, last_run=None,
+            condition=(
+                "erp.vroong.com(1.224.189.147)과 uc.vroong.com(1.224.189.146)에 curl https 접속이 "
+                "다시 응답하는지, 그리고 부릉groupware-support 채널 C0AP4R78JMU 의 스레드 ts "
+                "1794287282.909599 에 고성진님 원인 답글이 달렸는지 확인"
+            ),
+            trust=TrustLevel.OWNER,
+        )
+        assert extra_report_targets(job) == []
+
+    def test_확인턴_안내문에_실행기가_올린다고_적는다(self) -> None:
+        from slack_cli_agent.reliability.watchrunner import extra_targets_note
+        안내 = extra_targets_note([("C0CFYL69JDS", "1794105022.126019")])
+        assert "C0CFYL69JDS" in 안내 and "권한 밖" in 안내
+        assert extra_targets_note([]) == ""
+
+
+class Test감시보고통계푸터:
+    """2026-11-11 김태일 지적 "시간측정을 말안하고": stats_footer 채널의 감시 보고도
+    본 답과 같은 걸린 시간·모델 푸터를 단다."""
+
+    @dataclass
+    class 푸터채널(가짜채널설정):
+        stats_footer: bool = False
+
+    @dataclass
+    class 푸터발행(가짜발행):
+        def apply_stats_footer(self, body, model, rich, *, elapsed, effort, usage):
+            return f"{body}\n\n> 걸린 시간 : {elapsed:.0f}초\n> 실행 모델 : {model}"
+
+    def _돌린다(self, 큐, stats_footer: bool) -> str:
+        큐.enqueue("C1", "111.1", "배포 확인")
+        발행 = self.푸터발행()
+        r = replace(응답(ok=True, body=f"끝{WATCH_DONE_TAG}"), elapsed=42.0, model_asked="m-1")
+        c = 체커(
+            큐=큐, run_check=lambda job, outcome: r, 발행=발행,
+            채널목록=가짜채널목록({"C1": self.푸터채널(rich=True, stats_footer=stats_footer)}),
+        )
+        큐.시각["값"] = 2000.0
+        c.check_once()
+        return 발행.게시내역[0][2]
+
+    def test_stats_footer_채널이면_감시보고에_걸린시간이_붙는다(self, 큐) -> None:
+        본문 = self._돌린다(큐, True)
+        assert "걸린 시간 : 42초" in 본문
+        assert "실행 모델 : m-1" in 본문
+
+    def test_stats_footer_꺼진_채널은_그대로다(self, 큐) -> None:
+        assert "걸린 시간" not in self._돌린다(큐, False)

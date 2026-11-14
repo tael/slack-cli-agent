@@ -17,11 +17,93 @@
   "work_root": "/Users/Shared/example-work",
   "launch_label": "local.example-bot",
   "owner_user_id": "U00000000",
+  "controller_user_ids": [],
   "troubleshoot_channel": "C00000000",
+  "_comment_peer": "짝 봇 되살리기 안내(소유자 턴 전용). services 를 생략하면 sca 배치(<label>.worker, <label>.ingress, <service>.pid)다. bot.py 같은 단일 잡 봇은 services 를 [] 로 두고 pid_files, log_files(state_dir 기준 상대 경로 가능), restart_command 를 적는다.",
+  "peer": {
+    "name": "sibling",
+    "display_name": "짝봇",
+    "state_dir": "~/.sibling-bot",
+    "work_root": "/Users/Shared/sibling-work",
+    "launch_label": "local.sibling-bot",
+    "services": [],
+    "pid_files": ["bot.pid"],
+    "log_files": ["logs/stderr.log"],
+    "restart_command": "BOT_PROFILE=sibling ~/sibling-bot/restart.sh"
+  },
   "plugins": [],
+  "_comment_agents": "claude 엔진 전용. 턴 도구 목록에 Agent 가 있을 때만 --agents 로 넘긴다. 작업자 도구는 이 tools 와 그 턴 도구의 교집합이고, MCP 승인은 턴의 --allowedTools 를 따른다. 정의 단위로 읽기 전용 Bash 를 만들 수 없어 lookup, verifier 에는 Bash 를 넣지 않는다. prompt_file 의 상대 경로는 이 프로필 파일 위치 기준이다. 실측 근거는 claude 2.1.321, 2026-11-10",
+  "agents": {
+    "lookup": {
+      "description": "조회 전용 작업자. 독립 갈래 하나의 파일, 로그, MCP 조회를 맡긴다. 도구 호출 3회 이상 예상되는 조회 갈래에 쓴다",
+      "model": "haiku",
+      "tools": [
+        "Read", "Grep", "Glob",
+        "mcp__snowflake__run_snowflake_query",
+        "mcp__metabase__execute_query",
+        "mcp__metabase__get_card",
+        "mcp__jira__jira_search",
+        "mcp__jira__jira_get_issue",
+        "mcp__slack__slack_search",
+        "mcp__slack__slack_thread_replies",
+        "mcp__notion__notion-search",
+        "mcp__notion__notion-fetch"
+      ],
+      "prompt_file": "agents/lookup.md"
+    },
+    "analyst": {
+      "description": "분석 작업자. 조회에 더해 집계 스크립트 실행이 필요한 갈래를 맡긴다. 외부 쓰기는 하지 않는다",
+      "model": "sonnet",
+      "tools": [
+        "Read", "Grep", "Glob", "Bash",
+        "mcp__snowflake__run_snowflake_query",
+        "mcp__metabase__execute_query",
+        "mcp__metabase__get_card",
+        "mcp__jira__jira_search",
+        "mcp__jira__jira_get_issue",
+        "mcp__slack__slack_search",
+        "mcp__slack__slack_thread_replies",
+        "mcp__notion__notion-search",
+        "mcp__notion__notion-fetch"
+      ],
+      "prompt_file": "agents/analyst.md"
+    },
+    "verifier": {
+      "description": "검증 작업자. 메인이 낸 결론 하나를 원천에 다시 대조한다. 조회 전용이다",
+      "model": "sonnet",
+      "tools": [
+        "Read", "Grep", "Glob",
+        "mcp__snowflake__run_snowflake_query",
+        "mcp__metabase__execute_query",
+        "mcp__metabase__get_card",
+        "mcp__jira__jira_search",
+        "mcp__jira__jira_get_issue",
+        "mcp__slack__slack_search",
+        "mcp__slack__slack_thread_replies",
+        "mcp__notion__notion-search",
+        "mcp__notion__notion-fetch"
+      ],
+      "prompt_file": "agents/verifier.md"
+    }
+  },
   "usage_check_command": [],
   "settings": {
     "request_timeout_sec": 900,
-    "max_concurrent": 10
+    "max_concurrent": 10,
+    "readonly_tools": [
+      "WebFetch",
+      "WebSearch",
+      "mcp__snowflake__run_snowflake_query",
+      "mcp__metabase__execute_query",
+      "mcp__metabase__get_card",
+      "mcp__jira__jira_search",
+      "mcp__jira__jira_get_issue",
+      "mcp__slack__slack_search",
+      "mcp__slack__slack_thread_replies",
+      "mcp__notion__notion-search",
+      "mcp__notion__notion-fetch",
+      "Bash(~/slack-cli-agent/wrappers/git_read.sh:*)",
+      "Bash(~/slack-cli-agent/wrappers/gh_read.sh:*)"
+    ]
   }
 }

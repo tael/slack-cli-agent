@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.auth.policy import OWNER_EFFORT_MIN
-from slack_cli_agent.auth.principal import TrustLevel
+from slack_cli_agent.auth.principal import Principal, TrustLevel
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.engine.base import (
@@ -183,12 +183,14 @@ class TestEngineRequest조립:
 
 
 class Test기본값:
-    def test_model과effort를안주면소유자수준기본값을쓴다(self) -> None:
+    def test_model을안주면기본모델과소유자effort하한을쓴다(self) -> None:
+        """A13 부터 소유자에게 큰 모델을 강제하지 않는다. 점검 모델은
+        호출부(application.py)가 정하고, 안 정하면 기본 model 이다."""
         profile = make_profile()
         caller, invoker = make_caller(profile=profile)
         caller.run("프롬프트", "세션1", False)
         request = invoker.calls[0]
-        assert request.model == profile.primary_engine.model_for_owner()
+        assert request.model == profile.primary_engine.model
         assert request.effort == OWNER_EFFORT_MIN
 
     def test_model과effort를생성자에서받으면그값을쓴다(self) -> None:
@@ -257,7 +259,7 @@ class Test요청_모델이_실행기에서_호출자까지_온다:
     여기서는 실물 실행기를 거쳐 응답에 요청 모델이 실려 오는지를 본다
     (코덱스 리뷰 지적, sca-cr2b)."""
 
-    def test_소유자_모델이_응답에_실려_온다(self, tmp_path: Path) -> None:
+    def test_요청_모델이_응답에_실려_온다(self, tmp_path: Path) -> None:
         from test_engine import FakeCompleted, 통과정책
 
         engine = FakeEngine(make_profile(), RuntimeSettings())
@@ -273,7 +275,9 @@ class Test요청_모델이_실행기에서_호출자까지_온다:
             subprocess_runner=lambda cmd, cwd, timeout, env=None: FakeCompleted(stdout="", returncode=0),
             environment_policy=통과정책(),
         )
-        caller, _ = make_caller(invoker=DirectInvoker(runner, engine), workdir=tmp_path)
+        caller, _ = make_caller(
+            invoker=DirectInvoker(runner, engine), workdir=tmp_path, model="opus"
+        )
 
         response = caller.run("프롬프트", None, False)
 
@@ -281,3 +285,59 @@ class Test요청_모델이_실행기에서_호출자까지_온다:
         # 실행기 경로를 안 본 것이 된다.
         assert response.failure_reason is None
         assert response.model_asked == "opus"
+
+
+class Test요청자:
+    @staticmethod
+    def _신뢰() -> Principal:
+        return Principal(user_id="U2", channel="C1", trust=TrustLevel.TRUSTED, is_direct_message=False)
+
+    def test_비소유자는_범위_함수가_준_도구와_지침으로_돈다(self) -> None:
+        받은: list[tuple[Principal, str]] = []
+
+        def 범위(requester: Principal, prompt: str) -> tuple[ToolSelection, str]:
+            받은.append((requester, prompt))
+            return ToolSelection.allow(["Read"]), "비소유자 지침"
+
+        caller, invoker = make_caller(tools=None, scoped=범위)
+        caller.run("프롬프트", None, False, requester=self._신뢰())
+        request = invoker.calls[0]
+        assert 받은 == [(self._신뢰(), "프롬프트")]
+        assert request.trust_level is TrustLevel.TRUSTED
+        assert request.tools.names == ("Read",)
+        assert request.system_prompt == "비소유자 지침"
+        assert request.requirements.tool_restriction is ToolRestriction.EXACT_ALLOWLIST
+
+    def test_범위_함수가_없으면_비소유자_점검을_돌리지_않는다(self) -> None:
+        """소유자 지침과 무제한 도구로 떨어지면 A18 이전과 같아진다."""
+        import pytest
+
+        caller, invoker = make_caller(tools=None)
+        with pytest.raises(RuntimeError):
+            caller.run("프롬프트", None, False, requester=self._신뢰())
+        assert invoker.calls == []
+
+    def test_등급은_실제_요청자와_받은_도구로_정한다(self) -> None:
+        """비소유자 점검 턴의 등급이 소유자 값으로 남으면 감사가 틀린다 (A12, A18)."""
+        받은: list[tuple[Principal | None, tuple[str, ...]]] = []
+
+        def 등급(requester: Principal | None, tools: ToolSelection) -> str:
+            받은.append((requester, tools.names))
+            return "readonly" if requester else "owner_trusted"
+
+        def 범위(requester: Principal, prompt: str) -> tuple[ToolSelection, str]:
+            return ToolSelection.allow(["Read"]), "비소유자 지침"
+
+        caller, invoker = make_caller(tools=None, scoped=범위, turn_tier=등급)
+        caller.run("프롬프트", None, False, requester=self._신뢰())
+        caller.run("프롬프트", None, False)
+        assert [c.turn_tier for c in invoker.calls] == ["readonly", "owner_trusted"]
+        assert 받은[0] == (self._신뢰(), ("Read",))
+        assert 받은[1][0] is None
+
+    def test_소유자_요청자는_기존_조립을_쓴다(self) -> None:
+        caller, invoker = make_caller(tools=None)
+        owner = Principal(user_id="U1", channel="C1", trust=TrustLevel.OWNER, is_direct_message=False)
+        caller.run("프롬프트", None, False, requester=owner)
+        assert invoker.calls[0].trust_level is TrustLevel.OWNER
+        assert invoker.calls[0].tools.access is ToolAccess.UNRESTRICTED

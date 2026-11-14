@@ -11,10 +11,12 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from .permalinks import parse_slack_links
 
 log = logging.getLogger(__name__)
 
@@ -144,3 +146,103 @@ class AttachmentStore:
             # 조용히 넘기면 권한 문제로 한 번도 못 지운 상태가 정상과 같아 보인다.
             log.warning("첨부 정리 실패 : %s", exc)
         return removed
+
+
+# ---------------------------------------------------------------------------
+# attachments 본문 재구성 — slack 조회 MCP 서버(mcp/slack_readonly.py)와
+# LinkedThreadReader 의 실시간 조회 실패 폴백이 함께 쓴다(gaps.md C39/C40).
+#
+# Slack 의 `attachments` 필드는 두 가지 전혀 다른 용도로 쓰인다.
+#
+# 1. 사람이 링크를 붙여넣으면 슬랙이 그 메시지를 미리보기로 "펼친다"(unfurl).
+#    `is_msg_unfurl` 또는 `from_url` 이 있고, 그 안의 `text`/`fallback` 은
+#    "링크가 가리키는 메시지"의 본문이다.
+# 2. 알림 앱(Grafana 등)은 최상위 `text` 를 비워 두고 본문 전체를
+#    `attachments` 의 pretext/title/text/fields 에 싣는다. 2026-11-03
+#    모니터링-부릉-내부 grafana 알림이 이 형태였는데 text 만 보고 "본문 없음"
+#    으로 읽었다.
+#
+# 둘을 섞으면 알림 본문에 "링크 미리보기" 라벨이 붙거나, 링크 미리보기가
+# 알림인 것처럼 섞여 나온다 — 그래서 함수를 나눈다.
+# ---------------------------------------------------------------------------
+
+
+def is_unfurl_attachment(attachment: Mapping[str, Any]) -> bool:
+    """링크를 붙여넣어 슬랙이 직접 펼친 미리보기인가.
+
+    알림 앱의 경보성 첨부는 이 둘을 달지 않는다 — 참이면 그 메시지가
+    "링크 미리보기" 쪽, 거짓이면 "경보 본문" 쪽이다.
+    """
+    return bool(attachment.get("is_msg_unfurl") or attachment.get("from_url"))
+
+
+def unfurled_messages(
+    attachments: Iterable[Mapping[str, Any]] | None, limit: int = 2000
+) -> tuple[dict[str, Any], ...]:
+    """링크 미리보기 첨부에서 그 링크가 가리키는 메시지의 본문을 되살린다.
+
+    읽을 수 없는 채널의 링크라도 그걸 붙인 사람의 메시지에는 슬랙이 이미
+    펼친 본문이 실려 있다. 2026-10-29 sandbox-rnd 에서 text 만 넘겨 허지우님
+    요청 본문이 통째로 빠진 사례가 기준이다.
+    """
+    out: list[dict[str, Any]] = []
+    for a in attachments or ():
+        if not is_unfurl_attachment(a):
+            continue
+        body = a.get("text") or a.get("fallback") or ""
+        if not body:
+            continue
+        out.append({
+            "author": a.get("author_subname") or a.get("author_name") or "",
+            "ts": a.get("ts") or "",
+            "from_url": a.get("from_url") or "",
+            "text": body[:limit],
+        })
+    return tuple(out)
+
+
+def attachment_body_texts(
+    attachments: Iterable[Mapping[str, Any]] | None, limit: int = 12000
+) -> tuple[str, ...]:
+    """경보성(비(非) 언퍼얼) 첨부에서 본문을 되살린다.
+
+    알림 앱은 최상위 text 를 비우고 본문 전체를 여기에 싣는다. 비워 두면
+    "본문이 없다" 고 잘못 읽는다(2026-11-03 grafana 사례).
+    """
+    out: list[str] = []
+    for a in attachments or ():
+        if is_unfurl_attachment(a):
+            continue
+        parts = [a.get("pretext"), a.get("title"), a.get("text")]
+        parts += [f"{f.get('title', '')}: {f.get('value', '')}" for f in a.get("fields") or ()]
+        body = "\n".join(p for p in parts if p) or a.get("fallback") or ""
+        if body:
+            out.append(body[:limit])
+    return tuple(out)
+
+
+def file_metadata(files: Iterable[Mapping[str, Any]] | None) -> tuple[dict[str, Any], ...]:
+    """첨부 파일의 존재를 알리는 최소 정보만 추린다.
+
+    내용은 여기서 받지 않는다 — files 가 있다는 사실 자체를 빼면 본문에
+    글자가 없는 것을 내용이 없는 것으로 읽는다(2026-10-22 식단표 이미지 사례).
+    """
+    return tuple(
+        {"id": f.get("id"), "name": f.get("name"), "mimetype": f.get("mimetype")}
+        for f in files or ()
+    )
+
+
+def unfurl_matches(attachment: Mapping[str, Any], channel: str, thread_ts: str) -> bool:
+    """이 언퍼얼 첨부가 정확히 이 링크(channel+thread_ts)의 것인가.
+
+    `from_url` 에 박힌 permalink 로 대조한다. 문자열 동등 비교가 아니라
+    `parse_slack_links` 로 같은 규칙을 한 번 더 태워, 쿼리 문자열의
+    thread_ts 유무 같은 표기 차이에 흔들리지 않게 한다. 실시간 스레드 조회가
+    실패한 링크를 이 첨부로 복원하는 LinkedThreadReader 의 폴백이 쓴다
+    (gaps.md C39).
+    """
+    if not is_unfurl_attachment(attachment):
+        return False
+    found = parse_slack_links(attachment.get("from_url"))
+    return bool(found) and found[0].channel == channel and found[0].thread_ts == thread_ts

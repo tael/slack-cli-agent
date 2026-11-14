@@ -14,24 +14,76 @@ publisher has no reason to depend on guard.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.config.settings import RuntimeSettings
 from slack_cli_agent.core.channel_kind import is_direct_message_channel
 from slack_cli_agent.core.errors import SlackError
-from slack_cli_agent.core.markers import ELAPSED_MODEL_LINE
+from slack_cli_agent.core.markers import (
+    ELAPSED_LINE,
+    ELAPSED_MODEL_LINE,
+    split_leaked_tags,
+    strip_control_tags,
+)
+from slack_cli_agent.core.secrets import count_outbound_secrets, redact_outbound
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.render.blocks import BlockBuilder
+from slack_cli_agent.render.file_links import strip_file_permalinks
 from slack_cli_agent.render.markdown import MarkdownConverter
-from slack_cli_agent.render.splitter import ContentSplitter, block_cost, split_by_block_budget
+from slack_cli_agent.render.notion_links import fix_notion_links
+from slack_cli_agent.render.splitter import (
+    ContentSplitter,
+    CsvFilePayload,
+    block_cost,
+    extract_csv_blocks,
+    split_by_block_budget,
+)
+from slack_cli_agent.render import table_blocks
 from slack_cli_agent.render.verifier import SplitVerifier
 
 log = logging.getLogger(__name__)
 
 # Color-codes status so success vs. failure is visible before reading the text.
 COLOR_FAIL = "#d64541"
+
+
+def _has_block_markup(text: str) -> bool:
+    """True when the body holds a heading, table, or divider -- markup Slack
+    stores as its own block (header/table/divider) rather than folding into
+    rich_text. Code fences are skipped: a divider or pipe shown as an example
+    there is content, not markup. Mirrors mametchi post_rich.separate_blocks,
+    which decides whether a rich_text-only rewrite means conversion failed."""
+    fenced = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if stripped.startswith("#"):
+            return True
+        if stripped in ("---", "***", "___"):
+            return True
+        if stripped.startswith("|") and stripped.endswith("|"):
+            return True
+    return False
+
+
+@dataclass(frozen=True)
+class PostReceipt:
+    """Where a post landed: the thread it went under and each message's ts."""
+
+    parent_ts: str
+    message_ts: tuple[str, ...]
+    # The text that went up, after ```csv blocks became a file note. A format
+    # review rewrites the message from the stored body, and the original
+    # would put the csv back inline (B6 review).
+    body: str = ""
 
 
 @dataclass(frozen=True)
@@ -47,6 +99,10 @@ class RichPayload:
     note: str
     text: str
     blocks: list[dict[str, Any]] = field(default_factory=list)
+    # Same chunk as plain markdown blocks, set only when tables were turned
+    # into table blocks. A rejected table payload retries with these before
+    # dropping to plain text.
+    markdown_blocks: list[dict[str, Any]] | None = None
 
 
 class MessagePublisher:
@@ -60,6 +116,8 @@ class MessagePublisher:
         blocks: BlockBuilder,
         bot_display_name: str,
         audit: Callable[..., None] | None = None,
+        backup_dir: Path | None = None,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -69,6 +127,11 @@ class MessagePublisher:
         self._blocks = blocks
         self._bot_display_name = bot_display_name
         self._audit = audit or (lambda **_: None)
+        # Where a pre-edit body is saved before chat.update overwrites it.
+        # None (tests, callers that don't configure it) skips backup+verify
+        # and keeps the plain chat.update path.
+        self._backup_dir = backup_dir
+        self._clock = clock
 
     def apply_elapsed_model_line(self, body: str, model: str, rich: bool) -> str:
         """Appends the model-name footer, only for rich channels with a model set.
@@ -82,6 +145,33 @@ class MessagePublisher:
         cleaned = ELAPSED_MODEL_LINE.sub("", body.rstrip()).rstrip()
         return cleaned.rstrip() + f"\n> 실행 모델 : {model}"
 
+    def apply_stats_footer(self, body: str, model: str, rich: bool, *, elapsed, effort, usage) -> str:
+        """Mametchi 와 같은 푸터: 걸린 시간, 실행 모델 · effort, 토큰, 캐시 적중률.
+
+        2026-11-08 김태일 지시 "응답에 마메치처럼 모델과 시간등을 표기해라. 똑같이".
+        모델이 흉내 낸 줄은 먼저 지운다. 값은 실행기가 잰 것만 쓴다.
+        """
+        if not rich or not model:
+            return body
+        cleaned = ELAPSED_MODEL_LINE.sub("", body.rstrip()).rstrip()
+        cleaned = ELAPSED_LINE.sub("", cleaned).rstrip()
+        out = cleaned
+        if elapsed is not None:
+            out += f"\n\n> 걸린 시간 : {elapsed:.0f}초"
+        out += f"\n> 실행 모델 : {model}" + (f" · {effort}" if effort else "")
+        if usage is not None:
+            def k(n):
+                return f"{n / 1_000_000:.1f}M" if n >= 1_000_000 else (f"{n / 1_000:.0f}k" if n >= 1_000 else str(n))
+            i, o = usage.input_tokens, usage.output_tokens
+            made, read = usage.cache_creation_tokens, usage.cache_read_tokens
+            side = i + made + read
+            out += (f"\n> 토큰 : {i + made + read + o:,}개 (입력 {k(i)} / 캐시 기록 {k(made)} / "
+                    f"캐시 읽기 {k(read)} / 출력 {k(o)})"
+                    f"\n> 캐시 적중률 : {(100 * read / side if side else 0):.0f}퍼센트")
+        else:
+            out += "\n> 토큰 : 기록 없음"
+        return out
+
     def _rich_payload(self, part: str, *, split_note: bool) -> RichPayload:
         """Renders one chunk into Slack arguments for a rich channel.
 
@@ -93,24 +183,188 @@ class MessagePublisher:
         if split_note:
             part, note = self._blocks.split_context(part)
         blocks: list[dict[str, Any]] = []
+        markdown_blocks: list[dict[str, Any]] = []
+        converted = False
         if part.strip():
-            blocks.append({"type": "markdown", "text": part})
+            # A paragraph after a list gets its own markdown block, or Slack
+            # glues it under the last bullet (BlockBuilder.split_after_lists).
+            # Slack caps a message at 50 blocks; past a safe count keep one.
+            pieces = self._blocks.split_after_lists(part)
+            if len(pieces) > 20:
+                pieces = [part]
+            for i, piece in enumerate(pieces):
+                # A split alone still renders flush under the bullet; the
+                # zero-width line gives one blank line (BlockBuilder.LIST_GAP).
+                if i:
+                    piece = self._blocks.LIST_GAP + piece
+                markdown_blocks.append({"type": "markdown", "text": piece})
+                # Tables become table blocks with wrapped columns (table_blocks).
+                table = None
+                try:
+                    table = table_blocks.to_blocks(piece)
+                except Exception:  # noqa: BLE001 - a conversion bug must not cost the answer
+                    log.exception("표 블록 변환 실패, markdown 블록으로 보낸다")
+                if table:
+                    blocks.extend(table)
+                    converted = True
+                else:
+                    blocks.append({"type": "markdown", "text": piece})
+            if converted and len(blocks) > 45:
+                blocks, converted = list(markdown_blocks), False
         if note:
-            blocks.append({
+            ctx = {
                 "type": "context",
                 "elements": [{"type": "mrkdwn", "text": note}],
-            })
+            }
+            blocks.append(ctx)
+            markdown_blocks.append(ctx)
         return RichPayload(
-            body=part, note=note, text=self._blocks.preview(part or note), blocks=blocks
+            body=part, note=note, text=self._blocks.preview(part or note), blocks=blocks,
+            markdown_blocks=markdown_blocks if converted else None,
         )
 
-    def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None:
+    def _audit_table_rejected(self, channel: str, thread_ts: str, exc: Exception) -> None:
+        log.warning("표 블록 거절, markdown 블록으로 다시 보낸다 : %s", exc)
+        self._audit(
+            kind=IncidentKind.BLOCKS_REJECTED.value, channel=channel,
+            thread_ts=thread_ts or "", error=str(exc), body="table_blocks",
+        )
+
+    def _post_with_table_fallback(
+        self, kwargs: dict[str, Any], payload: RichPayload | None,
+        channel: str, thread_ts: str,
+    ) -> Any:
+        """Posts; when built table blocks are rejected, retries once with the
+        plain markdown blocks Slack converts itself before the caller's
+        plain-text fallback takes over."""
+        try:
+            return self._client.chat_postMessage(**kwargs)
+        except Exception as exc:
+            if payload is None or not payload.markdown_blocks or not self._verifier.blocks_rejected(exc):
+                raise
+            self._audit_table_rejected(channel, thread_ts, exc)
+            kwargs["blocks"] = payload.markdown_blocks
+            return self._client.chat_postMessage(**kwargs)
+
+    def _redact(self, channel: str, thread_ts: str, text: str) -> str:
+        """Masks credentials before anything is sent (A17).
+
+        Runs ahead of csv extraction and splitting, so the uploaded file, every
+        chunk and the plain-text fallback all start from the masked body. The
+        audit row carries the count only, never the value.
+        """
+        found = count_outbound_secrets(text)
+        if not found:
+            return text
+        log.warning("게시 본문의 비밀값 %d 건을 가렸다 : 채널 %s", found, channel)
+        self._audit(
+            kind=IncidentKind.SECRET_REDACTED.value, channel=channel,
+            thread_ts=thread_ts or "", count=found,
+        )
+        return redact_outbound(text)
+
+    def _strip_control_tags(self, channel: str, thread_ts: str, text: str) -> str | None:
+        """Drops internal markers and records them. None when nothing but
+        markers was there, so an empty message is never posted."""
+        cleaned, leaked = strip_control_tags(text)
+        if not leaked:
+            return text
+        log.warning("내부 표식이 본문에 남아 있었다. 떼고 올린다 : %s", leaked)
+        # Same split as the main pipeline's _strip_publish_markers, so an
+        # invented marker lands under unknown_tag whichever path posted it.
+        known, unknown = split_leaked_tags(leaked)
+        if known:
+            self._audit(
+                kind=IncidentKind.CONTROL_TAG_LEAK.value, channel=channel,
+                thread_ts=thread_ts, tags=known,
+            )
+        if unknown:
+            self._audit(
+                kind=IncidentKind.UNKNOWN_TAG.value, channel=channel,
+                thread_ts=thread_ts, tags=unknown,
+            )
+        if not cleaned.strip():
+            self._audit(
+                kind=IncidentKind.EMPTY_AFTER_TAGS.value, channel=channel,
+                thread_ts=thread_ts, tags=leaked,
+            )
+            return None
+        return cleaned
+
+    def _fix_notion_links(self, channel: str, thread_ts: str, text: str) -> str:
+        text, fixed = fix_notion_links(text)
+        if fixed:
+            self._audit(
+                kind=IncidentKind.NOTION_LINK_FIXED.value, channel=channel,
+                thread_ts=thread_ts, links=fixed,
+            )
+        return text
+
+    def _strip_file_links(self, channel: str, thread_ts: str, text: str) -> str:
+        """Removes Slack file permalinks (D4). Slack re-attaches a linked file
+        to the message, so leaving the link posts the same file card twice.
+
+        When the body is nothing but file links, stripping would leave it empty
+        and the reply would silently vanish (post returns None, update raises).
+        A duplicated card beats no answer, so the links stay in that case.
+        The model footer (apply_elapsed_model_line) does not count as content:
+        a rich answer of one link plus that footer would otherwise post the
+        footer alone.
+        """
+        stripped = strip_file_permalinks(text)
+        if stripped != text and not ELAPSED_MODEL_LINE.sub("", stripped).strip():
+            log.info("본문이 파일 링크뿐이라 떼지 않았다 : %s", thread_ts)
+            return text
+        if stripped != text:
+            log.info("파일 permalink 를 본문에서 뗐다. 같은 파일이 두 번 붙는다 : %s", thread_ts)
+            self._audit(
+                kind=IncidentKind.FILE_PERMALINK_STRIPPED.value,
+                channel=channel, thread_ts=thread_ts,
+            )
+        return stripped
+
+    def post(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> str | None:
+        """Posts and returns the thread parent ts (see post_receipt)."""
+        receipt = self.post_receipt(channel, thread_ts, text, rich, flat=flat)
+        return (receipt.parent_ts or None) if receipt is not None else None
+
+    def post_receipt(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> PostReceipt | None:
         """Posts using the channel's rendering mode.
+
+        The receipt keeps the thread parent apart from the ts of each message
+        actually posted. In a thread they differ: an answer's own ts is the
+        first chunk's, and recording the parent instead pointed a format
+        review of the parent at a later reply's body (B6 review).
 
         Rich channels get the markdown source verbatim in a markdown
         block; everything else gets it downgraded to mrkdwn. Channels
-        reply in a thread; DMs post directly.
+        reply in a thread; DMs post directly, and so does a `flat` channel
+        (flat_reply, A17) that reads as a feed rather than a conversation.
+
+        A ```csv fenced block is always pulled out and uploaded as a file
+        instead of being posted inline (J14, bot.py:6279-6322): a csv left in
+        the message can't be downloaded and opened in a spreadsheet. The body
+        keeps a one-line note where the block was; the file is attached to the
+        same thread once the text has posted.
+
+        Notion page links missing `p/` are fixed first, here rather than in
+        the guard pipeline, so every caller (watch reports, review results,
+        engine failure bodies) gets it (bot.py:6532).
         """
+        # Last gate before any send: watch reports, reviews and notices reach
+        # here without the main pipeline's marker pass, so one path forgetting
+        # to strip would leak the marker (B4, bot.py:6511-6530).
+        cleaned = self._strip_control_tags(channel, thread_ts, text)
+        if cleaned is None:
+            return None
+        text = self._redact(channel, thread_ts, cleaned)
+        text = self._fix_notion_links(channel, thread_ts, text)
+        text = self._strip_file_links(channel, thread_ts, text)
+        text, csv_payloads = extract_csv_blocks(text)
         if rich:
             separated = self._verifier.separate_tables(text)
             chunks = self._splitter.split_for_blocks(separated)
@@ -144,15 +398,22 @@ class MessagePublisher:
         # Empty means "no thread yet", same as None. Leaving "" in would
         # never take the res["ts"] branch below, so the caller gets "" back
         # and later chunks post at top level instead of under the first.
-        parent_ts = None if is_direct_message_channel(channel) else (thread_ts or None)
+        parent_ts = (
+            None
+            if (flat or is_direct_message_channel(channel))
+            else (thread_ts or None)
+        )
         sent = 0
+        posted: list[str] = []
         # A rejected chunk can be replaced in place by smaller pieces, so this
         # walks a mutable list rather than the original chunks (sca-2k7).
         pending = list(chunks)
         idx = 0
         while idx < len(pending):
             part = pending[idx]
-            kwargs: dict[str, Any] = {"channel": channel, "username": self._bot_display_name}
+            # username 을 주지 않는다 (2026-11-10). 덮어쓰면 user 없는 bot_message 로 저장돼
+            # 봇 사용자 명의 글과 한 스레드에 "구치파치" 가 두 명으로 보인다.
+            kwargs: dict[str, Any] = {"channel": channel}
             note = ""
             if rich:
                 payload = self._rich_payload(part, split_note=idx == len(pending) - 1)
@@ -165,7 +426,8 @@ class MessagePublisher:
                 kwargs["thread_ts"] = parent_ts
 
             try:
-                res = self._client.chat_postMessage(**kwargs)
+                res = self._post_with_table_fallback(kwargs, payload if rich else None,
+                                                     channel, thread_ts)
             except Exception as exc:
                 if rich and self._verifier.block_limit_exceeded(exc):
                     pieces = self._resplit(part)
@@ -189,6 +451,7 @@ class MessagePublisher:
                         res = self._client.chat_postMessage(**plain)
                         sent += 1
                         idx += 1
+                        posted.append(res["ts"])
                         if parent_ts is None:
                             parent_ts = res["ts"]
                         continue
@@ -202,7 +465,7 @@ class MessagePublisher:
                 if sent:
                     try:
                         self._client.chat_postMessage(
-                            channel=channel, username=self._bot_display_name,
+                            channel=channel,
                             thread_ts=parent_ts,
                             text=f"답변이 {sent}/{len(pending)} 까지만 전달됐습니다.",
                             attachments=[{
@@ -218,6 +481,7 @@ class MessagePublisher:
                 raise SlackError(str(exc)) from exc
             sent += 1
             idx += 1
+            posted.append(res["ts"])
             if parent_ts is None:
                 parent_ts = res["ts"]
 
@@ -226,7 +490,47 @@ class MessagePublisher:
                 kind=IncidentKind.SPLIT.value, channel=channel, thread_ts=thread_ts,
                 total=len(text), sizes=[len(c) for c in pending],
             )
-        return parent_ts
+        self._upload_csv(channel, parent_ts, csv_payloads)
+        return PostReceipt(parent_ts=parent_ts or "", message_ts=tuple(posted), body=text)
+
+    def _upload_csv(
+        self, channel: str, parent_ts: str | None, payloads: list[CsvFilePayload]
+    ) -> None:
+        """Uploads each extracted ```csv block as a file under the posted
+        message (bot.py:6302-6323 upload_snippets).
+
+        A failed upload is not swallowed: the body already says "uploaded as a
+        file", so a missing file would read as content that silently vanished.
+        It's recorded, and the raw csv is posted back inline as a fenced block
+        so the data survives even when the upload API is down.
+        """
+        for payload in payloads:
+            kwargs: dict[str, Any] = {
+                "channel": channel,
+                "filename": payload.filename,
+                "title": payload.filename,
+                "content": payload.content,
+            }
+            if parent_ts:
+                kwargs["thread_ts"] = parent_ts
+            try:
+                self._client.files_upload_v2(**kwargs)
+            except Exception as exc:  # noqa: BLE001 - a failed upload must fall back to inline, not lose the data
+                log.warning("CSV 파일을 올리지 못했다 : %s : %s", payload.filename, exc)
+                self._audit(
+                    kind=IncidentKind.CSV_UPLOAD_FAILED.value, channel=channel,
+                    thread_ts=parent_ts or "", filename=payload.filename, error=str(exc),
+                )
+                recovered = payload.content.decode("utf-8-sig", errors="replace")
+                fallback = f"{payload.filename} (파일 업로드 실패, 본문으로 대신 올립니다):\n```\n{recovered}```"
+                try:
+                    self._client.chat_postMessage(
+                        channel=channel,
+                        text=fallback[:3900],
+                        **({"thread_ts": parent_ts} if parent_ts else {}),
+                    )
+                except Exception as repost_exc:  # noqa: BLE001 - nothing left to do but record it
+                    log.warning("CSV 본문 대체 게시도 실패 : %s", repost_exc)
 
     @staticmethod
     def _resplit(part: str) -> list[str]:
@@ -243,6 +547,14 @@ class MessagePublisher:
         Slack was given, so the caller can report what the message became
         ([] for a plain-text channel).
         """
+        cleaned = self._strip_control_tags(channel, ts, text)
+        if cleaned is None:
+            raise SlackError("교정본에 내부 표식만 있어 갱신하지 않았다")
+        text = self._redact(channel, ts, cleaned)
+        # Same Notion `p/` fix and file-link strip as post(), so a correction
+        # can't post a dead link or re-attach a file.
+        text = self._fix_notion_links(channel, ts, text)
+        text = self._strip_file_links(channel, ts, text)
         if rich:
             body = self._verifier.separate_tables(text)
             chunks = self._splitter.split_for_blocks(body)
@@ -268,8 +580,24 @@ class MessagePublisher:
         else:
             kwargs["text"] = chunks[0]
 
+        # Save the pre-edit body before chat.update overwrites it. A format-fix
+        # rewrite used to erase the only copy of what the message said, so a
+        # wrong fix left nothing to compare against (J7). A fetch failure aborts
+        # the edit rather than overwriting blind.
+        self._backup_original(channel, ts)
+
         try:
-            self._client.chat_update(**kwargs)
+            if rich and payload.markdown_blocks:
+                try:
+                    self._client.chat_update(**kwargs)
+                except Exception as table_exc:
+                    if not self._verifier.blocks_rejected(table_exc):
+                        raise
+                    self._audit_table_rejected(channel, ts, table_exc)
+                    kwargs["blocks"] = payload.markdown_blocks
+                    self._client.chat_update(**kwargs)
+            else:
+                self._client.chat_update(**kwargs)
         except Exception as exc:
             # chat.update touches one ts, so a rejected block payload can't be
             # split the way post() does it. Dropping the blocks is the only
@@ -295,4 +623,63 @@ class MessagePublisher:
                 sent=0, total=1, error=str(exc),
             )
             raise SlackError(str(exc)) from exc
+        # A 200 from chat.update doesn't prove Slack rendered the markdown.
+        # Re-read and check (J7).
+        self._verify_rewrite(channel, ts, text, rich)
         return [str(block["type"]) for block in kwargs.get("blocks", [])]
+
+    def _fetch_message(self, channel: str, ts: str) -> dict[str, Any] | None:
+        """Reads one posted message back by ts, for backup and the post-update
+        check. Tries replies first -- a thread reply isn't in channel history --
+        then falls back to history. Any read failure is treated as not-found."""
+        try:
+            res = self._client.conversations_replies(channel=channel, ts=ts, limit=1)
+            msgs = [m for m in (res.get("messages") or []) if m.get("ts") == ts]
+            if not msgs:
+                res = self._client.conversations_history(
+                    channel=channel, latest=ts, oldest=ts, inclusive=True, limit=1
+                )
+                msgs = res.get("messages") or []
+        except Exception:  # noqa: BLE001 -- any read failure means we can't read it back
+            return None
+        return msgs[0] if msgs else None
+
+    def _backup_original(self, channel: str, ts: str) -> Path | None:
+        """Saves the current body to the backup dir before chat.update runs.
+
+        The markdown block's text is the original the human wrote; without any
+        markdown block the message text is used. A fetch miss aborts the edit
+        (SlackError) so a rewrite never overwrites a body it couldn't save
+        (mametchi post_rich.backup_original)."""
+        if self._backup_dir is None:
+            return None
+        msg = self._fetch_message(channel, ts)
+        if msg is None:
+            raise SlackError("수정 전 원문을 조회하지 못해 고치지 않았다")
+        markdown = [
+            b.get("text") for b in (msg.get("blocks") or [])
+            if b.get("type") == "markdown"
+        ]
+        original = "\n\n".join(t for t in markdown if t) or msg.get("text") or ""
+        self._backup_dir.mkdir(parents=True, exist_ok=True)
+        path = self._backup_dir / f"{channel}_{ts}_{int(self._clock())}.md"
+        path.write_text(original)
+        return path
+
+    def _verify_rewrite(self, channel: str, ts: str, text: str, rich: bool) -> None:
+        """Re-reads the edited message and flags a conversion that didn't take:
+        only rich_text came back while the body carried a heading/table/divider
+        Slack renders as its own block (mametchi post_rich.verify). Logged and
+        audited, not raised -- the edit already landed."""
+        if self._backup_dir is None or not rich:
+            return
+        msg = self._fetch_message(channel, ts)
+        if msg is None:
+            return
+        kinds = {b.get("type") for b in (msg.get("blocks") or [])}
+        if kinds <= {"rich_text"} and _has_block_markup(text):
+            log.warning("리치 수정이 rich_text 로만 저장됐다 : %s %s", channel, ts)
+            self._audit(
+                kind=IncidentKind.REWRITE_UNCONVERTED.value,
+                channel=channel, thread_ts=ts, body=text[:2000],
+            )

@@ -1,0 +1,820 @@
+"""B4 — PreToolUse Bash 가드(turn_budget/install_guard/scan_guard)와
+Stop 종료검수 훅(finish_hook), 그리고 engine/claude.py 배선 시험.
+
+가드 스크립트는 progress_hook.py 와 같은 설계다: 표준라이브러리만 쓰는
+standalone 스크립트라 엔진의 최소 허용 환경에서도 그대로 돈다. 그래서 여기서도
+stdin 에 hook JSON 을 흘려 실제 서브프로세스로 돌려 보고 stdout JSON 과
+exit 0 을 확인한다 (observability/progress_hook.py 를 쓰는
+test_progress_delivery.py 와 달리 이 모듈들은 단순 함수 호출로 단위시험하기보다
+훅 프로토콜 전체 - stdin 읽기, exit 코드, stdout 형식 - 를 같이 확인하는 쪽이
+실수가 적다).
+
+finish_hook.py 만 예외로 slack_cli_agent.guard.finish_review 를 import 하므로
+(모듈 docstring 참고), 서브프로세스에 PYTHONPATH 를 이 워크트리의 src 로 앞서
+줘서 설치된 패키지가 아니라 지금 짜고 있는 코드를 import 하게 만든다.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any, ClassVar
+
+import pytest
+
+from slack_cli_agent.guard import finish_hook
+from slack_cli_agent.guard.posttool import parallel_nudge
+from slack_cli_agent.guard.pretool import (
+    install_guard,
+    restart_guard,
+    scan_guard,
+    sleep_poll_guard,
+    turn_budget,
+)
+
+#: 이 워크트리의 src 루트. finish_hook.py 서브프로세스가 설치된(다른 워크트리의)
+#: slack_cli_agent 가 아니라 지금 짜고 있는 코드를 import 하도록 앞에 둔다.
+SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
+
+#: 훅이 스스로 읽을 일이 없는데 테스트 바깥 환경에 남아 있으면 판정을 오염시킬
+#: 수 있는 변수들. 서브프로세스마다 지우고 테스트가 명시한 값만 준다.
+_DEADLINE_VARS = (
+    "TURN_DEADLINE", "TURN_DEADLINE_MONO", "TURN_WRAPUP_SEC", "TURN_BUDGET_LOG",
+    "POST_CHANNEL", "TURN_TIER", "ADVISOR_CHANNELS", "CODE_FIRST_CHANNELS",
+    "RESTART_GUARD_LABELS", "RESTART_GUARD_MARKER",
+    "SCA_FINISH_VERIFY", "SCA_FINISH_VERIFY_MODEL", "SCA_VERIFY_NESTED",
+    "SCA_FINISH_VERIFY_MAX_BLOCKS", "SCA_FINISH_KNOWLEDGE_FILE",
+    "SLEEP_POLL_GUARD_LOG",
+)
+
+
+def run_hook(
+    script: Path, payload: dict[str, Any], env: dict[str, str] | None = None
+) -> tuple[dict[str, Any] | None, subprocess.CompletedProcess[str]]:
+    full_env = dict(os.environ)
+    full_env["PYTHONPATH"] = str(SRC_ROOT) + os.pathsep + full_env.get("PYTHONPATH", "")
+    for key in _DEADLINE_VARS:
+        full_env.pop(key, None)
+    if env:
+        full_env.update(env)
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        input=json.dumps(payload, ensure_ascii=False),
+        capture_output=True,
+        text=True,
+        env=full_env,
+        timeout=15,
+    )
+    stdout = proc.stdout.strip()
+    data = json.loads(stdout) if stdout else None
+    return data, proc
+
+
+class TestTurnBudget:
+    def test_마감_임박에_긴_timeout_은_거부한다(self) -> None:
+        mono_deadline = time.monotonic() + 30  # 여유(60초)를 빼면 이미 마이너스
+        payload = {
+            "tool_name": "Bash",
+            "session_id": "s1",
+            "tool_input": {"command": "sleep 100", "timeout": 90_000},
+        }
+        result, proc = run_hook(
+            turn_budget.HOOK_SCRIPT, payload, {"TURN_DEADLINE_MONO": str(mono_deadline)}
+        )
+        assert proc.returncode == 0
+        assert result is not None
+        hook_out = result["hookSpecificOutput"]
+        assert hook_out["hookEventName"] == "PreToolUse"
+        assert hook_out["permissionDecision"] == "deny"
+
+    def test_run_in_background_은_마감이_임박해도_통과한다(self) -> None:
+        mono_deadline = time.monotonic() + 5
+        payload = {
+            "tool_name": "Bash",
+            "session_id": "s1",
+            "tool_input": {"command": "sleep 100", "timeout": 90_000, "run_in_background": True},
+        }
+        result, proc = run_hook(
+            turn_budget.HOOK_SCRIPT, payload, {"TURN_DEADLINE_MONO": str(mono_deadline)}
+        )
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_deadline_env_이_없으면_사람_세션이라_통과한다(self) -> None:
+        payload = {
+            "tool_name": "Bash",
+            "session_id": "s1",
+            "tool_input": {"command": "sleep 900", "timeout": 900_000},
+        }
+        result, proc = run_hook(turn_budget.HOOK_SCRIPT, payload)
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_시간이_충분하면_통과한다(self) -> None:
+        mono_deadline = time.monotonic() + 10_000
+        payload = {
+            "tool_name": "Bash",
+            "session_id": "s1",
+            # timeout 을 안 주면 기본 120초로 본다 - 그래도 10000초 마감엔 넉넉하다
+            "tool_input": {"command": "ls"},
+        }
+        result, proc = run_hook(
+            turn_budget.HOOK_SCRIPT, payload, {"TURN_DEADLINE_MONO": str(mono_deadline)}
+        )
+        assert proc.returncode == 0
+        assert result is None
+
+
+class TestRestartGuard:
+    def _run(
+        self, command: str, env: dict[str, str] | None = None
+    ) -> tuple[dict[str, Any] | None, subprocess.CompletedProcess[str]]:
+        payload = {"tool_name": "Bash", "session_id": "s1", "tool_input": {"command": command}}
+        return run_hook(restart_guard.HOOK_SCRIPT, payload, env)
+
+    def test_launchctl_kickstart_은_거부한다(self) -> None:
+        result, proc = self._run("launchctl kickstart -k gui/501/local.guchipachi.worker")
+        assert proc.returncode == 0
+        assert result is not None
+        hook_out = result["hookSpecificOutput"]
+        assert hook_out["hookEventName"] == "PreToolUse"
+        assert hook_out["permissionDecision"] == "deny"
+
+    def test_launchctl_list_조회는_통과한다(self) -> None:
+        result, proc = self._run("launchctl list | grep guchipachi")
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_재기동_스크립트는_거부한다(self) -> None:
+        result, proc = self._run("~/.guchipachi-sca/apply-restart.sh")
+        assert proc.returncode == 0
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "./apply.sh",
+            "cd ~/Projects/mametchi-slack-bot && ./apply.sh",
+            "bash ~/Projects/mametchi-slack-bot/apply.sh",
+            "nohup bash -x restart.sh &",
+            "sh -c './apply-restart.sh'",
+            "echo hi; restart.sh",
+            "source apply.sh",
+            "VAR=1 env FOO=2 apply.sh",
+        ],
+    )
+    def test_스크립트_실행_위치면_거부한다(self, command: str) -> None:
+        result, _ = self._run(command)
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "test -e ~/Projects/mametchi-slack-bot/apply.sh && echo exists",
+            "ls -la apply.sh",
+            "grep -n restart apply-restart.sh",
+            "cat ~/Projects/mametchi-slack-bot/restart.sh | head",
+            "git diff -- apply.sh",
+        ],
+    )
+    def test_스크립트를_읽기만_하면_통과한다(self, command: str) -> None:
+        result, proc = self._run(command)
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_마커경로가_있으면_사유에_담긴다(self) -> None:
+        result, proc = self._run(
+            "launchctl stop local.guchipachi.worker",
+            {"RESTART_GUARD_MARKER": "/tmp/apply-request"},
+        )
+        assert proc.returncode == 0
+        assert result is not None
+        assert "/tmp/apply-request" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    _SVC: ClassVar[dict[str, str]] = {"RESTART_GUARD_SERVICES": "local.deagent.worker,local.deagent.ingress"}
+
+    def test_봇_서비스가_아닌_작업_등록은_통과한다(self) -> None:
+        cmd = (
+            "cp ~/.deagent/local.deagent.autoupdate.plist ~/Library/LaunchAgents/ && "
+            "launchctl bootstrap gui/$(id -u) "
+            "~/Library/LaunchAgents/local.deagent.autoupdate.plist && "
+            "launchctl print gui/$(id -u)/local.deagent.autoupdate"
+        )
+        result, proc = self._run(cmd, self._SVC)
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_봇_서비스_kickstart_는_서비스목록이_있어도_거부한다(self) -> None:
+        result, _ = self._run("launchctl kickstart -k gui/$(id -u)/local.deagent.worker", self._SVC)
+        assert result is not None
+        reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "다른 launchd 작업" in reason
+
+    def test_봇_서비스_plist_bootout_은_거부한다(self) -> None:
+        result, _ = self._run(
+            "launchctl bootout gui/501 ~/Library/LaunchAgents/local.deagent.ingress.plist",
+            self._SVC,
+        )
+        assert result is not None
+
+    def test_변수로_가린_대상은_거부한다(self) -> None:
+        result, _ = self._run("launchctl kickstart -k gui/$(id -u)/$LABEL", self._SVC)
+        assert result is not None
+
+    def test_같은_명령의_뒤쪽_세그먼트가_봇서비스면_거부한다(self) -> None:
+        result, _ = self._run(
+            "launchctl bootstrap gui/501 /tmp/x.plist; launchctl stop local.deagent.worker",
+            self._SVC,
+        )
+        assert result is not None
+
+    def test_봇라벨을_겨냥한_kill_은_거부한다(self) -> None:
+        result, proc = self._run(
+            "pkill -f local.guchipachi.worker", {"RESTART_GUARD_LABELS": "local.guchipachi.worker"}
+        )
+        assert proc.returncode == 0
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_무관한_프로세스_kill_은_통과한다(self) -> None:
+        result, proc = self._run(
+            "pkill -f some_unrelated_job", {"RESTART_GUARD_LABELS": "local.guchipachi.worker"}
+        )
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_라벨이_없으면_일반_kill_은_통과한다(self) -> None:
+        result, proc = self._run("kill 12345")
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_재기동과_무관한_명령은_통과한다(self) -> None:
+        result, proc = self._run("echo restart please")
+        assert proc.returncode == 0
+        assert result is None
+
+
+class TestInstallGuard:
+    def _env(self, tmp_path: Path) -> dict[str, str]:
+        return {
+            "INSTALL_GUARD_MARK_DIR": str(tmp_path / "mark"),
+            "INSTALL_GUARD_RESULT_DIR": str(tmp_path / "result"),
+        }
+
+    def test_미확인_설치명령은_거부한다(self, tmp_path: Path) -> None:
+        payload = {
+            "tool_name": "Bash",
+            "session_id": "sess-1",
+            "tool_input": {"command": "brew install ghidra"},
+        }
+        result, proc = run_hook(install_guard.HOOK_SCRIPT, payload, self._env(tmp_path))
+        assert proc.returncode == 0
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_확인_이력이_있으면_통과한다(self, tmp_path: Path) -> None:
+        env = self._env(tmp_path)
+        check_payload = {
+            "tool_name": "Bash",
+            "session_id": "sess-2",
+            "tool_input": {"command": "installed-check ghidra"},
+        }
+        checked, proc1 = run_hook(install_guard.HOOK_SCRIPT, check_payload, env)
+        assert proc1.returncode == 0
+        assert checked is None
+
+        install_payload = {
+            "tool_name": "Bash",
+            "session_id": "sess-2",
+            "tool_input": {"command": "brew install ghidra"},
+        }
+        result, proc2 = run_hook(install_guard.HOOK_SCRIPT, install_payload, env)
+        assert proc2.returncode == 0
+        assert result is None
+
+    def test_설치_명령이_아니면_통과한다(self, tmp_path: Path) -> None:
+        payload = {
+            "tool_name": "Bash",
+            "session_id": "sess-3",
+            "tool_input": {"command": "ls -la"},
+        }
+        result, proc = run_hook(install_guard.HOOK_SCRIPT, payload, self._env(tmp_path))
+        assert proc.returncode == 0
+        assert result is None
+
+
+class TestScanGuard:
+    def test_library를_제외해도_rg_홈_전체_스캔은_거부한다(self, tmp_path: Path) -> None:
+        """전용 HOME 환경에서도 실제 계정 홈 699.6초 지연 명령을 차단한다."""
+        log_path = tmp_path / "scan_guard.jsonl"
+        payload = {
+            "tool_name": "Bash",
+            "session_id": "sg-wide-rg",
+            "cwd": "/Users/Shared/guchipachi-work",
+            "tool_input": {
+                "command": (
+                    f"rg -n 'goal_unfinished' {scan_guard.HOME} --glob '*.py' "
+                    "--glob '!Library/**' --glob '!**/.git/**' 2>/dev/null | head -80"
+                ),
+            },
+        }
+        result, proc = run_hook(
+            scan_guard.HOOK_SCRIPT, payload, {"SCAN_GUARD_LOG": str(log_path)}
+        )
+        assert proc.returncode == 0
+        assert result is not None
+        hook_out = result["hookSpecificOutput"]
+        assert hook_out["permissionDecision"] == "deny"
+        assert "홈 전체" in hook_out["permissionDecisionReason"]
+        assert "699.6" not in hook_out["permissionDecisionReason"]
+        assert len(log_path.read_text(encoding="utf-8").strip().splitlines()) == 1
+
+    def test_find_루트_전체_스캔은_prune_재작성되고_로그가_한_줄_남는다(self, tmp_path: Path) -> None:
+        log_path = tmp_path / "scan_guard.jsonl"
+        payload = {
+            "tool_name": "Bash",
+            "session_id": "sg-1",
+            "cwd": "/tmp",
+            "tool_input": {"command": "find / -iname 'channels.json'"},
+        }
+        result, proc = run_hook(
+            scan_guard.HOOK_SCRIPT, payload, {"SCAN_GUARD_LOG": str(log_path)}
+        )
+        assert proc.returncode == 0
+        assert result is not None
+        hook_out = result["hookSpecificOutput"]
+        # 거부가 아니라 -prune 재작성으로 그대로 실행되는 경로다
+        denied = hook_out.get("permissionDecision") == "deny"
+        rewritten = "updatedInput" in hook_out
+        assert denied or rewritten
+        if rewritten:
+            assert "/" in hook_out["updatedInput"]["command"] or "-prune" in hook_out["updatedInput"]["command"]
+        assert log_path.exists()
+        assert len(log_path.read_text(encoding="utf-8").strip().splitlines()) == 1
+
+    def test_보호경로가_없는_find는_통과한다(self, tmp_path: Path) -> None:
+        log_path = tmp_path / "scan_guard.jsonl"
+        payload = {
+            "tool_name": "Bash",
+            "session_id": "sg-2",
+            "cwd": "/tmp",
+            "tool_input": {"command": "find /tmp -maxdepth 2 -name 'x.txt'"},
+        }
+        result, proc = run_hook(
+            scan_guard.HOOK_SCRIPT, payload, {"SCAN_GUARD_LOG": str(log_path)}
+        )
+        assert proc.returncode == 0
+        assert result is None
+        assert not log_path.exists()
+
+
+def _assistant(message_id: str, *uses: tuple[str, dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "type": "assistant",
+        "message": {
+            "id": message_id,
+            "content": [{"type": "tool_use", "name": n, "input": i} for n, i in uses],
+        },
+    }
+
+
+def _tool_result() -> dict[str, Any]:
+    return {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}}
+
+
+def _human(text: str = "조사해 줘") -> dict[str, Any]:
+    return {"type": "user", "message": {"content": text}}
+
+
+class TestParallelNudge:
+    def _payload(self, tmp_path: Path, records: list[dict[str, Any]]) -> dict[str, Any]:
+        path = tmp_path / "transcript.jsonl"
+        path.write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n", encoding="utf-8",
+        )
+        return {"hook_event_name": "PostToolUse", "transcript_path": str(path)}
+
+    def _single_reads(self, n: int) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = [_human()]
+        for i in range(n):
+            records += [_assistant(f"m{i}", ("Read", {"file_path": f"/f{i}"})), _tool_result()]
+        return records
+
+    def test_단일_조회가_세번_이어지면_알린다(self, tmp_path: Path) -> None:
+        result, proc = run_hook(parallel_nudge.HOOK_SCRIPT, self._payload(tmp_path, self._single_reads(3)))
+        assert proc.returncode == 0
+        assert result is not None
+        out = result["hookSpecificOutput"]
+        assert out["hookEventName"] == "PostToolUse"
+        assert "3번" in out["additionalContext"]
+        assert "permissionDecision" not in out
+
+    def test_두번이면_조용하다(self, tmp_path: Path) -> None:
+        result, proc = run_hook(parallel_nudge.HOOK_SCRIPT, self._payload(tmp_path, self._single_reads(2)))
+        assert proc.returncode == 0
+        assert result is None
+
+    def test_묶어_부른_응답이_끼면_다시_센다(self, tmp_path: Path) -> None:
+        records = [
+            *self._single_reads(2),
+            _assistant("mb", ("Read", {"file_path": "/a"}), ("Grep", {"pattern": "x"})), _tool_result(),
+            _assistant("mc", ("Glob", {"pattern": "*"})), _tool_result(),
+        ]
+        result, _ = run_hook(parallel_nudge.HOOK_SCRIPT, self._payload(tmp_path, records))
+        assert result is None
+
+    def test_새_요청이_오면_센_것을_버린다(self, tmp_path: Path) -> None:
+        records = [
+            *self._single_reads(2), _human("다음 일"),
+            _assistant("n1", ("Read", {"file_path": "/x"})), _tool_result(),
+        ]
+        result, _ = run_hook(parallel_nudge.HOOK_SCRIPT, self._payload(tmp_path, records))
+        assert result is None
+
+    def test_쓰기_명령은_조회로_세지_않는다(self) -> None:
+        assert parallel_nudge.is_read("Bash", {"command": "git push origin main"}) is False
+        assert parallel_nudge.is_read("Bash", {"command": "rg foo src"}) is True
+        assert parallel_nudge.is_read("mcp__slack__slack_search", {}) is True
+        assert parallel_nudge.is_read("mcp__slack__slack_post_message", {}) is False
+        assert parallel_nudge.is_read("Edit", {}) is False
+        # serial_read_guard 가 이 판정으로 거부하므로 신호, 복사, 제자리 수정,
+        # 스크립트 쓰기는 조회로 세지 않는다
+        for command in (
+            "kill -TERM 123", "cp a b", "sed -i '' s/a/b/ f", "echo x | tee out",
+            "python3 - <<'EOF'\nopen(p, 'w').write(s)\nEOF",
+        ):
+            assert parallel_nudge.is_read("Bash", {"command": command}) is False, command
+        assert parallel_nudge.is_read("Bash", {"command": "grep -n x f.py | head; git log -3"}) is True
+
+    def test_대화록이_없어도_실패하지_않는다(self, tmp_path: Path) -> None:
+        result, proc = run_hook(
+            parallel_nudge.HOOK_SCRIPT, {"transcript_path": str(tmp_path / "없음.jsonl")},
+        )
+        assert proc.returncode == 0
+        assert result is None
+
+
+class TestFinishHook:
+    def test_transcript_가_없으면_빈_출력으로_통과한다(self, tmp_path: Path) -> None:
+        payload = {
+            "session_id": "fh-1",
+            "transcript_path": str(tmp_path / "없는파일.jsonl"),
+        }
+        result, proc = run_hook(finish_hook.HOOK_SCRIPT, payload)
+        assert proc.returncode == 0
+        assert proc.stdout.strip() == ""
+        assert result is None
+
+    def test_위반이_있으면_두_번은_막고_세_번째는_풀어준다(self, tmp_path: Path) -> None:
+        transcript_path = tmp_path / "transcript.jsonl"
+        transcript_path.write_text(
+            json.dumps({
+                "type": "user",
+                "uuid": "turn-1",
+                "message": {"role": "user", "content": "확인해줘"},
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+        }
+        payload = {
+            "session_id": "fh-2",
+            "transcript_path": str(transcript_path),
+            "last_assistant_message": (
+                "지금까지 로그 두 건을 봤다.\n원하시면 나머지도 이어서 확인해 볼게요"
+            ),
+        }
+
+        first, proc1 = run_hook(finish_hook.HOOK_SCRIPT, payload, env)
+        assert proc1.returncode == 0
+        assert first is not None and first["decision"] == "block" and first["reason"]
+
+        second, proc2 = run_hook(finish_hook.HOOK_SCRIPT, payload, env)
+        assert proc2.returncode == 0
+        assert second is not None and second["decision"] == "block"
+
+        third, proc3 = run_hook(finish_hook.HOOK_SCRIPT, payload, env)
+        assert proc3.returncode == 0
+        assert proc3.stdout.strip() == ""
+        assert third is None
+
+    def test_대화이력없는_오너의_완_뒤_재승인요청을_막는다(self, tmp_path: Path) -> None:
+        transcript_path = tmp_path / "owner-approval.jsonl"
+        transcript_path.write_text(
+            json.dumps({
+                "type": "user",
+                "uuid": "owner-approval-turn",
+                "message": {
+                    "role": "user",
+                    "content": (
+                        "[제약] 이번 턴 도구 안내\n"
+                        "[이 요청의 값. 사람이 쓴 말이 아니라 봇이 붙인 것이다]\n\n"
+                        "[19:32:59 김태일 <@UOWNER>]\n완"
+                    ),
+                },
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        payload = {
+            "session_id": "fh-owner-approval",
+            "transcript_path": str(transcript_path),
+            "last_assistant_message": (
+                "인증 저장은 아직임.\n\n"
+                "**위 권한으로 재인증하고 push하도록 승인해 주세요.**\n[[ASK]]"
+            ),
+        }
+        env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+            "TURN_TIER": "owner",
+        }
+
+        result, proc = run_hook(finish_hook.HOOK_SCRIPT, payload, env)
+
+        assert proc.returncode == 0
+        assert result is not None and result["decision"] == "block"
+        assert "이미 승인된 실행" in result["reason"]
+
+    def _knowledge_payload(self, tmp_path: Path) -> dict[str, Any]:
+        transcript_path = tmp_path / "knowledge.jsonl"
+        transcript_path.write_text(
+            json.dumps({
+                "type": "user", "uuid": "kn-turn",
+                "message": {"role": "user", "content": "배차 정책 값 뜻 알려줘"},
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return {
+            "session_id": "fh-kn",
+            "transcript_path": str(transcript_path),
+            "last_assistant_message": (
+                "이번 턴 코드표를 처음부터 끝까지 자세히 정리해서 답한다. " * 12
+                + "배차 정책 값 47 은 LEGACY_AI 를 뜻한다."
+            ),
+        }
+
+    def test_지식_파일에_있는_코드표_문장은_막지_않는다(self, tmp_path: Path) -> None:
+        """2026-11-10 검수가 이번 턴에 실린 지식 파일을 보지 못해 코드표 해석을
+        근거 없음으로 4회 막았다. 엔진이 넘긴 지식 파일을 근거에 넣는다."""
+        knowledge = tmp_path / "knowledge.md"
+        knowledge.write_text("dispatch_policy 값 : 47 = LEGACY_AI\n", encoding="utf-8")
+        base_env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+            # 모델 검증 대신 숫자 휴리스틱으로 판정해 서브프로세스 모델을 띄우지 않는다.
+            "SCA_FINISH_VERIFY": "0",
+        }
+
+        without, _ = run_hook(finish_hook.HOOK_SCRIPT, self._knowledge_payload(tmp_path), base_env)
+        assert without is not None and without["decision"] == "block"
+
+        (tmp_path / "state").mkdir(exist_ok=True)
+        for leftover in (tmp_path / "state").glob("finish-hook-*"):
+            leftover.unlink()
+        with_knowledge, proc = run_hook(
+            finish_hook.HOOK_SCRIPT, self._knowledge_payload(tmp_path),
+            {**base_env, "SCA_FINISH_KNOWLEDGE_FILE": str(knowledge)},
+        )
+        assert proc.returncode == 0
+        assert with_knowledge is None
+
+    def _advisor_payload(self, tmp_path: Path) -> dict[str, Any]:
+        transcript_path = tmp_path / "advisor.jsonl"
+        transcript_path.write_text(
+            json.dumps({
+                "type": "user",
+                "uuid": "adv-turn",
+                "message": {"role": "user", "content": "A안 B안 중 뭐로 갈까"},
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return {
+            "session_id": "fh-adv",
+            "transcript_path": str(transcript_path),
+            "last_assistant_message": "### 방안\n1. A안\n2. B안\n[[ASK]]",
+        }
+
+    def test_자문채널_결정형답도_조언자_강제없이_통과한다(self, tmp_path: Path) -> None:
+        """2026-11-10 advisor_skipped 를 종료검수에서 뺐다. 자문 채널이어도 막지 않는다."""
+        env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+            "POST_CHANNEL": "C_ADVISOR",
+            "ADVISOR_CHANNELS": "C_ADVISOR,C_OTHER",
+        }
+        result, proc = run_hook(finish_hook.HOOK_SCRIPT, self._advisor_payload(tmp_path), env)
+        assert proc.returncode == 0
+        assert proc.stdout.strip() == ""
+        assert result is None
+
+    def test_비자문채널이면_같은_결정형답도_통과한다(self, tmp_path: Path) -> None:
+        env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+            "POST_CHANNEL": "C_PLAIN",
+            "ADVISOR_CHANNELS": "C_ADVISOR,C_OTHER",
+        }
+        result, proc = run_hook(finish_hook.HOOK_SCRIPT, self._advisor_payload(tmp_path), env)
+        assert proc.returncode == 0
+        assert proc.stdout.strip() == ""
+        assert result is None
+
+    def _code_first_payload(self, tmp_path: Path) -> dict[str, Any]:
+        transcript_path = tmp_path / "codefirst.jsonl"
+        transcript_path.write_text(
+            json.dumps({
+                "type": "user",
+                "uuid": "cf-turn",
+                "message": {"role": "user", "content": "cm_v1 도 재무리포트로 분류하지?"},
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return {
+            "session_id": "fh-cf",
+            "transcript_path": str(transcript_path),
+            "last_assistant_message": "트래커 기준으로 cm_v1 은 재무리포트예요. https://notion.so/abc",
+        }
+
+    def test_코드우선채널_문서만_근거면_막는다(self, tmp_path: Path) -> None:
+        """G13 배선: POST_CHANNEL 이 CODE_FIRST_CHANNELS 에 들면 종료검수가
+        code_first 로 차단한다."""
+        env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+            "POST_CHANNEL": "C_CODE",
+            "CODE_FIRST_CHANNELS": "C_CODE,C_OTHER",
+        }
+        result, proc = run_hook(finish_hook.HOOK_SCRIPT, self._code_first_payload(tmp_path), env)
+        assert proc.returncode == 0
+        assert result is not None and result["decision"] == "block"
+
+    def test_비코드우선채널이면_같은_문서답도_통과한다(self, tmp_path: Path) -> None:
+        env = {
+            "FINISH_HOOK_STATE_DIR": str(tmp_path / "state"),
+            "TURN_DEADLINE_MONO": str(time.monotonic() + 10_000),
+            "POST_CHANNEL": "C_PLAIN",
+            "CODE_FIRST_CHANNELS": "C_CODE,C_OTHER",
+        }
+        result, proc = run_hook(finish_hook.HOOK_SCRIPT, self._code_first_payload(tmp_path), env)
+        assert proc.returncode == 0
+        assert proc.stdout.strip() == ""
+        assert result is None
+
+
+class TestClaudeEngineWiring:
+    def test_guard_hook_settings_에_bash_가드_5개와_stop_훅이_있다(self) -> None:
+        from slack_cli_agent.engine.claude import guard_hook_settings
+
+        settings = guard_hook_settings()
+        pretool_groups = settings["hooks"]["PreToolUse"]
+        bash_group = next(g for g in pretool_groups if g["matcher"] == "Bash")
+        commands = [h["command"] for h in bash_group["hooks"]]
+        assert len(commands) == 5
+        assert any("turn_budget.py" in c for c in commands)
+        assert any("restart_guard.py" in c for c in commands)
+        assert any("install_guard.py" in c for c in commands)
+        assert any("scan_guard.py" in c for c in commands)
+        assert any("sleep_poll_guard.py" in c for c in commands)
+        assert all(c.startswith(sys.executable) for c in commands)
+
+        stop_groups = settings["hooks"]["Stop"]
+        assert len(stop_groups) == 1
+        assert stop_groups[0]["matcher"] == "*"
+        assert "finish_hook.py" in stop_groups[0]["hooks"][0]["command"]
+
+        posttool_groups = settings["hooks"]["PostToolUse"]
+        assert len(posttool_groups) == 1
+        assert posttool_groups[0]["matcher"] == "*"
+        assert "parallel_nudge.py" in posttool_groups[0]["hooks"][0]["command"]
+
+    def test_build_command_의_settings에_progress_훅과_bash_가드가_함께_실린다(
+        self, tmp_path: Path
+    ) -> None:
+        from slack_cli_agent.auth.principal import TrustLevel
+        from slack_cli_agent.config.profile import Profile
+        from slack_cli_agent.config.settings import RuntimeSettings
+        from slack_cli_agent.engine.base import EngineRequest
+        from slack_cli_agent.engine.claude import ClaudeEngine
+        from slack_cli_agent.engine.tool_selection import ToolSelection
+
+        profile = Profile.from_dict({
+            "name": "example",
+            "primary_engine": {"type": "claude", "binary": "claude", "model": "claude-sonnet-5"},
+            "owner_user_id": "U1",
+            "troubleshoot_channel": "C1",
+            "state_dir": str(tmp_path / "state"),
+        })
+        engine = ClaudeEngine(profile, RuntimeSettings())
+        req = EngineRequest(
+            prompt="안녕",
+            system_prompt="시스템 지침",
+            session_id="11111111-1111-1111-1111-111111111111",
+            resume=False,
+            model="claude-sonnet-5",
+            effort="medium",
+            workdir=tmp_path,
+            readable_dirs=(tmp_path,),
+            tools=ToolSelection.allow(["Read", "Grep"]),
+            trust_level=TrustLevel.GENERAL,
+            progress_log=tmp_path / "progress" / "C1-1.0.log",
+        )
+        cmd = engine.build_command(req)
+        settings = json.loads(cmd[cmd.index("--settings") + 1])
+        pretool_groups = settings["hooks"]["PreToolUse"]
+        matchers = [g["matcher"] for g in pretool_groups]
+        assert "*" in matchers  # progress 훅
+        assert "Bash" in matchers  # 가드 3종
+        bash_group = next(g for g in pretool_groups if g["matcher"] == "Bash")
+        assert len(bash_group["hooks"]) == 5
+        assert settings["hooks"]["Stop"][0]["matcher"] == "*"
+
+
+def test_오너_턴에는_스스로_해결_규칙이_실린다() -> None:
+    from slack_cli_agent.prompt.sections import OWNER_SELF_RESOLVE
+
+    assert "터미널 명령" in OWNER_SELF_RESOLVE
+    assert "승인을 묻지 않고" in OWNER_SELF_RESOLVE
+    assert "git push와 원격 반영은 맡은 작업의 실행 범위" in OWNER_SELF_RESOLVE
+    assert "삭제, 원격 반영" not in OWNER_SELF_RESOLVE
+
+
+def test_restart_guard_env_에_서비스_라벨이_있다() -> None:
+    from types import SimpleNamespace
+
+    from slack_cli_agent.core.application import Application
+
+    fake = SimpleNamespace(
+        _profile=SimpleNamespace(
+            launch_label="local.deagent",
+            paths=SimpleNamespace(apply_requests=("/tmp/req", "/tmp/run")),
+        )
+    )
+    env = Application.restart_guard_env(fake)  # type: ignore[arg-type]
+    assert env["RESTART_GUARD_SERVICES"] == "local.deagent.worker,local.deagent.ingress"
+
+
+class TestSleepPollGuard:
+    @staticmethod
+    def _bash(command: str, **extra: Any) -> dict[str, Any]:
+        return {"tool_name": "Bash", "session_id": "sp", "tool_input": {"command": command, **extra}}
+
+    # 2026-11-08 기상할증 스레드에서 100초를 쓴 실제 명령 모양
+    WAIT_PY = (
+        'timeout 100 python -c "\nimport time,glob\nfor i in range(90):\n'
+        "    fs=sorted(glob.glob('hsr2/*.json'))\n    if len(fs)>=30: break\n"
+        '    time.sleep(1)\n"'
+    )
+
+    def test_파이썬_대기_루프는_막는다(self) -> None:
+        result, proc = run_hook(sleep_poll_guard.HOOK_SCRIPT, self._bash(self.WAIT_PY))
+        assert proc.returncode == 0
+        assert result is not None
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "WATCH" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    def test_셸_while_sleep_은_막는다(self) -> None:
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT,
+                             self._bash("while ! grep -q done log.txt; do sleep 5; done"))
+        assert result is not None
+
+    def test_run_in_background_은_통과한다(self) -> None:
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT,
+                             self._bash(self.WAIT_PY, run_in_background=True))
+        assert result is None
+
+    def test_nohup_으로_떼어낸_명령은_통과한다(self) -> None:
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT,
+                             self._bash("nohup sh -c 'while true; do sleep 60; done' > o 2>&1 &"))
+        assert result is None
+
+    def test_짧은_재시도_루프는_통과한다(self) -> None:
+        cmd = "python -c \"\nimport time\nfor k in range(6):\n    try: go(); break\n    except E: time.sleep(5)\n\""
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT, self._bash(cmd))
+        assert result is None
+
+    def test_파일로_쓰기만_하는_heredoc_안의_루프는_통과한다(self) -> None:
+        cmd = "cat > w.py <<'EOF'\nimport time\nwhile True:\n    time.sleep(1800)\nEOF\npython3 -m py_compile w.py"
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT, self._bash(cmd))
+        assert result is None
+
+    def test_루프없는_sleep_은_통과한다(self) -> None:
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT, self._bash("sleep 2 && ls"))
+        assert result is None
+
+    def test_bash_가_아니면_통과한다(self) -> None:
+        result, _ = run_hook(sleep_poll_guard.HOOK_SCRIPT,
+                             {"tool_name": "Read", "tool_input": {"file_path": "/x"}})
+        assert result is None
+
+    def test_막으면_로그를_남긴다(self, tmp_path: Path) -> None:
+        log = tmp_path / "sp.jsonl"
+        run_hook(sleep_poll_guard.HOOK_SCRIPT, self._bash(self.WAIT_PY), {"SLEEP_POLL_GUARD_LOG": str(log)})
+        assert "range(90)" in json.loads(log.read_text(encoding="utf-8").strip())["command"]

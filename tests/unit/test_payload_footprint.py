@@ -121,6 +121,15 @@ class Test감사에_남는다:
         assert "비밀본문" not in 직렬
         assert "비밀지침" not in 직렬
 
+    def test_권한_등급이_같은_행에_남는다(self, tmp_path: Path) -> None:
+        """도구 이름은 엔진이 footprint 에 싣는다 (test_mcp_attachment_filter 가 시험한다)."""
+        from test_engine_capability import _감사
+
+        감사 = _감사()
+        self._돌린다(tmp_path, 감사, request_id="req-t", turn_tier="owner")
+        필드 = next(f for kind, f in 감사.기록 if kind == "payload")
+        assert 필드["tier"] == "owner"
+
 
 class Test선언은_실제_명령과_맞는다:
     """선언과 build_command 가 어긋나면 이 측정으로 정한 상한이 틀린 값에

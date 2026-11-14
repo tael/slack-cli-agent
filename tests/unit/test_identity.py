@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
 from slack_cli_agent.slack.identity import SlackBotIdentity
@@ -146,3 +148,26 @@ class Test이봇을부른말인가:
     def test_신원을_모르면_부른_것으로_보지_않는다(self) -> None:
         identity = SlackBotIdentity(FakeAuthClient({}))
         assert not identity.is_mentioned("<@U_BOT> 질문입니다")
+
+
+class 지연하는클라이언트(FakeAuthClient):
+    def auth_test(self, **kwargs: Any) -> dict[str, Any]:
+        time.sleep(0.3)
+        return super().auth_test(**kwargs)
+
+
+class Test동시조회:
+    def test_조회_중에_들어온_판정은_조회가_끝나길_기다린다(self) -> None:
+        """첫 이벤트 두 건이 동시에 들어오면 뒤 스레드가 빈 신원을 읽어 봇 명의 멘션이 버려졌다."""
+        client = 지연하는클라이언트()
+        identity = SlackBotIdentity(client)
+        결과: list[bool] = []
+        앞 = threading.Thread(target=lambda: identity.user_id)
+        앞.start()
+        time.sleep(0.05)
+        뒤 = threading.Thread(target=lambda: 결과.append(identity.is_mentioned("<@U_ME> hi")))
+        뒤.start()
+        앞.join()
+        뒤.join()
+        assert 결과 == [True]
+        assert client.calls == 1

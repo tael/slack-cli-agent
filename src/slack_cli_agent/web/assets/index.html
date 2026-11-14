@@ -464,12 +464,24 @@ function renderStateTab(d){
       <div class="dim" style="margin-top:8px;font-size:11.5px">
         model 과 effort 는 최근에 기록을 시작해 표본이 전체보다 적다</div></div>
     <div class="panel"><div class="k dim" style="font-size:11px;margin-bottom:8px">일별 비용</div>
-      ${isNA("cost")
-        ? `<div class="dim">${na("cost")}</div>`
+      ${isNA("usage.cost_total_usd")
+        ? `<div class="dim">${na("usage.cost_total_usd")}</div>`
         : bars((us.cost_by_day||[]).map(c => ({label:c.day.slice(5), value:c.usd})), " USD") +
           `<div class="dim" style="margin-top:8px;font-size:11.5px">
             누적 ${num(us.cost_total_usd)} USD · 요청당 중위 ${num(us.cost_median_usd)} USD</div>`}</div>
   </div>
+  <div class="panel" style="margin-top:10px">
+    <div class="k dim" style="font-size:11px;margin-bottom:8px">모델별 토큰과 비용</div>
+    ${(us.by_model_usage||[]).length
+      ? table([{label:"모델"},{label:"호출",num:true},{label:"입력",num:true},{label:"캐시쓰기",num:true},
+               {label:"캐시읽기",num:true},{label:"출력",num:true},{label:"비용 USD",num:true}],
+          us.by_model_usage.map(m => [esc(m.model), num(m.calls), num(m.input_tokens),
+            num(m.cache_creation_tokens), num(m.cache_read_tokens), num(m.output_tokens),
+            m.cost_usd === null || m.cost_usd === undefined ? nil : num(m.cost_usd)]))
+        + `<div class="dim" style="margin-top:8px;font-size:11.5px">
+            엔진이 보고한 모델별 값을 세션 안에서 직전 기록과의 차이로 합산했다.
+            조언자·서브에이전트 모델도 따로 한 줄이다. 표본 ${num(us.model_usage_sample)}건</div>`
+      : `<div class="dim">모델별 사용량 기록이 이 기간에 없다</div>`}</div>
   <div class="grid tiles" style="margin-top:10px">
     ${tile("질문 길이 중위", num(us.question_len_median, "자"), "")}
     ${tile("답변 길이 중위", num(us.answer_len_median, "자"), "")}
@@ -510,6 +522,11 @@ function renderStateTab(d){
         ? tile("첫 반응까지", dur(fr.median_sec),
                `p90 ${dur(fr.p90_sec)} · 표본 ${fr.count}건 (전체의 ${fr.sample_pct}%)`)
         : tile("첫 반응까지", nil, "계측 시작 이후 기록이 아직 없다")}
+    ${tile("비소유자 DM 답", num((d.dm||{}).replies, "건"),
+           `${num((d.dm||{}).people)}명 · 고정 안내문 ${num((d.dm||{}).fallback)}건 · ` +
+           `상한 초과 ${num((d.dm||{}).capped)}건 · 게시 실패 ${num((d.dm||{}).failed)}건 · ` +
+           `캐묻기 ${num((d.dm||{}).probes)}건` +
+           Object.entries((d.dm||{}).by_class||{}).map(([k,v]) => ` · ${esc(k)} ${num(v)}건`).join(""))}
     ${usageBlockTile(blk)}
   </div>
   <div class="grid cols2" style="margin-top:10px">
@@ -529,7 +546,7 @@ function renderStateTab(d){
       <div class="dim" style="margin-top:8px;font-size:11.5px">
         흐린 값은 채널 설정이 없어 전역 기본값을 쓴다는 뜻이다.
         이 봇의 모델 기본값은 ${esc(bot.default_model || "")},
-        소유자 대화는 ${esc(bot.owner_model || "")}, effort 기본값은 medium 이다.</div>
+        부검은 ${esc(bot.postmortem_model || "")}, effort 기본값은 medium 이다.</div>
       ${unlisted}</div>` +
     `<h2>응답성</h2>${respPanel}` +
     `<h2>신뢰성</h2>${relPanel}` +
@@ -594,7 +611,7 @@ function renderSettingsTab(){
       <label>엔진 타입</label><input type="text" id="f-eng-type">
       <label>엔진 실행 파일</label><input type="text" id="f-eng-binary">
       <label>엔진 모델</label><input type="text" id="f-eng-model">
-      <label>소유자용 모델</label><input type="text" id="f-eng-model_owner">
+      <label>부검 기본 모델 (model_owner, postmortem_model 이 비었을 때)</label><input type="text" id="f-eng-model_owner">
       <label>상태 디렉터리</label><input type="text" id="f-state_dir">
       <label>작업 디렉터리</label><input type="text" id="f-work_root">
       <label>소유자 (owner_user_id)</label><input type="text" id="f-owner_user_id">

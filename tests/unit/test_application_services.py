@@ -82,6 +82,7 @@ RUNNER_ARGS: dict[str, Any] = {
     "pending_report_runner": lambda app: (),
     "stale_review_runner": lambda app: (),
     "learning_batch_runner": lambda app: (),
+    "channel_join_runner": lambda app: (),
 }
 
 
@@ -118,6 +119,7 @@ class Test묶음구성:
             "attachment_cleanup",
             "pending_report",
             "stale_review",
+            "channel_join",
         }
 
     def test_워커_묶음은_상태기록과_감시와_정리와_캐치업을_띄운다(self, app: Application) -> None:
@@ -135,6 +137,10 @@ class Test묶음구성:
             "pending_report",
             "learning_batch",
             "stale_reclaim",
+            "welcome:retro",
+            "shadow:loop",
+            # DM 응대가 꺼져 있어도 시도 기록을 보고한다 (dm_attempt_log 기본값).
+            "core:dm_daily_report",
         }
 
     def test_정체_작업_회수는_주기로_돈다(self, app: Application) -> None:
@@ -242,6 +248,52 @@ class Test캐치업재시도:
         app.catchup_retry_runner(워커)._task()
         보낸것 = [kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"]
         assert any("C9" in str(kwargs) for kwargs in 보낸것), 보낸것
+
+    def test_빈_기록이_사유면_빈_목록이라고_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        from slack_cli_agent.reliability.catchup import RetryStatus, StuckCause
+
+        워커 = app.worker()
+        워커.retry_catchup = lambda: [  # type: ignore[method-assign]
+            RetryStatus(channel="C9", stuck_sec=7200.0, alert=True, cause=StuckCause.EMPTY_HISTORY)
+        ]
+        app.catchup_retry_runner(워커)._task()
+        본문 = str([kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"])
+        assert "빈 목록" in 본문
+        assert "스레드" not in 본문
+
+    def test_긴_스레드를_못_읽은_것이_사유면_그렇게_알린다(
+        self, app: Application, client: FakeSlackClient
+    ) -> None:
+        """사유가 다른데 "빈 목록" 이라고 알리면 소유자가 없는 슬랙 장애를 찾는다 (PR #124 검토)."""
+        from slack_cli_agent.reliability.catchup import RetryStatus, StuckCause
+
+        워커 = app.worker()
+        워커.retry_catchup = lambda: [  # type: ignore[method-assign]
+            RetryStatus(
+                channel="C9",
+                stuck_sec=7200.0,
+                alert=True,
+                cause=StuckCause.UNREADABLE_THREAD,
+                unreadable_threads=2,
+            )
+        ]
+        app.catchup_retry_runner(워커)._task()
+        본문 = str([kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"])
+        assert "C9" in 본문
+        assert "긴 스레드 2개를 끝까지 읽지 못했습니다" in 본문
+        assert "빈 목록" not in 본문
+
+    def test_신원을_모르는_것이_사유면_그렇게_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        from slack_cli_agent.reliability.catchup import RetryStatus, StuckCause
+
+        워커 = app.worker()
+        워커.retry_catchup = lambda: [  # type: ignore[method-assign]
+            RetryStatus(channel="C9", stuck_sec=7200.0, alert=True, cause=StuckCause.UNKNOWN_IDENTITY)
+        ]
+        app.catchup_retry_runner(워커)._task()
+        본문 = str([kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"])
+        assert "사용자 정보를 확인하지 못해" in 본문
+        assert "빈 목록" not in 본문
 
     def test_막히지_않았으면_안_알린다(self, app: Application, client: FakeSlackClient) -> None:
         from slack_cli_agent.reliability.catchup import RetryStatus
@@ -395,6 +447,50 @@ class Test복구보고:
         보낸것 = [kwargs for 이름, kwargs in self.복구시킨다(app) if 이름 == "chat_postMessage"]
         assert any("2건" in str(kwargs) for kwargs in 보낸것), 보낸것
 
+    def test_캐치업이_실패해도_복구를_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        """check() 가 복구를 이미 소비해 다시 못 잡으므로, 캐치업이 터져도
+        연결이 돌아온 사실은 반드시 소유자에게 가야 한다. 조용히 삼키면
+        장애가 있었다는 신호 자체가 사라진다."""
+        닿는다 = [True]
+        워커 = app.worker()
+        워커.retry_catchup = list  # type: ignore[method-assign]
+
+        def 캐치업이_터진다(channels: list[str], window_sec: float | None = None) -> Any:
+            raise RuntimeError("슬랙 기록 조회 실패")
+
+        워커.catch_up = 캐치업이_터진다  # type: ignore[method-assign]
+        app._slack_reachable = lambda: 닿는다[0]  # type: ignore[method-assign]
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        닿는다[0] = True
+        러너._task()  # 예외를 삼키지 않고 복구 보고를 내보낸다
+        보낸것 = [kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"]
+        assert any("연결 복구" in str(kwargs) for kwargs in 보낸것), 보낸것
+        assert any("캐치업 실패" in str(kwargs) for kwargs in 보낸것), 보낸것
+
+    def test_복구는_한_번만_알린다(self, app: Application, client: FakeSlackClient) -> None:
+        """복구 뒤 계속 닿는 회차마다 다시 알리면 개인 대화가 복구 보고로
+        도배된다. OutageTracker.check() 가 복구를 한 회차만 돌려주는 덕분에
+        배선도 한 번만 보고해야 한다."""
+        닿는다 = [True]
+        워커, _ = Test복구직후캐치업.워커를_바꾼다(app, 닿는다)
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        닿는다[0] = True
+        러너._task()  # 복구 회차 — 여기서 한 번 보고
+        러너._task()  # 계속 닿는 회차 — 다시 보고하면 안 된다
+        러너._task()
+        복구보고 = [
+            kwargs
+            for 이름, kwargs in client.calls
+            if 이름 == "chat_postMessage" and "연결 복구" in str(kwargs)
+        ]
+        assert len(복구보고) == 1, 복구보고
+
     def test_MCP_서버_상태를_함께_알린다(self, app: Application, client: FakeSlackClient) -> None:
         """원본 bot.py:6857 이 보고에 담는 줄이다. 노트북이 잠들었다 깨어난 뒤
         MCP 가 조용히 빠진 상태를 알아챌 계기가 여기 말고 없다."""
@@ -423,6 +519,98 @@ class Test복구보고:
         러너._task()
         러너._task()
         assert [이름 for 이름, _ in client.calls if 이름 == "chat_postMessage"] == []
+
+    def test_오래_끊겼으면_네트워크_수준_장애로_알린다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        """auth_test 가 capture_after_sec(180초) 넘게 닿지 않은 끊김은 소켓 아래
+        계층(DNS/Wi-Fi) 장애로 보고, 복구 보고에 그 사실과 기간을 싣는다.
+        NetworkOutageEscalation 이 '진단 캡처할 만한 지속 장애' 를 판정하고,
+        assemble_recovery_report 가 그 줄을 조립한다 (G59)."""
+        시각 = [1000.0]
+        app = Application(profile, client, clock=lambda: 시각[0])
+        닿는다 = [True]
+        워커, _ = Test복구직후캐치업.워커를_바꾼다(app, 닿는다)
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        시각[0] += 300.0  # 180초를 넘는 지속 끊김 → 네트워크 수준으로 본다
+        닿는다[0] = True
+        러너._task()
+        합친것 = str([kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"])
+        assert "연결 복구" in 합친것
+        assert "DNS" in 합친것 or "Wi-Fi" in 합친것, 합친것
+        assert "5분" in 합친것, 합친것  # 300초 = 5분, 네트워크 장애 기간
+
+    def test_짧게_끊겼으면_네트워크_수준_장애로_보지_않는다(
+        self, profile: Profile, client: FakeSlackClient
+    ) -> None:
+        """짧은 API 블립은 DNS/Wi-Fi 장애로 단정하지 않는다 — 평시 복구 보고만."""
+        시각 = [1000.0]
+        app = Application(profile, client, clock=lambda: 시각[0])
+        닿는다 = [True]
+        워커, _ = Test복구직후캐치업.워커를_바꾼다(app, 닿는다)
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        시각[0] += 20.0  # 180초 미만
+        닿는다[0] = True
+        러너._task()
+        합친것 = str([kwargs for 이름, kwargs in client.calls if 이름 == "chat_postMessage"])
+        assert "연결 복구" in 합친것
+        assert "DNS" not in 합친것 and "Wi-Fi" not in 합친것, 합친것
+
+
+class Test복구시남긴보고를즉시내보낸다:
+    """끊긴 사이에 보내지 못하고 남겨둔 보고를 복구 회차에 바로 내보내는가.
+
+    남겨둔 보고는 대개 재기동 알림이다. 재기동 순간 소켓이 불안정해 발송이
+    실패해 파일에 남는데, 바로 그 불안정이 풀리는 순간이 복구다. 복구를
+    감지한 회차에서 즉시 flush 하지 않으면, 그 보고는 독립 주기(기본 30초)의
+    pending_report 실행기가 돌 때까지 파일에 남는다. 원본 bot.py:11147-11148
+    은 닿는 회차마다 flush_pending_report 를 retry_catchup 앞에 부른다
+    (2026-08-26 08:09 의 되짚기 실패 보고가 139분 묵은 사고를 고친 것이다)."""
+
+    def test_복구_회차에_남겨둔_보고를_보낸다(
+        self, app: Application, client: FakeSlackClient
+    ) -> None:
+        app.pending_report().save("남겨둔_재기동_보고_XYZ")
+        닿는다 = [True]
+        워커, _ = Test복구직후캐치업.워커를_바꾼다(app, 닿는다)
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        닿는다[0] = False
+        러너._task()
+        닿는다[0] = True
+        러너._task()  # 복구 회차 — 남겨둔 보고를 여기서 바로 내보낸다
+        보낸것 = [
+            kwargs
+            for 이름, kwargs in client.calls
+            if 이름 == "chat_postMessage" and "남겨둔_재기동_보고_XYZ" in str(kwargs)
+        ]
+        assert 보낸것, client.calls
+        assert not (app._profile.state_dir / "pending_report.json").exists()
+
+    def test_복구가_아니면_굳이_flush_하지_않는다(
+        self, app: Application, client: FakeSlackClient
+    ) -> None:
+        """끊김이 없던 평상 회차는 pending_report 전담 실행기의 몫이다.
+        catchup_retry 가 매 회차 flush 를 흉내 내면 책임이 겹친다."""
+        app.pending_report().save("평상_회차_보고_ABC")
+        워커 = app.worker()
+        워커.retry_catchup = list  # type: ignore[method-assign]
+        app._slack_reachable = lambda: True  # type: ignore[method-assign]
+        러너 = app.catchup_retry_runner(워커)
+        러너._task()
+        러너._task()
+        보낸것 = [
+            kwargs
+            for 이름, kwargs in client.calls
+            if 이름 == "chat_postMessage" and "평상_회차_보고_ABC" in str(kwargs)
+        ]
+        assert 보낸것 == [], 보낸것
 
 
 class Test느린요청보고의기록리더:
@@ -496,6 +684,54 @@ class Test링크된스레드채널명:
 
         조회 = [call for call in client.calls if call[0] == "conversations_info"]
         assert len(조회) == 1
+
+
+class _비공개막힘(FakeSlackClient):
+    """봇이 초대되지 않은 비공개 채널처럼 스레드 조회가 실패한다."""
+
+    def conversations_replies(self, **kwargs: Any) -> dict[str, Any]:
+        self._record("conversations_replies", **kwargs)
+        raise RuntimeError("channel_not_found")
+
+
+class _소유자세션(FakeSlackClient):
+    def conversations_replies(self, **kwargs: Any) -> dict[str, Any]:
+        self._record("conversations_replies", **kwargs)
+        return {"messages": [{"ts": "1788253544.408049", "user": "U9", "text": "비공개 할증 요청"}]}
+
+
+class Test소유자세션링크읽기조립:
+    """D5 : owner_client 를 받은 조립이 소유자 턴에서만 그 클라이언트로 링크를 읽는가."""
+
+    LINK = "https://example.slack.com/archives/C0EXAMPLE01/p1788253544408049"
+
+    def test_소유자_턴은_사용자_세션으로_읽는다(self, profile: Profile) -> None:
+        owner = _소유자세션()
+        app = Application(profile, _비공개막힘(), owner_client=owner)
+        note = app._linked_threads().of(self.LINK, as_owner=True)
+        assert "비공개 할증 요청" in note
+        assert any(c[0] == "conversations_replies" for c in owner.calls)
+
+    def test_비소유자_턴은_사용자_세션을_부르지_않는다(self, profile: Profile) -> None:
+        owner = _소유자세션()
+        app = Application(profile, _비공개막힘(), owner_client=owner)
+        note = app._linked_threads().of(self.LINK)
+        assert "비공개 할증 요청" not in note
+        assert "읽지 못했다" in note
+        assert owner.calls == []
+
+    def test_파이프라인은_비소유자_턴에_사용자_세션을_쓰지_않는다(self, profile: Profile) -> None:
+        owner = _소유자세션()
+        app = Application(profile, _비공개막힘(), owner_client=owner)
+        hook = app.pipeline()._linked_threads
+        assert hook is not None
+        assert "비공개 할증 요청" not in hook(self.LINK, "C099", (), False)
+        assert owner.calls == []
+        assert "비공개 할증 요청" in hook(self.LINK, "C099", (), True)
+
+    def test_사용자_세션이_없으면_소유자_턴도_봇_토큰만_쓴다(self, profile: Profile) -> None:
+        app = Application(profile, _비공개막힘())
+        assert "읽지 못했다" in app._linked_threads().of(self.LINK, as_owner=True)
 
 
 class Test사용량확인실행기:
@@ -646,3 +882,64 @@ class Test접수의_잠금예산:
         백오프 = sum(ingress._enqueue_retry_wait_sec * (n + 1) for n in range(시도 - 1))
         상한 = 대기 + 백오프
         assert 상한 <= 1.5, f"접수 경로 상한이 {상한:.2f}초다"
+
+
+class Test소유자세션설정누락:
+    """D5 실측 : #114 머지 뒤에도 소유자 턴이 비초대 비공개 링크를 읽지 못했다.
+    운영 자격 파일에 user_token 이 없어 소유자 세션이 꺼진 채로 떴는데, 그 사실이
+    로그 어디에도 남지 않았다. 꺼진 이유를 기동 시점에 남긴다."""
+
+    def test_소유자는_있는데_사용자_토큰이_없으면_경고를_남긴다(
+        self, profile: Profile, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from slack_cli_agent.slack.credentials import CredentialResolver
+
+        resolver = CredentialResolver(
+            default_path=profile.paths.root / "없는파일.json", configured_path=None, env={}
+        )
+        with caplog.at_level(logging.WARNING):
+            app = Application.from_profile(profile, client=FakeSlackClient(), resolver=resolver)
+        assert app._owner_client is None
+        assert any("user_token" in r.getMessage() for r in caplog.records)
+
+    def test_xoxc_토큰에_쿠키가_없으면_소유자_세션을_만들지_않는다(
+        self, profile: Profile, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from slack_cli_agent.slack.credentials import CredentialResolver
+
+        resolver = CredentialResolver(
+            default_path=profile.paths.root / "없는파일.json", configured_path=None,
+            env={"SLACK_USER_TOKEN": "xoxc-1"},
+        )
+        with caplog.at_level(logging.WARNING):
+            app = Application.from_profile(profile, client=FakeSlackClient(), resolver=resolver)
+        assert app._owner_client is None
+        assert any("user_cookie" in r.getMessage() for r in caplog.records)
+
+    def test_자격_파일의_토큰과_쿠키로_소유자_턴만_비공개_링크를_읽는다(
+        self, profile: Profile, tmp_path: Path
+    ) -> None:
+        """#114 가 정한 출처(자격 파일 user_token, user_cookie)에서 조립까지 이어지는가."""
+        import json as _json
+        import os as _os
+
+        from slack_cli_agent.slack.credentials import CredentialResolver
+
+        path = tmp_path / "credentials.json"
+        path.write_text(_json.dumps({
+            "bot_token": "xoxb-1", "user_token": "xoxc-1", "user_cookie": "xoxd-2",
+        }))
+        _os.chmod(path, 0o600)
+        resolver = CredentialResolver(default_path=path, configured_path=None, env={})
+        app = Application.from_profile(profile, client=_비공개막힘(), resolver=resolver)
+        owner = app._owner_client
+        assert owner is not None
+        assert owner.token == "xoxc-1"
+        assert owner.headers["Cookie"] == "d=xoxd-2"
+        # 실제 WebClient 대신 가짜로 바꿔 경로만 본다.
+        app._owner_client = _소유자세션()
+        hook = app.pipeline()._linked_threads
+        assert hook is not None
+        assert "비공개 할증 요청" not in hook(Test소유자세션링크읽기조립.LINK, "C099", (), False)
+        assert app._owner_client.calls == []
+        assert "비공개 할증 요청" in hook(Test소유자세션링크읽기조립.LINK, "C099", (), True)

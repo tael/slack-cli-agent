@@ -484,7 +484,9 @@ class TestOwnerSettingsInertCheck:
         result = check.run(PreflightContext(profile=profile))
         assert result.ok is True
 
-    def test_소유자용_모델과_다른_채널_모델은_경고를_낸다(self, tmp_path: Path) -> None:
+    def test_채널_모델은_소유자에게도_적용되므로_경고하지_않는다(self, tmp_path: Path) -> None:
+        """A13 부터 AccessPolicy.model_for 가 소유자에게도 채널 model 을 쓴다.
+        이 값을 무시되는 설정으로 경고하면 반대 의미로 읽힌다."""
         profile = make_profile(
             tmp_path,
             primary_engine={
@@ -494,13 +496,13 @@ class TestOwnerSettingsInertCheck:
                 "model_owner": "opus",
             },
         )
-        write_channels(profile, {"C1": {"name": "잡담방", "model": "haiku"}})
+        write_channels(profile, {
+            "C1": {"name": "잡담방", "model": "haiku"},
+            "C2": {"name": "조언방", "advisor": {"executor": "haiku"}},
+        })
         check = OwnerSettingsInertCheck()
         result = check.run(PreflightContext(profile=profile))
-        assert result.ok is False
-        assert result.fatal is False
-        assert "잡담방" in result.detail
-        assert "haiku" in result.detail
+        assert result.ok is True
 
     def test_effort가_소유자_하한보다_낮으면_경고를_낸다(self, tmp_path: Path) -> None:
         profile = make_profile(tmp_path)
@@ -519,8 +521,9 @@ class TestOwnerSettingsInertCheck:
         assert result.ok is True
 
     def test_codex_엔진에서도_경고를_낸다(self, tmp_path: Path) -> None:
-        """AccessPolicy 는 엔진 종류와 무관하게 소유자의 채널 model 과 낮은
-        effort 를 무시한다. 엔진별 예외를 두면 그 봇만 경고가 사라진다."""
+        """AccessPolicy 는 엔진 종류와 무관하게 소유자의 낮은 effort 를
+        무시한다. 엔진별 예외를 두면 그 봇만 경고가 사라진다. 채널 model 은
+        소유자에게도 적용되므로 경고 대상이 아니다."""
         profile = make_profile(
             tmp_path,
             primary_engine={"type": "codex", "binary": "python3", "model": "m"},
@@ -529,7 +532,7 @@ class TestOwnerSettingsInertCheck:
         check = OwnerSettingsInertCheck()
         result = check.run(PreflightContext(profile=profile))
         assert result.ok is False
-        assert "haiku" in result.detail
+        assert "haiku" not in result.detail
         assert "low" in result.detail
 
 
@@ -706,6 +709,7 @@ class TestPreflightSuite:
             "engine_binary",
             "engine_home_credentials",
             "mcp_server",
+            "mcp_own_dir",
             "engine_settings",
             "prompt_files",
             "channel_settings_readable",
@@ -716,6 +720,21 @@ class TestPreflightSuite:
             "profile_unknown_keys",
             "channel_user_tools",
             "mcp_credentials",
+            "core_import",
+            "source_tree",
+            # B6 — 마메치 check.py 와 짝 맞춘 점검 (tests/unit/test_preflight_parity.py).
+            # plugin_compile 은 apply.sh 의 py_compile 게이트(G43/G51)로, 이름 검사
+            # 앞에 선다.
+            "plugin_compile",
+            "plugin_ast_names",
+            "skill_symlinks",
+            "codex_config_load",
+            "mcp_script_ownership",
+            "full_disk_access",
+            "prompt_tool_consistency",
+            "duplicate_mcp_systems",
+            "script_capability_grade",
+            "slack_api_registration",
         ]
 
     def test_추가_인자가_실제_점검에_반영된다(self, tmp_path: Path) -> None:
@@ -795,6 +814,7 @@ class TestPreflightSuite:
             "[실패] engine_binary : 나쁨\n"
             "[경고] engine_home_credentials : 주의\n"
             "[통과] mcp_server : 좋음\n"
+            "[통과] mcp_own_dir : 좋음\n"
             "[통과] engine_settings : 좋음\n"
             "[통과] prompt_files : 좋음\n"
             "[통과] channel_settings_readable : 좋음\n"
@@ -805,6 +825,18 @@ class TestPreflightSuite:
             "[통과] profile_unknown_keys : 좋음\n"
             "[통과] channel_user_tools : 좋음\n"
             "[통과] mcp_credentials : 좋음\n"
+            "[통과] core_import : 좋음\n"
+            "[통과] source_tree : 좋음\n"
+            "[통과] plugin_compile : 좋음\n"
+            "[통과] plugin_ast_names : 좋음\n"
+            "[통과] skill_symlinks : 좋음\n"
+            "[통과] codex_config_load : 좋음\n"
+            "[통과] mcp_script_ownership : 좋음\n"
+            "[통과] full_disk_access : 좋음\n"
+            "[통과] prompt_tool_consistency : 좋음\n"
+            "[통과] duplicate_mcp_systems : 좋음\n"
+            "[통과] script_capability_grade : 좋음\n"
+            "[통과] slack_api_registration : 좋음\n"
             "기동 불가\n"
         )
 

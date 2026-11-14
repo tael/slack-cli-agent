@@ -20,6 +20,8 @@ from slack_cli_agent.engine.environment import (
     GeminiEnvironmentPolicy,
     create_environment_policy,
     registry,
+    TURN_WRAPUP_SEC,
+    turn_budget_env,
 )
 
 
@@ -235,6 +237,34 @@ class TestClaudeEnvironmentPolicy:
 
         assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
+    def test_carries_advisor_channel_vars_for_the_stop_hook(self):
+        """G16: Stop 훅이 자문 채널을 판정하도록 POST_CHANNEL/ADVISOR_CHANNELS 를
+        허용 목록으로 통과시킨다."""
+        policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        source = {
+            **_rich_source_env(),
+            "POST_CHANNEL": "C002",
+            "ADVISOR_CHANNELS": "C001,C002",
+            "TURN_TIER": "owner_trusted",
+        }
+
+        env = policy.build(source)
+
+        assert env["POST_CHANNEL"] == "C002"
+        assert env["ADVISOR_CHANNELS"] == "C001,C002"
+        assert env["TURN_TIER"] == "owner_trusted"
+
+    def test_carries_code_first_channel_vars_for_the_stop_hook(self):
+        """G13: Stop 훅이 코드 우선 채널을 판정하도록 CODE_FIRST_CHANNELS 를
+        허용 목록으로 통과시킨다."""
+        policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
+        source = {**_rich_source_env(), "POST_CHANNEL": "C002", "CODE_FIRST_CHANNELS": "C002,C003"}
+
+        env = policy.build(source)
+
+        assert env["POST_CHANNEL"] == "C002"
+        assert env["CODE_FIRST_CHANNELS"] == "C002,C003"
+
     def test_carries_bot_profile_name_for_downstream_scripts(self):
         policy = ClaudeEnvironmentPolicy(profile_name="examplebot", home_dir=None)
         env = policy.build(_rich_source_env())
@@ -368,3 +398,93 @@ class TestClaudeAuthNeedsUser:
         policy = ClaudeEnvironmentPolicy(profile_name="봇A")
         env = policy.build({"PATH": "/bin"})
         assert "USER" not in env
+
+
+class TestTurnBudgetEnv:
+    """턴 마감 시각을 자식 엔진 프로세스에 넘기는 환경 변수 생성 (A28).
+
+    Stop 훅(finish_review.time_left)과 Bash PreToolUse 가드(pretool.turn_budget)가
+    TURN_DEADLINE_MONO 를 먼저, 없으면 TURN_DEADLINE 을 절대 에폭으로 읽는다.
+    """
+
+    def test_마감시각은_현재에_제한을_더한_절대값이다(self) -> None:
+        env = turn_budget_env(900.0, now_wall=1000.0, now_monotonic=50.0)
+        assert env["TURN_DEADLINE"] == str(1000.0 + 900.0)
+        assert env["TURN_DEADLINE_MONO"] == str(50.0 + 900.0)
+
+    def test_만드는_이름은_마감_정리여유_Bash상한이다(self) -> None:
+        env = turn_budget_env(60.0, now_wall=0.0, now_monotonic=0.0)
+        assert set(env) == {
+            "TURN_DEADLINE", "TURN_DEADLINE_MONO", "TURN_WRAPUP_SEC", "BASH_MAX_TIMEOUT_MS",
+        }
+
+    def test_Bash_상한은_제한에서_정리여유를_뺀_밀리초다(self) -> None:
+        # 마메치 bot.py turn_budget_env 와 같은 값: max(timeout - 60, 60) * 1000.
+        env = turn_budget_env(900.0, now_wall=0.0, now_monotonic=0.0)
+        assert env["TURN_WRAPUP_SEC"] == str(TURN_WRAPUP_SEC) == "60"
+        assert env["BASH_MAX_TIMEOUT_MS"] == "840000"
+
+    def test_짧은_턴에도_Bash_상한은_60초_아래로_내려가지_않는다(self) -> None:
+        env = turn_budget_env(30.0, now_wall=0.0, now_monotonic=0.0)
+        assert env["BASH_MAX_TIMEOUT_MS"] == "60000"
+
+    def test_정리여유는_PreToolUse_가드_기본값과_같다(self) -> None:
+        from slack_cli_agent.guard.pretool.turn_budget import DEFAULT_WRAPUP_SEC
+        assert TURN_WRAPUP_SEC == DEFAULT_WRAPUP_SEC
+
+    def test_값은_time_left_가_읽을_수_있는_문자열이다(self) -> None:
+        # 훅들이 float(env[...]) 로 되읽으므로 왕복이 가능해야 한다.
+        env = turn_budget_env(123.5, now_wall=10.0, now_monotonic=5.0)
+        assert float(env["TURN_DEADLINE"]) == 133.5
+        assert float(env["TURN_DEADLINE_MONO"]) == 128.5
+
+    def test_claude_allowlist_가_그대로_자식에_넘긴다(self) -> None:
+        """생성한 마감시각이 ClaudeEnvironmentPolicy 허용목록을 통과하는지 —
+        둘이 짝이 맞아야 자식이 실제로 마감을 본다."""
+        budget = turn_budget_env(900.0, now_wall=1000.0, now_monotonic=50.0)
+        policy = ClaudeEnvironmentPolicy(profile_name="봇A")
+        env = policy.build({"PATH": "/bin", **budget})
+        assert env["TURN_DEADLINE"] == budget["TURN_DEADLINE"]
+        assert env["TURN_DEADLINE_MONO"] == budget["TURN_DEADLINE_MONO"]
+        assert env["TURN_WRAPUP_SEC"] == budget["TURN_WRAPUP_SEC"]
+        assert env["BASH_MAX_TIMEOUT_MS"] == budget["BASH_MAX_TIMEOUT_MS"]
+
+
+_NON_INTERACTIVE = {"GIT_TERMINAL_PROMPT": "0", "GH_PROMPT_DISABLED": "1", "CI": "1"}
+
+
+class TestNonInteractiveEnv:
+    """git·gh 가 자격증명이나 확인 질문으로 입력을 기다려 턴이 멈추지 않게 한다 (C11).
+
+    마메치 bot.py turn_budget_env 가 넘기던 세 값을 세 엔진 모두에 고정값으로 준다.
+    부모 환경에 다른 값이 있어도 덮어쓴다.
+    """
+
+    @pytest.mark.parametrize(
+        "policy_cls", [ClaudeEnvironmentPolicy, CodexEnvironmentPolicy, GeminiEnvironmentPolicy],
+    )
+    def test_세_엔진_모두_비대화형_값을_넘긴다(self, policy_cls) -> None:
+        env = policy_cls(profile_name="봇A").build({"PATH": "/bin"})
+        assert {k: env[k] for k in _NON_INTERACTIVE} == _NON_INTERACTIVE
+
+    @pytest.mark.parametrize(
+        "policy_cls", [ClaudeEnvironmentPolicy, CodexEnvironmentPolicy, GeminiEnvironmentPolicy],
+    )
+    def test_부모_환경의_대화형_값을_덮어쓴다(self, policy_cls) -> None:
+        source = {"PATH": "/bin", "GIT_TERMINAL_PROMPT": "1", "GH_PROMPT_DISABLED": "", "CI": "0"}
+        env = policy_cls(profile_name="봇A").build(source)
+        assert {k: env[k] for k in _NON_INTERACTIVE} == _NON_INTERACTIVE
+
+    def test_claude_MCP_도구_상한_기본값은_300초다(self) -> None:
+        env = ClaudeEnvironmentPolicy(profile_name="봇A").build({"PATH": "/bin"})
+        assert env["MCP_TOOL_TIMEOUT"] == "300000"
+
+    def test_claude_MCP_도구_상한은_부모_값이_있으면_그것을_쓴다(self) -> None:
+        env = ClaudeEnvironmentPolicy(profile_name="봇A").build(
+            {"PATH": "/bin", "MCP_TOOL_TIMEOUT": "120000"})
+        assert env["MCP_TOOL_TIMEOUT"] == "120000"
+
+    def test_비대화형_값은_자격증명_제외를_흔들지_않는다(self) -> None:
+        env = ClaudeEnvironmentPolicy(profile_name="봇A").build(_rich_source_env())
+        assert "SLACK_BOT_TOKEN" not in env
+        assert "ANTHROPIC_API_KEY" not in env

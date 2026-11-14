@@ -357,3 +357,57 @@ class TestWAL전환은_예산_안에서_재시도를_안_한다:
             잠근쪽.close()
             시험연결.close()
         assert len(쉰시간) == Database.WAL_ATTEMPTS - 1
+
+
+class Test동시_마이그레이션:
+    """ingress 와 worker 가 함께 기동하면 둘 다 옛 버전을 읽고 마이그레이션을 돈다.
+    늦은 쪽이 앞쪽이 이미 적용한 ALTER 를 다시 돌려 duplicate column 으로 죽었다
+    (2026-11-09 tier 컬럼). 버전마다 잠금 안에서 버전을 다시 읽는다."""
+
+    class _StaleFirstRead:
+        """첫 user_version 조회만 0 을 돌려준다. 다른 프로세스가 그 사이에
+        마이그레이션을 끝낸 상황이다."""
+
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+            self._stale = True
+
+        def execute(self, sql: str, *args: object) -> sqlite3.Cursor:
+            if self._stale and sql.strip() == "PRAGMA user_version":
+                self._stale = False
+                return self._conn.execute("SELECT 0")
+            return self._conn.execute(sql, *args)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._conn, name)
+
+    def test_먼저_읽은_버전이_낡아도_적용된_단계를_건너뛴다(self, tmp_path: Path) -> None:
+        path = tmp_path / "bot.db"
+        Database(path).migrate()
+        late = Database(path)
+        proxy = self._StaleFirstRead(late.connect())
+        late.connect = lambda: proxy  # type: ignore[method-assign,assignment,return-value]
+        assert late.migrate() == SCHEMA_VERSION
+        assert int(Database(path).connect().execute("PRAGMA user_version").fetchone()[0]) == SCHEMA_VERSION
+
+    def test_두_프로세스가_동시에_마이그레이션해도_실패하지_않는다(self, tmp_path: Path) -> None:
+        path = tmp_path / "bot.db"
+        barrier = threading.Barrier(2)
+        errors: list[BaseException] = []
+
+        def run() -> None:
+            db = Database(path)
+            db.connect()
+            barrier.wait()
+            try:
+                db.migrate()
+            except BaseException as exc:  # noqa: BLE001 -- 시험이 실패를 모은다
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == []
+        assert int(Database(path).connect().execute("PRAGMA user_version").fetchone()[0]) == SCHEMA_VERSION

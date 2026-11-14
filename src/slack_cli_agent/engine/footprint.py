@@ -37,12 +37,32 @@ class PayloadFootprint:
     #: The one field sca-ygd is about: true means N resumes cost N times the
     #: instruction size.
     instruction_replayed_on_resume: bool
+    #: 이 호출에 실제로 붙인 MCP 서버 수. None 은 엔진이 세지 않은 것이다.
+    mcp_servers_attached: int | None = None
+    #: 이 호출에 닫아 넘긴 내장 도구 이름 (--tools). None 은 엔진이 도구 집합을
+    #: 닫지 않았거나 세지 않은 것이고, 빈 튜플은 내장 도구를 하나도 열지 않은 것이다.
+    tools_builtin: tuple[str, ...] | None = None
+    #: --allowedTools 에 넘긴 이름. 이름만 담고 값이나 자격증명은 담지 않는다.
+    tools_allowed: tuple[str, ...] | None = None
+    #: --disallowedTools 에 넘긴 이름.
+    tools_disallowed: tuple[str, ...] | None = None
 
     @property
     def total_bytes(self) -> int:
         return self.instruction_bytes + self.user_prompt_bytes + self.adapter_added_bytes
 
     def as_audit_dict(self) -> dict[str, Any]:
+        extra: dict[str, Any] = (
+            {} if self.mcp_servers_attached is None
+            else {"mcp_servers_attached": self.mcp_servers_attached}
+        )
+        for key, names in (
+            ("tools_builtin", self.tools_builtin),
+            ("tools_allowed", self.tools_allowed),
+            ("tools_disallowed", self.tools_disallowed),
+        ):
+            if names is not None:
+                extra[key] = list(names)
         return {
             "instruction_bytes": self.instruction_bytes,
             "user_prompt_bytes": self.user_prompt_bytes,
@@ -50,6 +70,7 @@ class PayloadFootprint:
             "total_bytes": self.total_bytes,
             "instruction_transport": self.instruction_transport,
             "instruction_replayed_on_resume": self.instruction_replayed_on_resume,
+            **extra,
         }
 
 

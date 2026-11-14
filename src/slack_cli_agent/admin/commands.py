@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable
 from typing import Any, ClassVar
 
 from .command import AdminCommand, AdminContext, AdminResult
@@ -115,3 +117,58 @@ class EngineStatusCommand(AdminCommand):
         except (OSError, ValueError):
             return {}
         return data if isinstance(data, dict) else {}
+
+
+class InflightStatusCommand(AdminCommand):
+    """Lists the requests being handled right now (B51).
+
+    Reads the state snapshot the worker writes, not memory: the worker's
+    in-flight registry lives in another process and the socket side can't
+    see it -- the same cross-process path EngineStatusCommand takes for
+    engine_state.json. Elapsed is as of the snapshot write, so the freshness
+    line names how old that read is.
+    """
+
+    name: ClassVar[str] = "inflight"
+    usage: ClassVar[str] = "처리 현황"
+    description: ClassVar[str] = "지금 처리 중인 요청(채널·ts·경과)을 보여준다"
+
+    def __init__(self, now: Callable[[], float] = time.time) -> None:
+        self._now = now
+
+    def matches(self, text: str) -> bool:
+        return text.strip() in ("처리 현황", "처리현황", "진행 중", "진행중")
+
+    def execute(self, ctx: AdminContext) -> AdminResult:
+        snap = self._read_snapshot(ctx)
+        if snap is None:
+            return AdminResult(message="*처리 현황*\n\n상태 파일이 아직 없습니다.")
+        active = snap.get("active") or []
+        if not active:
+            return AdminResult(message="*처리 현황*\n\n지금 처리 중인 요청이 없습니다.")
+        lines = ["*처리 현황*", ""]
+        for ev in active:
+            channel = ev.get("channel") or "?"
+            ts = ev.get("ts") or "?"
+            elapsed = ev.get("elapsed_sec")
+            if isinstance(elapsed, int | float):
+                lines.append(f"- {channel}:{ts} (경과 {round(float(elapsed))}초)")
+            else:
+                lines.append(f"- {channel}:{ts}")
+        written_at = snap.get("written_at")
+        if isinstance(written_at, int | float):
+            age = max(0, round(self._now() - float(written_at)))
+            lines.append("")
+            lines.append(f"({age}초 전 기준)")
+        return AdminResult(message="\n".join(lines))
+
+    @staticmethod
+    def _read_snapshot(ctx: AdminContext) -> dict[str, Any] | None:
+        path = ctx.profile.paths.state_snapshot
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None

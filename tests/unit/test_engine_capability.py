@@ -360,7 +360,10 @@ class Test폴백은_실제로_도는_엔진의_보장을_낸다:
         """대리가 자기 기본값을 돌려주면 폴백 턴의 기록이 전부 거짓이 된다."""
         폴백 = self._폴백(tmp_path)
         assert 폴백.capabilities_for(request()) == ClaudeEngine.capabilities
-        폴백._active = 폴백.secondary
+        # 실행 전에도 묻는다 (pipeline.turn_reach). 직전 턴의 _active 가 아니라
+        # 전환 상태로 이번 턴에 돌 엔진을 고른다 (A12 리뷰).
+        폴백.switcher.begin_switch("weekly limit", engine_name="gemini")
+        폴백.switcher.approve()
         assert 폴백.capabilities_for(request()) == GeminiEngine.capabilities
 
 
@@ -401,6 +404,22 @@ class Test폴백은_요청의_요구를_그대로_넘긴다:
         with pytest.raises(_그만):
             폴백._run_secondary(request(requirements=요구))
         assert 받은[0].requirements == 요구
+
+    def test_이차로_넘길_때_위임_표지를_버리지_않는다(self, tmp_path: Path) -> None:
+        """위임 입력 표식은 input_mark_for 를 쓰는 codex 와 gemini 에서만
+        쓰인다. 그 엔진으로 넘어가는 경로에서 delegated 가 빠지면 도구와 위임
+        안내는 그대로인데 입력은 자료로 읽으라는 표식을 받는다."""
+        폴백, _ = self._폴백(tmp_path)
+        받은: list[Any] = []
+
+        def 받아둔다(engine: Any, req: Any) -> Any:
+            받은.append(req)
+            raise _그만()
+
+        폴백.runner.run = 받아둔다  # type: ignore[assignment,method-assign]
+        with pytest.raises(_그만):
+            폴백._run_secondary(request(delegated=True))
+        assert 받은[0].delegated is True
 
     def test_이차가_요구를_못_맞추면_실행하지_않는다(self, tmp_path: Path) -> None:
         """gemini 의 도구 제한은 NONE 이다. 정확한 허용 목록을 요구한 요청이

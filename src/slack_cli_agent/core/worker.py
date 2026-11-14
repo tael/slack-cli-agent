@@ -10,6 +10,7 @@ running/pending state before a catch-up sweep re-adds something.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -17,14 +18,16 @@ from collections.abc import Callable, Sequence
 from ..admin.admission import AdminAdmission, ClaimUnavailable
 from ..config.settings import RuntimeSettings
 from ..core.context import RequestContext
-from ..core.lifecycle import InflightCounter
+from ..core.lifecycle import InflightCounter, InflightRegistry
 from ..core.ports import HandleOutcome, RequestHandler
 from ..jobs.heartbeat import WorkerHeartbeat
 from ..jobs.ports import Job, JobQueue, ReclaimResult
 from ..reliability.catchup import CatchupReport, RetryStatus
 from ..reliability.ports import CatchupPort
+from ..reliability.restart import APPLY_HOLD_MAX_SEC, APPLY_REQUESTER_GRACE_SEC, ApplyRequest
 from ..reliability.watchjobs import ActiveWatchPort
 from ..slack.reactions import ReactionMarker
+from .slots import ConcurrencySlots, SlotToken, ThreadSlots
 
 _Mark = Callable[[str, str], None]
 
@@ -45,14 +48,23 @@ class Worker:
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         inflight: InflightCounter | None = None,
+        # Records each handling request's identity + start time so the state
+        # snapshot can list what is in flight (B51). None keeps a standalone
+        # Worker working — it just has nothing to list.
+        active: InflightRegistry | None = None,
         # reclaim picks the mark from this: a watched message put back in the
         # queue would otherwise read as waiting while its watch runs (sca-o1e).
         watch_jobs: ActiveWatchPort | None = None,
         # None keeps the old behavior: everything recovered goes to the model.
         # A missing injection must not make a recovered request disappear.
         admin: AdminAdmission | None = None,
+        # Shared with the ingress reviews so the two together stay under
+        # max_concurrent, as bot.py's one `_slots` did (A16). None keeps the
+        # cap inside this process.
+        slots: ConcurrencySlots | None = None,
     ) -> None:
         self._queue = queue
+        self._slots = slots
         self._handler = handler
         self._heartbeat = heartbeat
         self._catchup = catchup
@@ -66,11 +78,105 @@ class Worker:
         # Shutdown checks this; without an injected one, a standalone Worker still
         # needs its own so shutdown knows whether to wait.
         self._inflight = inflight or InflightCounter()
-        self._lock = threading.Lock()
+        self._active = active or InflightRegistry()
+        # Reentrant: the TERM handler runs on the main thread and reads the
+        # running set through restart_requester_discount. The main thread also
+        # takes this lock in its claim loop (holding_claims, _enqueue_new), so
+        # a signal landing inside that section would wait on its own thread's
+        # lock until SIGKILL with a plain Lock.
+        self._lock = threading.RLock()
         self._running: dict[int, Job] = {}
         # Catch-up-representative key -> the requests it absorbed, so the same
         # reaction mark gets applied to them once the representative finishes.
         self._skip_groups: dict[tuple[str, str], list[RequestContext]] = {}
+        # None keeps the old behavior: no apply request is ever seen.
+        self._restart_request: Callable[[], ApplyRequest | None] | None = None
+        # The last request seen. The supervisor removes the marker right after
+        # its kickstart, while this process may still be in its TERM grace.
+        self._seen_request: ApplyRequest | None = None
+        self._requester_grace_sec = APPLY_REQUESTER_GRACE_SEC
+        self._hold_max_sec = APPLY_HOLD_MAX_SEC
+        self._requester_ok: Callable[[RequestContext], bool] | None = None
+        self._hold_since: float | None = None
+        self._hold_abandoned: float | None = None
+        # Wall-clock start per running job: only a turn already running when
+        # the marker was written can be the one that wrote it.
+        self._started_at: dict[int, float] = {}
+
+    def watch_restart_requests(
+        self,
+        pending: Callable[[], ApplyRequest | None],
+        *,
+        requester_grace_sec: float = APPLY_REQUESTER_GRACE_SEC,
+        hold_max_sec: float = APPLY_HOLD_MAX_SEC,
+        requester_ok: Callable[[RequestContext], bool] | None = None,
+    ) -> None:
+        """Polled before every claim. While a request is pending the worker
+        claims nothing new and waits for the supervisor's TERM; it does not
+        exit by itself, or the supervisor's kickstart restarts it a second
+        time (mametchi watchdog.py take_over_sca_apply). `requester_ok` says
+        whose turn may be the requester the marker names."""
+        self._restart_request = pending
+        self._requester_grace_sec = requester_grace_sec
+        self._hold_max_sec = hold_max_sec
+        self._requester_ok = requester_ok
+
+    def _observe_request(self) -> ApplyRequest | None:
+        request = self._restart_request() if self._restart_request is not None else None
+        if request is not None:
+            self._seen_request = request
+        return request
+
+    def holding_claims(self) -> bool:
+        """True while an apply request waits for the supervisor. Released when
+        the marker goes away, or after hold_max_sec if nobody picks it up
+        (no supervisor running): holding forever would stop all replies."""
+        request = self._observe_request()
+        with self._lock:
+            if request is None:
+                self._hold_since = None
+                return False
+            if self._hold_abandoned == request.requested_at:
+                return False
+            now = time.monotonic()
+            if self._hold_since is None:
+                self._hold_since = now
+                log.warning("재기동 요청이 있어 새 작업을 집지 않는다 : %s", request.turn_id)
+            if now - self._hold_since < self._hold_max_sec:
+                return True
+            self._hold_since = None
+            self._hold_abandoned = request.requested_at
+        log.warning("재기동 요청을 %.0f초 동안 아무도 집지 않아 작업을 다시 집는다", self._hold_max_sec)
+        return False
+
+    def _requester_job(self) -> Job | None:
+        """The running job whose turn wrote the apply request, if any. The
+        marker's turn id is only trusted for a job that was already running
+        when it was written and that requester_ok accepts; anything else
+        would let one turn mark another person's request finished."""
+        request = self._observe_request() or self._seen_request
+        key = request.requester() if request is not None else None
+        if request is None or key is None:
+            return None
+        with self._lock:
+            for job in self._running.values():
+                if job.context.key != key:
+                    continue
+                started = self._started_at.get(job.id)
+                if started is None or math.floor(started) > request.requested_at:
+                    return None
+                if self._requester_ok is not None and not self._requester_ok(job.context):
+                    return None
+                return job
+        return None
+
+    def restart_requester_discount(self, waited: float) -> int:
+        """How many in-flight requests shutdown stops waiting for after
+        `waited` seconds: the requesting turn, once its grace is over. Waiting
+        on it longer is the deadlock the marker exists to avoid."""
+        if waited < self._requester_grace_sec:
+            return 0
+        return 1 if self._requester_job() is not None else 0
 
     @property
     def worker_id(self) -> str:
@@ -81,21 +187,41 @@ class Worker:
     def inflight(self) -> InflightCounter:
         return self._inflight
 
+    @property
+    def active(self) -> InflightRegistry:
+        return self._active
+
     def run_once(self) -> bool:
-        job = self._queue.claim_next(self._worker_id)
+        job, buried = self._queue.claim_next_representative(self._worker_id)
         if job is None:
             return False
+        self._bury_behind(job, buried)
         self._process(job)
         return True
+
+    def _bury_behind(self, job: Job, buried: list[RequestContext]) -> None:
+        """Tracks the requests collapsed behind this representative so they get
+        the same reaction mark once it finishes, the same path a catch-up
+        representative's buried messages take (A30)."""
+        if not buried:
+            return
+        with self._lock:
+            self._skip_groups.setdefault(job.context.key, []).extend(buried)
 
     def _process(self, job: Job) -> None:
         context = job.context
         with self._lock:
             self._running[job.id] = job
+            self._started_at[job.id] = time.time()
         # The wait is over, so the queued mark gives way to the processing one.
         # Leaving it on would put both marks on every request at once.
         self._markers.clear_waiting(context.channel, context.ts)
         self._markers.mark_processing(context.channel, context.ts)
+        # The eyes mark is the first reaction a request gets; stamp it so the
+        # handler can record the 접수→첫반응 latency (B38). Keep an already-set
+        # stamp from an earlier run so requeue/recovery doesn't push it later.
+        if context.first_reaction_at is None:
+            context = context.with_first_reaction(self._now())
 
         stop_event = threading.Event()
         beat = threading.Thread(
@@ -106,7 +232,9 @@ class Worker:
             # Only the actual handling counts as in-flight — claiming and
             # recording completion are quick, and it's the handling that shutdown
             # needs to wait for.
-            with self._inflight.work():
+            with self._inflight.work(), self._active.track(
+                context.channel, context.ts, self._now()
+            ):
                 outcome = self._safe_handle(context)
         finally:
             stop_event.set()
@@ -114,6 +242,7 @@ class Worker:
 
         with self._lock:
             still_running = self._running.pop(job.id, None) is not None
+            self._started_at.pop(job.id, None)
         if not still_running:
             # shutdown() already requeued this job; don't finish it a second time.
             return
@@ -130,40 +259,61 @@ class Worker:
         # are free to run at once -- what serialized them was this process handling
         # one at a time (sca-si6). max_concurrent is that cap, same as the original
         # bot.py's semaphore.
-        slots = max(1, int(self._settings.max_concurrent))
-        if slots == 1:
+        size = max(1, int(self._settings.max_concurrent))
+        if size == 1 and self._slots is None:
             while not should_stop():
-                if not self.run_once():
+                if self.holding_claims() or not self.run_once():
                     self._sleep(self._settings.queue_idle_sleep_sec)
             return
 
-        free = threading.Semaphore(slots)
-        running: list[threading.Thread] = []
+        free = self._slots if self._slots is not None else ThreadSlots(size)
+        running: list[tuple[threading.Thread, Job]] = []
         while not should_stop():
             # One should_stop call per turn, same as the single-slot loop: the
-            # caller's flag is also what the tests step through.
-            free.acquire()
-            job = self._queue.claim_next(self._worker_id)
-            if job is None:
-                free.release()
+            # caller's flag is also what the tests step through. The wait is
+            # bounded so a pool held by reviews still lets shutdown through.
+            if self.holding_claims():
                 self._sleep(self._settings.queue_idle_sleep_sec)
                 continue
+            token = free.acquire(timeout=self._settings.queue_idle_sleep_sec)
+            if token is None:
+                continue
+            # A request can arrive while every slot was busy; the slot that
+            # just freed must not take new work past it.
+            if self.holding_claims():
+                free.release(token)
+                self._sleep(self._settings.queue_idle_sleep_sec)
+                continue
+            job, buried = self._queue.claim_next_representative(self._worker_id)
+            if job is None:
+                free.release(token)
+                self._sleep(self._settings.queue_idle_sleep_sec)
+                continue
+            self._bury_behind(job, buried)
             thread = threading.Thread(
-                target=self._process_and_release, args=(job, free), daemon=True
+                target=self._process_and_release, args=(job, free, token), daemon=True
             )
             thread.start()
-            running.append(thread)
-            running = [t for t in running if t.is_alive()]
+            running.append((thread, job))
+            running = [(t, j) for t, j in running if t.is_alive()]
         # A job left mid-handling would keep its processing mark and be finished
-        # by nobody, so the loop does not return before its threads are done.
-        for thread in running:
-            thread.join()
+        # by nobody, so the loop does not return before its threads are done --
+        # except the turn that asked for a restart, which gets its grace only
+        # and is then left to shutdown() to keep out of the queue.
+        requester = self._requester_job()
+        for thread, job in running:
+            if requester is not None and job.id == requester.id:
+                thread.join(self._requester_grace_sec)
+            else:
+                thread.join()
 
-    def _process_and_release(self, job: Job, free: threading.Semaphore) -> None:
+    def _process_and_release(
+        self, job: Job, free: ConcurrencySlots, token: SlotToken
+    ) -> None:
         try:
             self._process(job)
         finally:
-            free.release()
+            free.release(token)
 
     def _safe_handle(self, context: RequestContext) -> HandleOutcome:
         # RequestHandler is contracted not to raise, but if it does anyway, only this
@@ -344,10 +494,22 @@ class Worker:
         return CatchupReport(missed=accepted, skipped=report.skipped, unchecked_channels=report.unchecked_channels)
 
     def shutdown(self) -> None:
+        # Looked up before _running is cleared: it reads the running set.
+        requester = self._requester_job()
         with self._lock:
             running = list(self._running.values())
             self._running.clear()
+            self._started_at.clear()
         for job in running:
+            if requester is not None and job.id == requester.id:
+                # Requeued, the same turn would run again on the new process
+                # and write the marker again (restart loop). Its reply is
+                # already out; it only waited on the restart (mametchi bot.py
+                # drop_restart_dropped).
+                if self._queue.complete(job.id, True, "", lease=job.lease):
+                    self._markers.clear_processing(job.context.channel, job.context.ts)
+                    self._markers.mark_done(job.context.channel, job.context.ts)
+                continue
             if not self._queue.requeue(job.id, lease=job.lease):
                 continue
             self._markers.clear_processing(job.context.channel, job.context.ts)

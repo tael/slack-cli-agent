@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 from slack_cli_agent.admin.command import AdminCommand, AdminContext, AdminResult
-from slack_cli_agent.admin.commands import ChannelListCommand, EngineStatusCommand, HelpCommand
+from slack_cli_agent.admin.commands import (
+    ChannelListCommand,
+    EngineStatusCommand,
+    HelpCommand,
+    InflightStatusCommand,
+)
 from slack_cli_agent.admin.defaults import default_admin_commands
 from slack_cli_agent.admin.router import AdminRouter
 from slack_cli_agent.auth.principal import Principal, TrustLevel
@@ -204,6 +209,58 @@ class TestEngineStatusCommand:
         assert "codex" in result.message
         assert "승인됨" in result.message
         assert "한도 소진" in result.message
+
+
+# InflightStatusCommand
+
+
+class TestInflightStatusCommand:
+    def _write_snapshot(self, ctx: AdminContext, data: dict) -> None:
+        ctx.profile.paths.root.mkdir(parents=True, exist_ok=True)
+        ctx.profile.paths.state_snapshot.write_text(
+            json.dumps(data), encoding="utf-8"
+        )
+
+    def test_상태_파일이_없으면_없다고_알린다(self, tmp_path: Path) -> None:
+        ctx = make_context(tmp_path)
+        result = InflightStatusCommand().execute(ctx)
+        assert "상태 파일이 아직 없습니다" in result.message
+
+    def test_처리중인_요청이_없으면_없다고_알린다(self, tmp_path: Path) -> None:
+        ctx = make_context(tmp_path)
+        self._write_snapshot(ctx, {"written_at": 100.0, "active": []})
+        result = InflightStatusCommand(now=lambda: 100.0).execute(ctx)
+        assert "처리 중인 요청이 없습니다" in result.message
+
+    def test_처리중인_요청을_채널_ts_경과와_함께_보여준다(self, tmp_path: Path) -> None:
+        ctx = make_context(tmp_path)
+        self._write_snapshot(
+            ctx,
+            {
+                "written_at": 100.0,
+                "active": [{"channel": "C9", "ts": "7.7", "elapsed_sec": 42.0}],
+            },
+        )
+        result = InflightStatusCommand(now=lambda: 103.0).execute(ctx)
+        assert "C9:7.7" in result.message
+        assert "경과 42초" in result.message
+        # 스냅샷이 3초 전에 적혔으니 기준 신선도를 함께 알린다.
+        assert "3초 전 기준" in result.message
+
+    def test_손상된_상태_파일은_없는_것으로_본다(self, tmp_path: Path) -> None:
+        ctx = make_context(tmp_path)
+        ctx.profile.paths.root.mkdir(parents=True, exist_ok=True)
+        ctx.profile.paths.state_snapshot.write_text("{깨진", encoding="utf-8")
+        result = InflightStatusCommand().execute(ctx)
+        assert "상태 파일이 아직 없습니다" in result.message
+
+    def test_도움말에_처리_현황이_실린다(self) -> None:
+        router = AdminRouter(default_admin_commands(NoticeCatalog()))
+        assert "처리 현황" in router.help_text()
+
+    def test_처리_현황_명령이_기본_목록에_등록돼_있다(self) -> None:
+        commands = default_admin_commands(NoticeCatalog())
+        assert any(isinstance(c, InflightStatusCommand) for c in commands)
 
 
 class Test채널목록은이름을보여준다:

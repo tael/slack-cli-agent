@@ -19,6 +19,21 @@ from slack_cli_agent.reliability.watchresult import (
 )
 
 
+def _끝날_때까지_읽는다(리더: WatchResultReader, run_id: str = "r1") -> WatchOutcome:
+    """`nohup ... &` 는 띄운 셸이 끝난 뒤에야 자식이 리다이렉션으로 결과 파일을
+    만들 수 있다. 그 틈에 읽으면 NOT_LAUNCHED 가 나오므로 RUNNING 과 함께
+    아직 안 끝난 상태로 보고 계속 기다린다."""
+    import time
+
+    결과 = 리더.read(run_id)
+    for _ in range(400):
+        if 결과 not in (WatchOutcome.RUNNING, WatchOutcome.NOT_LAUNCHED):
+            return 결과
+        time.sleep(0.05)
+        결과 = 리더.read(run_id)
+    return 결과
+
+
 @pytest.fixture
 def 결과자리(tmp_path):
     return tmp_path / ".watch-out"
@@ -341,19 +356,18 @@ class Test안내문대로_띄우면_실패가_실패로_남는다:
 
     def _돌린다(self, tmp_path: Path, 스크립트: str) -> WatchOutcome:
         import subprocess
-        import time
 
         자리 = tmp_path / ".watch-out"
         자리.mkdir()
         (자리 / "r1.sh").write_text(스크립트, encoding="utf-8")
         subprocess.run(self._실행줄("r1", 자리), shell=True, cwd=tmp_path, check=True)
-        리더 = WatchResultReader(자리)
-        for _ in range(400):
-            결과 = 리더.read("r1")
-            if 결과 is not WatchOutcome.RUNNING:
-                return 결과
-            time.sleep(0.05)
-        raise AssertionError(f"표식이 안 남았다 : {(자리 / 'r1.out').read_text()!r}")
+        결과 = _끝날_때까지_읽는다(WatchResultReader(자리))
+        if 결과 in (WatchOutcome.RUNNING, WatchOutcome.NOT_LAUNCHED):
+            출력 = 자리 / "r1.out"
+            raise AssertionError(
+                f"표식이 안 남았다 : {출력.read_text() if 출력.exists() else '결과 파일 없음'!r}"
+            )
+        return 결과
 
     def test_파이프_앞이_실패하면_실패로_남는다(self, tmp_path: Path) -> None:
         결과 = self._돌린다(tmp_path, "python3 -c 'import sys; sys.exit(3)' | tail -1\n")
@@ -453,14 +467,7 @@ class Test경로에_공백이_있어도_같은_자리에_남는다:
         raise AssertionError("안내문에 실행 줄이 없다")
 
     def _기다린다(self, 리더: WatchResultReader) -> WatchOutcome:
-        import time
-
-        for _ in range(400):
-            결과 = 리더.read("r1")
-            if 결과 is not WatchOutcome.RUNNING:
-                return 결과
-            time.sleep(0.05)
-        raise AssertionError("표식이 안 남았다")
+        return _끝날_때까지_읽는다(리더)
 
     def test_안내문대로_띄우면_결과가_제자리에_남는다(self, tmp_path: Path) -> None:
         import subprocess
@@ -496,18 +503,11 @@ class Test생성기와_안내문이_같은_실행_형태를_쓴다:
 
     def test_파이프_앞_실패가_생성기_명령에서도_실패로_남는다(self, tmp_path: Path) -> None:
         import subprocess
-        import time
 
         자리 = tmp_path / "watch-out"
         명령 = background_command("python3 -c 'import sys; sys.exit(3)' | tail -1", "r1", str(자리))
         subprocess.run(명령, shell=True, cwd=tmp_path, check=True)
-        리더 = WatchResultReader(자리)
-        for _ in range(400):
-            결과 = 리더.read("r1")
-            if 결과 is not WatchOutcome.RUNNING:
-                break
-            time.sleep(0.05)
-        assert 결과 is WatchOutcome.FAILED
+        assert _끝날_때까지_읽는다(WatchResultReader(자리)) is WatchOutcome.FAILED
 
 
 class Test숨김_파일은_낯선_것으로_세지_않는다:

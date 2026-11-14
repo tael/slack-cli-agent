@@ -12,7 +12,8 @@ same whether a person ran the command or a service refused to start.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from pathlib import Path
 from typing import TextIO
 
 from ..config.profile import Profile
@@ -20,15 +21,28 @@ from .check import CheckResult, PreflightCheck, PreflightContext
 from .checks import (
     ChannelSettingsReadableCheck,
     ChannelUserToolsCheck,
+    CodexConfigLoadCheck,
+    CompileCheck,
+    CoreImportCheck,
+    DuplicateMcpSystemCheck,
     EngineBinaryCheck,
     EngineHomeCredentialCheck,
     EngineSettingsCheck,
+    FullDiskAccessCheck,
     McpCredentialCheck,
+    McpScriptOwnershipCheck,
+    McpOwnDirCheck,
     McpServerCheck,
     OwnerSettingsInertCheck,
+    PluginAstCheck,
     ProfilePermissionCheck,
     ProfileUnknownKeysCheck,
     PromptFileCheck,
+    PromptToolConsistencyCheck,
+    ScriptCapabilityGradeCheck,
+    SkillSymlinkCheck,
+    SlackApiRegistrationCheck,
+    SourceTreeCheck,
     ToolAllowlistEnforcementCheck,
     UsageCheckCommandCheck,
     WorkdirCheck,
@@ -49,6 +63,18 @@ class PreflightSuite:
         extra_workdirs: Sequence[str] | None = None,
         *,
         checks: Sequence[PreflightCheck] | None = None,
+        # 아래 네 항목은 조직 지식(어떤 낱말이 어떤 도구를 약속하는지, 어떤
+        # 서버 이름이 같은 시스템을 가리키는지, 등급 체계와 그 대상 자리)
+        # 없이는 아무것도 보지 않는 점검들의 주입점이다. B6 는 공통 골격만
+        # 신는다 — 값을 채우는 것은 그 값을 아는 쪽(조직 설정, 플러그인)의
+        # 몫이다.
+        prompt_tool_promises: Mapping[str, Sequence[str]] | None = None,
+        prompt_tool_base_tools: Sequence[str] = (),
+        duplicate_mcp_groups: Mapping[str, Sequence[str]] | None = None,
+        capability_scripts_dir: Path | None = None,
+        capability_registry_file: Path | None = None,
+        slack_api_source_files: Sequence[Path] = (),
+        slack_api_registry_file: Path | None = None,
     ) -> None:
         # Injection point for tests that aren't about the gate: they swap the
         # check list and keep the real verdict and formatting. Without it a
@@ -62,6 +88,7 @@ class PreflightSuite:
             EngineBinaryCheck(),
             EngineHomeCredentialCheck(),
             McpServerCheck(),
+            McpOwnDirCheck(),
             # fatal 은 EngineSettingsCheck 가 결과마다 정한다 - 부재는 경고, 깨짐은 기동 정지.
             EngineSettingsCheck(),
             PromptFileCheck(required_names=list(required_prompts or ())),
@@ -80,6 +107,39 @@ class PreflightSuite:
             ChannelUserToolsCheck(),
             # 표기가 안 풀리면 MCP 서버는 빈 자격으로 인증 실패만 낸다. 기동에서 막는다.
             McpCredentialCheck(),
+            # 기동 명령은 게이트 통과 뒤에야 core.application 을 import 한다. 여기서
+            # 먼저 시도하지 않으면 깨진 코어가 기동 가능으로 통과하고 종료코드 1 로
+            # 죽어 launchd 재기동이 반복된다.
+            CoreImportCheck(),
+            # fatal=False: 운영 트리가 origin/main 에서 벗어난 것을 기동 시점에 보이는
+            # 것이 목적이다. 원격 조회 실패도 경고로만 남긴다.
+            SourceTreeCheck(),
+            # 아래부터 B6 — 마메치 check.py 와 짝 맞춘 9종.
+            # CompileCheck 는 PluginAstCheck 앞 — apply.sh 가 py_compile 를 먼저
+            # 돌리고 그 다음 check.py(이름 검사)를 돌린 순서 그대로다. 깨진 구문은
+            # ast.parse 가 SyntaxError 로 터지고 PluginAstCheck 는 그것을 건너뛰므로,
+            # 컴파일 점검이 먼저 서야 기동 전에 걸린다.
+            CompileCheck(),
+            PluginAstCheck(),
+            SkillSymlinkCheck(),
+            CodexConfigLoadCheck(),
+            McpScriptOwnershipCheck(),
+            # fatal=False: 전체 디스크 접근은 권한 창 하나를 줄이는 사전 조치일
+            # 뿐이다. 없다고 기동을 막을 이유가 아니다.
+            FullDiskAccessCheck(),
+            # 아래 네 점검은 조직 지식이 없으면 아무것도 보지 않는다(생성자 기본값).
+            PromptToolConsistencyCheck(
+                promises=prompt_tool_promises, base_tools=prompt_tool_base_tools
+            ),
+            DuplicateMcpSystemCheck(groups=duplicate_mcp_groups),
+            ScriptCapabilityGradeCheck(
+                scripts_dir=capability_scripts_dir,
+                capabilities_file=capability_registry_file,
+            ),
+            SlackApiRegistrationCheck(
+                source_files=slack_api_source_files,
+                registry_file=slack_api_registry_file,
+            ),
         )
 
     @property

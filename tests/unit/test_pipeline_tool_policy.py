@@ -101,3 +101,121 @@ def test_Application_이_채널별_사용자_도구를_정책에_연결한다(tm
     )
 
     assert app.tool_policy().tool_list_for(general) == ("Read", "Bash(ops_ctl.sh:*)")
+
+
+def test_위임_판정에_요청_메시지_ts_가_넘어가고_엔진_요청에_실린다() -> None:
+    """A7. 원장은 메시지 ts 로 찾는다. 파이프라인이 ts 를 넘기지 않으면 위임은
+    한 번도 성립하지 않고, 판정 결과가 엔진 요청에 안 실리면 입력 표식이 갈리지 않는다."""
+    from test_pipeline import FakeAccessPolicy
+
+    from slack_cli_agent.auth.principal import Principal, TrustLevel
+
+    seen: list[str] = []
+
+    class Delegating(FakeAccessPolicy):
+        def principal_for(self, channel: str, user: str, message_ts: str = "") -> Principal:
+            seen.append(message_ts)
+            return Principal(user_id=user, channel=channel, trust=TrustLevel.GENERAL,
+                             is_direct_message=False, is_controller=True, delegated=True)
+
+    policy = ToolPolicy(
+        base_tools=("Read",), owner_tools=("Write", "mcp__jira__*"),
+        operator_level=lambda p, is_bot=False: "operator" if p.delegated else "",
+        operator_tools=("Write", "mcp__jira__create_issue"),
+    )
+    pipeline, parts = build_pipeline(responses=[ok_response()], tool_policy=policy)
+    pipeline._access = Delegating()
+
+    pipeline.handle(make_ctx(user="U_CTRL", ts="1700000009.000900"))
+
+    call = parts["runner"].calls[0]
+    assert "1700000009.000900" in seen
+    assert call.delegated is True
+    assert call.trust_level is TrustLevel.GENERAL
+    # Write 는 operator_full 채널에서만 열린다
+    # 위임 턴은 소유자 도구를 받는다 (2026-11-08 김태일 지시)
+    assert call.tools.names == ("Read", "Write", "mcp__jira__*")
+
+
+def test_위임_턴은_봇_화자이자_operator_로_지침을_조립한다() -> None:
+    """마메치는 operator=bool(delegated) 다 (bot.py 7855). controller 는 봇
+    계정이므로 bots_info 판정이 실패해도 봇 화자로 본다."""
+    from test_pipeline import FakeAccessPolicy
+
+    from slack_cli_agent.auth.principal import Principal, TrustLevel
+
+    class Delegating(FakeAccessPolicy):
+        def principal_for(self, channel: str, user: str, message_ts: str = "") -> Principal:
+            return Principal(user_id=user, channel=channel, trust=TrustLevel.GENERAL,
+                             is_direct_message=False, is_controller=True, delegated=True)
+
+    pipeline, parts = build_pipeline(responses=[ok_response()])
+    pipeline._access = Delegating()
+    pipeline._asker_is_bot = lambda user: False
+
+    pipeline.handle(make_ctx(user="U_CTRL", ts="1700000009.000900"))
+
+    composed = parts["composer"].contexts[0]
+    assert composed.asker_is_bot is True
+    assert composed.operator is True
+
+
+def _controller_access(delegated: bool = False):
+    from test_pipeline import FakeAccessPolicy
+
+    from slack_cli_agent.auth.principal import Principal, TrustLevel
+
+    class Controller(FakeAccessPolicy):
+        def principal_for(self, channel: str, user: str, message_ts: str = "") -> Principal:
+            return Principal(user_id=user, channel=channel, trust=TrustLevel.GENERAL,
+                             is_direct_message=False, is_controller=True, delegated=delegated)
+
+    return Controller()
+
+
+def test_컨트롤러_봇은_위임_없이도_일반_사용자와_같은_도구를_받는다() -> None:
+    """2026-11-10 김태일 지시 : 구치파치가 마메치·데이전트를 어디서든 일반 사용자와
+    같게 부를 수 있어야 한다. 원장 없는 컨트롤러 멘션도 사람과 같은 도구와 operator 판정."""
+    policy = ToolPolicy(
+        base_tools=("Read",),
+        readonly_tools=("Bash(~/wrap/git_read.sh:*)",),
+        operator_level=lambda p, is_bot=False: "" if is_bot else "operator",
+        operator_tools=("mcp__jira__create_issue",),
+    )
+    pipeline, parts = build_pipeline(
+        responses=[ok_response()],
+        channels={"C1": ChannelConfig(channel_id="C1", name="테스트", operators=frozenset({"*"}))},
+        tool_policy=policy,
+    )
+    pipeline._access = _controller_access()
+    pipeline._asker_is_bot = lambda user: True
+
+    pipeline.handle(make_ctx(user="U_CTRL", from_bot=True))
+
+    names = parts["runner"].calls[0].tools.names
+    assert "Bash(~/wrap/git_read.sh:*)" in names
+    assert "mcp__jira__create_issue" in names
+    composed = parts["composer"].contexts[0]
+    assert composed.asker_is_bot is True  # 봇 화자 지침은 유지
+    assert composed.operator is True
+
+
+def test_컨트롤러가_아닌_봇은_여전히_봇_등급이다() -> None:
+    policy = ToolPolicy(
+        base_tools=("Read",),
+        readonly_tools=("Bash(~/wrap/git_read.sh:*)",),
+        operator_level=lambda p, is_bot=False: "" if is_bot else "operator",
+        operator_tools=("mcp__jira__create_issue",),
+    )
+    pipeline, parts = build_pipeline(
+        responses=[ok_response()],
+        channels={"C1": ChannelConfig(channel_id="C1", name="테스트", operators=frozenset({"*"}))},
+        tool_policy=policy,
+    )
+    pipeline._asker_is_bot = lambda user: True
+
+    pipeline.handle(make_ctx(user="U_OTHERBOT", from_bot=True))
+
+    names = parts["runner"].calls[0].tools.names
+    assert not [n for n in names if n.startswith("Bash")]
+    assert "mcp__jira__create_issue" not in names

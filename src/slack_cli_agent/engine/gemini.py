@@ -47,7 +47,6 @@ from typing import Any, ClassVar
 from ..config.profile import McpServerSpec
 from .base import (
     TRUNCATED_RAW_KEY,
-    UNTRUSTED_INPUT_MARK,
     ElapsedSource,
     Engine,
     EngineRequest,
@@ -55,6 +54,8 @@ from .base import (
     FailureDetail,
     Usage,
     UsageLimit,
+    acts_for_owner,
+    input_mark_for,
     json_object_line,
 )
 from .capability import (
@@ -86,7 +87,13 @@ _USAGE_KEY_MAP: Mapping[str, str] = {
 }
 
 
-def _agy_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, Any]:
+def _agy_mcp_servers(
+    mcp_servers: Mapping[str, McpServerSpec],
+    *,
+    can_act: bool = False,
+    is_owner: bool = False,
+    turn_context: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     servers: dict[str, Any] = {}
     for name, server in mcp_servers.items():
         # The file is shared by every turn in the work directory, so a server
@@ -102,8 +109,17 @@ def _agy_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> dict[str, Any]
             entry = {"command": server.command}
             if server.args:
                 entry["args"] = list(server.args)
-            if server.env:
-                entry["env"] = server.resolved_env()
+            # turn_env merges onto the static env, dropped on a read-only turn
+            # so the spawned server reads no write clearance (H6/H7/H8); the
+            # channel var is dropped when no channel token is in context.
+            env = server.resolved_env()
+            env.update(
+                server.turn_env_for(
+                    can_act=can_act, is_owner=is_owner, turn_context=turn_context
+                )
+            )
+            if env:
+                entry["env"] = env
             if server.cwd:
                 entry["cwd"] = str(server.cwd)
         if server.disabled:
@@ -150,6 +166,15 @@ TRUNCATION_NOTICE = "\n\n(제한 시간에 걸려 답이 여기서 끊겼습니�
 class GeminiEngine(Engine):
     name = "gemini"
     shell_always_attached = True
+    #: agy carries instructions in the prompt on every turn, so a resumed
+    #: turn's blocks are in the conversation as much as the first one's (C15).
+    dedups_resumed_instructions = True
+    records_resumed_instructions = True
+    #: Unmeasured: whether agy compacts a long conversation is not known, and
+    #: its usage reads 0, so there is no signal to watch. Sending everything
+    #: again every few resumes bounds how long a reference can point at text
+    #: that compaction dropped.
+    instruction_refresh_after = 3
 
     #: agy rejects xhigh/max with `invalid --effort` (docs/agy-실측.md 3).
     #: Engine.resolve_effort brings the caller's value down into this set.
@@ -167,7 +192,13 @@ class GeminiEngine(Engine):
     def prepare(self, request: EngineRequest) -> None:
         self._ensure_settings_file(self.spec.home_dir)
         self._ensure_keychain_link(self.spec.home_dir)
-        self._ensure_mcp_config_file(request.workdir, self.profile.mcp_servers)
+        self._ensure_mcp_config_file(
+            request.workdir,
+            self.profile.mcp_servers,
+            can_act=request.tools.can_act,
+            is_owner=acts_for_owner(request),
+            turn_context=request.turn_context,
+        )
 
     def footprint_for(self, request: EngineRequest) -> PayloadFootprint:
         """agy takes one prompt argument, so instructions always ride in it.
@@ -175,7 +206,7 @@ class GeminiEngine(Engine):
         base = super().footprint_for(request)
         return dataclasses.replace(
             base,
-            adapter_added_bytes=base.adapter_added_bytes + utf8_bytes(UNTRUSTED_INPUT_MARK),
+            adapter_added_bytes=base.adapter_added_bytes + utf8_bytes(input_mark_for(request)),
             instruction_transport=INSTRUCTION_TRANSPORT_USER_PROMPT,
             instruction_replayed_on_resume=request.resume,
         )
@@ -215,12 +246,12 @@ class GeminiEngine(Engine):
         cmd += ["--print-timeout", f"{timeout_sec}s"]
 
         prompt = (
-            request.system_prompt
+            self.instructions_for(request)
             + self.readable_paths_note(request.readable_dirs)
             + self.write_paths_note(request)
             + self.tool_ban_note(request)
             + self.tool_allow_note(request)
-            + UNTRUSTED_INPUT_MARK
+            + input_mark_for(request)
             + request.prompt
         )
         cmd += ["-p", prompt]
@@ -418,8 +449,17 @@ class GeminiEngine(Engine):
         _write_if_changed(settings_path, existing)
 
     @staticmethod
-    def _ensure_mcp_config_file(workdir: Path, mcp_servers: Mapping[str, McpServerSpec]) -> None:
-        servers = _agy_mcp_servers(mcp_servers)
+    def _ensure_mcp_config_file(
+        workdir: Path,
+        mcp_servers: Mapping[str, McpServerSpec],
+        *,
+        can_act: bool = False,
+        is_owner: bool = False,
+        turn_context: Mapping[str, str] | None = None,
+    ) -> None:
+        servers = _agy_mcp_servers(
+            mcp_servers, can_act=can_act, is_owner=is_owner, turn_context=turn_context
+        )
         if not servers:
             # An installed bot with no configured servers must not create
             # this file at all — see docs/패키징-경계.md.

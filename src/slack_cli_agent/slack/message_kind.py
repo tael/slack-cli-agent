@@ -16,8 +16,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-# Messages with an attached file still count as new human input despite having a subtype.
-HUMAN_SUBTYPES = frozenset({"file_share"})
+#: Subtypes that still count as new human input despite carrying one.
+#: `file_share` is a message with an attached file; `thread_broadcast` is a
+#: thread reply also sent to the channel -- the same person talking, not a
+#: new kind of event. Matches mametchi bot.py `HUMAN_SUBTYPES`. This is the
+#: only definition; `guard.mentions` imports it (A15).
+HUMAN_SUBTYPES = frozenset({"file_share", "thread_broadcast"})
 
 
 class MessageKind:

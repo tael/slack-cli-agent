@@ -9,19 +9,24 @@ the real class (sca-ve2).
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from ..auth.principal import Principal
 from ..config.channel import ChannelConfig
 from ..slack.transcript import CurrentMessage
 
+if TYPE_CHECKING:
+    from ..slack.publisher import PostReceipt
+
 
 class AccessPolicyPort(Protocol):
-    def principal_for(self, channel: str, user: str) -> Principal: ...
+    def principal_for(self, channel: str, user: str, message_ts: str = "") -> Principal: ...
 
     def model_for(self, principal: Principal) -> str: ...
 
     def effort_for(self, principal: Principal, prompt: str) -> str: ...
+
+    def is_full_authority(self, principal: Principal) -> bool: ...
 
 
 class TranscriptPort(Protocol):
@@ -40,7 +45,13 @@ class TranscriptPort(Protocol):
 class PublisherPort(Protocol):
     def apply_elapsed_model_line(self, body: str, model: str, rich: bool) -> str: ...
 
-    def post(self, channel: str, thread_ts: str, text: str, rich: bool) -> str | None: ...
+    def post(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> str | None: ...
+
+    def post_receipt(
+        self, channel: str, thread_ts: str, text: str, rich: bool, *, flat: bool = False
+    ) -> PostReceipt | None: ...
 
 
 class AuditPort(Protocol):

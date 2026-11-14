@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 import json
 import signal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from preflight_support import 통과하는_suite
@@ -314,6 +316,7 @@ class FakeApplication:
         worker: object | None = None,
         channel_ids: list[str] | None = None,
     ) -> None:
+        self.identity = SimpleNamespace(known=True)
         self._gateway = gateway if gateway is not None else FakeGateway()
         self._ingress = ingress if ingress is not None else FakeIngress()
         self._worker = worker
@@ -763,6 +766,28 @@ class TestWorkerCommand:
         )
         assert worker.catch_up_calls == [["C1", "C2"]]
 
+    def test_상시_실행은_캐치업을_기다리지_않고_바로_집는다(self, tmp_path: Path) -> None:
+        """기동 캐치업은 worker_services 의 startup_catchup 실행기가 맡는다.
+        여기서 동기로 한 번 더 쓸면 첫 집기가 53-96초 늦었다(2026-11-13)."""
+        profiles = tmp_path / "profiles"
+        write_profile(profiles, tmp_path / "state")
+        worker = FakeWorker(stop_after_run_once=1)
+        app = FakeApplication(worker=worker, channel_ids=["C1", "C2"])
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
+        cli.run(
+            ["worker", "--profile", "example", "--profile-dir", str(profiles)],
+            stdout=io.StringIO(),
+        )
+        assert worker.catch_up_calls == []
+        assert worker.calls[:2] == ["reclaim", "run_forever"]
+
     def test_no_catch_up_을_주면_안_캐치업한다(self, tmp_path: Path) -> None:
         """캐치업은 슬랙 기록 조회를 동반한다. 끌 수단은 남긴다."""
         profiles = tmp_path / "profiles"
@@ -831,6 +856,90 @@ class TestWorkerCommand:
         )
         assert worker.shutdown_calls == 1
         assert app.close_calls == 1
+
+
+class TestWorkerCommandPid기록:
+    """기동한 워커 프로세스의 PID 를 상태 디렉터리에 남긴다 (F54)."""
+
+    def test_실행중_worker_pid파일에_현재_pid가_있고_종료후_지워진다(
+        self, tmp_path: Path
+    ) -> None:
+        import os
+
+        profiles = tmp_path / "profiles"
+        state_dir = tmp_path / "state"
+        write_profile(profiles, state_dir)
+
+        seen: dict[str, str] = {}
+
+        class 기록워커(FakeWorker):
+            def run_once(self) -> bool:
+                pid_path = state_dir / "worker.pid"
+                if pid_path.exists():
+                    seen["content"] = pid_path.read_text().strip()
+                return super().run_once()
+
+        worker = 기록워커(stop_after_run_once=1)
+        app = FakeApplication(worker=worker)
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
+        code = cli.run(
+            ["worker", "--profile", "example", "--profile-dir", str(profiles), "--once"],
+            stdout=io.StringIO(),
+        )
+        assert code == 0
+        # 실행 중에는 현재 프로세스 pid 가 파일에 있었고,
+        assert seen.get("content") == str(os.getpid())
+        # 정상 종료 뒤에는 지워져 죽은 상태 디렉터리와 구분된다.
+        assert not (state_dir / "worker.pid").exists()
+
+    def test_worker_id별로_다른_파일에_쓴다(self, tmp_path: Path) -> None:
+        import os
+
+        profiles = tmp_path / "profiles"
+        state_dir = tmp_path / "state"
+        write_profile(profiles, state_dir)
+
+        seen: dict[str, bool] = {}
+
+        class 기록워커(FakeWorker):
+            def run_once(self) -> bool:
+                seen["worker2"] = (state_dir / "worker2.pid").read_text().strip() == str(
+                    os.getpid()
+                )
+                return super().run_once()
+
+        worker = 기록워커(stop_after_run_once=1)
+        app = FakeApplication(worker=worker)
+        cli = SlackCliAgent(
+            [
+                WorkerCommand(
+                    preflight_suite_factory=통과하는_suite,
+                    application_factory=lambda profile, _resolver: app,
+                )
+            ]
+        )
+        code = cli.run(
+            [
+                "worker",
+                "--profile",
+                "example",
+                "--profile-dir",
+                str(profiles),
+                "--once",
+                "--worker-id",
+                "worker2",
+            ],
+            stdout=io.StringIO(),
+        )
+        assert code == 0
+        assert seen.get("worker2") is True
 
 
 class TestWorkerCommand종료신호:
@@ -1377,13 +1486,32 @@ class Test웹서버계약:
     시험 전부가 통과한 채로 서버가 기동 직후 예외로 끝났다.
     """
 
+    @staticmethod
+    def _빠진_멤버(target: object) -> list[str]:
+        """ServerLike 멤버 중 target 에 없는 이름.
+
+        isinstance 를 쓰지 않는다. 3.11 의 runtime_checkable 은 hasattr 로
+        속성을 읽어, 기동 전에 예외를 내는 port 속성을 없는 것으로 본다.
+        getattr_static 은 속성을 실행하지 않으므로 판과 무관하게 같다.
+        """
+        members = [n for n in vars(ServerLike) if not n.startswith("_")]
+        assert members, "ServerLike 멤버를 읽지 못했다"
+        missing = []
+        for name in members:
+            try:
+                inspect.getattr_static(target, name)
+            except AttributeError:
+                missing.append(name)
+        return missing
+
     def test_실물_서버가_명령이_부르는_계약을_만족한다(self, tmp_path: Path) -> None:
         from slack_cli_agent.web.server import WebServer
 
         server = WebServer(port=0, router=None)  # type: ignore[arg-type]  # 계약만 본다
-        assert isinstance(server, ServerLike)
+        assert self._빠진_멤버(server) == []
 
     def test_대역도_같은_계약을_만족한다(self) -> None:
+        assert self._빠진_멤버(FakeWebServer()) == []
         assert isinstance(FakeWebServer(), ServerLike)
 
 

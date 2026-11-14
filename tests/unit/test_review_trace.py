@@ -92,7 +92,7 @@ class _FakeTranscript:
 
 
 class _FakeAnswerFinder:
-    def find(self, channel: str, thread_ts: str, text: str):
+    def find(self, channel: str, thread_ts: str, text: str, msg_ts: str | None = None):
         return None
 
 
@@ -123,7 +123,7 @@ class _FakeEngine:
         self.calls: list = []
 
     def run(self, prompt: str, session_id: str | None, resume: bool, progress_log=None,
-            request_id: str = ""):
+            request_id: str = "", requester: Any = None):
         from slack_cli_agent.engine.base import EngineResponse
 
         self.calls.append(prompt)

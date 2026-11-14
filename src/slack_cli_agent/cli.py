@@ -29,6 +29,7 @@ from .core.errors import AgentError, ConfigError
 from .core.lifecycle import GracefulShutdown, SignalRegister
 from .core.secrets import contains_secret, redact
 from .preflight.suite import PreflightSuite
+from .reliability.pidfile import PidFile
 from .slack.credentials import (
     APP_TOKEN_ENV,
     BOT_TOKEN_ENV,
@@ -441,18 +442,25 @@ class IngressCommand(PreflightGatedServiceCommand):
         resolver = self.resolver(profile)
         token = resolver.app_token(args.app_token)
         app = self._factory(profile, resolver)
-        try:
-            gateway = app.gateway()
-            app.ingress().register(gateway)
-            # Must be enabled before start: the socket connection only exists in
-            # this process, so a drop would otherwise go unnoticed.
-            app.connection_watch()
-            # Periodic runners start as a bundle, so adding a new one can't be
-            # forgotten at a call site that starts them one by one.
-            with app.ingress_services(app.self_restarter()):
-                gateway.start(token)
-        finally:
-            app.close()
+        # Records this process's PID so an operator (and the watchdog) can tell
+        # a live socket process from a dead state directory, and from the worker.
+        with PidFile(profile.paths.pid_file("ingress")):
+            try:
+                gateway = app.gateway()
+                if not app.identity.known:
+                    logging.getLogger(__name__).warning(
+                        "봇 신원을 기동 때 확정하지 못했다. 첫 이벤트에서 다시 조회한다"
+                    )
+                app.ingress().register(gateway)
+                # Must be enabled before start: the socket connection only exists in
+                # this process, so a drop would otherwise go unnoticed.
+                app.connection_watch()
+                # Periodic runners start as a bundle, so adding a new one can't be
+                # forgotten at a call site that starts them one by one.
+                with app.ingress_services(app.self_restarter()):
+                    gateway.start(token)
+            finally:
+                app.close()
         return 0
 
 
@@ -478,7 +486,7 @@ class WorkerCommand(PreflightGatedServiceCommand):
             "--no-catch-up",
             dest="catch_up",
             action="store_false",
-            help="시작 시 캐치업을 건너뛴다. 기본은 캐치업한다",
+            help="--once 실행에서 처리 전 캐치업을 건너뛴다. 상시 실행의 기동 캐치업은 주기 실행기가 맡는다",
         )
         parser.set_defaults(catch_up=True)
 
@@ -497,18 +505,26 @@ class WorkerCommand(PreflightGatedServiceCommand):
             # Recorded so a state-file reader can tell a shutting-down process
             # from a dead one.
             on_shutdown_start=lambda inflight: app.mark_shutting_down(),
+            # The turn that asked for this restart is waited on for its grace
+            # only, or the restart and that turn wait on each other.
+            discount=getattr(worker, "restart_requester_discount", None),
         )
         shutdown.register()
+        # One file per worker id, so two workers (or a worker and the ingress)
+        # don't overwrite each other's record.
         try:
             # Periodic runners (state updates, watch checks, finished-job
             # cleanup) start as a bundle, since adding one by hand here has
             # been forgotten before.
-            with app.worker_services(worker):
+            with PidFile(profile.paths.pid_file(args.worker_id)), app.worker_services(worker):
                 worker.reclaim()
-                # Catch-up defaults to on: a mention that arrives during a
-                # restart doesn't replay as a socket event, so skipping this
-                # silently drops it.
-                if args.catch_up:
+                # A mention that arrives during a restart doesn't replay as a
+                # socket event, so the startup_catchup runner in
+                # worker_services sweeps on its first tick, right as the
+                # services start. Sweeping here as well held the first claim
+                # back 53-96s after every start (2026-11-13). --once has no
+                # loop for the runner to feed, so it still sweeps first.
+                if args.once and args.catch_up:
                     worker.catch_up(app.channel_ids())
                 try:
                     if args.once:
@@ -703,6 +719,212 @@ class WebCommand(CliCommand):
         return 0
 
 
+def _kickstart(label: str) -> bool:
+    import subprocess
+
+    # A hung kickstart (worker drain, stuck launchd) or a missing launchctl is
+    # a failed kickstart: the supervisor then judges by PID and reports it.
+    try:
+        done = subprocess.run(
+            ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=420,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logging.getLogger(__name__).warning("launchctl kickstart 실행 실패 : %s (%s)", label, exc)
+        return False
+    return done.returncode == 0
+
+
+def _run_rollback(argv: list[str]) -> bool:
+    import subprocess
+
+    # A hung or missing rollback command is a failed rollback, so the supervisor
+    # still reports while nothing is serving.
+    try:
+        done = subprocess.run(argv, stdin=subprocess.DEVNULL, timeout=600, check=False)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logging.getLogger(__name__).warning("rollback 명령 실행 실패 : %s (%s)", argv, exc)
+        return False
+    return done.returncode == 0
+
+
+def _run_check(argv: list[str]) -> tuple[bool, str]:
+    import subprocess
+
+    # The pre-restart check (H3, mametchi apply.sh's py_compile and regression
+    # run). A hung or missing command fails the check, and the bot keeps
+    # running the code it already loaded.
+    try:
+        done = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=600, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return False, f"점검 명령 실행 실패 : {exc}"
+    return done.returncode == 0, (done.stdout or "") + (done.stderr or "")
+
+
+def _pid_alive(pid: str) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except (ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _owner_dm_sender(profile: Profile) -> Callable[[str], object]:
+    """Posts with the bot token from outside the bot process."""
+
+    def send(text: str) -> None:
+        from slack_sdk import WebClient  # lazy import, like the application
+
+        client = WebClient(token=resolver_for(profile).bot_token())
+        channel = profile.owner_dm
+        if not channel:
+            opened = client.conversations_open(users=profile.owner_user_id)
+            channel = str((opened.get("channel") or {}).get("id") or "")
+        if not channel:
+            raise AgentError("소유자 DM 방을 찾지 못했다")
+        client.chat_postMessage(channel=channel, text=text)
+
+    return send
+
+
+def _admin_sender(profile: Profile) -> Callable[[str], object]:
+    """Posts the restart report to the admin channel (troubleshoot_channel),
+    falling back to the owner DM when it is unset or the post fails.
+    2026-11-13 김태일 지시 : 재기동 결과 보고는 admin 채널로 보낸다."""
+    owner = _owner_dm_sender(profile)
+
+    def send(text: str) -> None:
+        channel = profile.troubleshoot_channel
+        if channel:
+            try:
+                from slack_sdk import WebClient  # lazy import, like the application
+
+                WebClient(token=resolver_for(profile).bot_token()).chat_postMessage(
+                    channel=channel, text=text
+                )
+                return
+            except Exception:  # fall back to the owner DM so the report is not lost
+                logging.getLogger(__name__).exception(
+                    "admin 채널 재기동 보고 실패, 소유자 DM 으로 보낸다"
+                )
+        owner(text)
+
+    return send
+
+
+def _default_supervisor(profile: Profile, args: argparse.Namespace) -> Any:
+    import shlex
+    import time
+
+    from .config.settings import RuntimeSettings
+    from .reliability.supervisor import (
+        ApplySupervisor,
+        Service,
+        active_reviews,
+        install_root,
+        running_jobs,
+    )
+
+    paths = profile.paths
+    settings = RuntimeSettings().override(profile.settings_override)
+    request, running = paths.apply_requests
+    rollback = None
+    if args.rollback_command:
+        argv = shlex.split(args.rollback_command)
+
+        def rollback() -> bool:
+            return _run_rollback(argv)
+
+    check = None
+    if args.check_command:
+        check_argv = shlex.split(args.check_command)
+
+        def check() -> tuple[bool, str]:
+            return _run_check(check_argv)
+
+    return ApplySupervisor(
+        request_path=request,
+        running_path=running,
+        services=[
+            Service(f"{profile.launch_label}.{role}", paths.pid_file(role))
+            for role in ("worker", "ingress")
+        ],
+        kickstart=_kickstart,
+        alive=_pid_alive,
+        notify=_admin_sender(profile),
+        busy=lambda: active_reviews(paths.database, now=time.time()),
+        rollback=rollback,
+        check=check,
+        install_dir=install_root(Path(__file__).resolve().parent),
+        auto_apply=settings.supervisor_auto_apply,
+        inflight=lambda: running_jobs(
+            paths.database, now=time.time(), stale_sec=settings.heartbeat_stale_sec
+        ),
+        idle_max_wait_sec=settings.restart_idle_max_wait_sec,
+    )
+
+
+class SuperviseCommand(ProfileAwareCommand):
+    """Carries out apply requests from outside any turn's sandbox (H2).
+
+    Runs as its own launchd job (tools/register-launchd.sh <name> supervisor),
+    not inside the worker: a kickstart from a turn's descendant is refused by
+    the sandbox, and the worker can't restart itself while it drains.
+    """
+
+    name: ClassVar[str] = "supervise"
+    help: ClassVar[str] = "재기동 요청 표식을 집어 봇을 재기동하고 결과를 소유자 DM 으로 알린다"
+
+    def __init__(
+        self,
+        supervisor_factory: Callable[[Profile, argparse.Namespace], Any] | None = None,
+        signal_register: SignalRegister = signal.signal,
+    ) -> None:
+        self._factory = supervisor_factory or _default_supervisor
+        self._signal_register = signal_register
+
+    def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--once", action="store_true", help="한 번만 확인하고 끝난다")
+        parser.add_argument("--interval", type=float, default=5.0, help="확인 간격(초)")
+        parser.add_argument(
+            "--rollback-command",
+            default=None,
+            help="재기동 뒤 아무 프로세스도 안 돌 때 실행할 되돌리기 명령. 없으면 되돌리지 않는다",
+        )
+        parser.add_argument(
+            "--check-command",
+            default=None,
+            help="재기동 전에 실행할 점검 명령(예 pytest). 실패하면 재기동하지 않고 DM 으로 알린다",
+        )
+
+    def execute_with_profile(
+        self, profile: Profile, args: argparse.Namespace, stdout: TextIO
+    ) -> int:
+        supervisor = self._factory(profile, args)
+        if args.once:
+            outcome = supervisor.tick()
+            print(f"결과 : {outcome or '할 일 없음'}", file=stdout)
+            return 0
+        stopping = {"flag": False}
+
+        def stop(signum: int, frame: object) -> None:
+            stopping["flag"] = True
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            self._signal_register(sig, stop)
+        supervisor.run_forever(lambda: stopping["flag"], args.interval)
+        return 0
+
+
 DEFAULT_COMMANDS: tuple[CliCommand, ...] = (
     InitCommand(),
     PreflightCommand(),
@@ -713,6 +935,7 @@ DEFAULT_COMMANDS: tuple[CliCommand, ...] = (
     LearnCommand(),
     RewriteCommand(),
     WebCommand(),
+    SuperviseCommand(),
 )
 
 

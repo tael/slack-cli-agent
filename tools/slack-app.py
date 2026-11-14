@@ -15,6 +15,7 @@ access 토큰은 12시간이면 만료되므로 매 호출 전에 자동으로 �
     tools/slack-app.py register <ws> <app_id> <봇이름> <매니페스트파일>
     tools/slack-app.py audit   [<ws>]
     tools/slack-app.py discover <ws> <봇이름> <매니페스트파일>
+    tools/slack-app.py restore-name <ws> <app_id>
 
 diff 는 저장소 정본(slack-apps/<이름>.json)과 슬랙에 실제로 올라간 설정을
 대조한다. 정본을 고치고 반영을 빠뜨리면 시험은 전부 통과하는데 봇은 옛
@@ -34,6 +35,15 @@ discover 는 app ID 를 모르는 봇을 위한 것이다. 그 봇의 상태 디
 브라우저가 필요한 것은 두 가지뿐이다 - 워크스페이스 설치 승인과 앱 수준
 토큰(xapp) 발급. 아이콘은 apps.icon.set 으로 올라간다(512px 에서 2000px
 정사각). 나머지는 전부 이 스크립트로 된다.
+
+icon 과 update 는 끝에 봇 사용자 이름을 되살린다. 슬랙은 앱 설정이 바뀌면
+봇 사용자 레코드의 real_name 을 bot_user.display_name(영문)으로 덮고
+display_name 을 비운다. 한글 이름은 users.profile.set 으로만 넣을 수 있고
+(봇 토큰은 not_allowed_token_type) manifest 에 한글을 쓰면 bad_username 이다.
+2026-11-10 15:47:55 구치파치 apps.icon.set 직후 15:47:59 에 실명이
+guchipachi 로 바뀌어 멘션 자동완성이 영문으로 돌아갔다. 되살릴 이름은
+display_information.name 이고, 사용자 토큰은 ~/.mcp.json 의 slack 항목
+(xoxc+xoxd)에서 읽는다. restore-name 은 그 단계만 따로 돌린다.
 """
 
 from __future__ import annotations
@@ -170,6 +180,65 @@ def _app_id_of(name: str) -> str:
     return str((info.get("bot") or {}).get("app_id", ""))
 
 
+def bot_user_of(members: list[dict], app_id: str) -> dict | None:
+    """users.list 결과에서 그 앱의 봇 사용자를 고른다."""
+    for member in members:
+        profile = member.get("profile") or {}
+        if member.get("is_bot") and not member.get("deleted") and profile.get("api_app_id") == app_id:
+            return member
+    return None
+
+
+def needs_name_restore(member: dict, name: str) -> bool:
+    profile = member.get("profile") or {}
+    return bool(name) and (profile.get("real_name") != name or profile.get("display_name") != name)
+
+
+def _user_session() -> tuple[str, str]:
+    env = json.loads((Path.home() / ".mcp.json").read_text())["mcpServers"]["slack"]["env"]
+    return env["SLACK_MCP_XOXC_TOKEN"], env["SLACK_MCP_XOXD_TOKEN"]
+
+
+def _user_call(method: str, data: dict[str, str], session: tuple[str, str]) -> dict:
+    xoxc, xoxd = session
+    cookie = xoxd if xoxd.startswith("d=") else f"d={xoxd}"
+    req = urllib.request.Request(API + method, data=urllib.parse.urlencode(data).encode())
+    req.add_header("Content-type", "application/x-www-form-urlencoded")
+    req.add_header("Authorization", f"Bearer {xoxc}")
+    req.add_header("Cookie", cookie)
+    with urllib.request.urlopen(req, timeout=30) as res:
+        return json.loads(res.read().decode())
+
+
+def restore_bot_name(app_id: str, token: str) -> str:
+    """앱 설정 변경 뒤 봇 사용자 실명, 표시 이름을 앱 이름(한글)으로 되돌린다."""
+    exported = _post("apps.manifest.export", {"app_id": app_id}, token)
+    if not exported.get("ok"):
+        return f"이름 복구 실패: manifest 조회 {exported.get('error')}"
+    name = str((exported["manifest"].get("display_information") or {}).get("name", ""))
+    if not name or name.isascii():
+        return "이름 복구 대상 아님: 앱 이름이 영문"
+    session = _user_session()
+    cursor, member = "", None
+    while member is None:
+        page = _user_call("users.list", {"limit": "500", "cursor": cursor}, session)
+        if not page.get("ok"):
+            return f"이름 복구 실패: users.list {page.get('error')}"
+        member = bot_user_of(page.get("members", []), app_id)
+        cursor = (page.get("response_metadata") or {}).get("next_cursor", "")
+        if not cursor:
+            break
+    if member is None:
+        return f"이름 복구 실패: {app_id} 의 봇 사용자를 찾지 못함"
+    if not needs_name_restore(member, name):
+        return f"봇 이름 {name} 그대로임"
+    profile = json.dumps({"real_name": name, "display_name": name}, ensure_ascii=False)
+    out = _user_call("users.profile.set", {"user": member["id"], "profile": profile}, session)
+    if not out.get("ok"):
+        return f"이름 복구 실패: users.profile.set {out.get('error')}"
+    return f"봇 이름을 {name} 로 되살림 ({member['id']})"
+
+
 def main(argv: list[str]) -> None:
     if len(argv) >= 2 and argv[1] == "audit":
         _audit(argv[2] if len(argv) > 2 else "")
@@ -222,6 +291,10 @@ def main(argv: list[str]) -> None:
         if not out.get("ok"):
             _fail(out)
         print("아이콘을 올렸다")
+        print(restore_bot_name(argv[3], token))
+        return
+    if cmd == "restore-name":
+        print(restore_bot_name(argv[3], token))
         return
     if cmd == "diff":
         out = _post("apps.manifest.export", {"app_id": argv[3]}, token)
@@ -239,6 +312,7 @@ def main(argv: list[str]) -> None:
         if not out.get("ok"):
             _fail(out)
         print("갱신했다")
+        print(restore_bot_name(argv[3], token))
         # 반영 확인을 여기서 한다. "갱신했다" 는 요청이 받아들여졌다는 뜻일
         # 뿐이고, 슬랙이 일부 키를 버려도 ok 로 돌아온다.
         차이 = ManifestDiff().differences(

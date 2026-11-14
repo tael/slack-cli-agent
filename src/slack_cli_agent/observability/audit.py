@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Mapping
 from enum import StrEnum
@@ -34,12 +35,21 @@ class IncidentKind(StrEnum):
     #: One engine call made by a review task. Baseline traffic like REQUEST;
     #: its elapsed value is what timeout decisions are read from.
     REVIEW = "review"
+    #: A review posted although its content check still failed after the one
+    #: rewrite (B8, mametchi audit kind postmortem_five_why). `problems`
+    #: lists what the check found; the report header carries the same list.
+    REVIEW_CHECK_FAILED = "review_check_failed"
     #: One round of the watch queue touching one job. Baseline traffic:
     #: checks/last_run only hold current state, so without this there is no
     #: record that a watch ever ran (sca-j3d).
     WATCH_CHECKED = "watch_checked"
     #: A watch that reported and left the queue. Baseline traffic.
     WATCH_FINISHED = "watch_finished"
+    #: The spend of an engine call whose outcome has no row of its own: the
+    #: watch's tool-less "already reported" and "superseded" verdicts. Carries
+    #: `purpose`, the engine, and the usage fields so the per-model rollup
+    #: counts it (A14). Baseline traffic.
+    ENGINE_SPEND = "engine_spend"
     #: A watch dropped on the age limit without its work ever finishing.
     WATCH_ABANDONED = "watch_abandoned"
     #: A tool name the progress label table has no entry for, so the step
@@ -52,10 +62,143 @@ class IncidentKind(StrEnum):
     SPLIT_BROKEN = "split_broken"
     BLOCKS_REJECTED = "blocks_rejected"
     POST_FAILED = "post_failed"
+    #: A ```csv block was extracted for upload but files_upload_v2 failed
+    #: (J14, bot.py:6316 snippet_failed). The raw csv is re-posted inline so
+    #: the data isn't lost; this records that the file attachment didn't land.
+    CSV_UPLOAD_FAILED = "csv_upload_failed"
+    #: A Slack file permalink was removed from an outgoing body (D4,
+    #: bot.py:6494 file_permalink_stripped). Slack re-attaches any linked
+    #: file to the message, so the link would post the same file card twice.
+    FILE_PERMALINK_STRIPPED = "file_permalink_stripped"
     LATE_ADDENDUM = "late_addendum"
     WRONG_ADDRESSEE = "wrong_addressee"
     REWRITE_LOSS = "rewrite_loss"
+    #: A reply the figurative guard rewrote before posting (B9).
+    FIGURATIVE_FIX = "figurative_fix"
+    #: A rich chat.update came back stored as rich_text only, while the body
+    #: carried a heading/table/divider that Slack renders as its own block
+    #: (J7, mametchi post_rich.py verify + separate_blocks). A 200 from
+    #: chat.update doesn't prove the markdown took; this records that it didn't.
+    REWRITE_UNCONVERTED = "rewrite_unconverted"
     SILENT = "silent"
+    #: A reply arrived without a `[[RECIPIENT:...]]` tag while recipient
+    #: enforcement was on (J11/D3, bot.py:8097 missing_recipient). The body is
+    #: held while the tag alone is re-asked; the snippet field holds its head
+    #: for troubleshooting.
+    MISSING_RECIPIENT = "missing_recipient"
+    #: How the tool-less re-ask for a missing tag went (B1, bot.py:8106
+    #: missing_recipient_retry): `recovered` False means the turn ended
+    #: silent with neither the body nor a notice posted.
+    MISSING_RECIPIENT_RETRY = "missing_recipient_retry"
+    #: An undeclared `[[...]]` marker line dropped before publish
+    #: (strip_unknown_tags, bot.py:1561's UNKNOWN_TAG_LINE_RE). Logged
+    #: rather than silently eaten so an invented marker surfaces.
+    UNKNOWN_TAG = "unknown_tag"
+    #: A declared marker line (`[[NOWATCH]]`, `[[WATCH_DONE]]`, a mid-body
+    #: `[[RECIPIENT:...]]` ...) still in the body at publish time, so its own
+    #: handler missed it; dropped and logged (B4, bot.py:6521 control_tag_leak).
+    CONTROL_TAG_LEAK = "control_tag_leak"
+    #: Nothing but markers was left once they were dropped, so nothing was
+    #: posted (B4, bot.py:6526 empty_after_tags).
+    EMPTY_AFTER_TAGS = "empty_after_tags"
+    #: One published reply's watch disposition, as a `verdict` field:
+    #: "watch" (a follow-up watch was registered), "nowatch" (the model
+    #: ended with `[[NOWATCH]]` to say none was needed), or "missing"
+    #: (neither — it left the call ambiguous). Lets the NOWATCH 판정률 be
+    #: aggregated (J9, mametchi bot.py NOWATCH 감사). Baseline traffic.
+    WATCH_VERDICT = "watch_verdict"
+    #: The question message was gone from its thread at publish time, so the
+    #: reply was withheld rather than dropped onto whatever thread now holds
+    #: those coordinates (C34, bot.py:8170 origin_deleted). `snippet` holds
+    #: the withheld body's head for troubleshooting.
+    ORIGIN_DELETED = "origin_deleted"
+    #: An owner turn posted a reply addressed to a bot, and its message ts
+    #: went into the delegation ledger (A8, mametchi delegation_recorded).
+    #: `to` is the bot, `posted` the message ts written.
+    DELEGATION_RECORDED = "delegation_recorded"
+    #: The engine had already posted a file in the thread through a tool, so
+    #: the final answer was written over that message instead of posted as a
+    #: second reply (2026-11-06 duplicate replies). `target_ts` is the file
+    #: message that now holds the answer.
+    TOOL_POST_MERGED = "tool_post_merged"
+    #: Rewriting the tool's file message failed; the answer was posted as a
+    #: separate reply instead, so it still reaches the thread.
+    TOOL_POST_MERGE_FAILED = "tool_post_merge_failed"
+    #: Someone other than the owner mentioned or invited the bot in an
+    #: unregistered channel. `user` is who, `notified` whether the owner was
+    #: called this time or the cooldown held it (bot.py:7431). Baseline traffic.
+    UNREGISTERED_MENTION = "unregistered_mention"
+    UNREGISTERED_INVITE = "unregistered_invite"
+    #: Credential-shaped strings were masked out of a reply before it was
+    #: posted (A17). `count` says how many; the value itself is never kept.
+    SECRET_REDACTED = "secret_redacted"
+    #: The turn rendered a Mermaid PNG without posting it, so it was rerun
+    #: once in the same session to post (D1, mametchi render_without_post).
+    #: `recovered` says whether that rerun posted successfully; `rerun` is
+    #: False on a fallback-engine turn, which cannot resume the session.
+    RENDER_WITHOUT_POST = "render_without_post"
+    #: A codex turn made pictures and called no posting tool, so the code
+    #: uploaded them to the thread (D2, mametchi generated_image_autopost).
+    #: `files` names them; the _FAILED kind carries `error` instead.
+    GENERATED_IMAGE_AUTOPOST = "generated_image_autopost"
+    GENERATED_IMAGE_AUTOPOST_FAILED = "generated_image_autopost_failed"
+    #: A registered `"join": true` channel the bot joined at start (G3,
+    #: mametchi channel_join). Routine, so baseline; the _FAILED kind carries
+    #: `error` and counts as an incident.
+    CHANNEL_JOIN = "channel_join"
+    CHANNEL_JOIN_FAILED = "channel_join_failed"
+
+    #: A non-owner DM answered by the isolated read-only turn (E1, mametchi
+    #: dm_redirect). `question` and `reply` hold both texts, `dm_kind` the
+    #: model's class, `fallback` whether the fixed notice went out instead.
+    DM_REPLY = "dm_reply"
+    #: A DM past the person's daily cap: recorded, not answered (E2).
+    DM_REPLY_CAPPED = "dm_reply_capped"
+    #: The reply could not be posted to the DM (E1, mametchi dm_redirect_failed).
+    DM_REPLY_FAILED = "dm_reply_failed"
+    #: A DM the word rule took for probing the bot's setup (E4). `count_today`
+    #: is that person's count for the day.
+    DM_PROBE = "dm_probe"
+    #: One daily DM report run (E8): `day`, `rows`, `ok`.
+    DM_REPORT = "dm_report"
+    #: A colleague's DM that went unanswered because `dm_reply` is off.
+    #: `user` and `question` are kept so the daily report can show the
+    #: attempt (2026-11-11 김태일 지시 "DM 시도시 기록해두고 일일 리포트").
+    DM_ATTEMPT = "dm_attempt"
+
+    #: Plain-text `@name` mentions turned into real ones (mametchi
+    #: plain_mention). `names` lists who.
+    PLAIN_MENTION = "plain_mention"
+    #: A reply promised a follow-up without a `[[WATCH:]]` tag and was sent
+    #: back for one rewrite (mametchi promise_without_watch).
+    PROMISE_WITHOUT_WATCH = "promise_without_watch"
+    #: The rewrite still promised, or never came back: the promise was cut
+    #: and the fixed line appended (mametchi promise_without_watch_retry_failed).
+    PROMISE_WITHOUT_WATCH_RETRY_FAILED = "promise_without_watch_retry_failed"
+    #: The posted reply waits on the asker's decision (mametchi
+    #: awaiting_reply). `by` is "tag" or "pattern". Baseline.
+    AWAITING_REPLY = "awaiting_reply"
+    #: A thread's bot-to-bot exchange went past its cap (mametchi peer_turn_limit).
+    PEER_TURN_LIMIT = "peer_turn_limit"
+    #: An unaddressed message in a joined thread left to the peer bot a human
+    #: was talking to (mametchi peer_skipped). Baseline.
+    PEER_SKIPPED = "peer_skipped"
+    #: An unaddressed message in a joined thread the gate judged not worth an
+    #: answer (mametchi gate_skipped). Baseline.
+    GATE_SKIPPED = "gate_skipped"
+    #: Notion `p/` links rewritten before posting (mametchi notion_link_fixed).
+    NOTION_LINK_FIXED = "notion_link_fixed"
+    #: A review posted without its summary/detail split marker even after the
+    #: retry, so it went up whole (mametchi postmortem_format,
+    #: debug_trace_format, format_review_format). `review_kind` says which.
+    REVIEW_FORMAT = "review_format"
+    #: A welcome posted to a new member (mametchi welcome_posted). Baseline;
+    #: the _FAILED kind carries `reason`.
+    WELCOME_POSTED = "welcome_posted"
+    WELCOME_FAILED = "welcome_failed"
+    #: Shadow evaluation rows (G4, mametchi shadow_answered/shadow_judged). Baseline.
+    SHADOW_ANSWERED = "shadow_answered"
+    SHADOW_JUDGED = "shadow_judged"
 
     def __str__(self) -> str:
         return self.value
@@ -64,9 +207,12 @@ class IncidentKind(StrEnum):
 REQUEST_KIND = IncidentKind.REQUEST.value
 PAYLOAD_KIND = IncidentKind.PAYLOAD.value
 REVIEW_KIND = IncidentKind.REVIEW.value
+REVIEW_CHECK_FAILED_KIND = IncidentKind.REVIEW_CHECK_FAILED.value
+REVIEW_FORMAT_KIND = IncidentKind.REVIEW_FORMAT.value
 WATCH_CHECKED_KIND = IncidentKind.WATCH_CHECKED.value
 WATCH_FINISHED_KIND = IncidentKind.WATCH_FINISHED.value
 WATCH_ABANDONED_KIND = IncidentKind.WATCH_ABANDONED.value
+ENGINE_SPEND_KIND = IncidentKind.ENGINE_SPEND.value
 
 # Kinds that count as an "incident" for the reliability/quality rollups —
 # REQUEST is excluded since it's the baseline traffic, not an incident.
@@ -77,6 +223,29 @@ BASELINE_KINDS: tuple[IncidentKind, ...] = (
     IncidentKind.REVIEW,
     IncidentKind.WATCH_CHECKED,
     IncidentKind.WATCH_FINISHED,
+    IncidentKind.ENGINE_SPEND,
+    # One row per published reply carrying its watch disposition, not a fault
+    # — counting it among incidents would swamp the real ones. metrics.py
+    # reads these out separately for the NOWATCH 판정률 (J9).
+    IncidentKind.WATCH_VERDICT,
+    # A refused attempt the bot answered by calling the owner, not a fault.
+    IncidentKind.UNREGISTERED_MENTION,
+    IncidentKind.UNREGISTERED_INVITE,
+    IncidentKind.CHANNEL_JOIN,
+    # DM traffic is read by its own rollup (metrics.py _dm); a probe or a cap
+    # is the person's doing, not a fault of the bot.
+    IncidentKind.DM_REPLY,
+    IncidentKind.DM_REPLY_CAPPED,
+    IncidentKind.DM_PROBE,
+    IncidentKind.DM_REPORT,
+    IncidentKind.DM_ATTEMPT,
+    # Routine traffic the mametchi kinds map onto (G7), not faults.
+    IncidentKind.AWAITING_REPLY,
+    IncidentKind.PEER_SKIPPED,
+    IncidentKind.GATE_SKIPPED,
+    IncidentKind.WELCOME_POSTED,
+    IncidentKind.SHADOW_ANSWERED,
+    IncidentKind.SHADOW_JUDGED,
 )
 #: Read by metrics.py as well -- a kind that is baseline here must not be
 #: tallied as an incident there.
@@ -160,6 +329,28 @@ class AuditLog(SqliteRepository):
             turns=turns,
             **extra,
         )
+
+    def rows_between(self, start: float, end: float, prefix: str) -> list[dict[str, Any]]:
+        """Rows whose kind starts with `prefix` in [start, end), oldest
+        first, payload fields merged in (E8 reads a day's dm_ rows)."""
+        rows = self._fetch_all(
+            "SELECT at, kind, channel, payload FROM audit"
+            " WHERE at >= ? AND at < ? AND kind LIKE ? ORDER BY id",
+            (start, end, prefix.replace("%", "") + "%"),
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            # LIKE reads "_" as any one character; the prefix is literal.
+            if not str(row["kind"]).startswith(prefix):
+                continue
+            try:
+                payload = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            record = dict(payload) if isinstance(payload, dict) else {}
+            record.update(kind=row["kind"], channel=row["channel"], at=row["at"])
+            out.append(record)
+        return out
 
     def _append_jsonl(self, line: Mapping[str, Any]) -> None:
         self._jsonl_path.parent.mkdir(parents=True, exist_ok=True)

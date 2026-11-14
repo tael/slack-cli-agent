@@ -8,15 +8,16 @@ later channels.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from ..auth.execution_policy import ExecutionPolicy
 from ..engine.base import CallOrigin, EngineRequest
 from ..engine.runner import EngineInvoker
 from ..engine.tool_selection import ToolSelection
+from ..observability.model_cost import record_engine_spend
 from ..session.manager import AUTH_FAILURE_REASON, USAGE_LIMIT_REASON
 from .decoder import ChannelAnalysisResult, ProposalDecoder
 from .progress import ChannelFailure, FailureKind
@@ -122,8 +123,12 @@ class ProposalAnalyzer:
         bot_name: str,
         decoder: ProposalDecoder | None = None,
         execution_policy: ExecutionPolicy | None = None,
+        # Audit record callable for the per-model spend row (A14). None in
+        # tests that do not look at it; the application always passes one.
+        audit: Callable[..., Any] | None = None,
     ) -> None:
         self._invoker = invoker
+        self._audit = audit
         self._model = model
         self._effort = effort
         self._workdir = workdir
@@ -173,6 +178,9 @@ class ProposalAnalyzer:
         # Nobody is waiting on the nightly batch, so it must not spend the
         # fallback's recovery probe that an interactive request needs.
         response = self._invoker.invoke(request, CallOrigin.BACKGROUND)
+        # The batch spends tokens with no request row of its own (A14).
+        if self._audit is not None:
+            record_engine_spend(self._audit, response, purpose="learning_analysis")
         if not response.ok:
             kind = _FAILURE_KINDS.get(response.failure_reason or "", FailureKind.ENGINE_FAILED)
             return ChannelAnalysis.failed(ChannelFailure(

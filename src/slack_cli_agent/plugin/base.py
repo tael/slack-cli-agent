@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from ..guard.base import OutputGuard
     from ..preflight.check import PreflightCheck
     from ..prompt.sections import PromptSection
+    from .hooks import BackgroundJob, EventHandler
 
 
 class BotPlugin(ABC):
@@ -43,4 +44,14 @@ class BotPlugin(ABC):
         """Engine types this plugin adds. Kept as an extension point, like
         access policy and admin commands, rather than hardcoded — otherwise
         a caller couldn't plug in its own engine."""
+        return ()
+
+    def background_jobs(self) -> Sequence[BackgroundJob]:
+        """Periodic jobs run in the worker or ingress process. One that
+        calls the engine shares the max_concurrent cap with requests."""
+        return ()
+
+    def event_handlers(self) -> Sequence[EventHandler]:
+        """Slack event hooks run on the ingress process after the core
+        handlers, off the socket thread."""
         return ()
