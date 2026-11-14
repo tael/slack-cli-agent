@@ -28,3 +28,18 @@ def test_persona_가_없는_공용_디렉터리는_통과한다(tmp_path: Path) 
     (tmp_path / ".mcp").mkdir()
     servers = {"sf": _spec("sf", "/usr/bin/uvx", "--service-config-file", str(tmp_path / ".mcp/c.yaml"))}
     assert foreign_bot_mcp_paths(servers, tmp_path / ".guchi", home=str(tmp_path)) == []
+
+
+def test_다른_봇_디렉터리로_가는_스킬_링크를_잡는다(tmp_path: Path) -> None:
+    from slack_cli_agent.engine.mcp_health import foreign_bot_skill_links
+
+    (tmp_path / ".mametchi" / "persona").mkdir(parents=True)
+    (tmp_path / ".mametchi" / "skills" / "a").mkdir(parents=True)
+    inst = tmp_path / ".guchi" / "skills" / "installed"
+    inst.mkdir(parents=True)
+    (inst / "a").symlink_to(tmp_path / ".mametchi" / "skills" / "a")
+    (inst / "b").mkdir()
+    (tmp_path / ".claude" / "skills" / "c").mkdir(parents=True)
+    (inst / "c").symlink_to(tmp_path / ".claude" / "skills" / "c")
+    found = foreign_bot_skill_links(tmp_path / ".guchi", home=str(tmp_path))
+    assert found == [f"skill a : 다른 봇 디렉터리 {tmp_path.resolve() / '.mametchi'} 로 가는 링크"]

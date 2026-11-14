@@ -80,3 +80,31 @@ def foreign_bot_mcp_paths(
                 found.append(f"{name} : 다른 봇 디렉터리 {bot_dir} 의 {path} 를 씀")
                 break
     return found
+
+
+def foreign_bot_skill_links(state_dir: os.PathLike[str] | str, home: str | None = None) -> list[str]:
+    """Installed skills that are symlinks into another bot's state directory.
+
+    2026-11-14: guchipachi's always-on skills were symlinks into
+    ~/.mametchi/skills, so deleting that directory would drop them silently.
+    """
+    home_dir = os.path.realpath(home or os.path.expanduser("~"))
+    own = os.path.realpath(os.path.expanduser(str(state_dir)))
+    root = os.path.join(own, "skills", "installed")
+    found = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return found
+    for name in names:
+        link = os.path.join(root, name)
+        if not os.path.islink(link):
+            continue
+        rel = os.path.relpath(os.path.realpath(link), home_dir)
+        top = rel.split(os.sep, 1)[0]
+        if rel.startswith("..") or not top.startswith("."):
+            continue
+        bot_dir = os.path.join(home_dir, top)
+        if bot_dir != own and os.path.isdir(os.path.join(bot_dir, "persona")):
+            found.append(f"skill {name} : 다른 봇 디렉터리 {bot_dir} 로 가는 링크")
+    return found
