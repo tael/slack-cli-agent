@@ -31,6 +31,7 @@ from .checks import (
     FullDiskAccessCheck,
     McpCredentialCheck,
     McpScriptOwnershipCheck,
+    McpOwnDirCheck,
     McpServerCheck,
     OwnerSettingsInertCheck,
     PluginAstCheck,
@@ -87,6 +88,7 @@ class PreflightSuite:
             EngineBinaryCheck(),
             EngineHomeCredentialCheck(),
             McpServerCheck(),
+            McpOwnDirCheck(),
             # fatal 은 EngineSettingsCheck 가 결과마다 정한다 - 부재는 경고, 깨짐은 기동 정지.
             EngineSettingsCheck(),
             PromptFileCheck(required_names=list(required_prompts or ())),

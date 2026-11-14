@@ -709,6 +709,7 @@ class TestPreflightSuite:
             "engine_binary",
             "engine_home_credentials",
             "mcp_server",
+            "mcp_own_dir",
             "engine_settings",
             "prompt_files",
             "channel_settings_readable",
@@ -813,6 +814,7 @@ class TestPreflightSuite:
             "[실패] engine_binary : 나쁨\n"
             "[경고] engine_home_credentials : 주의\n"
             "[통과] mcp_server : 좋음\n"
+            "[통과] mcp_own_dir : 좋음\n"
             "[통과] engine_settings : 좋음\n"
             "[통과] prompt_files : 좋음\n"
             "[통과] channel_settings_readable : 좋음\n"
