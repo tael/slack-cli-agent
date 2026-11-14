@@ -48,3 +48,35 @@ def broken_mcp_servers(mcp_servers: Mapping[str, McpServerSpec]) -> list[str]:
         if m and not shutil.which(m.group(1)):
             broken.append(f"{name} : {m.group(1)} 를 PATH 에서 못 찾음")
     return broken
+
+
+def foreign_bot_mcp_paths(
+    mcp_servers: Mapping[str, McpServerSpec], state_dir: os.PathLike[str] | str, home: str | None = None,
+) -> list[str]:
+    """MCP servers that run code out of another bot's state directory.
+
+    2026-11-14: guchipachi's posting tool was fixed in the mametchi copy
+    (~/.mametchi/mcp) and the fix never reached the copy guchipachi runs; its
+    openalex server and claude wrapper also ran from ~/.mametchi. One bot's
+    tools must not depend on another bot's files. A home dot-directory with a
+    persona/ subdirectory is treated as a bot state directory.
+    """
+    home_dir = os.path.realpath(home or os.path.expanduser("~"))
+    own = os.path.realpath(os.path.expanduser(str(state_dir)))
+    found = []
+    for name, spec in mcp_servers.items():
+        if spec.disabled or spec.is_remote:
+            continue
+        for raw in (spec.command, *spec.args):
+            path = os.path.expanduser(str(raw))
+            if not os.path.isabs(path):
+                continue
+            rel = os.path.relpath(os.path.realpath(path), home_dir)
+            top = rel.split(os.sep, 1)[0]
+            if rel.startswith("..") or not top.startswith("."):
+                continue
+            bot_dir = os.path.join(home_dir, top)
+            if bot_dir != own and os.path.isdir(os.path.join(bot_dir, "persona")):
+                found.append(f"{name} : 다른 봇 디렉터리 {bot_dir} 의 {path} 를 씀")
+                break
+    return found

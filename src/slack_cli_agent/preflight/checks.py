@@ -32,7 +32,7 @@ from ..core.errors import ConfigError
 from ..engine.capability import ToolRestriction
 from ..engine.claude_settings import load_merged_settings
 from ..engine.environment import registry
-from ..engine.mcp_health import broken_mcp_servers
+from ..engine.mcp_health import broken_mcp_servers, foreign_bot_mcp_paths
 from ..engine.registry import default_registry
 from .check import CheckResult, PreflightCheck, PreflightContext
 
@@ -411,6 +411,22 @@ class McpServerCheck(PreflightCheck):
         if broken:
             return CheckResult(ok=False, detail="; ".join(broken))
         return CheckResult(ok=True, detail="MCP 기동 점검 통과")
+
+
+class McpOwnDirCheck(PreflightCheck):
+    """Checks MCP servers don't run out of another bot's state directory.
+
+    Non-fatal so a peer still on an old layout keeps booting; the warning
+    names the server and path to move into this bot's state_dir.
+    """
+
+    name: ClassVar[str] = "mcp_own_dir"
+
+    def run(self, ctx: PreflightContext) -> CheckResult:
+        found = foreign_bot_mcp_paths(ctx.profile.mcp_servers, ctx.profile.state_dir)
+        if found:
+            return CheckResult(ok=False, detail="; ".join(found), fatal=False)
+        return CheckResult(ok=True, detail="MCP 서버가 다른 봇 디렉터리에 기대지 않음")
 
 
 class EngineSettingsCheck(PreflightCheck):
