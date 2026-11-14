@@ -32,7 +32,7 @@ from ..core.errors import ConfigError
 from ..engine.capability import ToolRestriction
 from ..engine.claude_settings import load_merged_settings
 from ..engine.environment import registry
-from ..engine.mcp_health import broken_mcp_servers, foreign_bot_mcp_paths
+from ..engine.mcp_health import broken_mcp_servers, foreign_bot_mcp_paths, foreign_bot_skill_links
 from ..engine.registry import default_registry
 from .check import CheckResult, PreflightCheck, PreflightContext
 
@@ -424,9 +424,10 @@ class McpOwnDirCheck(PreflightCheck):
 
     def run(self, ctx: PreflightContext) -> CheckResult:
         found = foreign_bot_mcp_paths(ctx.profile.mcp_servers, ctx.profile.state_dir)
+        found += foreign_bot_skill_links(ctx.profile.state_dir)
         if found:
             return CheckResult(ok=False, detail="; ".join(found), fatal=False)
-        return CheckResult(ok=True, detail="MCP 서버가 다른 봇 디렉터리에 기대지 않음")
+        return CheckResult(ok=True, detail="MCP 서버와 스킬이 다른 봇 디렉터리에 기대지 않음")
 
 
 class EngineSettingsCheck(PreflightCheck):
