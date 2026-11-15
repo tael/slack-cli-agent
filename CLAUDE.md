@@ -34,7 +34,10 @@
   말한다. 주석 규칙과 무관하다
 - 설계 근거처럼 긴 설명이 필요하면 `docs/` 에 둔다. 코드 안에 두지 않는다
 - 비유와 의인화를 쓰지 않는다
-- 시험은 `python3 -m pytest tests -n 4`. 린트는 `uvx ruff check src tests`
+- 시험은 `uv run --no-sync python -m pytest tests -n 4`. CI 도 같은 명령이다.
+  맨 `python3` 로 돌리면 slack_sdk 가 없는 인터프리터가 잡혀 import 실패와
+  표준 점검 실패가 섞여 나온다(2026-11-14). 지금은 conftest 가 수집 전에
+  끊는다. 린트는 `uvx ruff check src tests`
   (켤 규칙은 pyproject 의 `[tool.ruff.lint] select` 에 적어 뒀다 - 안 적으면
   ruff 판이 올라갈 때마다 강제되는 것이 바뀐다),
   타입은 `uvx mypy src`. 시험 쪽까지 보려면 `uvx --with pytest mypy src tests`
@@ -42,7 +45,8 @@
   풀리고 없는 오류가 200건 넘게 더 나온다(2026-09-17 실측 517 대 263). 시험
   쪽도 지금은 오류 0건이다(sca-ve2 에서 정리했다). 시험은 주석 규칙이 느슨해
   함수 표기를 요구하지 않고, 대역이 실물 서명과 어긋나는 것만 잡는다
-- 가상환경이 없다. `python` 이 아니라 `python3`
+- 저장소 가상환경은 `.venv` 다(python 3.12, `uv sync --extra dev` 로 만든다).
+  엔진 의존성은 여기에만 있다. 맨 `python3` 는 홈브루 쪽이라 쓰지 않는다
 - 새 동작은 실패하는 시험을 먼저 만들고, 그 시험이 실제로 실패하는 것을 실행으로
   확인한 뒤 구현한다. 구현 뒤에는 그 판정을 되돌려 시험이 실패하는지 다시 잰다
 
