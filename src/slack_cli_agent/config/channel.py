@@ -348,7 +348,11 @@ def is_channel_operator(config: ChannelConfig | None, user: str, *, is_bot: bool
     if is_bot:
         # Only a bot the channel names in operator_bots; "*" never covers bots.
         return user in config.operator_bots
-    return "*" in config.operators or user in config.operators
+    # A controller bot reaches here with is_bot=False (pipeline._restricted_bot
+    # treats it like a person, 2026-11-10). A channel that names it only under
+    # operator_bots must still count it: private-taeil lists 구치파치 there and
+    # has no operators, so its handoff ran as tier=read (2026-11-15 휴가 상신).
+    return "*" in config.operators or user in config.operators or user in config.operator_bots
 
 
 class ChannelRegistry:
