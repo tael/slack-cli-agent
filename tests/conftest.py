@@ -32,6 +32,45 @@ _CREDENTIAL_ENV = (
     "GH_TOKEN",
 )
 
+#: 봇 런타임이 자기 프로세스에 심는 변수. 시험을 봇 안에서 돌리면 하위 프로세스가
+#: 이 값을 물려받아, 시험이 명시한 값이 아니라 그 봇의 운영값으로 판정한다
+#: (2026-11-14: RESTART_GUARD_SERVICES 가 남아 다른 봇 라벨 거부 시험 2건이
+#: 통과로 뒤집혔다). 변수를 새로 늘릴 때 여기에도 적는다.
+_RUNTIME_ENV = (
+    "RESTART_GUARD_LABELS",
+    "RESTART_GUARD_SERVICES",
+    "RESTART_GUARD_MARKER",
+    "TURN_DEADLINE",
+    "TURN_DEADLINE_MONO",
+    "TURN_WRAPUP_SEC",
+    "TURN_BUDGET_LOG",
+    "TURN_TIER",
+    "POST_CHANNEL",
+    "ADVISOR_CHANNELS",
+    "CODE_FIRST_CHANNELS",
+    "SLEEP_POLL_GUARD_LOG",
+    "SCA_FINISH_VERIFY",
+    "SCA_FINISH_VERIFY_MODEL",
+    "SCA_VERIFY_NESTED",
+    "SCA_FINISH_VERIFY_MAX_BLOCKS",
+    "SCA_FINISH_KNOWLEDGE_FILE",
+)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """엔진 의존성이 없는 인터프리터로 돌린 것을 수집 전에 끊는다.
+
+    slack_sdk 가 없으면 import 실패와 표준 점검 실패가 흩어져 나와, 원인이
+    인터프리터 선택이라는 것이 실패 목록에서 보이지 않는다.
+    """
+    try:
+        import slack_sdk  # noqa: F401
+    except ModuleNotFoundError as exc:
+        raise pytest.UsageError(
+            f"엔진 의존성이 없는 인터프리터다 ({sys.executable}): {exc.name} 를 찾지 못했다. "
+            "`uv run --no-sync python -m pytest` 로 돌린다"
+        ) from exc
+
 
 def _guard(event: str, args: tuple) -> None:
     if event != "open" or not _ALLOWED_PREFIXES:
@@ -68,7 +107,7 @@ def isolate_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pa
     repo = str(Path(__file__).resolve().parents[1])
     _ALLOWED_PREFIXES[:] = [repo, str(tmp_path), sys.prefix, sys.base_prefix]
     monkeypatch.setenv("HOME", str(tmp_path))
-    for 이름 in _CREDENTIAL_ENV:
+    for 이름 in (*_CREDENTIAL_ENV, *_RUNTIME_ENV):
         monkeypatch.delenv(이름, raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # 표준 점검의 운영 트리 점검은 저장소 원격을 fetch 한다. 시험은 네트워크를 쓰지
