@@ -137,6 +137,9 @@ class IncidentKind(StrEnum):
     #: `recovered` says whether that rerun posted successfully; `rerun` is
     #: False on a fallback-engine turn, which cannot resume the session.
     RENDER_WITHOUT_POST = "render_without_post"
+    #: 2026-11-15 휴가 위임 거짓 보고: the answer says a task was handed to
+    #: another bot, and the turn posted nothing to Slack. Log only.
+    HANDOFF_CLAIM_UNBACKED = "handoff_claim_unbacked"
     #: A codex turn made pictures and called no posting tool, so the code
     #: uploaded them to the thread (D2, mametchi generated_image_autopost).
     #: `files` names them; the _FAILED kind carries `error` instead.

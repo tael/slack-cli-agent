@@ -245,6 +245,41 @@ class ClaudeTranscriptReader(SessionTranscriptReader):
             ))
         return events
 
+    def turn_tool_names(self, session_id: str, until_ts: float | None = None) -> tuple[str, ...] | None:
+        """Names of the tools called since the last real user prompt.
+
+        A real prompt is a user text that is neither a task-notification nor
+        a Stop-hook feedback (those arrive mid-turn). Subagent lines count:
+        a post made inside a Task still reached Slack. ``until_ts`` cuts the
+        file at that time, for judging an earlier turn. None when the file is
+        missing or empty.
+        """
+        path = self.transcript_path(session_id)
+        lines = sorted(_read_timestamped_lines(path), key=lambda item: item[0])
+        if not lines:
+            return None
+        names: list[str] = []
+        for ts, data in lines:
+            if until_ts is not None and ts > until_ts:
+                break
+            message = data.get("message")
+            role = data.get("type")
+            if not isinstance(message, dict) or role not in ("user", "assistant"):
+                continue
+            if role == "user":
+                text = _text_of(message.get("content"), "text")
+                if (
+                    text and not data.get("isSidechain")
+                    and not text.startswith((TASK_NOTIFICATION_PREFIX, "Stop hook feedback:"))
+                ):
+                    names = []
+                continue
+            content = message.get("content")
+            for block in content if isinstance(content, list) else []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    names.append(str(block.get("name") or ""))
+        return tuple(names)
+
     #: Lines are appended in time order, but parallel writers can interleave a
     #: little. Reading back from the end stops only once a line is this much
     #: older than the request, so a slightly out-of-order line is still kept.

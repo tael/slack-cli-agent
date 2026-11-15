@@ -1032,6 +1032,7 @@ class Application:
                 # Resolved per request like the slow report: the engine that
                 # answered decides the transcript format (S0 계측).
                 request_timing=RequestTimingCalculator(self.transcript_reader),
+                turn_tools=self._turn_tool_names,
                 # built lazily rather than as a field — eagerly building it here would
                 # look up the bot user ID, making assembly alone call out to Slack
                 participants=lambda channel, thread_ts: self._participants().of(channel, thread_ts),
@@ -2431,6 +2432,11 @@ class Application:
             )
         except Exception:
             log.exception("점검 실패: %s %s:%s", emoji, channel, ts)
+
+    def _turn_tool_names(self, engine: str, session_id: str) -> tuple[str, ...] | None:
+        """Tools the turn called; only the Claude reader can tell, others give None."""
+        find = getattr(self.transcript_reader(engine), "turn_tool_names", None)
+        return find(session_id) if find else None
 
     def transcript_reader(self, engine: str = "") -> SessionTranscriptReader:
         """Transcript format and home dir differ per engine, so the reader is
