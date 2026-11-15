@@ -122,3 +122,23 @@ def test_채널_기본값은_주입한_매핑만_쓴다():
 def test_빈_문장은_미적중():
     d = route("   ")
     assert (d.workflow_id, d.matched) == ("deep", False)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("캘린더 조회. 브리핑", "personal-deep"),
+    ("이력서 초안을 보면 너무 짧지 않은가", "personal-deep"),
+    ("커리어 관련 진행사항 브리핑", "personal-deep"),
+    ("메일에 강의 일정 확인", "personal-deep"),
+    ("모든 에이전트가 이모지 동시에 발생하는 문제 해결", "shinji-maintenance"),
+    ("아스카가 대답안해", "shinji-maintenance"),
+])
+def test_v2_보강_규칙(text, expected):
+    assert route(text).workflow_id == expected
+
+
+def test_v2_커리어_파일_포함_여부_질문은_본인_기록_규칙에_걸리지_않는다():
+    assert route("커리어 관련 포함되진않았지?").matched is False
+
+
+def test_라우터_버전은_규칙을_바꾸면_올린다():
+    assert ROUTER_VERSION == "rule-v2"

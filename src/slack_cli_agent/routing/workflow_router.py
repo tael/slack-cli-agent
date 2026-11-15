@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from slack_cli_agent.core.mcp_routing import _matches
 
 #: 규칙을 바꿀 때마다 올린다. shadow 기록에서 어느 규칙판의 결과인지 구분한다.
-ROUTER_VERSION = "rule-v1"
+ROUTER_VERSION = "rule-v2"
 DEFAULT_WORKFLOW = "deep"
 
 WEB_LOOKUP = "web-lookup"
@@ -51,12 +51,18 @@ RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "re:페르소나|persona\\.md|channels\\.json",
         "re:채널(별|마다).{0,8}설정",
         "re:멘션\\s*없이.{0,8}(답|응답|대답)",
+        "re:(이모지|리액션|진행\\s*표시|응답\\s*형식|끝줄|말투|문체).{0,25}(문제|고쳐|해결|개선|바꿔|켜|꺼)",
+        "re:(아스카|레이|신지|마메치|봇|에이전트)(가|이|은|는)?\\s*(대답|응답|답)\\s*(을\\s*)?(안|못)",
     )),
     (PERSONAL_DEEP, (
         "re:내\\s*(개발\\s*)?(성향|이력서?|경력|철학|서사|과거|메일|메모|노트|일정|캘린더|구글\\s*캘린더|개인\\s*캘린더|스타일|습관|기록|드라이브)",
         "re:내가\\s*(예전|과거|지난|전에|이전)",
         "re:네가\\s*아는\\s*내",
         "re:애플\\s*메모|애플\\s*노트|옵시디언|obsidian",
+        "캘린더",
+        "re:이력서|레쥬메|resume",
+        "re:커리어\\s*관련\\s*(은|는|자료|내용|진행)",
+        "re:메일(에서|에)?\\s*.{0,15}(확인|조회|찾아|있었)",
     )),
     (WEB_LOOKUP, (
         "날씨", "기온", "미세먼지", "일기예보",
