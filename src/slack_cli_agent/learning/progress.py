@@ -306,6 +306,10 @@ class ProgressStore:
     def __init__(self, progress_dir: Path) -> None:
         self._dir = progress_dir
 
+    @property
+    def directory(self) -> Path:
+        return self._dir
+
     def _path(self, day: str) -> Path:
         return self._dir / f"{day}.progress.json"
 

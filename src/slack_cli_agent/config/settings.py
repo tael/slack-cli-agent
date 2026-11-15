@@ -217,6 +217,16 @@ class RuntimeSettings:
     learning_batch_interval_sec: float = 600
     # KST hour learning starts; before this, that day's records aren't all in yet.
     learning_run_hour: int = 22
+    # A channel-day with fewer recorded requests than this is not sent to the
+    # analyzer; its record is carried over and analyzed with the next day's.
+    # Measured over 2026-09-15..11-15: channel-days with 1-2 requests yielded
+    # 1.2 learned lines each (9 of 23 yielded none), 3 or more yielded 4-5.
+    # A correction in the day's questions overrides this. 1 or less turns the
+    # gate off.
+    learning_min_entries: int = 3
+    # Longest a carried-over record waits before analysis is forced, whatever
+    # the volume. Must be 1 or more.
+    learning_max_defer_days: int = 7
     # Empty delegates to the running engine's own configured model. A shared
     # literal here was invalid on codex/gemini profiles (sca-dyb.10).
     learning_model: str = ""

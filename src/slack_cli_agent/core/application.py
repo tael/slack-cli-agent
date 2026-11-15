@@ -92,6 +92,7 @@ from ..jobs.queue import SqliteJobQueue
 from ..learning.analyzer import ProposalAnalyzer, ProposalBuilder
 from ..learning.apply import LearningApplier
 from ..learning.batch import LearningBatch
+from ..learning.gate import CarryStore, GatePolicy, LearningGate
 from ..learning.progress import ProgressStore
 from ..learning.proposal import ProposalStore
 from ..learning.reactions import ReactionCollector
@@ -1113,8 +1114,25 @@ class Application:
                 renderer=ProposalRenderer(),
                 notify=self._notify_admin,
                 clock=lambda: datetime.now(KST),
+                gate=LearningGate(self._learning_gate_policy()),
+                # Beside the progress files, not in the proposal directory:
+                # ProposalStore.latest() scans that one.
+                carry=CarryStore(self._learning_progress_store().directory / "carry.json"),
             )
         return self._learning_batch
+
+    def _learning_gate_policy(self) -> GatePolicy:
+        """Gate thresholds; a max defer below 1 day falls back to the default,
+        since rejecting it would stop the worker from starting."""
+        defaults = RuntimeSettings()
+        max_days = self._settings.learning_max_defer_days
+        if max_days < 1:
+            log.warning(
+                "learning_max_defer_days 값이 1 미만이다(%s). %s 일로 되돌린다",
+                max_days, defaults.learning_max_defer_days,
+            )
+            max_days = defaults.learning_max_defer_days
+        return GatePolicy(min_entries=self._settings.learning_min_entries, max_defer_days=max_days)
 
     def _channel_id_of(self, channel_name: str) -> str | None:
         for channel_id, config in self._channels.all().items():
