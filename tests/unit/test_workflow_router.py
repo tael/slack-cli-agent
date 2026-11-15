@@ -109,7 +109,7 @@ def test_스레드_후속도_규칙이_적중하면_규칙이_이긴다():
 
 def test_직전_workflow가_deep이면_잇지_않고_미적중이다():
     ctx = ThreadContext(has_prior_bot_reply=True, prior_workflow="deep")
-    d = route("그래서?", thread=ctx)
+    d = route("그래서 이 구조가 왜 이렇게 설계됐는지 처음부터 차근차근 설명해 줘", thread=ctx)
     assert (d.workflow_id, d.matched, d.reason) == ("deep", False, "no-rule")
 
 
@@ -141,4 +141,41 @@ def test_v2_커리어_파일_포함_여부_질문은_본인_기록_규칙에_걸
 
 
 def test_라우터_버전은_규칙을_바꾸면_올린다():
-    assert ROUTER_VERSION == "rule-v2"
+    assert ROUTER_VERSION == "rule-v3"
+
+
+# --- followup (rule-v3) ---
+
+_RESUMED = ThreadContext(has_prior_bot_reply=True)
+
+
+@pytest.mark.parametrize("text", ["다시.", "진행하세요", "네가 시도한 도구는 무엇인가", "<@U123ABC> 적용해"])
+def test_재개_턴의_짧은_발화는_followup(text):
+    d = route(text, thread=_RESUMED)
+    assert d.workflow_id == "followup"
+    assert d.matched is True
+    assert d.reason == "followup:short-resumed"
+
+
+def test_재개가_아니면_짧아도_followup_아님():
+    assert route("다시.", thread=ThreadContext(has_prior_bot_reply=False)).workflow_id == "deep"
+    assert route("다시.").workflow_id == "deep"
+
+
+def test_followup_길이_경계():
+    assert route("가" * 30, thread=_RESUMED).workflow_id == "followup"
+    assert route("가" * 31, thread=_RESUMED).workflow_id == "deep"
+
+
+def test_followup_URL_포함이면_제외():
+    assert route("이거 봐 https://a.b/c", thread=_RESUMED).workflow_id == "deep"
+
+
+def test_followup_키워드_규칙과_접두사가_우선():
+    assert route("이력서 파일 가져와", thread=_RESUMED).workflow_id == "personal-deep"
+    assert route("!웹 다시", thread=_RESUMED).workflow_id == "web-lookup"
+
+
+def test_followup_스레드_이어받기보다_뒤():
+    t = ThreadContext(has_prior_bot_reply=True, prior_workflow="web-lookup")
+    assert route("다시.", thread=t).workflow_id == "web-lookup"

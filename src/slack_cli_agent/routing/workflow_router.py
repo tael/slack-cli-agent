@@ -9,8 +9,11 @@
    슬랙 `/` 는 슬래시 명령과 겹쳐서 쓰지 않는다.
 2. 키워드 규칙. RULES 순서대로 먼저 걸린 workflow 가 이긴다.
 3. 스레드 후속: 규칙이 안 걸리고 직전 봇 답의 workflow 가 deep 이 아니면 이어받는다.
-4. 채널 기본값: 호출자가 준 매핑에 있을 때만 쓴다.
-5. 전부 미적중이면 deep, matched=False.
+4. followup: 스레드 재개 턴(같은 스레드에 이전 봇 답이 있음)이고 규칙이 안 걸린 짧은 발화
+   (`FOLLOWUP_MAX_CHARS` 자 이하, URL 없음). 새 대상 명사가 있으면 3번까지의 키워드 규칙이
+   먼저 걸리므로 followup 은 "새 대상이 없는 짧은 한마디"만 남는다.
+5. 채널 기본값: 호출자가 준 매핑에 있을 때만 쓴다.
+6. 전부 미적중이면 deep, matched=False.
 
 키워드 매칭은 `core.mcp_routing._matches` 를 재사용한다. 패턴은 대소문자를 무시한
 부분 문자열이고 `re:` 로 시작하면 정규식이다.
@@ -25,12 +28,16 @@ from dataclasses import dataclass
 from slack_cli_agent.core.mcp_routing import _matches
 
 #: 규칙을 바꿀 때마다 올린다. shadow 기록에서 어느 규칙판의 결과인지 구분한다.
-ROUTER_VERSION = "rule-v2"
+ROUTER_VERSION = "rule-v3"
 DEFAULT_WORKFLOW = "deep"
 
 WEB_LOOKUP = "web-lookup"
 SHINJI_MAINTENANCE = "shinji-maintenance"
 PERSONAL_DEEP = "personal-deep"
+FOLLOWUP = "followup"
+
+#: followup 으로 볼 최대 글자 수(멘션 제거·공백 정리 뒤). 근거는 router-backfill/REPORT.md.
+FOLLOWUP_MAX_CHARS = 30
 
 #: 명시 접두사 -> workflow
 PREFIXES: dict[str, str] = {
@@ -76,6 +83,14 @@ RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 _PREFIX_RE = re.compile(
     r"^(?P<lead>\s*(?:<@[A-Z0-9]+>\s*)*)(?P<prefix>" + "|".join(map(re.escape, PREFIXES)) + r")(?=\s|$)"
 )
+
+
+_MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
+
+
+def _is_short_followup(text: str) -> bool:
+    body = re.sub(r"\s+", " ", _MENTION_RE.sub("", text)).strip()
+    return bool(body) and len(body) <= FOLLOWUP_MAX_CHARS and "://" not in body
 
 
 @dataclass(frozen=True)
@@ -129,6 +144,8 @@ def route(
         and thread.prior_workflow != DEFAULT_WORKFLOW
     ):
         return _decision(thread.prior_workflow, f"thread-inherit:{thread.prior_workflow}", True)
+    if thread is not None and thread.has_prior_bot_reply and _is_short_followup(text):
+        return _decision(FOLLOWUP, "followup:short-resumed", True)
     if channel_defaults and channel_id in channel_defaults:
         return _decision(channel_defaults[channel_id], f"channel-default:{channel_id}", True)
     return _decision(DEFAULT_WORKFLOW, "no-rule", False)
