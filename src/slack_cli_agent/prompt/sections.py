@@ -12,7 +12,7 @@ from ..auth.principal import Principal, TrustLevel, TurnTier
 from .code_terms import CODE_TERM_NOTE
 
 if TYPE_CHECKING:
-    from ..config.profile import PeerProfile
+    from ..config.profile import PeerProfile, Profile
     from .knowledge import KnowledgeLoader
     from .library import PromptLibrary
 
@@ -361,6 +361,69 @@ OWNER_SELF_RESOLVE = (
     "- 모든 경로가 막혔을 때만 시도한 경로마다 오류 문구를 적고, 무엇이 바뀌면 풀리는지 "
     "한 줄로 적는다. 이때도 소유자 손에 명령을 쥐여 주는 것으로 끝내지 않는다"
 )
+
+
+class SelfConfigSection(PromptSection):
+    """Tells the owner's turn where this bot's own settings live.
+
+    2026-11-16 asuka: the owner said "아스카 모델을 하이쿠로 변경". The turn
+    searched the state dir, found only engine/settings-claude*.json (Read is
+    denied there by design) and asked the owner which file to edit. The model
+    is in the profile file, which sits outside the state dir and was never
+    named in the prompt, so the turn could not find it. The restart that a
+    profile edit needs goes through the apply-request marker (restart_guard).
+
+    Not shown on aside turns (postmortem, debug trace, format review): those
+    carry no act tools, so the locations would only invite a write that fails.
+    """
+
+    def __init__(self, profile: Profile) -> None:
+        self._profile = profile
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return ctx.is_owner and not ctx.aside
+
+    def render(self, ctx: CompositionContext) -> str:
+        profile = self._profile
+        paths = profile.paths
+        marker, _running = paths.apply_requests
+        source = (
+            str(profile.source_file)
+            if profile.source_file is not None
+            else f"프로필 {profile.name}.json (slack-cli-agent --profile-dir 가 가리키는 디렉터리)"
+        )
+        lines = [
+            "\n\n# 이 봇 자신의 설정 위치\n",
+            "소유자가 이 봇의 모델, 채널 설정, 페르소나를 바꾸라고 하면 아래 파일을 직접 고친다.",
+            "위치를 소유자에게 되묻지 않는다.\n",
+            (
+                f"- 봇 전체 모델 : {source} 의 primary_engine.model 과 model_owner."
+                f" 지금 값은 {profile.primary_engine.model or '미지정'} 이다. 재기동해야 반영된다"
+            ),
+            (
+                f"- 채널별 모델과 추론 강도 : {paths.channels} 의 채널 항목 model, effort."
+                " 턴마다 다시 읽으므로 재기동이 필요 없다"
+            ),
+            f"- 채널 설정 : {paths.channels}",
+            f"- 페르소나 : {paths.persona}",
+            f"- 프롬프트 덮어쓰기 : {paths.prompts}",
+            (
+                f"- {paths.root / 'engine'} 아래는 엔진 권한 설정이라 읽기와 쓰기가 막혀 있다."
+                " 모델 설정은 거기 없다"
+            ),
+            (
+                "- 재기동 : launchctl 로 자기 서비스를 내리지 않는다 (지금 턴이 끝나길 기다리며 교착된다)."
+                f" printf '%s\\n%s\\n%s\\n' \"$(date +%s)\" \"$TURN_ID\" \"<변경 요약>\" > {marker}"
+                " 로 apply-request 마커를 쓰고 턴을 끝낸다. 감독(supervisor)이 턴이 끝난 뒤"
+                " 점검하고 재기동한 다음 결과를 DM 으로 보낸다"
+            ),
+        ]
+        if profile.primary_engine.type == "claude":
+            lines.append(
+                "- 모델 값은 claude --model 이 받는 전체 ID 로 쓴다. 고치기 전에"
+                " claude -p --model <ID> 로 한 번 불러 ID 가 유효한지 확인한다"
+            )
+        return "\n".join(lines)
 
 
 class PeerRecoverySection(PromptSection):

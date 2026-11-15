@@ -364,9 +364,10 @@ class TestRegistryCandidates:
 
 #: 이 변경 이전(HEAD fc9887d3) 실물 조립기로 낸 운영 조립 지침의 sha256.
 #: 지침을 고치는 변경이면 이 값을 의도해서 바꾼다.
+#: 2026-11-16 owner-* : 소유자 턴에 SelfConfigSection(자기 설정 위치) 추가.
 GOLDEN = {
-    "owner-chat": "0724e08d05c8d8b8add7b085194712fa187a08503578e750f8c3943d298bd487",
-    "owner-work": "72574e3c91c14ded643d45770337ca0eaed9bec7bcbbb63b8d48a238468f4368",
+    "owner-chat": "62a6b6a26c4eb3e221b97fef84b749c1ea7993b2d54b88fefc3c861a93c66e14",
+    "owner-work": "e0068d7508e3603175fa4da19f303c5a2544b3d6ee254b5acf9ab2d44cbe2a43",
     "read-work": "2aaab553af324844854d87c096978ce5eeab4733e8f9c00d2b794c0c3af64f55",
 }
 
