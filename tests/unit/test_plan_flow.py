@@ -123,6 +123,21 @@ class TestPlannerParse:
     def test_CLI_오류는_error_cli_다(self) -> None:
         assert ps.parse(json.dumps({"is_error": True}))[0] == "error:cli"
 
+    def test_이벤트_배열_출력에서도_계획을_꺼낸다(self) -> None:
+        # 2026-11-16: 운영자 settings 의 verbose: true 가 --setting-sources "" 로도
+        # 안 빠져 CLI 가 이벤트 배열을 냈고, 계획 호출 26건이 전부 error:cli 였다.
+        result = json.loads(_cli_result(_PLAN))
+        events = [{"type": "system", "subtype": "init"}, {"type": "assistant"}, {"type": "result", **result}]
+        status, plan = ps.parse(json.dumps(events))
+        assert status == "ok" and plan is not None
+        assert plan["type"] == "branch"
+
+    def test_result_이벤트가_없는_배열은_bad_output_이다(self) -> None:
+        assert ps.parse(json.dumps([{"type": "system"}])) == ("bad_output", None)
+
+    def test_배열_안의_CLI_오류는_error_cli_다(self) -> None:
+        assert ps.parse(json.dumps([{"type": "result", "is_error": True}]))[0] == "error:cli"
+
 
 class TestPlannerRun:
     def _prepare(self, tmp_path: Path) -> str:

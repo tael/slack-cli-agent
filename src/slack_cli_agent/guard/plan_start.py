@@ -220,11 +220,24 @@ def _call_planner(prompt: str, model: str, timeout: float) -> subprocess.Complet
 
 
 def parse(stdout: str) -> tuple[str, dict[str, Any] | None]:
-    """(status, plan) from the CLI's ``--output-format json`` result."""
+    """(status, plan) from the CLI's ``--output-format json`` result.
+
+    The CLI emits either a single result object or, with verbose on, an array
+    of events ending in one (engine/claude.py _result_event has the same rule).
+    2026-11-16: the operator's verbose setting reached this call despite
+    --setting-sources "", and all 26 recorded plans were error:cli.
+    """
     try:
         result = json.loads(stdout)
     except ValueError:
         return "bad_output", None
+    if isinstance(result, list):
+        result = next(
+            (e for e in reversed(result) if isinstance(e, dict) and e.get("type") == "result"),
+            None,
+        )
+        if result is None:
+            return "bad_output", None
     if not isinstance(result, dict) or result.get("is_error"):
         return "error:cli", None
     plan = result.get("structured_output")
