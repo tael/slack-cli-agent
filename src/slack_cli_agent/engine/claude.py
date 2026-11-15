@@ -84,6 +84,7 @@ from .capability import (
 from .claude_settings import load_merged_settings, merge_settings
 from .footprint import PayloadFootprint
 from .tool_selection import ToolAccess
+from .transcript import ClaudeTranscriptReader, recover_handoff_over_silence
 
 # Same hint list as the original bot.py's usage_limit_message().
 _USAGE_LIMIT_HINTS = (
@@ -102,6 +103,9 @@ _USAGE_LIMIT_HINTS = (
 # read the same way every engine reads one: a missing key is "can't tell",
 # not "measured zero".
 log = logging.getLogger(__name__)
+
+#: raw 에 남기는 표식: 침묵 앞의 위임 답을 transcript 에서 되살린 턴 (audit 로 간다).
+SILENCE_RECOVERED_RAW_KEY = "silence_recovered"
 
 _USAGE_KEY_MAP: Mapping[str, str] = {
     "input_tokens": "input_tokens",
@@ -948,6 +952,29 @@ class ClaudeEngine(Engine):
             if text and not is_silent(text) and RECIPIENT_TAG_ANY.search(text):
                 return text
         return body
+
+    def recover_silenced_answer(
+        self, request: EngineRequest, response: EngineResponse, env: Mapping[str, str],
+    ) -> EngineResponse:
+        """Reads this call's session transcript when the final text is silence.
+
+        2026-11-15 휴가 위임 거짓 보고, #226 은 dict 출력에서 무동작: the real
+        `claude -p --output-format json` prints one result object, not the
+        event array #226 assumed, so the earlier handoff text is only in the
+        session transcript (~/.claude/projects/<slug>/<session_id>.jsonl).
+        """
+        if not (response.ok and response.session_id and is_silent(response.body)):
+            return response
+        home = env.get("HOME")
+        reader = ClaudeTranscriptReader(request.workdir, home=Path(home) if home else None)
+        text = recover_handoff_over_silence(reader.transcript_path(response.session_id))
+        if text is None:
+            return response
+        log.warning("silence_recovered: 침묵 앞의 수신자 표식 답을 최종 답으로 채택 session=%s",
+                    response.session_id)
+        return dataclasses.replace(
+            response, body=text, raw={**dict(response.raw), SILENCE_RECOVERED_RAW_KEY: True},
+        )
 
     @staticmethod
     def _elapsed_from_payload(payload: Mapping[str, Any]) -> tuple[float, ElapsedSource]:
