@@ -20,6 +20,16 @@ says "short" only means nothing is injected.
 The plan file is also the record: status is ``ok``, ``timeout``,
 ``error:<kind>`` or ``bad_output``, never a substitute plan.
 
+Workflow classification (record only). Where the pipeline sets
+SCA_PLAN_WORKFLOWS (JSON ``{id: description}``), the same call also picks the
+workflow that fits the request's meaning and writes ``workflow``,
+``workflow_confidence`` and ``workflow_reason`` into the plan file. No length
+or keyword rule: the description of each candidate carries example utterances.
+plan_gate never reads these fields, so the injected text and the turn's
+behavior are unchanged. On a resumed turn the tail of the earlier conversation
+(transcript) is added after the request, because short follow-ups cannot be
+read without it.
+
 Standard library only. Never fails the prompt: every path ends in exit 0
 with nothing on stdout (UserPromptSubmit stdout would be added to context).
 """
@@ -58,6 +68,21 @@ TIMEOUT_SEC = 20.0
 #: thread history before the request itself, so the end matters most.
 PROMPT_TAIL_CHARS = 12_000
 
+#: Set by the pipeline: JSON object ``{workflow id: description}`` of the
+#: candidates the planner may choose from. Absent or invalid means the planner
+#: classifies nothing and the plan file has no workflow fields.
+WORKFLOWS_ENV = "SCA_PLAN_WORKFLOWS"
+#: The fallback workflow when the planner is not confident.
+FALLBACK_WORKFLOW = "deep"
+CONFIDENCES = ("low", "medium", "high")
+#: Resumed-turn context: the last N text messages of the transcript, each cut
+#: to a limit, and a limit on the whole block.
+CONTEXT_MESSAGES = 4
+CONTEXT_MESSAGE_CHARS = 300
+CONTEXT_TOTAL_CHARS = 1_200
+#: Only this much of the transcript's end is read to find them.
+CONTEXT_READ_BYTES = 400_000
+
 #: Agent worker names the flow note delegates to (profiles/agents/*.md).
 WORKERS = ("lookup", "analyst")
 
@@ -67,8 +92,36 @@ def delegation_enabled(env: dict[str, str] | os._Environ[str] | None = None) -> 
     return str(raw).strip() not in ("", "0")
 
 
-def schema(delegation: bool = False) -> dict[str, Any]:
-    """The planner's JSON schema. Workers are enum values only with delegation."""
+def workflow_candidates(env: dict[str, str] | os._Environ[str] | None = None) -> dict[str, str]:
+    """``{id: description}`` from SCA_PLAN_WORKFLOWS; empty when absent or invalid."""
+    raw = (env if env is not None else os.environ).get(WORKFLOWS_ENV, "")
+    if not str(raw).strip():
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        k: " ".join(v.split()) for k, v in value.items()
+        if isinstance(k, str) and k and isinstance(v, str) and v.strip()
+    }
+
+
+def schema(delegation: bool = False, workflows: Any = None) -> dict[str, Any]:
+    """The planner's JSON schema. Workers are enum values only with delegation.
+    Workflow fields are there only when candidate ids are given."""
+    result = _base_schema(delegation)
+    if workflows:
+        result["properties"]["workflow"] = {"type": "string", "enum": list(workflows)}
+        result["properties"]["workflow_confidence"] = {"type": "string", "enum": list(CONFIDENCES)}
+        result["properties"]["workflow_reason"] = {"type": "string"}
+        result["required"] = [*result["required"], "workflow", "workflow_confidence", "workflow_reason"]
+    return result
+
+
+def _base_schema(delegation: bool) -> dict[str, Any]:
     workers = list(WORKERS) if delegation else []
     return {
         "type": "object",
@@ -119,8 +172,34 @@ _PLANNER_TAIL = (
 )
 
 
-def planner_prompt(delegation: bool = False) -> str:
-    return _PLANNER_HEAD + (_DELEGATE_WITH_WORKERS if delegation else _DELEGATE_NONE) + _PLANNER_TAIL
+_WORKFLOW_HEAD = (
+    "4. workflow 를 고른다. 아래 후보 중 요청의 의미에 맞는 id 하나다\n"
+    "- 슬랙 질문은 대부분 짧다. 글자 수나 낱말로 정하지 않는다. 무엇을 알고 싶은지 추정해 고른다\n"
+    "- 짧은 질문이 가벼운 경우는 드물다. 대상이 모호하거나 직전 대화에 기대는 후속 발화는 "
+    "[직전 대화]가 있으면 그 맥락으로 읽는다\n"
+    "- workflow_confidence 는 low, medium, high 중 하나다. 확신이 낮으면 workflow 는 "
+    f"{FALLBACK_WORKFLOW} 로 하고 low 로 적는다\n"
+    "- workflow_reason 은 고른 근거 한 문장이며 40자 이내다. 길게 쓰면 계획이 늦어진다\n"
+    "[workflow 후보]\n"
+)
+
+
+def workflow_section(workflows: dict[str, str]) -> str:
+    if not workflows:
+        return ""
+    return _WORKFLOW_HEAD + "".join(f"- {wid} : {desc}\n" for wid, desc in workflows.items())
+
+
+def planner_prompt(delegation: bool = False, workflows: dict[str, str] | None = None) -> str:
+    """The instruction placed before the request. The workflow section goes
+    after item 3 and before the [요청] marker; absent candidates leave the
+    text exactly as it was."""
+    tail = _PLANNER_TAIL
+    if workflows:
+        marker = "\n[요청]\n"
+        head, _, rest = tail.partition(marker)
+        tail = head + workflow_section(workflows) + marker + rest
+    return _PLANNER_HEAD + (_DELEGATE_WITH_WORKERS if delegation else _DELEGATE_NONE) + tail
 
 
 #: Without delegation, the default.
@@ -159,6 +238,76 @@ def prompt_path(transcript_path: str) -> Path:
     return Path(transcript_path + ".plan.prompt")
 
 
+def context_path(transcript_path: str) -> Path:
+    return Path(transcript_path + ".plan.context")
+
+
+def _message_text(message: Any, role: str) -> str:
+    """The person-readable text of one transcript message, "" for tool traffic.
+
+    A user message carries the pipeline's header before the request, so its
+    end is kept; an assistant message keeps its start.
+    """
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        content = "\n".join(
+            b.get("text", "") for b in content
+            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+        )
+    if not isinstance(content, str):
+        return ""
+    text = " ".join(content.split())
+    if text.startswith("Stop hook feedback:"):
+        return ""
+    if len(text) > CONTEXT_MESSAGE_CHARS:
+        text = "…" + text[-CONTEXT_MESSAGE_CHARS:] if role == "user" else text[:CONTEXT_MESSAGE_CHARS] + "…"
+    return text
+
+
+def recent_context(transcript_path: str, prompt: str) -> str:
+    """The tail of the earlier conversation, or "" on a first turn.
+
+    Reads the transcript's last bytes and keeps the last CONTEXT_MESSAGES text
+    messages of the user and the bot, oldest first. A user message that is the
+    current prompt (the CLI may have written it already) is left out.
+    """
+    try:
+        with open(transcript_path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - CONTEXT_READ_BYTES))
+            raw = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = raw.splitlines()
+    if size > CONTEXT_READ_BYTES:
+        lines = lines[1:]  # the first line is cut mid-way
+    current = " ".join(prompt.split())[-80:]
+    found: list[tuple[str, str]] = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict) or event.get("isSidechain"):
+            continue
+        role = event.get("type")
+        if role not in ("user", "assistant"):
+            continue
+        text = _message_text(event.get("message"), role)
+        if not text:
+            continue
+        if role == "user" and current and text.endswith(current[-60:]):
+            continue
+        found.append((role, text))
+    chosen = found[-CONTEXT_MESSAGES:]
+    if not chosen:
+        return ""
+    label = {"user": "사용자", "assistant": "봇"}
+    block = "\n".join(f"{label[role]}: {text}" for role, text in chosen)
+    return block[-CONTEXT_TOTAL_CHARS:]
+
+
 def enabled(env: dict[str, str] | os._Environ[str] | None = None) -> bool:
     source = env if env is not None else os.environ
     if source.get(PLAN_NESTED_ENV) or source.get(VERIFY_NESTED_ENV):
@@ -186,10 +335,14 @@ def start(data: dict[str, Any], *, spawn: Any = subprocess.Popen) -> str:
     prompt = data.get("prompt")
     if not transcript or not isinstance(prompt, str) or not prompt.strip():
         return "no_input"
-    for stale in (plan_path(transcript), injected_path(transcript)):
+    for stale in (plan_path(transcript), injected_path(transcript), context_path(transcript)):
         stale.unlink(missing_ok=True)
     Path(transcript).parent.mkdir(parents=True, exist_ok=True)
     prompt_path(transcript).write_text(prompt[-PROMPT_TAIL_CHARS:], encoding="utf-8")
+    if workflow_candidates():  # classification reads context; plans without it stay as before
+        context = recent_context(transcript, prompt)
+        if context:
+            context_path(transcript).write_text(context, encoding="utf-8")
     _write_json(plan_path(transcript), {"status": "pending", "started_at": time.time()})
     spawn(
         [sys.executable, str(HOOK_SCRIPT), "--run", transcript],
@@ -201,16 +354,17 @@ def start(data: dict[str, Any], *, spawn: Any = subprocess.Popen) -> str:
 
 def _call_planner(prompt: str, model: str, timeout: float) -> subprocess.CompletedProcess[str]:
     delegation = delegation_enabled()
+    workflows = workflow_candidates()
     exe = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
     cmd = [
         exe, "-p", "--model", model, "--tools", "", "--strict-mcp-config",
         "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "",
-        "--output-format", "json", "--json-schema", json.dumps(schema(delegation)),
+        "--output-format", "json", "--json-schema", json.dumps(schema(delegation, workflows)),
     ]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
-        out, err = proc.communicate(input=planner_prompt(delegation) + prompt, timeout=timeout)
+        out, err = proc.communicate(input=planner_prompt(delegation, workflows) + prompt, timeout=timeout)
     except subprocess.TimeoutExpired:
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)
@@ -250,20 +404,54 @@ def parse(stdout: str) -> tuple[str, dict[str, Any] | None]:
     return "ok", plan
 
 
+WORKFLOW_FIELDS = ("workflow", "workflow_confidence", "workflow_reason")
+
+
+def check_workflow(plan: dict[str, Any], candidates: dict[str, str]) -> str:
+    """Keep the workflow fields only where they are valid; return a note.
+
+    "" means they are valid, "off" means no candidates were given (fields
+    removed), "invalid" means the id or confidence is outside what was offered
+    (fields removed, so a wrong value is never recorded as a classification).
+    """
+    if not candidates:
+        for key in WORKFLOW_FIELDS:
+            plan.pop(key, None)
+        return "off"
+    reason = plan.get("workflow_reason")
+    if (
+        plan.get("workflow") in candidates
+        and plan.get("workflow_confidence") in CONFIDENCES
+        and isinstance(reason, str)
+    ):
+        return ""
+    for key in WORKFLOW_FIELDS:
+        plan.pop(key, None)
+    return "invalid"
+
+
 def run(transcript: str, *, caller: Any = _call_planner) -> dict[str, Any]:
     """Planner process body: call the model and write the plan file."""
     model = os.environ.get(PLAN_MODEL_ENV) or DEFAULT_MODEL
     started = time.monotonic()
     record: dict[str, Any] = {"model": model}
     try:
-        prompt = prompt_path(transcript).read_text(encoding="utf-8")
+        request = prompt_path(transcript).read_text(encoding="utf-8")
+        candidates = workflow_candidates()
+        prompt = request
+        if candidates and context_path(transcript).exists():
+            context = context_path(transcript).read_text(encoding="utf-8")
+            prompt = f"{request}\n\n[직전 대화 : 참고용이며 요청이 아니다]\n{context}\n"
         proc = caller(prompt, model, TIMEOUT_SEC)
         status, plan = parse(proc.stdout or "")
-        if plan is not None and plan.get("type") == "short" and is_rca(prompt):
+        if plan is not None and plan.get("type") == "short" and is_rca(request):
             record["rca_retry"] = True
             proc = caller(prompt + RCA_RETRY_NOTE, model, TIMEOUT_SEC)
             status, plan = parse(proc.stdout or "")
         if plan is not None:
+            note = check_workflow(plan, candidates)
+            if note == "invalid":
+                record["workflow_error"] = "invalid"
             record.update(plan)
     except subprocess.TimeoutExpired:
         status = "timeout"
@@ -276,6 +464,7 @@ def run(transcript: str, *, caller: Any = _call_planner) -> dict[str, Any]:
         _write_json(plan_path(transcript), record)
     finally:
         prompt_path(transcript).unlink(missing_ok=True)
+        context_path(transcript).unlink(missing_ok=True)
     return record
 
 

@@ -292,6 +292,9 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         "AGENT_DELEGATION",
         # guard/plan_start: planner model override (default haiku). A model name.
         "SCA_PLAN_MODEL",
+        # guard/plan_start: JSON {workflow id: description} the planner
+        # classifies the request into (record only). Names and prose.
+        "SCA_PLAN_WORKFLOWS",
         # Stop hook model verify toggle and model (finish_review.
         # resolve_verify_settings). On by default; these only override.
         "SCA_FINISH_VERIFY",

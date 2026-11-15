@@ -11,6 +11,7 @@ connection, so events would arrive but nothing would handle them.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shlex
@@ -70,6 +71,7 @@ from ..engine.transcript import (
     SessionTranscriptReader,
     TranscriptReaderRegistry,
 )
+from ..guard import plan_start
 from ..guard.base import OutputGuard
 from ..guard.dropline import ConfiguredLineDropGuard
 from ..guard.figurative import MIN_CHARS_ENV as FIGURATIVE_MIN_CHARS_ENV
@@ -1033,6 +1035,10 @@ class Application:
                 # Resolved per request like the slow report: the engine that
                 # answered decides the transcript format (S0 계측).
                 request_timing=RequestTimingCalculator(self.transcript_reader),
+                # Workflow classification in the plan file lands in the request
+                # row (record only). Candidates stay empty until the workflow
+                # registry is wired in, so this reader is idle for now.
+                plan_result=self._read_plan_result,
                 # built lazily rather than as a field — eagerly building it here would
                 # look up the bot user ID, making assembly alone call out to Slack
                 participants=lambda channel, thread_ts: self._participants().of(channel, thread_ts),
@@ -2449,6 +2455,19 @@ class Application:
             )
         except Exception:
             log.exception("점검 실패: %s %s:%s", emoji, channel, ts)
+
+    def _read_plan_result(self, engine: str, session_id: str) -> dict[str, Any] | None:
+        """The planner's plan file (guard/plan_start) for a session, or None."""
+        reader: Any = self.transcript_reader(engine)
+        find = getattr(reader, "find_transcript_path", None) or getattr(reader, "transcript_path", None)
+        path = find(session_id) if find else None
+        if path is None:
+            return None
+        try:
+            data = json.loads(plan_start.plan_path(str(path)).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
 
     def transcript_reader(self, engine: str = "") -> SessionTranscriptReader:
         """Transcript format and home dir differ per engine, so the reader is
