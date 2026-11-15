@@ -47,6 +47,20 @@ class Test지식_파일_이동:
         assert (learned / "테스트.md").read_text(encoding="utf-8") == "배운 것"
         assert not (learned / "C1.md").exists()
 
+    def test_파일_안의_옛_슬러그_제목도_바뀐다(self, 상태, 이사) -> None:
+        _, learned, _ = 상태
+        (learned / "C1.md").write_text(
+            "# C1\n\n## 대화에서 배운 것\n\n### C1\n- C1 에서 확인한 것\n",
+            encoding="utf-8",
+        )
+
+        이사.migrate("C1", "테스트")
+
+        본문 = (learned / "테스트.md").read_text(encoding="utf-8")
+        assert 본문.startswith("# 테스트\n")
+        assert "### 테스트\n" in 본문
+        assert "- C1 에서 확인한 것" in 본문
+
     def test_여러_디렉터리를_함께_옮긴다(self, 상태, 이사) -> None:
         knowledge, learned, _ = 상태
         (knowledge / "C1.md").write_text("사람이 쓴 것", encoding="utf-8")

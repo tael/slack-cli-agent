@@ -127,8 +127,38 @@ class ChannelSlugMigrator:
             return True
         if not self._replace(source, target):
             return False
+        self._rename_headings(target, source.stem, target.stem)
         log.info("채널 이름이 바뀌어 지식 파일을 옮겼다 : %s -> %s", source, target)
         return True
+
+    @staticmethod
+    def _rename_headings(path: Path, old_slug: str, new_slug: str) -> None:
+        """Rewrites the headings LearningApplier wrote from the old slug.
+
+        Moving the file alone leaves `# C0ABC123` and `### C0ABC123` inside it,
+        and that is what the prompt and the console show as the channel's name.
+        Only a heading whose whole text is the old slug is touched, so a line
+        that happens to name the channel ID is left as written.
+        """
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            log.warning("옮긴 파일의 제목을 바꾸지 못했다 : %s : %s", path, exc)
+            return
+        lines = text.splitlines(keepends=True)
+        changed = False
+        for index, line in enumerate(lines):
+            머리, 기호, 제목 = line.partition(" ")
+            if not 기호 or set(머리) != {"#"} or 제목.strip() != old_slug:
+                continue
+            lines[index] = line.replace(old_slug, new_slug, 1)
+            changed = True
+        if not changed:
+            return
+        try:
+            path.write_text("".join(lines), encoding="utf-8")
+        except OSError as exc:
+            log.warning("옮긴 파일의 제목을 바꾸지 못했다 : %s : %s", path, exc)
 
     def _move_tree(self, source: Path, target: Path) -> bool:
         if not source.is_dir():
