@@ -1067,6 +1067,8 @@ class RequestPipeline:
         if decision.resume:
             transcript = self._transcript.thread_transcript(
                 ctx.channel, ctx.thread_ts, ctx.ts, scope=scope, after_ts=decision.after_ts,
+                # The session already holds its own replies (TranscriptBuilder.thread_transcript).
+                exclude_self=True,
             )
         else:
             transcript = self._transcript.thread_transcript(

@@ -76,10 +76,10 @@ class FakeTranscriptBuilder:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    def thread_transcript(self, channel, thread_ts, before_ts, scope="thread", after_ts=None) -> str:
+    def thread_transcript(self, channel, thread_ts, before_ts, scope="thread", after_ts=None, exclude_self=False) -> str:
         self.calls.append(
             {"channel": channel, "thread_ts": thread_ts, "before_ts": before_ts,
-             "scope": scope, "after_ts": after_ts}
+             "scope": scope, "after_ts": after_ts, "exclude_self": exclude_self}
         )
         return ""
 
@@ -3122,6 +3122,16 @@ class Test라우터_shadow_기록:
         assert first["route_workflow_id"] == "deep"
         assert second["resumed"] is True
         assert second["route_workflow_id"] == "followup"
+
+    def test_재개_턴은_대화록에서_자기_답을_뺀다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response(), ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(text="첫 질문입니다 길게 써서 후속이 아니게 한다 1234567890"))
+        pipeline.handle(make_ctx(text="다음 질문", ts="1700000002.000100"))
+
+        first, second = deps["transcript"].calls
+        assert first["exclude_self"] is False
+        assert second["after_ts"] is not None
+        assert second["exclude_self"] is True
 
     def test_실패한_요청_행에도_남는다(self, tmp_path: Path) -> None:
         pipeline, deps = build_pipeline(responses=[fail_response("usage_limit")], tmp_path=tmp_path)

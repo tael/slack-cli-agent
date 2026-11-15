@@ -37,6 +37,7 @@ class TranscriptPort(Protocol):
         before_ts: str | float | None,
         scope: str = "thread",
         after_ts: str | float | None = None,
+        exclude_self: bool = False,
     ) -> str: ...
 
     def with_history(self, transcript: str, current: CurrentMessage) -> str: ...

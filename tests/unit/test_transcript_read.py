@@ -70,3 +70,22 @@ class Test조회결과구분:
         assert builder.thread_transcript("C1", "1700000000.000001", None) == builder.read_thread(
             "C1", "1700000000.000001", None
         ).body
+
+
+class Test재개턴_자기답제외:
+    """재개 세션은 자기 답을 이미 가지고 있다. 다시 읽으면 같은 답이 두 번 들어간다(11-16 실측 32/32)."""
+
+    MESSAGES = [
+        {"ts": "1700000001.000001", "user": "U_BOT", "bot_id": "B_BOT", "text": "앞 턴 답"},
+        {"ts": "1700000002.000001", "user": "U1", "text": "사람이 그사이 쓴 말"},
+    ]
+
+    def test_exclude_self_면_자기_답만_빠진다(self) -> None:
+        body = 만들기(대역클라이언트(self.MESSAGES)).thread_transcript(
+            "C1", "1700000000.000001", None, exclude_self=True)
+        assert "앞 턴 답" not in body
+        assert "사람이 그사이 쓴 말" in body
+
+    def test_기본값은_자기_답도_넣는다(self) -> None:
+        body = 만들기(대역클라이언트(self.MESSAGES)).thread_transcript("C1", "1700000000.000001", None)
+        assert "앞 턴 답" in body
