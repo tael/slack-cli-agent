@@ -78,3 +78,51 @@ def test_result_이벤트가_없으면_bad_json() -> None:
 
     assert not response.ok
     assert response.failure_reason == "bad_json"
+
+
+HANDOFF = "마메치에게 맡겼습니다.\n[[RECIPIENT:BOT:U0BS6LBPHJ6]]"
+
+
+def test_수신자_표식_답_뒤의_침묵은_앞_답을_최종_답으로_쓴다() -> None:
+    # 2026-11-15 휴가 위임 거짓 보고
+    stdout = json.dumps([
+        {"type": "system", "subtype": "init", "session_id": "sess-abc"},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": HANDOFF}]}},
+        {"type": "user", "message": {"content": "<task-notification>done</task-notification>"}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "[[침묵]]"}]}},
+        result_event(result="[[침묵]]"),
+    ], ensure_ascii=False)
+
+    response = engine().parse(stdout, "", 0)
+
+    assert response.ok
+    assert response.body == HANDOFF
+
+
+def test_앞_답에_수신자_표식이_없으면_침묵이_그대로_남는다() -> None:
+    stdout = json.dumps([
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "중간 메모"}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "[[침묵]]"}]}},
+        result_event(result="[[침묵]]"),
+    ], ensure_ascii=False)
+
+    assert engine().parse(stdout, "", 0).body == "[[침묵]]"
+
+
+def test_침묵이_아닌_최종_답은_앞_답으로_바뀌지_않는다() -> None:
+    stdout = json.dumps([
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": HANDOFF}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "최종 답"}]}},
+        result_event(result="최종 답"),
+    ], ensure_ascii=False)
+
+    assert engine().parse(stdout, "", 0).body == "최종 답"
+
+
+def test_앞_답도_침묵이면_침묵이다() -> None:
+    stdout = json.dumps([
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "[[침묵]]\n[[RECIPIENT:OWNER]]"}]}},
+        result_event(result="[[침묵]]"),
+    ], ensure_ascii=False)
+
+    assert engine().parse(stdout, "", 0).body == "[[침묵]]"
