@@ -646,6 +646,17 @@ class Engine(ABC):
             return request.system_prompt
         return self._instruction_ledger.reduce(request.session_id, request.system_prompt)
 
+    def recover_silenced_answer(
+        self, request: EngineRequest, response: EngineResponse, env: Mapping[str, str],
+    ) -> EngineResponse:
+        """Hook for an engine whose final text can bury an earlier answer.
+
+        The runner calls it on every parsed response; the default keeps the
+        response as it is. `env` is the environment the call ran under, so an
+        engine can find files the call wrote under its own HOME.
+        """
+        return response
+
     def note_delivered(self, request: EngineRequest, response: EngineResponse) -> None:
         """Records what a finished turn put in its session. The runner calls
         this after every attempt. Only a successful one adds blocks, since a

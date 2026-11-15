@@ -348,6 +348,77 @@ class ClaudeTranscriptReader(SessionTranscriptReader):
         return kind, brief
 
 
+TASK_NOTIFICATION_PREFIX = "<task-notification>"
+
+
+def _text_of(content: Any, block_type: str) -> str | None:
+    """Joined text blocks of a message, or None when it holds none.
+
+    A user message made only of tool_result blocks is not something a person
+    or the harness said, so it reads as None here.
+    """
+    if isinstance(content, str):
+        return content.strip() if block_type == "text" else None
+    if not isinstance(content, list):
+        return None
+    pieces = [
+        str(block.get("text") or "") for block in content
+        if isinstance(block, dict) and block.get("type") == block_type
+    ]
+    return "\n".join(pieces).strip() if pieces else None
+
+
+def recover_handoff_over_silence(path: Path) -> str | None:
+    """The handoff text a background task-notification step buried in silence.
+
+    2026-11-15 휴가 위임 거짓 보고: the model answered with a recipient-tagged
+    handoff, a task-notification woke it for one more step, and it ended on
+    `[[침묵]]`. Only the last text reaches the result event, so the handoff was
+    never posted.
+
+    Reads only the segment after the last real user prompt (a user text that
+    is not a task-notification). The earlier text is returned only when the
+    segment ends on silence, the sole user messages between the two texts are
+    task-notifications, and that earlier text is not silent and carries a
+    recipient tag. A draft the harness or a person retracted has a real user
+    message after it, so it never qualifies.
+    """
+    from ..core.markers import RECIPIENT_TAG_ANY
+    from ..prompt.sections import is_silent
+
+    # (role, text, is_notification) for every message that holds text.
+    texts: list[tuple[str, str, bool]] = []
+    for _ts, data in _read_timestamped_lines(path):
+        if data.get("isSidechain"):
+            continue
+        message = data.get("message")
+        role = data.get("type")
+        if not isinstance(message, dict) or role not in ("user", "assistant"):
+            continue
+        text = _text_of(message.get("content"), "text")
+        if not text:
+            continue
+        notification = role == "user" and text.startswith(TASK_NOTIFICATION_PREFIX)
+        texts.append((role, text, notification))
+
+    start = 0
+    for index, (role, _text, notification) in enumerate(texts):
+        if role == "user" and not notification:
+            start = index + 1
+    segment = texts[start:]
+    assistant = [i for i, (role, _t, _n) in enumerate(segment) if role == "assistant"]
+    if len(assistant) < 2 or not is_silent(segment[assistant[-1]][1]):
+        return None
+    earlier, last = assistant[-2], assistant[-1]
+    between = segment[earlier + 1:last]
+    if not between or not all(role == "user" and notification for role, _t, notification in between):
+        return None
+    draft = segment[earlier][1]
+    if is_silent(draft) or not RECIPIENT_TAG_ANY.search(draft):
+        return None
+    return draft
+
+
 class CodexTranscriptReader(SessionTranscriptReader):
     """Reads the jsonl rollout file the Codex CLI (`codex exec`) writes.
 

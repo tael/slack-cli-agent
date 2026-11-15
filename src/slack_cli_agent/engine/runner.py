@@ -391,6 +391,7 @@ class EngineRunner:
                 engine=engine.name,
                 model_asked=attempt.model or "",
             )
+            response = engine.recover_silenced_answer(attempt, response, extra["env"])
             # sca-cfa — some engines (Codex) never report their own elapsed time.
             # Only fill in the runner's wall-clock measurement when the engine
             # left it unknown; an engine-reported value is more precise (it can
