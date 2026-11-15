@@ -49,6 +49,7 @@ from typing import Any, ClassVar
 from ..auth.policy import OPERATOR_TOOLS
 from ..auth.principal import TrustLevel
 from ..config.profile import EngineSpec, McpServerSpec
+from ..core.markers import RECIPIENT_TAG_ANY
 from ..guard import finish_hook, plan_start
 from ..guard.posttool import parallel_nudge
 from ..guard.pretool import (
@@ -62,6 +63,7 @@ from ..guard.pretool import (
     turn_budget,
 )
 from ..observability.progress_hook import HOOK_SCRIPT
+from ..prompt.sections import is_silent
 from .base import (
     ElapsedSource,
     Engine,
@@ -894,6 +896,7 @@ class ClaudeEngine(Engine):
             )
 
         body = str(payload.get("result") or "").strip()
+        body = self._addressed_text_over_silence(stdout, body)
         if not body:
             return EngineResponse(
                 ok=False, body="응답이 비어 있습니다.", session_id=session_id,
@@ -911,6 +914,40 @@ class ClaudeEngine(Engine):
             elapsed=elapsed, turns=turns, usage=usage, model_usage=model_usage,
             raw=dict(payload), failure_reason=None, elapsed_source=elapsed_source,
         )
+
+    @staticmethod
+    def _addressed_text_over_silence(stdout: str, body: str) -> str:
+        """Keeps an addressed answer that a later silent step would bury.
+
+        2026-11-15 휴가 위임 거짓 보고: the model wrote a handoff reply ending in
+        a recipient tag, then a background task-notification woke it for one
+        more step and it answered `[[침묵]]`. The result event carries only that
+        last text, so the handoff was never posted. When the final text is
+        silence, the last earlier assistant text that carries a recipient tag
+        is the answer.
+        """
+        if not is_silent(body):
+            return body
+        try:
+            events = json.loads(stdout)
+        except (json.JSONDecodeError, TypeError):
+            return body
+        if not isinstance(events, list):
+            return body
+        for event in reversed(events):
+            if not (isinstance(event, Mapping) and event.get("type") == "assistant"):
+                continue
+            message = event.get("message")
+            content = message.get("content") if isinstance(message, Mapping) else None
+            if not isinstance(content, list):
+                continue
+            text = "\n".join(
+                str(block.get("text") or "") for block in content
+                if isinstance(block, Mapping) and block.get("type") == "text"
+            ).strip()
+            if text and not is_silent(text) and RECIPIENT_TAG_ANY.search(text):
+                return text
+        return body
 
     @staticmethod
     def _elapsed_from_payload(payload: Mapping[str, Any]) -> tuple[float, ElapsedSource]:
