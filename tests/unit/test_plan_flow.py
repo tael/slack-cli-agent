@@ -293,6 +293,49 @@ class TestPlanGateInject:
         assert pg.threshold_from_env({"PLAN_GATE": "3"}) == 3
 
 
+_PARALLEL_PLAN = {
+    "type": "explore",
+    "branches": [
+        {"goal": "환율", "source": "open.er-api.com", "depends_on": [], "delegate": "lookup", "returns": "수치"},
+        {"goal": "메모 검색", "source": "Apple Notes", "depends_on": [], "delegate": "analyst", "returns": "목록"},
+        {"goal": "요약", "source": "앞 결과", "depends_on": [1, 2], "delegate": "lookup", "returns": "문단"},
+        {"goal": "일정", "source": "캘린더", "depends_on": [], "delegate": "none", "returns": "목록"},
+    ],
+}
+
+
+class TestPlanGateForceParallel:
+    def test_의존_없는_위임_갈래가_둘_이상이면_호출_형태로_적는다(self) -> None:
+        text = pg.render(_PARALLEL_PLAN, delegation=True, force_parallel=True)
+        assert pg.FORCE_PARALLEL_HEAD in text
+        assert 'Agent(subagent_type="lookup", prompt="목표: 환율 / 원천: open.er-api.com / 반환: 수치")' in text
+        assert 'Agent(subagent_type="analyst", prompt="목표: 메모 검색' in text
+        assert "목표: 요약" not in text.split(pg.FORCE_PARALLEL_HEAD)[1]
+        assert "목표: 일정" not in text.split(pg.FORCE_PARALLEL_HEAD)[1]
+        assert text.endswith(pg.INJECT_TAIL_END)
+
+    def test_위임_갈래가_하나뿐이면_강제_문단을_내지_않는다(self) -> None:
+        assert pg.FORCE_PARALLEL_HEAD not in pg.render(_PLAN, delegation=True, force_parallel=True)
+
+    def test_스위치나_위임이_꺼져_있으면_강제_문단을_내지_않는다(self) -> None:
+        assert pg.FORCE_PARALLEL_HEAD not in pg.render(_PARALLEL_PLAN, delegation=True, force_parallel=False)
+        assert pg.FORCE_PARALLEL_HEAD not in pg.render(_PARALLEL_PLAN, delegation=False, force_parallel=True)
+
+    def test_decide_는_환경값으로_스위치를_읽는다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        monkeypatch.setenv("PLAN_GATE", "3")
+        monkeypatch.setenv("AGENT_DELEGATION", "1")
+        monkeypatch.setenv(pg.FORCE_PARALLEL_ENV, "1")
+        call = {"transcript_path": str(tmp_path / "s.jsonl"), "tool_use_id": "t1", "tool_name": "Read"}
+        _write_plan(call["transcript_path"], status="ok", **_PARALLEL_PLAN)
+        verdict, context = pg.decide(call)
+        assert verdict == "inject" and pg.FORCE_PARALLEL_HEAD in context
+
+    def test_환경값_해석(self) -> None:
+        assert pg.force_parallel_from_env({}) is False
+        assert pg.force_parallel_from_env({pg.FORCE_PARALLEL_ENV: "0"}) is False
+        assert pg.force_parallel_from_env({pg.FORCE_PARALLEL_ENV: "1"}) is True
+
+
 def _run_hook(transcript: str, env_value: str | None) -> tuple[dict[str, Any] | None, int]:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(SRC_ROOT) + os.pathsep + env.get("PYTHONPATH", "")

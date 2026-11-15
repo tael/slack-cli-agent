@@ -61,6 +61,20 @@ INJECT_TAIL_DELEGATION = (
     "- 위임이 적힌 갈래는 Agent(subagent_type=\"<위임>\")에 범위, 목표, 금지 조건, 반환 형식 "
     "네 항목으로 맡긴다\n"
 )
+#: Env var that turns on FORCE_PARALLEL (below). Absent, empty or "0" is off.
+#: Kept behind its own switch so a replay can measure it before any turn runs it.
+FORCE_PARALLEL_ENV = "SCA_PLAN_FORCE_PARALLEL"
+#: Delegated branches with no dependency at or above this count get the forced
+#: form. One branch has nothing to run beside it.
+FORCE_PARALLEL_MIN = 2
+#: Written as the calls to make, not as advice. With the advice form alone
+#: ("함께 부른다", "맡긴다") H8 replay delegated in 2 of 10 runs and never ran
+#: two Agent calls in one response (tasks/shinji-workflow/h8-deep-parallel,
+#: 2026-11-16).
+FORCE_PARALLEL_HEAD = (
+    "- 아래 Agent 호출을 지금 다음 응답 하나에 모두 함께 낸다. 이 갈래들을 직접 조회로 대신하지 않는다. "
+    "결과가 모두 돌아온 뒤 합쳐서 답한다\n"
+)
 INJECT_TAIL_END = (
     "- 갈래가 요청과 맞지 않거나 빠진 일이 있으면 요청을 따른다\n"
     "- 이 안내는 내부 작업 순서다. 답변에 이 안내, 작업 순서, 계획, 훅을 언급하지 않는다"
@@ -94,7 +108,30 @@ def delegation_from_env(env: dict[str, str] | os._Environ[str] | None = None) ->
     return str(raw).strip() not in ("", "0")
 
 
-def render(plan: dict[str, Any], delegation: bool = False) -> str:
+def force_parallel_from_env(env: dict[str, str] | os._Environ[str] | None = None) -> bool:
+    """SCA_PLAN_FORCE_PARALLEL on: set and not "0"."""
+    raw = (env if env is not None else os.environ).get(FORCE_PARALLEL_ENV, "")
+    return str(raw).strip() not in ("", "0")
+
+
+def _parallel_calls(plan: dict[str, Any]) -> list[str]:
+    """Agent calls for the delegated branches that depend on nothing."""
+    calls = []
+    for branch in plan.get("branches") or []:
+        if not isinstance(branch, dict) or branch.get("depends_on"):
+            continue
+        delegate = branch.get("delegate") or "none"
+        if delegate == "none":
+            continue
+        brief = (
+            f"목표: {branch.get('goal', '')} / 원천: {branch.get('source', '')} / "
+            f"반환: {branch.get('returns', '')}"
+        )
+        calls.append(f'  Agent(subagent_type="{delegate}", prompt="{brief}")')
+    return calls
+
+
+def render(plan: dict[str, Any], delegation: bool = False, force_parallel: bool = False) -> str:
     lines = [INJECT_HEAD, f"유형 : {_TYPE_LABEL.get(str(plan.get('type')), plan.get('type'))}"]
     for i, branch in enumerate(plan.get("branches") or [], start=1):
         if not isinstance(branch, dict):
@@ -110,8 +147,11 @@ def render(plan: dict[str, Any], delegation: bool = False) -> str:
         lines.append(line)
     if plan.get("type") == "explore":
         lines.append("- 탐색형이다. 첫 갈래 결과를 보고 다음 조회를 정한다")
-    tail = INJECT_TAIL_HEAD + (INJECT_TAIL_DELEGATION if delegation else "") + INJECT_TAIL_END
-    return "\n".join(lines) + "\n" + tail
+    tail = INJECT_TAIL_HEAD + (INJECT_TAIL_DELEGATION if delegation else "")
+    calls = _parallel_calls(plan) if delegation and force_parallel else []
+    if len(calls) >= FORCE_PARALLEL_MIN:
+        tail += FORCE_PARALLEL_HEAD + "\n".join(calls) + "\n"
+    return "\n".join(lines) + "\n" + tail + INJECT_TAIL_END
 
 
 def _read_plan(path: Path, now: float) -> dict[str, Any] | None:
@@ -156,7 +196,7 @@ def decide(data: dict[str, Any], now: float | None = None) -> tuple[str, str]:
     except OSError:
         return "flag_error", ""
     os.close(fd)
-    return "inject", render(plan, delegation_from_env())
+    return "inject", render(plan, delegation_from_env(), force_parallel_from_env())
 
 
 def main(argv: list[str]) -> int:
