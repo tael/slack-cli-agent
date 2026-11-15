@@ -61,6 +61,7 @@ from ..guard.pretool.plan_gate import PLAN_GATE_ENV
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
 from ..observability.audit import IncidentKind
+from .handoff_claim import find_handoff_claim, handoff_claim_unbacked
 from ..observability.progress import ProgressCoordinator
 from ..observability.request_timing import RequestTiming, RequestTimingCalculator
 from ..observability.response_archive import ResponseArchive
@@ -317,6 +318,9 @@ class RequestPipeline:
         # Splits each request's wall time into named items for its audit row
         # (time_breakdown). None leaves the row without one (S0 계측).
         request_timing: RequestTimingCalculator | None = None,
+        # (engine name, session id) -> names of the tools the turn called, None
+        # when unreadable. Feeds the audit-only handoff claim check.
+        turn_tools: Callable[[str, str], Sequence[str] | None] | None = None,
         # Optional to avoid an extra Slack lookup where it's not needed.
         participants: Callable[[str, str], tuple[tuple[str, str], ...]] | None = None,
         linked_threads: Callable[[str, str, Sequence[Mapping[str, Any]], bool], str] | None = None,
@@ -418,6 +422,7 @@ class RequestPipeline:
         self._mention_table = mention_table
         self._slow_reporter = slow_reporter
         self._request_timing = request_timing
+        self._turn_tools = turn_tools
         self._participants = participants
         self._linked_threads = linked_threads
         self._late_addendum = late_addendum
@@ -951,6 +956,7 @@ class RequestPipeline:
             if receipt is not None and receipt.body:
                 posted_body = receipt.body
         self._archive_response(ctx, body, response, elapsed)
+        self._audit_handoff_claim(ctx, unfootered_body, response, decision)
         self._record_delegation(ctx, principal, recipient, answer_parts, posted_body)
         if posted_body == body:
             self._correct_after_post(ctx, principal, unfootered_body, with_footer, answer_parts, rich)
@@ -1019,6 +1025,27 @@ class RequestPipeline:
                 log.warning("게시 뒤 교정 실패 channel=%s ts=%s", ctx.channel, ts, exc_info=True)
 
         self._spawn(run)
+
+    def _audit_handoff_claim(
+        self, ctx: RequestContext, body: str, response: EngineResponse, decision: SessionDecision,
+    ) -> None:
+        # 2026-11-15 휴가 위임 거짓 보고: "넘겼다" with no Slack post in the turn.
+        # Audit only; a failure here never touches the answer that is already up.
+        if self._turn_tools is None:
+            return
+        try:
+            if find_handoff_claim(body) is None:
+                return
+            session = response.session_id or decision.session_id or ""
+            tools = self._turn_tools(response.engine or self._engine.name, session) if session else None
+            claim = handoff_claim_unbacked(body, tools)
+            if claim is not None:
+                self._audit.record(
+                    IncidentKind.HANDOFF_CLAIM_UNBACKED.value, channel=ctx.channel,
+                    thread_ts=ctx.thread_ts, session_id=session, claim=claim[:200],
+                )
+        except Exception:  # noqa: BLE001
+            log.warning("위임 주장 점검 실패", exc_info=True)
 
     def _archive_response(
         self, ctx: RequestContext, body: str, response: EngineResponse, elapsed: float,
