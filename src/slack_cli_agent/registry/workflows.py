@@ -134,6 +134,16 @@ def load_workflows(workflows_root: Path, sources_root: Path) -> WorkflowRegistry
     return WorkflowRegistry(True, "", {w.id: w for w in items}, tuple(rejected), known - live)
 
 
+def classification_candidates(registry: WorkflowRegistry) -> dict[str, str]:
+    """계획 호출(guard/plan_start)이 분류할 후보. `{id: description}`.
+
+    기능이 꺼진 레지스트리는 빈 dict 이고, 빈 dict 면 분류하지 않는다.
+    """
+    if not registry.enabled:
+        return {}
+    return {w.id: " ".join(w.description.split()) for w in registry.workflows.values()}
+
+
 def render_workflow_block(workflow: Workflow) -> str:
     """요청 헤더(prompt/sections.render_request_header)에 한 덩어리로 붙일 블록.
 

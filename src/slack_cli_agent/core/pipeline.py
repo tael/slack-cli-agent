@@ -5,6 +5,7 @@ call, guard corrections, and posting to Slack. Implements
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -57,6 +58,7 @@ from ..guard.mentions import (
     leading_recipient_bot,
 )
 from ..guard.pipeline import GuardPipeline
+from ..guard.plan_start import WORKFLOWS_ENV as PLAN_WORKFLOWS_ENV
 from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, PLAN_GATE_ENV
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
@@ -306,6 +308,13 @@ class RequestPipeline:
         # injection (guard/pretool/plan_gate). Set as PLAN_GATE on turns
         # FlowSection applies to; 0 (the component default) leaves it off.
         plan_gate_responses: int = 0,
+        # {workflow id: description} the planner classifies each request into
+        # (guard/plan_start, record only). Empty leaves classification off.
+        plan_workflows: Mapping[str, str] | None = None,
+        # (engine name, session id) -> the planner's plan file content or None.
+        # Lets the request row carry the classification; None leaves the row
+        # without plan_* fields.
+        plan_result: Callable[[str, str], Mapping[str, Any] | None] | None = None,
         mention_table: Callable[[], Mapping[str, str]] = dict,
         slow_reporter: SlowRequestReporter | None = None,
         # Splits each request's wall time into named items for its audit row
@@ -404,6 +413,8 @@ class RequestPipeline:
         self._asker_is_bot = asker_is_bot
         self._require_recipient = require_recipient
         self._plan_gate_responses = plan_gate_responses
+        self._plan_workflows = dict(plan_workflows or {})
+        self._plan_result = plan_result
         # Reuses asker_is_bot as the is-bot oracle: resolving a RECIPIENT tag
         # needs the same "is this user a bot" lookup for the ASKER→BOT fold and
         # for validating a BOT:id. Forces the leading mention for bot recipients
@@ -1306,7 +1317,10 @@ class RequestPipeline:
         chat = config is not None and (config.chat == "active" or config.mode == "chat")
         if self._plan_gate_responses <= 0 or not flow_applies(tier, chat=chat):
             return {}
-        return {PLAN_GATE_ENV: str(self._plan_gate_responses)}
+        env = {PLAN_GATE_ENV: str(self._plan_gate_responses)}
+        if self._plan_workflows:
+            env[PLAN_WORKFLOWS_ENV] = json.dumps(self._plan_workflows, ensure_ascii=False)
+        return env
 
     def _delegation_env(self, tools: ToolSelection) -> dict[str, str]:
         """AGENT_DELEGATION for the guard hooks and the planner: set when this
@@ -1990,6 +2004,8 @@ class RequestPipeline:
         if failure_detail:
             extra["failure_detail"] = str(failure_detail)
         extra.update(self._route_shadow_fields(ctx, decision.resume))
+        plan_session = (model_usage.session_id if model_usage else None) or decision.session_id
+        extra.update(self._plan_workflow_fields(plan_session, start=self._now() - elapsed))
         first_reaction_sec = self._first_reaction_sec(ctx)
         queue_wait_sec = self._queue_wait_sec(ctx)
         self._audit.record_request(
@@ -2009,6 +2025,45 @@ class RequestPipeline:
             turns=turns,
             **extra,
         )
+
+    def _plan_workflow_fields(self, session_id: str | None, *, start: float) -> dict[str, Any]:
+        """계획 호출의 workflow 분류를 request 행에 남길 필드. 기록 전용이다.
+
+        계획은 비동기라 행을 쓰는 시점에 없거나 끝나지 않았을 수 있다. 분류를
+        못 읽은 사유는 `plan_status` 로 남겨 "분류 안 됨" 과 구분한다.
+        필드가 없는 행은 분류를 켜지 않았거나 이 기능 이전 행이다.
+
+        - ok: 분류가 있음. plan_workflow_id, plan_workflow_confidence, plan_workflow_reason
+        - ok_no_workflow: 계획은 성공했으나 분류 값이 후보 밖이라 버려짐
+        - pending/timeout/error:*/bad_output: 계획 파일의 status 그대로
+        - no_plan_file: 계획 파일이 없음(훅이 이 요청에서 안 돌았거나 세션 경로를 못 찾음)
+        - stale: 계획 파일이 이 요청보다 먼저 만들어진 것
+        - read_error: 읽기 예외
+        """
+        if not self._plan_workflows or self._plan_result is None:
+            return {}
+        try:
+            plan = self._plan_result(self._engine.name, session_id or "") if session_id else None
+        except Exception as exc:  # noqa: BLE001 -- 기록이 요청 처리를 막으면 안 된다
+            log.warning("계획 파일 읽기 실패", exc_info=True)
+            return {"plan_status": "read_error", "plan_error": f"{type(exc).__name__}"[:80]}
+        if not plan:
+            return {"plan_status": "no_plan_file"}
+        stamp = plan.get("finished_at") or plan.get("started_at")
+        if isinstance(stamp, (int, float)) and stamp < start - 1.0:
+            return {"plan_status": "stale"}
+        status = str(plan.get("status") or "unknown")
+        fields: dict[str, Any] = {"plan_status": status}
+        if status != "ok":
+            return fields
+        if plan.get("workflow") and plan.get("workflow_confidence"):
+            fields["plan_workflow_id"] = plan["workflow"]
+            fields["plan_workflow_confidence"] = plan["workflow_confidence"]
+            if plan.get("workflow_reason"):
+                fields["plan_workflow_reason"] = str(plan["workflow_reason"])[:200]
+        else:
+            fields["plan_status"] = "ok_no_workflow"
+        return fields
 
     @staticmethod
     def _route_shadow_fields(ctx: RequestContext, resumed: bool) -> dict[str, Any]:
