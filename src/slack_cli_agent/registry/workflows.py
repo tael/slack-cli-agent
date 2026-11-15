@@ -3,7 +3,8 @@
 `workflows/<id>/WORKFLOW.md` 프론트매터
 
     id            디렉터리 이름과 같아야 한다
-    description   쓸 때와 쓰지 않을 때 (한 줄)
+    description   쓸 때와 쓰지 않을 때를 예시 발화와 함께 (한 줄). 의미 분류기가 읽는
+                  입력이므로 발화 길이가 아니라 의미로 갈리게 쓴다
     capabilities  능력 이름 목록. 소스 레지스트리에 없는 이름이면 그 workflow 거부
     model         선택
     effort        선택. low|medium|high|xhigh|max
@@ -172,10 +173,9 @@ def resume_decision(registry: WorkflowRegistry, *, opened: str, routed: str) -> 
     둘 다 모르는 id).
 
     - 라우팅 능력이 열린 workflow 능력의 부분집합이면 열린 것을 유지한다
-    - followup(스레드에서 직전 workflow 상속)은 도구를 줄이지 않는다. 능력을
-      deep 과 같게 선언해 두므로, 열린 workflow 를 모르면 deep 으로, 알면 위
-      규칙에 따라 열린 것이 유지된다. 상속 자체는 호출 측이 routed 를 ""
-      (열린 것 유지)로 넘겨 표현할 수 있다
+    - 스레드가 열린 workflow 를 이어받을지(상속)는 workflow 선택 단계의 일이다.
+      이 함수는 선택 결과를 받아 능력만 합친다. 이어받는 호출 측은 routed 를
+      ""(열린 것 유지)로 넘긴다. 발화 길이로 workflow 를 정하지 않는다
     - 아니면 합집합 능력으로 넓히고 id 는 이번 라우팅 결과로 바꾼다
     - 좁히는 경우는 없다
 
