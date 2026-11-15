@@ -51,6 +51,16 @@ NON_INTERACTIVE_ENV: Mapping[str, str] = {
     "CI": "1",
 }
 
+#: Fixed on every claude turn. A headless turn ends at its result event, so a
+#: background task (Agent's default async launch, Bash run_in_background)
+#: comes back as a <task-notification> user row and a second result in the
+#: same process; the guard hooks read that row as human input and the turn's
+#: elapsed counts only the last result (2026-11-16 agent-exp-shinji run2).
+#: With this set the Agent call waits for its result and parallel calls in
+#: one response still overlap (run3, claude 2.1.325). Production transcripts
+#: had no run_in_background call in 378 sessions before this was set.
+CLAUDE_SYNC_TASKS_ENV: Mapping[str, str] = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
+
 #: Seconds left at the end of a turn for writing the answer. Must equal
 #: guard/pretool/turn_budget.DEFAULT_WRAPUP_SEC; a test pins the two together.
 TURN_WRAPUP_SEC = 60
@@ -99,7 +109,7 @@ def _with_turn_id(
     turn = source_env.get("TURN_ID")
     if not turn:
         return env
-    owned = set(env) | set(NON_INTERACTIVE_ENV) | guarded | _RESERVED_ALIAS_NAMES
+    owned = set(env) | set(NON_INTERACTIVE_ENV) | set(CLAUDE_SYNC_TASKS_ENV) | guarded | _RESERVED_ALIAS_NAMES
     env["TURN_ID"] = turn
     for name in (source_env.get(TURN_ID_ALIASES_ENV) or "").split(","):
         name = name.strip()
@@ -332,6 +342,7 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
             env["CLAUDE_ACCOUNT"], env["CLAUDE_CODE_OAUTH_TOKEN"] = account
         env.setdefault("MCP_TOOL_TIMEOUT", DEFAULT_MCP_TOOL_TIMEOUT_MS)
         env.update(NON_INTERACTIVE_ENV)
+        env.update(CLAUDE_SYNC_TASKS_ENV)
         return _with_turn_id(env, source_env, self.ADDITIONAL_ALLOWED_VARS)
 
 

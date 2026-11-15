@@ -291,3 +291,18 @@ class TestEngineHasSubagents:
 
         assert Engine.has_subagents(SimpleNamespace(profile=SimpleNamespace(agents={}))) is False
         assert Engine.has_subagents(SimpleNamespace(profile=SimpleNamespace(agents={"lookup": 1}))) is True
+
+
+class TestSyncTasksEnv:
+    def test_claude_턴은_백그라운드_작업을_끈다(self) -> None:
+        from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
+
+        env = ClaudeEnvironmentPolicy("shinji").build({"PATH": "/bin", "HOME": "/tmp"})
+        assert env.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS") == "1"
+
+    def test_부모_환경이_0_이어도_덮어쓴다(self) -> None:
+        from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
+
+        env = ClaudeEnvironmentPolicy("shinji").build(
+            {"PATH": "/bin", "HOME": "/tmp", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "0"})
+        assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
