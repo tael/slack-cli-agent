@@ -607,7 +607,7 @@ class RequestPipeline:
         # Worked out before the instruction fingerprint: whether this turn can
         # delegate to Agent is part of the instructions it is told.
         tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
-        delegation = tools.can_delegate
+        delegation = self._can_delegate(tools)
 
         key = self._session_key(ctx, scope)
         # The tier decides resumption too: a resumed session keeps the
@@ -1310,11 +1310,20 @@ class RequestPipeline:
 
     def _delegation_env(self, tools: ToolSelection) -> dict[str, str]:
         """AGENT_DELEGATION for the guard hooks and the planner: set when this
-        turn's tool list has Agent or Task (ToolSelection.can_delegate), the
-        same judgment FlowSection gets as ctx.delegation. Independent of
+        turn can delegate (_can_delegate), the same judgment FlowSection gets
+        as ctx.delegation. Independent of
         PLAN_GATE: the serial-read denial applies on every turn. Absent means
         the hooks leave delegation wording out."""
-        return {AGENT_DELEGATION_ENV: "1"} if tools.can_delegate else {}
+        return {AGENT_DELEGATION_ENV: "1"} if self._can_delegate(tools) else {}
+
+    def _can_delegate(self, tools: ToolSelection) -> bool:
+        """Whether this turn is told it can delegate: the tool list has Agent
+        or Task (ToolSelection.can_delegate) and the engine has subagents to
+        call (Engine.has_subagents). The same two conditions decide whether
+        engine/claude._agent_args sends --agents, so the instructions and the
+        CLI do not disagree. FlowSection (ctx.delegation) and the guard hooks
+        (AGENT_DELEGATION) both read this one judgment."""
+        return tools.can_delegate and self._engine.has_subagents()
 
     def _owner_name(self) -> str:
         if not self._owner_user_id:

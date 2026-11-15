@@ -628,6 +628,14 @@ class Engine(ABC):
         self.settings = settings
         self._instruction_ledger = InstructionLedger(refresh_after=self.instruction_refresh_after)
 
+    def has_subagents(self) -> bool:
+        """Whether the profile defines subagents (profile.agents) for a
+        delegating turn to call. Without them engine/claude._agent_args sends
+        no --agents, so Agent(subagent_type="lookup") names nothing and the
+        turn must not be told it can delegate (2026-11-16: owner_tools gained
+        Agent with no agents defined)."""
+        return bool(self.profile.agents)
+
     def resumes_with_opening_instructions(self) -> bool:
         """Whether a resumed turn runs under the instructions the session
         opened with rather than this turn's. claude drops

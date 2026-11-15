@@ -171,6 +171,12 @@ class FakeEngine(Engine):
     def parse(self, stdout: str, stderr: str, returncode: int) -> EngineResponse:
         raise NotImplementedError
 
+    #: profile.agents 가 있는 것으로 볼지. 기본은 없음.
+    subagents = False
+
+    def has_subagents(self) -> bool:
+        return self.subagents
+
     def new_session_id(self) -> str:
         return "engine-new-session"
 

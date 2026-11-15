@@ -225,7 +225,9 @@ OWNER_TOOLS_WITH_AGENT = ("Bash", "Agent", "Read")
 OWNER_TOOLS_WITHOUT_AGENT = ("Bash", "Read")
 
 
-def _run_owner_turn(tmp_path: Path, owner_tools: tuple[str, ...]) -> tuple[Any, Any]:
+def _run_owner_turn(
+    tmp_path: Path, owner_tools: tuple[str, ...], *, subagents: bool = True,
+) -> tuple[Any, Any]:
     from test_pipeline import FakeComposer, build_pipeline, make_ctx, ok_response
 
     composer = FakeComposer()
@@ -234,6 +236,7 @@ def _run_owner_turn(tmp_path: Path, owner_tools: tuple[str, ...]) -> tuple[Any, 
         responses=[ok_response()], tmp_path=tmp_path, tool_policy=policy, composer=composer,
     )
     pipeline._plan_gate_responses = 3
+    pipeline._engine.subagents = subagents
     pipeline.handle(make_ctx(channel="C1", user="UOWNER", ts="1700000001.000100",
                              thread_ts="1700000001.000100"))
     return deps["runner"].calls[0], composer
@@ -251,6 +254,13 @@ class TestPipelineDelegation:
         assert composer.contexts[-1].delegation is False
         # 흐름 자체(PLAN_GATE)는 위임과 무관하게 켜진다
         assert request.engine_env.get("PLAN_GATE") == "3"
+
+    def test_Agent_가_있어도_프로필_작업자가_없으면_싣지_않는다(self, tmp_path: Path) -> None:
+        # 2026-11-16 실제 상태: owner_tools 에 Agent 가 있고 profile.agents 는 비었다.
+        # --agents 가 안 붙어 lookup 을 부를 수 없으니 안내도 끈다.
+        request, composer = _run_owner_turn(tmp_path, OWNER_TOOLS_WITH_AGENT, subagents=False)
+        assert DELEGATION_ENV not in request.engine_env
+        assert composer.contexts[-1].delegation is False
 
     def test_환경_허용목록에_있다(self) -> None:
         assert DELEGATION_ENV in ClaudeEnvironmentPolicy.ADDITIONAL_ALLOWED_VARS
@@ -271,3 +281,13 @@ class TestFingerprint:
         assert composer.instruction_fingerprint(on) == composer.instruction_fingerprint(
             helper._ctx(helper.OWNER, delegation=True, thread_ts="9.9", prompt="다른 요청", **kwargs))
         app.close()
+
+
+class TestEngineHasSubagents:
+    def test_프로필_agents_유무를_따른다(self) -> None:
+        from types import SimpleNamespace
+
+        from slack_cli_agent.engine.base import Engine
+
+        assert Engine.has_subagents(SimpleNamespace(profile=SimpleNamespace(agents={}))) is False
+        assert Engine.has_subagents(SimpleNamespace(profile=SimpleNamespace(agents={"lookup": 1}))) is True
