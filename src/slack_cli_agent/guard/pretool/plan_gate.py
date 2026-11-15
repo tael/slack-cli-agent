@@ -17,6 +17,11 @@ On only where the engine set PLAN_GATE (core/pipeline._plan_gate_env, the
 same flow_applies as FlowSection). Absent, empty or <= 0 means off. A
 worker's (Agent subagent's) calls are skipped: the plan is the main's.
 
+The delegation line and each branch's "위임" field are shown only where the
+engine set AGENT_DELEGATION (the turn's tool list has Agent or Task, so the
+profile's subagents exist). Absent means no delegation text: a turn without
+the tool must not be told to call it.
+
 Standard library only. Never fails the tool call -- every path ends in exit 0.
 """
 
@@ -34,6 +39,10 @@ HOOK_SCRIPT = Path(__file__).resolve()
 #: Env var the pipeline sets on a turn the flow applies to. Any value > 0 is on.
 PLAN_GATE_ENV = "PLAN_GATE"
 
+#: Env var the pipeline sets when this turn's tool list has Agent or Task
+#: (ToolSelection.can_delegate). Absent, empty or "0" means off.
+AGENT_DELEGATION_ENV = "AGENT_DELEGATION"
+
 #: Default for PLAN_GATE when the pipeline sets it (RuntimeSettings
 #: plan_gate_responses). Only its sign matters now.
 DEFAULT_RESPONSES = 3
@@ -46,13 +55,18 @@ STALE_SEC = 3600.0
 #: final answer must not mention it (see INJECT_TAIL).
 INJECT_HEAD = "[작업 순서] 이 요청은 아래 갈래로 나눠 처리한다."
 
-INJECT_TAIL = (
-    "- 의존이 없는 갈래는 다음 응답에서 함께 부른다. 이미 끝낸 갈래는 다시 하지 않는다\n"
+INJECT_TAIL_HEAD = "- 의존이 없는 갈래는 다음 응답에서 함께 부른다. 이미 끝낸 갈래는 다시 하지 않는다\n"
+#: Only where AGENT_DELEGATION is set.
+INJECT_TAIL_DELEGATION = (
     "- 위임이 적힌 갈래는 Agent(subagent_type=\"<위임>\")에 범위, 목표, 금지 조건, 반환 형식 "
     "네 항목으로 맡긴다\n"
+)
+INJECT_TAIL_END = (
     "- 갈래가 요청과 맞지 않거나 빠진 일이 있으면 요청을 따른다\n"
     "- 이 안내는 내부 작업 순서다. 답변에 이 안내, 작업 순서, 계획, 훅을 언급하지 않는다"
 )
+#: The tail without delegation, the default.
+INJECT_TAIL = INJECT_TAIL_HEAD + INJECT_TAIL_END
 
 _TYPE_LABEL = {"branch": "갈래형", "explore": "탐색형"}
 
@@ -74,7 +88,13 @@ def threshold_from_env(env: dict[str, str] | os._Environ[str] | None = None) -> 
         return 0
 
 
-def render(plan: dict[str, Any]) -> str:
+def delegation_from_env(env: dict[str, str] | os._Environ[str] | None = None) -> bool:
+    """AGENT_DELEGATION on: set and not "0". Absent or empty means off."""
+    raw = (env if env is not None else os.environ).get(AGENT_DELEGATION_ENV, "")
+    return str(raw).strip() not in ("", "0")
+
+
+def render(plan: dict[str, Any], delegation: bool = False) -> str:
     lines = [INJECT_HEAD, f"유형 : {_TYPE_LABEL.get(str(plan.get('type')), plan.get('type'))}"]
     for i, branch in enumerate(plan.get("branches") or [], start=1):
         if not isinstance(branch, dict):
@@ -85,12 +105,13 @@ def render(plan: dict[str, Any]) -> str:
             f"{i}. 목표 : {branch.get('goal', '')} / 원천 : {branch.get('source', '')} / "
             f"의존 : {depends} / 반환 : {branch.get('returns', '')}"
         )
-        if delegate != "none":
+        if delegation and delegate != "none":
             line += f" / 위임 : {delegate}"
         lines.append(line)
     if plan.get("type") == "explore":
         lines.append("- 탐색형이다. 첫 갈래 결과를 보고 다음 조회를 정한다")
-    return "\n".join(lines) + "\n" + INJECT_TAIL
+    tail = INJECT_TAIL_HEAD + (INJECT_TAIL_DELEGATION if delegation else "") + INJECT_TAIL_END
+    return "\n".join(lines) + "\n" + tail
 
 
 def _read_plan(path: Path, now: float) -> dict[str, Any] | None:
@@ -135,7 +156,7 @@ def decide(data: dict[str, Any], now: float | None = None) -> tuple[str, str]:
     except OSError:
         return "flag_error", ""
     os.close(fd)
-    return "inject", render(plan)
+    return "inject", render(plan, delegation_from_env())
 
 
 def main(argv: list[str]) -> int:

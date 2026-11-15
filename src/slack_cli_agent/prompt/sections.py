@@ -124,6 +124,10 @@ class CompositionContext:
     #: tools that act, empty when the selection is unrestricted.
     turn_reads_only: bool = False
     turn_acting_tools: tuple[str, ...] = ()
+    #: This turn's tool list names Agent or Task, so the profile's subagents
+    #: (lookup, analyst) can be called (ToolSelection.can_delegate). Drives the
+    #: delegation lines of FlowSection; part of the instruction fingerprint.
+    delegation: bool = False
     chat_level: str = "normal"
     silent_mark: str = SILENT_MARK
     library: PromptLibrary | None = None
@@ -766,10 +770,11 @@ class WorkStyleSection(PromptSection):
         return ctx._library_or_raise().text("WORK_STYLE_NOTE") + "\n\n" + CODE_TERM_NOTE
 
 
-#: Tiers whose turn holds the Agent tool: the owner, a channel operator, and a
+#: Tiers the default flow applies to: the owner, a channel operator, and a
 #: delegated turn, which gets the operator's tool set (ToolPolicy
-#: operator_level). FlowSection and the plan_gate hook apply only here; a
-#: flow that tells the model to delegate a branch is no use without Agent.
+#: operator_level). FlowSection and the plan_gate hook apply only here. Whether
+#: the turn may delegate a branch to Agent is a separate question, decided per
+#: turn from its tool list (CompositionContext.delegation, AGENT_DELEGATION).
 FLOW_TIERS: frozenset[str] = frozenset({
     TurnTier.OWNER_TRUSTED,
     TurnTier.OWNER,
@@ -790,14 +795,20 @@ def flow_applies(tier: str, *, chat: bool, aside: bool = False) -> bool:
     return tier in FLOW_TIERS and not chat and not aside
 
 
+#: Slot in flow_note.md where the delegation lines go (flow_delegation_note.md).
+FLOW_DELEGATION_SLOT = "FLOW_DELEGATION"
+
+
 class FlowSection(PromptSection):
     """FLOW_NOTE: analyse, plan, run branches in parallel, refine.
 
     2026-11-06..10 guchipachi: of 43 sessions with 30+ tool calls, 3 used a
     lookup subagent. The note tells the model to follow the `[작업 순서]`
     plan the engine makes (guard/plan_start) and plan_gate injects, and hands
-    a branch of 3+ calls to Agent(subagent_type="lookup"|"analyst"). The
-    pipeline turns both hooks on with the same flow_applies.
+    a branch of 3+ calls to Agent(subagent_type="lookup"|"analyst") -- the
+    delegation lines (flow_delegation_note.md) only on a turn whose tool list
+    has Agent or Task (ctx.delegation). The pipeline turns both hooks on with
+    the same flow_applies.
     `enabled` comes from the profile setting `plan_flow`.
     """
 
@@ -810,7 +821,12 @@ class FlowSection(PromptSection):
         )
 
     def render(self, ctx: CompositionContext) -> str:
-        return ctx._library_or_raise().text("FLOW_NOTE")
+        library = ctx._library_or_raise()
+        note = library.text("FLOW_NOTE")
+        # The slot takes its whole line. A state-dir flow_note.md without the
+        # slot keeps its own text.
+        lines = library.text("FLOW_DELEGATION_NOTE").rstrip("\n") + "\n" if ctx.delegation else ""
+        return note.replace(f"<<{FLOW_DELEGATION_SLOT}>>\n", lines)
 
 
 class AttachmentSection(PromptSection):

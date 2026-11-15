@@ -46,6 +46,9 @@ PLAN_GATE_ENV = "PLAN_GATE"
 PLAN_NESTED_ENV = "SCA_PLAN_NESTED"
 #: Set inside the finish-review verify claude (finish_review.VERIFY_NESTED_ENV).
 VERIFY_NESTED_ENV = "SCA_VERIFY_NESTED"
+#: Set by the pipeline when this turn's tool list has Agent or Task. Only then
+#: may the planner name a worker; otherwise every branch's delegate is "none".
+AGENT_DELEGATION_ENV = "AGENT_DELEGATION"
 #: Planner model override. haiku measured 4.3-6.6 s for four plans (RCA 재현 6).
 PLAN_MODEL_ENV = "SCA_PLAN_MODEL"
 DEFAULT_MODEL = "haiku"
@@ -58,30 +61,40 @@ PROMPT_TAIL_CHARS = 12_000
 #: Agent worker names the flow note delegates to (profiles/agents/*.md).
 WORKERS = ("lookup", "analyst")
 
-SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "type": {"type": "string", "enum": ["short", "branch", "explore"]},
-        "branches": {
-            "type": "array",
-            "maxItems": 5,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "goal": {"type": "string"},
-                    "source": {"type": "string"},
-                    "depends_on": {"type": "array", "items": {"type": "integer"}},
-                    "delegate": {"type": "string", "enum": ["none", *WORKERS]},
-                    "returns": {"type": "string"},
+def delegation_enabled(env: dict[str, str] | os._Environ[str] | None = None) -> bool:
+    """AGENT_DELEGATION on: set and not "0". Absent or empty means off."""
+    raw = (env if env is not None else os.environ).get(AGENT_DELEGATION_ENV, "")
+    return str(raw).strip() not in ("", "0")
+
+
+def schema(delegation: bool = False) -> dict[str, Any]:
+    """The planner's JSON schema. Workers are enum values only with delegation."""
+    workers = list(WORKERS) if delegation else []
+    return {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": ["short", "branch", "explore"]},
+            "branches": {
+                "type": "array",
+                "maxItems": 5,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "goal": {"type": "string"},
+                        "source": {"type": "string"},
+                        "depends_on": {"type": "array", "items": {"type": "integer"}},
+                        "delegate": {"type": "string", "enum": ["none", *workers]},
+                        "returns": {"type": "string"},
+                    },
+                    "required": ["goal", "source", "depends_on", "delegate", "returns"],
                 },
-                "required": ["goal", "source", "depends_on", "delegate", "returns"],
             },
         },
-    },
-    "required": ["type", "branches"],
-}
+        "required": ["type", "branches"],
+    }
 
-PLANNER_PROMPT = (
+
+_PLANNER_HEAD = (
     "너는 슬랙 업무 봇의 작업 계획만 세운다. 도구는 없다. 아래 [요청]을 읽고 JSON 으로만 답한다.\n"
     "1. type 을 정한다\n"
     "- short : 조회 1-2회로 답이 나온다. branches 는 빈 배열이다\n"
@@ -93,12 +106,26 @@ PLANNER_PROMPT = (
     "- goal : 알아낼 것 한 문장\n"
     "- source : 볼 원천. 테이블, 파일, API, 채널 중 요청에 나온 것. 모르면 '확인 필요'\n"
     "- depends_on : 먼저 끝나야 하는 갈래 번호(1부터). 없으면 빈 배열\n"
+)
+_DELEGATE_WITH_WORKERS = (
     "- delegate : 도구 호출이 3회 이상 들 갈래만 작업자에게 맡긴다. 조회만이면 lookup, "
     "집계 스크립트 실행이 필요하면 analyst, 그보다 작으면 none\n"
+)
+_DELEGATE_NONE = "- delegate : 항상 none 으로 적는다. 이 턴에는 작업자가 없다\n"
+_PLANNER_TAIL = (
     "- returns : 돌려받을 것. 수치, 목록, 판정 중 하나와 그 대상\n"
     "3. 요청에 없는 작업을 만들지 않는다. 쓰기, 게시, 삭제가 요청에 없으면 갈래에 넣지 않는다\n\n"
     "[요청]\n"
 )
+
+
+def planner_prompt(delegation: bool = False) -> str:
+    return _PLANNER_HEAD + (_DELEGATE_WITH_WORKERS if delegation else _DELEGATE_NONE) + _PLANNER_TAIL
+
+
+#: Without delegation, the default.
+SCHEMA: dict[str, Any] = schema(False)
+PLANNER_PROMPT = planner_prompt(False)
 
 
 #: Root-cause requests are never "short". On 2026-11-13 haiku planned a
@@ -173,16 +200,17 @@ def start(data: dict[str, Any], *, spawn: Any = subprocess.Popen) -> str:
 
 
 def _call_planner(prompt: str, model: str, timeout: float) -> subprocess.CompletedProcess[str]:
+    delegation = delegation_enabled()
     exe = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
     cmd = [
         exe, "-p", "--model", model, "--tools", "", "--strict-mcp-config",
         "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "",
-        "--output-format", "json", "--json-schema", json.dumps(SCHEMA),
+        "--output-format", "json", "--json-schema", json.dumps(schema(delegation)),
     ]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
-        out, err = proc.communicate(input=PLANNER_PROMPT + prompt, timeout=timeout)
+        out, err = proc.communicate(input=planner_prompt(delegation) + prompt, timeout=timeout)
     except subprocess.TimeoutExpired:
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)

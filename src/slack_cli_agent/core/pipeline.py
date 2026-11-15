@@ -57,7 +57,7 @@ from ..guard.mentions import (
     leading_recipient_bot,
 )
 from ..guard.pipeline import GuardPipeline
-from ..guard.pretool.plan_gate import PLAN_GATE_ENV
+from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, PLAN_GATE_ENV
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
 from ..observability.audit import IncidentKind
@@ -603,6 +603,11 @@ class RequestPipeline:
             is_bot=self._restricted_bot(principal, ctx.from_bot),
         ).value
 
+        # Worked out before the instruction fingerprint: whether this turn can
+        # delegate to Agent is part of the instructions it is told.
+        tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
+        delegation = tools.can_delegate
+
         key = self._session_key(ctx, scope)
         # The tier decides resumption too: a resumed session keeps the
         # instructions of the turn that opened it, so a delegated, bot or
@@ -616,6 +621,7 @@ class RequestPipeline:
         fingerprint = (
             self._instruction_fingerprint(
                 ctx, principal, channel_mode, channel_slug, rich, chat_level, tier=tier,
+                delegation=delegation,
             )
             if not callable(keeps_opening) or keeps_opening()
             else ""
@@ -640,7 +646,6 @@ class RequestPipeline:
             prompt = f"{_THRESHOLD_RESET_NOTE}\n\n{prompt}"
         elif decision.reset_reason == SYSTEM_PROMPT_RESET_REASON:
             prompt = f"{_SYSTEM_PROMPT_RESET_NOTE}\n\n{prompt}"
-        tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
         # 재개 턴은 그 세션이 앞서 붙인 서버를 유지한다 (core/mcp_routing.py).
         mcp_selection = select_mcp_servers(
             self._mcp_routing, ctx.text, decision.mcp_servers if decision.resume else "",
@@ -687,6 +692,7 @@ class RequestPipeline:
                 ),
                 **self._engine_env(ctx.channel, config, tier),
                 **self._plan_gate_env(tier, config),
+                **self._delegation_env(tools),
                 **self._verify_cap_env(tier),
                 **(self._figurative_env(config) if self._figurative_env is not None else {}),
                 # The marker's second line, so the worker can tell the turn
@@ -697,7 +703,7 @@ class RequestPipeline:
         reach = turn_reach(self._engine, request)
         system_prompt, budget_report, header, knowledge = self._compose_system_prompt(
             ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
-            tier=tier, reach=reach,
+            tier=tier, reach=reach, delegation=delegation,
         )
         request = replace(
             request, prompt=_with_request_header(header, prompt),
@@ -1119,6 +1125,7 @@ class RequestPipeline:
         *,
         tier: str = "",
         reach: tuple[bool, tuple[str, ...]] = (False, ()),
+        delegation: bool = False,
     ) -> tuple[str, dict[str, Any], str, str]:
         """System prompt, its budget report, the user-prompt header, and the
         knowledge text the prompt carried (for the Stop hook's verify,
@@ -1137,7 +1144,8 @@ class RequestPipeline:
         build_header = getattr(self._composer, "request_header", None)
         composition_ctx = self._composition_context(
             ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
-            tier=tier, reach=reach, request_header=callable(build_header),
+            tier=tier, reach=reach, delegation=delegation,
+            request_header=callable(build_header),
         )
         text, report = self._composer.compose_with_report(composition_ctx)
         header = build_header(composition_ctx) if callable(build_header) else ""
@@ -1154,6 +1162,7 @@ class RequestPipeline:
         chat_level: str,
         *,
         tier: str,
+        delegation: bool = False,
     ) -> str:
         """The composer's fingerprint of this turn's instructions, for the
         session decision (SystemPromptComposer.instruction_fingerprint). ""
@@ -1167,7 +1176,7 @@ class RequestPipeline:
         try:
             value = fingerprint(self._composition_context(
                 ctx, principal, channel_mode, channel_slug, rich, chat_level,
-                tier=tier, request_header=True, stable=True,
+                tier=tier, delegation=delegation, request_header=True, stable=True,
             ))
         except Exception:  # 지문이 없으면 비교만 건너뛴다
             log.warning("시스템 지침 지문을 만들지 못했다", exc_info=True)
@@ -1186,6 +1195,7 @@ class RequestPipeline:
         *,
         tier: str = "",
         reach: tuple[bool, tuple[str, ...]] = (False, ()),
+        delegation: bool = False,
         request_header: bool = False,
         stable: bool = False,
     ) -> CompositionContext:
@@ -1241,6 +1251,7 @@ class RequestPipeline:
             turn_tier=tier,
             turn_reads_only=reach[0],
             turn_acting_tools=reach[1],
+            delegation=delegation,
             request_header=request_header,
         )
 
@@ -1295,6 +1306,14 @@ class RequestPipeline:
         if self._plan_gate_responses <= 0 or not flow_applies(tier, chat=chat):
             return {}
         return {PLAN_GATE_ENV: str(self._plan_gate_responses)}
+
+    def _delegation_env(self, tools: ToolSelection) -> dict[str, str]:
+        """AGENT_DELEGATION for the guard hooks and the planner: set when this
+        turn's tool list has Agent or Task (ToolSelection.can_delegate), the
+        same judgment FlowSection gets as ctx.delegation. Independent of
+        PLAN_GATE: the serial-read denial applies on every turn. Absent means
+        the hooks leave delegation wording out."""
+        return {AGENT_DELEGATION_ENV: "1"} if tools.can_delegate else {}
 
     def _owner_name(self) -> str:
         if not self._owner_user_id:

@@ -276,6 +276,10 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # guard/pretool/plan_gate: the response number from which a call needs
         # a `[계획]` block first. Set per turn by the pipeline (W4); a number.
         "PLAN_GATE",
+        # The turn's tool list has Agent or Task, so guard hooks and the
+        # planner may name the profile's subagents (ToolSelection.can_delegate).
+        # "1" or absent.
+        "AGENT_DELEGATION",
         # guard/plan_start: planner model override (default haiku). A model name.
         "SCA_PLAN_MODEL",
         # Stop hook model verify toggle and model (finish_review.

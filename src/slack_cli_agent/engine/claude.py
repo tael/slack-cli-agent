@@ -81,7 +81,7 @@ from .capability import (
 )
 from .claude_settings import load_merged_settings, merge_settings
 from .footprint import PayloadFootprint
-from .tool_selection import ToolAccess
+from .tool_selection import SUBAGENT_TOOLS, ToolAccess
 
 # Same hint list as the original bot.py's usage_limit_message().
 _USAGE_LIMIT_HINTS = (
@@ -131,7 +131,7 @@ TOOL_SEARCH = "ToolSearch"
 
 #: The subagent tool under its current and former name. The init event lists
 #: it as Task when --tools names Agent (claude 2.1.321).
-AGENT_TOOLS = frozenset({"Agent", "Task"})
+AGENT_TOOLS = SUBAGENT_TOOLS
 
 
 def _closed_tool_names(args: Sequence[str]) -> dict[str, tuple[str, ...]]:

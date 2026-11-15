@@ -70,7 +70,7 @@ class TestFlowSection:
         assert RuntimeSettings().override({"plan_flow": False}).plan_flow is False
 
     def test_네_단계와_계획_형식과_위임을_담는다(self) -> None:
-        text = FlowSection().render(_ctx())
+        text = FlowSection().render(_ctx(delegation=True))
         for word in ("1. 분석", "2. 계획", "3. 병렬 실행", "4. 다듬기", "단답형", "갈래형", "탐색형"):
             assert word in text
         assert "[작업 순서]" in text and "[계획 갱신]" in text
@@ -82,7 +82,7 @@ class TestFlowSection:
             assert item in text
 
     def test_60줄_이하다(self) -> None:
-        assert len(FlowSection().render(_ctx()).splitlines()) <= 60
+        assert len(FlowSection().render(_ctx(delegation=True)).splitlines()) <= 60
 
     def test_티어_집합과_판정이_같다(self) -> None:
         assert {"owner", "operator", "delegated"} <= set(FLOW_TIERS)
@@ -226,6 +226,7 @@ class TestPlanGateInject:
     @pytest.fixture(autouse=True)
     def _on(self, monkeypatch: Any) -> None:
         monkeypatch.setenv("PLAN_GATE", "3")
+        monkeypatch.setenv("AGENT_DELEGATION", "1")
 
     def _call(self, tmp_path: Path, **extra: Any) -> dict[str, Any]:
         return {"transcript_path": str(tmp_path / "s.jsonl"), "tool_use_id": "t1", "tool_name": "Read", **extra}
@@ -328,7 +329,7 @@ class TestPlanGateHook:
 
 
 def test_연속_조회_거부_문구가_계획_갱신과_위임을_안내한다() -> None:
-    reason = srg.REASON.format(run=6)
+    reason = srg.build_reason(6, delegation=True)
     assert reason.startswith(srg.MARKER)
     assert "[계획 갱신]" in reason
     assert 'Agent(subagent_type="lookup")' in reason

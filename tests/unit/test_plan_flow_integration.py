@@ -81,7 +81,7 @@ def test_감사_행은_Agent_가_열린_턴에만_Agent_를_남긴다(tmp_path: 
 
 
 def test_FLOW_NOTE_가_부르는_작업자가_견본_정의에_있다() -> None:
-    note = PromptLibrary(Path("/does/not/exist")).text("FLOW_NOTE")
+    note = PromptLibrary(Path("/does/not/exist")).text("FLOW_DELEGATION_NOTE")
     named = set(re.findall(r'subagent_type="(\w+)"', note))
     assert named == {"lookup", "analyst"}
     assert named <= set(Profile._read(EXAMPLE).agents)

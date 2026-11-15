@@ -52,13 +52,32 @@ BASH_WRITE = re.compile(
     r"|\blaunchctl\s|open\([^)]*['\"][wa]b?['\"]|\.write_text\(|\.write\()"
 )
 
-MESSAGE = (
+#: Env var the pipeline sets when this turn's tool list has Agent or Task
+#: (ToolSelection.can_delegate). Absent, empty or "0" means off.
+AGENT_DELEGATION_ENV = "AGENT_DELEGATION"
+
+MESSAGE_HEAD = (
     "[병렬 점검] 조회를 하나씩 {run}번 연달아 불렀다. 응답 하나마다 왕복 시간이 더해진다. "
     "남은 조회를 지금 전부 적고, 앞 결과 없이도 부를 수 있는 것은 다음 응답에서 한꺼번에 부른다. "
     "같은 파일을 sed, grep 으로 조각내 읽는 중이면 Read 로 필요한 범위를 한 번에 읽는다. "
-    "파일 여러 개, 로그와 설정, 여러 집계는 한 응답에 묶는다. 갈래가 셋 이상이면 Agent 를 한 응답에서 함께 띄운다. "
-    "앞 결과가 있어야 다음을 정할 수 있는 조회만 순서대로 둔다."
+    "파일 여러 개, 로그와 설정, 여러 집계는 한 응답에 묶는다. "
 )
+#: Only where AGENT_DELEGATION is set.
+MESSAGE_DELEGATION = "갈래가 셋 이상이면 Agent 를 한 응답에서 함께 띄운다. "
+MESSAGE_TAIL = "앞 결과가 있어야 다음을 정할 수 있는 조회만 순서대로 둔다."
+#: The message without delegation, the default.
+MESSAGE = MESSAGE_HEAD + MESSAGE_TAIL
+
+
+def delegation_enabled(env: Any = None) -> bool:
+    """AGENT_DELEGATION on: set and not "0". Absent or empty means off."""
+    raw = (env if env is not None else os.environ).get(AGENT_DELEGATION_ENV, "")
+    return str(raw).strip() not in ("", "0")
+
+
+def build_message(run: int, delegation: bool = False) -> str:
+    return (MESSAGE_HEAD + (MESSAGE_DELEGATION if delegation else "") + MESSAGE_TAIL).format(run=run)
+
 
 Step = tuple[Any, list[tuple[str, dict[str, Any]]]]
 
@@ -146,7 +165,7 @@ def main(argv: list[str]) -> int:
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",
-            "additionalContext": MESSAGE.format(run=run),
+            "additionalContext": build_message(run, delegation_enabled()),
         },
     }, ensure_ascii=False))
     return 0
