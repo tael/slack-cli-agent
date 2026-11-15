@@ -32,7 +32,10 @@ directly, so tests aren't coupled to the real process environment.
 
 from __future__ import annotations
 
+import logging
+import os
 import re
+import time
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -76,8 +79,70 @@ _ALIAS_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 #: _with_turn_id() reading the env it already built.
 _RESERVED_ALIAS_NAMES = frozenset({
     "PATH", "LANG", "HOME", "USER", "SHELL", "BOT_PROFILE", "TURN_ID",
-    "CODEX_HOME", "TMPDIR",
+    "CODEX_HOME", "TMPDIR", "CLAUDE_CODE_TMPDIR",
 })
+
+_log = logging.getLogger(__name__)
+
+#: 2026-11-15 김태일 지시, /tmp 대신 봇 전용 tmp (#228 심링크 경로 불일치 후속).
+#: Files older than this under the bot's own tmp are pruned. mtime based.
+TMP_MAX_AGE_SEC = 7 * 24 * 3600
+#: Prune runs at most once a day; this file's mtime is the last run.
+TMP_PRUNE_MARKER = ".last-prune"
+TMP_PRUNE_INTERVAL_SEC = 24 * 3600
+
+
+def _prune_dir(path: Path, cutoff: float, *, is_root: bool) -> bool:
+    """Deletes files older than cutoff under path, then empty subdirectories
+    whose own mtime (read before touching their contents) is older than cutoff.
+    Returns True when path itself is left empty. Never follows symlinks."""
+    try:
+        dir_mtime = path.lstat().st_mtime
+        entries = list(os.scandir(path))
+    except OSError:
+        return False
+    empty = True
+    for entry in entries:
+        entry_path = Path(entry.path)
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                if _prune_dir(entry_path, cutoff, is_root=False):
+                    entry_path.rmdir()
+                else:
+                    empty = False
+            else:
+                if is_root and entry.name == TMP_PRUNE_MARKER:
+                    empty = False
+                    continue
+                if entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                    entry_path.unlink()
+                else:
+                    empty = False
+        except OSError:
+            empty = False
+    return empty and dir_mtime < cutoff
+
+
+def prune_bot_tmp(tmp_dir: Path, *, now: float | None = None) -> bool:
+    """Once a day, removes 7-day-old files and empty directories under the
+    bot's tmp. Returns True when a prune ran. Never raises: a failure here
+    must not stop a turn."""
+    now = time.time() if now is None else now
+    try:
+        marker = tmp_dir / TMP_PRUNE_MARKER
+        try:
+            if now - marker.stat().st_mtime < TMP_PRUNE_INTERVAL_SEC:
+                return False
+        except FileNotFoundError:
+            pass
+        # Marker first: a prune that fails halfway is not retried every turn.
+        marker.touch()
+        os.utime(marker, (now, now))
+        _prune_dir(tmp_dir, now - TMP_MAX_AGE_SEC, is_root=True)
+        return True
+    except Exception:  # noqa: BLE001 - housekeeping must never block a turn
+        _log.warning("봇 tmp 정리 실패: %s", tmp_dir, exc_info=True)
+        return False
 
 
 def _with_turn_id(
@@ -136,6 +201,28 @@ class EngineEnvironmentPolicy(ABC):
             )
         self.profile_name = profile_name
         self.home_dir = home_dir
+        #: The bot's own tmp (<state_dir>/tmp), set by create_environment_policy.
+        #: None leaves TMPDIR to the parent process (tests, bare policies).
+        self.tmp_dir: Path | None = None
+
+    def _tmp_env(self, *, claude: bool = False) -> dict[str, str]:
+        """TMPDIR (and CLAUDE_CODE_TMPDIR for claude) pointing at the bot's tmp.
+
+        2026-11-15 김태일 지시, /tmp 대신 봇 전용 tmp (#228 심링크 경로 불일치
+        후속). claude ignores TMPDIR alone and writes background-task output
+        under CLAUDE_CODE_TMPDIR/claude-<uid>/<cwd slug>/<session>/tasks/
+        (measured 2026-11-15). Creating and pruning are best effort."""
+        if self.tmp_dir is None:
+            return {}
+        try:
+            self.tmp_dir.mkdir(parents=True, exist_ok=True)
+            prune_bot_tmp(self.tmp_dir)
+        except OSError:
+            _log.warning("봇 tmp 생성 실패: %s", self.tmp_dir, exc_info=True)
+        env = {"TMPDIR": str(self.tmp_dir)}
+        if claude:
+            env["CLAUDE_CODE_TMPDIR"] = str(self.tmp_dir)
+        return env
 
     def build(self, source_env: Mapping[str, str]) -> dict[str, str]:
         """Env vars to pass to this engine's process. source_env is read, never mutated."""
@@ -169,6 +256,7 @@ class CodexEnvironmentPolicy(EngineEnvironmentPolicy):
             # they're running as — without this, they'd pick the wrong
             # bot's token and channel config.
             "BOT_PROFILE": self.profile_name,
+            **self._tmp_env(),
             **NON_INTERACTIVE_ENV,
         }, source_env, _GUARD_VAR_NAMES)
 
@@ -193,6 +281,7 @@ class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
             "LANG": source_env.get("LANG", "ko_KR.UTF-8"),
             "HOME": source_env.get("HOME", ""),
             "BOT_PROFILE": self.profile_name,
+            **self._tmp_env(),
             **NON_INTERACTIVE_ENV,
         }, source_env, _GUARD_VAR_NAMES)
 
@@ -327,6 +416,7 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
             # a shell-side claude wrapper picks the same token by this name.
             env["CLAUDE_ACCOUNT"], env["CLAUDE_CODE_OAUTH_TOKEN"] = account
         env.setdefault("MCP_TOOL_TIMEOUT", DEFAULT_MCP_TOOL_TIMEOUT_MS)
+        env.update(self._tmp_env(claude=True))
         env.update(NON_INTERACTIVE_ENV)
         return _with_turn_id(env, source_env, self.ADDITIONAL_ALLOWED_VARS)
 
@@ -397,13 +487,16 @@ registry = _build_default_registry()
 
 def create_environment_policy(
     engine_name: str, profile_name: str, home_dir: Path | None,
+    tmp_dir: Path | None = None,
 ) -> EngineEnvironmentPolicy:
     """Creates the right policy for an engine name.
 
     Keeps the existing signature used by core/application.py; the
     actual lookup is delegated to the module-level registry.
     """
-    return registry.create(engine_name, profile_name=profile_name, home_dir=home_dir)
+    policy = registry.create(engine_name, profile_name=profile_name, home_dir=home_dir)
+    policy.tmp_dir = tmp_dir
+    return policy
 
 
 def turn_budget_env(

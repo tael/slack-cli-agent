@@ -160,6 +160,13 @@ class StatePaths:
         return self.skills / "installed"
 
     @property
+    def tmp(self) -> Path:
+        """Bot-only tmp, handed to engine children as TMPDIR/CLAUDE_CODE_TMPDIR.
+        2026-11-15 김태일 지시, /tmp 대신 봇 전용 tmp (#228 심링크 경로 불일치
+        후속). Pruned daily (engine/environment.prune_bot_tmp)."""
+        return self.root / "tmp"
+
+    @property
     def engine_dir(self) -> Path:
         return self.root / "engine"
 

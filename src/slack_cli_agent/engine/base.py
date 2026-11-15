@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from ..auth.policy import DEFAULT_EFFORT, EFFORT_LEVELS
 from ..auth.principal import TrustLevel
 from ..auth.tools import is_read_only_tool
+from ..config.paths import StatePaths
 from ..core.errors import ConfigError
 from .capability import EngineCapabilities, ExecutionIsolation, ExecutionRequirements, ToolRestriction
 from .environment import EngineEnvironmentPolicy, create_environment_policy
@@ -808,7 +809,10 @@ class Engine(ABC):
         engine with a different home dir, and one policy shared across both
         would point the secondary's CLI at the primary's home.
         """
-        return create_environment_policy(self.name, self.profile.name, self.spec.home_dir)
+        return create_environment_policy(
+            self.name, self.profile.name, self.spec.home_dir,
+            tmp_dir=StatePaths(self.profile.state_dir).tmp,
+        )
 
     def capabilities_for(self, request: EngineRequest) -> EngineCapabilities:
         """This request's actual guarantee. Default: the class declaration."""

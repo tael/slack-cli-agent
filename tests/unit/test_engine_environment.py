@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 
 import pytest
@@ -488,3 +490,89 @@ class TestNonInteractiveEnv:
         env = ClaudeEnvironmentPolicy(profile_name="봇A").build(_rich_source_env())
         assert "SLACK_BOT_TOKEN" not in env
         assert "ANTHROPIC_API_KEY" not in env
+
+
+class TestBotTmp:
+    """2026-11-15 김태일 지시, /tmp 대신 봇 전용 tmp (#228 심링크 경로 불일치 후속)."""
+
+    def _policy(self, cls, tmp_path):
+        policy = cls(profile_name="봇A")
+        policy.tmp_dir = tmp_path / "tmp"
+        return policy
+
+    def test_claude_gets_both_vars_and_dir_is_made(self, tmp_path):
+        env = self._policy(ClaudeEnvironmentPolicy, tmp_path).build({"PATH": "/bin", "TMPDIR": "/tmp"})
+        assert env["TMPDIR"] == str(tmp_path / "tmp")
+        assert env["CLAUDE_CODE_TMPDIR"] == str(tmp_path / "tmp")
+        assert (tmp_path / "tmp").is_dir()
+
+    @pytest.mark.parametrize("cls", [CodexEnvironmentPolicy, GeminiEnvironmentPolicy])
+    def test_codex_gemini_get_tmpdir_only(self, cls, tmp_path):
+        env = self._policy(cls, tmp_path).build({"PATH": "/bin"})
+        assert env["TMPDIR"] == str(tmp_path / "tmp")
+        assert "CLAUDE_CODE_TMPDIR" not in env
+
+    def test_unset_leaves_parent_tmpdir_alone(self):
+        env = ClaudeEnvironmentPolicy(profile_name="봇A").build({"PATH": "/bin", "TMPDIR": "/x"})
+        assert "CLAUDE_CODE_TMPDIR" not in env
+        assert "TMPDIR" not in env
+
+    def test_alias_cannot_override(self, tmp_path):
+        env = self._policy(ClaudeEnvironmentPolicy, tmp_path).build({
+            "PATH": "/bin", "TURN_ID": "C1:1.2",
+            "SCA_TURN_ID_ALIASES": "TMPDIR,CLAUDE_CODE_TMPDIR",
+        })
+        assert env["TMPDIR"] == str(tmp_path / "tmp")
+        assert env["CLAUDE_CODE_TMPDIR"] == str(tmp_path / "tmp")
+
+    def test_factory_sets_tmp_dir(self, tmp_path):
+        from slack_cli_agent.engine.environment import create_environment_policy
+        policy = create_environment_policy("claude", "봇A", None, tmp_dir=tmp_path / "t")
+        assert policy.build({"PATH": "/bin"})["TMPDIR"] == str(tmp_path / "t")
+
+
+class TestPruneBotTmp:
+    def _age(self, path, days, now):
+        t = now - days * 86400
+        os.utime(path, (t, t))
+
+    def test_prunes_old_files_and_empty_dirs_keeps_new(self, tmp_path):
+        import time
+        from slack_cli_agent.engine.environment import prune_bot_tmp
+        now = time.time()
+        old = tmp_path / "a" / "b" / "old.txt"
+        old.parent.mkdir(parents=True)
+        old.write_text("x")
+        new = tmp_path / "c" / "new.txt"
+        new.parent.mkdir()
+        new.write_text("y")
+        for p in (old, old.parent, old.parent.parent):
+            self._age(p, 9, now)
+        assert prune_bot_tmp(tmp_path, now=now) is True
+        assert not (tmp_path / "a").exists()
+        assert new.exists()
+        assert (tmp_path / ".last-prune").exists()
+
+    def test_runs_once_a_day(self, tmp_path):
+        import time
+        from slack_cli_agent.engine.environment import prune_bot_tmp
+        now = time.time()
+        assert prune_bot_tmp(tmp_path, now=now) is True
+        old = tmp_path / "old.txt"
+        old.write_text("x")
+        self._age(old, 9, now)
+        assert prune_bot_tmp(tmp_path, now=now + 3600) is False
+        assert old.exists()
+        assert prune_bot_tmp(tmp_path, now=now + 25 * 3600) is True
+        assert not old.exists()
+
+    def test_failure_does_not_raise(self, tmp_path):
+        from slack_cli_agent.engine.environment import prune_bot_tmp
+        assert prune_bot_tmp(tmp_path / "missing" / "x") is False
+
+    def test_build_survives_unwritable_tmp(self, tmp_path):
+        blocker = tmp_path / "file"
+        blocker.write_text("")
+        policy = ClaudeEnvironmentPolicy(profile_name="봇A")
+        policy.tmp_dir = blocker / "tmp"
+        assert policy.build({"PATH": "/bin"})["TMPDIR"] == str(blocker / "tmp")
