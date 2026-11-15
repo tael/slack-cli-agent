@@ -319,6 +319,11 @@ class RuntimeSettings:
     #: hook scripts run new code beside an old worker short.
     restart_idle_max_wait_sec: float = 600
 
+    #: workflow 레지스트리(registry/)를 요청 처리에 쓰는가. 로더와 검증기는
+    #: 있으나 파이프라인 연결 전이라 이 값을 읽는 곳이 아직 없다. 연결할 때도
+    #: 이 값이 False 면 동작이 지금과 같아야 한다.
+    workflows_enabled: bool = False
+
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """Overrides only the fields present in `values`; unknown keys are
         ignored. Set-typed fields get converted, since JSON has no set
