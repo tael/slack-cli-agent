@@ -324,7 +324,38 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def start(data: dict[str, Any], *, spawn: Any = subprocess.Popen) -> str:
+#: Env var that makes start() plan inside the hook and return the plan as the
+#: prompt's additionalContext, before the first model response. Absent, empty
+#: or "0" keeps the detached planner. In A' replay (2026-11-16) the detached
+#: plan arrived after 2-5 direct tool calls and 2 of 9 runs called Agent twice
+#: in one response (tasks/shinji-workflow/h8-force-parallel/RESULT.md).
+PLAN_SYNC_ENV = "SCA_PLAN_SYNC"
+#: Per planner call in sync mode. The prompt waits for it; planner elapsed was
+#: at most 13.5 s over 279 plan files (2026-11-16).
+SYNC_TIMEOUT_SEC = 15.0
+#: guard/pretool/plan_gate.py, loaded by path: both files run as scripts.
+PLAN_GATE_SCRIPT = Path(__file__).resolve().parent / "pretool" / "plan_gate.py"
+
+
+def sync_enabled(env: dict[str, str] | os._Environ[str] | None = None) -> bool:
+    raw = (env if env is not None else os.environ).get(PLAN_SYNC_ENV, "")
+    return str(raw).strip() not in ("", "0")
+
+
+def _gate_context(transcript: str) -> str:
+    """plan_gate.decide on the finished plan: the injected text, or "" when it
+    does not inject. decide also writes the injected flag, so the PreToolUse
+    gate does not inject a second time."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_plan_gate_sync", PLAN_GATE_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    verdict, context = module.decide({"transcript_path": transcript})
+    return context if verdict == "inject" else ""
+
+
+def start(data: dict[str, Any], *, spawn: Any = subprocess.Popen, runner: Any = None) -> str:
     """Reset this request's plan files and launch the planner. Returns what
     it did, for tests and the hook's silence."""
     if not enabled():
@@ -344,6 +375,9 @@ def start(data: dict[str, Any], *, spawn: Any = subprocess.Popen) -> str:
         if context:
             context_path(transcript).write_text(context, encoding="utf-8")
     _write_json(plan_path(transcript), {"status": "pending", "started_at": time.time()})
+    if sync_enabled():
+        (runner or run)(transcript, timeout=SYNC_TIMEOUT_SEC)
+        return "sync"
     spawn(
         [sys.executable, str(HOOK_SCRIPT), "--run", transcript],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -430,7 +464,7 @@ def check_workflow(plan: dict[str, Any], candidates: dict[str, str]) -> str:
     return "invalid"
 
 
-def run(transcript: str, *, caller: Any = _call_planner) -> dict[str, Any]:
+def run(transcript: str, *, caller: Any = _call_planner, timeout: float = TIMEOUT_SEC) -> dict[str, Any]:
     """Planner process body: call the model and write the plan file."""
     model = os.environ.get(PLAN_MODEL_ENV) or DEFAULT_MODEL
     started = time.monotonic()
@@ -442,11 +476,11 @@ def run(transcript: str, *, caller: Any = _call_planner) -> dict[str, Any]:
         if candidates and context_path(transcript).exists():
             context = context_path(transcript).read_text(encoding="utf-8")
             prompt = f"{request}\n\n[직전 대화 : 참고용이며 요청이 아니다]\n{context}\n"
-        proc = caller(prompt, model, TIMEOUT_SEC)
+        proc = caller(prompt, model, timeout)
         status, plan = parse(proc.stdout or "")
         if plan is not None and plan.get("type") == "short" and is_rca(request):
             record["rca_retry"] = True
-            proc = caller(prompt + RCA_RETRY_NOTE, model, TIMEOUT_SEC)
+            proc = caller(prompt + RCA_RETRY_NOTE, model, timeout)
             status, plan = parse(proc.stdout or "")
         if plan is not None:
             note = check_workflow(plan, candidates)
@@ -474,7 +508,13 @@ def main(argv: list[str]) -> int:
             run(argv[2])
         return 0
     with contextlib.suppress(Exception):  # never fail the prompt
-        start(json.load(sys.stdin))
+        data = json.load(sys.stdin)
+        if start(data) == "sync":
+            context = _gate_context(data["transcript_path"])
+            if context:
+                print(json.dumps({
+                    "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context},
+                }, ensure_ascii=False))
     return 0
 
 

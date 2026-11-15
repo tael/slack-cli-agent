@@ -233,6 +233,53 @@ class TestPlannerStart:
         assert proc.returncode == 0 and proc.stdout == ""
 
 
+class TestPlannerSync:
+    @pytest.fixture(autouse=True)
+    def _on(self, monkeypatch: Any) -> None:
+        for key in ("SCA_PLAN_NESTED", "SCA_VERIFY_NESTED"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("PLAN_GATE", "3")
+        monkeypatch.setenv("AGENT_DELEGATION", "1")
+        monkeypatch.setenv(ps.PLAN_SYNC_ENV, "1")
+
+    def _data(self, tmp_path: Path) -> dict[str, Any]:
+        return {"transcript_path": str(tmp_path / "s.jsonl"), "prompt": "조회해 줘"}
+
+    def test_동기_모드는_분리_실행_없이_짧은_제한으로_계획한다(self, tmp_path: Path) -> None:
+        seen: list[float] = []
+        verdict = ps.start(self._data(tmp_path), spawn=lambda *a, **k: pytest.fail("spawned"),
+                           runner=lambda transcript, timeout: seen.append(timeout))
+        assert verdict == "sync" and seen == [ps.SYNC_TIMEOUT_SEC]
+
+    def test_훅이_계획을_프롬프트_컨텍스트로_내고_도구_시점_주입을_막는다(
+            self, tmp_path: Path, monkeypatch: Any, capsys: Any) -> None:
+        data = self._data(tmp_path)
+
+        def fake_run(transcript: str, timeout: float) -> None:
+            _write_plan(transcript, status="ok", **_PLAN)
+
+        monkeypatch.setattr(ps, "run", fake_run)
+        monkeypatch.setattr(sys, "stdin", __import__("io").StringIO(json.dumps(data)))
+        assert ps.main(["plan_start.py"]) == 0
+        out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+        assert out["hookEventName"] == "UserPromptSubmit"
+        assert out["additionalContext"].startswith(pg.INJECT_HEAD)
+        assert pg.decide({"transcript_path": data["transcript_path"], "tool_name": "Read"}) == ("already", "")
+
+    def test_단답형_계획이면_아무것도_출력하지_않는다(self, tmp_path: Path, monkeypatch: Any, capsys: Any) -> None:
+        data = self._data(tmp_path)
+        monkeypatch.setattr(ps, "run", lambda transcript, timeout: _write_plan(
+            transcript, status="ok", type="short", branches=[]))
+        monkeypatch.setattr(sys, "stdin", __import__("io").StringIO(json.dumps(data)))
+        assert ps.main(["plan_start.py"]) == 0
+        assert capsys.readouterr().out == ""
+
+    def test_스위치_해석(self) -> None:
+        assert ps.sync_enabled({}) is False
+        assert ps.sync_enabled({ps.PLAN_SYNC_ENV: "0"}) is False
+        assert ps.sync_enabled({ps.PLAN_SYNC_ENV: "1"}) is True
+
+
 def _write_plan(transcript: str, **plan: Any) -> None:
     ps.plan_path(transcript).write_text(json.dumps({"finished_at": time.time(), **plan}), encoding="utf-8")
 

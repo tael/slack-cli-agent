@@ -403,7 +403,8 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
         # Starts the tool-less planner call beside the turn and returns at
         # once; plan_gate above injects its result (guard/plan_start).
         "UserPromptSubmit": [
-            {"hooks": [{"type": "command", "command": _hook_command(plan_start.HOOK_SCRIPT)}]},
+            # timeout covers SCA_PLAN_SYNC, where the hook waits for up to two planner calls.
+            {"hooks": [{"type": "command", "command": _hook_command(plan_start.HOOK_SCRIPT), "timeout": 45}]},
         ],
     }
 }
