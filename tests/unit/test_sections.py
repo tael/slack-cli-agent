@@ -178,17 +178,8 @@ class TestWorkStyleSection:
         # 800 에서 1200 으로 올렸다 : 번호 조회 줄(약 540 B, 150 토큰 안팎)이 더해졌다.
         # 1200 에서 1600 으로 올렸다 : 연관 조회 묶음 줄(약 370 B)이 더해졌다.
         # 1600 에서 1900 으로 올렸다 : 코드 용어 표기 줄(약 250 B, prompt/code_terms.py).
-        # 1900 에서 2400 으로 올렸다 : 원인·현재 상태 단정 줄(약 470 B). 2026-11-14, 11-15 긴 응답 6건 모두
-        # 근거 검토가 확인 안 된 원인·현재 상태 문장을 찾았다.
         text = WorkStyleSection().render(_ctx())
-        assert len(text.encode("utf-8")) < 2400
-
-    def test_확인하지_않은_원인과_현재_상태는_단정하지_않게_한다(self) -> None:
-        # finish_review._VERIFY_PROMPT 가 근거 없음으로 판정하는 두 유형을 본 턴에서 먼저 막는다.
-        text = WorkStyleSection().render(_ctx())
-        assert "이번 턴 조회 결과로 확인한 것만 단정한다" in text
-        assert "'추정'" in text
-        assert "기록의 날짜와 함께 과거 사실로" in text
+        assert len(text.encode("utf-8")) < 1900
 
 
 def test_작업_방식_지침에_코드_용어_표기가_붙는다() -> None:
