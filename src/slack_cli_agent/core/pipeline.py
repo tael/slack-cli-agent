@@ -61,6 +61,7 @@ from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, PLAN_GATE_ENV
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
 from ..observability.audit import IncidentKind
+from ..routing.workflow_router import ThreadContext, route
 from ..observability.progress import ProgressCoordinator
 from ..observability.request_timing import RequestTiming, RequestTimingCalculator
 from ..observability.response_archive import ResponseArchive
@@ -1988,6 +1989,7 @@ class RequestPipeline:
             extra["failure"] = failure
         if failure_detail:
             extra["failure_detail"] = str(failure_detail)
+        extra.update(self._route_shadow_fields(ctx, decision.resume))
         first_reaction_sec = self._first_reaction_sec(ctx)
         queue_wait_sec = self._queue_wait_sec(ctx)
         self._audit.record_request(
@@ -2007,6 +2009,26 @@ class RequestPipeline:
             turns=turns,
             **extra,
         )
+
+    @staticmethod
+    def _route_shadow_fields(ctx: RequestContext, resumed: bool) -> dict[str, Any]:
+        """규칙 라우터 결과를 request 행에 남길 필드. 기록 전용이다(shadow).
+
+        요청 처리에는 영향이 없다. 라우터 예외는 삼키고 `route_error` 에만 남긴다.
+        미적중(deep, matched False)도 필드를 쓴다. 필드가 없는 행은 "라우터 미실행"
+        (이 기능 이전 행, 최소 기록 행)이고 미적중과 구분된다.
+        """
+        try:
+            decision = route(ctx.text, ctx.channel, ThreadContext(has_prior_bot_reply=resumed))
+        except Exception as exc:  # noqa: BLE001 -- shadow 기록이 요청 처리를 막으면 안 된다
+            log.warning("라우터 실행 실패", exc_info=True)
+            return {"route_error": f"{type(exc).__name__}: {exc}"[:200]}
+        return {
+            "route_workflow_id": decision.workflow_id,
+            "router_version": decision.router_version,
+            "route_reason": decision.reason,
+            "route_matched": decision.matched,
+        }
 
     def _time_breakdown(
         self,
