@@ -183,3 +183,18 @@ def test_러너가_실행_뒤_transcript_복구를_거친다(tmp_path: Path, mon
 def test_dict_출력만으로는_parse_가_침묵을_바꾸지_않는다() -> None:
     # #226 의 배열 경로는 dict 출력에서 무동작이다. 복구는 transcript 경로가 맡는다.
     assert engine().parse(single_dict_stdout(), "", 0).body == "[[침묵]]"
+
+
+def test_transcript_path_falls_back_to_realpath(tmp_path):
+    """2026-11-15 E2E : CLI 는 심링크를 푼 실경로로 slug 를 만든다."""
+    from slack_cli_agent.engine.transcript import ClaudeTranscriptReader
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    home = tmp_path / "home"
+    slug = str(real.resolve()).replace("/", "-").replace(".", "-")
+    target = home / ".claude" / "projects" / slug / "s1.jsonl"
+    target.parent.mkdir(parents=True)
+    target.write_text("{}\n")
+    assert ClaudeTranscriptReader(link, home=home).transcript_path("s1") == target
