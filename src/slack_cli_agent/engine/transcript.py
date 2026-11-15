@@ -197,7 +197,20 @@ class ClaudeTranscriptReader(SessionTranscriptReader):
         self._home = home or Path.home()
 
     def transcript_path(self, session_id: str) -> Path:
-        slug = str(self._workdir).replace("/", "-").replace(".", "-")
+        # 2026-11-15 E2E 시험 : CLI 는 심링크를 푼 실경로(/tmp -> /private/tmp)로 slug 를
+        # 만든다. 적힌 경로에 기록이 없으면 실경로 slug 를 쓴다.
+        path = self._path_for(self._workdir, session_id)
+        if not path.exists():
+            try:
+                real = self._path_for(Path(self._workdir).resolve(), session_id)
+            except OSError:
+                return path
+            if real.exists():
+                return real
+        return path
+
+    def _path_for(self, workdir: Path, session_id: str) -> Path:
+        slug = str(workdir).replace("/", "-").replace(".", "-")
         return self._home / ".claude" / "projects" / slug / f"{session_id}.jsonl"
 
     def read(self, session_id: str) -> list[TranscriptEvent]:
