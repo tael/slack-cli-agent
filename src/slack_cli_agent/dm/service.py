@@ -116,6 +116,10 @@ class DmReplyService:
         slot: Callable[[], AbstractContextManager[None]] = nullcontext,
         # (user) -> the <recent_channels> block for that person, or "".
         context: Callable[[str], str] = lambda user: "",
+        # (channel, user, text) -> the <dm_history> block of earlier messages
+        # in this DM, or "". Without it each turn saw only the newest line
+        # (2026-11-16: "그걸 어떻게 보는데?" answered as if out of nowhere).
+        history: Callable[[str, str, str], str] = lambda channel, user, text: "",
         probe_warn_at: Sequence[int] = (2, 5),
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -127,6 +131,7 @@ class DmReplyService:
         self._notify_owner = notify_owner
         self._slot = slot
         self._context = context
+        self._history = history
         self._probe_warn_at = frozenset(probe_warn_at)
         self._probes = DailyCounter()
         self._clock = clock
@@ -143,7 +148,7 @@ class DmReplyService:
             if verdict.notify:
                 self._safe_post(channel, user, self._notices.render(NoticeKey.DM_CAPPED), question)
         else:
-            answer = self._answer(user, text or "")
+            answer = self._answer(channel, user, text or "")
             fallback = answer.reply is None
             reply = answer.reply or self._notices.render(NoticeKey.DM_FALLBACK)
             if self._safe_post(channel, user, reply, question):
@@ -157,8 +162,11 @@ class DmReplyService:
         if probe:
             self._record_probe(channel, user, text or "", day)
 
-    def _answer(self, user: str, text: str) -> DmAnswer:
-        prompt = self._context(user) + "<dm>\n" + text[:MAX_QUESTION_CHARS] + "\n</dm>"
+    def _answer(self, channel: str, user: str, text: str) -> DmAnswer:
+        prompt = (
+            self._context(user) + self._safe_history(channel, user, text)
+            + "<dm>\n" + text[:MAX_QUESTION_CHARS] + "\n</dm>"
+        )
         try:
             with self._slot():
                 result = self._run_turn(prompt)
@@ -166,6 +174,13 @@ class DmReplyService:
             log.warning("DM 답을 만들지 못했다 : %s : %s", user, exc)
             return parse_answer(None, f"DM 답 생성 실패 : {type(exc).__name__} {str(exc)[:120]}")
         return parse_answer(result)
+
+    def _safe_history(self, channel: str, user: str, text: str) -> str:
+        try:
+            return self._history(channel, user, text) or ""
+        except Exception as exc:  # noqa: BLE001 - the reply goes out without history
+            log.warning("DM 기록을 붙이지 못했다 : %s : %s", channel, exc)
+            return ""
 
     def _safe_post(self, channel: str, user: str, text: str, question: str) -> bool:
         try:
