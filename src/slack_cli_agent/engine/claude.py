@@ -39,6 +39,7 @@ import fnmatch
 import itertools
 import json
 import logging
+import re
 import shlex
 import sys
 import uuid
@@ -828,6 +829,23 @@ class ClaudeEngine(Engine):
         value = payload.get("api_error_status")
         return value if isinstance(value, int) and not isinstance(value, bool) else None
 
+    #: 2026-11-16 실측 — 디버그 흐름 요청이 종료코드 1 로 끝났고, 세션 기록에만
+    #: model_refusal_no_fallback / apiRefusalCategory=reasoning_extraction 이
+    #: 남았다. 응답 본문은 '처리에 실패했습니다.' 뿐이라 프롬프트가 거부된 것과
+    #: CLI 가 죽은 것이 같은 글자로 보였다. 거부는 그 프롬프트 하나의 문제라서
+    #: 엔진 전환 계기가 아니다 - 사유만 갈라 기록해 어느 문구를 고칠지 바로
+    #: 보이게 한다.
+    REFUSAL_MARKER: ClassVar[str] = "safeguards flagged this message"
+    REFUSAL_CATEGORY_RE: ClassVar[re.Pattern[str]] = re.compile(r"Details:\s*`?\[([a-z_]+)\]`?")
+
+    @classmethod
+    def _refusal_category(cls, stdout: str) -> str | None:
+        """거부 카테고리를 돌려준다. 거부가 아니면 None 이다."""
+        if not stdout or cls.REFUSAL_MARKER not in stdout:
+            return None
+        found = cls.REFUSAL_CATEGORY_RE.search(stdout)
+        return found.group(1) if found else "unknown"
+
     def new_session_id(self) -> str:
         return str(uuid.uuid4())
 
@@ -847,6 +865,19 @@ class ClaudeEngine(Engine):
             # result event (2026-11-07 운영 로그, 종료코드 1). Its per-model
             # table is kept so the spend reaches the audit row (A14).
             failed_event = self._result_event(stdout) if stdout else None
+            refusal = self._refusal_category(stdout)
+            if refusal is not None:
+                return EngineResponse(
+                    ok=False,
+                    body=f"모델이 이 프롬프트를 거부했습니다 (사유 : {refusal}).",
+                    session_id=None, model_actual=None,
+                    elapsed=0.0, turns=None, usage=None,
+                    model_usage=_model_usage(failed_event) if failed_event is not None else None,
+                    raw={"stdout": stdout, "stderr": stderr, "returncode": returncode,
+                         "refusal_category": refusal},
+                    failure_reason="model_refusal",
+                    failure_detail=FailureDetail(exit_code=returncode, code=refusal),
+                )
             return EngineResponse(
                 ok=False, body="처리에 실패했습니다.", session_id=None, model_actual=None,
                 elapsed=0.0, turns=None, usage=None,

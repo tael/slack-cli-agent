@@ -727,6 +727,35 @@ class TestClaudeEngineParse:
         assert resp.ok is False
         assert resp.failure_reason == "nonzero_exit"
 
+    def test_거부는_model_refusal로_사유를_가른다(self, tmp_path: Path) -> None:
+        """2026-11-16 실측 — 디버그 흐름 요청이 종료코드 1 로 끝났고 본문은
+        '처리에 실패했습니다.' 뿐이었다. 거부 카테고리는 세션 기록에만 남아,
+        프롬프트 거부와 CLI 사망이 같은 글자로 보였다."""
+        stdout = (
+            "API Error: Opus 5's safeguards flagged this message "
+            "(https://www.anthropic.com/legal/aup).\n\n"
+            "Details: `[reasoning_extraction]`\n\nRequest ID: req_011Ch6Brx4HrL9FuVp8EGjRN"
+        )
+        profile = claude_profile(tmp_path)
+        engine = ClaudeEngine(profile, SETTINGS)
+        resp = engine.parse(stdout, "", 1)
+        assert resp.ok is False
+        assert resp.failure_reason == "model_refusal"
+        assert resp.failure_detail.code == "reasoning_extraction"
+        assert "reasoning_extraction" in resp.body
+
+    def test_카테고리를_못_읽은_거부도_model_refusal이다(self, tmp_path: Path) -> None:
+        profile = claude_profile(tmp_path)
+        engine = ClaudeEngine(profile, SETTINGS)
+        resp = engine.parse("API Error: safeguards flagged this message", "", 1)
+        assert resp.failure_reason == "model_refusal"
+        assert resp.failure_detail.code == "unknown"
+
+    def test_거부는_새_세션_재시도_대상이_아니다(self) -> None:
+        from slack_cli_agent.session.manager import NO_RETRY_REASONS
+
+        assert "model_refusal" in NO_RETRY_REASONS
+
     def test_json이_아니면_bad_json이다(self, tmp_path: Path) -> None:
         profile = claude_profile(tmp_path)
         engine = ClaudeEngine(profile, SETTINGS)

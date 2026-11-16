@@ -338,6 +338,9 @@ KNOWN_DETAIL_CODES = frozenset(
         "pending", "approved", "denied",
         # runner: capability axis that blocked the run
         "tool_restriction", "execution_isolation", "instruction_boundary",
+        # claude: refusal category from the CLI's own error text
+        # (2026-11-16 실측 reasoning_extraction). 새 카테고리는 unknown 으로 남는다.
+        "reasoning_extraction", "unknown",
     }
 )
 
