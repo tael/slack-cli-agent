@@ -561,3 +561,71 @@ class Test시도만_기록할_때의_일일_보고:
         report.tick(nullcontext)
         assert sent == []
         assert audits and audits[0][1]["rows"] == 0
+
+
+class TestDM_앞_대화_맥락:
+    """2026-11-16 안지원님 DM: 각 턴이 직전 대화를 못 봐 "그걸" 을 되물었다."""
+
+    def test_앞_대화_블록을_DM_본문_앞에_넘긴다(self) -> None:
+        h = Harness()
+        h.service._history = lambda channel, user, text: f"<dm_history>\n[봇] {channel}\n</dm_history>\n"
+        h.service.handle("D1", "U1", "그걸 어떻게 보는데?")
+        assert h.prompts == [(
+            "<recent_channels>U1</recent_channels>\n<dm_history>\n[봇] D1\n</dm_history>\n"
+            "<dm>\n그걸 어떻게 보는데?\n</dm>"
+        )]
+
+    def test_기록_읽기가_실패해도_답은_나간다(self) -> None:
+        h = Harness()
+
+        def boom(channel: str, user: str, text: str) -> str:
+            raise RuntimeError("slack down")
+
+        h.service._history = boom
+        h.service.handle("D1", "U1", "안녕")
+        assert h.posts == [("D1", "답입니다")]
+
+    def test_지금_DM을_빼고_오래된_순으로_화자를_붙인다(self) -> None:
+        from slack_cli_agent.dm.history import render
+
+        newest_first = [
+            {"user": "U1", "text": "뭔소리야? 이해가 안돼", "ts": "4"},
+            {"user": "UBOT", "bot_id": "B1", "text": "SQL 은 질의 언어예요", "ts": "3"},
+            {"user": "U1", "text": "SQL을 어떻게 붙여?", "ts": "2"},
+            {"user": "U1", "text": "", "ts": "1"},
+        ]
+        block = render(newest_first, "U1", "뭔소리야? 이해가 안돼")
+        assert block == (
+            "<dm_history>\n[동료] SQL을 어떻게 붙여?\n[봇] SQL 은 질의 언어예요\n</dm_history>\n"
+        )
+
+    def test_앞_대화가_없으면_빈_문자열(self) -> None:
+        from slack_cli_agent.dm.history import render
+
+        assert render([{"user": "U1", "text": "안녕", "ts": "1"}], "U1", "안녕") == ""
+
+    def test_슬랙_호출이_실패하면_빈_문자열(self) -> None:
+        from slack_cli_agent.dm.history import DmHistory
+
+        class Broken:
+            def conversations_history(self, **kwargs: Any) -> dict[str, Any]:
+                raise RuntimeError("missing_scope")
+
+        assert DmHistory(Broken(), clock=lambda: NOW)("D1", "U1", "x") == ""
+
+    def test_6시간_창과_6자리_ts로_조회한다(self) -> None:
+        from slack_cli_agent.dm.history import DmHistory
+
+        calls: list[dict[str, Any]] = []
+
+        class Client:
+            def conversations_history(self, **kwargs: Any) -> dict[str, Any]:
+                calls.append(kwargs)
+                return {"messages": [{"user": "UB", "text": "앞 답", "ts": "1"}]}
+
+        out = DmHistory(Client(), clock=lambda: NOW)("D1", "U1", "그걸?")
+        assert out == "<dm_history>\n[봇] 앞 답\n</dm_history>\n"
+        assert calls[0]["channel"] == "D1" and calls[0]["oldest"] == f"{NOW - 6 * 3600:.6f}"
+
+    def test_기본_지침이_앞_대화_블록을_설명한다(self) -> None:
+        assert "<dm_history>" in DEFAULT_REPLY_SYSTEM

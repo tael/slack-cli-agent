@@ -52,6 +52,7 @@ from ..dm.prompts import (
     REPORT_FILE,
     load_prompt,
 )
+from ..dm.history import DmHistory
 from ..dm.service import DmReplyService
 from ..engine.base import CallOrigin, Engine, EngineRequest, EngineResponse
 from ..engine.capability import ExecutionRequirements, ToolRestriction
@@ -1750,6 +1751,7 @@ class Application:
                 notify_owner=self._notify_owner,
                 slot=engine_slot(self.concurrency_slots(), self._settings.request_timeout_sec),
                 context=lambda user: notice_log.recent_context(user, self._channels.is_registered),
+                history=DmHistory(self._client),
                 probe_warn_at=self._settings.dm_probe_warn_at,
             )
         return self._dm_reply
