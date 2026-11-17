@@ -20,13 +20,14 @@ import json
 import subprocess
 from pathlib import Path
 
+from fake_exec import write_fake
+
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tools" / "register-console.sh"
 
 
 def _대역(path: Path, 본문: str) -> Path:
-    path.write_text("#!/bin/bash\n" + 본문, encoding="utf-8")
-    path.chmod(0o755)
+    write_fake(path, "#!/bin/bash\n" + 본문)
     return path
 
 
@@ -59,7 +60,8 @@ def _준비(tmp_path: Path, *, 포트점유: str = "", 건강: bool = True) -> d
         "LAUNCHCTL": str(launchctl),
         "LSOF": str(lsof),
         "CURL": str(curl),
-        "CONSOLE_HEALTH_TIMEOUT_SEC": "1",
+        "CONSOLE_HEALTH_TIMEOUT_SEC": "0.2",
+        "CONSOLE_HEALTH_POLL_SEC": "0.1",
     }
 
 
