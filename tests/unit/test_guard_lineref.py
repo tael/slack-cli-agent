@@ -50,6 +50,22 @@ class TestFindBareRefs:
     def test_inline_code_is_ignored(self) -> None:
         assert find_bare_refs("PERSONA.md:127 확인. `head -127` 로 봤다") == {}
 
+    def test_two_digit_line_is_not_checked(self) -> None:
+        # 50개 응답 아카이브 스캔에서 두 자리 단독 숫자는 모두 수치였다.
+        assert find_bare_refs("engine/environment.py:88 을 봤다. 전체 88 가운데 일부다") == {}
+
+    def test_slash_separated_series_is_not_a_reference(self) -> None:
+        body = "sections.py:264 를 고쳤다. 시간당 집계는 264/360/360 으로 일정하다"
+        assert find_bare_refs(body) == {}
+
+    def test_url_is_ignored(self) -> None:
+        body = "sections.py:264 확인. https://example.com/a/264/b 에도 같은 값이 있다"
+        assert find_bare_refs(body) == {}
+
+    def test_number_far_from_its_label_is_not_shorthand(self) -> None:
+        body = "PERSONA.md:127 을 고쳤다." + ("가" * 1600) + " 처리량은 127 이다"
+        assert find_bare_refs(body) == {}
+
     def test_line_range_label_is_read(self) -> None:
         body = "bot.py:8249-8255 를 이식했다. 8249 쪽이 먼저다"
         assert find_bare_refs(body) == {"8249": "bot.py:8249"}

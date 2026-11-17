@@ -29,19 +29,54 @@ log = logging.getLogger(__name__)
 LABEL_RE = re.compile(
     r"(?P<label>[\w./-]+\.(?:md|markdown|py|json|jsonl|ya?ml|toml|txt|sh|ts|tsx|js|sql)):(?P<line>\d{1,6})"
 )
-_CODE_RE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+_CODE_RE = re.compile(r"```.*?```|`[^`\n]*`|<?https?://\S+>?", re.DOTALL)
+
+# A two-digit number standing alone is a measurement far more often than a
+# line reference: scanning 50 archived reply files, every bare match below
+# this bound was a count or a duration (08-20 의 "1초", "12", "88", "4 커밋"),
+# so only three-digit-and-up line numbers are checked.
+MIN_LINE = 100
+# How far from its label a bare number still reads as that label. The
+# 2026-11-17 case had 190 characters between them; a number further off in a
+# long reply is its own value, not shorthand for the citation.
+MAX_DISTANCE = 1500
 
 
 def _mask_code(text: str) -> str:
-    """Blanks out code spans, keeping offsets so matches map onto the original."""
+    """Blanks out code spans and URLs, keeping offsets so matches map onto
+    the original."""
     return _CODE_RE.sub(lambda m: " " * len(m.group(0)), text)
 
 
 def _bare_re(line: str) -> re.Pattern[str]:
-    # Not part of a longer number, not preceded by `:`/`.` (already inside a
-    # label or a version), not followed by a word char — "127줄" and "127건"
-    # carry their own unit and are left alone.
-    return re.compile(rf"(?<![\w:.\-]){re.escape(line)}(?![\w:.\-])")
+    # Not part of a longer number, not preceded by `:`/`.`/`/` (already inside
+    # a label, a version, or a slash-separated series like "264/360"), not
+    # followed by a word char — "127줄" and "127건" carry their own unit and
+    # are left alone.
+    return re.compile(rf"(?<![\w:.\-/]){re.escape(line)}(?![\w:.\-/])")
+
+
+def _bare_spans(body: str) -> list[tuple[int, int, str, str]]:
+    """Locates every bare line-number reference as (start, end, line, label).
+
+    Offsets are into `body` itself: the match runs on the code-masked copy,
+    whose length is unchanged.
+    """
+    text = body or ""
+    labels: dict[str, tuple[str, int]] = {}
+    for m in LABEL_RE.finditer(text):
+        if int(m.group("line")) < MIN_LINE:
+            continue
+        labels.setdefault(m.group("line"), (m.group("label") + ":" + m.group("line"), m.start()))
+    if not labels:
+        return []
+    masked = _mask_code(text)
+    spans: list[tuple[int, int, str, str]] = []
+    for line, (label, at) in labels.items():
+        for m in _bare_re(line).finditer(masked):
+            if abs(m.start() - at) <= MAX_DISTANCE:
+                spans.append((m.start(), m.end(), line, label))
+    return sorted(spans)
 
 
 def find_bare_refs(body: str) -> dict[str, str]:
@@ -50,24 +85,14 @@ def find_bare_refs(body: str) -> dict[str, str]:
     Empty when the body has no `<file>:<line>` label, or every mention of
     those numbers stays attached to its label.
     """
-    text = body or ""
-    labels: dict[str, str] = {}
-    for m in LABEL_RE.finditer(text):
-        labels.setdefault(m.group("line"), m.group("label") + ":" + m.group("line"))
-    if not labels:
-        return {}
-    masked = _mask_code(text)
-    return {line: label for line, label in labels.items() if _bare_re(line).search(masked)}
+    return {line: label for _, _, line, label in _bare_spans(body)}
 
 
 def expand_bare_refs(body: str) -> str:
     """Rewrites each bare line number back to its full `<file>:<line>` label."""
     text = body or ""
-    refs = find_bare_refs(text)
-    for line, label in refs.items():
-        masked = _mask_code(text)
-        for m in reversed(list(_bare_re(line).finditer(masked))):
-            text = text[: m.start()] + label + text[m.end() :]
+    for start, end, _, label in reversed(_bare_spans(text)):
+        text = text[:start] + label + text[end:]
     return text
 
 
