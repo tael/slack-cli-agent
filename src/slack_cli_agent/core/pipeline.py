@@ -1983,6 +1983,7 @@ class RequestPipeline:
         extra: dict[str, Any] = {CONTEXT_RESET_RAW_KEY: context_reset}
         if timing is not None:
             extra["time_breakdown"] = timing.as_audit_dict()
+            extra.update(timing.tool_audit_fields())
         if context_reset and context_reset_reason:
             extra["context_reset_reason"] = context_reset_reason
         if tier:

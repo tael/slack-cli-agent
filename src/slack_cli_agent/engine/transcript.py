@@ -75,6 +75,10 @@ class TimingEvent:
     """Call ids this line closes. Empty on a tool_result means "the oldest open call"."""
     hook_sec: float = 0.0
     """How long the hooks this line reports ran, as the engine measured it."""
+    message_id: str = ""
+    """The model response this line belongs to (Claude: message.id). One response
+    is written as several lines that share it, so a round trip is counted by
+    distinct id, never by line. Empty when the reader's format has none."""
 
 
 def _parse_iso_ts(value: Any) -> float | None:
@@ -310,9 +314,11 @@ class ClaudeTranscriptReader(SessionTranscriptReader):
                 (str(block.get("id") or ""), str(block.get("name") or "?"))
                 for block in blocks if block.get("type") == "tool_use"
             )
+            message_id = message.get("id") if isinstance(message, dict) else None
+            message_id = message_id if isinstance(message_id, str) else ""
             if uses:
-                return TimingEvent(ts=ts, kind="tool_use", tool_uses=uses)
-            return TimingEvent(ts=ts, kind="assistant")
+                return TimingEvent(ts=ts, kind="tool_use", tool_uses=uses, message_id=message_id)
+            return TimingEvent(ts=ts, kind="assistant", message_id=message_id)
         if line_type == "user":
             results = tuple(
                 str(block.get("tool_use_id") or "")

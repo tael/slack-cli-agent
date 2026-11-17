@@ -271,3 +271,120 @@ class Test_파이프라인_기록:
         pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
         pipeline.handle(make_ctx())
         assert "time_breakdown" not in deps["audit"].records[-1]
+
+
+def _tool_line(ts: float, msg_id: str, *tool_ids: str, sidechain: bool = False) -> dict[str, Any]:
+    """한 응답의 tool_use 블록 하나를 한 줄로 쓴다. CLI 는 같은 message.id 로 줄을 나눠 쓴다."""
+    return {
+        "type": "assistant", "timestamp": _iso(ts), "isSidechain": sidechain,
+        "message": {"id": msg_id, "content": [
+            {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {}} for tool_id in tool_ids
+        ]},
+    }
+
+
+class Test_툴콜_왕복_수:
+    T0 = 1_800_000_000.0
+
+    def _compute(self, tmp_path: Path, lines: list[dict[str, Any]]):
+        workdir = tmp_path / "work"
+        _write_claude_transcript(tmp_path, workdir, "sess", lines)
+        reader = ClaudeTranscriptReader(workdir, home=tmp_path)
+        return RequestTimingCalculator(lambda engine: reader).compute(
+            engine="claude", session_id="sess", start=self.T0 - 1, engine_start=self.T0,
+            engine_end=self.T0 + 30,
+        )
+
+    def test_같은_message_id_의_줄은_한_왕복이다(self, tmp_path: Path) -> None:
+        t0 = self.T0
+        timing = self._compute(tmp_path, [
+            {"type": "api-request", "timestamp": _iso(t0 + 1)},
+            _tool_line(t0 + 2, "msg_A", "a1"),
+            _tool_line(t0 + 2.1, "msg_A", "a2"),  # 같은 응답의 둘째 줄
+            _tool_line(t0 + 8, "msg_B", "b1"),
+        ])
+        assert timing.tool_round_trips == 2
+        assert timing.tool_calls == 3
+        assert timing.tools_per_round_trip == 1.5
+        assert timing.tool_audit_fields() == {
+            "tool_round_trips": 2, "tool_calls": 3, "tools_per_round_trip": 1.5,
+        }
+
+    def test_한_줄에_블록이_둘이어도_툴콜은_블록_수다(self, tmp_path: Path) -> None:
+        timing = self._compute(tmp_path, [_tool_line(self.T0 + 2, "msg_A", "a1", "a2", "a3")])
+        assert (timing.tool_round_trips, timing.tool_calls) == (1, 3)
+        assert timing.tools_per_round_trip == 3.0
+
+    def test_사이드체인은_세지_않는다(self, tmp_path: Path) -> None:
+        t0 = self.T0
+        timing = self._compute(tmp_path, [
+            _tool_line(t0 + 2, "msg_A", "a1"),
+            _tool_line(t0 + 3, "msg_S", "s1", "s2", sidechain=True),
+        ])
+        assert (timing.tool_round_trips, timing.tool_calls) == (1, 1)
+
+    def test_이전_요청의_줄은_세지_않는다(self, tmp_path: Path) -> None:
+        timing = self._compute(tmp_path, [
+            _tool_line(self.T0 - 500, "msg_OLD", "o1"),
+            _tool_line(self.T0 + 2, "msg_A", "a1"),
+        ])
+        assert (timing.tool_round_trips, timing.tool_calls) == (1, 1)
+
+    def test_툴콜이_없으면_0이고_비율은_null(self, tmp_path: Path) -> None:
+        timing = self._compute(tmp_path, [
+            {"type": "assistant", "timestamp": _iso(self.T0 + 2),
+             "message": {"id": "msg_A", "content": [{"type": "text", "text": "hi"}]}},
+        ])
+        assert (timing.tool_round_trips, timing.tool_calls) == (0, 0)
+        assert timing.tools_per_round_trip is None
+
+    def test_세션_기록이_없으면_전부_null(self, tmp_path: Path) -> None:
+        reader = ClaudeTranscriptReader(tmp_path / "work", home=tmp_path)
+        timing = RequestTimingCalculator(lambda engine: reader).compute(
+            engine="claude", session_id="none", start=0, engine_start=1, engine_end=9,
+        )
+        assert timing.tool_audit_fields() == {
+            "tool_round_trips": None, "tool_calls": None, "tools_per_round_trip": None,
+        }
+
+    def test_message_id_가_없는_줄이_있으면_null(self) -> None:
+        timing = attribute(
+            [_ev(5, "tool_use", tool_uses=(("x", "Bash"),))], start=0, engine_start=1, engine_end=9,
+        )
+        assert timing.tool_round_trips is None and timing.tool_calls is None
+
+    def test_세기가_실패해도_분해와_요청은_계속된다(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import slack_cli_agent.observability.request_timing as module
+
+        def boom(window: Any) -> Any:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(module, "count_tool_round_trips", boom)
+        timing = attribute([_ev(5, "api_request")], start=0, engine_start=1, engine_end=9)
+        assert timing.tool_audit_fields()["tool_round_trips"] is None
+        assert timing.transcript is True
+
+    def test_파이프라인_기록에_세_필드가_실린다(self, tmp_path: Path) -> None:
+        class _IdReader(_FixedReader):
+            def read_timing(self, session_id: str, since_ts: float | None = None) -> list[TimingEvent]:
+                assert since_ts is not None
+                return [
+                    TimingEvent(ts=since_ts + 1, kind="tool_use", tool_uses=(("a", "Bash"), ("b", "Bash")),
+                                message_id="m1"),
+                    TimingEvent(ts=since_ts + 2, kind="tool_use", tool_uses=(("c", "Bash"),), message_id="m2"),
+                ]
+
+        reader = _IdReader()
+        pipeline, deps = build_pipeline(
+            responses=[ok_response(session_id="sess-1")], tmp_path=tmp_path,
+            now=Test_파이프라인_기록()._clock(1_700_000_000.0),
+            request_timing=RequestTimingCalculator(lambda engine: reader),
+        )
+        pipeline.handle(make_ctx())
+        record = deps["audit"].records[-1]
+        assert (record["tool_round_trips"], record["tool_calls"], record["tools_per_round_trip"]) == (2, 3, 1.5)
+
+    def test_계산기가_없으면_필드를_넣지_않는다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx())
+        assert "tool_round_trips" not in deps["audit"].records[-1]
