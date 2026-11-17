@@ -80,6 +80,7 @@ from ..guard.figurative import MODEL_ENV as FIGURATIVE_MODEL_ENV
 from ..guard.figurative import OUT_ENV as FIGURATIVE_OUT_ENV
 from ..guard.figurative import TIMEOUT_ENV as FIGURATIVE_TIMEOUT_ENV
 from ..guard.figurative import FigurativeGuard, is_chat_channel
+from ..guard.lineref import BareLineRefGuard
 from ..guard.mentions import (
     AddresseeGuard,
     BotMentionGuard,
@@ -785,6 +786,11 @@ class Application:
                 requested_only_in=self._is_chat_channel,
             ),
             AddresseeGuard(is_bot=self._is_bot_or_peer),
+            # Before WatchPromiseGuard: its rerun comes back with the draft's
+            # `[[WATCH]]` tag still attached, so the watch is read off the
+            # rewritten body on the second pass instead of being stripped
+            # from a draft that never goes out.
+            BareLineRefGuard(),
             WatchPromiseGuard(),
             RewriteLossGuard(self._settings),
             # safe to always include — a no-op when the drop-line list is empty

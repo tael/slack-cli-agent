@@ -57,6 +57,7 @@ from ..guard.mentions import (
     RecipientResolver,
     leading_recipient_bot,
 )
+from ..guard.lineref import BareLineRefGuard, expand_bare_refs
 from ..guard.pipeline import GuardPipeline
 from ..guard.plan_start import WORKFLOWS_ENV as PLAN_WORKFLOWS_ENV
 from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, PLAN_GATE_ENV
@@ -1633,6 +1634,10 @@ class RequestPipeline:
             body_out = result.body
             # An untagged promise whose rewrite never arrived still must not
             # go out as-is: cut it like a failed retry does (bot.py:8249-8255).
+            if result.rerun.guard_name == BareLineRefGuard.name:
+                # No rewrite arrived, so expand the bare numbers here: the
+                # sentence then at least says which file and line it means.
+                body_out = expand_bare_refs(body_out)
             if result.rerun.guard_name == WatchPromiseGuard.name:
                 body_out = cut_untagged_promise(body_out)
                 if promise_rerun:
