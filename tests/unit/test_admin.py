@@ -178,7 +178,7 @@ class TestChannelListCommand:
         channels_path.write_text(
             json.dumps({
                 "C1": {"answer_unaddressed": True, "session_scope": "channel"},
-                "C2": {},
+                "C2": {"answer_unaddressed": False},
             }),
             encoding="utf-8",
         )

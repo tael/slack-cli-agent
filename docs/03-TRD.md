@@ -998,7 +998,9 @@ shadow 대조에도 쓴다.
     knowledge           지식 파일 목록
     trusted_users       이 채널에서 신뢰하는 사용자
     user_tools          사용자별 추가 허용 도구 표. 소유자에게는 안 따진다
-    answer_unaddressed  호명 없는 메시지에도 답하는가. 원본 mention_only 의 반대다.
+    answer_unaddressed  호명 없는 스레드 답글에도 답하는가. 기본 켜짐
+                        (2026-11-17 김태일 지시). 멘션에만 답할 채널은
+                        false 를 명시한다. 원본 mention_only 의 반대다.
                         슬랙에서 「끼어들기 허용」 · 「멘션 전용」 으로 바꾼다
     name                슬랙에서 조회한 채널 이름. 없으면 채널 ID
     session_scope       대화를 잇는 단위. thread(기본) 또는 channel
@@ -1013,7 +1015,8 @@ shadow 대조에도 쓴다.
 `slack/policy.py` 의 `ResponsePolicy` 한 곳에서 정한다. 리스너는 사실만 모아
 넘긴다 — 채널 설정과 스레드 상태(봇이 이미 말했는가, 그 말이 되물음이었는가).
 
-    answer_unaddressed 꺼짐   안 받는다. 등록 안 된 채널도 같다
+    answer_unaddressed 꺼짐   안 받는다. 채널 파일에 false 를 적은 경우다
+    등록 안 된 채널          안 받는다. 기본값 켜짐은 등록된 채널에만 적용된다
     다른 참가자 호명          안 받는다. chat 값과 되물음 여부보다 앞선다
     chat=quiet              봇이 되물은 답만 받는다
     chat=normal             봇이 낀 스레드에서 ResponseGate 를 통과한 말만

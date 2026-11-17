@@ -31,10 +31,15 @@ class TestConsiders:
     def test_answer_unaddressed가_꺼져_있으면_대상이_아니다(
         self, policy: ResponsePolicy
     ) -> None:
-        assert policy.considers(채널()) is False
+        assert policy.considers(채널(answer_unaddressed=False)) is False
 
     def test_켜져_있으면_대상이다(self, policy: ResponsePolicy) -> None:
         assert policy.considers(채널(answer_unaddressed=True)) is True
+
+    def test_값이_없으면_켜진_것으로_본다(self, policy: ResponsePolicy) -> None:
+        """2026-11-17 김태일 지시로 기본값이 켜졌다. 멘션에만 답할 채널은
+        answer_unaddressed: false 를 명시한다."""
+        assert policy.considers(채널()) is True
 
 
 class TestAnswersTopLevel:
@@ -74,7 +79,7 @@ class TestAnswers:
         self, policy: ResponsePolicy
     ) -> None:
         state = ThreadState(joined=True, bot_asked=True)
-        assert policy.answers(채널(), "이거 해줘", state) is False
+        assert policy.answers(채널(answer_unaddressed=False), "이거 해줘", state) is False
 
 
 class TestAddressedToOther:

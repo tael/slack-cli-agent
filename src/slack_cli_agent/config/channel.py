@@ -88,9 +88,10 @@ I82 — disposition of mametchi channels.json keys that are *not* core fields:
 * ``shadow_source`` — the paired source channel a shadow/mirror channel
   mirrors (mametchi shadow_source_api); ``extra`` only. shadow/service.py
   reads it, and ``shadow_judge`` beside it, to run shadow evaluation (G4).
-* ``mention_only`` — *not* a replacement key: answering only mentions is the
-  core default (``answer_unaddressed`` and ``answer_top_level`` both off), so
-  this is absorbed by the default rather than needing its own field.
+* ``mention_only`` — *not* a replacement key. It used to be absorbed by the
+  core default; since 2026-11-17 ``answer_unaddressed`` defaults to on, so a
+  channel that must answer only when named sets ``answer_unaddressed: false``
+  explicitly. ``mention_only`` itself stays in ``extra`` and changes nothing.
 * ``added_at`` — bookkeeping metadata the join flow writes, never
   behaviour; harmless in ``extra``.
 * ``join`` — ``true`` makes the bot call conversations.join on the channel at
@@ -128,7 +129,13 @@ class ChannelConfig:
     user_tools: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     """Per-user extra tools. The org-specific value (an ops script, say) lives
     in the channel file, not in the installed package (sca-ww4)."""
-    answer_unaddressed: bool = False
+    answer_unaddressed: bool = True
+    """Answers a mention-less *thread reply* in this channel. On by default
+    (2026-11-17 김태일 "스레드에서 멘션없이 답하는걸 기본값으로 해줘"): a
+    thread the bot already speaks in reads as a conversation, so requiring a
+    mention on every follow-up dropped plain replies. A channel that must
+    answer only when named sets it to false explicitly. Top-level mention-less
+    messages stay closed; `answer_top_level` is the separate key for those."""
     peer_turn_limit: int | None = None
     """Bot-to-bot exchange cap for this channel's threads. None keeps the
     process default, 0 turns the cap off (2026-11-08 김태일 "무제한턴 방지를
@@ -250,7 +257,7 @@ class ChannelConfig:
                 str(user): tuple(str(tool) for tool in (tools or ()))
                 for user, tools in (data.get("user_tools") or {}).items()
             },
-            answer_unaddressed=bool(data.get("answer_unaddressed", False)),
+            answer_unaddressed=bool(data.get("answer_unaddressed", True)),
             answer_top_level=bool(data.get("answer_top_level", False)),
             peer_turn_limit=_peer_turn_limit(data.get("peer_turn_limit")),
             stats_footer=bool(data.get("stats_footer", False)),
