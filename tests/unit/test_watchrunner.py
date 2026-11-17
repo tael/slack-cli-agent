@@ -1842,19 +1842,20 @@ class Test감시보고통계푸터:
     @dataclass
     class 푸터채널(가짜채널설정):
         stats_footer: bool = False
+        model_footer: bool = True
 
     @dataclass
     class 푸터발행(가짜발행):
         def apply_stats_footer(self, body, model, rich, *, elapsed, effort, usage):
             return f"{body}\n\n> 걸린 시간 : {elapsed:.0f}초\n> 실행 모델 : {model}"
 
-    def _돌린다(self, 큐, stats_footer: bool) -> str:
+    def _돌린다(self, 큐, stats_footer: bool, model_footer: bool = True) -> str:
         큐.enqueue("C1", "111.1", "배포 확인")
         발행 = self.푸터발행()
         r = replace(응답(ok=True, body=f"끝{WATCH_DONE_TAG}"), elapsed=42.0, model_asked="m-1")
         c = 체커(
             큐=큐, run_check=lambda job, outcome: r, 발행=발행,
-            채널목록=가짜채널목록({"C1": self.푸터채널(rich=True, stats_footer=stats_footer)}),
+            채널목록=가짜채널목록({"C1": self.푸터채널(rich=True, stats_footer=stats_footer, model_footer=model_footer)}),
         )
         큐.시각["값"] = 2000.0
         c.check_once()
@@ -1867,3 +1868,7 @@ class Test감시보고통계푸터:
 
     def test_stats_footer_꺼진_채널은_그대로다(self, 큐) -> None:
         assert "걸린 시간" not in self._돌린다(큐, False)
+
+    def test_model_footer_꺼진_채널은_stats_footer여도_붙이지_않는다(self, 큐) -> None:
+        본문 = self._돌린다(큐, True, model_footer=False)
+        assert "실행 모델" not in 본문

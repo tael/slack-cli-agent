@@ -899,6 +899,9 @@ class RequestPipeline:
         shown_model = self._footer_model(model, response)
 
         def with_footer(text: str) -> str:
+            # model_footer=false 채널은 모델명이 들어가는 푸터를 붙이지 않는다 (2026-11-17)
+            if footer_config is not None and not footer_config.model_footer:
+                return text
             if footer_config is not None and footer_config.stats_footer and hasattr(
                 self._publisher, "apply_stats_footer"
             ):

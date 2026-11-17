@@ -528,7 +528,8 @@ class WatchJobChecker:
             return body
         config = self._channels.get(job.channel)
         apply = getattr(self._publisher, "apply_stats_footer", None)
-        if config is None or not getattr(config, "stats_footer", False) or apply is None:
+        if (config is None or not getattr(config, "stats_footer", False)
+                or not getattr(config, "model_footer", True) or apply is None):
             return body
         model = response.model_asked or response.model_actual or ""
         try:
