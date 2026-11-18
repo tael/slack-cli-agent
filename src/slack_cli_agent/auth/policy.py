@@ -111,7 +111,7 @@ class AccessPolicy:
         """
         is_dm = is_direct_message_channel(channel)
         is_controller = bool(user) and user in self._profile.controller_user_ids
-        if user and user == self._profile.owner_user_id:
+        if user and user in self._profile.owner_user_ids:
             trust = TrustLevel.OWNER
         elif user and self._is_channel_trusted(channel, user):
             trust = TrustLevel.TRUSTED

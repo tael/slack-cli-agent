@@ -51,6 +51,23 @@ class TestPrincipalFor:
         assert principal.trust is TrustLevel.OWNER
         assert principal.is_direct_message is False
 
+    def test_공동_소유자도_채널과_무관하게_OWNER다(self, tmp_path: Path) -> None:
+        """2026-11-18 소유자 추가. co_owner_user_ids 도 OWNER 로 판정한다."""
+        profile = Profile.from_dict({**MINIMAL_PROFILE, "co_owner_user_ids": ["U_CO"]})
+        policy = AccessPolicy(profile, make_channels(tmp_path / "c.json", {}))
+        assert policy.principal_for("C_PUBLIC", "U_CO").trust is TrustLevel.OWNER
+        assert policy.principal_for("D9", "U_CO").trust is TrustLevel.OWNER
+        assert policy.principal_for("C_PUBLIC", OWNER).trust is TrustLevel.OWNER
+        assert profile.owner_user_ids == frozenset({OWNER, "U_CO"})
+        assert profile.owner_user_id == OWNER
+
+    def test_공동_소유자가_없으면_기존_소유자만_OWNER다(self, tmp_path: Path) -> None:
+        profile = make_profile()
+        assert profile.co_owner_user_ids == frozenset()
+        assert profile.owner_user_ids == frozenset({OWNER})
+        policy = AccessPolicy(profile, make_channels(tmp_path / "c.json", {}))
+        assert policy.principal_for("C_PUBLIC", STRANGER).trust is TrustLevel.GENERAL
+
     def test_채널의_trusted_users에_있으면_TRUSTED다(self, tmp_path: Path) -> None:
         channels = make_channels(
             tmp_path / "c.json", {"C1": {"trusted_users": [TRUSTED_USER]}}
