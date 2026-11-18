@@ -76,6 +76,14 @@ class TestJudge:
         assert judge(CHECKS, "a", "b") is None
         assert judge.status == "error:bad_json"
 
+    def test_빠진_항목을_사용자에게_되묻는_답은_그_항목_기준을_충족으로_보라고_지시한다(self):
+        """모호한 요청("그거 다시 확인해줘")에서 대상을 되물은 답이 미충족으로 차단됐다 (N9)."""
+        runner = _runner(_judge_output([]))
+        _judge(runner)(CHECKS[:1], "무엇을 다시 확인할까요?", "")
+        prompt = runner.calls[0]["input"]
+        assert "되묻는 답" in prompt and "충족" in prompt.split("되묻는 답")[1].split("\n")[0]
+        assert "추정으로 진행" in prompt
+
     def test_중첩_호출에서는_돌지_않는다(self):
         runner = _runner(_judge_output([]))
         judge = _judge(runner, env={fr.VERIFY_NESTED_ENV: "1"})
