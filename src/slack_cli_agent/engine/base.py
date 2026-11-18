@@ -563,6 +563,14 @@ class Engine(ABC):
 
     name: ClassVar[str] = ""
 
+    def serving_name(self) -> str:
+        """Name of the engine that runs (or ran) this turn.
+
+        Equals `name` except for a delegating engine, whose own name is not
+        one the profile's engine specs know (plan-file lookup keys on it).
+        """
+        return self.name
+
     #: What this engine can enforce at best. The actual guarantee for one
     #: request is capabilities_for() -- codex's sandbox comes from profile
     #: options, and claude's allowlist only holds if the request has one.

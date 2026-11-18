@@ -366,6 +366,14 @@ class Test폴백은_실제로_도는_엔진의_보장을_낸다:
         폴백.switcher.approve()
         assert 폴백.capabilities_for(request()) == GeminiEngine.capabilities
 
+    def test_이번_턴에_돌_엔진_이름을_전환_상태로_낸다(self, tmp_path: Path) -> None:
+        폴백 = self._폴백(tmp_path)
+        assert 폴백.name == "fallback" and 폴백.serving_name() == "claude"
+        폴백.switcher.begin_switch("weekly limit", engine_name="gemini")
+        폴백.switcher.approve()
+        assert 폴백.serving_name() == "gemini"
+        assert ClaudeEngine(claude_profile(tmp_path), SETTINGS).serving_name() == "claude"
+
 
 class _그만(Exception):
     """대역이 요청만 받고 멈춘다. 응답을 지어내면 계약이 바뀔 때 안 깨진다."""

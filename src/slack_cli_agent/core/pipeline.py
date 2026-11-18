@@ -799,7 +799,7 @@ class RequestPipeline:
             ctx, config, tier, start=start,
             post=lambda text: self._publisher.post(ctx.channel, ctx.thread_ts, text, rich, flat=flat),
             plan_path=lambda: (
-                self._plan_file(self._engine.name, request.session_id or "", workdir)
+                self._plan_file(self._engine.serving_name(), request.session_id or "", workdir)
                 if self._plan_file is not None and request.session_id else None
             ),
         )
@@ -2145,7 +2145,7 @@ class RequestPipeline:
         try:
             scope = _REQUEST_SCOPE.get()
             plan = (
-                self._plan_result(self._engine.name, session_id, scope.workdir if scope else None)
+                self._plan_result(self._engine.serving_name(), session_id, scope.workdir if scope else None)
                 if session_id else None
             )
         except Exception as exc:  # noqa: BLE001 -- 기록이 요청 처리를 막으면 안 된다

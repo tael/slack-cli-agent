@@ -235,6 +235,19 @@ class TestPipeline:
         assert rec["ack_posted"] is True and rec["ack_latency_sec"] >= 0.05 and "ack_skip_reason" not in rec
         assert calls[0][2] == tmp_path.resolve()
 
+    def test_폴백_엔진이면_이번_턴에_실행될_엔진_이름으로_계획을_찾는다(self, tmp_path: Path) -> None:
+        pipeline, deps, calls, _ = self._pipeline(tmp_path, on=True, plan=_plan())
+
+        class _Fallback(type(pipeline._engine)):  # type: ignore[misc]
+            name = "fallback"
+
+            def serving_name(self) -> str:
+                return "claude"
+
+        pipeline._engine = _Fallback()
+        pipeline.handle(make_ctx(user="UOWNER"))
+        assert calls and {c[0] for c in calls} == {"claude"}
+
     def test_꺼져_있으면_게시도_행_필드도_계획_조회도_없다(self, tmp_path: Path) -> None:
         pipeline, deps, calls, _ = self._pipeline(tmp_path, on=False, plan=_plan())
         pipeline.handle(make_ctx(user="UOWNER"))
