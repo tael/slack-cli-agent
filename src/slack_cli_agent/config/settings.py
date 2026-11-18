@@ -305,6 +305,10 @@ class RuntimeSettings:
     # 켠다. 0 이하는 두 훅만 끈다. 엔진에는 PLAN_GATE 로 넘어간다. 2026-11-11
     # 부터 거부하지 않으므로 값의 크기는 쓰지 않는다.
     plan_gate_responses: int = 3
+    # True 면 계획 호출이 요청 해석·추정한 인풋·ack·확인 기준도 계획 파일에
+    # 적고 request 행에 남긴다. 기록 전용이라 모델 입력은 그대로다.
+    # 엔진에는 SCA_PLAN_INTAKE 로 넘어간다.
+    plan_intake: bool = False
 
     #: The restart supervisor writes an apply-request itself when the install
     #: checkout's HEAD moves on main with a clean tree. 2026-11-12: bots share

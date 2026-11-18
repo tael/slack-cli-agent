@@ -59,6 +59,7 @@ from ..guard.mentions import (
 )
 from ..guard.lineref import BareLineRefGuard, expand_bare_refs
 from ..guard.pipeline import GuardPipeline
+from ..guard.plan_start import INTAKE_ENV as PLAN_INTAKE_ENV
 from ..guard.plan_start import WORKFLOWS_ENV as PLAN_WORKFLOWS_ENV
 from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, PLAN_GATE_ENV
 from ..guard.rewrite import RewriteLossGuard
@@ -312,6 +313,8 @@ class RequestPipeline:
         # {workflow id: description} the planner classifies each request into
         # (guard/plan_start, record only). Empty leaves classification off.
         plan_workflows: Mapping[str, str] | None = None,
+        # True asks the planner for intake fields too (SCA_PLAN_INTAKE, record only).
+        plan_intake: bool = False,
         # (engine name, session id) -> the planner's plan file content or None.
         # Lets the request row carry the classification; None leaves the row
         # without plan_* fields.
@@ -415,6 +418,7 @@ class RequestPipeline:
         self._require_recipient = require_recipient
         self._plan_gate_responses = plan_gate_responses
         self._plan_workflows = dict(plan_workflows or {})
+        self._plan_intake = plan_intake
         self._plan_result = plan_result
         # Reuses asker_is_bot as the is-bot oracle: resolving a RECIPIENT tag
         # needs the same "is this user a bot" lookup for the ASKER→BOT fold and
@@ -1323,6 +1327,8 @@ class RequestPipeline:
         env = {PLAN_GATE_ENV: str(self._plan_gate_responses)}
         if self._plan_workflows:
             env[PLAN_WORKFLOWS_ENV] = json.dumps(self._plan_workflows, ensure_ascii=False)
+        if self._plan_intake:
+            env[PLAN_INTAKE_ENV] = "1"
         return env
 
     def _delegation_env(self, tools: ToolSelection) -> dict[str, str]:
@@ -2057,7 +2063,7 @@ class RequestPipeline:
         - stale: 계획 파일이 이 요청보다 먼저 만들어진 것
         - read_error: 읽기 예외
         """
-        if not self._plan_workflows or self._plan_result is None:
+        if not (self._plan_workflows or self._plan_intake) or self._plan_result is None:
             return {}
         try:
             plan = self._plan_result(self._engine.name, session_id or "") if session_id else None
@@ -2073,6 +2079,10 @@ class RequestPipeline:
         fields: dict[str, Any] = {"plan_status": status}
         if status != "ok":
             return fields
+        if self._plan_intake:
+            fields.update(self._plan_intake_fields(plan))
+        if not self._plan_workflows:
+            return fields
         if plan.get("workflow") and plan.get("workflow_confidence"):
             fields["plan_workflow_id"] = plan["workflow"]
             fields["plan_workflow_confidence"] = plan["workflow_confidence"]
@@ -2080,6 +2090,27 @@ class RequestPipeline:
                 fields["plan_workflow_reason"] = str(plan["workflow_reason"])[:200]
         else:
             fields["plan_status"] = "ok_no_workflow"
+        return fields
+
+    @staticmethod
+    def _plan_intake_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
+        """계획의 입력 점검 필드를 request 행에 남길 짧은 형태로. 기록 전용이다."""
+        fields: dict[str, Any] = {}
+        for key, limit in (("intent", 200), ("ack", 300), ("ask", 200)):
+            value = plan.get(key)
+            if isinstance(value, str) and value:
+                fields[f"plan_{key}"] = value[:limit]
+        for key in ("assumed", "missing"):
+            items = plan.get(key)
+            if isinstance(items, list) and items:
+                fields[f"plan_{key}"] = [str(item)[:100] for item in items[:5]]
+        checks = plan.get("checks")
+        if isinstance(checks, list):
+            fields["plan_checks_count"] = len(checks)
+            fields["plan_checks"] = [
+                {"what": str(item.get("what", ""))[:100], "how": str(item.get("how", ""))[:100]}
+                for item in checks[:5] if isinstance(item, dict)
+            ]
         return fields
 
     @staticmethod

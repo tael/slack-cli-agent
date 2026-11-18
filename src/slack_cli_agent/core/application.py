@@ -1038,6 +1038,7 @@ class Application:
                 plan_gate_responses=(
                     self._settings.plan_gate_responses if self._settings.plan_flow else 0
                 ),
+                plan_intake=self._settings.plan_intake,
                 mention_table=self._names.name_table,
                 slow_reporter=self._slow_reporter(),
                 # Resolved per request like the slow report: the engine that

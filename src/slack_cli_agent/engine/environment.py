@@ -295,6 +295,9 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # guard/plan_start: JSON {workflow id: description} the planner
         # classifies the request into (record only). Names and prose.
         "SCA_PLAN_WORKFLOWS",
+        # guard/plan_start: "1" asks the planner for intent, assumptions, ack
+        # and checks too (record only).
+        "SCA_PLAN_INTAKE",
         # Stop hook model verify toggle and model (finish_review.
         # resolve_verify_settings). On by default; these only override.
         "SCA_FINISH_VERIFY",
