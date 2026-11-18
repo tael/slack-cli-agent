@@ -82,9 +82,12 @@ owner 와 trusted 파일이 같은 항목을 들고 있어 손으로 맞춰야 �
 
 ## 본보기가 막는 것
 
-공통 파일은 읽기만 막는다 — `~/.ssh`, `~/.aws`, `~/.config`,
-`~/.claude/.credentials.json`, `~/.claude/session-env`, `~/Library`,
-`~/.mcp.json`, 자격 파일 이름 패턴, `.env*`. 여기에 그 봇 자신의
+공통 파일은 읽기만 막는다 — `~/.ssh`, `~/.aws`, `~/.config` 의 gcloud·gh·op,
+`~/.claude/.credentials.json`, `~/.claude/session-env`, `~/Library` 의
+Keychains·Cookies·Application Support·Mail·Messages·Safari·Containers·
+Group Containers, `~/.mcp.json`, 자격 파일 이름 패턴, `.env*`.
+`~/.config`·`~/Library` 전체를 막으면 `~/Library/Caches/ms-playwright`,
+`~/.config/pw-session` 같은 작업 경로까지 거부돼 이 목록으로 좁혔다. 여기에 그 봇 자신의
 `credentials.json` 과 `engine/` 아래(엔진 자격과 이 settings 파일들)를 읽기·
 쓰기·고치기로 막고, `state.db` 와 `audit.jsonl` 은 쓰기·고치기만 막는다.
 
