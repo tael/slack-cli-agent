@@ -305,6 +305,9 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # guard/pretool/plan_gate: "1" adds expected output, assumptions and
         # checks to the one-time plan injection.
         "SCA_PLAN_INTAKE_INJECT",
+        # Stop hook plan-check switch and its own block cap (finish_review N6).
+        "SCA_PLAN_INTAKE_CHECK",
+        "SCA_PLAN_CHECK_MAX_BLOCKS",
         # Stop hook model verify toggle and model (finish_review.
         # resolve_verify_settings). On by default; these only override.
         "SCA_FINISH_VERIFY",

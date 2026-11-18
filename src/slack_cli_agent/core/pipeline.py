@@ -59,6 +59,7 @@ from ..guard.mentions import (
 )
 from ..guard.lineref import BareLineRefGuard, expand_bare_refs
 from ..guard.pipeline import GuardPipeline
+from ..guard.finish_review import PLAN_CHECK_ENV
 from ..guard.plan_start import INTAKE_ENV as PLAN_INTAKE_ENV
 from ..guard.plan_start import REFINE_ENV as PLAN_REFINE_ENV
 from ..guard.plan_start import REFINE_MODES as PLAN_REFINE_MODES
@@ -321,6 +322,7 @@ class RequestPipeline:
         # "separate" or "combined" refines the request before planning (SCA_PLAN_REFINE).
         plan_refine: str = "",
         plan_intake_inject: bool = False,
+        plan_intake_check: bool = False,
         # (engine name, session id) -> the planner's plan file content or None.
         # Lets the request row carry the classification; None leaves the row
         # without plan_* fields.
@@ -427,6 +429,7 @@ class RequestPipeline:
         self._plan_intake = plan_intake
         self._plan_refine = plan_refine
         self._plan_intake_inject = plan_intake_inject
+        self._plan_intake_check = plan_intake_check
         self._plan_result = plan_result
         # Reuses asker_is_bot as the is-bot oracle: resolving a RECIPIENT tag
         # needs the same "is this user a bot" lookup for the ASKER→BOT fold and
@@ -1343,6 +1346,8 @@ class RequestPipeline:
                 env[PLAN_SOURCES_ENV] = json.dumps(list(tools.names), ensure_ascii=False)
             if self._plan_intake_inject:
                 env[INTAKE_INJECT_ENV] = "1"
+            if self._plan_intake_check:
+                env[PLAN_CHECK_ENV] = "1"
         if self._plan_refine in PLAN_REFINE_MODES:
             env[PLAN_REFINE_ENV] = self._plan_refine
         return env

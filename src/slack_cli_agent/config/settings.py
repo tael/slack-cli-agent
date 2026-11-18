@@ -319,6 +319,9 @@ class RuntimeSettings:
     # True 면 plan_intake 와 함께일 때 계획 주입에 기대 결과·가정·확인 기준도
     # 싣는다(짧은 계획 포함). 모델 입력이 바뀐다. SCA_PLAN_INTAKE_INJECT 로 넘어간다.
     plan_intake_inject: bool = False
+    # True 면 Stop 훅이 계획의 확인 기준(checks)과 이번 턴 결과를 대조한다. plan_intake 가 켜져
+    # 있어야 효과가 있다. 엔진에는 SCA_PLAN_INTAKE_CHECK 로 넘어간다.
+    plan_intake_check: bool = False
 
     #: The restart supervisor writes an apply-request itself when the install
     #: checkout's HEAD moves on main with a clean tree. 2026-11-12: bots share
