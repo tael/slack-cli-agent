@@ -313,6 +313,9 @@ class RuntimeSettings:
     # 적고 request 행에 남긴다. 기록 전용이라 모델 입력은 그대로다.
     # 엔진에는 SCA_PLAN_INTAKE 로 넘어간다.
     plan_intake: bool = False
+    # True 면 Stop 훅이 계획의 확인 기준(checks)과 이번 턴 결과를 대조한다. plan_intake 가 켜져
+    # 있어야 효과가 있다. 엔진에는 SCA_PLAN_INTAKE_CHECK 로 넘어간다.
+    plan_intake_check: bool = False
 
     #: The restart supervisor writes an apply-request itself when the install
     #: checkout's HEAD moves on main with a clean tree. 2026-11-12: bots share

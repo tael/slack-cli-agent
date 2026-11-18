@@ -44,14 +44,25 @@ from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.guard.finish_review import (
+    PLAN_CHECK_TIMEOUT,
+    Finding,
     ModelClaimVerifier,
+    PlanCheckJudge,
+    PlanCheckOutcome,
+    StopDecision,
+    Turn,
+    _turn_evidence,
     decide,
     draft_key,
     needs_verification,
+    plan_check_enabled,
+    plan_check_outcome,
+    plan_checks,
     read_knowledge_file,
     resolve_advisor_channel,
     resolve_code_first_channel,
     resolve_owner_turn,
+    resolve_plan_check_max_blocks,
     resolve_verify_max_blocks,
     resolve_verify_settings,
     rows_since_last_human_input,
@@ -181,6 +192,72 @@ def _log_verify(state_dir: Path | None, record: dict[str, Any],
         pass
 
 
+def _make_plan_check_judge(model: str) -> PlanCheckJudge:
+    return PlanCheckJudge(model=model)
+
+
+def _plan_check_state(state_dir: Path, key: str) -> tuple[Path, Path]:
+    return state_dir / f"finish-hook-{key}.plancheck.count", state_dir / f"finish-hook-{key}.plancheck.keys.json"
+
+
+def _run_plan_check(
+    *, turn: Turn, transcript_path: str, state_dir: Path | None, key: str, decision: StopDecision,
+    seconds_left: float | None, model: str, session_id: object,
+) -> StopDecision | None:
+    """N6: the answer against the plan's checks. A block decision, or None to
+    leave `decision` as it is. Never raises into the stop."""
+    if not plan_check_enabled(os.environ) or not transcript_path or not turn.has_transcript:
+        return None
+    try:
+        plan = json.loads(Path(transcript_path + ".plan.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    checks = plan_checks(plan)
+    if not checks:
+        return None
+    record: dict[str, Any] = {
+        "t": time.strftime("%Y-%m-%d %H:%M:%S"), "session": str(session_id or ""), "model": model,
+        "checks": len(checks),
+    }
+    count_path = keys_path = None
+    block_count, prior = 0, frozenset[str]()
+    if state_dir is not None:
+        count_path, keys_path = _plan_check_state(state_dir, key)
+        block_count, prior = _read_count(count_path), _read_flagged(keys_path)
+    record["round"] = block_count + 1
+    if decision.action != "allow":
+        _log_verify(state_dir, {**record, "status": "skip_other_block"}, name="finish-hook-plan-check.jsonl")
+        return None
+    if seconds_left is not None and seconds_left <= 240 + PLAN_CHECK_TIMEOUT:
+        _log_verify(state_dir, {**record, "status": "skip_budget"}, name="finish-hook-plan-check.jsonl")
+        return None
+    judge = _make_plan_check_judge(model)
+    results = judge(checks, turn.answer, _turn_evidence(turn))
+    outcome = (
+        plan_check_outcome(
+            results, prior_keys=prior, block_count=block_count, cap=resolve_plan_check_max_blocks(os.environ),
+        )
+        if results is not None else PlanCheckOutcome(None)
+    )
+    blocked = outcome.reason is not None
+    record.update(status=judge.status, blocked=blocked, results=results or [], elapsed_sec=judge.elapsed)
+    with contextlib.suppress(OSError):
+        Path(transcript_path + ".plan.checks.json").write_text(
+            json.dumps({k: record[k] for k in ("results", "blocked", "round", "status")}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    _log_verify(state_dir, record, name="finish-hook-plan-check.jsonl")
+    if not blocked or outcome.reason is None:
+        return None
+    if count_path is not None and keys_path is not None:
+        _write_count(count_path, block_count + 1)
+        _write_flagged(keys_path, prior | outcome.keys)
+    return StopDecision(
+        action="block",
+        findings=(Finding(name="plan_check", detail=outcome.reason, guidance=outcome.reason),),
+    )
+
+
 def _is_recipient_retry_turn(rows: Sequence[Mapping[str, Any]]) -> bool:
     """True when the latest non-meta text input is the missing-recipient
     reprompt. That rerun runs with every tool forbidden and only its tag is
@@ -264,12 +341,20 @@ def main(argv: list[str]) -> int:
             prior_drafts=prior_drafts,
         )
         elapsed = round(time.monotonic() - started, 1)
+        final = decision
+        if state_dir is not None or transcript_path:
+            plan_decision = _run_plan_check(
+                turn=turn, transcript_path=transcript_path, state_dir=state_dir,
+                key=_turn_key(session_id, this_turn_rows), decision=decision,
+                seconds_left=seconds_left, model=verify_model, session_id=session_id,
+            )
+            final = plan_decision or decision
         figurative_log: dict[str, Any] = {}
         if figurative is not None:
             # A blocked draft's check keeps running detached: the rewrite
             # carries most of its lines, so the next Stop reuses it.
             figurative_log = {"figurative": "left_running" if figurative.started else "no_new_lines"}
-            if decision.action != "block":
+            if final.action != "block":
                 waited = time.monotonic()
                 with contextlib.suppress(Exception):
                     record = figurative.finish()
@@ -281,7 +366,7 @@ def main(argv: list[str]) -> int:
                     }
             _log_verify(state_dir, {
                 "t": time.strftime("%Y-%m-%d %H:%M:%S"), "session": str(session_id or ""),
-                "decision": decision.action, "decide_sec": elapsed, **figurative_log,
+                "decision": final.action, "decide_sec": elapsed, **figurative_log,
             }, name="finish-hook-figurative.jsonl")
         if decision.action == "block" and count_path is not None:
             _write_count(count_path, block_count + 1)
@@ -306,7 +391,7 @@ def main(argv: list[str]) -> int:
                 "block_count": block_count,
             })
 
-        result = decision.to_hook_json()
+        result = final.to_hook_json()
         if result:
             print(json.dumps(result, ensure_ascii=False))
     except Exception:  # noqa: BLE001 - never block the turn through failure

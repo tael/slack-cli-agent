@@ -59,6 +59,7 @@ from ..guard.mentions import (
 )
 from ..guard.lineref import BareLineRefGuard, expand_bare_refs
 from ..guard.pipeline import GuardPipeline
+from ..guard.finish_review import PLAN_CHECK_ENV
 from ..guard.plan_start import INTAKE_ENV as PLAN_INTAKE_ENV
 from ..guard.plan_start import WORKFLOWS_ENV as PLAN_WORKFLOWS_ENV
 from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, PLAN_GATE_ENV
@@ -315,6 +316,7 @@ class RequestPipeline:
         plan_workflows: Mapping[str, str] | None = None,
         # True asks the planner for intake fields too (SCA_PLAN_INTAKE, record only).
         plan_intake: bool = False,
+        plan_intake_check: bool = False,
         # (engine name, session id) -> the planner's plan file content or None.
         # Lets the request row carry the classification; None leaves the row
         # without plan_* fields.
@@ -419,6 +421,7 @@ class RequestPipeline:
         self._plan_gate_responses = plan_gate_responses
         self._plan_workflows = dict(plan_workflows or {})
         self._plan_intake = plan_intake
+        self._plan_intake_check = plan_intake_check
         self._plan_result = plan_result
         # Reuses asker_is_bot as the is-bot oracle: resolving a RECIPIENT tag
         # needs the same "is this user a bot" lookup for the ASKER→BOT fold and
@@ -1329,6 +1332,8 @@ class RequestPipeline:
             env[PLAN_WORKFLOWS_ENV] = json.dumps(self._plan_workflows, ensure_ascii=False)
         if self._plan_intake:
             env[PLAN_INTAKE_ENV] = "1"
+            if self._plan_intake_check:
+                env[PLAN_CHECK_ENV] = "1"
         return env
 
     def _delegation_env(self, tools: ToolSelection) -> dict[str, str]:
