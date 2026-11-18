@@ -332,3 +332,16 @@ class TestPlannerContext:
         calls = Calls()
         _run(tmp_path, calls, "그거 왜 그래?", context="사용자: 어제 늦던데")
         assert calls.planner_prompts[0] == "그거 왜 그래?"
+
+
+class TestCombinedRefineRules:
+    """N3: combined refine added unstated targets and wrote unresolved guesses as settled (haiku 21/90)."""
+
+    def test_combined_정제_지침은_원문에_없는_대상_추가와_unresolved_확정을_금한다(self) -> None:
+        section = ps._COMBINED_REFINE_SECTION
+        assert "원문에 없는 대상·지역·원천·기준·출력 형식·작업 범위를 더하지 않는다" in section
+        assert "unresolved 에 적은 것을 refined 에 확정해 쓰지 않는다" in section
+        assert "추정으로 채울 값은 assumed 에만 적는다" in section
+
+    def test_combined_정제_지침은_기본값과_원천_목록을_근거로_치지_않는다(self) -> None:
+        assert "기본값, 쓸 수 있는 원천 목록, 수신자가 봇이라는 사실은 basis 가 아니다" in ps._COMBINED_REFINE_SECTION
