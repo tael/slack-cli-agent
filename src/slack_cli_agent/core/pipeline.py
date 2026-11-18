@@ -60,6 +60,9 @@ from ..guard.mentions import (
 from ..guard.lineref import BareLineRefGuard, expand_bare_refs
 from ..guard.pipeline import GuardPipeline
 from ..guard.plan_start import INTAKE_ENV as PLAN_INTAKE_ENV
+from ..guard.plan_start import REFINE_ENV as PLAN_REFINE_ENV
+from ..guard.plan_start import REFINE_MODES as PLAN_REFINE_MODES
+from ..guard.plan_start import SOURCES_ENV as PLAN_SOURCES_ENV
 from ..guard.plan_start import WORKFLOWS_ENV as PLAN_WORKFLOWS_ENV
 from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, PLAN_GATE_ENV
 from ..guard.rewrite import RewriteLossGuard
@@ -315,6 +318,8 @@ class RequestPipeline:
         plan_workflows: Mapping[str, str] | None = None,
         # True asks the planner for intake fields too (SCA_PLAN_INTAKE, record only).
         plan_intake: bool = False,
+        # "separate" or "combined" refines the request before planning (SCA_PLAN_REFINE).
+        plan_refine: str = "",
         # (engine name, session id) -> the planner's plan file content or None.
         # Lets the request row carry the classification; None leaves the row
         # without plan_* fields.
@@ -419,6 +424,7 @@ class RequestPipeline:
         self._plan_gate_responses = plan_gate_responses
         self._plan_workflows = dict(plan_workflows or {})
         self._plan_intake = plan_intake
+        self._plan_refine = plan_refine
         self._plan_result = plan_result
         # Reuses asker_is_bot as the is-bot oracle: resolving a RECIPIENT tag
         # needs the same "is this user a bot" lookup for the ASKER→BOT fold and
@@ -708,7 +714,7 @@ class RequestPipeline:
                     else {}
                 ),
                 **self._engine_env(ctx.channel, config, tier),
-                **self._plan_gate_env(tier, config),
+                **self._plan_gate_env(tier, config, tools),
                 **self._delegation_env(tools),
                 **self._verify_cap_env(tier),
                 **(self._figurative_env(config) if self._figurative_env is not None else {}),
@@ -1317,7 +1323,9 @@ class RequestPipeline:
             return {VERIFY_MAX_BLOCKS_ENV: "1"}
         return {}
 
-    def _plan_gate_env(self, tier: str, config: ChannelConfig | None) -> dict[str, str]:
+    def _plan_gate_env(
+        self, tier: str, config: ChannelConfig | None, tools: ToolSelection | None = None,
+    ) -> dict[str, str]:
         """PLAN_GATE for guard/plan_start and guard/pretool/plan_gate. Only
         on a turn FlowSection applies to (same flow_applies), so no plan is
         injected where the prompt never mentions one. Absent means off."""
@@ -1329,6 +1337,10 @@ class RequestPipeline:
             env[PLAN_WORKFLOWS_ENV] = json.dumps(self._plan_workflows, ensure_ascii=False)
         if self._plan_intake:
             env[PLAN_INTAKE_ENV] = "1"
+            if tools is not None and tools.names:
+                env[PLAN_SOURCES_ENV] = json.dumps(list(tools.names), ensure_ascii=False)
+        if self._plan_refine in PLAN_REFINE_MODES:
+            env[PLAN_REFINE_ENV] = self._plan_refine
         return env
 
     def _delegation_env(self, tools: ToolSelection) -> dict[str, str]:

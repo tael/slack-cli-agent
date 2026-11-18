@@ -313,6 +313,9 @@ class RuntimeSettings:
     # 적고 request 행에 남긴다. 기록 전용이라 모델 입력은 그대로다.
     # 엔진에는 SCA_PLAN_INTAKE 로 넘어간다.
     plan_intake: bool = False
+    # 계획 앞 입력 정제. "" 꺼짐, "separate" 계획 앞에 도구 없는 호출 한 번,
+    # "combined" 계획 호출이 먼저 정제. 엔진에는 SCA_PLAN_REFINE 로 넘어간다.
+    plan_refine: str = ""
 
     #: The restart supervisor writes an apply-request itself when the install
     #: checkout's HEAD moves on main with a clean tree. 2026-11-12: bots share
