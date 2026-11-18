@@ -1040,6 +1040,7 @@ class Application:
                 ),
                 plan_intake=self._settings.plan_intake,
                 plan_refine=self._settings.plan_refine,
+                plan_intake_inject=self._settings.plan_intake_inject,
                 mention_table=self._names.name_table,
                 slow_reporter=self._slow_reporter(),
                 # Resolved per request like the slow report: the engine that

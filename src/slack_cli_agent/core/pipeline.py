@@ -64,7 +64,7 @@ from ..guard.plan_start import REFINE_ENV as PLAN_REFINE_ENV
 from ..guard.plan_start import REFINE_MODES as PLAN_REFINE_MODES
 from ..guard.plan_start import SOURCES_ENV as PLAN_SOURCES_ENV
 from ..guard.plan_start import WORKFLOWS_ENV as PLAN_WORKFLOWS_ENV
-from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, PLAN_GATE_ENV
+from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, INTAKE_INJECT_ENV, PLAN_GATE_ENV
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
 from ..observability.audit import IncidentKind
@@ -320,6 +320,7 @@ class RequestPipeline:
         plan_intake: bool = False,
         # "separate" or "combined" refines the request before planning (SCA_PLAN_REFINE).
         plan_refine: str = "",
+        plan_intake_inject: bool = False,
         # (engine name, session id) -> the planner's plan file content or None.
         # Lets the request row carry the classification; None leaves the row
         # without plan_* fields.
@@ -425,6 +426,7 @@ class RequestPipeline:
         self._plan_workflows = dict(plan_workflows or {})
         self._plan_intake = plan_intake
         self._plan_refine = plan_refine
+        self._plan_intake_inject = plan_intake_inject
         self._plan_result = plan_result
         # Reuses asker_is_bot as the is-bot oracle: resolving a RECIPIENT tag
         # needs the same "is this user a bot" lookup for the ASKER→BOT fold and
@@ -1339,6 +1341,8 @@ class RequestPipeline:
             env[PLAN_INTAKE_ENV] = "1"
             if tools is not None and tools.names:
                 env[PLAN_SOURCES_ENV] = json.dumps(list(tools.names), ensure_ascii=False)
+            if self._plan_intake_inject:
+                env[INTAKE_INJECT_ENV] = "1"
         if self._plan_refine in PLAN_REFINE_MODES:
             env[PLAN_REFINE_ENV] = self._plan_refine
         return env

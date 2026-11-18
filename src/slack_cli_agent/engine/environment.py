@@ -302,6 +302,9 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # planning; SCA_PLAN_SOURCES is the JSON list of tool names this turn has.
         "SCA_PLAN_REFINE",
         "SCA_PLAN_SOURCES",
+        # guard/pretool/plan_gate: "1" adds expected output, assumptions and
+        # checks to the one-time plan injection.
+        "SCA_PLAN_INTAKE_INJECT",
         # Stop hook model verify toggle and model (finish_review.
         # resolve_verify_settings). On by default; these only override.
         "SCA_FINISH_VERIFY",
