@@ -63,8 +63,8 @@ class TestSwitchOffIsUnchanged:
         assert _sha(json.dumps(ps.schema(delegation, None, False), sort_keys=True)) == schema_sha
 
     def test_상수는_그대로다(self) -> None:
-        assert ps.PLANNER_PROMPT == ps.planner_prompt(False)
-        assert ps.SCHEMA == ps.schema(False)
+        assert ps.planner_prompt(False) == ps.PLANNER_PROMPT
+        assert ps.schema(False) == ps.SCHEMA
 
     def test_환경값_해석(self) -> None:
         assert not ps.intake_enabled({})
