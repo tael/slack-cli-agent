@@ -132,7 +132,7 @@ class TestPipeline:
         pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
         pipeline._plan_intake = intake
         pipeline._plan_workflows = dict(workflows or {})
-        pipeline._plan_result = lambda engine, session: plan
+        pipeline._plan_result = lambda engine, session, workdir=None: plan
         return pipeline, deps
 
     def test_환경에_1_을_싣는다(self, tmp_path: Path) -> None:

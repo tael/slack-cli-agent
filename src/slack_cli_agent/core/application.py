@@ -1048,6 +1048,9 @@ class Application:
                 # row (record only). Candidates stay empty until the workflow
                 # registry is wired in, so this reader is idle for now.
                 plan_result=self._read_plan_result,
+                plan_file=self._plan_file_path,
+                intake_ack=self._settings.intake_ack,
+                intake_ack_after_sec=self._settings.intake_ack_after_sec,
                 # built lazily rather than as a field — eagerly building it here would
                 # look up the bot user ID, making assembly alone call out to Slack
                 participants=lambda channel, thread_ts: self._participants().of(channel, thread_ts),
@@ -2465,15 +2468,27 @@ class Application:
         except Exception:
             log.exception("점검 실패: %s %s:%s", emoji, channel, ts)
 
-    def _read_plan_result(self, engine: str, session_id: str) -> dict[str, Any] | None:
-        """The planner's plan file (guard/plan_start) for a session, or None."""
-        reader: Any = self.transcript_reader(engine)
+    def _plan_file_path(self, engine: str, session_id: str, workdir: Path | None = None) -> Path | None:
+        """The plan file of a session. The transcript dir follows the cwd the
+        engine actually ran in, which is the channel workdir, not always work_root."""
+        if workdir is None or workdir.resolve() == Path(self._profile.work_root).resolve():
+            reader: Any = self.transcript_reader(engine)
+        else:
+            spec = self._engine_spec_for(engine)
+            reader = self._transcript_readers.create(spec.type if spec is not None else engine, workdir, spec=spec)
         find = getattr(reader, "find_transcript_path", None) or getattr(reader, "transcript_path", None)
         path = find(session_id) if find else None
+        return plan_start.plan_path(str(path)) if path is not None else None
+
+    def _read_plan_result(
+        self, engine: str, session_id: str, workdir: Path | None = None,
+    ) -> dict[str, Any] | None:
+        """The planner's plan file (guard/plan_start) for a session, or None."""
+        path = self._plan_file_path(engine, session_id, workdir)
         if path is None:
             return None
         try:
-            data = json.loads(plan_start.plan_path(str(path)).read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
         return data if isinstance(data, dict) else None

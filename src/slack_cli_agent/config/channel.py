@@ -67,7 +67,7 @@ KNOWN_KEYS = frozenset(
         "session_scope",
         "disclose_mechanism", "full_authority", "operator_full", "skills",
         "light_context", "rich", "chat",
-        "progress", "bot_mentions", "code_first", "peer_turn_limit", "stats_footer",
+        "progress", "intake_ack", "bot_mentions", "code_first", "peer_turn_limit", "stats_footer",
         "user_tools", "tool_enforcement",
         "operators", "operator_bots", "airflow_admins", "extra_tools",
     }
@@ -148,6 +148,9 @@ class ChannelConfig:
     doesn't butt in -- a separate key from `answer_unaddressed` for exactly
     that reason (mametchi answer_top_level, bot.py:10089)."""
     stats_footer: bool = False
+    intake_ack: bool = True
+    """Channel-level off for the intake ack (RuntimeSettings.intake_ack is the
+    process switch). Only matters when that switch is on."""
     """Ends each reply with elapsed time, model, effort, token count and cache
     hit rate instead of the short elapsed/model line."""
     flat_reply: bool = False
@@ -261,6 +264,7 @@ class ChannelConfig:
             answer_top_level=bool(data.get("answer_top_level", False)),
             peer_turn_limit=_peer_turn_limit(data.get("peer_turn_limit")),
             stats_footer=bool(data.get("stats_footer", False)),
+            intake_ack=bool(data.get("intake_ack", True)),
             flat_reply=bool(data.get("flat_reply", False)),
             session_scope=str(data.get("session_scope") or "thread"),
             disclose_mechanism=bool(data.get("disclose_mechanism", False)),
