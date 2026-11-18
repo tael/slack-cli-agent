@@ -1013,6 +1013,7 @@ class Application:
                 default_workdir=self._profile.work_root,
                 light_workdir=self._profile.light_workdir,
                 owner_user_id=self._profile.owner_user_id,
+                co_owner_user_ids=self._profile.co_owner_user_ids,
                 reactions=self.reactions(),
                 name_resolver=self.user_namer(),
                 # AskerSection's bot-only branch (B1/B2). Shares the resolver the
@@ -2533,7 +2534,10 @@ class Application:
             owner_user_id=self._profile.owner_user_id,
             # controller 는 소유자와 같은 최고 권한을 받으므로 소유자 전용 채널의
             # 정당한 멤버다. 외부인(유출 대상)으로 오탐하지 않게 함께 넘긴다.
-            controller_user_ids=self._profile.controller_user_ids,
+            # 공동 소유자도 소유자 전용 채널의 정당한 멤버다 (2026-11-18).
+            controller_user_ids=(
+                *self._profile.controller_user_ids, *self._profile.co_owner_user_ids,
+            ),
             list_members=self._channel_members,
             # 슬랙 멤버 목록은 봇도 사용자 ID 로 준다. 사람인지는 users.info 의
             # is_bot 으로만 갈린다.

@@ -33,7 +33,7 @@ KNOWN_KEYS = frozenset(
     {
         "name", "display_name", "primary_engine", "fallback_engine",
         "state_dir", "work_root", "data_dir", "attach_dir", "launch_label",
-        "owner_user_id", "controller_user_ids", "troubleshoot_channel", "owner_dm", "credentials_file",
+        "owner_user_id", "co_owner_user_ids", "controller_user_ids", "troubleshoot_channel", "owner_dm", "credentials_file",
         "plugins", "usage_check_command", "agent_greeting", "agent_prompts",
         "settings", "mcp_servers", "domain_file", "light_workdir", "airflow_ctl", "peer",
         "delegation_ledger", "delegation_by", "delegation_record", "delegation_reply_only",
@@ -441,6 +441,10 @@ class Profile:
     #: Bot accounts whose requests this bot accepts. Acceptance only: their
     #: turns are GENERAL unless delegation_ledger vouches for the message.
     controller_user_ids: frozenset[str] = frozenset()
+    #: 2026-11-18 김태일 지시 : 소유자를 이관하지 않고 추가한다. 여기 든 사람도
+    #: 채널과 무관하게 OWNER 다. 소유자 DM, 알림, 소유자 슬랙 세션처럼 한 사람에게만
+    #: 가야 하는 것은 계속 owner_user_id 하나가 받는다.
+    co_owner_user_ids: frozenset[str] = frozenset()
     #: The delegating bot's ledger file (mametchi ~/.mametchi/delegations.json
     #: format), read only. None means no controller turn is ever delegated.
     delegation_ledger: Path | None = None
@@ -499,6 +503,11 @@ class Profile:
     # is every test and the init command -- checks about the file itself have
     # nothing to look at then.
     source_file: Path | None = None
+
+    @property
+    def owner_user_ids(self) -> frozenset[str]:
+        """OWNER 로 판정할 사람 전체. owner_user_id 와 co_owner_user_ids 의 합이다."""
+        return frozenset(u for u in (self.owner_user_id, *self.co_owner_user_ids) if u)
 
     @property
     def paths(self) -> StatePaths:
@@ -630,6 +639,7 @@ class Profile:
             troubleshoot_channel=str(data.get("troubleshoot_channel", "")),
             owner_dm=str(data.get("owner_dm", "")),
             controller_user_ids=frozenset(str(u) for u in (data.get("controller_user_ids") or ()) if u),
+            co_owner_user_ids=frozenset(str(u) for u in (data.get("co_owner_user_ids") or ()) if u),
             credentials_file=credentials_file or None,
             domain_file=(
                 Path(str(data["domain_file"])).expanduser()

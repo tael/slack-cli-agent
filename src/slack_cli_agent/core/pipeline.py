@@ -296,6 +296,7 @@ class RequestPipeline:
         # (A11). None leaves the feature off and every turn uses default_workdir.
         light_workdir: Path | None = None,
         owner_user_id: str = "",
+        co_owner_user_ids: frozenset[str] = frozenset(),
         reactions: ReactionPort | None = None,
         name_resolver: Callable[[str], str] = lambda user_id: user_id,
         # Whether the asker is a bot, for AskerSection's bot-only branch
@@ -409,6 +410,11 @@ class RequestPipeline:
         self._new_request_id = new_request_id
         self._watch_results = watch_results
         self._owner_user_id = owner_user_id
+        # 공동 소유자까지 담은 OWNER 판정 집합 (2026-11-18). 소유자 슬랙 세션처럼
+        # 주 소유자 한 사람만 받아야 하는 곳은 계속 _owner_user_id 를 쓴다.
+        self._owner_ids = frozenset(
+            u for u in (owner_user_id, *co_owner_user_ids) if u
+        )
         self._reactions = reactions
         self._name_resolver = name_resolver
         self._asker_is_bot = asker_is_bot
@@ -861,7 +867,7 @@ class RequestPipeline:
             body, blocked_recipient, recipient = self._retry_recipient_tag(
                 body, ctx, request, decision, response, turn_calls,
             )
-        if (blocked_recipient and ctx.user == self._owner_user_id and not ctx.from_bot
+        if (blocked_recipient and ctx.user in self._owner_ids and not ctx.from_bot
                 and take_recipient_tag(body)[0].strip()):
             # 2026-11-09 private-taeil 20:31: the tag was lost and the retry came
             # back empty, so the owner's own question got no answer at all. On an
@@ -1008,7 +1014,7 @@ class RequestPipeline:
         ts = answer_parts[0]
         guard_ctx = GuardContext(
             channel=ctx.channel, thread_ts=ctx.thread_ts, asker_id=ctx.user,
-            is_owner=ctx.user == self._owner_user_id, owner_user_id=self._owner_user_id,
+            is_owner=ctx.user in self._owner_ids, owner_user_id=self._owner_user_id,
             request_text=ctx.text,
         )
 
@@ -1745,7 +1751,7 @@ class RequestPipeline:
             return
         if not posted or principal.trust is not TrustLevel.OWNER:
             return
-        if not self._owner_user_id or ctx.user != self._owner_user_id:
+        if not ctx.user or ctx.user not in self._owner_ids:
             return
         try:
             n = self._delegation_recorder.record(
