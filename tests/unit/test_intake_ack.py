@@ -236,7 +236,7 @@ class TestPipeline:
         assert calls[0][2] == tmp_path.resolve()
 
     def test_폴백_엔진이면_이번_턴에_실행될_엔진_이름으로_계획을_찾는다(self, tmp_path: Path) -> None:
-        pipeline, deps, calls, _ = self._pipeline(tmp_path, on=True, plan=_plan())
+        pipeline, _, calls, _ = self._pipeline(tmp_path, on=True, plan=_plan())
 
         class _Fallback(type(pipeline._engine)):  # type: ignore[misc]
             name = "fallback"

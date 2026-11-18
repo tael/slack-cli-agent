@@ -1808,7 +1808,7 @@ class PlanCheckJudge:
             self.status = "error:no_json" if "{" not in out else "error:bad_json"
             return None
         try:
-            payload = outer.get("structured_output") if "structured_output" in outer else outer
+            payload: Any = outer.get("structured_output") if "structured_output" in outer else outer
             items = payload["results"]
             if not isinstance(items, list):
                 raise TypeError("results")

@@ -299,7 +299,7 @@ class TestAuditFields:
         assert deps["audit"].records[0]["plan_status"] == "ok_no_workflow"
 
     def test_폴백_엔진이면_이번_턴에_실행될_엔진_이름으로_계획을_읽는다(self, tmp_path: Path) -> None:
-        pipeline, deps, asked = _pipeline(tmp_path, _plan(workflow="web-lookup",
+        pipeline, _, asked = _pipeline(tmp_path, _plan(workflow="web-lookup",
                                                           workflow_confidence="high", workflow_reason="r"))
 
         class _Fallback(type(pipeline._engine)):  # type: ignore[misc]
