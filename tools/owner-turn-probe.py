@@ -22,6 +22,7 @@ RequestPipeline.handle 을 부른다. 채널은 프로필의 troubleshoot_channe
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import re
 import sys
@@ -96,15 +97,37 @@ class WriteRecordingClient:
         return attr
 
 
+def parse_set_options(items: list[str]) -> dict[str, Any]:
+    """`key=value` pairs; the value is JSON-parsed, falling back to the raw string."""
+    out: dict[str, Any] = {}
+    for item in items:
+        key, sep, raw = item.partition("=")
+        if not sep or not key:
+            raise SystemExit(f"--set 은 key=value 형식이어야 한다 : {item!r}")
+        try:
+            out[key] = json.loads(raw)
+        except json.JSONDecodeError:
+            out[key] = raw
+    return out
+
+
+def apply_setting_overrides(profile: Profile, overrides: dict[str, Any]) -> Profile:
+    if not overrides:
+        return profile
+    return dataclasses.replace(profile, settings_override={**profile.settings_override, **overrides})
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("bot")
     ap.add_argument("text")
+    ap.add_argument("--set", dest="overrides", action="append", default=[], metavar="KEY=VALUE",
+                    help="프로필 settings 키를 이번 실행에만 덮어쓴다. 값은 JSON, 아니면 문자열. 반복 가능")
     a = ap.parse_args()
     if not NAME_PATTERN.match(a.bot):
         raise SystemExit(f"봇 이름이 아니다 : {a.bot!r}")
 
-    profile = Profile.load(a.bot, [PROFILE_DIR])
+    profile = apply_setting_overrides(Profile.load(a.bot, [PROFILE_DIR]), parse_set_options(a.overrides))
     if not profile.owner_user_id or not profile.troubleshoot_channel:
         raise SystemExit("프로필에 owner_user_id 와 troubleshoot_channel 이 있어야 한다")
     resolver = resolver_for(profile)
