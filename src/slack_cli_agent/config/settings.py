@@ -158,6 +158,10 @@ class RuntimeSettings:
     #: 지시 : 봇마다 답 안 보내는 메시지가 다르다, 다른 안내를 줘야 한다).
     dm_off_notice: str = ""
 
+    #: Langfuse 로 턴을 보내는 훅 실행 파일 경로. 빈 값이면 꺼짐이고 settings 에
+    #: 아무것도 붙지 않는다. 값이 있고 파일이 있으면 Stop·SessionEnd 에 붙는다.
+    langfuse_hook: str = ""
+
     progress_tick_sec: float = 3
     progress_idle_sec: float = 45
 

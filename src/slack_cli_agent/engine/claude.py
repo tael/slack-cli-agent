@@ -102,6 +102,9 @@ _USAGE_LIMIT_HINTS = (
 # not "measured zero".
 log = logging.getLogger(__name__)
 
+#: langfuse_hook paths already warned about, so the warning is once per process.
+_LANGFUSE_WARNED: set[str] = set()
+
 _USAGE_KEY_MAP: Mapping[str, str] = {
     "input_tokens": "input_tokens",
     "output_tokens": "output_tokens",
@@ -773,7 +776,33 @@ class ClaudeEngine(Engine):
             merged = merge_settings(merged, progress_hook_settings(request.progress_log))
         # Always on, regardless of progress_log: these are engine built-ins,
         # not a per-request feature toggle (sca-kos.B4).
-        return merge_settings(merged, guard_hook_settings(), NO_ATTRIBUTION_SETTINGS)
+        return merge_settings(
+            merged, guard_hook_settings(), NO_ATTRIBUTION_SETTINGS, self._langfuse_hook_settings(merged),
+        )
+
+    def _langfuse_hook_settings(self, merged: Mapping[str, Any]) -> dict[str, Any]:
+        """Stop/SessionEnd fragment for settings.langfuse_hook; empty when off,
+        when the file is missing, or when the operator files already carry it."""
+        configured = self.settings.langfuse_hook
+        if not configured:
+            return {}
+        path = Path(configured).expanduser()
+        if not path.is_file():
+            if configured not in _LANGFUSE_WARNED:
+                _LANGFUSE_WARNED.add(configured)
+                log.warning("langfuse_hook 파일이 없어 훅을 붙이지 않는다 : %s", path)
+            return {}
+        command = str(path)
+        hooks: dict[str, Any] = {}
+        for event in ("Stop", "SessionEnd"):
+            present = any(
+                hook.get("command") == command
+                for entry in (merged.get("hooks") or {}).get(event, [])
+                for hook in entry.get("hooks", [])
+            )
+            if not present:
+                hooks[event] = [{"hooks": [{"type": "command", "command": command, "timeout": 30}]}]
+        return {"hooks": hooks} if hooks else {}
 
     @staticmethod
     def _operator_full_signal(request: EngineRequest) -> bool:
