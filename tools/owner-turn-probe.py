@@ -64,6 +64,7 @@ class WriteRecordingClient:
     def __init__(self, real: Any) -> None:
         self._real = real
         self.writes: list[tuple[str, dict[str, Any]]] = []
+        self.write_times: list[float] = []
         self._seq = 0
         # The probe question does not exist on Slack. Thread reads for its ts
         # return it, or the pre-post check reads it as deleted and withholds.
@@ -76,6 +77,7 @@ class WriteRecordingClient:
 
     def _fake(self, method: str, params: dict[str, Any]) -> FakeResponse:
         self.writes.append((method, params))
+        self.write_times.append(time.time())
         self._seq += 1
         ts = f"{time.time():.6f}"
         return FakeResponse(ok=True, ts=ts, channel=params.get("channel", ""), message={"ts": ts})
@@ -153,11 +155,12 @@ def main() -> int:
     finally:
         app.close()
     print(f"결과 : {outcome!r}  ({time.time() - started:.0f}초)")
-    for method, params in client.writes:
+    print(f"질문 ts : {ts}")
+    for (method, params), at in zip(client.writes, client.write_times, strict=True):
         body = params.get("text") or params.get("name") or ""
         if not body and params.get("blocks"):
             body = json.dumps(params["blocks"], ensure_ascii=False)[:400]
-        print(f"--- {method}\n{body}")
+        print(f"--- {method} (+{at - float(ts):.1f}초)\n{body}")
     return 0
 
 
