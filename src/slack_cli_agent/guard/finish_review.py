@@ -61,6 +61,7 @@ from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.core.markers import ASK_TAG
+from slack_cli_agent.guard.plan_start import result_event
 
 #: Absolute path to this file. A real wiring (see module docstring) invokes
 #: this module as a standalone script the same way
@@ -1800,12 +1801,11 @@ class PlanCheckJudge:
             return None
         self.elapsed = round(time.monotonic() - started, 1)
         out = proc.stdout or ""
-        start, end = out.find("{"), out.rfind("}")
-        if start < 0 or end <= start:
-            self.status = "error:no_json"
+        outer = result_event(out)
+        if outer is None:
+            self.status = "error:no_json" if "{" not in out else "error:bad_json"
             return None
         try:
-            outer = json.loads(out[start : end + 1])
             payload = outer.get("structured_output") if "structured_output" in outer else outer
             items = payload["results"]
             if not isinstance(items, list):

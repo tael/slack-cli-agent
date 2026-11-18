@@ -60,6 +60,22 @@ class TestJudge:
         assert call["env"][fr.VERIFY_NESTED_ENV] == "1"
         assert "배포 로그에 오류가 없다" in call["input"] and "로그 정상" in call["input"]
 
+    def test_이벤트_배열_출력에서_마지막_result_를_읽는다(self):
+        """claude -p --output-format json 2.1.325 는 객체가 아니라 이벤트 배열을 낸다."""
+        events = [
+            {"type": "system", "subtype": "init", "tools": []},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "{x}"}]}},
+            json.loads(_judge_output([_verdict(CHECKS[0]["what"], "미충족")])),
+        ]
+        judge = _judge(_runner(json.dumps(events, ensure_ascii=False)))
+        results = judge(CHECKS[:1], "네", "로그 정상")
+        assert judge.status == "ok" and results and results[0]["verdict"] == "미충족"
+
+    def test_result__없는_배열은_bad_json(self):
+        judge = _judge(_runner(json.dumps([{"type": "system"}])))
+        assert judge(CHECKS, "a", "b") is None
+        assert judge.status == "error:bad_json"
+
     def test_중첩_호출에서는_돌지_않는다(self):
         runner = _runner(_judge_output([]))
         judge = _judge(runner, env={fr.VERIFY_NESTED_ENV: "1"})

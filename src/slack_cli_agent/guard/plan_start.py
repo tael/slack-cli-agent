@@ -655,26 +655,33 @@ def refined_planner_input(request: str, refine: dict[str, Any]) -> str:
     return "\n\n".join(lines) + f"\n\n[원문 요청]\n{request}"
 
 
-def parse(stdout: str) -> tuple[str, dict[str, Any] | None]:
-    """(status, plan) from the CLI's ``--output-format json`` result.
+def result_event(stdout: str) -> dict[str, Any] | None:
+    """The result object of a CLI ``--output-format json`` run.
 
-    The CLI emits either a single result object or, with verbose on, an array
-    of events ending in one (engine/claude.py _result_event has the same rule).
-    2026-11-16: the operator's verbose setting reached this call despite
-    --setting-sources "", and all 26 recorded plans were error:cli.
+    The CLI emits either a single result object or an array of events ending
+    in one (engine/claude.py _result_event has the same rule). 2026-11-16: the
+    operator's verbose setting reached the plan call despite
+    --setting-sources "", and all 26 recorded plans were error:cli. The
+    2.1.325 CLI prints the array by default (N9, 2026-11-19).
     """
     try:
         result = json.loads(stdout)
     except ValueError:
-        return "bad_output", None
+        return None
     if isinstance(result, list):
         result = next(
             (e for e in reversed(result) if isinstance(e, dict) and e.get("type") == "result"),
             None,
         )
-        if result is None:
-            return "bad_output", None
-    if not isinstance(result, dict) or result.get("is_error"):
+    return result if isinstance(result, dict) else None
+
+
+def parse(stdout: str) -> tuple[str, dict[str, Any] | None]:
+    """(status, plan) from the CLI's ``--output-format json`` result."""
+    result = result_event(stdout)
+    if result is None:
+        return "bad_output", None
+    if result.get("is_error"):
         return "error:cli", None
     plan = result.get("structured_output")
     if not isinstance(plan, dict) or plan.get("type") not in ("short", "branch", "explore"):
