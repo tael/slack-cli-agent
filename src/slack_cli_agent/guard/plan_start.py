@@ -72,6 +72,13 @@ PROMPT_TAIL_CHARS = 12_000
 #: candidates the planner may choose from. Absent or invalid means the planner
 #: classifies nothing and the plan file has no workflow fields.
 WORKFLOWS_ENV = "SCA_PLAN_WORKFLOWS"
+#: Set by the pipeline to "1" when the profile's plan_intake is on: the plan
+#: also records the request's interpretation, assumed and missing inputs, an
+#: ack for the user, the expected output and checks. Absent or "0" means off.
+INTAKE_ENV = "SCA_PLAN_INTAKE"
+INTAKE_TEXT_FIELDS = ("intent", "ask", "expected_output", "ack")
+INTAKE_LIST_FIELDS = ("assumed", "missing")
+INTAKE_FIELDS = ("intent", "assumed", "missing", "ask", "expected_output", "ack", "checks")
 #: The fallback workflow when the planner is not confident.
 FALLBACK_WORKFLOW = "deep"
 CONFIDENCES = ("low", "medium", "high")
@@ -109,10 +116,33 @@ def workflow_candidates(env: dict[str, str] | os._Environ[str] | None = None) ->
     }
 
 
-def schema(delegation: bool = False, workflows: Any = None) -> dict[str, Any]:
+def intake_enabled(env: dict[str, str] | os._Environ[str] | None = None) -> bool:
+    """SCA_PLAN_INTAKE on: set and not "0". Absent or empty means off."""
+    raw = (env if env is not None else os.environ).get(INTAKE_ENV, "")
+    return str(raw).strip() not in ("", "0")
+
+
+def schema(delegation: bool = False, workflows: Any = None, intake: bool = False) -> dict[str, Any]:
     """The planner's JSON schema. Workers are enum values only with delegation.
-    Workflow fields are there only when candidate ids are given."""
+    Workflow fields are there only when candidate ids are given, intake fields
+    only with intake."""
     result = _base_schema(delegation)
+    if intake:
+        text = {"type": "string"}
+        texts = {"type": "array", "items": {"type": "string"}}
+        result["properties"].update({
+            "intent": text, "assumed": texts, "missing": texts, "ask": text,
+            "expected_output": text, "ack": text,
+            "checks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"what": text, "how": text},
+                    "required": ["what", "how"],
+                },
+            },
+        })
+        result["required"] = [*result["required"], *INTAKE_FIELDS]
     if workflows:
         result["properties"]["workflow"] = {"type": "string", "enum": list(workflows)}
         result["properties"]["workflow_confidence"] = {"type": "string", "enum": list(CONFIDENCES)}
@@ -190,15 +220,31 @@ def workflow_section(workflows: dict[str, str]) -> str:
     return _WORKFLOW_HEAD + "".join(f"- {wid} : {desc}\n" for wid, desc in workflows.items())
 
 
-def planner_prompt(delegation: bool = False, workflows: dict[str, str] | None = None) -> str:
+_INTAKE_SECTION = (
+    "[입력 점검] 아래 필드도 적는다. 길게 쓰면 계획이 늦어진다\n"
+    "- intent : 요청을 어떻게 이해했는지 한 문장\n"
+    "- assumed : 요청에 없어 추정으로 채운 입력 목록. 없으면 빈 배열\n"
+    "- missing : 추정할 수 없는 입력 목록. 없으면 빈 배열\n"
+    "- ask : missing 이 있을 때만 되묻는 질문 한 문장. 아니면 빈 문자열\n"
+    "- expected_output : 사용자가 받을 결과의 형태와 대상\n"
+    "- ack : 사용자에게 바로 보낼 한두 문장. 추정한 해석을 밝혀 틀리면 고치게 한다. "
+    "예: \"X 기준으로 Y 를 확인해볼게요\"\n"
+    "- checks : 답하기 전에 만족해야 할 조건 목록. what 은 조건, how 는 확인할 도구나 원천이다. "
+    "도구 결과로 확인되는 조건만 적고 의견은 적지 않는다\n"
+)
+
+
+def planner_prompt(
+    delegation: bool = False, workflows: dict[str, str] | None = None, intake: bool = False,
+) -> str:
     """The instruction placed before the request. The workflow section goes
-    after item 3 and before the [요청] marker; absent candidates leave the
-    text exactly as it was."""
+    after item 3 and before the [요청] marker, then the intake section; absent
+    candidates and an off intake leave the text exactly as it was."""
     tail = _PLANNER_TAIL
-    if workflows:
+    if workflows or intake:
         marker = "\n[요청]\n"
         head, _, rest = tail.partition(marker)
-        tail = head + workflow_section(workflows) + marker + rest
+        tail = head + workflow_section(workflows or {}) + (_INTAKE_SECTION if intake else "") + marker + rest
     return _PLANNER_HEAD + (_DELEGATE_WITH_WORKERS if delegation else _DELEGATE_NONE) + tail
 
 
@@ -389,16 +435,17 @@ def start(data: dict[str, Any], *, spawn: Any = subprocess.Popen, runner: Any = 
 def _call_planner(prompt: str, model: str, timeout: float) -> subprocess.CompletedProcess[str]:
     delegation = delegation_enabled()
     workflows = workflow_candidates()
+    intake = intake_enabled()
     exe = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
     cmd = [
         exe, "-p", "--model", model, "--tools", "", "--strict-mcp-config",
         "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "",
-        "--output-format", "json", "--json-schema", json.dumps(schema(delegation, workflows)),
+        "--output-format", "json", "--json-schema", json.dumps(schema(delegation, workflows, intake)),
     ]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
-        out, err = proc.communicate(input=planner_prompt(delegation, workflows) + prompt, timeout=timeout)
+        out, err = proc.communicate(input=planner_prompt(delegation, workflows, intake) + prompt, timeout=timeout)
     except subprocess.TimeoutExpired:
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)
@@ -464,6 +511,32 @@ def check_workflow(plan: dict[str, Any], candidates: dict[str, str]) -> str:
     return "invalid"
 
 
+def _intake_field_valid(key: str, value: Any) -> bool:
+    if key in INTAKE_TEXT_FIELDS:
+        return isinstance(value, str)
+    if key in INTAKE_LIST_FIELDS:
+        return isinstance(value, list) and all(isinstance(item, str) for item in value)
+    return isinstance(value, list) and all(
+        isinstance(item, dict) and isinstance(item.get("what"), str) and isinstance(item.get("how"), str)
+        for item in value
+    )
+
+
+def check_intake(plan: dict[str, Any], enabled: bool) -> list[str]:
+    """Keep the intake fields only where they are well formed; return the
+    names dropped. Off removes all of them. Nothing here touches the rest of
+    the plan, so a bad intake field never costs the plan injection."""
+    dropped: list[str] = []
+    for key in INTAKE_FIELDS:
+        if key not in plan:
+            continue
+        if not enabled or not _intake_field_valid(key, plan[key]):
+            plan.pop(key)
+            if enabled:
+                dropped.append(key)
+    return dropped
+
+
 def run(transcript: str, *, caller: Any = _call_planner, timeout: float = TIMEOUT_SEC) -> dict[str, Any]:
     """Planner process body: call the model and write the plan file."""
     model = os.environ.get(PLAN_MODEL_ENV) or DEFAULT_MODEL
@@ -486,6 +559,9 @@ def run(transcript: str, *, caller: Any = _call_planner, timeout: float = TIMEOU
             note = check_workflow(plan, candidates)
             if note == "invalid":
                 record["workflow_error"] = "invalid"
+            dropped = check_intake(plan, intake_enabled())
+            if dropped:
+                record["intake_dropped"] = dropped
             record.update(plan)
     except subprocess.TimeoutExpired:
         status = "timeout"
