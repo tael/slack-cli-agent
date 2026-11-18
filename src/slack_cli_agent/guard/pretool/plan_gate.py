@@ -3,7 +3,8 @@
 guard/plan_start (UserPromptSubmit) starts a tool-less planner call when a
 request arrives and writes ``<transcript>.plan.json``. On the first tool call
 after that plan is ready this hook adds it as ``additionalContext``, once per
-request. Short plans and failed plans inject nothing.
+request. Short plans and failed plans inject nothing, except with
+SCA_PLAN_INTAKE_INJECT a short plan carrying checks or expected_output.
 
 Until 2026-11-10 this hook denied the third tool-calling response when no
 `[계획]` block came first. In W5 all 15 runs were denied twice and passed by
@@ -82,6 +83,16 @@ INJECT_TAIL_END = (
 #: The tail without delegation, the default.
 INJECT_TAIL = INJECT_TAIL_HEAD + INJECT_TAIL_END
 
+#: Env var that adds expected output, assumptions and checks to the injection
+#: (pipeline sets it only with SCA_PLAN_INTAKE too). Absent, empty or "0" is off.
+INTAKE_INJECT_ENV = "SCA_PLAN_INTAKE_INJECT"
+INJECT_HEAD_COMPACT = "[작업 기준] 이 요청은 아래 기준으로 답한다."
+INJECT_ASSUMED = "- 가정을 답변에 밝혀 사용자가 고칠 수 있게 한다"
+INJECT_CHECKS = "- 답변은 이 기준으로 점검된다. 확인하지 못한 기준은 답변에 \"미확인\" 으로 표시한다"
+#: Written to the once-only flag file when the intake text is on.
+KIND_FULL = "full"
+KIND_COMPACT = "compact"
+
 _TYPE_LABEL = {"branch": "갈래형", "explore": "탐색형"}
 
 
@@ -114,6 +125,51 @@ def force_parallel_from_env(env: dict[str, str] | os._Environ[str] | None = None
     return str(raw).strip() not in ("", "0")
 
 
+def intake_inject_from_env(env: dict[str, str] | os._Environ[str] | None = None) -> bool:
+    """SCA_PLAN_INTAKE_INJECT on: set and not "0"."""
+    raw = (env if env is not None else os.environ).get(INTAKE_INJECT_ENV, "")
+    return str(raw).strip() not in ("", "0")
+
+
+def _intake_parts(plan: dict[str, Any]) -> tuple[str, list[str], list[tuple[str, str]]]:
+    """expected_output, assumed and checks; a malformed field or entry is dropped."""
+    expected = plan.get("expected_output")
+    expected = expected.strip() if isinstance(expected, str) else ""
+    assumed = plan.get("assumed")
+    assumed = [a.strip() for a in assumed if isinstance(a, str) and a.strip()] if isinstance(assumed, list) else []
+    raw_checks = plan.get("checks")
+    checks = []
+    for item in raw_checks if isinstance(raw_checks, list) else []:
+        if not (isinstance(item, dict) and isinstance(item.get("what"), str) and isinstance(item.get("how"), str)):
+            continue
+        if item["what"].strip():
+            checks.append((item["what"].strip(), item["how"].strip()))
+    return expected, assumed, checks
+
+
+def _intake_lines(plan: dict[str, Any]) -> list[str]:
+    expected, assumed, checks = _intake_parts(plan)
+    lines = []
+    if expected:
+        lines.append(f"기대 결과 : {expected}")
+    if assumed:
+        lines += [f"가정 : {' / '.join(assumed)}", INJECT_ASSUMED]
+    if checks:
+        lines.append("확인 기준 :")
+        lines += [f"{i}. {what} (확인 : {how})" for i, (what, how) in enumerate(checks, start=1)]
+        lines.append(INJECT_CHECKS)
+    return lines
+
+
+def has_compact_intake(plan: dict[str, Any]) -> bool:
+    expected, _, checks = _intake_parts(plan)
+    return bool(expected or checks)
+
+
+def render_compact(plan: dict[str, Any]) -> str:
+    return "\n".join([INJECT_HEAD_COMPACT, *_intake_lines(plan), INJECT_TAIL_END])
+
+
 def _parallel_calls(plan: dict[str, Any]) -> list[str]:
     """Agent calls for the delegated branches that depend on nothing."""
     calls = []
@@ -131,7 +187,9 @@ def _parallel_calls(plan: dict[str, Any]) -> list[str]:
     return calls
 
 
-def render(plan: dict[str, Any], delegation: bool = False, force_parallel: bool = False) -> str:
+def render(
+    plan: dict[str, Any], delegation: bool = False, force_parallel: bool = False, intake: bool = False,
+) -> str:
     lines = [INJECT_HEAD, f"유형 : {_TYPE_LABEL.get(str(plan.get('type')), plan.get('type'))}"]
     for i, branch in enumerate(plan.get("branches") or [], start=1):
         if not isinstance(branch, dict):
@@ -147,6 +205,8 @@ def render(plan: dict[str, Any], delegation: bool = False, force_parallel: bool 
         lines.append(line)
     if plan.get("type") == "explore":
         lines.append("- 탐색형이다. 첫 갈래 결과를 보고 다음 조회를 정한다")
+    if intake:
+        lines += _intake_lines(plan)
     tail = INJECT_TAIL_HEAD + (INJECT_TAIL_DELEGATION if delegation else "")
     calls = _parallel_calls(plan) if delegation and force_parallel else []
     if len(calls) >= FORCE_PARALLEL_MIN:
@@ -186,7 +246,9 @@ def decide(data: dict[str, Any], now: float | None = None) -> tuple[str, str]:
         return "pending", ""
     if status != "ok":
         return "plan_failed", ""
-    if plan.get("type") == "short" or not plan.get("branches"):
+    intake = intake_inject_from_env()
+    compact = plan.get("type") == "short" or not plan.get("branches")
+    if compact and not (intake and has_compact_intake(plan)):
         return "short", ""
     try:
         # O_EXCL: parallel calls of one response run this hook at once.
@@ -195,8 +257,16 @@ def decide(data: dict[str, Any], now: float | None = None) -> tuple[str, str]:
         return "already", ""
     except OSError:
         return "flag_error", ""
-    os.close(fd)
-    return "inject", render(plan, delegation_from_env(), force_parallel_from_env())
+    try:
+        if intake:
+            os.write(fd, (KIND_COMPACT if compact else KIND_FULL).encode())
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+    if compact:
+        return "inject", render_compact(plan)
+    return "inject", render(plan, delegation_from_env(), force_parallel_from_env(), intake)
 
 
 def main(argv: list[str]) -> int:

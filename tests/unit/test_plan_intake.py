@@ -76,7 +76,7 @@ class TestSwitchOffIsUnchanged:
 class TestSwitchOn:
     def test_schema_에_필드와_필수가_생긴다(self) -> None:
         result = ps.schema(False, None, True)
-        for key in ps.INTAKE_FIELDS:
+        for key in ("intent", "missing", "ask", "ack"):
             assert key in result["properties"] and key in result["required"]
         assert result["properties"]["checks"]["items"]["required"] == ["what", "how"]
 
@@ -123,7 +123,7 @@ class TestRun:
 class TestInjectionUnchanged:
     def test_plan_gate_는_새_필드를_읽지_않는다(self) -> None:
         source = Path(plan_gate.__file__).read_text(encoding="utf-8")
-        for key in ps.INTAKE_FIELDS:
+        for key in ("intent", "missing", "ask", "ack"):
             assert f'"{key}"' not in source and f"'{key}'" not in source
 
 
