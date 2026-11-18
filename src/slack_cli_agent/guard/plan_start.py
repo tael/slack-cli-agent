@@ -38,13 +38,14 @@ from __future__ import annotations
 
 import contextlib
 import json
-import re
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,21 @@ INTAKE_ENV = "SCA_PLAN_INTAKE"
 INTAKE_TEXT_FIELDS = ("intent", "ask", "expected_output", "ack")
 INTAKE_LIST_FIELDS = ("assumed", "missing")
 INTAKE_FIELDS = ("intent", "assumed", "missing", "ask", "expected_output", "ack", "checks")
+#: Set by the pipeline from the profile's plan_refine: "separate" runs one
+#: extra tool-less call that rewrites the request before the planner,
+#: "combined" asks the planner itself to refine first. Anything else is off.
+REFINE_ENV = "SCA_PLAN_REFINE"
+REFINE_MODES = ("separate", "combined")
+REFINE_FIELDS = ("refined", "resolved", "unresolved")
+#: Refine call limit in separate mode; on a miss the raw request is planned.
+REFINE_TIMEOUT_SEC = 15.0
+#: Set by the pipeline (with intake on): JSON list of the tool names this turn
+#: can use. The planner then picks `source` only from it.
+SOURCES_ENV = "SCA_PLAN_SOURCES"
+SOURCES_MAX = 60
+SOURCE_NAME_CHARS = 80
+KST = timezone(timedelta(hours=9), "KST")
+WEEKDAYS = "월화수목금토일"
 #: The fallback workflow when the planner is not confident.
 FALLBACK_WORKFLOW = "deep"
 CONFIDENCES = ("low", "medium", "high")
@@ -122,11 +138,58 @@ def intake_enabled(env: dict[str, str] | os._Environ[str] | None = None) -> bool
     return str(raw).strip() not in ("", "0")
 
 
-def schema(delegation: bool = False, workflows: Any = None, intake: bool = False) -> dict[str, Any]:
+def refine_mode(env: dict[str, str] | os._Environ[str] | None = None) -> str:
+    """"separate", "combined" or "" (off, also for any other value)."""
+    raw = str((env if env is not None else os.environ).get(REFINE_ENV, "")).strip()
+    return raw if raw in REFINE_MODES else ""
+
+
+def sources_list(env: dict[str, str] | os._Environ[str] | None = None) -> list[str]:
+    """Tool names from SCA_PLAN_SOURCES; empty when absent or invalid."""
+    raw = (env if env is not None else os.environ).get(SOURCES_ENV, "")
+    try:
+        value = json.loads(raw) if str(raw).strip() else []
+    except ValueError:
+        return []
+    if not isinstance(value, list):
+        return []
+    names: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip() and item.strip()[:SOURCE_NAME_CHARS] not in names:
+            names.append(item.strip()[:SOURCE_NAME_CHARS])
+    return names[:SOURCES_MAX]
+
+
+def _refine_properties() -> dict[str, Any]:
+    text = {"type": "string"}
+    return {
+        "refined": text,
+        "resolved": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"from": text, "to": text, "basis": text},
+                "required": ["from", "to", "basis"],
+            },
+        },
+        "unresolved": {"type": "array", "items": text},
+    }
+
+
+def refine_schema() -> dict[str, Any]:
+    return {"type": "object", "properties": _refine_properties(), "required": list(REFINE_FIELDS)}
+
+
+def schema(
+    delegation: bool = False, workflows: Any = None, intake: bool = False, refine: str = "",
+) -> dict[str, Any]:
     """The planner's JSON schema. Workers are enum values only with delegation.
     Workflow fields are there only when candidate ids are given, intake fields
-    only with intake."""
+    only with intake, refine fields only in combined mode."""
     result = _base_schema(delegation)
+    if refine == "combined":
+        result["properties"].update(_refine_properties())
+        result["required"] = [*result["required"], *REFINE_FIELDS]
     if intake:
         text = {"type": "string"}
         texts = {"type": "array", "items": {"type": "string"}}
@@ -225,26 +288,53 @@ _INTAKE_SECTION = (
     "- intent : 요청을 어떻게 이해했는지 한 문장\n"
     "- assumed : 요청에 없어 추정으로 채운 입력 목록. 없으면 빈 배열\n"
     "- missing : 추정할 수 없는 입력 목록. 없으면 빈 배열\n"
-    "- ask : missing 이 있을 때만 되묻는 질문 한 문장. 아니면 빈 문자열\n"
+    "- ask : missing 이 있을 때만 되묻는 질문 한 문장. 아니면 빈 문자열. 쓰기·전송·삭제 요청에서 "
+    "대상이나 필수 값을 정할 수 없으면 missing 에 적고 ask 는 비우지 않고 질문으로 적는다\n"
     "- expected_output : 사용자가 받을 결과의 형태와 대상\n"
-    "- ack : 사용자에게 바로 보낼 한두 문장. 추정한 해석을 밝혀 틀리면 고치게 한다. "
-    "예: \"X 기준으로 Y 를 확인해볼게요\"\n"
+    "- ack : 사용자에게 바로 보낼 한두 문장. 추정한 해석과 확인하거나 할 일만 적는다. "
+    "공감·위로·상담 문구와 요청에 없는 내용은 넣지 않는다. 예: \"X 기준으로 Y 를 확인해볼게요\"\n"
     "- checks : 답하기 전에 만족해야 할 조건 목록. what 은 조건, how 는 확인할 도구나 원천이다. "
     "도구 결과로 확인되는 조건만 적고 의견은 적지 않는다\n"
 )
 
 
+_COMBINED_REFINE_SECTION = (
+    "[입력 정제] 먼저 요청을 정제하고 그 결과로 계획한다\n"
+    "- refined : 지시어·상대 날짜·줄임말을 구체 값으로 바꿔 그 자체로 읽히게 다시 쓴 요청. "
+    "범위를 넓히거나 줄이지 않고, 대상어(예: \"치과 캘린더에 넣어줘\" 의 치과)를 다른 뜻으로 바꾸지 않는다\n"
+    "- resolved : 바꾼 것. from, to, basis. basis 는 직전 대화나 현재 시각처럼 명시된 근거만 적는다. "
+    "추측은 적지 않는다\n"
+    "- unresolved : 근거가 없어 못 바꾼 것\n"
+)
+
+
+def sources_section(sources: list[str]) -> str:
+    if not sources:
+        return ""
+    return (
+        "[쓸 수 있는 원천] " + ", ".join(sources) + "\n"
+        "- source 는 이 목록에서 고르거나 '확인 필요' 로 적는다. 목록에 없는 시스템을 만들지 않는다\n"
+    )
+
+
 def planner_prompt(
     delegation: bool = False, workflows: dict[str, str] | None = None, intake: bool = False,
+    sources: list[str] | None = None, refine: str = "",
 ) -> str:
     """The instruction placed before the request. The workflow section goes
-    after item 3 and before the [요청] marker, then the intake section; absent
-    candidates and an off intake leave the text exactly as it was."""
+    after item 3 and before the [요청] marker, then the intake section (with
+    the source list); absent candidates, an off intake and an off refine leave
+    the text exactly as it was. Sources count only with intake."""
     tail = _PLANNER_TAIL
-    if workflows or intake:
+    combined = refine == "combined"
+    if workflows or intake or combined:
         marker = "\n[요청]\n"
         head, _, rest = tail.partition(marker)
-        tail = head + workflow_section(workflows or {}) + (_INTAKE_SECTION if intake else "") + marker + rest
+        intake_text = (_INTAKE_SECTION + sources_section(sources or [])) if intake else ""
+        tail = (
+            head + workflow_section(workflows or {}) + (_COMBINED_REFINE_SECTION if combined else "")
+            + intake_text + marker + rest
+        )
     return _PLANNER_HEAD + (_DELEGATE_WITH_WORKERS if delegation else _DELEGATE_NONE) + tail
 
 
@@ -416,7 +506,7 @@ def start(data: dict[str, Any], *, spawn: Any = subprocess.Popen, runner: Any = 
         stale.unlink(missing_ok=True)
     Path(transcript).parent.mkdir(parents=True, exist_ok=True)
     prompt_path(transcript).write_text(prompt[-PROMPT_TAIL_CHARS:], encoding="utf-8")
-    if workflow_candidates():  # classification reads context; plans without it stay as before
+    if workflow_candidates() or refine_mode():  # context readers only; others stay as before
         context = recent_context(transcript, prompt)
         if context:
             context_path(transcript).write_text(context, encoding="utf-8")
@@ -432,26 +522,134 @@ def start(data: dict[str, Any], *, spawn: Any = subprocess.Popen, runner: Any = 
     return "started"
 
 
-def _call_planner(prompt: str, model: str, timeout: float) -> subprocess.CompletedProcess[str]:
-    delegation = delegation_enabled()
-    workflows = workflow_candidates()
-    intake = intake_enabled()
+def _call_claude(
+    prompt: str, model: str, timeout: float, json_schema: dict[str, Any],
+) -> subprocess.CompletedProcess[str]:
     exe = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
     cmd = [
         exe, "-p", "--model", model, "--tools", "", "--strict-mcp-config",
         "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "",
-        "--output-format", "json", "--json-schema", json.dumps(schema(delegation, workflows, intake)),
+        "--output-format", "json", "--json-schema", json.dumps(json_schema),
     ]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, start_new_session=True)
     try:
-        out, err = proc.communicate(input=planner_prompt(delegation, workflows, intake) + prompt, timeout=timeout)
+        out, err = proc.communicate(input=prompt, timeout=timeout)
     except subprocess.TimeoutExpired:
         with contextlib.suppress(OSError):
             os.killpg(proc.pid, signal.SIGKILL)
         proc.communicate()
         raise
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+def _call_planner(prompt: str, model: str, timeout: float) -> subprocess.CompletedProcess[str]:
+    delegation = delegation_enabled()
+    workflows = workflow_candidates()
+    intake = intake_enabled()
+    refine = refine_mode()
+    text = planner_prompt(delegation, workflows, intake, sources_list(), refine) + prompt
+    return _call_claude(text, model, timeout, schema(delegation, workflows, intake, refine))
+
+
+def _call_refiner(prompt: str, model: str, timeout: float) -> subprocess.CompletedProcess[str]:
+    return _call_claude(prompt, model, timeout, refine_schema())
+
+
+_REFINE_HEAD = (
+    "너는 슬랙 업무 봇의 입력 정제 단계다. 도구는 없다. JSON 으로만 답한다.\n"
+    "[현재 시각]과 [직전 대화]로 [요청]을 그 자체로 읽히게 다시 쓴다\n"
+    "- 지시어(그거), 상대 날짜(어제, 담주 화욜), 줄임말·오타를 구체 값으로 바꾼다\n"
+    "- 바꾼 것은 resolved 에 from, to, basis 로 적는다. basis 는 직전 대화 몇 번째 줄이나 현재 시각처럼 "
+    "명시된 근거만 쓴다\n"
+    "- 근거 없이 짐작해야 하는 해석(예: 3시를 오후로)은 바꾸지 않고 unresolved 에 적는다. 추측해 채우지 않는다\n"
+    "- 요청의 의도·범위를 넓히거나 줄이지 않는다\n"
+    "- 대상어를 다른 뜻으로 바꾸지 않는다. \"치과 캘린더에 넣어줘\" 는 치과 일정을 캘린더에 넣는 뜻이지 "
+    "\"치과 캘린더\" 라는 캘린더가 아니다\n\n"
+)
+
+
+def kst_now_text(now: datetime | None = None) -> str:
+    moment = (now or datetime.now(UTC)).astimezone(KST)
+    return f"{moment:%Y-%m-%d} ({WEEKDAYS[moment.weekday()]}) {moment:%H:%M} KST"
+
+
+def refine_prompt(request: str = "", context: str = "", now: datetime | None = None) -> str:
+    return (
+        _REFINE_HEAD + f"[현재 시각] {kst_now_text(now)}\n[직전 대화]\n{context or '(없음)'}\n[요청]\n{request}\n"
+    )
+
+
+def _clean_refine(value: Any) -> dict[str, Any] | None:
+    """The refine fields in canonical form, or None when malformed. A resolved
+    item without a basis is a guess: it moves to unresolved."""
+    if not isinstance(value, dict):
+        return None
+    refined, resolved, unresolved = (value.get(key) for key in REFINE_FIELDS)
+    if not isinstance(refined, str) or not refined.strip():
+        return None
+    if not isinstance(resolved, list) or not isinstance(unresolved, list):
+        return None
+    if not all(isinstance(item, str) for item in unresolved):
+        return None
+    kept: list[dict[str, str]] = []
+    moved: list[str] = []
+    for item in resolved:
+        if not isinstance(item, dict) or not all(isinstance(item.get(key), str) for key in ("from", "to", "basis")):
+            return None
+        if item["basis"].strip():
+            kept.append({key: item[key] for key in ("from", "to", "basis")})
+        else:
+            moved.append(item["from"])
+    return {"refined": refined.strip(), "resolved": kept, "unresolved": [*unresolved, *moved]}
+
+
+def refine_request(
+    request: str, context: str, model: str, *, refiner: Any, now: datetime | None,
+) -> dict[str, Any]:
+    """One tool-less refine call. Returns the record for the plan file: status
+    ok with the fields, or the failure status alone, so the caller can go on
+    with the raw request."""
+    started = time.monotonic()
+    record: dict[str, Any] = {"mode": "separate"}
+    try:
+        proc = refiner(refine_prompt(request, context, now), model, REFINE_TIMEOUT_SEC)
+        try:
+            result = json.loads(proc.stdout or "")
+        except ValueError:
+            result = None
+        if isinstance(result, list):
+            result = next((e for e in reversed(result) if isinstance(e, dict) and e.get("type") == "result"), None)
+        if not isinstance(result, dict):
+            record["status"] = "bad_output"
+        elif result.get("is_error"):
+            record["status"] = "error:cli"
+        else:
+            cleaned = _clean_refine(result.get("structured_output"))
+            if cleaned is None:
+                record["status"] = "bad_output"
+            else:
+                record.update(cleaned)
+                record["status"] = "ok"
+    except subprocess.TimeoutExpired:
+        record["status"] = "timeout"
+    except Exception as exc:  # noqa: BLE001 - the plan file records the failure
+        record["status"] = "error:" + type(exc).__name__
+    record["elapsed_sec"] = round(time.monotonic() - started, 1)
+    return record
+
+
+def refined_planner_input(request: str, refine: dict[str, Any]) -> str:
+    lines = [f"[정제된 요청]\n{refine['refined']}"]
+    if refine["resolved"]:
+        resolved = "\n".join(f"- {r['from']} → {r['to']} ({r['basis']})" for r in refine["resolved"])
+        lines.append("[확정한 해석]\n" + resolved)
+    if refine["unresolved"]:
+        lines.append(
+            "[미확정 : 추정으로 채우면 assumed 에, 쓰기 요청에 꼭 필요하면 missing 과 ask 에 적는다]\n"
+            + "\n".join(f"- {item}" for item in refine["unresolved"])
+        )
+    return "\n\n".join(lines) + f"\n\n[원문 요청]\n{request}"
 
 
 def parse(stdout: str) -> tuple[str, dict[str, Any] | None]:
@@ -537,18 +735,41 @@ def check_intake(plan: dict[str, Any], enabled: bool) -> list[str]:
     return dropped
 
 
-def run(transcript: str, *, caller: Any = _call_planner, timeout: float = TIMEOUT_SEC) -> dict[str, Any]:
+def check_refine(plan: dict[str, Any], mode: str) -> dict[str, Any] | None:
+    """Move combined-mode refine fields out of the plan into the record under
+    `refine`. Malformed fields are dropped and the status says so; the rest of
+    the plan is untouched."""
+    values = {key: plan.pop(key) for key in REFINE_FIELDS if key in plan}
+    if mode != "combined":
+        return None
+    cleaned = _clean_refine(values)
+    if cleaned is None:
+        return {"mode": "combined", "status": "bad_output"}
+    return {"mode": "combined", "status": "ok", **cleaned}
+
+
+def run(
+    transcript: str, *, caller: Any = _call_planner, timeout: float = TIMEOUT_SEC,
+    refiner: Any = _call_refiner, now: datetime | None = None,
+) -> dict[str, Any]:
     """Planner process body: call the model and write the plan file."""
     model = os.environ.get(PLAN_MODEL_ENV) or DEFAULT_MODEL
     started = time.monotonic()
     record: dict[str, Any] = {"model": model}
+    mode = refine_mode()
     try:
         request = prompt_path(transcript).read_text(encoding="utf-8")
         candidates = workflow_candidates()
         prompt = request
-        if candidates and context_path(transcript).exists():
+        context = ""
+        if (candidates or mode) and context_path(transcript).exists():
             context = context_path(transcript).read_text(encoding="utf-8")
+        if candidates and context:
             prompt = f"{request}\n\n[직전 대화 : 참고용이며 요청이 아니다]\n{context}\n"
+        if mode == "separate":
+            record["refine"] = refine_request(request, context, model, refiner=refiner, now=now)
+            if record["refine"]["status"] == "ok":
+                prompt = refined_planner_input(prompt, record["refine"])
         proc = caller(prompt, model, timeout)
         status, plan = parse(proc.stdout or "")
         if plan is not None and plan.get("type") == "short" and is_rca(request):
@@ -556,6 +777,9 @@ def run(transcript: str, *, caller: Any = _call_planner, timeout: float = TIMEOU
             proc = caller(prompt + RCA_RETRY_NOTE, model, timeout)
             status, plan = parse(proc.stdout or "")
         if plan is not None:
+            combined = check_refine(plan, mode)
+            if combined is not None:
+                record["refine"] = combined
             note = check_workflow(plan, candidates)
             if note == "invalid":
                 record["workflow_error"] = "invalid"
