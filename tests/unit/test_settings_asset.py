@@ -216,3 +216,50 @@ class Test까다로운_경로:
         install_settings.install(Path(".shinji"), home=tmp_path)
         deny = load_settings_file(tmp_path / ".shinji" / "engine" / 공통)["permissions"]["deny"]
         assert "Read(~/.shinji/credentials.json)" in deny
+
+
+class Test어긋남점검:
+    """install() 은 이미 있는 파일을 건너뛰므로 본보기를 고쳐도 도는 봇에는 안
+    들어간다. check() 가 그 차이를 보고하는지 본다 (2026-11-18 신지 사례)."""
+
+    def test_막_깐_상태는_어긋남이_없다(self, tmp_path: Path) -> None:
+        상태 = tmp_path / ".shinji"
+        install_settings.install(상태, home=tmp_path)
+        assert install_settings.check(상태, home=tmp_path) == []
+
+    def test_없는_덧씌움_파일을_보고한다(self, tmp_path: Path) -> None:
+        상태 = tmp_path / ".shinji"
+        install_settings.install(상태, home=tmp_path)
+        (상태 / "engine" / 신뢰).unlink()
+        결과 = install_settings.check(상태, home=tmp_path)
+        assert len(결과) == 1 and 신뢰 in 결과[0] and "파일 없음" in 결과[0]
+
+    def test_본보기에서_뺀_항목이_남으면_보고한다(self, tmp_path: Path) -> None:
+        상태 = tmp_path / ".shinji"
+        install_settings.install(상태, home=tmp_path)
+        공통본 = 상태 / "engine" / 공통
+        문서 = json.loads(공통본.read_text(encoding="utf-8"))
+        문서["permissions"]["deny"].append("Read(~/.claude/**)")
+        공통본.write_text(json.dumps(문서), encoding="utf-8")
+        결과 = install_settings.check(상태, home=tmp_path)
+        assert any("본보기에서 뺀 항목이 남음 Read(~/.claude/**)" in 줄 for 줄 in 결과)
+
+    def test_본보기_항목이_빠지면_보고한다(self, tmp_path: Path) -> None:
+        상태 = tmp_path / ".shinji"
+        install_settings.install(상태, home=tmp_path)
+        일반본 = 상태 / "engine" / 일반
+        일반본.write_text('{"permissions": {"deny": ["Bash", "Edit", "Write", "NotebookEdit"]}}', encoding="utf-8")
+        결과 = install_settings.check(상태, home=tmp_path)
+        assert 결과 == [f"{일반본} : 본보기에 있는데 없음 Read(~/.claude/**)"]
+
+    def test_조직이_더한_항목과_더_넓은_항목은_보고하지_않는다(self, tmp_path: Path) -> None:
+        상태 = tmp_path / ".shinji"
+        install_settings.install(상태, home=tmp_path)
+        공통본 = 상태 / "engine" / 공통
+        문서 = json.loads(공통본.read_text(encoding="utf-8"))
+        deny = 문서["permissions"]["deny"]
+        좁은항목 = [항목 for 항목 in deny if 항목.startswith("Read(~/.config/")]
+        문서["permissions"]["deny"] = [항목 for 항목 in deny if 항목 not in 좁은항목]
+        문서["permissions"]["deny"] += ["Read(~/.config/**)", "Read(//srv/company/**)"]
+        공통본.write_text(json.dumps(문서), encoding="utf-8")
+        assert install_settings.check(상태, home=tmp_path) == []

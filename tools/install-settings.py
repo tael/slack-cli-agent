@@ -104,15 +104,87 @@ def install(
     return created, skipped
 
 
+#: 본보기에서 뺀 deny 항목. 이미 깔린 운영물은 install() 이 건너뛰므로 본보기를
+#: 고쳐도 도는 봇에는 반영되지 않는다. 운영물에만 있는 항목은 조직이 더한 것과
+#: 구분이 안 되므로, 뺀 항목을 여기 적어 두고 check() 가 운영물에 남은 것을 보고한다.
+#: 본보기에서 deny 를 뺄 때 이 표에 함께 적는다.
+RETIRED: dict[str, dict[str, str]] = {
+    "settings-claude.json": {
+        # 2026-11-18 신지 운영물에 이 줄이 남아 소유자 턴이 자기 memory 와
+        # 세션 기록을 못 읽었다. 본보기 수정 9일 뒤에 발견했다.
+        "Read(~/.claude/**)": "2026-11-09 c6f8355f 소유자 밖 수준 덧씌움으로 옮김",
+    },
+}
+
+
+def _covered(entry: str, installed: list[str]) -> bool:
+    """`Read(~/.config/gh/**)` 는 운영물의 `Read(~/.config/**)` 가 이미 막는다."""
+    if entry in installed:
+        return True
+    if "(" not in entry or not entry.endswith(")"):
+        return False
+    tool, _, pattern = entry[:-1].partition("(")
+    for other in installed:
+        if not other.startswith(tool + "(") or not other.endswith("/**)"):
+            continue
+        prefix = other[len(tool) + 1:-len("**)")]
+        if pattern.startswith(prefix):
+            return True
+    return False
+
+
+def check(
+    state_dir: Path,
+    home: Path | None = None,
+    asset_dir: Path | None = None,
+    retired: dict[str, dict[str, str]] | None = None,
+) -> list[str]:
+    """깔린 settings 와 지금 본보기의 deny 차이. 빈 목록이면 어긋남 없음.
+
+    보고 대상은 본보기에 있는데 운영물에 없는 파일·deny 항목과, 본보기에서
+    뺐는데 운영물에 남은 항목이다. 운영물에만 있는 그 밖의 항목은 조직이 더한
+    것이라 보고하지 않는다.
+    """
+    home = home or Path.home()
+    asset_dir = asset_dir or ASSET_DIR
+    retired = RETIRED if retired is None else retired
+    problems: list[str] = []
+    for name in ASSET_NAMES:
+        target = state_dir / "engine" / name
+        if not target.exists():
+            problems.append(f"{target} : 파일 없음")
+            continue
+        expected = json.loads(render(asset_dir / name, state_dir, home))
+        installed = (load_settings_file(target).get("permissions") or {}).get("deny") or []
+        for entry in (expected.get("permissions") or {}).get("deny") or []:
+            if not _covered(entry, installed):
+                problems.append(f"{target} : 본보기에 있는데 없음 {entry}")
+        for entry, reason in retired.get(name, {}).items():
+            if entry in installed:
+                problems.append(f"{target} : 본보기에서 뺀 항목이 남음 {entry} ({reason})")
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="엔진 settings 본보기를 상태 디렉터리에 깐다")
     parser.add_argument("name", help="봇 이름")
     parser.add_argument("--state-dir", default=None, help="상태 디렉터리. 기본은 ~/.<봇이름>")
     parser.add_argument("--engine", default="claude", help="엔진 종류. 지금은 claude 뿐")
+    parser.add_argument(
+        "--check", action="store_true",
+        help="깔지 않고 본보기와 운영물의 deny 차이만 출력한다. 차이가 있으면 종료코드 1",
+    )
     args = parser.parse_args(argv)
     state_dir = (
         Path(args.state_dir).expanduser() if args.state_dir else Path.home() / f".{args.name}"
     )
+    if args.check:
+        problems = check(state_dir)
+        for line in problems:
+            print(line)
+        if not problems:
+            print(f"어긋남 없음 : {state_dir / 'engine'}")
+        return 1 if problems else 0
     created, skipped = install(state_dir, args.engine)
     for path in created:
         print(f"만들었다 : {path}")
