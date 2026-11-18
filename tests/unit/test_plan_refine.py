@@ -295,3 +295,40 @@ class TestPipelineAndWiring:
         monkeypatch.setenv(ps.INTAKE_ENV, "1")
         record = _run(tmp_path, Calls(plan={**BRANCH_PLAN, **INTAKE}, refine=REFINE_OK))
         assert record["ack"] == INTAKE["ack"] and record["refine"]["status"] == "ok"
+
+
+class TestPlannerContext:
+    """Intake and combined refine judge ask/missing from the thread, so the planner gets prior turns."""
+
+    def test_입력_점검만_켜져도_직전_대화를_계획_옆_파일에_쓴다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        transcript = str(tmp_path / "t.jsonl")
+        Path(transcript).write_text(
+            json.dumps({"type": "user", "message": {"content": "앞 질문"}}) + "\n", encoding="utf-8"
+        )
+        monkeypatch.setenv(ps.PLAN_GATE_ENV, "3")
+        monkeypatch.setenv(ps.INTAKE_ENV, "1")
+        ps.start({"transcript_path": transcript, "prompt": "후속"}, spawn=lambda *a, **k: None)
+        assert "앞 질문" in ps.context_path(transcript).read_text(encoding="utf-8")
+
+    def test_입력_점검이_켜지면_계획_입력에_직전_대화가_붙는다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(ps.INTAKE_ENV, "1")
+        calls = Calls()
+        _run(tmp_path, calls, "그거 왜 그래?", context="사용자: 어제 늦던데")
+        assert "어제 늦던데" in calls.planner_prompts[0]
+
+    def test_combined_정제는_계획_입력에_직전_대화가_붙는다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(ps.REFINE_ENV, "combined")
+        calls = Calls()
+        _run(tmp_path, calls, "그거 왜 그래?", context="사용자: 어제 늦던데")
+        assert "어제 늦던데" in calls.planner_prompts[0]
+
+    def test_전부_꺼져_있으면_계획_입력은_요청_그대로다(self, tmp_path: Path) -> None:
+        calls = Calls()
+        _run(tmp_path, calls, "그거 왜 그래?", context="사용자: 어제 늦던데")
+        assert calls.planner_prompts[0] == "그거 왜 그래?"

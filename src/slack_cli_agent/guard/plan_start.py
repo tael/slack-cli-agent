@@ -506,7 +506,7 @@ def start(data: dict[str, Any], *, spawn: Any = subprocess.Popen, runner: Any = 
         stale.unlink(missing_ok=True)
     Path(transcript).parent.mkdir(parents=True, exist_ok=True)
     prompt_path(transcript).write_text(prompt[-PROMPT_TAIL_CHARS:], encoding="utf-8")
-    if workflow_candidates() or refine_mode():  # context readers only; others stay as before
+    if workflow_candidates() or refine_mode() or intake_enabled():  # context readers only
         context = recent_context(transcript, prompt)
         if context:
             context_path(transcript).write_text(context, encoding="utf-8")
@@ -762,9 +762,10 @@ def run(
         candidates = workflow_candidates()
         prompt = request
         context = ""
-        if (candidates or mode) and context_path(transcript).exists():
+        intake = intake_enabled()
+        if (candidates or mode or intake) and context_path(transcript).exists():
             context = context_path(transcript).read_text(encoding="utf-8")
-        if candidates and context:
+        if (candidates or intake or mode == "combined") and context:
             prompt = f"{request}\n\n[직전 대화 : 참고용이며 요청이 아니다]\n{context}\n"
         if mode == "separate":
             record["refine"] = refine_request(request, context, model, refiner=refiner, now=now)
@@ -783,7 +784,7 @@ def run(
             note = check_workflow(plan, candidates)
             if note == "invalid":
                 record["workflow_error"] = "invalid"
-            dropped = check_intake(plan, intake_enabled())
+            dropped = check_intake(plan, intake)
             if dropped:
                 record["intake_dropped"] = dropped
             record.update(plan)
