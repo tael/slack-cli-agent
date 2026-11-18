@@ -261,7 +261,7 @@ def _plan(**kw: Any) -> dict[str, Any]:
 def _pipeline(tmp_path: Path, plan: Any, *, candidates: Any = CANDIDATES) -> tuple[Any, Any, list[tuple[str, str]]]:
     asked: list[tuple[str, str]] = []
 
-    def reader(engine: str, session: str) -> Any:
+    def reader(engine: str, session: str, workdir: Any = None) -> Any:
         asked.append((engine, session))
         if isinstance(plan, Exception):
             raise plan

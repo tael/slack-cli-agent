@@ -10,6 +10,7 @@ import logging
 import threading
 import time
 import uuid
+from contextvars import ContextVar
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
@@ -106,6 +107,7 @@ from ..slack.transcribe import TranscribeFn, transcribe_files
 from ..slack.transcript import CurrentMessage
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
+from .intake_ack import IntakeAck
 from .markers import (
     missing_recipient_prompt,
     pick_recipient_tag,
@@ -276,6 +278,17 @@ def _spawn_daemon(fn: Callable[[], None]) -> None:
     threading.Thread(target=fn, name="post-correct", daemon=True).start()
 
 
+@dataclass
+class _RequestScope:
+    """Per-request state `_record` needs but is not handed (N4)."""
+
+    workdir: Path | None = None
+    ack: IntakeAck | None = None
+
+
+_REQUEST_SCOPE: ContextVar[_RequestScope | None] = ContextVar("request_scope", default=None)
+
+
 class RequestPipeline:
     def __init__(
         self,
@@ -326,7 +339,13 @@ class RequestPipeline:
         # (engine name, session id) -> the planner's plan file content or None.
         # Lets the request row carry the classification; None leaves the row
         # without plan_* fields.
-        plan_result: Callable[[str, str], Mapping[str, Any] | None] | None = None,
+        plan_result: Callable[[str, str, Path | None], Mapping[str, Any] | None] | None = None,
+        # (engine, session id, cwd the engine ran in) -> plan file path (N4 ack).
+        plan_file: Callable[[str, str, Path], Path | None] | None = None,
+        # Posts the planner's ack once when the answer is still unfinished
+        # intake_ack_after_sec after the request started. Off by default.
+        intake_ack: bool = False,
+        intake_ack_after_sec: float = 12.0,
         mention_table: Callable[[], Mapping[str, str]] = dict,
         slow_reporter: SlowRequestReporter | None = None,
         # Splits each request's wall time into named items for its audit row
@@ -431,6 +450,10 @@ class RequestPipeline:
         self._plan_intake_inject = plan_intake_inject
         self._plan_intake_check = plan_intake_check
         self._plan_result = plan_result
+        self._plan_file = plan_file
+        self._intake_ack = intake_ack
+        self._intake_ack_after_sec = intake_ack_after_sec
+        self._intake_ack_poll_sec = 1.0
         # Reuses asker_is_bot as the is-bot oracle: resolving a RECIPIENT tag
         # needs the same "is this user a bot" lookup for the ASKER→BOT fold and
         # for validating a BOT:id. Forces the leading mention for bot recipients
@@ -576,6 +599,26 @@ class RequestPipeline:
             lookups=self._tool_policy.lookups_for(principal, asker_is_bot=is_bot),
         )
 
+    def _intake_ack_session(
+        self, ctx: RequestContext, config: ChannelConfig | None, tier: str, *, start: float,
+        post: Callable[[str], object], plan_path: Callable[[], Path | None],
+    ) -> AbstractContextManager[Any]:
+        """The ack watcher for this request, or a pass-through when it does not apply."""
+        if (
+            not self._intake_ack or not self._plan_intake or self._plan_file is None
+            or (config is not None and not config.intake_ack)
+            or not self._plan_gate_env(tier, config)
+        ):
+            return nullcontext()
+        scope = _REQUEST_SCOPE.get()
+        ack = IntakeAck(
+            resolve_plan=plan_path, post=post, after_sec=self._intake_ack_after_sec, start=start,
+            now=self._now, poll_sec=self._intake_ack_poll_sec,
+        )
+        if scope is not None:
+            scope.ack = ack
+        return ack
+
     def _progress_session(self, ctx: RequestContext, log_path: Path | None) -> AbstractContextManager[None]:
         """The progress display for this request, or a pass-through when it has none."""
         if self._progress is None or log_path is None:
@@ -583,6 +626,7 @@ class RequestPipeline:
         return self._progress.session(ctx.channel, ctx.thread_ts, ctx.user, log_path)
 
     def _handle(self, ctx: RequestContext) -> HandleOutcome:
+        _REQUEST_SCOPE.set(None)
         start = self._now()
         # Wall clock alone can't distinguish "actually slow" from "device slept".
         mono_start = self._monotonic()
@@ -603,6 +647,7 @@ class RequestPipeline:
             workdir = light_turn.resolve()
         else:
             workdir = (config.workdir if (config and config.workdir) else self._default_workdir).resolve()
+        _REQUEST_SCOPE.set(_RequestScope(workdir=workdir))
         rich = channel_is_rich(config)
         # A flat_reply channel posts straight to the channel, not a thread off
         # the triggering message (A17, mametchi bot.py:6458).
@@ -750,7 +795,15 @@ class RequestPipeline:
         # Covers the retry too: a new-session retry is the same wait for the
         # person watching, and closing the display between the two attempts
         # would read as the request having finished.
-        with self._progress_session(ctx, progress_log):
+        ack_session = self._intake_ack_session(
+            ctx, config, tier, start=start,
+            post=lambda text: self._publisher.post(ctx.channel, ctx.thread_ts, text, rich, flat=flat),
+            plan_path=lambda: (
+                self._plan_file(self._engine.name, request.session_id or "", workdir)
+                if self._plan_file is not None and request.session_id else None
+            ),
+        )
+        with self._progress_session(ctx, progress_log), ack_session:
             # Bracketing each engine call lets the audit row tell bot-side
             # preparation from engine startup (S0 계측). The retry overwrites
             # both, so a failed first attempt is booked as pre-engine time.
@@ -2049,6 +2102,9 @@ class RequestPipeline:
             extra["failure_detail"] = str(failure_detail)
         extra.update(self._route_shadow_fields(ctx, decision.resume))
         plan_session = (model_usage.session_id if model_usage else None) or decision.session_id
+        scope = _REQUEST_SCOPE.get()
+        if scope is not None and isinstance(scope.ack, IntakeAck):
+            extra.update(scope.ack.outcome.audit_fields())
         extra.update(self._plan_workflow_fields(plan_session, start=self._now() - elapsed))
         first_reaction_sec = self._first_reaction_sec(ctx)
         queue_wait_sec = self._queue_wait_sec(ctx)
@@ -2087,7 +2143,11 @@ class RequestPipeline:
         if not (self._plan_workflows or self._plan_intake) or self._plan_result is None:
             return {}
         try:
-            plan = self._plan_result(self._engine.name, session_id or "") if session_id else None
+            scope = _REQUEST_SCOPE.get()
+            plan = (
+                self._plan_result(self._engine.name, session_id, scope.workdir if scope else None)
+                if session_id else None
+            )
         except Exception as exc:  # noqa: BLE001 -- 기록이 요청 처리를 막으면 안 된다
             log.warning("계획 파일 읽기 실패", exc_info=True)
             return {"plan_status": "read_error", "plan_error": f"{type(exc).__name__}"[:80]}

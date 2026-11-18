@@ -322,6 +322,12 @@ class RuntimeSettings:
     # True 면 Stop 훅이 계획의 확인 기준(checks)과 이번 턴 결과를 대조한다. plan_intake 가 켜져
     # 있어야 효과가 있다. 엔진에는 SCA_PLAN_INTAKE_CHECK 로 넘어간다.
     plan_intake_check: bool = False
+    # True 면 엔진이 도는 중 계획의 ack 를 스레드에 한 번 게시한다. 게시 기준은
+    # 계획의 type 예측이 아니라 요청 시작 후 경과 시간이다. plan_intake 가
+    # 켜져 있어야 동작한다. 12초 = 계획 p50 3.1초 + 계획 완료 후 턴 종료 p50
+    # 7.6초(11-19 실측, short 기준).
+    intake_ack: bool = False
+    intake_ack_after_sec: float = 12
 
     #: The restart supervisor writes an apply-request itself when the install
     #: checkout's HEAD moves on main with a clean tree. 2026-11-12: bots share
