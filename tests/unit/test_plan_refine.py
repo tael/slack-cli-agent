@@ -347,3 +347,14 @@ class TestCombinedRefineRules:
         section = ps._COMBINED_REFINE_SECTION
         assert "basis 가 아니다" not in section
         assert "확률 높은 추정은 assumed 에 적고 ack 에 밝힌 뒤 진행한다" in section
+
+
+class TestAckAndMissingRules:
+    """11-19 live ack: '경로만 알려주시면 바로 확인할게요' was posted while the turn went on
+    and found the audit log by itself. The question was in the ack and missing listed a tool-findable value."""
+
+    def test_ack_에_질문을_넣지_않는다(self) -> None:
+        assert "ack 에는 질문을 넣지 않는다. 되물을 것은 ask 에만 적는다" in ps._INTAKE_SECTION
+
+    def test_도구로_찾을_수_있는_값은_missing_이_아니다(self) -> None:
+        assert "파일 위치·설정 값·기록처럼 도구로 찾을 수 있는 값은 missing 이 아니다" in ps._INTAKE_SECTION
