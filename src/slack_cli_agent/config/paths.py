@@ -133,6 +133,27 @@ class StatePaths:
         return self.persona / "local"
 
     @property
+    def memory(self) -> Path:
+        """Facts the bot keeps across sessions, one file each plus `MEMORY.md`.
+
+        Claude Code puts its memory under
+        `<home>/.claude/projects/<slugified workdir>/memory`, which is per work
+        directory and unwritable in dontAsk mode (a `.claude` component, 실측
+        2026-09-19). A bot's memory is one set per bot, so it lives here and
+        every work directory's engine-side path is a symlink to it
+        (engine/claude.py prepare()). Writes go to this path; the prompt names
+        it (prompt/sections.MemoryPathSection, 2026-11-19 신지 지적: a turn
+        wrote to the `.claude` path, was refused, and reported it as a
+        permission problem).
+        """
+        return self.root / "memory"
+
+    @property
+    def memory_index(self) -> Path:
+        """The index Claude Code loads each session. One line per memory file."""
+        return self.memory / "MEMORY.md"
+
+    @property
     def wiki(self) -> Path:
         """Topic pages of domain facts. Only `index.md` is sent every turn; the
         model opens a page itself when the topic matches (마메치 WIKI_DIR)."""
@@ -216,5 +237,5 @@ class StatePaths:
 
     def ensure(self) -> None:
         for path in (self.root, self.prompts, self.persona, self.engine_dir,
-                     self.progress, self.skill_files):
+                     self.progress, self.skill_files, self.memory):
             path.mkdir(parents=True, exist_ok=True)

@@ -187,6 +187,17 @@ class SessionTranscriptReader(ABC):
         return True
 
 
+def claude_project_slug(workdir: Path) -> str:
+    """The directory name Claude Code derives from a work directory.
+
+    `/` and `.` in the absolute path become `-`. Same rule as the original
+    bot.py's claude_transcript() (line 3076). Both the session transcript and
+    the memory directory sit under `<home>/.claude/projects/<this slug>`, so
+    the rule is named once here (engine/claude.py prepare()).
+    """
+    return str(workdir).replace("/", "-").replace(".", "-")
+
+
 class ClaudeTranscriptReader(SessionTranscriptReader):
     """Reads the jsonl session transcript the Claude Code CLI writes.
 
@@ -201,7 +212,7 @@ class ClaudeTranscriptReader(SessionTranscriptReader):
         self._home = home or Path.home()
 
     def transcript_path(self, session_id: str) -> Path:
-        slug = str(self._workdir).replace("/", "-").replace(".", "-")
+        slug = claude_project_slug(self._workdir)
         return self._home / ".claude" / "projects" / slug / f"{session_id}.jsonl"
 
     def read(self, session_id: str) -> list[TranscriptEvent]:

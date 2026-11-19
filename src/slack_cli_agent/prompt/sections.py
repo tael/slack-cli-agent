@@ -426,6 +426,47 @@ class SelfConfigSection(PromptSection):
         return "\n".join(lines)
 
 
+class MemoryPathSection(PromptSection):
+    """Names the path a memory file is written to.
+
+    2026-11-19 신지: told to remember something, the turn called Write on
+    `~/.claude/projects/<slug>/memory/...` — the path Claude Code's own prompt
+    gives — which Write and Bash refuse in dontAsk mode on any `.claude`
+    component (실측 2026-09-19). The turn then reported the refusal as a
+    permission problem. StatePaths.memory holds the same files (the engine-side
+    path is a symlink to it, engine/claude.py prepare()), so the writable path
+    is named here rather than left in one bot's persona file.
+
+    Owner turns only: a general turn carries no write tools, so the path would
+    only invite a write that fails. Aside turns (postmortem, debug trace,
+    format review) carry none either.
+    """
+
+    def __init__(self, profile: Profile) -> None:
+        self._profile = profile
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return ctx.is_owner and not ctx.aside
+
+    def render(self, ctx: CompositionContext) -> str:
+        paths = self._profile.paths
+        return "\n".join([
+            "\n\n# 메모리 쓰기 경로\n",
+            (
+                f"기억해 둘 것은 {paths.memory} 아래에 파일로 쓴다."
+                f" 색인은 {paths.memory_index} 다.\n"
+            ),
+            (
+                "- 경로에 `.claude` 가 들어가는 메모리 경로로 쓰지 않는다. 그 경로는"
+                " Write 와 Bash 가 거부한다. 거부를 권한 문제로 보고하지 않는다"
+            ),
+            (
+                f"- 엔진 쪽 메모리 경로는 {paths.memory} 를 가리키는 symlink 라 내용은 같다."
+                " 읽기도 이 경로를 쓴다"
+            ),
+        ])
+
+
 class PeerRecoverySection(PromptSection):
     """Tells the owner's turn how to revive a sibling bot that has gone down.
 

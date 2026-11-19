@@ -83,6 +83,7 @@ from .capability import (
 from .claude_settings import load_merged_settings, merge_settings
 from .footprint import PayloadFootprint
 from .tool_selection import SUBAGENT_TOOLS, ToolAccess
+from .transcript import claude_project_slug
 
 # Same hint list as the original bot.py's usage_limit_message().
 _USAGE_LIMIT_HINTS = (
@@ -611,6 +612,51 @@ class ClaudeEngine(Engine):
     def prepare(self, request: EngineRequest) -> None:
         self._ensure_skill_discovery_link()
         self._ensure_skill_plugin()
+        self._ensure_memory_link(request.workdir)
+
+    def _ensure_memory_link(self, workdir: Path) -> None:
+        """Points this work directory's engine-side memory path at StatePaths.memory.
+
+        Claude Code reads memory from `<home>/.claude/projects/<slug>/memory`,
+        one directory per work directory. A channel pointed at another
+        directory therefore starts with an empty memory, and what earlier turns
+        saved is not loaded. A bot's memory is one set per bot, so each slug's
+        path becomes a symlink to StatePaths.memory and every channel reads and
+        writes the same files.
+
+        The link only fixes reads: that path still holds a `.claude` component,
+        which Write and Bash refuse in dontAsk mode (실측 2026-09-19), so the
+        turn writes to StatePaths.memory itself (prompt/sections.MemoryPathSection).
+
+        A real directory with files in it is someone's memory; replacing it
+        would delete them, so it is logged and left alone.
+        """
+        paths = self.profile.paths
+        try:
+            paths.memory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log.warning("메모리 디렉터리를 만들지 못했다 : %s", exc)
+            return
+        home = self.spec.home_dir or Path.home()
+        link = home / ".claude" / "projects" / claude_project_slug(workdir) / "memory"
+        try:
+            if link.is_symlink():
+                if link.resolve() == paths.memory.resolve():
+                    return
+                link.unlink()
+            elif link.is_dir():
+                if any(link.iterdir()):
+                    log.warning(
+                        "엔진 쪽 메모리 경로가 symlink 가 아니라 파일이 든 디렉터리다 : %s - "
+                        "내용을 %s 로 옮기고 이 디렉터리를 지운다",
+                        link, paths.memory,
+                    )
+                    return
+                link.rmdir()
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(paths.memory, target_is_directory=True)
+        except OSError as exc:
+            log.warning("메모리 경로를 잇지 못했다 : %s", exc)
 
     #: Folder under StatePaths.skills that holds the bot's skills as a plugin.
     SKILL_PLUGIN_DIR: ClassVar[str] = "plugin"
