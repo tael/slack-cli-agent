@@ -80,8 +80,8 @@ class TestForm:
         assert fr.form_violation("한두줄", "a\nb\nc") == "한두줄"
 
     def test_답_끝_표식과_WATCH_줄은_세지_않는다(self):
-        assert fr.form_violation("한두줄", ANSWER + "\n[[NOWATCH]]") is None
-        assert fr.form_violation("한두줄", ANSWER + "\n[[WATCH: 내일 확인]]") is None
+        assert fr.form_violation("한두줄", ANSWER + "\n둘째 줄\n[[NOWATCH]]") is None
+        assert fr.form_violation("한두줄", ANSWER + "\n둘째 줄\n[[WATCH: 내일 확인]]") is None
 
     def test_문단은_불릿만_막는다(self):
         assert fr.form_violation("문단", "가나다\n라마바") is None
