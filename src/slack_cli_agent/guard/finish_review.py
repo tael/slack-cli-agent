@@ -277,8 +277,12 @@ def _input_blob(input_mapping: Mapping[str, object]) -> str:
 # --------------------------------------------------------------------------
 
 _OFFER_RE = re.compile(
-    r"(원하시면|필요하시면|필요하면|말씀 주시면|말씀해 주시면)[^\n]*?"
-    r"(볼게요|드릴게요|할게요|하겠습니다|드리겠습니다|보겠습니다|이어서|확인해|조사해|파볼|말씀해\s*주세요|말씀\s*주세요)"
+    # 2026-11-20: "궁금하면 그 부분만 조회해서 답함" ended a reply by asking the
+    # owner to re-request a lookup this turn could have run. "궁금하면"/"원하면"
+    # and the 요약체 endings ("답함", "조회함") were both missing here.
+    r"(원하시면|원하면|필요하시면|필요하면|궁금하면|궁금하시면|말씀 주시면|말씀해 주시면|알려주시면|알려주면)[^\n]*?"
+    r"(볼게요|드릴게요|할게요|하겠습니다|드리겠습니다|보겠습니다|이어서|확인해|조사해|파볼"
+    r"|말씀해\s*주세요|말씀\s*주세요|답함|답하겠|조회함|조회해|확인함|알려드림|정리함)"
     r"|(더|이어서|추가로|바로)[^\n]{0,20}?(확인|조사|살펴|파|찾아|조회)\S*\s*(볼까요|드릴까요|할까요)"
     r"|(돌려|집계해|확인해|조회해|찾아|살펴|분석해|대조해|재\s?볼|모으면|모아\s?보면)"
     r"[^\n]{0,6}?(볼\s?수\s?있어요|볼\s?수\s?있습니다|잴\s?수도\s?있어요|잴\s?수\s?있어요"
@@ -386,7 +390,15 @@ def handoff(turn: Turn) -> str | None:
 
 #: gave_up blocks a turn at most this many times; see gave_up().
 GAVE_UP_MAX_BLOCKS = 1
-_GAVE_UP_RE = re.compile(r"(조회|확인|열람)(하지 못|할 수 없었|\s?불가)[^\n]{0,20}")
+#: 2026-11-20: the summary-style endings the persona asks for ("확인 못 함",
+#: "조회하지 않아 확인 못 함") never matched the "하지 못" form, so a reply that
+#: skipped four lookups it could have run went out unflagged. The owner's
+#: reading: "확인해 봐 -> 확인 못 했다" hands the lookup back to the asker.
+#: "안 함"/"않아" are included because not trying reads the same to the asker
+#: as trying and failing.
+_GAVE_UP_RE = re.compile(
+    r"(조회|확인|열람)(하지\s?못|하지\s?않아|할 수 없었|\s?못\s?함|\s?안\s?함|\s?불가)[^\n]{0,20}"
+)
 
 
 def gave_up(turn: Turn) -> str | None:
@@ -793,6 +805,17 @@ _NUM_RE = re.compile(r"(?<![\w.])\d(?:[\d,]*\d)?(?:\.\d+)?")
 #: mametchi raised this 200 -> 400 after the median reply time tripled from
 #: block-then-rewrite loops on short answers.
 VERIFY_MIN_LEN = 400
+#: Length is the wrong gate for one shape of claim: a self-assessment ratio
+#: ("준수율이 아직 100%가 아님", "정확도 24/24") fits in one short line and is
+#: exactly the sentence no tool result backs. 2026-11-20 a 300-char reply
+#: asserted an unmeasured compliance rate and cited an unrelated benchmark as
+#: its evidence; needs_verification() skipped it on length alone. Answers
+#: matching this run the check regardless of length.
+_SELF_RATE_RE = re.compile(
+    r"(?:준수율|정확도|성공률|품질\s*점수|재현율|일치율)"
+    r"|(?<![\w.])\d{1,3}(?:\.\d+)?\s*(?:%|퍼센트)"
+    r"|(?<![\w.])\d{1,4}\s*/\s*\d{1,4}(?![\w.])"
+)
 #: The verify judgment blocks a turn at most this many times before the
 #: `prior_flagged` filter starts. 2026-11-06:
 #: with 1, the rewrite after the first block was never checked, and
@@ -849,7 +872,17 @@ def needs_verification(answer: str) -> bool:
     if "[[침묵]]" in (answer or ""):
         return False
     body = "\n".join(line for line in (answer or "").splitlines() if not _TAG_LINE.match(line))
-    return len(body.strip()) >= VERIFY_MIN_LEN and bool(_CLAIM_MARK_RE.search(body))
+    stripped = body.strip()
+    if not stripped:
+        return False
+    # The publisher's footer (slack/publisher.py) is quoted lines carrying its
+    # own numbers ("캐시 적중률 : 64퍼센트", "토큰 : 127,230개"). Those are
+    # measured by the publisher, not claimed by the model, so a quoted line
+    # never triggers the self-assessment gate.
+    prose = "\n".join(line for line in stripped.splitlines() if not line.lstrip().startswith(">"))
+    if _SELF_RATE_RE.search(prose):
+        return True
+    return len(stripped) >= VERIFY_MIN_LEN and bool(_CLAIM_MARK_RE.search(body))
 
 
 #: `answer, evidence text -> unsupported sentences`. The engine's Stop hook
