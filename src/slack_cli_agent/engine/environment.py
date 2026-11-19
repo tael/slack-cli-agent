@@ -305,6 +305,8 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # guard/pretool/plan_gate: "1" adds expected output, assumptions and
         # checks to the one-time plan injection.
         "SCA_PLAN_INTAKE_INJECT",
+        # guard/plan_start: "2" asks for inputs/output instead of the v1 intake fields.
+        "SCA_PLAN_INTAKE_SCHEMA",
         # Stop hook plan-check switch and its own block cap (finish_review N6).
         "SCA_PLAN_INTAKE_CHECK",
         "SCA_PLAN_CHECK_MAX_BLOCKS",

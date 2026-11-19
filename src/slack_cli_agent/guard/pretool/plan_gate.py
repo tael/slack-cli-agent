@@ -33,7 +33,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 HOOK_SCRIPT = Path(__file__).resolve()
 
@@ -89,6 +89,20 @@ INTAKE_INJECT_ENV = "SCA_PLAN_INTAKE_INJECT"
 INJECT_HEAD_COMPACT = "[작업 기준] 이 요청은 아래 기준으로 답한다."
 INJECT_ASSUMED = "- 가정을 답변에 밝혀 사용자가 고칠 수 있게 한다"
 INJECT_CHECKS = "- 답변은 이 기준으로 점검된다. 확인하지 못한 기준은 답변에 \"미확인\" 으로 표시한다"
+#: v2 intake (SCA_PLAN_INTAKE_SCHEMA=2): input kinds, output forms and caps.
+#: guard/plan_start keeps its own copies (a test pins them equal).
+INPUT_KINDS = ("given", "derived", "lookup", "guess", "ask")
+OUTPUT_FORMS = ("한두줄", "문단", "목록", "표", "긴글")
+INPUTS_MAX = 6
+OUTPUT_ITEMS_MAX = 6
+KIND_LOOKUP = "lookup"
+KIND_GUESS = "guess"
+KIND_ASK = "ask"
+INJECT_LOOKUP = "- lookup 입력은 도구로 찾아 채우고 '미확인' 으로 남기지 않는다"
+INJECT_GUESS = (
+    "- guess 값은 사용자에게 이미 안내됐다. 도구 결과가 다르면 바꾸고 바꾼 점을 답에 한 문장으로 밝힌다"
+)
+INJECT_OUTPUT = "- 답은 기대 결과의 형태와 항목대로 쓰고 그 밖의 내용은 덧붙이지 않는다"
 #: Written to the once-only flag file when the intake text is on.
 KIND_FULL = "full"
 KIND_COMPACT = "compact"
@@ -131,15 +145,67 @@ def intake_inject_from_env(env: dict[str, str] | os._Environ[str] | None = None)
     return str(raw).strip() not in ("", "0")
 
 
+class IntakeView(NamedTuple):
+    """One shape for v1 (assumed/missing/expected_output/checks) and v2
+    (inputs/output) intake fields. ``assumed``, ``missing`` and ``checks`` keep
+    the raw v1 values; for v2 the first two are derived from guess and ask
+    inputs and ``checks`` is None."""
+
+    schema: int
+    expected: Any
+    assumed: list[Any]
+    missing: list[Any]
+    checks: list[Any] | None
+    inputs: list[dict[str, str]]
+    output_form: str
+    output_items: list[str]
+
+
+def _clean_inputs(raw: Any) -> list[dict[str, str]]:
+    found: list[dict[str, str]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name, value, kind, reason = (item.get(key) for key in ("name", "value", "kind", "reason"))
+        if not (isinstance(name, str) and name.strip() and isinstance(value, str) and kind in INPUT_KINDS):
+            continue
+        found.append({
+            "name": name.strip(), "value": value.strip(), "kind": kind,
+            "reason": reason.strip() if isinstance(reason, str) else "",
+        })
+    return found[:INPUTS_MAX]
+
+
+def _clean_output(raw: Any) -> tuple[str, list[str]]:
+    if not isinstance(raw, dict) or raw.get("form") not in OUTPUT_FORMS:
+        return "", []
+    items = raw.get("items")
+    texts = [i.strip() for i in items if isinstance(i, str) and i.strip()] if isinstance(items, list) else []
+    return raw["form"], texts[:OUTPUT_ITEMS_MAX]
+
+
+def intake_view(plan: dict[str, Any]) -> IntakeView:
+    if isinstance(plan.get("inputs"), list) or isinstance(plan.get("output"), dict):
+        inputs = _clean_inputs(plan.get("inputs"))
+        form, items = _clean_output(plan.get("output"))
+        guessed = [f"{i['name']}: {i['value']}" for i in inputs if i["kind"] == KIND_GUESS]
+        asked = [i["name"] for i in inputs if i["kind"] == KIND_ASK]
+        return IntakeView(2, "", guessed, asked, None, inputs, form, items)
+    assumed, missing, checks = plan.get("assumed"), plan.get("missing"), plan.get("checks")
+    return IntakeView(
+        1, plan.get("expected_output"),
+        assumed if isinstance(assumed, list) else [], missing if isinstance(missing, list) else [],
+        checks if isinstance(checks, list) else None, [], "", [],
+    )
+
+
 def _intake_parts(plan: dict[str, Any]) -> tuple[str, list[str], list[tuple[str, str]]]:
     """expected_output, assumed and checks; a malformed field or entry is dropped."""
-    expected = plan.get("expected_output")
-    expected = expected.strip() if isinstance(expected, str) else ""
-    assumed = plan.get("assumed")
-    assumed = [a.strip() for a in assumed if isinstance(a, str) and a.strip()] if isinstance(assumed, list) else []
-    raw_checks = plan.get("checks")
+    view = intake_view(plan)
+    expected = view.expected.strip() if isinstance(view.expected, str) else ""
+    assumed = [a.strip() for a in view.assumed if isinstance(a, str) and a.strip()]
     checks = []
-    for item in raw_checks if isinstance(raw_checks, list) else []:
+    for item in view.checks or []:
         if not (isinstance(item, dict) and isinstance(item.get("what"), str) and isinstance(item.get("how"), str)):
             continue
         if item["what"].strip():
@@ -147,7 +213,28 @@ def _intake_parts(plan: dict[str, Any]) -> tuple[str, list[str], list[tuple[str,
     return expected, assumed, checks
 
 
+def _intake_lines_v2(view: IntakeView) -> list[str]:
+    lines = []
+    if view.inputs:
+        lines.append("입력 :")
+        lines += [f"- {i['name']}: {i['value'] or '미정'} ({i['kind']})" for i in view.inputs]
+    if view.output_form:
+        shape = " / ".join([view.output_form, ", ".join(view.output_items)]) if view.output_items else view.output_form
+        lines.append(f"기대 결과 : {shape}")
+    kinds = {i["kind"] for i in view.inputs}
+    if KIND_LOOKUP in kinds:
+        lines.append(INJECT_LOOKUP)
+    if KIND_GUESS in kinds:
+        lines.append(INJECT_GUESS)
+    if view.output_form:
+        lines.append(INJECT_OUTPUT)
+    return lines
+
+
 def _intake_lines(plan: dict[str, Any]) -> list[str]:
+    view = intake_view(plan)
+    if view.schema == 2:
+        return _intake_lines_v2(view)
     expected, assumed, checks = _intake_parts(plan)
     lines = []
     if expected:
@@ -162,6 +249,9 @@ def _intake_lines(plan: dict[str, Any]) -> list[str]:
 
 
 def has_compact_intake(plan: dict[str, Any]) -> bool:
+    view = intake_view(plan)
+    if view.schema == 2:
+        return bool(view.inputs or view.output_form)
     expected, _, checks = _intake_parts(plan)
     return bool(expected or checks)
 

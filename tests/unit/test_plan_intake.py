@@ -121,10 +121,11 @@ class TestRun:
 
 
 class TestInjectionUnchanged:
-    def test_plan_gate_는_새_필드를_읽지_않는다(self) -> None:
-        source = Path(plan_gate.__file__).read_text(encoding="utf-8")
-        for key in ("intent", "missing", "ask", "ack"):
-            assert f'"{key}"' not in source and f"'{key}'" not in source
+    def test_plan_gate_는_새_필드_값을_주입하지_않는다(self) -> None:
+        plan = {**BRANCH_PLAN, **INTAKE, "intent": "의도값", "missing": ["빠진값"], "ask": "질문값", "ack": "응답값"}
+        for text in (plan_gate.render(plan, intake=True), plan_gate.render_compact(plan)):
+            for value in ("의도값", "빠진값", "질문값", "응답값"):
+                assert value not in text
 
 
 class TestPipeline:

@@ -62,6 +62,7 @@ from typing import Any
 
 from slack_cli_agent.core.markers import ASK_TAG
 from slack_cli_agent.guard.plan_start import result_event
+from slack_cli_agent.guard.pretool.plan_gate import intake_view
 
 #: Absolute path to this file. A real wiring (see module docstring) invokes
 #: this module as a standalone script the same way
@@ -1753,7 +1754,7 @@ def plan_checks(plan: object) -> list[dict[str, str]]:
     if not isinstance(plan, Mapping) or plan.get("status") != "ok":
         return []
     found = []
-    for item in plan.get("checks") or []:
+    for item in intake_view(dict(plan)).checks or []:
         if isinstance(item, Mapping) and str(item.get("what") or "").strip():
             found.append({"what": str(item["what"]).strip(), "how": str(item.get("how") or "").strip()})
     return found

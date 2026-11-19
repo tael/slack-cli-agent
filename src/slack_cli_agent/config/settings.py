@@ -322,6 +322,10 @@ class RuntimeSettings:
     # True 면 Stop 훅이 계획의 확인 기준(checks)과 이번 턴 결과를 대조한다. plan_intake 가 켜져
     # 있어야 효과가 있다. 엔진에는 SCA_PLAN_INTAKE_CHECK 로 넘어간다.
     plan_intake_check: bool = False
+    # 2 면 계획 호출이 assumed/missing/expected_output/checks 대신 inputs(kind 분류)와
+    # output(형태·항목)을 적는다. plan_intake 가 켜져 있어야 효과가 있다. 엔진에는
+    # SCA_PLAN_INTAKE_SCHEMA=2 로 넘어간다. 1 이면 넘기지 않는다.
+    plan_intake_schema: int = 1
     # True 면 엔진이 도는 중 계획의 ack 를 스레드에 한 번 게시한다. 게시 기준은
     # 계획의 type 예측이 아니라 요청 시작 후 경과 시간이다. plan_intake 가
     # 켜져 있어야 동작한다. 기본 0초 = 계획이 도착하면 바로 게시. 짧은 답과

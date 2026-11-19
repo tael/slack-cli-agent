@@ -80,6 +80,16 @@ INTAKE_ENV = "SCA_PLAN_INTAKE"
 INTAKE_TEXT_FIELDS = ("intent", "ask", "expected_output", "ack")
 INTAKE_LIST_FIELDS = ("assumed", "missing")
 INTAKE_FIELDS = ("intent", "assumed", "missing", "ask", "expected_output", "ack", "checks")
+#: Set by the pipeline to "2" (with intake on) for the v2 intake fields: every
+#: input with a kind, and the output's form and items.
+INTAKE_SCHEMA_ENV = "SCA_PLAN_INTAKE_SCHEMA"
+INTAKE_FIELDS_V2 = ("intent", "inputs", "ask", "output", "ack")
+INTAKE_V1_ONLY = ("assumed", "missing", "expected_output", "checks")
+#: Copies of guard/pretool/plan_gate's (that file is a standalone hook script).
+INPUT_KINDS = ("given", "derived", "lookup", "guess", "ask")
+OUTPUT_FORMS = ("한두줄", "문단", "목록", "표", "긴글")
+INPUTS_MAX = 6
+OUTPUT_ITEMS_MAX = 6
 #: Set by the pipeline from the profile's plan_refine: "separate" runs one
 #: extra tool-less call that rewrites the request before the planner,
 #: "combined" asks the planner itself to refine first. Anything else is off.
@@ -138,6 +148,12 @@ def intake_enabled(env: dict[str, str] | os._Environ[str] | None = None) -> bool
     return str(raw).strip() not in ("", "0")
 
 
+def intake_schema(env: dict[str, str] | os._Environ[str] | None = None) -> int:
+    """SCA_PLAN_INTAKE_SCHEMA as 2 or 1 (the default for anything else)."""
+    raw = (env if env is not None else os.environ).get(INTAKE_SCHEMA_ENV, "")
+    return 2 if str(raw).strip() == "2" else 1
+
+
 def refine_mode(env: dict[str, str] | os._Environ[str] | None = None) -> str:
     """"separate", "combined" or "" (off, also for any other value)."""
     raw = str((env if env is not None else os.environ).get(REFINE_ENV, "")).strip()
@@ -180,8 +196,38 @@ def refine_schema() -> dict[str, Any]:
     return {"type": "object", "properties": _refine_properties(), "required": list(REFINE_FIELDS)}
 
 
+def _intake_properties_v2() -> dict[str, Any]:
+    text = {"type": "string"}
+    return {
+        "intent": text,
+        "inputs": {
+            "type": "array",
+            "maxItems": INPUTS_MAX,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": text, "value": text, "kind": {"type": "string", "enum": list(INPUT_KINDS)},
+                    "reason": text,
+                },
+                "required": ["name", "value", "kind", "reason"],
+            },
+        },
+        "ask": text,
+        "output": {
+            "type": "object",
+            "properties": {
+                "form": {"type": "string", "enum": list(OUTPUT_FORMS)},
+                "items": {"type": "array", "maxItems": OUTPUT_ITEMS_MAX, "items": text},
+            },
+            "required": ["form", "items"],
+        },
+        "ack": text,
+    }
+
+
 def schema(
     delegation: bool = False, workflows: Any = None, intake: bool = False, refine: str = "",
+    intake_version: int = 1,
 ) -> dict[str, Any]:
     """The planner's JSON schema. Workers are enum values only with delegation.
     Workflow fields are there only when candidate ids are given, intake fields
@@ -190,7 +236,10 @@ def schema(
     if refine == "combined":
         result["properties"].update(_refine_properties())
         result["required"] = [*result["required"], *REFINE_FIELDS]
-    if intake:
+    if intake and intake_version == 2:
+        result["properties"].update(_intake_properties_v2())
+        result["required"] = [*result["required"], *INTAKE_FIELDS_V2]
+    elif intake:
         text = {"type": "string"}
         texts = {"type": "array", "items": {"type": "string"}}
         result["properties"].update({
@@ -300,6 +349,25 @@ _INTAKE_SECTION = (
 )
 
 
+_INTAKE_SECTION_V2 = (
+    "[입력 점검] 아래 필드도 적는다. 짧게 쓴다. 길게 쓰면 계획이 늦어진다\n"
+    "- intent : 요청을 어떻게 이해했는지 한 문장\n"
+    "- inputs : 이 일에 필요한 직접 입력을 모두 나열한다. 항목은 name, value, kind, reason 이다. "
+    "reason 은 짧게 쓰고 given 은 빈 문자열이다. kind 는 다음 중 하나다\n"
+    "    - given : 요청에 적혀 있다\n"
+    "    - derived : 현재 시각이나 직전 대화에서 계산된다\n"
+    "    - lookup : 도구로 찾을 수 있다. 파일 위치·설정 값·기록은 lookup 이고 절대 묻지 않는다\n"
+    "    - guess : 요청에 없지만 가장 가능성 높은 값을 근거(언어·화자·시각·직전 대화)와 함께 적는다. "
+    "사람은 짧게 쓰므로 되묻기보다 추정을 택한다\n"
+    "    - ask : 근거 있는 추정이 없거나 쓰기·전송·삭제의 대상을 정할 수 없을 때만 쓴다\n"
+    "- ask : kind 가 ask 인 입력이 있을 때만 되묻는 질문 한 문장. 아니면 빈 문자열\n"
+    "- output : 답이 담아야 할 결과. form 은 한두줄·문단·목록·표·긴글 중 하나, items 는 답에 들어갈 항목을 "
+    "짧은 명사구로 적는다(최대 6개)\n"
+    "- ack : 사용자에게 바로 보낼 한두 문장. \"X 기준으로 Y 를 찾아볼게요\" 꼴로 추정한 값(guess)을 밝힌다. "
+    "질문은 넣지 않는다. 공감·위로·상담 문구와 요청에 없는 내용은 넣지 않는다\n"
+)
+
+
 _COMBINED_REFINE_SECTION = (
     "[입력 정제] 먼저 요청을 정제하고 그 결과로 계획한다\n"
     "- refined : 지시어·상대 날짜·줄임말을 구체 값으로 바꿔 그 자체로 읽히게 다시 쓴 요청. "
@@ -325,7 +393,7 @@ def sources_section(sources: list[str]) -> str:
 
 def planner_prompt(
     delegation: bool = False, workflows: dict[str, str] | None = None, intake: bool = False,
-    sources: list[str] | None = None, refine: str = "",
+    sources: list[str] | None = None, refine: str = "", intake_version: int = 1,
 ) -> str:
     """The instruction placed before the request. The workflow section goes
     after item 3 and before the [요청] marker, then the intake section (with
@@ -336,7 +404,8 @@ def planner_prompt(
     if workflows or intake or combined:
         marker = "\n[요청]\n"
         head, _, rest = tail.partition(marker)
-        intake_text = (_INTAKE_SECTION + sources_section(sources or [])) if intake else ""
+        section = _INTAKE_SECTION_V2 if intake_version == 2 else _INTAKE_SECTION
+        intake_text = (section + sources_section(sources or [])) if intake else ""
         tail = (
             head + workflow_section(workflows or {}) + (_COMBINED_REFINE_SECTION if combined else "")
             + intake_text + marker + rest
@@ -554,8 +623,9 @@ def _call_planner(prompt: str, model: str, timeout: float) -> subprocess.Complet
     workflows = workflow_candidates()
     intake = intake_enabled()
     refine = refine_mode()
-    text = planner_prompt(delegation, workflows, intake, sources_list(), refine) + prompt
-    return _call_claude(text, model, timeout, schema(delegation, workflows, intake, refine))
+    version = intake_schema()
+    text = planner_prompt(delegation, workflows, intake, sources_list(), refine, version) + prompt
+    return _call_claude(text, model, timeout, schema(delegation, workflows, intake, refine, version))
 
 
 def _call_refiner(prompt: str, model: str, timeout: float) -> subprocess.CompletedProcess[str]:
@@ -733,10 +803,62 @@ def _intake_field_valid(key: str, value: Any) -> bool:
     )
 
 
-def check_intake(plan: dict[str, Any], enabled: bool) -> list[str]:
+def _clean_inputs_v2(value: Any) -> list[dict[str, str]] | None:
+    if not isinstance(value, list):
+        return None
+    kept = []
+    for item in value:
+        if not isinstance(item, dict) or item.get("kind") not in INPUT_KINDS:
+            continue
+        name, val, reason = item.get("name"), item.get("value"), item.get("reason", "")
+        if isinstance(name, str) and name.strip() and isinstance(val, str) and isinstance(reason, str):
+            kept.append({"name": name, "value": val, "kind": item["kind"], "reason": reason})
+    return kept[:INPUTS_MAX]
+
+
+def _clean_output_v2(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or value.get("form") not in OUTPUT_FORMS or not isinstance(value.get("items"), list):
+        return None
+    items = [i for i in value["items"] if isinstance(i, str) and i.strip()]
+    return {"form": value["form"], "items": items[:OUTPUT_ITEMS_MAX]}
+
+
+def check_intake_v2(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """v2 counterpart of check_intake: (dropped, fixed). Malformed input
+    entries are removed one by one; ``ask`` is forced empty when no input
+    has kind ask."""
+    dropped: list[str] = []
+    fixed: list[str] = []
+    for key in INTAKE_V1_ONLY:
+        plan.pop(key, None)
+    for key in INTAKE_FIELDS_V2:
+        if key not in plan:
+            continue
+        value = plan[key]
+        if key == "inputs":
+            value = _clean_inputs_v2(value)
+        elif key == "output":
+            value = _clean_output_v2(value)
+        elif not isinstance(value, str):
+            value = None
+        if value is None:
+            plan.pop(key)
+            dropped.append(key)
+        else:
+            plan[key] = value
+    has_ask = any(i["kind"] == "ask" for i in plan.get("inputs", []))
+    if plan.get("ask") and not has_ask:
+        plan["ask"] = ""
+        fixed.append("ask")
+    return dropped, fixed
+
+
+def check_intake(plan: dict[str, Any], enabled: bool, version: int = 1) -> list[str]:
     """Keep the intake fields only where they are well formed; return the
     names dropped. Off removes all of them. Nothing here touches the rest of
     the plan, so a bad intake field never costs the plan injection."""
+    if enabled and version == 2:
+        return check_intake_v2(plan)[0]
     dropped: list[str] = []
     for key in INTAKE_FIELDS:
         if key not in plan:
@@ -797,7 +919,12 @@ def run(
             note = check_workflow(plan, candidates)
             if note == "invalid":
                 record["workflow_error"] = "invalid"
-            dropped = check_intake(plan, intake)
+            if intake and intake_schema() == 2:
+                dropped, fixed = check_intake_v2(plan)
+                if fixed:
+                    record["intake_fixed"] = fixed
+            else:
+                dropped = check_intake(plan, intake)
             if dropped:
                 record["intake_dropped"] = dropped
             record.update(plan)

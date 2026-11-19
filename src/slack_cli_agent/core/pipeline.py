@@ -62,11 +62,12 @@ from ..guard.lineref import BareLineRefGuard, expand_bare_refs
 from ..guard.pipeline import GuardPipeline
 from ..guard.finish_review import PLAN_CHECK_ENV
 from ..guard.plan_start import INTAKE_ENV as PLAN_INTAKE_ENV
+from ..guard.plan_start import INTAKE_SCHEMA_ENV as PLAN_INTAKE_SCHEMA_ENV
 from ..guard.plan_start import REFINE_ENV as PLAN_REFINE_ENV
 from ..guard.plan_start import REFINE_MODES as PLAN_REFINE_MODES
 from ..guard.plan_start import SOURCES_ENV as PLAN_SOURCES_ENV
 from ..guard.plan_start import WORKFLOWS_ENV as PLAN_WORKFLOWS_ENV
-from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, INTAKE_INJECT_ENV, PLAN_GATE_ENV
+from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, INTAKE_INJECT_ENV, PLAN_GATE_ENV, intake_view
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
 from ..observability.audit import IncidentKind
@@ -336,6 +337,7 @@ class RequestPipeline:
         plan_refine: str = "",
         plan_intake_inject: bool = False,
         plan_intake_check: bool = False,
+        plan_intake_schema: int = 1,
         # (engine name, session id) -> the planner's plan file content or None.
         # Lets the request row carry the classification; None leaves the row
         # without plan_* fields.
@@ -449,6 +451,7 @@ class RequestPipeline:
         self._plan_refine = plan_refine
         self._plan_intake_inject = plan_intake_inject
         self._plan_intake_check = plan_intake_check
+        self._plan_intake_schema = plan_intake_schema
         self._plan_result = plan_result
         self._plan_file = plan_file
         self._intake_ack = intake_ack
@@ -1395,6 +1398,8 @@ class RequestPipeline:
             env[PLAN_WORKFLOWS_ENV] = json.dumps(self._plan_workflows, ensure_ascii=False)
         if self._plan_intake:
             env[PLAN_INTAKE_ENV] = "1"
+            if self._plan_intake_schema == 2:
+                env[PLAN_INTAKE_SCHEMA_ENV] = "2"
             if tools is not None and tools.names:
                 env[PLAN_SOURCES_ENV] = json.dumps(list(tools.names), ensure_ascii=False)
             if self._plan_intake_inject:
@@ -2181,12 +2186,12 @@ class RequestPipeline:
             value = plan.get(key)
             if isinstance(value, str) and value:
                 fields[f"plan_{key}"] = value[:limit]
-        for key in ("assumed", "missing"):
-            items = plan.get(key)
-            if isinstance(items, list) and items:
+        view = intake_view(dict(plan))
+        for key, items in (("assumed", view.assumed), ("missing", view.missing)):
+            if items:
                 fields[f"plan_{key}"] = [str(item)[:100] for item in items[:5]]
-        checks = plan.get("checks")
-        if isinstance(checks, list):
+        checks = view.checks
+        if checks is not None:
             fields["plan_checks_count"] = len(checks)
             fields["plan_checks"] = [
                 {"what": str(item.get("what", ""))[:100], "how": str(item.get("how", ""))[:100]}
