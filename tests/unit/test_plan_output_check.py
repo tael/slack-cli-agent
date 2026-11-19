@@ -126,7 +126,7 @@ class TestJudge:
         verdict = judge(_spec(), ANSWER)
         assert judge.status == "ok" and verdict == _verdict()
         call = runner.calls[0]
-        assert call["cmd"][:3] == ["claude", "-p", "--model"] and "--json-schema" in call["cmd"]
+        assert call["cmd"][:4] == ["claude", "-p", "--model", "haiku"] and "--json-schema" in call["cmd"]
         assert call["env"][fr.VERIFY_NESTED_ENV] == "1"
         for needle in ("한두줄", "요청 시각", "성공 여부", "고를 기준", "처리 시간", ANSWER):
             assert needle in call["input"]

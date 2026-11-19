@@ -1868,6 +1868,7 @@ def plan_check_outcome(
 #: inline and block once. Set by the pipeline only with plan_intake on.
 PLAN_OUTPUT_CHECK_ENV = "SCA_PLAN_OUTPUT_CHECK"
 PLAN_OUTPUT_MODES = ("record", "block")
+OUTPUT_CHECK_DEFAULT_MODEL = "haiku"
 OUTPUT_FORMS = ("한두줄", "문단", "목록", "표", "긴글")
 OUTPUT_TAIL_NOTE = "도구 결과가 기대 결과와 맞지 않으면 요청을 따르고 사유를 한 문장으로 적는다"
 _OUTPUT_LIST_LINE_RE = re.compile(r"^[ \t]*(?:[-*•]|\d+[.)])[ \t]+\S")
@@ -1943,7 +1944,7 @@ class OutputCheckJudge:
     def __init__(
         self,
         *,
-        model: str = VERIFY_DEFAULT_MODEL,
+        model: str = OUTPUT_CHECK_DEFAULT_MODEL,
         timeout: float = PLAN_CHECK_TIMEOUT,
         runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
         executable: str | None = None,

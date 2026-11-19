@@ -266,7 +266,7 @@ def _run_plan_check(
 
 
 def _make_output_check_judge(model: str) -> OutputCheckJudge:
-    return OutputCheckJudge(model=model)
+    return OutputCheckJudge(model=model) if model else OutputCheckJudge()
 
 
 def _spawn_output_judge(job: Path) -> None:
@@ -297,8 +297,8 @@ def _judge_and_record(
         else plan_output_outcome(verdict, form_issue, form, block_count=0, cap=max(cap, 1)).reason is not None
     )
     record: dict[str, Any] = {
-        "t": time.strftime("%Y-%m-%d %H:%M:%S"), "session": str(session_id or ""), "model": model, "mode": mode,
-        "injected": injected, "round": block_count + 1, "form": form, "form_issue": form_issue,
+        "t": time.strftime("%Y-%m-%d %H:%M:%S"), "session": str(session_id or ""), "model": getattr(judge, "model", model),
+        "mode": mode, "injected": injected, "round": block_count + 1, "form": form, "form_issue": form_issue,
         "status": judge.status, "verdict": verdict, "would_block": would_block,
         "blocked": mode == "block" and outcome.reason is not None, "elapsed_sec": judge.elapsed,
     }
@@ -353,7 +353,7 @@ def _run_plan_output_check(
     outcome = _judge_and_record(
         spec=spec, answer=turn.answer, transcript_path=transcript_path, state_dir=state_dir, model=model,
         session_id=session_id, mode=mode, injected=injected, block_count=block_count,
-        judge=_make_output_check_judge(model),
+        judge=_make_output_check_judge(""),
     )
     if outcome.reason is None:
         return None
@@ -378,7 +378,7 @@ def _judge_output_job(job: Path) -> int:
             spec=data["spec"], answer=str(data.get("answer") or ""), transcript_path=data["transcript"],
             state_dir=Path(state) if state else None, model=str(data.get("model") or ""),
             session_id=data.get("session"), mode="record", injected=bool(data.get("injected")), block_count=0,
-            judge=_make_output_check_judge(str(data.get("model") or "")),
+            judge=_make_output_check_judge(""),
         )
     return 0
 
