@@ -267,3 +267,15 @@ class TestPipelineV2:
 class TestFinishReviewView:
     def test_v2_계획은_점검_기준이_없다(self) -> None:
         assert fr.plan_checks({"status": "ok", **V2}) == []
+
+
+def test_v2_prompt_keeps_write_targets_out_of_guess() -> None:
+    # N3 schema2: haiku filled write targets (channel, date) as guess and left ask empty (s25 s28 s29).
+    prompt = ps.planner_prompt(intake=True, intake_version=2)
+    assert "쓰기·전송·삭제의 대상은 guess 로 채우지 않는다" in prompt
+
+
+def test_v2_prompt_lists_interpretation_inputs_and_identifying_items() -> None:
+    prompt = ps.planner_prompt(intake=True, intake_version=2)
+    assert "고르는 기준·포함 범위처럼 해석이 갈리는 값도 입력이다" in prompt
+    assert "결과를 알아볼 수 있는 항목(무엇·언제·어디·성공 여부)" in prompt
