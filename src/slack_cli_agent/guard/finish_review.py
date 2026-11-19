@@ -396,8 +396,17 @@ GAVE_UP_MAX_BLOCKS = 1
 #: reading: "확인해 봐 -> 확인 못 했다" hands the lookup back to the asker.
 #: "안 함"/"않아" are included because not trying reads the same to the asker
 #: as trying and failing.
+#: The 못 함/안 함/불가 forms take a particle when they name an earlier state
+#: instead of declaring one now ("확인 못 함으로 넘겼던 두 건을 조회했고"). Those
+#: are reports of a lookup already done — without this exclusion the judgment
+#: fires on the very answer that went back and ran the lookup.
 _GAVE_UP_RE = re.compile(
-    r"(조회|확인|열람)(하지\s?못|하지\s?않아|할 수 없었|\s?못\s?함|\s?안\s?함|\s?불가)[^\n]{0,20}"
+    r"(조회|확인|열람)"
+    r"(하지\s?못|하지\s?않아|할 수 없었"
+    r"|\s?못\s?함(?![으을은이에과와])"
+    r"|\s?안\s?함(?![으을은이에과와])"
+    r"|\s?불가(?![으을은이에과와]))"
+    r"[^\n]{0,20}"
 )
 
 
