@@ -102,7 +102,10 @@ class Test격리_응대:
     def test_미등록_채널_맥락과_DM_본문을_턴에_넘긴다(self) -> None:
         h = Harness()
         h.service.handle("D1", "U1", "왜 채널에서 답이 없어요")
-        assert h.prompts == ["<recent_channels>U1</recent_channels>\n<dm>\n왜 채널에서 답이 없어요\n</dm>"]
+        assert h.prompts == [
+            "<dm_channel>D1</dm_channel>\n"
+            "<recent_channels>U1</recent_channels>\n<dm>\n왜 채널에서 답이 없어요\n</dm>"
+        ]
 
     def test_JSON이_아니면_받은_글을_답으로_쓴다(self) -> None:
         answer = parse_answer(Turn(body="그냥 문장\nVooster가 켜져 있습니다."))
@@ -571,6 +574,7 @@ class TestDM_앞_대화_맥락:
         h.service._history = lambda channel, user, text: f"<dm_history>\n[봇] {channel}\n</dm_history>\n"
         h.service.handle("D1", "U1", "그걸 어떻게 보는데?")
         assert h.prompts == [(
+            "<dm_channel>D1</dm_channel>\n"
             "<recent_channels>U1</recent_channels>\n<dm_history>\n[봇] D1\n</dm_history>\n"
             "<dm>\n그걸 어떻게 보는데?\n</dm>"
         )]

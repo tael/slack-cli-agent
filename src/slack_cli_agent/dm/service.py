@@ -163,8 +163,12 @@ class DmReplyService:
             self._record_probe(channel, user, text or "", day)
 
     def _answer(self, channel: str, user: str, text: str) -> DmAnswer:
+        # 2026-11-19: the DM turn had csv_post_from_sql but no channel to give
+        # it, so a 568-row list request ended "목록은 아직 뽑지 못했어요".
+        # The coordinate lets the turn upload files into this DM itself.
         prompt = (
-            self._context(user) + self._safe_history(channel, user, text)
+            f"<dm_channel>{channel}</dm_channel>\n"
+            + self._context(user) + self._safe_history(channel, user, text)
             + "<dm>\n" + text[:MAX_QUESTION_CHARS] + "\n</dm>"
         )
         try:
