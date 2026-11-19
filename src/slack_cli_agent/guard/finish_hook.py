@@ -297,8 +297,8 @@ def _judge_and_record(
         else plan_output_outcome(verdict, form_issue, form, block_count=0, cap=max(cap, 1)).reason is not None
     )
     record: dict[str, Any] = {
-        "t": time.strftime("%Y-%m-%d %H:%M:%S"), "session": str(session_id or ""), "model": getattr(judge, "model", model),
-        "mode": mode, "injected": injected, "round": block_count + 1, "form": form, "form_issue": form_issue,
+        "t": time.strftime("%Y-%m-%d %H:%M:%S"), "session": str(session_id or ""),
+        "model": getattr(judge, "model", model), "mode": mode, "injected": injected, "round": block_count + 1, "form": form, "form_issue": form_issue,
         "status": judge.status, "verdict": verdict, "would_block": would_block,
         "blocked": mode == "block" and outcome.reason is not None, "elapsed_sec": judge.elapsed,
     }
