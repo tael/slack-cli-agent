@@ -33,7 +33,7 @@ V2: dict[str, Any] = {
         {"name": "요청 원문", "value": "어제 신지 응답", "kind": "given", "reason": ""},
     ],
     "ask": "",
-    "output": {"form": "한두줄", "items": ["시각", "채널", "요청 요지", "소요 초"]},
+    "output": {"form": "목록", "items": ["시각", "채널", "요청 요지", "소요 초"]},
     "ack": "신지 기준으로 어제 응답을 찾아볼게요",
 }
 V2_BRANCH: dict[str, Any] = {**BRANCH_PLAN, **V2}
@@ -70,7 +70,7 @@ class TestIntakeView:
         view = pg.intake_view(V2)
         assert view.schema == 2
         assert [i["kind"] for i in view.inputs] == ["derived", "lookup", "guess", "given"]
-        assert view.output_form == "한두줄" and view.output_items == ["시각", "채널", "요청 요지", "소요 초"]
+        assert view.output_form == "목록" and view.output_items == ["시각", "채널", "요청 요지", "소요 초"]
         assert view.assumed == ["대상 봇: 신지"] and view.missing == []
         assert view.checks is None
 
@@ -105,7 +105,7 @@ class TestInjection:
         text = pg.render(V2_BRANCH, intake=True)
         assert "날짜: 2026-11-18 (derived)" in text and "audit 경로: ~/.shinji/audit.jsonl (lookup)" in text
         assert "대상 봇: 신지 (guess)" in text
-        assert "기대 결과 : 한두줄 / 시각, 채널, 요청 요지, 소요 초" in text
+        assert "기대 결과 : 목록 / 시각, 채널, 요청 요지, 소요 초" in text
         assert "lookup 입력은 도구로 찾아 채우고 '미확인' 으로 남기지 않는다" in text
         assert pg.INJECT_GUESS.removeprefix("- ") in text
         assert "도구 결과가 다르면 바꾸고 바꾼 점을 답에 한 문장으로 밝힌다" in text
@@ -116,7 +116,7 @@ class TestInjection:
     def test_v2_짧은_계획도_주입한다(self) -> None:
         assert pg.has_compact_intake(V2_SHORT)
         text = pg.render_compact(V2_SHORT)
-        assert text.startswith(pg.INJECT_HEAD_COMPACT) and "기대 결과 : 한두줄" in text
+        assert text.startswith(pg.INJECT_HEAD_COMPACT) and "기대 결과 : 목록" in text
         assert "미확인" not in text.replace("'미확인' 으로 남기지 않는다", "")
 
     def test_입출력이_없는_v2_짧은_계획은_주입하지_않는다(self) -> None:
@@ -278,4 +278,15 @@ def test_v2_prompt_keeps_write_targets_out_of_guess() -> None:
 def test_v2_prompt_lists_interpretation_inputs_and_identifying_items() -> None:
     prompt = ps.planner_prompt(intake=True, intake_version=2)
     assert "고르는 기준·포함 범위처럼 해석이 갈리는 값도 입력이다" in prompt
-    assert "결과를 알아볼 수 있는 항목(무엇·언제·어디·성공 여부)" in prompt
+    assert "items 는 요청이 직접 물은 것만" in prompt
+    assert "조건부 항목과 추정 공개는 넣지 않는다" in prompt
+
+
+def test_v2_one_or_two_line_output_keeps_two_items() -> None:
+    # 11-19 replay: 한두줄 plans listed 3-4 items, so the output check found "missing" items the request never asked.
+    plan = {"output": {"form": "한두줄", "items": ["기온", "날씨", "습도", "풍속"]}}
+    ps.check_intake_v2(plan)
+    assert plan["output"]["items"] == ["기온", "날씨"]
+    table = {"output": {"form": "표", "items": ["a", "b", "c"]}}
+    ps.check_intake_v2(table)
+    assert table["output"]["items"] == ["a", "b", "c"]

@@ -2011,13 +2011,11 @@ def plan_output_outcome(
     if block_count >= cap:
         return PlanCheckOutcome(None)
     verdict = verdict or {}
+    # missing_items and extra stay in the record only: on the 11-19 replay they fired on 11/12 turns, mostly
+    # items the request never asked for. Revisit after a hand-checked real-turn sample.
     parts = []
-    if verdict.get("missing_items"):
-        parts.append("기대 결과에 있는데 답에 없는 항목: " + ", ".join(verdict["missing_items"]))
     if verdict.get("unconfirmed_items"):
         parts.append("미확인으로 남긴 항목은 도구로 찾아 채운다: " + ", ".join(verdict["unconfirmed_items"]))
-    if verdict.get("extra"):
-        parts.append("기대 결과에 없는 내용을 뺀다: " + ", ".join(verdict["extra"]))
     if form_issue:
         parts.append(f"형태는 {form} 이다")
     if verdict.get("undisclosed"):

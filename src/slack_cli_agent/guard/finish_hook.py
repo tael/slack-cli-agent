@@ -76,7 +76,7 @@ from slack_cli_agent.guard.finish_review import (
     turn_from_transcript_rows,
     verify_claim_keys,
 )
-from slack_cli_agent.core.markers import missing_recipient_prompt
+from slack_cli_agent.core.markers import missing_recipient_prompt, strip_control_tags
 from slack_cli_agent.guard.pretool.plan_gate import injected_path as plan_gate_injected_path
 from slack_cli_agent.guard.figurative import Precompute
 
@@ -288,6 +288,7 @@ def _judge_and_record(
     """Judges the answer against `spec`, writes `<transcript>.plan.output.json`
     and one finish-hook-plan-output.jsonl line, returns the block outcome."""
     form = spec["form"]
+    answer, _ = strip_control_tags(answer or "")
     form_issue = form_violation(form, answer)
     verdict = judge(spec, answer)
     cap = resolve_plan_check_max_blocks(os.environ)

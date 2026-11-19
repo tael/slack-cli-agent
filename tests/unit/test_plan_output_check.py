@@ -171,10 +171,9 @@ class TestOutcome:
         )
         reason = fr.plan_output_outcome(verdict, "한두줄", "한두줄", block_count=0, cap=1).reason
         assert reason is not None
+        assert "소요 초" not in reason and "2위" not in reason
         for part in (
-            "기대 결과에 있는데 답에 없는 항목: 소요 초",
             "미확인으로 남긴 항목은 도구로 찾아 채운다: 채널",
-            "기대 결과에 없는 내용을 뺀다: 2위, 총 건수",
             "형태는 한두줄 이다",
             "추정한 값을 밝힌다: 처리 시간",
             "도구 결과가 기대 결과와 맞지 않으면 요청을 따르고 사유를 한 문장으로 적는다",
@@ -182,8 +181,13 @@ class TestOutcome:
             assert part in reason
 
     def test_해당_없는_줄은_넣지_않는다(self):
-        reason = fr.plan_output_outcome(_verdict(extra=["a"]), None, "표", block_count=0, cap=1).reason
+        reason = fr.plan_output_outcome(_verdict(unconfirmed_items=["a"]), None, "표", block_count=0, cap=1).reason
         assert reason is not None and "형태는" not in reason and "추정한" not in reason
+
+    def test_빠진_항목과_덧붙임은_기록만_하고_차단하지_않는다(self):
+        # 11-19 replay: 12/12 would_block, mostly planner-overspecified items and extras (advisor judgment).
+        verdict = _verdict(missing_items=["습도"], extra=["2위"])
+        assert fr.plan_output_outcome(verdict, None, "표", block_count=0, cap=1).reason is None
 
     def test_형태만_어긋나도_판정기_실패와_무관하게_차단(self):
         reason = fr.plan_output_outcome(None, "문단", "문단", block_count=0, cap=1).reason
@@ -193,8 +197,8 @@ class TestOutcome:
         assert fr.plan_output_outcome(None, None, "문단", block_count=0, cap=1).reason is None
 
     def test_상한을_넘으면_차단하지_않는다(self):
-        assert fr.plan_output_outcome(_verdict(extra=["a"]), None, "표", block_count=1, cap=1).reason is None
-        assert fr.plan_output_outcome(_verdict(extra=["a"]), None, "표", block_count=1, cap=2).reason is not None
+        assert fr.plan_output_outcome(_verdict(undisclosed=["a"]), None, "표", block_count=1, cap=1).reason is None
+        assert fr.plan_output_outcome(_verdict(undisclosed=["a"]), None, "표", block_count=1, cap=2).reason is not None
 
 
 class _FakeJudge:
@@ -203,6 +207,7 @@ class _FakeJudge:
 
     def __call__(self, spec, answer):
         self.calls += 1
+        self.answer = answer
         return self.verdict
 
 
@@ -244,14 +249,14 @@ def _run_hook(monkeypatch, tmp_path, judge, *, mode="block", plan=None, decision
     return (json.loads(text) if text else {}), Path(str(transcript) + ".plan.output.json"), spawned
 
 
-BAD = _verdict(extra=["2위"])
+BAD = _verdict(undisclosed=["처리 시간"])
 
 
 class TestBlockMode:
     def test_불일치면_한번_차단하고_기록한다(self, monkeypatch, tmp_path):
         judge = _FakeJudge(BAD)
         out, record_file, spawned = _run_hook(monkeypatch, tmp_path, judge, injected=True)
-        assert out["decision"] == "block" and "기대 결과에 없는 내용을 뺀다: 2위" in out["reason"]
+        assert out["decision"] == "block" and "추정한 값을 밝힌다: 처리 시간" in out["reason"]
         record = json.loads(record_file.read_text(encoding="utf-8"))
         assert record["blocked"] is True and record["injected"] is True and record["mode"] == "block"
         assert record["verdict"] == BAD and record["round"] == 1 and not spawned
@@ -283,6 +288,12 @@ class TestBlockMode:
         out, record_file, _ = _run_hook(monkeypatch, tmp_path, judge)
         record = json.loads(record_file.read_text(encoding="utf-8"))
         assert out == {} and record["status"] == "error:TimeoutExpired"
+
+    def test_판정기는_답_끝_표식을_보지_않는다(self, monkeypatch, tmp_path):
+        # 11-19 replay P-4: the judge flagged [[RECIPIENT:ASKER]] as extra content.
+        judge = _FakeJudge(_verdict())
+        _run_hook(monkeypatch, tmp_path, judge, answer=ANSWER + "\n[[RECIPIENT:ASKER]]")
+        assert "RECIPIENT" not in judge.answer and judge.answer.startswith("어제 최장")
 
     def test_로그_줄을_남긴다(self, monkeypatch, tmp_path):
         _run_hook(monkeypatch, tmp_path, _FakeJudge(BAD))

@@ -90,6 +90,7 @@ INPUT_KINDS = ("given", "derived", "lookup", "guess", "ask")
 OUTPUT_FORMS = ("한두줄", "문단", "목록", "표", "긴글")
 INPUTS_MAX = 6
 OUTPUT_ITEMS_MAX = 6
+OUTPUT_ITEMS_SHORT_MAX = 2
 #: Set by the pipeline from the profile's plan_refine: "separate" runs one
 #: extra tool-less call that rewrites the request before the planner,
 #: "combined" asks the planner itself to refine first. Anything else is off.
@@ -362,9 +363,9 @@ _INTAKE_SECTION_V2 = (
     "요청이나 도구로 정할 수 없으면 ask 다\n"
     "    - ask : 근거 있는 추정이 없거나 쓰기·전송·삭제의 대상을 정할 수 없을 때만 쓴다\n"
     "- ask : kind 가 ask 인 입력이 있을 때만 되묻는 질문 한 문장. 아니면 빈 문자열\n"
-    "- output : 답이 담아야 할 결과. form 은 한두줄·문단·목록·표·긴글 중 하나, items 는 답에 들어갈 항목을 "
-    "짧은 명사구로 적는다(최대 6개). 결과를 알아볼 수 있는 항목(무엇·언제·어디·성공 여부)과, guess 가 있으면 "
-    "추정 값 공개를 넣는다\n"
+    "- output : 답이 담아야 할 결과. form 은 한두줄·문단·목록·표·긴글 중 하나다. items 는 요청이 직접 물은 것만 "
+    "짧은 명사구로 적는다. 한두줄이면 2개 이하, 그 밖은 최대 6개다. "
+    "'있으면' 같은 조건부 항목과 추정 공개는 넣지 않는다\n"
     "- ack : 사용자에게 바로 보낼 한두 문장. \"X 기준으로 Y 를 찾아볼게요\" 꼴로 추정한 값(guess)을 밝힌다. "
     "질문은 넣지 않는다. 공감·위로·상담 문구와 요청에 없는 내용은 넣지 않는다\n"
 )
@@ -822,7 +823,8 @@ def _clean_output_v2(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict) or value.get("form") not in OUTPUT_FORMS or not isinstance(value.get("items"), list):
         return None
     items = [i for i in value["items"] if isinstance(i, str) and i.strip()]
-    return {"form": value["form"], "items": items[:OUTPUT_ITEMS_MAX]}
+    limit = OUTPUT_ITEMS_SHORT_MAX if value["form"] == "한두줄" else OUTPUT_ITEMS_MAX
+    return {"form": value["form"], "items": items[:limit]}
 
 
 def check_intake_v2(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
