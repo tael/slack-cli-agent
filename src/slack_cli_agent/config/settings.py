@@ -324,10 +324,10 @@ class RuntimeSettings:
     plan_intake_check: bool = False
     # True 면 엔진이 도는 중 계획의 ack 를 스레드에 한 번 게시한다. 게시 기준은
     # 계획의 type 예측이 아니라 요청 시작 후 경과 시간이다. plan_intake 가
-    # 켜져 있어야 동작한다. 12초 = 계획 p50 3.1초 + 계획 완료 후 턴 종료 p50
-    # 7.6초(11-19 실측, short 기준).
+    # 켜져 있어야 동작한다. 기본 0초 = 계획이 도착하면 바로 게시. 짧은 답과
+    # 메시지가 2개 떠도 된다는 11-19 소유자 판단(12초 안은 짧은 답에 ack 생략).
     intake_ack: bool = False
-    intake_ack_after_sec: float = 12
+    intake_ack_after_sec: float = 0
 
     #: The restart supervisor writes an apply-request itself when the install
     #: checkout's HEAD moves on main with a clean tree. 2026-11-12: bots share

@@ -287,7 +287,7 @@ class TestPipeline:
 
 def test_설정_기본값은_꺼짐이고_12초다() -> None:
     settings = RuntimeSettings()
-    assert settings.intake_ack is False and settings.intake_ack_after_sec == 12
+    assert settings.intake_ack is False and settings.intake_ack_after_sec == 0
     assert ChannelConfig(channel_id="C1").intake_ack is True
     assert ChannelConfig.from_dict("C1", {"intake_ack": False}).intake_ack is False
     assert ChannelConfig.from_dict("C1", {}).intake_ack is True
