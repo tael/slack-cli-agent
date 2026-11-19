@@ -343,5 +343,7 @@ class TestCombinedRefineRules:
         assert "unresolved 에 적은 것을 refined 에 확정해 쓰지 않는다" in section
         assert "추정으로 채울 값은 assumed 에만 적는다" in section
 
-    def test_combined_정제_지침은_기본값과_원천_목록을_근거로_치지_않는다(self) -> None:
-        assert "기본값, 쓸 수 있는 원천 목록, 수신자가 봇이라는 사실은 basis 가 아니다" in ps._COMBINED_REFINE_SECTION
+    def test_combined_정제_지침은_근거_있는_추정을_assumed_로_채우게_한다(self) -> None:
+        section = ps._COMBINED_REFINE_SECTION
+        assert "basis 가 아니다" not in section
+        assert "확률 높은 추정은 assumed 에 적고 ack 에 밝힌 뒤 진행한다" in section
