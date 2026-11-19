@@ -60,7 +60,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from slack_cli_agent.core.markers import ASK_TAG
+from slack_cli_agent.core.markers import ASK_TAG, strip_control_tags
 from slack_cli_agent.guard.plan_start import result_event
 from slack_cli_agent.guard.pretool.plan_gate import intake_view
 
@@ -1858,3 +1858,169 @@ def plan_check_outcome(
     if unknown:
         parts.append("이번 턴 결과로 확인되지 않은 기준은 답에 \"미확인\" 이라고 밝힌다: " + " / ".join(unknown))
     return PlanCheckOutcome("; ".join(parts), frozenset(unmet + unknown))
+
+
+# --------------------------------------------------------------------------
+# v2: the answer against the plan's `output` (docs/입출력-절차-v2-설계.md (c))
+# --------------------------------------------------------------------------
+
+#: "" off, "record" judge in a detached process and only record, "block" judge
+#: inline and block once. Set by the pipeline only with plan_intake on.
+PLAN_OUTPUT_CHECK_ENV = "SCA_PLAN_OUTPUT_CHECK"
+PLAN_OUTPUT_MODES = ("record", "block")
+OUTPUT_FORMS = ("한두줄", "문단", "목록", "표", "긴글")
+OUTPUT_TAIL_NOTE = "도구 결과가 기대 결과와 맞지 않으면 요청을 따르고 사유를 한 문장으로 적는다"
+_OUTPUT_LIST_LINE_RE = re.compile(r"^[ \t]*(?:[-*•]|\d+[.)])[ \t]+\S")
+_OUTPUT_FORM_MAX_LINES = {"한두줄": 2, "문단": 6}
+
+_OUTPUT_CHECK_PROMPT = (
+    "아래 [기대 결과] 는 이 요청을 시작할 때 세운 답의 형태와 담을 항목이고, [추정한 값] 은 사용자가 말하지 않아 "
+    "계획이 가정한 값이다. [답] 은 게시하려는 답이다. 도구 결과는 보지 않고 [답] 만으로 판정한다.\n"
+    "- missing_items: [기대 결과] 항목 중 [답] 에 없는 것(뜻이 같으면 있는 것이다)\n"
+    "- unconfirmed_items: [기대 결과] 항목 중 [답] 이 \"미확인\"·\"모름\" 으로 남긴 것\n"
+    "- extra: [기대 결과] 에 없는데 [답] 에 덧붙은 내용 한 줄 요약(최대 3개). 항목을 밝히는 데 쓴 근거 표시와 "
+    "추정값 공개 문장은 덧붙임이 아니다\n"
+    "- undisclosed: [추정한 값] 중 [답] 이 추정이라고 밝히지 않은 것의 이름. 값이 답에 기준·범위로 적혀 있으면 "
+    "밝힌 것이다\n"
+    "해당이 없으면 빈 배열이다.\n\n"
+)
+_OUTPUT_CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "missing_items": {"type": "array", "items": {"type": "string"}},
+        "unconfirmed_items": {"type": "array", "items": {"type": "string"}},
+        "extra": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+        "undisclosed": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["missing_items", "unconfirmed_items", "extra", "undisclosed"],
+}
+_OUTPUT_VERDICT_KEYS = ("missing_items", "unconfirmed_items", "extra", "undisclosed")
+
+
+def plan_output_mode(env: Mapping[str, str]) -> str:
+    value = (env.get(PLAN_OUTPUT_CHECK_ENV) or "").strip()
+    return value if value in PLAN_OUTPUT_MODES else ""
+
+
+def plan_output_spec(plan: object) -> dict[str, Any] | None:
+    """{form, items, guesses} of an ok v2 plan, or None when this plan is not
+    checked: v1 (no `output`), status not ok, or any input of kind ask."""
+    if not isinstance(plan, Mapping) or plan.get("status") != "ok":
+        return None
+    output = plan.get("output")
+    if not isinstance(output, Mapping) or output.get("form") not in OUTPUT_FORMS:
+        return None
+    inputs = [x for x in plan.get("inputs") or [] if isinstance(x, Mapping)]
+    if any(x.get("kind") == "ask" for x in inputs):
+        return None
+    items = [str(x).strip() for x in output.get("items") or [] if str(x).strip()]
+    guesses = [
+        {"name": str(x.get("name") or "").strip(), "value": str(x.get("value") or "").strip()}
+        for x in inputs if x.get("kind") == "guess" and str(x.get("name") or "").strip()
+    ]
+    return {"form": output["form"], "items": items, "guesses": guesses}
+
+
+def form_violation(form: str, answer: str) -> str | None:
+    """`form` when the answer breaks it, for 한두줄 and 문단 only: a bullet or
+    numbered line, or too many non-blank lines. Marker and WATCH lines are
+    not content."""
+    limit = _OUTPUT_FORM_MAX_LINES.get(form)
+    if limit is None:
+        return None
+    body, _ = strip_control_tags(answer or "")
+    lines = [line for line in body.split("\n") if line.strip()]
+    if any(_OUTPUT_LIST_LINE_RE.match(line) for line in lines):
+        return form
+    return form if len(lines) > limit else None
+
+
+class OutputCheckJudge:
+    """Judges the answer against the plan's output with a separate nested
+    tool-less claude call. Returns the verdict dict, or None on any failure
+    (reason in `status`); a failed judge never blocks."""
+
+    def __init__(
+        self,
+        *,
+        model: str = VERIFY_DEFAULT_MODEL,
+        timeout: float = PLAN_CHECK_TIMEOUT,
+        runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+        executable: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
+        self.model = model
+        self.timeout = timeout
+        self._runner = runner or _run_killable
+        self._executable = executable
+        self._env = dict(os.environ if env is None else env)
+        self.status = "not_run"
+        self.elapsed: float | None = None
+
+    def __call__(self, spec: Mapping[str, Any], answer: str) -> dict[str, list[str]] | None:
+        if self._env.get(VERIFY_NESTED_ENV):
+            self.status = "skip_nested"
+            return None
+        exe = self._executable or shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+        items = "\n".join(f"- {item}" for item in spec.get("items") or []) or "- (없음)"
+        guesses = "\n".join(f"- {g['name']}: {g['value']}" for g in spec.get("guesses") or []) or "- (없음)"
+        prompt = (
+            f"{_OUTPUT_CHECK_PROMPT}[기대 결과]\n형태: {spec.get('form')}\n항목:\n{items}\n\n"
+            f"[추정한 값]\n{guesses}\n\n[답]\n{answer or ''}"
+        )
+        started = time.monotonic()
+        try:
+            proc = self._runner(
+                [exe, "-p", "--model", self.model, "--tools", "", "--strict-mcp-config",
+                 "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "",
+                 "--output-format", "json", "--json-schema", json.dumps(_OUTPUT_CHECK_SCHEMA)],
+                input=prompt, capture_output=True, text=True, timeout=self.timeout,
+                env={**self._env, VERIFY_NESTED_ENV: "1"},
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed judge never blocks
+            self.status = "error:" + type(exc).__name__
+            self.elapsed = round(time.monotonic() - started, 1)
+            return None
+        self.elapsed = round(time.monotonic() - started, 1)
+        out = proc.stdout or ""
+        outer = result_event(out)
+        if outer is None:
+            self.status = "error:no_json" if "{" not in out else "error:bad_json"
+            return None
+        try:
+            payload: Any = outer.get("structured_output") if "structured_output" in outer else outer
+            if any(not isinstance(payload[key], list) for key in _OUTPUT_VERDICT_KEYS):
+                raise TypeError("not a list")
+            verdict = {key: [str(x).strip() for x in payload[key] if str(x).strip()] for key in _OUTPUT_VERDICT_KEYS}
+        except (ValueError, AttributeError, KeyError, TypeError):
+            self.status = "error:bad_json"
+            return None
+        verdict["extra"] = verdict["extra"][:3]
+        if not spec.get("guesses"):
+            verdict["undisclosed"] = []
+        self.status = "ok"
+        return verdict
+
+
+def plan_output_outcome(
+    verdict: Mapping[str, Sequence[str]] | None, form_issue: str | None, form: str, *, block_count: int, cap: int,
+) -> PlanCheckOutcome:
+    """Block reason lines for an output mismatch (design (c)). `verdict` None
+    (judge failed) still blocks on a form issue alone. Past the cap, no block."""
+    if block_count >= cap:
+        return PlanCheckOutcome(None)
+    verdict = verdict or {}
+    parts = []
+    if verdict.get("missing_items"):
+        parts.append("기대 결과에 있는데 답에 없는 항목: " + ", ".join(verdict["missing_items"]))
+    if verdict.get("unconfirmed_items"):
+        parts.append("미확인으로 남긴 항목은 도구로 찾아 채운다: " + ", ".join(verdict["unconfirmed_items"]))
+    if verdict.get("extra"):
+        parts.append("기대 결과에 없는 내용을 뺀다: " + ", ".join(verdict["extra"]))
+    if form_issue:
+        parts.append(f"형태는 {form} 이다")
+    if verdict.get("undisclosed"):
+        parts.append("추정한 값을 밝힌다: " + ", ".join(verdict["undisclosed"]))
+    if not parts:
+        return PlanCheckOutcome(None)
+    return PlanCheckOutcome("; ".join(parts) + ". " + OUTPUT_TAIL_NOTE)

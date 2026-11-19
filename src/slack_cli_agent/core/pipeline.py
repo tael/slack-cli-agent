@@ -60,7 +60,7 @@ from ..guard.mentions import (
 )
 from ..guard.lineref import BareLineRefGuard, expand_bare_refs
 from ..guard.pipeline import GuardPipeline
-from ..guard.finish_review import PLAN_CHECK_ENV
+from ..guard.finish_review import PLAN_CHECK_ENV, PLAN_OUTPUT_CHECK_ENV, PLAN_OUTPUT_MODES
 from ..guard.plan_start import INTAKE_ENV as PLAN_INTAKE_ENV
 from ..guard.plan_start import INTAKE_SCHEMA_ENV as PLAN_INTAKE_SCHEMA_ENV
 from ..guard.plan_start import REFINE_ENV as PLAN_REFINE_ENV
@@ -338,6 +338,7 @@ class RequestPipeline:
         plan_intake_inject: bool = False,
         plan_intake_check: bool = False,
         plan_intake_schema: int = 1,
+        plan_output_check: str = "",
         # (engine name, session id) -> the planner's plan file content or None.
         # Lets the request row carry the classification; None leaves the row
         # without plan_* fields.
@@ -452,6 +453,7 @@ class RequestPipeline:
         self._plan_intake_inject = plan_intake_inject
         self._plan_intake_check = plan_intake_check
         self._plan_intake_schema = plan_intake_schema
+        self._plan_output_check = plan_output_check
         self._plan_result = plan_result
         self._plan_file = plan_file
         self._intake_ack = intake_ack
@@ -1406,6 +1408,8 @@ class RequestPipeline:
                 env[INTAKE_INJECT_ENV] = "1"
             if self._plan_intake_check:
                 env[PLAN_CHECK_ENV] = "1"
+            if self._plan_output_check in PLAN_OUTPUT_MODES:
+                env[PLAN_OUTPUT_CHECK_ENV] = self._plan_output_check
         if self._plan_refine in PLAN_REFINE_MODES:
             env[PLAN_REFINE_ENV] = self._plan_refine
         return env

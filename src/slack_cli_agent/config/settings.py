@@ -326,6 +326,10 @@ class RuntimeSettings:
     # output(형태·항목)을 적는다. plan_intake 가 켜져 있어야 효과가 있다. 엔진에는
     # SCA_PLAN_INTAKE_SCHEMA=2 로 넘어간다. 1 이면 넘기지 않는다.
     plan_intake_schema: int = 1
+    # v2 계획(output 있음)의 기대 결과와 답을 Stop 훅이 대조한다. "" 꺼짐, "record" 분리
+    # 프로세스가 판정해 기록만(Stop 지연 0), "block" 인라인 판정 후 1회 차단. plan_intake 가
+    # 켜져 있어야 한다. 엔진에는 SCA_PLAN_OUTPUT_CHECK 로 넘어간다.
+    plan_output_check: str = ""
     # True 면 엔진이 도는 중 계획의 ack 를 스레드에 한 번 게시한다. 게시 기준은
     # 계획의 type 예측이 아니라 요청 시작 후 경과 시간이다. plan_intake 가
     # 켜져 있어야 동작한다. 기본 0초 = 계획이 도착하면 바로 게시. 짧은 답과

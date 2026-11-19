@@ -36,6 +36,7 @@ import contextlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from dataclasses import replace
@@ -47,6 +48,7 @@ from slack_cli_agent.guard.finish_review import (
     PLAN_CHECK_TIMEOUT,
     Finding,
     ModelClaimVerifier,
+    OutputCheckJudge,
     PlanCheckJudge,
     PlanCheckOutcome,
     StopDecision,
@@ -54,10 +56,14 @@ from slack_cli_agent.guard.finish_review import (
     _turn_evidence,
     decide,
     draft_key,
+    form_violation,
     needs_verification,
     plan_check_enabled,
     plan_check_outcome,
     plan_checks,
+    plan_output_mode,
+    plan_output_outcome,
+    plan_output_spec,
     read_knowledge_file,
     resolve_advisor_channel,
     resolve_code_first_channel,
@@ -71,6 +77,7 @@ from slack_cli_agent.guard.finish_review import (
     verify_claim_keys,
 )
 from slack_cli_agent.core.markers import missing_recipient_prompt
+from slack_cli_agent.guard.pretool.plan_gate import injected_path as plan_gate_injected_path
 from slack_cli_agent.guard.figurative import Precompute
 
 #: Absolute path to this file, for the engine adapter that builds the hook
@@ -258,6 +265,124 @@ def _run_plan_check(
     )
 
 
+def _make_output_check_judge(model: str) -> OutputCheckJudge:
+    return OutputCheckJudge(model=model)
+
+
+def _spawn_output_judge(job: Path) -> None:
+    subprocess.Popen(
+        [sys.executable, str(HOOK_SCRIPT), "--judge-output", str(job)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _output_state(state_dir: Path, key: str) -> Path:
+    return state_dir / f"finish-hook-{key}.planoutput.count"
+
+
+def _judge_and_record(
+    *, spec: dict[str, Any], answer: str, transcript_path: str, state_dir: Path | None, model: str,
+    session_id: object, mode: str, injected: bool, block_count: int, judge: Any,
+) -> PlanCheckOutcome:
+    """Judges the answer against `spec`, writes `<transcript>.plan.output.json`
+    and one finish-hook-plan-output.jsonl line, returns the block outcome."""
+    form = spec["form"]
+    form_issue = form_violation(form, answer)
+    verdict = judge(spec, answer)
+    cap = resolve_plan_check_max_blocks(os.environ)
+    outcome = plan_output_outcome(verdict, form_issue, form, block_count=block_count, cap=cap)
+    would_block = (
+        outcome.reason is not None if mode == "block"
+        else plan_output_outcome(verdict, form_issue, form, block_count=0, cap=max(cap, 1)).reason is not None
+    )
+    record: dict[str, Any] = {
+        "t": time.strftime("%Y-%m-%d %H:%M:%S"), "session": str(session_id or ""), "model": model, "mode": mode,
+        "injected": injected, "round": block_count + 1, "form": form, "form_issue": form_issue,
+        "status": judge.status, "verdict": verdict, "would_block": would_block,
+        "blocked": mode == "block" and outcome.reason is not None, "elapsed_sec": judge.elapsed,
+    }
+    with contextlib.suppress(OSError):
+        Path(transcript_path + ".plan.output.json").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    _log_verify(state_dir, record, name="finish-hook-plan-output.jsonl")
+    return outcome
+
+
+def _run_plan_output_check(
+    *, turn: Turn, transcript_path: str, state_dir: Path | None, key: str, decision: StopDecision,
+    seconds_left: float | None, model: str, session_id: object,
+) -> StopDecision | None:
+    """v2 7th step: the answer against the plan's output. "record" hands the
+    judging to a detached process (no Stop latency), "block" judges inline and
+    blocks within the cap. Never raises into the stop."""
+    mode = plan_output_mode(os.environ)
+    if not mode or not transcript_path or not turn.has_transcript:
+        return None
+    try:
+        plan = json.loads(Path(transcript_path + ".plan.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    spec = plan_output_spec(plan)
+    if spec is None:
+        return None
+    base: dict[str, Any] = {
+        "t": time.strftime("%Y-%m-%d %H:%M:%S"), "session": str(session_id or ""), "mode": mode,
+    }
+    log = "finish-hook-plan-output.jsonl"
+    if decision.action != "allow":
+        _log_verify(state_dir, {**base, "status": "skip_other_block"}, name=log)
+        return None
+    injected = plan_gate_injected_path(transcript_path).exists()
+    if mode == "record":
+        job = Path(transcript_path + ".plan.output.job.json")
+        try:
+            job.write_text(json.dumps({
+                "spec": spec, "answer": turn.answer, "transcript": transcript_path, "model": model,
+                "state_dir": str(state_dir) if state_dir is not None else "", "session": str(session_id or ""),
+                "injected": injected,
+            }, ensure_ascii=False), encoding="utf-8")
+            _spawn_output_judge(job)
+        except OSError:
+            _log_verify(state_dir, {**base, "status": "error:spawn"}, name=log)
+        return None
+    if seconds_left is not None and seconds_left <= 240 + PLAN_CHECK_TIMEOUT:
+        _log_verify(state_dir, {**base, "status": "skip_budget"}, name=log)
+        return None
+    count_path = _output_state(state_dir, key) if state_dir is not None else None
+    block_count = _read_count(count_path) if count_path is not None else 0
+    outcome = _judge_and_record(
+        spec=spec, answer=turn.answer, transcript_path=transcript_path, state_dir=state_dir, model=model,
+        session_id=session_id, mode=mode, injected=injected, block_count=block_count,
+        judge=_make_output_check_judge(model),
+    )
+    if outcome.reason is None:
+        return None
+    if count_path is not None:
+        _write_count(count_path, block_count + 1)
+    return StopDecision(
+        action="block", findings=(Finding(name="plan_output", detail=outcome.reason, guidance=outcome.reason),),
+    )
+
+
+def _judge_output_job(job: Path) -> int:
+    """Entry of the detached record-mode process."""
+    try:
+        data = json.loads(job.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    finally:
+        job.unlink(missing_ok=True)
+    with contextlib.suppress(Exception):
+        state = str(data.get("state_dir") or "")
+        _judge_and_record(
+            spec=data["spec"], answer=str(data.get("answer") or ""), transcript_path=data["transcript"],
+            state_dir=Path(state) if state else None, model=str(data.get("model") or ""),
+            session_id=data.get("session"), mode="record", injected=bool(data.get("injected")), block_count=0,
+            judge=_make_output_check_judge(str(data.get("model") or "")),
+        )
+    return 0
+
+
 def _is_recipient_retry_turn(rows: Sequence[Mapping[str, Any]]) -> bool:
     """True when the latest non-meta text input is the missing-recipient
     reprompt. That rerun runs with every tool forbidden and only its tag is
@@ -284,6 +409,8 @@ def _is_recipient_retry_turn(rows: Sequence[Mapping[str, Any]]) -> bool:
 
 
 def main(argv: list[str]) -> int:
+    if len(argv) >= 3 and argv[1] == "--judge-output":
+        return _judge_output_job(Path(argv[2]))
     try:
         payload = json.load(sys.stdin)
     except Exception:  # noqa: BLE001 - never block the turn through failure
@@ -343,11 +470,12 @@ def main(argv: list[str]) -> int:
         elapsed = round(time.monotonic() - started, 1)
         final = decision
         if state_dir is not None or transcript_path:
-            plan_decision = _run_plan_check(
-                turn=turn, transcript_path=transcript_path, state_dir=state_dir,
-                key=_turn_key(session_id, this_turn_rows), decision=decision,
-                seconds_left=seconds_left, model=verify_model, session_id=session_id,
-            )
+            plan_args: dict[str, Any] = {
+                "turn": turn, "transcript_path": transcript_path, "state_dir": state_dir,
+                "key": _turn_key(session_id, this_turn_rows), "decision": decision,
+                "seconds_left": seconds_left, "model": verify_model, "session_id": session_id,
+            }
+            plan_decision = _run_plan_check(**plan_args) or _run_plan_output_check(**plan_args)
             final = plan_decision or decision
         figurative_log: dict[str, Any] = {}
         if figurative is not None:

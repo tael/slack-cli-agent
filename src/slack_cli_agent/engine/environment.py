@@ -309,6 +309,8 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         "SCA_PLAN_INTAKE_SCHEMA",
         # Stop hook plan-check switch and its own block cap (finish_review N6).
         "SCA_PLAN_INTAKE_CHECK",
+        # Stop hook v2 output check: "record" or "block" (finish_review).
+        "SCA_PLAN_OUTPUT_CHECK",
         "SCA_PLAN_CHECK_MAX_BLOCKS",
         # Stop hook model verify toggle and model (finish_review.
         # resolve_verify_settings). On by default; these only override.
