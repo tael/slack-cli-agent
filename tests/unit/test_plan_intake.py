@@ -18,10 +18,10 @@ from slack_cli_agent.guard.pretool import plan_gate
 
 # sha256 of the prompt and sorted-key schema JSON before the intake switch existed.
 BASE_SHA = {
-    False: ("cba3a5669987e0065bc459d4f5e643087d9b42df78aad25999390468e274e9ce",
-            "14e0c330b64bb4f27ca2cf0283aed5b5bf9bca1f5d4bcfcfa9ce51c8e840bc75"),
-    True: ("7119271f6f9de5f23b8ea91e4b9b76f66c6737d3bd615e7db99f9d3b0015536c",
-           "ccf87ea31476569b4bfd5da67eed1d2af8df6ebdec3ad0599f4231e9d2a8392d"),
+    False: ("fff76f9a88aaf83d58ad1bd27f35c258e03559d9719eaf16626f05477712973d",
+            "2a439752d57724f624e47cdf6db9d88f58ba9a481f0ce79fed1d436aad10ba32"),
+    True: ("09d178bd424273cbac67904604767f5d1e82a357a394fa52b51a19e270709377",
+           "a9668f7b7a1ec5cce553fc057d07d514586b1e9fd505fc54afd6822658dd0a40"),
 }
 INTAKE: dict[str, Any] = {
     "intent": "서울 날씨 확인", "assumed": ["오늘 기준"], "missing": [], "ask": "",

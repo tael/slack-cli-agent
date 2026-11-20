@@ -505,3 +505,22 @@ class TestPipelinePlanGateEnv:
         pipeline.handle(make_ctx(channel="C1", user=user))
         call = deps["runner"].calls[0]
         assert ("PLAN_GATE" in call.engine_env) is expected
+
+
+class TestDoneWhen:
+    def test_완료_조건이_안내에_들어가고_대조_지시가_붙는다(self) -> None:
+        from slack_cli_agent.guard.pretool import plan_gate
+
+        text = plan_gate.render({"type": "branch", "done_when": ["수치 확인", "원천 표기"], "branches": []})
+        assert "완료 조건 : 수치 확인 / 원천 표기" in text
+        assert "미확인" in text
+
+    def test_완료_조건이_없으면_안내가_바뀌지_않는다(self) -> None:
+        from slack_cli_agent.guard.pretool import plan_gate
+
+        text = plan_gate.render({"type": "branch", "branches": []})
+        assert "완료 조건" not in text
+
+    def test_schema_에서_done_when_은_선택이다(self) -> None:
+        schema = ps.schema(False)
+        assert "done_when" in schema["properties"] and "done_when" not in schema["required"]

@@ -270,6 +270,7 @@ def _base_schema(delegation: bool) -> dict[str, Any]:
         "type": "object",
         "properties": {
             "type": {"type": "string", "enum": ["short", "branch", "explore"]},
+            "done_when": {"type": "array", "maxItems": 3, "items": {"type": "string"}},
             "branches": {
                 "type": "array",
                 "maxItems": 5,
@@ -298,7 +299,8 @@ _PLANNER_HEAD = (
     "DB, 코드, 슬랙)로 2-3개 적는다\n"
     "- branch : 답에 필요한 조회나 작업 단위가 둘 이상이다. 순서 의존은 depends_on 으로 적는다. branches 는 2-5개다\n"
     "- short : 그 밖의 요청이다. branches 는 빈 배열이다\n"
-    "2. 갈래마다 적는다\n"
+    "2. done_when 에 이 요청이 끝났다고 볼 조건을 1-3개 적는다. 요청에 나온 것만 쓴다. short 이면 빈 배열이다\n"
+    "3. 갈래마다 적는다\n"
     "- goal : 알아낼 것 한 문장\n"
     "- source : 볼 원천. 테이블, 파일, API, 채널 중 요청에 나온 것. 모르면 '확인 필요'\n"
     "- depends_on : 먼저 끝나야 하는 갈래 번호(1부터). 없으면 빈 배열\n"
@@ -310,7 +312,7 @@ _DELEGATE_WITH_WORKERS = (
 _DELEGATE_NONE = "- delegate : 항상 none 으로 적는다. 이 턴에는 작업자가 없다\n"
 _PLANNER_TAIL = (
     "- returns : 돌려받을 것. 수치, 목록, 판정 중 하나와 그 대상\n"
-    "3. 요청에 없는 작업을 만들지 않는다. 쓰기, 게시, 삭제가 요청에 없으면 갈래에 넣지 않는다\n\n"
+    "4. 요청에 없는 작업을 만들지 않는다. 쓰기, 게시, 삭제가 요청에 없으면 갈래에 넣지 않는다\n\n"
     "[요청]\n"
 )
 
