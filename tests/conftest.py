@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -15,6 +16,11 @@ import pytest
 
 _REAL_HOME = Path.home()
 _ALLOWED_PREFIXES: list[str] = []
+
+#: 임시 경로. TMPDIR 이 홈 아래로 잡힌 환경(이 봇은 `~/.shinji/tmp`)에서는 tmp_path
+#: 와 `tempfile.mkdtemp()` 결과가 모두 실제 홈 아래라, 허용하지 않으면 격리가 된
+#: 시험까지 홈 접근으로 막힌다. 상태 디렉터리가 아니므로 접두사로 열어 둔다.
+_TEMP_PREFIXES = tuple({str(Path(tempfile.gettempdir())), os.path.realpath(tempfile.gettempdir())})
 
 #: 실행한 셸에 있으면 시험이 그 값을 읽어 버리는 자격 변수. 하위 프로세스를 띄우는
 #: 시험은 `os.environ` 을 그대로 물려주므로, 지우지 않으면 운영 토큰이 시험에
@@ -35,7 +41,13 @@ _CREDENTIAL_ENV = (
 #: 봇 런타임이 자기 프로세스에 심는 변수. 시험을 봇 안에서 돌리면 하위 프로세스가
 #: 이 값을 물려받아, 시험이 명시한 값이 아니라 그 봇의 운영값으로 판정한다
 #: (2026-11-14: RESTART_GUARD_SERVICES 가 남아 다른 봇 라벨 거부 시험 2건이
-#: 통과로 뒤집혔다). 변수를 새로 늘릴 때 여기에도 적는다.
+#: 통과로 뒤집혔다).
+#:
+#: 접두사 `SCA_`, `TURN_`, `RESTART_GUARD_` 는 `_RUNTIME_PREFIXES` 로 통째로
+#: 지운다. 변수를 새로 늘릴 때 목록에 적는 것을 잊어도 새 변수가 새 접두사가
+#: 아니면 격리가 유지된다 (2026-11-20: 목록에 없던 SCA_PLAN_INTAKE 등 5개가
+#: 남아 계획 입력·정제·워크플로 시험 14건이 실패했다). 접두사 밖 변수만 적는다.
+_RUNTIME_PREFIXES = ("SCA_", "TURN_", "RESTART_GUARD_")
 _RUNTIME_ENV = (
     "RESTART_GUARD_LABELS",
     "RESTART_GUARD_SERVICES",
@@ -107,9 +119,11 @@ def isolate_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pa
     from slack_cli_agent.engine.lifecycle import reset_engine_state
 
     repo = str(Path(__file__).resolve().parents[1])
-    _ALLOWED_PREFIXES[:] = [repo, str(tmp_path), sys.prefix, sys.base_prefix]
+    _ALLOWED_PREFIXES[:] = [repo, str(tmp_path), sys.prefix, sys.base_prefix, *_TEMP_PREFIXES]
     monkeypatch.setenv("HOME", str(tmp_path))
-    for 이름 in (*_CREDENTIAL_ENV, *_RUNTIME_ENV):
+    이미_적힌_것 = {*_CREDENTIAL_ENV, *_RUNTIME_ENV}
+    지울_것 = [이름 for 이름 in os.environ if 이름.startswith(_RUNTIME_PREFIXES) and 이름 not in 이미_적힌_것]
+    for 이름 in (*_CREDENTIAL_ENV, *_RUNTIME_ENV, *지울_것):
         monkeypatch.delenv(이름, raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # 표준 점검의 운영 트리 점검은 저장소 원격을 fetch 한다. 시험은 네트워크를 쓰지

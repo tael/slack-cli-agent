@@ -309,8 +309,12 @@ class TestPlanFilePath:
     def test_실행_cwd_가_work_root_와_다르면_cwd_기준_경로다(self, tmp_path: Path) -> None:
         app, fake = self._app(tmp_path / "root")
         got = app._plan_file_path(fake, "claude", "sid", tmp_path / "chan")
-        assert got is not None and got.name == "sid.jsonl.plan.json"
-        assert str(got.parent).endswith("-chan") and "-root" not in str(got)
+        base = app._plan_file_path(fake, "claude", "sid", None)
+        assert got is not None and base is not None and got.name == "sid.jsonl.plan.json"
+        # work_root 기준 경로와 다른 디렉터리여야 한다. 경로 전체에서 "-root" 를
+        # 찾으면 임시 경로에 그 글자가 들어가는 환경(pytest-of-root)에서 코드와
+        # 무관하게 실패한다.
+        assert str(got.parent).endswith("-chan") and got.parent != base.parent
 
     def test_같거나_없으면_기존_경로와_같다(self, tmp_path: Path) -> None:
         app, fake = self._app(tmp_path / "root")
