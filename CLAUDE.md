@@ -34,7 +34,7 @@
   말한다. 주석 규칙과 무관하다
 - 설계 근거처럼 긴 설명이 필요하면 `docs/` 에 둔다. 코드 안에 두지 않는다
 - 비유와 의인화를 쓰지 않는다
-- 시험은 `uv run --no-sync python -m pytest tests -n 4`. CI 도 같은 명령이다.
+- 시험은 `uv run --no-sync python -m pytest tests -n 12`. CI 도 같은 명령이다.
   맨 `python3` 로 돌리면 slack_sdk 가 없는 인터프리터가 잡혀 import 실패와
   표준 점검 실패가 섞여 나온다(2026-11-14). 지금은 conftest 가 수집 전에
   끊는다. 린트는 `uvx ruff check src tests`
