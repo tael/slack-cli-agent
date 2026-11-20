@@ -27,6 +27,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -215,15 +216,19 @@ class ModelFigurativeCorrector:
                 os.killpg(proc.pid, signal.SIGKILL)
 
     def _run(self, cmd: list[str], text: str) -> str:
+        # cwd is TMPDIR, which engine/environment hands to children as the bot's
+        # own tmp. /tmp hardcoded would run this CLI in a directory shared by
+        # every bot on the machine.
+        workdir = tempfile.gettempdir()
         if self._runner is not None:
             proc = self._runner(cmd, input=text, capture_output=True, text=True,
-                                timeout=self.timeout, env=self._env, cwd="/tmp")
+                                timeout=self.timeout, env=self._env, cwd=workdir)
             return proc.stdout or ""
         if self._cancelled:
             return ""
         self._proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=self._env, cwd="/tmp", start_new_session=True,
+            text=True, env=self._env, cwd=workdir, start_new_session=True,
         )
         try:
             out, _ = self._proc.communicate(input=text, timeout=self.timeout)

@@ -29,13 +29,20 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 #: Absolute path to this file, for the engine adapter that builds the hook
 #: command (same pattern as observability/progress_hook.py's HOOK_SCRIPT).
 HOOK_SCRIPT = Path(__file__).resolve()
 
-MARK_DIR = Path(os.environ.get("INSTALL_GUARD_MARK_DIR", "/tmp/slack-cli-agent-installcheck"))
+#: Session markers live under TMPDIR, which engine/environment hands to every
+#: child as the bot's own tmp (`config/paths.tmp`). A hardcoded /tmp would put
+#: one bot's markers in a directory every bot on the machine shares.
+MARK_DIR = Path(
+    os.environ.get("INSTALL_GUARD_MARK_DIR")
+    or Path(tempfile.gettempdir()) / "slack-cli-agent-installcheck"
+)
 RESULT_DIR = Path(
     os.environ.get("INSTALL_GUARD_RESULT_DIR", str(Path.home() / ".cache" / "installed-check"))
 )
