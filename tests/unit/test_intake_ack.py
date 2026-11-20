@@ -78,6 +78,7 @@ class TestIntakeAck:
         (lambda: _plan(ack=""), "no_ack"),
         (lambda: _plan(ack=3), "no_ack"),
         (lambda: _plan(started_at=1.0, finished_at=1.0), "stale"),
+        (lambda: _plan(work="none"), "no_work"),
     ])
     def test_조건이_안_맞으면_게시하지_않는다(self, tmp_path: Path, plan: Any, reason: str) -> None:
         plan_file, poster = tmp_path / "t.plan.json", Poster()

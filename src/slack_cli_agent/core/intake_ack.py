@@ -21,6 +21,10 @@ log = logging.getLogger(__name__)
 
 ACK_LIMIT = 300
 STALE_SLACK_SEC = 1.0
+#: guard/plan_start's optional ``work`` field. This value means the request has
+#: no lookup, write or send in it (an acknowledgement, an agreement, a
+#: greeting), so the ack is skipped and the turn posts one answer only.
+NO_WORK = "none"
 
 
 def ack_record_path(plan_file: Path) -> Path:
@@ -72,6 +76,8 @@ def judge_plan(plan: dict[str, Any] | None, *, start: float) -> tuple[str, str]:
         return "", "plan_pending"
     if status != "ok":
         return "", f"plan_not_ok:{status}"
+    if str(plan.get("work") or "").strip() == NO_WORK:
+        return "", "no_work"
     ack = plan.get("ack")
     if not isinstance(ack, str) or not ack.strip():
         return "", "no_ack"

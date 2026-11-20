@@ -84,6 +84,10 @@ INTAKE_FIELDS = ("intent", "assumed", "missing", "ask", "expected_output", "ack"
 #: input with a kind, and the output's form and items.
 INTAKE_SCHEMA_ENV = "SCA_PLAN_INTAKE_SCHEMA"
 INTAKE_FIELDS_V2 = ("intent", "inputs", "ask", "output", "ack")
+#: Optional intake field (both schema versions, never required): "none" when
+#: the request needs no lookup, write or send. core/intake_ack skips the ack
+#: then, so an acknowledgement-only message gets one answer, not two.
+WORK_VALUES = ("none", "some")
 INTAKE_V1_ONLY = ("assumed", "missing", "expected_output", "checks")
 #: Copies of guard/pretool/plan_gate's (that file is a standalone hook script).
 INPUT_KINDS = ("given", "derived", "lookup", "guess", "ask")
@@ -223,6 +227,7 @@ def _intake_properties_v2() -> dict[str, Any]:
             "required": ["form", "items"],
         },
         "ack": text,
+        "work": {"type": "string", "enum": list(WORK_VALUES)},
     }
 
 
@@ -246,6 +251,7 @@ def schema(
         result["properties"].update({
             "intent": text, "assumed": texts, "missing": texts, "ask": text,
             "expected_output": text, "ack": text,
+            "work": {"type": "string", "enum": list(WORK_VALUES)},
             "checks": {
                 "type": "array",
                 "items": {
@@ -335,6 +341,12 @@ def workflow_section(workflows: dict[str, str]) -> str:
     return _WORKFLOW_HEAD + "".join(f"- {wid} : {desc}\n" for wid, desc in workflows.items())
 
 
+_WORK_FIELD_LINE = (
+    "- work : 조회·수정·전송·계산할 일이 하나라도 있으면 some 이다. 확인·동의·인사·감탄처럼 "
+    "앞선 답을 받아들이는 말이고 새로 할 일이 없으면 none 이고 그때는 ack 를 빈 문자열로 둔다\n"
+)
+
+
 _INTAKE_SECTION = (
     "[입력 점검] 아래 필드도 적는다. 길게 쓰면 계획이 늦어진다\n"
     "- intent : 요청을 어떻게 이해했는지 한 문장\n"
@@ -349,6 +361,7 @@ _INTAKE_SECTION = (
     "예: \"X 기준으로 Y 를 확인해볼게요\"\n"
     "- checks : 답하기 전에 만족해야 할 조건 목록. what 은 조건, how 는 확인할 도구나 원천이다. "
     "도구 결과로 확인되는 조건만 적고 의견은 적지 않는다\n"
+    + _WORK_FIELD_LINE
 )
 
 
@@ -370,6 +383,7 @@ _INTAKE_SECTION_V2 = (
     "'있으면' 같은 조건부 항목과 추정 공개는 넣지 않는다\n"
     "- ack : 사용자에게 바로 보낼 한두 문장. \"X 기준으로 Y 를 찾아볼게요\" 꼴로 추정한 값(guess)을 밝힌다. "
     "질문은 넣지 않는다. 공감·위로·상담 문구와 요청에 없는 내용은 넣지 않는다\n"
+    + _WORK_FIELD_LINE
 )
 
 
@@ -834,6 +848,18 @@ def _clean_output_v2(value: Any) -> dict[str, Any] | None:
     return {"form": value["form"], "items": items[:limit]}
 
 
+def _clean_work(plan: dict[str, Any], dropped: list[str], enabled: bool = True) -> None:
+    """Keep ``work`` only as one of WORK_VALUES; an off intake removes it."""
+    if "work" not in plan:
+        return
+    if enabled and str(plan["work"]).strip() in WORK_VALUES:
+        plan["work"] = str(plan["work"]).strip()
+        return
+    plan.pop("work")
+    if enabled:
+        dropped.append("work")
+
+
 def check_intake_v2(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
     """v2 counterpart of check_intake: (dropped, fixed). Malformed input
     entries are removed one by one; ``ask`` is forced empty when no input
@@ -857,6 +883,7 @@ def check_intake_v2(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
             dropped.append(key)
         else:
             plan[key] = value
+    _clean_work(plan, dropped)
     has_ask = any(i["kind"] == "ask" for i in plan.get("inputs", []))
     if plan.get("ask") and not has_ask:
         plan["ask"] = ""
@@ -878,6 +905,7 @@ def check_intake(plan: dict[str, Any], enabled: bool, version: int = 1) -> list[
             plan.pop(key)
             if enabled:
                 dropped.append(key)
+    _clean_work(plan, dropped, enabled)
     return dropped
 
 
