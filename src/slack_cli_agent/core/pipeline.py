@@ -1142,7 +1142,8 @@ class RequestPipeline:
             # controller_user_ids are GENERAL (A7) and never get the owner's
             # session, and a non-owner turn would carry a private
             # conversation only the owner can see into its answer (D5).
-            as_owner = bool(self._owner_user_id) and ctx.user == self._owner_user_id
+            # 공동 소유자도 오너 세션을 쓴다. 오너 세션은 PEAGENT 계정으로 옮길 예정 (2026-11-20 김태일 지시)
+            as_owner = ctx.user in self._owner_ids
             return self._linked_threads(
                 ctx.text, ctx.channel, ctx.unfurl_attachments, as_owner
             )
@@ -1926,6 +1927,9 @@ class RequestPipeline:
             self._watch_queue.enqueue(
                 ctx.channel, ctx.thread_ts, description,
                 msg_ts=ctx.ts, trust=principal.trust,
+                # 확인 턴을 등록한 사람 ID 로 돌리려고 남긴다. 공동 소유자의 감시가
+                # 주 소유자 ID 로 돌던 것을 막는다 (2026-11-20 김태일 지시)
+                extra={"user": ctx.user} if ctx.user else None,
                 # Pinned here rather than recomputed at check time: the channel
                 # config can change in between, and the result of the work sits
                 # under the directory the request actually ran in (sca-6zt).
