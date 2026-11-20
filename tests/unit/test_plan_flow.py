@@ -71,7 +71,7 @@ class TestFlowSection:
 
     def test_네_단계와_계획_형식과_위임을_담는다(self) -> None:
         text = FlowSection().render(_ctx(delegation=True))
-        for word in ("1. 분석", "2. 계획", "3. 병렬 실행", "4. 다듬기", "단답형", "갈래형", "탐색형"):
+        for word in ("1. 분석", "2. 계획", "3. 병렬 실행", "4. 다듬기", "short", "branch", "explore"):
             assert word in text
         assert "[작업 순서]" in text and "[계획 갱신]" in text
         assert "계획 확인 훅이 호출을 거부한다" not in text
@@ -194,7 +194,7 @@ class TestPlannerRun:
         assert len(calls) == 1 and record["type"] == "short" and "rca_retry" not in record
 
     def test_planner_지시문이_원인_분석을_short_에서_뺀다(self) -> None:
-        assert "5why" in ps.PLANNER_PROMPT and "short 가 아니다" in ps.PLANNER_PROMPT
+        assert "5why" in ps.PLANNER_PROMPT and "항상 explore" in ps.PLANNER_PROMPT
 
 
 class TestPlannerStart:

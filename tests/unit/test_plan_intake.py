@@ -18,9 +18,9 @@ from slack_cli_agent.guard.pretool import plan_gate
 
 # sha256 of the prompt and sorted-key schema JSON before the intake switch existed.
 BASE_SHA = {
-    False: ("6220e26a4f69b9cb3fff70a4ade7af8005812f08fa0c529dc65bd60f7ed0bae4",
+    False: ("cba3a5669987e0065bc459d4f5e643087d9b42df78aad25999390468e274e9ce",
             "14e0c330b64bb4f27ca2cf0283aed5b5bf9bca1f5d4bcfcfa9ce51c8e840bc75"),
-    True: ("89c150d651a2bb611d4526ccc29ab9b84b66309ad82d915c98db4b4fc1642c9a",
+    True: ("7119271f6f9de5f23b8ea91e4b9b76f66c6737d3bd615e7db99f9d3b0015536c",
            "ccf87ea31476569b4bfd5da67eed1d2af8df6ebdec3ad0599f4231e9d2a8392d"),
 }
 INTAKE: dict[str, Any] = {

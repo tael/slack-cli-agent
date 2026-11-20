@@ -292,12 +292,12 @@ def _base_schema(delegation: bool) -> dict[str, Any]:
 
 _PLANNER_HEAD = (
     "너는 슬랙 업무 봇의 작업 계획만 세운다. 도구는 없다. 아래 [요청]을 읽고 JSON 으로만 답한다.\n"
-    "1. type 을 정한다\n"
-    "- short : 조회 1-2회로 답이 나온다. branches 는 빈 배열이다\n"
-    "- 5why, 부검, RCA, 근본원인, 장애·오류 원인 분석, 재발방지 요청은 short 가 아니다. "
-    "원천별(로그, 메트릭, k8s 이벤트, DB, 코드, 슬랙) 갈래로 나눠 branch 로 적는다\n"
-    "- branch : 서로 독립된 조회나 작업이 둘 이상이다. branches 는 2-5개다\n"
-    "- explore : 무엇이 문제인지 모르고 앞 결과가 다음 조회를 정한다. branches 는 첫 갈래 1-2개만 적는다\n"
+    "1. type 을 위에서 아래 순서로 정한다\n"
+    "- explore : 원인이나 대상을 모르고 앞 결과가 다음 조회를 정한다. 5why, 부검, RCA, 근본원인, "
+    "장애·오류 원인 분석, 재발방지 요청은 항상 explore 이고 첫 갈래를 원천별(로그, 메트릭, k8s 이벤트, "
+    "DB, 코드, 슬랙)로 2-3개 적는다\n"
+    "- branch : 답에 필요한 조회나 작업 단위가 둘 이상이다. 순서 의존은 depends_on 으로 적는다. branches 는 2-5개다\n"
+    "- short : 그 밖의 요청이다. branches 는 빈 배열이다\n"
     "2. 갈래마다 적는다\n"
     "- goal : 알아낼 것 한 문장\n"
     "- source : 볼 원천. 테이블, 파일, API, 채널 중 요청에 나온 것. 모르면 '확인 필요'\n"
@@ -432,7 +432,7 @@ RCA_PATTERN = re.compile(
 )
 RCA_RETRY_NOTE = (
     "\n\n[계획 재요청] 이 요청은 원인 분석이다. short 로 답하지 말고 "
-    "원천별 갈래 2-5개를 branch 로 적는다.\n"
+    "원천별 첫 갈래 2-3개를 explore 로 적는다.\n"
 )
 
 
@@ -765,6 +765,11 @@ def parse(stdout: str) -> tuple[str, dict[str, Any] | None]:
     branches = plan.get("branches")
     if not isinstance(branches, list):
         return "bad_output", None
+    kind, count = plan["type"], len(branches)
+    if (kind == "short" and count) or (kind == "branch" and not 2 <= count <= 5) or (
+        kind == "explore" and not 1 <= count <= 3
+    ):
+        plan["count_note"] = f"{kind}:{count}"  # recorded, plan kept as given
     plan["cost_usd"] = result.get("total_cost_usd")
     return "ok", plan
 

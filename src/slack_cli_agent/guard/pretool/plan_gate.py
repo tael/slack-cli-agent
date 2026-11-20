@@ -107,7 +107,7 @@ INJECT_OUTPUT = "- 답은 기대 결과의 형태와 항목대로 쓰고 그 밖
 KIND_FULL = "full"
 KIND_COMPACT = "compact"
 
-_TYPE_LABEL = {"branch": "갈래형", "explore": "탐색형"}
+_TYPE_LABEL = {"branch": "branch", "explore": "explore"}
 
 
 def plan_path(transcript_path: str) -> Path:
@@ -294,7 +294,7 @@ def render(
             line += f" / 위임 : {delegate}"
         lines.append(line)
     if plan.get("type") == "explore":
-        lines.append("- 탐색형이다. 첫 갈래 결과를 보고 다음 조회를 정한다")
+        lines.append("- explore 유형이다. 첫 갈래 결과를 보고 다음 조회를 정한다")
     if intake:
         lines += _intake_lines(plan)
     tail = INJECT_TAIL_HEAD + (INJECT_TAIL_DELEGATION if delegation else "")

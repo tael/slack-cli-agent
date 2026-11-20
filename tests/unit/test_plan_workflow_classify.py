@@ -382,7 +382,7 @@ class TestRegistryCandidates:
 #: 2026-11-20 owner-* : 소유자 턴에 MemoryPathSection(메모리 쓰기 경로) 추가.
 GOLDEN = {
     "owner-chat": "8e90ef32bfe1494aa92a8569750de0ce5ae676deca9319f867da39fba0dc1888",
-    "owner-work": "5220cdf0791ce8e038e0ce6cb9e1f86970211b2d31fa980e6a15c97ddd88dfef",
+    "owner-work": "d2f46d6a3d60295ae39916063ffbec73241695d46d970f19de02b6914f6ad3c0",
     "read-work": "2aaab553af324844854d87c096978ce5eeab4733e8f9c00d2b794c0c3af64f55",
 }
 

@@ -47,11 +47,11 @@ ODD_V1: dict[str, Any] = {
 class TestV1Unchanged:
     def test_v1_주입문은_바이트가_같다(self) -> None:
         assert _sha(pg.render({**BRANCH_PLAN, **INTAKE}, intake=True)) == (
-            "5827dfa8e57a47428211d7d76d5b5d041a5146239ef7b8360bda8a7af25c9160")
+            "0163170e9a5c6f2ba9b2a4455e762152302dc5b3ae7311b863d34a51ce5ff18b")
         assert _sha(pg.render_compact({**SHORT_PLAN, **INTAKE})) == (
             "3012279b2ba742308cf9fe1c1885741e13f86c209146ef14f414159f5fa1796a")
         assert _sha(pg.render({**BRANCH_PLAN, **ODD_V1}, intake=True)) == (
-            "dcf728d1e25482fdc8e83c67e63faba477a3fbf3a6ee2698dc233883b82ca076")
+            "857c7ec3d865d03d0d9ac15341127a228b12548cb2ea8d5b7d33fa0e615f08a4")
 
     def test_v1_audit_필드는_바이트가_같다(self) -> None:
         def dump(plan: dict[str, Any]) -> str:

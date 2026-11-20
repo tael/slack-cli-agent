@@ -143,7 +143,7 @@ class TestPlanStartPlanner:
         assert enum == ["none"]
         prompt = ps.planner_prompt(False)
         assert "lookup" not in prompt and "analyst" not in prompt
-        assert "5why" in prompt and "short 가 아니다" in prompt
+        assert "5why" in prompt and "항상 explore" in prompt
 
     def test_위임_가능이면_작업자가_enum_과_지시문에_있다(self) -> None:
         enum = ps.schema(True)["properties"]["branches"]["items"]["properties"]["delegate"]["enum"]
