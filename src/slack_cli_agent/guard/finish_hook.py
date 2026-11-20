@@ -56,6 +56,7 @@ from slack_cli_agent.guard.finish_review import (
     _turn_evidence,
     decide,
     draft_key,
+    FORM_BLOCK_FORMS,
     form_violation,
     needs_verification,
     plan_check_enabled,
@@ -334,7 +335,7 @@ def _run_plan_output_check(
         _log_verify(state_dir, {**base, "status": "skip_other_block"}, name=log)
         return None
     injected = plan_gate_injected_path(transcript_path).exists()
-    if mode == "record":
+    if mode in ("record", "block_form"):
         job = Path(transcript_path + ".plan.output.job.json")
         try:
             job.write_text(json.dumps({
@@ -345,7 +346,9 @@ def _run_plan_output_check(
             _spawn_output_judge(job)
         except OSError:
             _log_verify(state_dir, {**base, "status": "error:spawn"}, name=log)
-        return None
+        if mode == "record":
+            return None
+        return _form_block(spec, turn.answer, state_dir, key, base, log)
     if seconds_left is not None and seconds_left <= 240 + PLAN_CHECK_TIMEOUT:
         _log_verify(state_dir, {**base, "status": "skip_budget"}, name=log)
         return None
@@ -360,6 +363,29 @@ def _run_plan_output_check(
         return None
     if count_path is not None:
         _write_count(count_path, block_count + 1)
+    return StopDecision(
+        action="block", findings=(Finding(name="plan_output", detail=outcome.reason, guidance=outcome.reason),),
+    )
+
+
+def _form_block(
+    spec: Mapping[str, Any], answer: str, state_dir: Path | None, key: str, base: dict[str, Any], log: str,
+) -> StopDecision | None:
+    """block_form: the code-only form check blocks inline, within the cap. No judge on the Stop path."""
+    form = spec["form"]
+    if form not in FORM_BLOCK_FORMS:
+        return None
+    count_path = _output_state(state_dir, key) if state_dir is not None else None
+    block_count = _read_count(count_path) if count_path is not None else 0
+    body, _ = strip_control_tags(answer or "")
+    outcome = plan_output_outcome(
+        None, form_violation(form, body), form, block_count=block_count, cap=resolve_plan_check_max_blocks(os.environ),
+    )
+    if outcome.reason is None:
+        return None
+    if count_path is not None:
+        _write_count(count_path, block_count + 1)
+    _log_verify(state_dir, {**base, "status": "form_block", "form": form, "round": block_count + 1}, name=log)
     return StopDecision(
         action="block", findings=(Finding(name="plan_output", detail=outcome.reason, guidance=outcome.reason),),
     )

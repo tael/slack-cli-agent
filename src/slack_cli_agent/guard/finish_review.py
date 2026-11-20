@@ -1909,7 +1909,9 @@ def plan_check_outcome(
 #: "" off, "record" judge in a detached process and only record, "block" judge
 #: inline and block once. Set by the pipeline only with plan_intake on.
 PLAN_OUTPUT_CHECK_ENV = "SCA_PLAN_OUTPUT_CHECK"
-PLAN_OUTPUT_MODES = ("record", "block")
+PLAN_OUTPUT_MODES = ("record", "block", "block_form")
+#: Forms whose violation block_form blocks. 문단 answers in the owner's bullet style are not a fault (11-20 check).
+FORM_BLOCK_FORMS = ("한두줄",)
 OUTPUT_CHECK_DEFAULT_MODEL = "haiku"
 OUTPUT_FORMS = ("한두줄", "문단", "목록", "표", "긴글")
 OUTPUT_TAIL_NOTE = "도구 결과가 기대 결과와 맞지 않으면 요청을 따르고 사유를 한 문장으로 적는다"
@@ -1920,7 +1922,9 @@ _OUTPUT_CHECK_PROMPT = (
     "아래 [기대 결과] 는 이 요청을 시작할 때 세운 답의 형태와 담을 항목이고, [추정한 값] 은 사용자가 말하지 않아 "
     "계획이 가정한 값이다. [답] 은 게시하려는 답이다. 도구 결과는 보지 않고 [답] 만으로 판정한다.\n"
     "- missing_items: [기대 결과] 항목 중 [답] 에 없는 것(뜻이 같으면 있는 것이다)\n"
-    "- unconfirmed_items: [기대 결과] 항목 중 [답] 이 \"미확인\"·\"모름\" 으로 남긴 것\n"
+    "- unconfirmed_items: [답] 이 \"확인 못 함\"·\"미확인\"·\"모름\" 으로 남긴 값 중 조회하지 않았다고 적은 것"
+    "(조회 안 함·열지 않음·이번 턴에 확인 안 함). [기대 결과] 항목이 아니어도 넣는다. 검색했지만 안 나왔다거나 "
+    "외부 심사·가입·다음 턴 결과처럼 닿을 수 없는 이유를 적은 것은 넣지 않는다\n"
     "- extra: [기대 결과] 에 없는데 [답] 에 덧붙은 내용 한 줄 요약(최대 3개). 항목을 밝히는 데 쓴 근거 표시와 "
     "추정값 공개 문장은 덧붙임이 아니다\n"
     "- undisclosed: [추정한 값] 중 [답] 이 추정이라고 밝히지 않은 것의 이름. 값이 답에 기준·범위로 적혀 있으면 "
@@ -2053,15 +2057,13 @@ def plan_output_outcome(
     if block_count >= cap:
         return PlanCheckOutcome(None)
     verdict = verdict or {}
-    # missing_items and extra stay in the record only: on the 11-19 replay they fired on 11/12 turns, mostly
-    # items the request never asked for. Revisit after a hand-checked real-turn sample.
+    # missing_items, extra and undisclosed stay in the record only: on the 11-19 replay and the 11-20 hand check
+    # of 25 real turns they were mostly false (undisclosed 0/14).
     parts = []
     if verdict.get("unconfirmed_items"):
         parts.append("미확인으로 남긴 항목은 도구로 찾아 채운다: " + ", ".join(verdict["unconfirmed_items"]))
     if form_issue:
         parts.append(f"형태는 {form} 이다")
-    if verdict.get("undisclosed"):
-        parts.append("추정한 값을 밝힌다: " + ", ".join(verdict["undisclosed"]))
     if not parts:
         return PlanCheckOutcome(None)
     return PlanCheckOutcome("; ".join(parts) + ". " + OUTPUT_TAIL_NOTE)

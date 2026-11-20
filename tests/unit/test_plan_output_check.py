@@ -119,6 +119,13 @@ def _spec(plan: dict[str, Any] | None = None) -> dict[str, Any]:
     return spec
 
 
+class TestJudgePrompt:
+    def test_미확인은_조회하지_않은_값만이다(self):
+        # 11-20 hand check: 5/8 unconfirmed were values no tool could reach (external review, unpublished rules).
+        assert "조회하지 않았다고 적은 것" in fr._OUTPUT_CHECK_PROMPT
+        assert "닿을 수 없는 이유를 적은 것은 넣지 않는다" in fr._OUTPUT_CHECK_PROMPT
+
+
 class TestJudge:
     def test_입력은_형태_항목_추정값_답이고_도구근거는_없다(self):
         runner = _runner(_output(_verdict()))
@@ -175,7 +182,6 @@ class TestOutcome:
         for part in (
             "미확인으로 남긴 항목은 도구로 찾아 채운다: 채널",
             "형태는 한두줄 이다",
-            "추정한 값을 밝힌다: 처리 시간",
             "도구 결과가 기대 결과와 맞지 않으면 요청을 따르고 사유를 한 문장으로 적는다",
         ):
             assert part in reason
@@ -197,8 +203,14 @@ class TestOutcome:
         assert fr.plan_output_outcome(None, None, "문단", block_count=0, cap=1).reason is None
 
     def test_상한을_넘으면_차단하지_않는다(self):
-        assert fr.plan_output_outcome(_verdict(undisclosed=["a"]), None, "표", block_count=1, cap=1).reason is None
-        assert fr.plan_output_outcome(_verdict(undisclosed=["a"]), None, "표", block_count=1, cap=2).reason is not None
+        bad = _verdict(unconfirmed_items=["a"])
+        assert fr.plan_output_outcome(bad, None, "표", block_count=1, cap=1).reason is None
+        assert fr.plan_output_outcome(bad, None, "표", block_count=1, cap=2).reason is not None
+
+    def test_추정_미공개는_기록만_하고_차단하지_않는다(self):
+        # 11-20 hand check of 25 real turns: undisclosed was a false positive 14/14.
+        verdict = _verdict(undisclosed=["처리 시간"])
+        assert fr.plan_output_outcome(verdict, None, "표", block_count=0, cap=1).reason is None
 
 
 class _FakeJudge:
@@ -249,14 +261,14 @@ def _run_hook(monkeypatch, tmp_path, judge, *, mode="block", plan=None, decision
     return (json.loads(text) if text else {}), Path(str(transcript) + ".plan.output.json"), spawned
 
 
-BAD = _verdict(undisclosed=["처리 시간"])
+BAD = _verdict(unconfirmed_items=["채널"])
 
 
 class TestBlockMode:
     def test_불일치면_한번_차단하고_기록한다(self, monkeypatch, tmp_path):
         judge = _FakeJudge(BAD)
         out, record_file, spawned = _run_hook(monkeypatch, tmp_path, judge, injected=True)
-        assert out["decision"] == "block" and "추정한 값을 밝힌다: 처리 시간" in out["reason"]
+        assert out["decision"] == "block" and "미확인으로 남긴 항목은 도구로 찾아 채운다: 채널" in out["reason"]
         record = json.loads(record_file.read_text(encoding="utf-8"))
         assert record["blocked"] is True and record["injected"] is True and record["mode"] == "block"
         assert record["verdict"] == BAD and record["round"] == 1 and not spawned
@@ -350,6 +362,41 @@ class TestRecordMode:
         assert not spawned
 
 
+class TestFormBlockMode:
+    # 11-20 hand check: form_issue was right on every 한두줄 record; 문단 answers used the owner's bullet style.
+    def test_한두줄_위반은_판정기_없이_차단하고_판정은_분리한다(self, monkeypatch, tmp_path):
+        judge = _FakeJudge(_verdict())
+        out, _, spawned = _run_hook(monkeypatch, tmp_path, judge, mode="block_form", answer=ANSWER + "\n- a\n- b")
+        assert out["decision"] == "block" and "형태는 한두줄 이다" in out["reason"]
+        assert judge.calls == 0 and len(spawned) == 1
+        log = (tmp_path / "state" / "finish-hook-plan-output.jsonl").read_text(encoding="utf-8").splitlines()
+        assert json.loads(log[-1])["status"] == "form_block"
+
+    def test_형태를_지키면_차단_없이_판정만_분리한다(self, monkeypatch, tmp_path):
+        judge = _FakeJudge(BAD)
+        out, _, spawned = _run_hook(monkeypatch, tmp_path, judge, mode="block_form")
+        assert out == {} and judge.calls == 0 and len(spawned) == 1
+
+    def test_문단은_불릿이_있어도_차단하지_않는다(self, monkeypatch, tmp_path):
+        plan = _plan(output={"form": "문단", "items": ITEMS})
+        out, _, spawned = _run_hook(monkeypatch, tmp_path, _FakeJudge(_verdict()), mode="block_form", plan=plan,
+                                    answer=ANSWER + "\n- a")
+        assert out == {} and len(spawned) == 1
+
+    def test_차단_뒤_재점검은_다시_차단하지_않는다(self, monkeypatch, tmp_path):
+        transcript = _write_transcript(tmp_path, _plan(), ANSWER + "\n- a\n- b")
+        _run_hook(monkeypatch, tmp_path, _FakeJudge(_verdict()), mode="block_form", transcript=transcript,
+                  answer=ANSWER + "\n- a\n- b")
+        out, _, _ = _run_hook(monkeypatch, tmp_path, _FakeJudge(_verdict()), mode="block_form",
+                              transcript=transcript, answer=ANSWER + "\n- a\n- b")
+        assert out == {}
+
+    def test_다른_차단이_있으면_건너뛴다(self, monkeypatch, tmp_path):
+        _, _, spawned = _run_hook(monkeypatch, tmp_path, _FakeJudge(_verdict()), mode="block_form",
+                                  decision="block", answer=ANSWER + "\n- a\n- b")
+        assert not spawned
+
+
 class TestWiring:
     def test_설정_기본값은_꺼짐(self):
         assert RuntimeSettings().plan_output_check == ""
@@ -358,7 +405,8 @@ class TestWiring:
         assert fr.PLAN_OUTPUT_CHECK_ENV in ClaudeEnvironmentPolicy.ADDITIONAL_ALLOWED_VARS
 
     @pytest.mark.parametrize(("intake", "value", "expected"), [
-        (True, "record", "record"), (True, "block", "block"), (True, "", None),
+        (True, "record", "record"), (True, "block", "block"), (True, "block_form", "block_form"),
+        (True, "", None),
         (True, "bogus", None), (False, "block", None),
     ])
     def test_환경은_intake_와_함께일_때_record_block_만_싣는다(self, tmp_path, intake, value, expected):
