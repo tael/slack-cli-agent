@@ -1457,7 +1457,7 @@ class Application:
         lookups for jobs registered under owner trust.
         """
         principal = Principal(
-            user_id=self._profile.owner_user_id if job.trust is TrustLevel.OWNER else "",
+            user_id=_watch_owner_id(job, self._profile.owner_user_id),
             channel=job.channel,
             trust=job.trust,
             is_direct_message=is_direct_message_channel(job.channel),
@@ -1551,7 +1551,7 @@ class Application:
 
     def _run_watch_verdict(self, job: WatchJob, prompt: str, request_id: str) -> EngineResponse:
         principal = Principal(
-            user_id=self._profile.owner_user_id if job.trust is TrustLevel.OWNER else "",
+            user_id=_watch_owner_id(job, self._profile.owner_user_id),
             channel=job.channel,
             trust=job.trust,
             is_direct_message=is_direct_message_channel(job.channel),
@@ -2953,3 +2953,11 @@ def _watch_workdir(job: WatchJob, config: ChannelConfig | None, work_root: Path)
     if config and config.workdir:
         return config.workdir.resolve()
     return work_root.resolve()
+
+
+def _watch_owner_id(job: WatchJob, owner_user_id: str) -> str:
+    """OWNER 감시의 확인 턴을 돌릴 사람. 등록한 사람이 남아 있으면 그 ID 이고,
+    기록이 없는 이전 감시는 주 소유자 ID 다 (2026-11-20 공동 소유자 대응)."""
+    if job.trust is not TrustLevel.OWNER:
+        return ""
+    return str((job.extra or {}).get("user") or owner_user_id)
