@@ -17,6 +17,7 @@
 #                         디렉터리는 거부한다. 작업 트리 사본의 profiles/ 에는
 #                         example 만 있어 구치파치가 콘솔에 나오지 않는다
 #   CONSOLE_HEALTH_TIMEOUT_SEC  기동 확인 대기 상한. 기본 20
+#   CONSOLE_HEALTH_POLL_SEC  기동 확인 간격. 기본 1
 #   LAUNCHCTL, LSOF, CURL  시험용 대역
 set -e
 PORT=${1:-8787}
@@ -27,6 +28,8 @@ LAUNCHCTL=${LAUNCHCTL:-launchctl}
 LSOF=${LSOF:-lsof}
 CURL=${CURL:-curl}
 HEALTH_TIMEOUT=${CONSOLE_HEALTH_TIMEOUT_SEC:-20}
+HEALTH_POLL=${CONSOLE_HEALTH_POLL_SEC:-1}
+HEALTH_TRIES=$(awk -v t="$HEALTH_TIMEOUT" -v p="$HEALTH_POLL" 'BEGIN { print int(t / p) }')
 
 fail() { echo "  $*" >&2; exit 1; }
 
@@ -89,15 +92,15 @@ fi
 
 # launchctl list 에 이름이 있어도 bind 에 실패하면 재기동만 반복한다. HTTP 로 확인한다.
 URL="http://127.0.0.1:$PORT"
-waited=0
+tries=0
 until "$CURL" -fsS -m 2 "$URL/api/health" 2>/dev/null | grep -q '"ok"'; do
-  if [ "$waited" -ge "$HEALTH_TIMEOUT" ]; then
+  if [ "$tries" -ge "$HEALTH_TRIES" ]; then
     # 등록을 남겨 두면 bind 실패로 재기동만 반복한다. 내리고 끝낸다.
     "$LAUNCHCTL" bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
     fail "기동 확인 실패 : $URL/api/health 가 ${HEALTH_TIMEOUT}초 안에 응답하지 않아 등록을 해제했다. 로그 $D/logs/web.err.log"
   fi
-  sleep 1
-  waited=$((waited + 1))
+  sleep "$HEALTH_POLL"
+  tries=$((tries + 1))
 done
 
 echo "  $URL/"

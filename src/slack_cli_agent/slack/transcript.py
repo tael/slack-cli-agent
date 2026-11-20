@@ -212,14 +212,22 @@ class TranscriptBuilder:
         before_ts: str | float | None,
         scope: str = "thread",
         after_ts: str | float | None = None,
+        exclude_self: bool = False,
     ) -> str:
         """Reads Slack history and formats it as a transcript with speaker labels.
 
         Pass after_ts to only include messages since then — used when
         continuing a session, to append what's new since the last
         read instead of re-reading the whole thread every time.
+
+        exclude_self drops this bot's own messages. A resumed session already
+        holds the replies it wrote, so reading them back sends the previous
+        answer twice: in 32 of 32 resumed shinji turns checked on 2026-11-16
+        the history block was exactly that one reply and nothing else.
         """
-        return self.read_thread(channel, thread_ts, before_ts, scope=scope, after_ts=after_ts).body
+        return self.read_thread(
+            channel, thread_ts, before_ts, scope=scope, after_ts=after_ts, exclude_self=exclude_self,
+        ).body
 
     def read_thread(
         self,
@@ -228,6 +236,7 @@ class TranscriptBuilder:
         before_ts: str | float | None,
         scope: str = "thread",
         after_ts: str | float | None = None,
+        exclude_self: bool = False,
     ) -> TranscriptRead:
         """thread_transcript plus whether the read itself succeeded."""
         limit = self._settings.history_max_msgs
@@ -250,6 +259,8 @@ class TranscriptBuilder:
             if before_ts and float(m.get("ts", 0)) >= float(before_ts):
                 continue
             if after_ts and float(m.get("ts", 0)) <= float(after_ts):
+                continue
+            if exclude_self and self._identity.is_self(m):
                 continue
             text = message_text(m).strip()
             # The notice check runs on the raw text: a notice may itself carry

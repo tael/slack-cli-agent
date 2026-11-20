@@ -19,6 +19,10 @@ class ToolAccess(StrEnum):
     FORBIDDEN = "forbidden"
 
 
+#: The subagent tool under its current and former name. The claude init event
+#: lists it as Task when --tools names Agent (claude 2.1.321).
+SUBAGENT_TOOLS = frozenset({"Agent", "Task"})
+
 _RESTRICTION: dict[ToolAccess, ToolRestriction] = {
     ToolAccess.UNRESTRICTED: ToolRestriction.NONE,
     ToolAccess.ALLOWLIST: ToolRestriction.EXACT_ALLOWLIST,
@@ -90,6 +94,22 @@ class ToolSelection:
         if self.access is ToolAccess.UNRESTRICTED:
             return True
         return any(not self.reads(name) for name in self.names)
+
+    @property
+    def can_delegate(self) -> bool:
+        """Whether this turn can hand a branch to a profile subagent
+        (Agent(subagent_type="lookup") and the like).
+
+        Same test as engine/claude._agent_args, which decides whether --agents
+        reaches the CLI: a closed allowlist that names Agent or Task (a scoped
+        form such as Agent(x) counts). An unrestricted turn gets no --agents,
+        so lookup and analyst do not exist there, and a turn without the tool
+        has nothing to call them with. What the turn is told about delegation
+        (prompt/sections.FlowSection, the guard hooks) follows this.
+        """
+        if self.access is not ToolAccess.ALLOWLIST:
+            return False
+        return any(name.split("(", 1)[0] in SUBAGENT_TOOLS for name in self.names)
 
     def reads(self, name: str) -> bool:
         """Whether one name in this selection only reads."""

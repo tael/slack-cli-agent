@@ -76,10 +76,10 @@ class FakeTranscriptBuilder:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    def thread_transcript(self, channel, thread_ts, before_ts, scope="thread", after_ts=None) -> str:
+    def thread_transcript(self, channel, thread_ts, before_ts, scope="thread", after_ts=None, exclude_self=False) -> str:
         self.calls.append(
             {"channel": channel, "thread_ts": thread_ts, "before_ts": before_ts,
-             "scope": scope, "after_ts": after_ts}
+             "scope": scope, "after_ts": after_ts, "exclude_self": exclude_self}
         )
         return ""
 
@@ -170,6 +170,12 @@ class FakeEngine(Engine):
 
     def parse(self, stdout: str, stderr: str, returncode: int) -> EngineResponse:
         raise NotImplementedError
+
+    #: profile.agents 가 있는 것으로 볼지. 기본은 없음.
+    subagents = False
+
+    def has_subagents(self) -> bool:
+        return self.subagents
 
     def new_session_id(self) -> str:
         return "engine-new-session"
@@ -3081,3 +3087,73 @@ def test_소유자_턴은_검수_차단을_한_번으로_묶는다() -> None:
     assert env( "owner_trusted") == {VERIFY_MAX_BLOCKS_ENV: "1"}
     assert env("owner") == {VERIFY_MAX_BLOCKS_ENV: "1"}
     assert env("read") == {} and env("delegated") == {}
+
+
+class Test라우터_shadow_기록:
+    """요청 행에 규칙 라우터 결과를 남긴다. 기록 전용이라 처리 결과는 그대로다."""
+
+    def test_적중_결과가_요청_행에_남는다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(text="오늘 서울 날씨 알려줘"))
+
+        rec = deps["audit"].records[0]
+        assert rec["route_workflow_id"] == "web-lookup"
+        assert rec["route_matched"] is True
+        assert rec["route_reason"].startswith("rule:web-lookup:")
+        assert rec["router_version"] == "rule-v3"
+        assert "route_error" not in rec
+
+    def test_미적중도_행에_남는다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(text="이 함수가 왜 느린지 설명해 줘"))
+
+        rec = deps["audit"].records[0]
+        assert rec["route_workflow_id"] == "deep"
+        assert rec["route_matched"] is False
+        assert rec["route_reason"] == "no-rule"
+
+    def test_재개_턴이_라우터_입력으로_넘어간다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response(), ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(text="첫 질문입니다 길게 써서 후속이 아니게 한다 1234567890"))
+        pipeline.handle(make_ctx(text="다시.", ts="1700000002.000100"))
+
+        first, second = deps["audit"].records
+        assert first["resumed"] is False
+        assert first["route_workflow_id"] == "deep"
+        assert second["resumed"] is True
+        assert second["route_workflow_id"] == "followup"
+
+    def test_재개_턴은_대화록에서_자기_답을_뺀다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[ok_response(), ok_response()], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(text="첫 질문입니다 길게 써서 후속이 아니게 한다 1234567890"))
+        pipeline.handle(make_ctx(text="다음 질문", ts="1700000002.000100"))
+
+        first, second = deps["transcript"].calls
+        assert first["exclude_self"] is False
+        assert second["after_ts"] is not None
+        assert second["exclude_self"] is True
+
+    def test_실패한_요청_행에도_남는다(self, tmp_path: Path) -> None:
+        pipeline, deps = build_pipeline(responses=[fail_response("usage_limit")], tmp_path=tmp_path)
+        pipeline.handle(make_ctx(text="오늘 서울 날씨 알려줘"))
+
+        rec = deps["audit"].records[0]
+        assert rec["ok"] is False
+        assert rec["route_workflow_id"] == "web-lookup"
+
+    def test_라우터가_예외를_내도_요청은_정상이고_route_error_가_남는다(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def boom(*_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("라우터 고장")
+
+        monkeypatch.setattr("slack_cli_agent.core.pipeline.route", boom)
+        pipeline, deps = build_pipeline(responses=[ok_response(body="정상 답")], tmp_path=tmp_path)
+        outcome = pipeline.handle(make_ctx())
+
+        assert outcome.ok is True
+        assert deps["publisher"].posted[0]["text"] == "정상 답"
+        rec = deps["audit"].records[0]
+        assert rec["ok"] is True
+        assert rec["route_error"] == "RuntimeError: 라우터 고장"
+        assert "route_workflow_id" not in rec

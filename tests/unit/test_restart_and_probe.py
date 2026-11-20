@@ -12,6 +12,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from fake_exec import write_fake
+
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tools" / "restart-and-probe.sh"
 
@@ -20,13 +22,12 @@ def _대역(tmp_path: Path, 이름: str, 종료코드: str = "0") -> Path:
     """부른 인자를 기록하고 정해진 코드로 끝나는 명령."""
     path = tmp_path / 이름
     기록 = tmp_path / f"{이름}.기록"
-    path.write_text(
+    write_fake(
+        path,
         "#!/bin/bash\n"
         f'echo "$@" >> "{기록}"\n'
-        f"exit {종료코드}\n",
-        encoding="utf-8",
+        f"exit {종료코드}\n"
     )
-    path.chmod(0o755)
     return path
 
 
@@ -35,16 +36,15 @@ def _봇별대역(tmp_path: Path, 코드들: dict[str, str]) -> Path:
     path = tmp_path / "probe-mixed"
     기록 = tmp_path / "probe-mixed.기록"
     갈래 = "\n".join(f'  {이름}) exit {코드} ;;' for 이름, 코드 in 코드들.items())
-    path.write_text(
+    write_fake(
+        path,
         "#!/bin/bash\n"
         f'echo "$@" >> "{기록}"\n'
         'case "$1" in\n'
         f"{갈래}\n"
         "  *) exit 0 ;;\n"
-        "esac\n",
-        encoding="utf-8",
+        "esac\n"
     )
-    path.chmod(0o755)
     return path
 
 

@@ -33,10 +33,17 @@ AUTH_FAILURE_REASON = "auth_failure"
 #: USAGE_LIMIT_REASON above.
 ENGINE_CONFIG_REASON = "engine_config"
 
-#: Failures a new session can't get past. All four are properties of the
-#: engine, the account, or its settings, not of the conversation.
+#: 모델이 프롬프트 자체를 거부한 상태다. 같은 프롬프트면 새 세션에서도 같은
+#: 거부가 돌아온다 (2026-11-16 디버그 흐름 실측 — 같은 문구를 두 세션에서
+#: 돌렸고 둘 다 reasoning_extraction 으로 끊겼다). 고칠 대상은 프롬프트 문구다.
+#: Must match ClaudeEngine.parse 의 failure_reason 리터럴.
+MODEL_REFUSAL_REASON = "model_refusal"
+
+#: Failures a new session can't get past. All five are properties of the
+#: engine, the account, its settings, or the prompt text -- not of the session.
 NO_RETRY_REASONS = frozenset({
     USAGE_LIMIT_REASON, CAPABILITY_UNMET_REASON, AUTH_FAILURE_REASON, ENGINE_CONFIG_REASON,
+    MODEL_REFUSAL_REASON,
 })
 
 

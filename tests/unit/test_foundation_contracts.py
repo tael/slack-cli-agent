@@ -205,15 +205,18 @@ class Test채널설정키가정식필드다:
             assert 키 not in KNOWN_KEYS
         assert 설정.extra == org
 
-    def test_mention_only는기본동작이라별도키가없다(self) -> None:
-        """I82 — mametchi `mention_only` 는 '멘션에만 응답'이라는 뜻인데, 코어의
-        기본 동작이 바로 그것이다(answer_unaddressed·answer_top_level 둘 다 꺼짐).
-        따라서 대체 키가 아니라 기본값으로 흡수되며, 값이 와도 extra 에만 남고
-        기본 동작을 바꾸지 않는다."""
+    def test_mention_only는별도키가아니라extra에만남는다(self) -> None:
+        """I82 — mametchi `mention_only` 는 대체 키가 아니다. 값이 와도 extra 에만
+        남고 응답 판정을 바꾸지 않는다. 2026-11-17 김태일 지시로
+        answer_unaddressed 기본값이 켜졌으므로(스레드 답글은 멘션 없이도 답한다)
+        멘션에만 답할 채널은 answer_unaddressed: false 를 명시한다. 최상위
+        멘션 없는 글은 여전히 닫혀 있다."""
         기본 = ChannelConfig.from_dict("C1", {})
-        assert 기본.answer_unaddressed is False
+        assert 기본.answer_unaddressed is True
         assert 기본.answer_top_level is False
         명시 = ChannelConfig.from_dict("C1", {"mention_only": True})
-        assert 명시.answer_unaddressed is False
+        assert 명시.answer_unaddressed is True
         assert 명시.answer_top_level is False
         assert 명시.extra == {"mention_only": True}
+        끈채널 = ChannelConfig.from_dict("C1", {"answer_unaddressed": False})
+        assert 끈채널.answer_unaddressed is False

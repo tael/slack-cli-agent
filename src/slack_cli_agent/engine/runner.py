@@ -858,6 +858,9 @@ class FallbackEngine(Engine):
         # capabilities_for above.
         return self._planned().resumes_with_opening_instructions()
 
+    def serving_name(self) -> str:
+        return self._planned().name
+
     def _planned(self) -> Engine:
         if self.switcher.load() and self.switcher.is_approved():
             return self.secondary

@@ -22,6 +22,7 @@ from slack_cli_agent.learning.analyzer import (
 )
 from slack_cli_agent.learning.apply import LearningApplier
 from slack_cli_agent.learning.batch import LearningBatch
+from slack_cli_agent.learning.gate import CarryStore, GatePolicy, LearningGate
 from slack_cli_agent.learning.ports import DayArchives
 from slack_cli_agent.learning.progress import (
     MAX_ATTEMPTS,
@@ -82,12 +83,14 @@ class FakeAnalyzer:
         self.fail_channels = fail_channels if fail_channels is not None else set()
         self.fail_kind = fail_kind
         self.calls: list[str] = []
+        self.texts: list[str] = []
 
     def analyze_channel(
         self, day: str, channel_name: str, archive_text: str,
         reactions: Sequence[Mapping[str, object]],
     ) -> ChannelAnalysis:
         self.calls.append(channel_name)
+        self.texts.append(archive_text)
         if self._fail_reason is not None or channel_name in self.fail_channels:
             return ChannelAnalysis.failed(ChannelFailure(
                 channel=channel_name, kind=self.fail_kind,
@@ -141,6 +144,8 @@ def make_batch(
     notify: Recorder | None = None,
     clock: object | None = None,
     applier: object | None = None,
+    gate: LearningGate | None = None,
+    carry: CarryStore | None = None,
 ) -> tuple[LearningBatch, ProposalStore, Recorder]:
     store = ProposalStore(tmp_path / "proposals")
     applier = applier if applier is not None else LearningApplier(tmp_path / "knowledge", "테스트봇")
@@ -160,6 +165,8 @@ def make_batch(
         renderer=renderer,
         notify=rec,
         clock=fixed_clock,  # type: ignore[arg-type]
+        gate=gate,
+        carry=carry,
     )
     return batch, store, rec
 
@@ -779,3 +786,160 @@ class Test읽기가_실패한_채널:
             batch.run(DAY)
         진행 = ProgressStore(tmp_path / "progress").load(DAY)
         assert 진행.failures["잡담"].attempts == 1
+
+
+def _entry(question: str, stamp: str = "10:00") -> str:
+    return (
+        f"\n## {stamp} KST · 성공\n\n- 질문자 : U1\n- 스레드 : 1.1\n- 소요 : 1.0초, 1턴\n\n"
+        f"### 질문\n\n{question}\n\n### 응답\n\n알겠습니다\n"
+    )
+
+
+class FakeDayArchives:
+    """날짜마다 다른 기록을 돌려준다. 이월은 지난 날짜를 다시 읽는 것이라 필요하다."""
+
+    def __init__(self, days: Mapping[str, Mapping[str, str]]) -> None:
+        self.days = {day: dict(texts) for day, texts in days.items()}
+        self.unreadable_days: dict[str, set[str]] = {}
+
+    def read_day(self, day: str) -> DayArchives:
+        return DayArchives(
+            texts=self.days.get(day, {}),
+            unreadable=frozenset(self.unreadable_days.get(day, ())),
+        )
+
+
+def _gated(tmp_path: Path, archives: FakeDayArchives, *, min_entries: int = 3, max_days: int = 7, **kw):
+    carry = CarryStore(tmp_path / "carry.json")
+    analyzer = kw.pop("analyzer", None) or FakeAnalyzer()
+    batch, store, rec = make_batch(
+        tmp_path, archives=archives, analyzer=analyzer, carry=carry,  # type: ignore[arg-type]
+        gate=LearningGate(GatePolicy(min_entries=min_entries, max_defer_days=max_days)), **kw,
+    )
+    return batch, store, rec, carry, analyzer
+
+
+class Test분석_게이트:
+    def test_기록이_적으면_분석하지_않고_이월한다(self, tmp_path: Path, caplog) -> None:
+        archives = FakeDayArchives({"2026-09-14": {"공지": _entry("안녕") + _entry("시각")}})
+        batch, store, rec, carry, analyzer = _gated(tmp_path, archives)
+
+        with caplog.at_level("INFO"):
+            report = batch.run("2026-09-14")
+
+        assert analyzer.calls == []
+        assert report.ran is False
+        assert "이월" in report.reason and "공지" in report.reason
+        assert carry.load() == {"공지": ("2026-09-14",)}
+        assert rec.calls == []
+        assert not (tmp_path / "proposals" / "2026-09-14.json").exists()
+        assert "공지" in caplog.text and "누적 2건" in caplog.text
+
+    def test_건너뛴_날도_끝난_날로_처리한다(self, tmp_path: Path) -> None:
+        """이월 목록에 남았으니 다시 읽히고, 날짜는 매 틱 후보로 남지 않는다."""
+        archives = FakeDayArchives({"2026-09-14": {"공지": _entry("안녕")}})
+        batch, store, _rec, _carry, analyzer = _gated(tmp_path, archives)
+        batch.run("2026-09-14")
+        assert store.is_done("2026-09-14")
+        batch.run("2026-09-14")
+        assert analyzer.calls == []
+
+    def test_누적량이_기준을_넘으면_이월분과_묶어_분석한다(self, tmp_path: Path) -> None:
+        archives = FakeDayArchives({
+            "2026-09-13": {"공지": _entry("첫째 날 질문")},
+            "2026-09-14": {"공지": _entry("둘째 날 질문 하나") + _entry("둘째 날 질문 둘")},
+        })
+        batch, _store, _rec, carry, analyzer = _gated(tmp_path, archives)
+        batch.run("2026-09-13")
+        assert analyzer.calls == []
+
+        report = batch.run("2026-09-14")
+
+        assert analyzer.calls == ["공지"]
+        assert "첫째 날 질문" in analyzer.texts[0] and "둘째 날 질문 둘" in analyzer.texts[0]
+        assert "2026-09-13" in analyzer.texts[0]
+        assert report.ran is True
+        assert carry.load() == {}
+
+    def test_정정_신호가_있으면_한_건이어도_분석한다(self, tmp_path: Path) -> None:
+        archives = FakeDayArchives({"2026-09-14": {"공지": _entry("아니다. 그건 틀렸다")}})
+        batch, _store, _rec, carry, analyzer = _gated(tmp_path, archives)
+        report = batch.run("2026-09-14")
+        assert analyzer.calls == ["공지"]
+        assert report.ran is True
+        assert carry.load() == {}
+
+    def test_최대_간격이_지나면_그날_기록이_없어도_분석한다(self, tmp_path: Path) -> None:
+        """조용해진 채널의 이월분이 영영 안 읽히는 일을 막는다."""
+        archives = FakeDayArchives({"2026-09-07": {"공지": _entry("한 건")}})
+        batch, _store, _rec, carry, analyzer = _gated(tmp_path, archives, max_days=7)
+        batch.run("2026-09-07")
+        assert carry.load() == {"공지": ("2026-09-07",)}
+
+        before = batch.run("2026-09-13")
+        assert analyzer.calls == []
+        assert before.reason == "응답 기록이 없다"
+
+        report = batch.run("2026-09-14")
+
+        assert analyzer.calls == ["공지"]
+        assert "한 건" in analyzer.texts[0]
+        assert report.ran is True
+        assert carry.load() == {}
+
+    def test_분석이_실패하면_이월분을_지우지_않는다(self, tmp_path: Path) -> None:
+        archives = FakeDayArchives({
+            "2026-09-13": {"공지": _entry("첫째 날")},
+            "2026-09-14": {"공지": _entry("가") + _entry("나")},
+        })
+        failing = FakeAnalyzer(fail_reason="엔진 실패")
+        clock = 가변시계(datetime(2026, 9, 14, 23, 0, tzinfo=UTC))
+        batch, _store, _rec, carry, analyzer = _gated(
+            tmp_path, archives, analyzer=failing, clock=clock,
+        )
+        batch.run("2026-09-13")
+        batch.run("2026-09-14")
+        assert carry.load() == {"공지": ("2026-09-13",)}
+
+        failing._fail_reason = None
+        clock.다음_재시도까지()
+        batch.run("2026-09-14")
+
+        assert carry.load() == {}
+        assert "첫째 날" in analyzer.texts[-1]
+
+    def test_이월분을_읽지_못하면_분석하지_않고_이월을_유지한다(self, tmp_path: Path) -> None:
+        archives = FakeDayArchives({
+            "2026-09-13": {"공지": _entry("첫째 날")},
+            "2026-09-14": {"공지": _entry("가") + _entry("나")},
+        })
+        batch, _store, _rec, carry, analyzer = _gated(tmp_path, archives)
+        batch.run("2026-09-13")
+        archives.unreadable_days["2026-09-13"] = {"공지"}
+        archives.days["2026-09-13"] = {}
+
+        report = batch.run("2026-09-14")
+
+        assert analyzer.calls == []
+        assert "읽지 못" in report.reason
+        assert carry.load() == {"공지": ("2026-09-13", "2026-09-14")}
+
+    def test_채널마다_따로_판정한다(self, tmp_path: Path) -> None:
+        archives = FakeDayArchives({"2026-09-14": {
+            "공지": _entry("가"),
+            "잡담": _entry("a") + _entry("b") + _entry("c"),
+        }})
+        batch, _store, _rec, carry, analyzer = _gated(tmp_path, archives)
+        report = batch.run("2026-09-14")
+        assert analyzer.calls == ["잡담"]
+        assert carry.load() == {"공지": ("2026-09-14",)}
+        assert report.ran is True
+
+    def test_게이트가_없으면_기록이_적어도_분석한다(self, tmp_path: Path) -> None:
+        analyzer = FakeAnalyzer()
+        batch, _store, _rec = make_batch(
+            tmp_path, archives=FakeDayArchives({"2026-09-14": {"공지": _entry("한 건")}}),  # type: ignore[arg-type]
+            analyzer=analyzer,
+        )
+        assert batch.run("2026-09-14").ran is True
+        assert analyzer.calls == ["공지"]

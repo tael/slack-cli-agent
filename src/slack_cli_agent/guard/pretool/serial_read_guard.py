@@ -52,10 +52,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from slack_cli_agent.guard.posttool.parallel_nudge import is_read
+    from slack_cli_agent.guard.posttool.parallel_nudge import delegation_enabled, is_read
 except ImportError:  # pragma: no cover - run straight from a source checkout
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from slack_cli_agent.guard.posttool.parallel_nudge import is_read
+    from slack_cli_agent.guard.posttool.parallel_nudge import delegation_enabled, is_read
 
 #: Absolute path to this file, for the engine adapter that builds the hook
 #: command (same pattern as the other guard/pretool modules' HOOK_SCRIPT).
@@ -81,13 +81,24 @@ TAIL_BYTES = 600_000
 #: text, which is how the next call recognises "this was just denied".
 MARKER = "[연속 단건 조회]"
 
-REASON = (
+REASON_HEAD = (
     MARKER + " 이번 요청에서 조회를 한 응답에 하나씩 {run}번 연달아 불렀다. "
     "남은 조사를 `[계획 갱신]`으로 갈래마다 한 줄씩 적고, 앞 결과가 필요한 갈래는 의존을 표시하라. "
-    "독립 갈래가 둘 이상이면 지금 한 응답에 함께 불러라. 도구 호출 3회 이상이 드는 갈래는 "
-    "Agent(subagent_type=\"lookup\")에 범위, 목표, 금지 조건, 반환 형식을 적어 맡겨라. "
-    "앞 결과가 꼭 필요하면 같은 호출을 그대로 다시 불러라."
+    "독립 갈래가 둘 이상이면 지금 한 응답에 함께 불러라. "
 )
+#: Only where AGENT_DELEGATION is set (the turn's tool list has Agent or Task).
+REASON_DELEGATION = (
+    "도구 호출 3회 이상이 드는 갈래는 "
+    "Agent(subagent_type=\"lookup\")에 범위, 목표, 금지 조건, 반환 형식을 적어 맡겨라. "
+)
+REASON_TAIL = "앞 결과가 꼭 필요하면 같은 호출을 그대로 다시 불러라."
+#: The reason without delegation, the default. Callers match denied results on
+#: MARKER, which every variant starts with.
+REASON = REASON_HEAD + REASON_TAIL
+
+
+def build_reason(run: int, delegation: bool = False) -> str:
+    return (REASON_HEAD + (REASON_DELEGATION if delegation else "") + REASON_TAIL).format(run=run)
 
 
 @dataclass
@@ -291,7 +302,7 @@ def main(argv: list[str]) -> int:
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": REASON.format(run=run),
+            "permissionDecisionReason": build_reason(run, delegation_enabled()),
         },
     }, ensure_ascii=False))
     return 0

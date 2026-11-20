@@ -54,6 +54,16 @@ NON_INTERACTIVE_ENV: Mapping[str, str] = {
     "CI": "1",
 }
 
+#: Fixed on every claude turn. A headless turn ends at its result event, so a
+#: background task (Agent's default async launch, Bash run_in_background)
+#: comes back as a <task-notification> user row and a second result in the
+#: same process; the guard hooks read that row as human input and the turn's
+#: elapsed counts only the last result (2026-11-16 agent-exp-shinji run2).
+#: With this set the Agent call waits for its result and parallel calls in
+#: one response still overlap (run3, claude 2.1.325). Production transcripts
+#: had no run_in_background call in 378 sessions before this was set.
+CLAUDE_SYNC_TASKS_ENV: Mapping[str, str] = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
+
 #: Seconds left at the end of a turn for writing the answer. Must equal
 #: guard/pretool/turn_budget.DEFAULT_WRAPUP_SEC; a test pins the two together.
 TURN_WRAPUP_SEC = 60
@@ -164,7 +174,7 @@ def _with_turn_id(
     turn = source_env.get("TURN_ID")
     if not turn:
         return env
-    owned = set(env) | set(NON_INTERACTIVE_ENV) | guarded | _RESERVED_ALIAS_NAMES
+    owned = set(env) | set(NON_INTERACTIVE_ENV) | set(CLAUDE_SYNC_TASKS_ENV) | guarded | _RESERVED_ALIAS_NAMES
     env["TURN_ID"] = turn
     for name in (source_env.get(TURN_ID_ALIASES_ENV) or "").split(","):
         name = name.strip()
@@ -365,8 +375,32 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # guard/pretool/plan_gate: the response number from which a call needs
         # a `[계획]` block first. Set per turn by the pipeline (W4); a number.
         "PLAN_GATE",
+        # The turn's tool list has Agent or Task, so guard hooks and the
+        # planner may name the profile's subagents (ToolSelection.can_delegate).
+        # "1" or absent.
+        "AGENT_DELEGATION",
         # guard/plan_start: planner model override (default haiku). A model name.
         "SCA_PLAN_MODEL",
+        # guard/plan_start: JSON {workflow id: description} the planner
+        # classifies the request into (record only). Names and prose.
+        "SCA_PLAN_WORKFLOWS",
+        # guard/plan_start: "1" asks the planner for intent, assumptions, ack
+        # and checks too (record only).
+        "SCA_PLAN_INTAKE",
+        # guard/plan_start: "separate" or "combined" refines the request before
+        # planning; SCA_PLAN_SOURCES is the JSON list of tool names this turn has.
+        "SCA_PLAN_REFINE",
+        "SCA_PLAN_SOURCES",
+        # guard/pretool/plan_gate: "1" adds expected output, assumptions and
+        # checks to the one-time plan injection.
+        "SCA_PLAN_INTAKE_INJECT",
+        # guard/plan_start: "2" asks for inputs/output instead of the v1 intake fields.
+        "SCA_PLAN_INTAKE_SCHEMA",
+        # Stop hook plan-check switch and its own block cap (finish_review N6).
+        "SCA_PLAN_INTAKE_CHECK",
+        # Stop hook v2 output check: "record" or "block" (finish_review).
+        "SCA_PLAN_OUTPUT_CHECK",
+        "SCA_PLAN_CHECK_MAX_BLOCKS",
         # Stop hook model verify toggle and model (finish_review.
         # resolve_verify_settings). On by default; these only override.
         "SCA_FINISH_VERIFY",
@@ -418,6 +452,7 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         env.setdefault("MCP_TOOL_TIMEOUT", DEFAULT_MCP_TOOL_TIMEOUT_MS)
         env.update(self._tmp_env(claude=True))
         env.update(NON_INTERACTIVE_ENV)
+        env.update(CLAUDE_SYNC_TASKS_ENV)
         return _with_turn_id(env, source_env, self.ADDITIONAL_ALLOWED_VARS)
 
 

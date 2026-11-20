@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fake_exec import write_fake
 
 REPO = Path(__file__).resolve().parents[2]
 등록기 = REPO / "tools" / "register-launchd.sh"
@@ -36,14 +37,13 @@ def 생성된plist(tmp_path: Path) -> dict[str, Any]:
     가짜 = bin_dir / "launchctl"
     # print 는 113(서비스 없음)을 낸다. bootout 뒤 사라짐을 기다리는 쪽이
     # 여기서 멈추지 않게 한다.
-    가짜.write_text(
+    write_fake(
+        가짜,
         "#!/bin/bash\n"
         'echo "launchctl $*" >> "$HOME/launchctl.log"\n'
         '[ "$1" = print ] && exit 113\n'
-        "exit 0\n",
-        encoding="utf-8",
+        "exit 0\n"
     )
-    가짜.chmod(0o755)
 
     결과 = subprocess.run(
         ["/bin/bash", str(등록기), "testbot"],
@@ -142,7 +142,8 @@ class Test재등록:
         bin_dir.mkdir()
         기록 = tmp_path / "호출.log"
         가짜 = bin_dir / "launchctl"
-        가짜.write_text(
+        write_fake(
+            가짜,
             "#!/bin/bash\n"
             # bootstrap 이 불릴 때 그 역할의 표식이 이미 없어야 한다. 그
             # 사실을 호출 시점에 그대로 기록한다.
@@ -158,10 +159,8 @@ class Test재등록:
             # print 는 113(서비스 없음). bootout 완료를 기다리는 쪽이 여기서
             # 멈추지 않게 한다.
             '[ "$1" = print ] && exit 113\n'
-            "exit 0\n",
-            encoding="utf-8",
+            "exit 0\n"
         )
-        가짜.chmod(0o755)
 
         결과 = subprocess.run(
             ["/bin/bash", str(등록기), "testbot"],
@@ -213,7 +212,8 @@ class Test기존서비스가_사라질_때까지_기다린다:
         가짜 = bin_dir / "launchctl"
         # bootout 뒤 print 가 몇 번은 "아직 있다" 를 돌려준다. 그 사이에
         # bootstrap 을 부르면 기록에 남아 시험이 검출한다.
-        가짜.write_text(
+        write_fake(
+            가짜,
             f"""#!/bin/bash
 LOG="$HOME/launchctl.log"
 CNT="$HOME/print.count"
@@ -228,10 +228,8 @@ case "$1" in
   bootout) echo 0 > "$CNT" ;;
 esac
 exit 0
-""",
-            encoding="utf-8",
+"""
         )
-        가짜.chmod(0o755)
         return subprocess.run(
             ["/bin/bash", str(등록기), "testbot"],
             capture_output=True,
@@ -273,16 +271,15 @@ class Test등록이_실패하면_그렇게_끝난다:
         bin_dir = tmp_path / "가짜bin"
         bin_dir.mkdir()
         가짜 = bin_dir / "launchctl"
-        가짜.write_text(
+        write_fake(
+            가짜,
             "#!/bin/bash\n"
             'echo "$1" >> "$HOME/launchctl.log"\n'
             '[ "$1" = print ] && exit 113\n'
             # launchd 가 내는 것과 같은 실패.
             '[ "$1" = bootstrap ] && { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }\n'
-            "exit 0\n",
-            encoding="utf-8",
+            "exit 0\n"
         )
-        가짜.chmod(0o755)
         return subprocess.run(
             ["/bin/bash", str(등록기), "testbot"],
             capture_output=True,
@@ -315,14 +312,13 @@ class Test감독_등록:
         bin_dir = tmp_path / "가짜bin"
         bin_dir.mkdir(exist_ok=True)
         가짜 = bin_dir / "launchctl"
-        가짜.write_text(
+        write_fake(
+            가짜,
             "#!/bin/bash\n"
             'echo "$1 $2" >> "$HOME/launchctl.log"\n'
             '[ "$1" = print ] && exit 113\n'
-            "exit 0\n",
-            encoding="utf-8",
+            "exit 0\n"
         )
-        가짜.chmod(0o755)
         env = dict(
             os.environ,
             HOME=str(tmp_path),
@@ -398,8 +394,7 @@ class Test감독_차단표식:
         봇자리 = run_sh.parent
         (봇자리 / "venv" / "bin").mkdir(parents=True)
         cli = 봇자리 / "venv" / "bin" / "slack-cli-agent"
-        cli.write_text("#!/bin/bash\nexit 78\n", encoding="utf-8")
-        cli.chmod(0o755)
+        write_fake(cli, "#!/bin/bash\nexit 78\n")
         run_sh.write_text(
             (REPO / "tools" / "templates" / "run.sh").read_text(encoding="utf-8")
             .replace("__NAME__", "testbot")
@@ -426,10 +421,10 @@ class Test감독_차단표식:
         (봇자리 / "preflight-blocked" / "supervisor").write_text("x", encoding="utf-8")
         bin_dir = tmp_path / "가짜bin"
         bin_dir.mkdir()
-        (bin_dir / "launchctl").write_text(
-            '#!/bin/bash\necho "$@" >> "$HOME/launchctl.log"\n', encoding="utf-8"
+        write_fake(
+            (bin_dir / "launchctl"),
+            '#!/bin/bash\necho "$@" >> "$HOME/launchctl.log"\n'
         )
-        (bin_dir / "launchctl").chmod(0o755)
         결과 = subprocess.run(
             ["/bin/bash", str(REPO / "tools" / "unblock.sh"), "testbot", "supervisor"],
             capture_output=True, text=True, timeout=30,

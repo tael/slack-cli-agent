@@ -87,7 +87,9 @@
     }
   },
   "usage_check_command": [],
+  "_comment_langfuse_hook": "settings.langfuse_hook 에 훅 실행 파일 경로를 적으면 Stop·SessionEnd 에 붙는다. 빈 값이면 꺼짐이고 다른 머신 봇은 기본으로 꺼져 있다. 경로에 파일이 없으면 붙이지 않고 경고를 한 번 남긴다.",
   "settings": {
+    "langfuse_hook": "",
     "request_timeout_sec": 900,
     "max_concurrent": 10,
     "readonly_tools": [

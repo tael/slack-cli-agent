@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
+from fake_exec import write_fake
 
 REPO = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO / "tools" / "templates" / "run.sh"
@@ -33,16 +34,22 @@ def _봇자리(tmp_path: Path, *, 종료코드: int, 지연초: float = 0, term�
     (d / "logs").mkdir()
     cli = d / "venv" / "bin" / "slack-cli-agent"
     무시 = "trap '' TERM INT HUP\n" if term무시 else ""
-    cli.write_text(
+    write_fake(
+        cli,
         "#!/bin/bash\n"
         + 무시
         + f'echo "$@" > "{d}/불린인자.txt"\n'
         + (f"sleep {지연초}\n" if 지연초 else "")
-        + f"exit {종료코드}\n",
-        encoding="utf-8",
+        + f"exit {종료코드}\n"
     )
-    cli.chmod(0o755)
     return d
+
+
+def _생길때까지(path: Path, 상한초: float = 10) -> None:
+    마감 = time.monotonic() + 상한초
+    while not path.exists():
+        assert time.monotonic() < 마감, f"{path} 가 {상한초}초 안에 안 생겼다"
+        time.sleep(0.02)
 
 
 def _wrapper(tmp_path: Path, 봇자리: Path) -> Path:
@@ -129,7 +136,9 @@ class Test신호전달:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        time.sleep(1.5)
+        # The wrapper installs its TERM trap a few lines after starting the child.
+        _생길때까지(봇 / "불린인자.txt")
+        time.sleep(0.2)
         proc.send_signal(signal.SIGTERM)
         proc.wait(timeout=10)
 
@@ -150,13 +159,15 @@ class Test신호전달:
         봇 = _봇자리(tmp_path, 종료코드=0, 지연초=60, term무시=True)
         proc = subprocess.Popen(
             ["/bin/bash", str(_wrapper(tmp_path, 봇)), "worker"],
-            env=dict(os.environ, HOME=str(tmp_path), SHUTDOWN_GRACE_SEC="2"),
+            env=dict(os.environ, HOME=str(tmp_path), SHUTDOWN_GRACE_SEC="0.5"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        time.sleep(1.5)
+        # The wrapper installs its TERM trap a few lines after starting the child.
+        _생길때까지(봇 / "불린인자.txt")
+        time.sleep(0.2)
         proc.send_signal(signal.SIGTERM)
-        # 유예 2초 + 여유. 안 끝나면 여기서 TimeoutExpired 로 실패한다.
+        # 유예 0.5초 + 여유. 안 끝나면 여기서 TimeoutExpired 로 실패한다.
         proc.wait(timeout=15)
 
         남은 = subprocess.run(
@@ -221,14 +232,13 @@ class Test기존봇동기화:
             (d / ".slack_app_token").write_text("xapp-1-시험용\n", encoding="utf-8")
         cli = d / "venv" / "bin" / "slack-cli-agent"
         # 넘겨받은 환경을 그대로 적어 두는 대역. 무엇이 전달됐는지 본다.
-        cli.write_text(
+        write_fake(
+            cli,
             "#!/bin/bash\n"
             f'echo "BOT=${{SLACK_BOT_TOKEN:-없음}}" > "{d}/받은환경.txt"\n'
             f'echo "APP=${{SLACK_APP_TOKEN:-없음}}" >> "{d}/받은환경.txt"\n'
-            "exit 0\n",
-            encoding="utf-8",
+            "exit 0\n"
         )
-        cli.chmod(0o755)
         return d
 
     def _돌린다(self, tmp_path: Path, name: str) -> subprocess.CompletedProcess[str]:
@@ -283,8 +293,7 @@ class Test기존봇동기화:
         봇 = self._봇(tmp_path, "asuka", 토큰파일=True)
         self._돌린다(tmp_path, "asuka")
         cli = 봇 / "venv" / "bin" / "slack-cli-agent"
-        cli.write_text("#!/bin/bash\nexit 78\n", encoding="utf-8")
-        cli.chmod(0o755)
+        write_fake(cli, "#!/bin/bash\nexit 78\n")
 
         결과 = _실행(봇 / "run.sh", tmp_path, "worker")
         assert 결과.returncode == 78
@@ -404,8 +413,7 @@ class Test표식을_옮기다_실패하는_경우:
         # rename 도 된다.
         가짜 = tmp_path / ".local" / "bin"
         가짜.mkdir(parents=True)
-        (가짜 / "mv").write_text("#!/bin/bash\nexit 1\n", encoding="utf-8")
-        (가짜 / "mv").chmod(0o755)
+        write_fake((가짜 / "mv"), "#!/bin/bash\nexit 1\n")
 
         결과 = _실행(run, tmp_path, "worker")
 
@@ -440,20 +448,21 @@ class Test잠자기방지:
 
     def _가짜_caffeinate(self, tmp_path: Path) -> Path:
         가짜 = tmp_path / "caffeinate"
-        가짜.write_text(f'#!/bin/bash\necho "$@" > "{tmp_path}/caffeinate인자.txt"\n', encoding="utf-8")
-        가짜.chmod(0o755)
+        write_fake(가짜, f'#!/bin/bash\necho "$@" > "{tmp_path}/caffeinate인자.txt"\n')
         return 가짜
 
     def test_본체_pid_에_caffeinate_s_를_건다(self, tmp_path: Path) -> None:
         봇 = _봇자리(tmp_path, 종료코드=0, 지연초=1)
         cli = 봇 / "venv" / "bin" / "slack-cli-agent"
-        cli.write_text(f'#!/bin/bash\necho $$ > "{봇}/pid.txt"\nsleep 1\nexit 0\n', encoding="utf-8")
+        write_fake(cli, f'echo $$ > "{봇}/pid.txt"\nexit 0\n')
         run = _wrapper(tmp_path, 봇)
         env = dict(os.environ, HOME=str(tmp_path), CAFFEINATE=str(self._가짜_caffeinate(tmp_path)))
         결과 = subprocess.run(
             ["/bin/bash", str(run), "worker"], capture_output=True, text=True, env=env, timeout=20
         )
         assert 결과.returncode == 0, 결과.stderr
+        # caffeinate runs in the background and the wrapper does not wait for it.
+        _생길때까지(tmp_path / "caffeinate인자.txt")
         인자 = (tmp_path / "caffeinate인자.txt").read_text(encoding="utf-8").split()
         pid = (봇 / "pid.txt").read_text(encoding="utf-8").strip()
         assert "-s" in 인자
@@ -477,7 +486,7 @@ class Test본체_stdin:
         물려받으면 EOF 를 못 받아 멈춘다 (2026-09-28 codex exec 43분 공전)."""
         봇 = _봇자리(tmp_path, 종료코드=0)
         cli = 봇 / "venv" / "bin" / "slack-cli-agent"
-        cli.write_text(f'#!/bin/bash\ncat > "{봇}/stdin.txt"\nexit 0\n', encoding="utf-8")
+        write_fake(cli, f'cat > "{봇}/stdin.txt"\nexit 0\n')
         proc = subprocess.Popen(
             ["/bin/bash", str(_wrapper(tmp_path, 봇)), "worker"],
             env=dict(os.environ, HOME=str(tmp_path)),

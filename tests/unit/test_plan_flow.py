@@ -70,8 +70,8 @@ class TestFlowSection:
         assert RuntimeSettings().override({"plan_flow": False}).plan_flow is False
 
     def test_네_단계와_계획_형식과_위임을_담는다(self) -> None:
-        text = FlowSection().render(_ctx())
-        for word in ("1. 분석", "2. 계획", "3. 병렬 실행", "4. 다듬기", "단답형", "갈래형", "탐색형"):
+        text = FlowSection().render(_ctx(delegation=True))
+        for word in ("1. 분석", "2. 계획", "3. 병렬 실행", "4. 다듬기", "short", "branch", "explore"):
             assert word in text
         assert "[작업 순서]" in text and "[계획 갱신]" in text
         assert "계획 확인 훅이 호출을 거부한다" not in text
@@ -82,7 +82,7 @@ class TestFlowSection:
             assert item in text
 
     def test_60줄_이하다(self) -> None:
-        assert len(FlowSection().render(_ctx()).splitlines()) <= 60
+        assert len(FlowSection().render(_ctx(delegation=True)).splitlines()) <= 60
 
     def test_티어_집합과_판정이_같다(self) -> None:
         assert {"owner", "operator", "delegated"} <= set(FLOW_TIERS)
@@ -122,6 +122,21 @@ class TestPlannerParse:
 
     def test_CLI_오류는_error_cli_다(self) -> None:
         assert ps.parse(json.dumps({"is_error": True}))[0] == "error:cli"
+
+    def test_이벤트_배열_출력에서도_계획을_꺼낸다(self) -> None:
+        # 2026-11-16: 운영자 settings 의 verbose: true 가 --setting-sources "" 로도
+        # 안 빠져 CLI 가 이벤트 배열을 냈고, 계획 호출 26건이 전부 error:cli 였다.
+        result = json.loads(_cli_result(_PLAN))
+        events = [{"type": "system", "subtype": "init"}, {"type": "assistant"}, {"type": "result", **result}]
+        status, plan = ps.parse(json.dumps(events))
+        assert status == "ok" and plan is not None
+        assert plan["type"] == "branch"
+
+    def test_result_이벤트가_없는_배열은_bad_output_이다(self) -> None:
+        assert ps.parse(json.dumps([{"type": "system"}])) == ("bad_output", None)
+
+    def test_배열_안의_CLI_오류는_error_cli_다(self) -> None:
+        assert ps.parse(json.dumps([{"type": "result", "is_error": True}]))[0] == "error:cli"
 
 
 class TestPlannerRun:
@@ -179,7 +194,7 @@ class TestPlannerRun:
         assert len(calls) == 1 and record["type"] == "short" and "rca_retry" not in record
 
     def test_planner_지시문이_원인_분석을_short_에서_뺀다(self) -> None:
-        assert "5why" in ps.PLANNER_PROMPT and "short 가 아니다" in ps.PLANNER_PROMPT
+        assert "5why" in ps.PLANNER_PROMPT and "항상 explore" in ps.PLANNER_PROMPT
 
 
 class TestPlannerStart:
@@ -218,6 +233,53 @@ class TestPlannerStart:
         assert proc.returncode == 0 and proc.stdout == ""
 
 
+class TestPlannerSync:
+    @pytest.fixture(autouse=True)
+    def _on(self, monkeypatch: Any) -> None:
+        for key in ("SCA_PLAN_NESTED", "SCA_VERIFY_NESTED"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("PLAN_GATE", "3")
+        monkeypatch.setenv("AGENT_DELEGATION", "1")
+        monkeypatch.setenv(ps.PLAN_SYNC_ENV, "1")
+
+    def _data(self, tmp_path: Path) -> dict[str, Any]:
+        return {"transcript_path": str(tmp_path / "s.jsonl"), "prompt": "조회해 줘"}
+
+    def test_동기_모드는_분리_실행_없이_짧은_제한으로_계획한다(self, tmp_path: Path) -> None:
+        seen: list[float] = []
+        verdict = ps.start(self._data(tmp_path), spawn=lambda *a, **k: pytest.fail("spawned"),
+                           runner=lambda transcript, timeout: seen.append(timeout))
+        assert verdict == "sync" and seen == [ps.SYNC_TIMEOUT_SEC]
+
+    def test_훅이_계획을_프롬프트_컨텍스트로_내고_도구_시점_주입을_막는다(
+            self, tmp_path: Path, monkeypatch: Any, capsys: Any) -> None:
+        data = self._data(tmp_path)
+
+        def fake_run(transcript: str, timeout: float) -> None:
+            _write_plan(transcript, status="ok", **_PLAN)
+
+        monkeypatch.setattr(ps, "run", fake_run)
+        monkeypatch.setattr(sys, "stdin", __import__("io").StringIO(json.dumps(data)))
+        assert ps.main(["plan_start.py"]) == 0
+        out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+        assert out["hookEventName"] == "UserPromptSubmit"
+        assert out["additionalContext"].startswith(pg.INJECT_HEAD)
+        assert pg.decide({"transcript_path": data["transcript_path"], "tool_name": "Read"}) == ("already", "")
+
+    def test_단답형_계획이면_아무것도_출력하지_않는다(self, tmp_path: Path, monkeypatch: Any, capsys: Any) -> None:
+        data = self._data(tmp_path)
+        monkeypatch.setattr(ps, "run", lambda transcript, timeout: _write_plan(
+            transcript, status="ok", type="short", branches=[]))
+        monkeypatch.setattr(sys, "stdin", __import__("io").StringIO(json.dumps(data)))
+        assert ps.main(["plan_start.py"]) == 0
+        assert capsys.readouterr().out == ""
+
+    def test_스위치_해석(self) -> None:
+        assert ps.sync_enabled({}) is False
+        assert ps.sync_enabled({ps.PLAN_SYNC_ENV: "0"}) is False
+        assert ps.sync_enabled({ps.PLAN_SYNC_ENV: "1"}) is True
+
+
 def _write_plan(transcript: str, **plan: Any) -> None:
     ps.plan_path(transcript).write_text(json.dumps({"finished_at": time.time(), **plan}), encoding="utf-8")
 
@@ -226,6 +288,7 @@ class TestPlanGateInject:
     @pytest.fixture(autouse=True)
     def _on(self, monkeypatch: Any) -> None:
         monkeypatch.setenv("PLAN_GATE", "3")
+        monkeypatch.setenv("AGENT_DELEGATION", "1")
 
     def _call(self, tmp_path: Path, **extra: Any) -> dict[str, Any]:
         return {"transcript_path": str(tmp_path / "s.jsonl"), "tool_use_id": "t1", "tool_name": "Read", **extra}
@@ -275,6 +338,49 @@ class TestPlanGateInject:
         assert pg.threshold_from_env({"PLAN_GATE": ""}) == 0
         assert pg.threshold_from_env({"PLAN_GATE": "x"}) == 0
         assert pg.threshold_from_env({"PLAN_GATE": "3"}) == 3
+
+
+_PARALLEL_PLAN = {
+    "type": "explore",
+    "branches": [
+        {"goal": "환율", "source": "open.er-api.com", "depends_on": [], "delegate": "lookup", "returns": "수치"},
+        {"goal": "메모 검색", "source": "Apple Notes", "depends_on": [], "delegate": "analyst", "returns": "목록"},
+        {"goal": "요약", "source": "앞 결과", "depends_on": [1, 2], "delegate": "lookup", "returns": "문단"},
+        {"goal": "일정", "source": "캘린더", "depends_on": [], "delegate": "none", "returns": "목록"},
+    ],
+}
+
+
+class TestPlanGateForceParallel:
+    def test_의존_없는_위임_갈래가_둘_이상이면_호출_형태로_적는다(self) -> None:
+        text = pg.render(_PARALLEL_PLAN, delegation=True, force_parallel=True)
+        assert pg.FORCE_PARALLEL_HEAD in text
+        assert 'Agent(subagent_type="lookup", prompt="목표: 환율 / 원천: open.er-api.com / 반환: 수치")' in text
+        assert 'Agent(subagent_type="analyst", prompt="목표: 메모 검색' in text
+        assert "목표: 요약" not in text.split(pg.FORCE_PARALLEL_HEAD)[1]
+        assert "목표: 일정" not in text.split(pg.FORCE_PARALLEL_HEAD)[1]
+        assert text.endswith(pg.INJECT_TAIL_END)
+
+    def test_위임_갈래가_하나뿐이면_강제_문단을_내지_않는다(self) -> None:
+        assert pg.FORCE_PARALLEL_HEAD not in pg.render(_PLAN, delegation=True, force_parallel=True)
+
+    def test_스위치나_위임이_꺼져_있으면_강제_문단을_내지_않는다(self) -> None:
+        assert pg.FORCE_PARALLEL_HEAD not in pg.render(_PARALLEL_PLAN, delegation=True, force_parallel=False)
+        assert pg.FORCE_PARALLEL_HEAD not in pg.render(_PARALLEL_PLAN, delegation=False, force_parallel=True)
+
+    def test_decide_는_환경값으로_스위치를_읽는다(self, tmp_path: Path, monkeypatch: Any) -> None:
+        monkeypatch.setenv("PLAN_GATE", "3")
+        monkeypatch.setenv("AGENT_DELEGATION", "1")
+        monkeypatch.setenv(pg.FORCE_PARALLEL_ENV, "1")
+        call = {"transcript_path": str(tmp_path / "s.jsonl"), "tool_use_id": "t1", "tool_name": "Read"}
+        _write_plan(call["transcript_path"], status="ok", **_PARALLEL_PLAN)
+        verdict, context = pg.decide(call)
+        assert verdict == "inject" and pg.FORCE_PARALLEL_HEAD in context
+
+    def test_환경값_해석(self) -> None:
+        assert pg.force_parallel_from_env({}) is False
+        assert pg.force_parallel_from_env({pg.FORCE_PARALLEL_ENV: "0"}) is False
+        assert pg.force_parallel_from_env({pg.FORCE_PARALLEL_ENV: "1"}) is True
 
 
 def _run_hook(transcript: str, env_value: str | None) -> tuple[dict[str, Any] | None, int]:
@@ -328,7 +434,7 @@ class TestPlanGateHook:
 
 
 def test_연속_조회_거부_문구가_계획_갱신과_위임을_안내한다() -> None:
-    reason = srg.REASON.format(run=6)
+    reason = srg.build_reason(6, delegation=True)
     assert reason.startswith(srg.MARKER)
     assert "[계획 갱신]" in reason
     assert 'Agent(subagent_type="lookup")' in reason
@@ -399,3 +505,22 @@ class TestPipelinePlanGateEnv:
         pipeline.handle(make_ctx(channel="C1", user=user))
         call = deps["runner"].calls[0]
         assert ("PLAN_GATE" in call.engine_env) is expected
+
+
+class TestDoneWhen:
+    def test_완료_조건이_안내에_들어가고_대조_지시가_붙는다(self) -> None:
+        from slack_cli_agent.guard.pretool import plan_gate
+
+        text = plan_gate.render({"type": "branch", "done_when": ["수치 확인", "원천 표기"], "branches": []})
+        assert "완료 조건 : 수치 확인 / 원천 표기" in text
+        assert "미확인" in text
+
+    def test_완료_조건이_없으면_안내가_바뀌지_않는다(self) -> None:
+        from slack_cli_agent.guard.pretool import plan_gate
+
+        text = plan_gate.render({"type": "branch", "branches": []})
+        assert "완료 조건" not in text
+
+    def test_schema_에서_done_when_은_선택이다(self) -> None:
+        schema = ps.schema(False)
+        assert "done_when" in schema["properties"] and "done_when" not in schema["required"]

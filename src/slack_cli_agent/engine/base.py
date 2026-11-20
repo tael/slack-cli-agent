@@ -339,6 +339,9 @@ KNOWN_DETAIL_CODES = frozenset(
         "pending", "approved", "denied",
         # runner: capability axis that blocked the run
         "tool_restriction", "execution_isolation", "instruction_boundary",
+        # claude: refusal category from the CLI's own error text
+        # (2026-11-16 실측 reasoning_extraction). 새 카테고리는 unknown 으로 남는다.
+        "reasoning_extraction", "unknown",
     }
 )
 
@@ -561,6 +564,14 @@ class Engine(ABC):
 
     name: ClassVar[str] = ""
 
+    def serving_name(self) -> str:
+        """Name of the engine that runs (or ran) this turn.
+
+        Equals `name` except for a delegating engine, whose own name is not
+        one the profile's engine specs know (plan-file lookup keys on it).
+        """
+        return self.name
+
     #: What this engine can enforce at best. The actual guarantee for one
     #: request is capabilities_for() -- codex's sandbox comes from profile
     #: options, and claude's allowlist only holds if the request has one.
@@ -628,6 +639,14 @@ class Engine(ABC):
         self.profile = profile
         self.settings = settings
         self._instruction_ledger = InstructionLedger(refresh_after=self.instruction_refresh_after)
+
+    def has_subagents(self) -> bool:
+        """Whether the profile defines subagents (profile.agents) for a
+        delegating turn to call. Without them engine/claude._agent_args sends
+        no --agents, so Agent(subagent_type="lookup") names nothing and the
+        turn must not be told it can delegate (2026-11-16: owner_tools gained
+        Agent with no agents defined)."""
+        return bool(self.profile.agents)
 
     def resumes_with_opening_instructions(self) -> bool:
         """Whether a resumed turn runs under the instructions the session

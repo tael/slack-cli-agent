@@ -21,6 +21,24 @@ printf '%s  종료코드=%s\n%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$CODE" "$OUT"
 
 # 이상 없음도 로그에 남긴다. 성공 경로가 조용하면 실패 한 줄이 그 뒤 구간
 # 전체로 읽힌다.
+audit_engine_settings() {
+    # install-settings.py skips files that already exist, so a template fix never
+    # reaches a running bot on its own (2026-11-18: ~/.claude deny left on shinji 9 days).
+    local profile bot drift="" out
+    for profile in "$REPO"/profiles/*.json; do
+        bot="$(basename "$profile" .json)"
+        [ -f "$HOME/.$bot/engine/settings-claude.json" ] || continue
+        out=$("$REPO/tools/install-settings.py" "$bot" --check 2>&1) || drift+="$out"$'\n'
+    done
+    printf '%s  엔진 settings 대조\n%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${drift:-어긋남 없음}" >> "$LOG"
+    [ -z "$drift" ] && return 0
+    "$REPO/tools/notify-owner.py" "$BOT" "봇 엔진 settings 가 본보기와 다릅니다.
+
+$drift
+확인: tools/install-settings.py <봇> --check" >> "$LOG" 2>&1
+}
+audit_engine_settings
+
 [ "$CODE" -eq 0 ] && exit 0
 
 "$REPO/tools/notify-owner.py" "$BOT" "슬랙 앱 설정이 정본과 다릅니다.

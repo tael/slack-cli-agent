@@ -39,6 +39,7 @@ import fnmatch
 import itertools
 import json
 import logging
+import re
 import shlex
 import sys
 import uuid
@@ -83,8 +84,8 @@ from .capability import (
 )
 from .claude_settings import load_merged_settings, merge_settings
 from .footprint import PayloadFootprint
-from .tool_selection import ToolAccess
-from .transcript import ClaudeTranscriptReader, recover_handoff_over_silence
+from .tool_selection import SUBAGENT_TOOLS, ToolAccess
+from .transcript import ClaudeTranscriptReader, claude_project_slug, recover_handoff_over_silence
 
 # Same hint list as the original bot.py's usage_limit_message().
 _USAGE_LIMIT_HINTS = (
@@ -106,6 +107,9 @@ log = logging.getLogger(__name__)
 
 #: raw 에 남기는 표식: 침묵 앞의 위임 답을 transcript 에서 되살린 턴 (audit 로 간다).
 SILENCE_RECOVERED_RAW_KEY = "silence_recovered"
+
+#: langfuse_hook paths already warned about, so the warning is once per process.
+_LANGFUSE_WARNED: set[str] = set()
 
 _USAGE_KEY_MAP: Mapping[str, str] = {
     "input_tokens": "input_tokens",
@@ -137,7 +141,7 @@ TOOL_SEARCH = "ToolSearch"
 
 #: The subagent tool under its current and former name. The init event lists
 #: it as Task when --tools names Agent (claude 2.1.321).
-AGENT_TOOLS = frozenset({"Agent", "Task"})
+AGENT_TOOLS = SUBAGENT_TOOLS
 
 
 def _closed_tool_names(args: Sequence[str]) -> dict[str, tuple[str, ...]]:
@@ -409,7 +413,8 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
         # Starts the tool-less planner call beside the turn and returns at
         # once; plan_gate above injects its result (guard/plan_start).
         "UserPromptSubmit": [
-            {"hooks": [{"type": "command", "command": _hook_command(plan_start.HOOK_SCRIPT)}]},
+            # timeout covers SCA_PLAN_SYNC, where the hook waits for up to two planner calls.
+            {"hooks": [{"type": "command", "command": _hook_command(plan_start.HOOK_SCRIPT), "timeout": 45}]},
         ],
     }
 }
@@ -612,6 +617,51 @@ class ClaudeEngine(Engine):
     def prepare(self, request: EngineRequest) -> None:
         self._ensure_skill_discovery_link()
         self._ensure_skill_plugin()
+        self._ensure_memory_link(request.workdir)
+
+    def _ensure_memory_link(self, workdir: Path) -> None:
+        """Points this work directory's engine-side memory path at StatePaths.memory.
+
+        Claude Code reads memory from `<home>/.claude/projects/<slug>/memory`,
+        one directory per work directory. A channel pointed at another
+        directory therefore starts with an empty memory, and what earlier turns
+        saved is not loaded. A bot's memory is one set per bot, so each slug's
+        path becomes a symlink to StatePaths.memory and every channel reads and
+        writes the same files.
+
+        The link only fixes reads: that path still holds a `.claude` component,
+        which Write and Bash refuse in dontAsk mode (실측 2026-09-19), so the
+        turn writes to StatePaths.memory itself (prompt/sections.MemoryPathSection).
+
+        A real directory with files in it is someone's memory; replacing it
+        would delete them, so it is logged and left alone.
+        """
+        paths = self.profile.paths
+        try:
+            paths.memory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log.warning("메모리 디렉터리를 만들지 못했다 : %s", exc)
+            return
+        home = self.spec.home_dir or Path.home()
+        link = home / ".claude" / "projects" / claude_project_slug(workdir) / "memory"
+        try:
+            if link.is_symlink():
+                if link.resolve() == paths.memory.resolve():
+                    return
+                link.unlink()
+            elif link.is_dir():
+                if any(link.iterdir()):
+                    log.warning(
+                        "엔진 쪽 메모리 경로가 symlink 가 아니라 파일이 든 디렉터리다 : %s - "
+                        "내용을 %s 로 옮기고 이 디렉터리를 지운다",
+                        link, paths.memory,
+                    )
+                    return
+                link.rmdir()
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(paths.memory, target_is_directory=True)
+        except OSError as exc:
+            log.warning("메모리 경로를 잇지 못했다 : %s", exc)
 
     #: Folder under StatePaths.skills that holds the bot's skills as a plugin.
     SKILL_PLUGIN_DIR: ClassVar[str] = "plugin"
@@ -777,7 +827,33 @@ class ClaudeEngine(Engine):
             merged = merge_settings(merged, progress_hook_settings(request.progress_log))
         # Always on, regardless of progress_log: these are engine built-ins,
         # not a per-request feature toggle (sca-kos.B4).
-        return merge_settings(merged, guard_hook_settings(), NO_ATTRIBUTION_SETTINGS)
+        return merge_settings(
+            merged, guard_hook_settings(), NO_ATTRIBUTION_SETTINGS, self._langfuse_hook_settings(merged),
+        )
+
+    def _langfuse_hook_settings(self, merged: Mapping[str, Any]) -> dict[str, Any]:
+        """Stop/SessionEnd fragment for settings.langfuse_hook; empty when off,
+        when the file is missing, or when the operator files already carry it."""
+        configured = self.settings.langfuse_hook
+        if not configured:
+            return {}
+        path = Path(configured).expanduser()
+        if not path.is_file():
+            if configured not in _LANGFUSE_WARNED:
+                _LANGFUSE_WARNED.add(configured)
+                log.warning("langfuse_hook 파일이 없어 훅을 붙이지 않는다 : %s", path)
+            return {}
+        command = str(path)
+        hooks: dict[str, Any] = {}
+        for event in ("Stop", "SessionEnd"):
+            present = any(
+                hook.get("command") == command
+                for entry in (merged.get("hooks") or {}).get(event, [])
+                for hook in entry.get("hooks", [])
+            )
+            if not present:
+                hooks[event] = [{"hooks": [{"type": "command", "command": command, "timeout": 30}]}]
+        return {"hooks": hooks} if hooks else {}
 
     @staticmethod
     def _operator_full_signal(request: EngineRequest) -> bool:
@@ -833,6 +909,23 @@ class ClaudeEngine(Engine):
         value = payload.get("api_error_status")
         return value if isinstance(value, int) and not isinstance(value, bool) else None
 
+    #: 2026-11-16 실측 — 디버그 흐름 요청이 종료코드 1 로 끝났고, 세션 기록에만
+    #: model_refusal_no_fallback / apiRefusalCategory=reasoning_extraction 이
+    #: 남았다. 응답 본문은 '처리에 실패했습니다.' 뿐이라 프롬프트가 거부된 것과
+    #: CLI 가 죽은 것이 같은 글자로 보였다. 거부는 그 프롬프트 하나의 문제라서
+    #: 엔진 전환 계기가 아니다 - 사유만 갈라 기록해 어느 문구를 고칠지 바로
+    #: 보이게 한다.
+    REFUSAL_MARKER: ClassVar[str] = "safeguards flagged this message"
+    REFUSAL_CATEGORY_RE: ClassVar[re.Pattern[str]] = re.compile(r"Details:\s*`?\[([a-z_]+)\]`?")
+
+    @classmethod
+    def _refusal_category(cls, stdout: str) -> str | None:
+        """거부 카테고리를 돌려준다. 거부가 아니면 None 이다."""
+        if not stdout or cls.REFUSAL_MARKER not in stdout:
+            return None
+        found = cls.REFUSAL_CATEGORY_RE.search(stdout)
+        return found.group(1) if found else "unknown"
+
     def new_session_id(self) -> str:
         return str(uuid.uuid4())
 
@@ -852,6 +945,19 @@ class ClaudeEngine(Engine):
             # result event (2026-11-07 운영 로그, 종료코드 1). Its per-model
             # table is kept so the spend reaches the audit row (A14).
             failed_event = self._result_event(stdout) if stdout else None
+            refusal = self._refusal_category(stdout)
+            if refusal is not None:
+                return EngineResponse(
+                    ok=False,
+                    body=f"모델이 이 프롬프트를 거부했습니다 (사유 : {refusal}).",
+                    session_id=None, model_actual=None,
+                    elapsed=0.0, turns=None, usage=None,
+                    model_usage=_model_usage(failed_event) if failed_event is not None else None,
+                    raw={"stdout": stdout, "stderr": stderr, "returncode": returncode,
+                         "refusal_category": refusal},
+                    failure_reason="model_refusal",
+                    failure_detail=FailureDetail(exit_code=returncode, code=refusal),
+                )
             return EngineResponse(
                 ok=False, body="처리에 실패했습니다.", session_id=None, model_actual=None,
                 elapsed=0.0, turns=None, usage=None,

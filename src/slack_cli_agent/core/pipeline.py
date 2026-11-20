@@ -5,10 +5,12 @@ call, guard corrections, and posting to Slack. Implements
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
 import uuid
+from contextvars import ContextVar
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
@@ -56,12 +58,21 @@ from ..guard.mentions import (
     RecipientResolver,
     leading_recipient_bot,
 )
+from ..guard.lineref import BareLineRefGuard, expand_bare_refs
 from ..guard.pipeline import GuardPipeline
-from ..guard.pretool.plan_gate import PLAN_GATE_ENV
+from ..guard.finish_review import PLAN_CHECK_ENV, PLAN_OUTPUT_CHECK_ENV, PLAN_OUTPUT_MODES
+from ..guard.plan_start import INTAKE_ENV as PLAN_INTAKE_ENV
+from ..guard.plan_start import INTAKE_SCHEMA_ENV as PLAN_INTAKE_SCHEMA_ENV
+from ..guard.plan_start import REFINE_ENV as PLAN_REFINE_ENV
+from ..guard.plan_start import REFINE_MODES as PLAN_REFINE_MODES
+from ..guard.plan_start import SOURCES_ENV as PLAN_SOURCES_ENV
+from ..guard.plan_start import WORKFLOWS_ENV as PLAN_WORKFLOWS_ENV
+from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, INTAKE_INJECT_ENV, PLAN_GATE_ENV, intake_view
 from ..guard.rewrite import RewriteLossGuard
 from ..guard.watch import WatchPromiseGuard, cut_untagged_promise, watch_due_at
 from ..observability.audit import IncidentKind
 from .handoff_claim import find_handoff_claim, handoff_claim_unbacked
+from ..routing.workflow_router import ThreadContext, route
 from ..observability.progress import ProgressCoordinator
 from ..observability.request_timing import RequestTiming, RequestTimingCalculator
 from ..observability.response_archive import ResponseArchive
@@ -98,6 +109,7 @@ from ..slack.transcribe import TranscribeFn, transcribe_files
 from ..slack.transcript import CurrentMessage
 from .channel_kind import is_direct_message_channel
 from .context import RequestContext
+from .intake_ack import IntakeAck
 from .markers import (
     missing_recipient_prompt,
     pick_recipient_tag,
@@ -275,6 +287,17 @@ def _spawn_daemon(fn: Callable[[], None]) -> None:
     threading.Thread(target=fn, name="post-correct", daemon=True).start()
 
 
+@dataclass
+class _RequestScope:
+    """Per-request state `_record` needs but is not handed (N4)."""
+
+    workdir: Path | None = None
+    ack: IntakeAck | None = None
+
+
+_REQUEST_SCOPE: ContextVar[_RequestScope | None] = ContextVar("request_scope", default=None)
+
+
 class RequestPipeline:
     def __init__(
         self,
@@ -314,6 +337,27 @@ class RequestPipeline:
         # injection (guard/pretool/plan_gate). Set as PLAN_GATE on turns
         # FlowSection applies to; 0 (the component default) leaves it off.
         plan_gate_responses: int = 0,
+        # {workflow id: description} the planner classifies each request into
+        # (guard/plan_start, record only). Empty leaves classification off.
+        plan_workflows: Mapping[str, str] | None = None,
+        # True asks the planner for intake fields too (SCA_PLAN_INTAKE, record only).
+        plan_intake: bool = False,
+        # "separate" or "combined" refines the request before planning (SCA_PLAN_REFINE).
+        plan_refine: str = "",
+        plan_intake_inject: bool = False,
+        plan_intake_check: bool = False,
+        plan_intake_schema: int = 1,
+        plan_output_check: str = "",
+        # (engine name, session id) -> the planner's plan file content or None.
+        # Lets the request row carry the classification; None leaves the row
+        # without plan_* fields.
+        plan_result: Callable[[str, str, Path | None], Mapping[str, Any] | None] | None = None,
+        # (engine, session id, cwd the engine ran in) -> plan file path (N4 ack).
+        plan_file: Callable[[str, str, Path], Path | None] | None = None,
+        # Posts the planner's ack once when the answer is still unfinished
+        # intake_ack_after_sec after the request started. Off by default.
+        intake_ack: bool = False,
+        intake_ack_after_sec: float = 12.0,
         mention_table: Callable[[], Mapping[str, str]] = dict,
         slow_reporter: SlowRequestReporter | None = None,
         # Splits each request's wall time into named items for its audit row
@@ -420,6 +464,18 @@ class RequestPipeline:
         self._asker_is_bot = asker_is_bot
         self._require_recipient = require_recipient
         self._plan_gate_responses = plan_gate_responses
+        self._plan_workflows = dict(plan_workflows or {})
+        self._plan_intake = plan_intake
+        self._plan_refine = plan_refine
+        self._plan_intake_inject = plan_intake_inject
+        self._plan_intake_check = plan_intake_check
+        self._plan_intake_schema = plan_intake_schema
+        self._plan_output_check = plan_output_check
+        self._plan_result = plan_result
+        self._plan_file = plan_file
+        self._intake_ack = intake_ack
+        self._intake_ack_after_sec = intake_ack_after_sec
+        self._intake_ack_poll_sec = 1.0
         # Reuses asker_is_bot as the is-bot oracle: resolving a RECIPIENT tag
         # needs the same "is this user a bot" lookup for the ASKER→BOT fold and
         # for validating a BOT:id. Forces the leading mention for bot recipients
@@ -566,6 +622,26 @@ class RequestPipeline:
             lookups=self._tool_policy.lookups_for(principal, asker_is_bot=is_bot),
         )
 
+    def _intake_ack_session(
+        self, ctx: RequestContext, config: ChannelConfig | None, tier: str, *, start: float,
+        post: Callable[[str], object], plan_path: Callable[[], Path | None],
+    ) -> AbstractContextManager[Any]:
+        """The ack watcher for this request, or a pass-through when it does not apply."""
+        if (
+            not self._intake_ack or not self._plan_intake or self._plan_file is None
+            or (config is not None and not config.intake_ack)
+            or not self._plan_gate_env(tier, config)
+        ):
+            return nullcontext()
+        scope = _REQUEST_SCOPE.get()
+        ack = IntakeAck(
+            resolve_plan=plan_path, post=post, after_sec=self._intake_ack_after_sec, start=start,
+            now=self._now, poll_sec=self._intake_ack_poll_sec,
+        )
+        if scope is not None:
+            scope.ack = ack
+        return ack
+
     def _progress_session(self, ctx: RequestContext, log_path: Path | None) -> AbstractContextManager[None]:
         """The progress display for this request, or a pass-through when it has none."""
         if self._progress is None or log_path is None:
@@ -573,6 +649,7 @@ class RequestPipeline:
         return self._progress.session(ctx.channel, ctx.thread_ts, ctx.user, log_path)
 
     def _handle(self, ctx: RequestContext) -> HandleOutcome:
+        _REQUEST_SCOPE.set(None)
         start = self._now()
         # Wall clock alone can't distinguish "actually slow" from "device slept".
         mono_start = self._monotonic()
@@ -593,6 +670,7 @@ class RequestPipeline:
             workdir = light_turn.resolve()
         else:
             workdir = (config.workdir if (config and config.workdir) else self._default_workdir).resolve()
+        _REQUEST_SCOPE.set(_RequestScope(workdir=workdir))
         rich = channel_is_rich(config)
         # A flat_reply channel posts straight to the channel, not a thread off
         # the triggering message (A17, mametchi bot.py:6458).
@@ -621,6 +699,11 @@ class RequestPipeline:
             is_bot=self._restricted_bot(principal, ctx.from_bot),
         ).value
 
+        # Worked out before the instruction fingerprint: whether this turn can
+        # delegate to Agent is part of the instructions it is told.
+        tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
+        delegation = self._can_delegate(tools)
+
         key = self._session_key(ctx, scope)
         # The tier decides resumption too: a resumed session keeps the
         # instructions of the turn that opened it, so a delegated, bot or
@@ -634,6 +717,7 @@ class RequestPipeline:
         fingerprint = (
             self._instruction_fingerprint(
                 ctx, principal, channel_mode, channel_slug, rich, chat_level, tier=tier,
+                delegation=delegation,
             )
             if not callable(keeps_opening) or keeps_opening()
             else ""
@@ -658,7 +742,6 @@ class RequestPipeline:
             prompt = f"{_THRESHOLD_RESET_NOTE}\n\n{prompt}"
         elif decision.reset_reason == SYSTEM_PROMPT_RESET_REASON:
             prompt = f"{_SYSTEM_PROMPT_RESET_NOTE}\n\n{prompt}"
-        tools = self._tools(principal, ctx.text, config, from_bot=ctx.from_bot)
         # 재개 턴은 그 세션이 앞서 붙인 서버를 유지한다 (core/mcp_routing.py).
         mcp_selection = select_mcp_servers(
             self._mcp_routing, ctx.text, decision.mcp_servers if decision.resume else "",
@@ -704,7 +787,8 @@ class RequestPipeline:
                     else {}
                 ),
                 **self._engine_env(ctx.channel, config, tier),
-                **self._plan_gate_env(tier, config),
+                **self._plan_gate_env(tier, config, tools),
+                **self._delegation_env(tools),
                 **self._verify_cap_env(tier),
                 **(self._figurative_env(config) if self._figurative_env is not None else {}),
                 # The marker's second line, so the worker can tell the turn
@@ -715,7 +799,7 @@ class RequestPipeline:
         reach = turn_reach(self._engine, request)
         system_prompt, budget_report, header, knowledge = self._compose_system_prompt(
             ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
-            tier=tier, reach=reach,
+            tier=tier, reach=reach, delegation=delegation,
         )
         request = replace(
             request, prompt=_with_request_header(header, prompt),
@@ -734,7 +818,15 @@ class RequestPipeline:
         # Covers the retry too: a new-session retry is the same wait for the
         # person watching, and closing the display between the two attempts
         # would read as the request having finished.
-        with self._progress_session(ctx, progress_log):
+        ack_session = self._intake_ack_session(
+            ctx, config, tier, start=start,
+            post=lambda text: self._publisher.post(ctx.channel, ctx.thread_ts, text, rich, flat=flat),
+            plan_path=lambda: (
+                self._plan_file(self._engine.serving_name(), request.session_id or "", workdir)
+                if self._plan_file is not None and request.session_id else None
+            ),
+        )
+        with self._progress_session(ctx, progress_log), ack_session:
             # Bracketing each engine call lets the audit row tell bot-side
             # preparation from engine startup (S0 계측). The retry overwrites
             # both, so a failed first attempt is booked as pre-engine time.
@@ -1092,6 +1184,8 @@ class RequestPipeline:
         if decision.resume:
             transcript = self._transcript.thread_transcript(
                 ctx.channel, ctx.thread_ts, ctx.ts, scope=scope, after_ts=decision.after_ts,
+                # The session already holds its own replies (TranscriptBuilder.thread_transcript).
+                exclude_self=True,
             )
         else:
             transcript = self._transcript.thread_transcript(
@@ -1163,6 +1257,7 @@ class RequestPipeline:
         *,
         tier: str = "",
         reach: tuple[bool, tuple[str, ...]] = (False, ()),
+        delegation: bool = False,
     ) -> tuple[str, dict[str, Any], str, str]:
         """System prompt, its budget report, the user-prompt header, and the
         knowledge text the prompt carried (for the Stop hook's verify,
@@ -1181,7 +1276,8 @@ class RequestPipeline:
         build_header = getattr(self._composer, "request_header", None)
         composition_ctx = self._composition_context(
             ctx, principal, channel_mode, channel_slug, rich, chat_level, run_id,
-            tier=tier, reach=reach, request_header=callable(build_header),
+            tier=tier, reach=reach, delegation=delegation,
+            request_header=callable(build_header),
         )
         text, report = self._composer.compose_with_report(composition_ctx)
         header = build_header(composition_ctx) if callable(build_header) else ""
@@ -1198,6 +1294,7 @@ class RequestPipeline:
         chat_level: str,
         *,
         tier: str,
+        delegation: bool = False,
     ) -> str:
         """The composer's fingerprint of this turn's instructions, for the
         session decision (SystemPromptComposer.instruction_fingerprint). ""
@@ -1211,7 +1308,7 @@ class RequestPipeline:
         try:
             value = fingerprint(self._composition_context(
                 ctx, principal, channel_mode, channel_slug, rich, chat_level,
-                tier=tier, request_header=True, stable=True,
+                tier=tier, delegation=delegation, request_header=True, stable=True,
             ))
         except Exception:  # 지문이 없으면 비교만 건너뛴다
             log.warning("시스템 지침 지문을 만들지 못했다", exc_info=True)
@@ -1230,6 +1327,7 @@ class RequestPipeline:
         *,
         tier: str = "",
         reach: tuple[bool, tuple[str, ...]] = (False, ()),
+        delegation: bool = False,
         request_header: bool = False,
         stable: bool = False,
     ) -> CompositionContext:
@@ -1285,6 +1383,7 @@ class RequestPipeline:
             turn_tier=tier,
             turn_reads_only=reach[0],
             turn_acting_tools=reach[1],
+            delegation=delegation,
             request_header=request_header,
         )
 
@@ -1331,14 +1430,50 @@ class RequestPipeline:
             return {VERIFY_MAX_BLOCKS_ENV: "1"}
         return {}
 
-    def _plan_gate_env(self, tier: str, config: ChannelConfig | None) -> dict[str, str]:
+    def _plan_gate_env(
+        self, tier: str, config: ChannelConfig | None, tools: ToolSelection | None = None,
+    ) -> dict[str, str]:
         """PLAN_GATE for guard/plan_start and guard/pretool/plan_gate. Only
         on a turn FlowSection applies to (same flow_applies), so no plan is
         injected where the prompt never mentions one. Absent means off."""
         chat = config is not None and (config.chat == "active" or config.mode == "chat")
         if self._plan_gate_responses <= 0 or not flow_applies(tier, chat=chat):
             return {}
-        return {PLAN_GATE_ENV: str(self._plan_gate_responses)}
+        env = {PLAN_GATE_ENV: str(self._plan_gate_responses)}
+        if self._plan_workflows:
+            env[PLAN_WORKFLOWS_ENV] = json.dumps(self._plan_workflows, ensure_ascii=False)
+        if self._plan_intake:
+            env[PLAN_INTAKE_ENV] = "1"
+            if self._plan_intake_schema == 2:
+                env[PLAN_INTAKE_SCHEMA_ENV] = "2"
+            if tools is not None and tools.names:
+                env[PLAN_SOURCES_ENV] = json.dumps(list(tools.names), ensure_ascii=False)
+            if self._plan_intake_inject:
+                env[INTAKE_INJECT_ENV] = "1"
+            if self._plan_intake_check:
+                env[PLAN_CHECK_ENV] = "1"
+            if self._plan_output_check in PLAN_OUTPUT_MODES:
+                env[PLAN_OUTPUT_CHECK_ENV] = self._plan_output_check
+        if self._plan_refine in PLAN_REFINE_MODES:
+            env[PLAN_REFINE_ENV] = self._plan_refine
+        return env
+
+    def _delegation_env(self, tools: ToolSelection) -> dict[str, str]:
+        """AGENT_DELEGATION for the guard hooks and the planner: set when this
+        turn can delegate (_can_delegate), the same judgment FlowSection gets
+        as ctx.delegation. Independent of
+        PLAN_GATE: the serial-read denial applies on every turn. Absent means
+        the hooks leave delegation wording out."""
+        return {AGENT_DELEGATION_ENV: "1"} if self._can_delegate(tools) else {}
+
+    def _can_delegate(self, tools: ToolSelection) -> bool:
+        """Whether this turn is told it can delegate: the tool list has Agent
+        or Task (ToolSelection.can_delegate) and the engine has subagents to
+        call (Engine.has_subagents). The same two conditions decide whether
+        engine/claude._agent_args sends --agents, so the instructions and the
+        CLI do not disagree. FlowSection (ctx.delegation) and the guard hooks
+        (AGENT_DELEGATION) both read this one judgment."""
+        return tools.can_delegate and self._engine.has_subagents()
 
     def _owner_name(self) -> str:
         if not self._owner_user_id:
@@ -1632,6 +1767,10 @@ class RequestPipeline:
             body_out = result.body
             # An untagged promise whose rewrite never arrived still must not
             # go out as-is: cut it like a failed retry does (bot.py:8249-8255).
+            if result.rerun.guard_name == BareLineRefGuard.name:
+                # No rewrite arrived, so expand the bare numbers here: the
+                # sentence then at least says which file and line it means.
+                body_out = expand_bare_refs(body_out)
             if result.rerun.guard_name == WatchPromiseGuard.name:
                 body_out = cut_untagged_promise(body_out)
                 if promise_rerun:
@@ -1985,6 +2124,7 @@ class RequestPipeline:
         extra: dict[str, Any] = {CONTEXT_RESET_RAW_KEY: context_reset}
         if timing is not None:
             extra["time_breakdown"] = timing.as_audit_dict()
+            extra.update(timing.tool_audit_fields())
         if context_reset and context_reset_reason:
             extra["context_reset_reason"] = context_reset_reason
         if tier:
@@ -2016,6 +2156,12 @@ class RequestPipeline:
             extra["failure"] = failure
         if failure_detail:
             extra["failure_detail"] = str(failure_detail)
+        extra.update(self._route_shadow_fields(ctx, decision.resume))
+        plan_session = (model_usage.session_id if model_usage else None) or decision.session_id
+        scope = _REQUEST_SCOPE.get()
+        if scope is not None and isinstance(scope.ack, IntakeAck):
+            extra.update(scope.ack.outcome.audit_fields())
+        extra.update(self._plan_workflow_fields(plan_session, start=self._now() - elapsed))
         first_reaction_sec = self._first_reaction_sec(ctx)
         queue_wait_sec = self._queue_wait_sec(ctx)
         self._audit.record_request(
@@ -2035,6 +2181,94 @@ class RequestPipeline:
             turns=turns,
             **extra,
         )
+
+    def _plan_workflow_fields(self, session_id: str | None, *, start: float) -> dict[str, Any]:
+        """계획 호출의 workflow 분류를 request 행에 남길 필드. 기록 전용이다.
+
+        계획은 비동기라 행을 쓰는 시점에 없거나 끝나지 않았을 수 있다. 분류를
+        못 읽은 사유는 `plan_status` 로 남겨 "분류 안 됨" 과 구분한다.
+        필드가 없는 행은 분류를 켜지 않았거나 이 기능 이전 행이다.
+
+        - ok: 분류가 있음. plan_workflow_id, plan_workflow_confidence, plan_workflow_reason
+        - ok_no_workflow: 계획은 성공했으나 분류 값이 후보 밖이라 버려짐
+        - pending/timeout/error:*/bad_output: 계획 파일의 status 그대로
+        - no_plan_file: 계획 파일이 없음(훅이 이 요청에서 안 돌았거나 세션 경로를 못 찾음)
+        - stale: 계획 파일이 이 요청보다 먼저 만들어진 것
+        - read_error: 읽기 예외
+        """
+        if not (self._plan_workflows or self._plan_intake) or self._plan_result is None:
+            return {}
+        try:
+            scope = _REQUEST_SCOPE.get()
+            plan = (
+                self._plan_result(self._engine.serving_name(), session_id, scope.workdir if scope else None)
+                if session_id else None
+            )
+        except Exception as exc:  # noqa: BLE001 -- 기록이 요청 처리를 막으면 안 된다
+            log.warning("계획 파일 읽기 실패", exc_info=True)
+            return {"plan_status": "read_error", "plan_error": f"{type(exc).__name__}"[:80]}
+        if not plan:
+            return {"plan_status": "no_plan_file"}
+        stamp = plan.get("finished_at") or plan.get("started_at")
+        if isinstance(stamp, (int, float)) and stamp < start - 1.0:
+            return {"plan_status": "stale"}
+        status = str(plan.get("status") or "unknown")
+        fields: dict[str, Any] = {"plan_status": status}
+        if status != "ok":
+            return fields
+        if self._plan_intake:
+            fields.update(self._plan_intake_fields(plan))
+        if not self._plan_workflows:
+            return fields
+        if plan.get("workflow") and plan.get("workflow_confidence"):
+            fields["plan_workflow_id"] = plan["workflow"]
+            fields["plan_workflow_confidence"] = plan["workflow_confidence"]
+            if plan.get("workflow_reason"):
+                fields["plan_workflow_reason"] = str(plan["workflow_reason"])[:200]
+        else:
+            fields["plan_status"] = "ok_no_workflow"
+        return fields
+
+    @staticmethod
+    def _plan_intake_fields(plan: Mapping[str, Any]) -> dict[str, Any]:
+        """계획의 입력 점검 필드를 request 행에 남길 짧은 형태로. 기록 전용이다."""
+        fields: dict[str, Any] = {}
+        for key, limit in (("intent", 200), ("ack", 300), ("ask", 200)):
+            value = plan.get(key)
+            if isinstance(value, str) and value:
+                fields[f"plan_{key}"] = value[:limit]
+        view = intake_view(dict(plan))
+        for key, items in (("assumed", view.assumed), ("missing", view.missing)):
+            if items:
+                fields[f"plan_{key}"] = [str(item)[:100] for item in items[:5]]
+        checks = view.checks
+        if checks is not None:
+            fields["plan_checks_count"] = len(checks)
+            fields["plan_checks"] = [
+                {"what": str(item.get("what", ""))[:100], "how": str(item.get("how", ""))[:100]}
+                for item in checks[:5] if isinstance(item, dict)
+            ]
+        return fields
+
+    @staticmethod
+    def _route_shadow_fields(ctx: RequestContext, resumed: bool) -> dict[str, Any]:
+        """규칙 라우터 결과를 request 행에 남길 필드. 기록 전용이다(shadow).
+
+        요청 처리에는 영향이 없다. 라우터 예외는 삼키고 `route_error` 에만 남긴다.
+        미적중(deep, matched False)도 필드를 쓴다. 필드가 없는 행은 "라우터 미실행"
+        (이 기능 이전 행, 최소 기록 행)이고 미적중과 구분된다.
+        """
+        try:
+            decision = route(ctx.text, ctx.channel, ThreadContext(has_prior_bot_reply=resumed))
+        except Exception as exc:  # noqa: BLE001 -- shadow 기록이 요청 처리를 막으면 안 된다
+            log.warning("라우터 실행 실패", exc_info=True)
+            return {"route_error": f"{type(exc).__name__}: {exc}"[:200]}
+        return {
+            "route_workflow_id": decision.workflow_id,
+            "router_version": decision.router_version,
+            "route_reason": decision.reason,
+            "route_matched": decision.matched,
+        }
 
     def _time_breakdown(
         self,

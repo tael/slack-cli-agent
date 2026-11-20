@@ -11,6 +11,7 @@ connection, so events would arrive but nothing would handle them.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shlex
@@ -71,6 +72,7 @@ from ..engine.transcript import (
     SessionTranscriptReader,
     TranscriptReaderRegistry,
 )
+from ..guard import plan_start
 from ..guard.base import OutputGuard
 from ..guard.dropline import ConfiguredLineDropGuard
 from ..guard.figurative import MIN_CHARS_ENV as FIGURATIVE_MIN_CHARS_ENV
@@ -79,6 +81,7 @@ from ..guard.figurative import MODEL_ENV as FIGURATIVE_MODEL_ENV
 from ..guard.figurative import OUT_ENV as FIGURATIVE_OUT_ENV
 from ..guard.figurative import TIMEOUT_ENV as FIGURATIVE_TIMEOUT_ENV
 from ..guard.figurative import FigurativeGuard, is_chat_channel
+from ..guard.lineref import BareLineRefGuard
 from ..guard.mentions import (
     AddresseeGuard,
     BotMentionGuard,
@@ -93,6 +96,7 @@ from ..jobs.queue import SqliteJobQueue
 from ..learning.analyzer import ProposalAnalyzer, ProposalBuilder
 from ..learning.apply import LearningApplier
 from ..learning.batch import LearningBatch
+from ..learning.gate import CarryStore, GatePolicy, LearningGate
 from ..learning.progress import ProgressStore
 from ..learning.proposal import ProposalStore
 from ..learning.reactions import ReactionCollector
@@ -138,6 +142,7 @@ from ..prompt.sections import (
     CompositionContext,
     FlowSection,
     KnowledgeSection,
+    MemoryPathSection,
     OwnerNoteSection,
     PeerRecoverySection,
     PersonaSection,
@@ -145,6 +150,7 @@ from ..prompt.sections import (
     PromptSection,
     ReviewFormatSection,
     RosterSection,
+    SelfConfigSection,
     SensitiveGuardSection,
     SilenceRuleSection,
     CacheBoundarySection,
@@ -680,6 +686,8 @@ class Application:
             RosterSection(self._profile.roster_file),
             ChannelModeSection(mode_prompt_names(), default_prompt=DEFAULT_PROMPT),
             OwnerNoteSection(),
+            SelfConfigSection(self._profile),
+            MemoryPathSection(self._profile),
             PeerRecoverySection(self._profile.peer),
             SlackFormatSection(),
             ReviewFormatSection(),
@@ -781,6 +789,11 @@ class Application:
                 requested_only_in=self._is_chat_channel,
             ),
             AddresseeGuard(is_bot=self._is_bot_or_peer),
+            # Before WatchPromiseGuard: its rerun comes back with the draft's
+            # `[[WATCH]]` tag still attached, so the watch is read off the
+            # rewritten body on the second pass instead of being stripped
+            # from a draft that never goes out.
+            BareLineRefGuard(),
             WatchPromiseGuard(),
             RewriteLossGuard(self._settings),
             # safe to always include — a no-op when the drop-line list is empty
@@ -1029,12 +1042,25 @@ class Application:
                 plan_gate_responses=(
                     self._settings.plan_gate_responses if self._settings.plan_flow else 0
                 ),
+                plan_intake=self._settings.plan_intake,
+                plan_refine=self._settings.plan_refine,
+                plan_intake_inject=self._settings.plan_intake_inject,
+                plan_intake_check=self._settings.plan_intake_check,
+                plan_intake_schema=self._settings.plan_intake_schema,
+                plan_output_check=self._settings.plan_output_check,
                 mention_table=self._names.name_table,
                 slow_reporter=self._slow_reporter(),
                 # Resolved per request like the slow report: the engine that
                 # answered decides the transcript format (S0 계측).
                 request_timing=RequestTimingCalculator(self.transcript_reader),
                 turn_tools=self._turn_tool_names,
+                # Workflow classification in the plan file lands in the request
+                # row (record only). Candidates stay empty until the workflow
+                # registry is wired in, so this reader is idle for now.
+                plan_result=self._read_plan_result,
+                plan_file=self._plan_file_path,
+                intake_ack=self._settings.intake_ack,
+                intake_ack_after_sec=self._settings.intake_ack_after_sec,
                 # built lazily rather than as a field — eagerly building it here would
                 # look up the bot user ID, making assembly alone call out to Slack
                 participants=lambda channel, thread_ts: self._participants().of(channel, thread_ts),
@@ -1116,8 +1142,25 @@ class Application:
                 renderer=ProposalRenderer(),
                 notify=self._notify_admin,
                 clock=lambda: datetime.now(KST),
+                gate=LearningGate(self._learning_gate_policy()),
+                # Beside the progress files, not in the proposal directory:
+                # ProposalStore.latest() scans that one.
+                carry=CarryStore(self._learning_progress_store().directory / "carry.json"),
             )
         return self._learning_batch
+
+    def _learning_gate_policy(self) -> GatePolicy:
+        """Gate thresholds; a max defer below 1 day falls back to the default,
+        since rejecting it would stop the worker from starting."""
+        defaults = RuntimeSettings()
+        max_days = self._settings.learning_max_defer_days
+        if max_days < 1:
+            log.warning(
+                "learning_max_defer_days 값이 1 미만이다(%s). %s 일로 되돌린다",
+                max_days, defaults.learning_max_defer_days,
+            )
+            max_days = defaults.learning_max_defer_days
+        return GatePolicy(min_entries=self._settings.learning_min_entries, max_defer_days=max_days)
 
     def _channel_id_of(self, channel_name: str) -> str | None:
         for channel_id, config in self._channels.all().items():
@@ -2440,6 +2483,31 @@ class Application:
         """Tools the turn called; only the Claude reader can tell, others give None."""
         find = getattr(self.transcript_reader(engine), "turn_tool_names", None)
         return find(session_id) if find else None
+
+    def _plan_file_path(self, engine: str, session_id: str, workdir: Path | None = None) -> Path | None:
+        """The plan file of a session. The transcript dir follows the cwd the
+        engine actually ran in, which is the channel workdir, not always work_root."""
+        if workdir is None or workdir.resolve() == Path(self._profile.work_root).resolve():
+            reader: Any = self.transcript_reader(engine)
+        else:
+            spec = self._engine_spec_for(engine)
+            reader = self._transcript_readers.create(spec.type if spec is not None else engine, workdir, spec=spec)
+        find = getattr(reader, "find_transcript_path", None) or getattr(reader, "transcript_path", None)
+        path = find(session_id) if find else None
+        return plan_start.plan_path(str(path)) if path is not None else None
+
+    def _read_plan_result(
+        self, engine: str, session_id: str, workdir: Path | None = None,
+    ) -> dict[str, Any] | None:
+        """The planner's plan file (guard/plan_start) for a session, or None."""
+        path = self._plan_file_path(engine, session_id, workdir)
+        if path is None:
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
 
     def transcript_reader(self, engine: str = "") -> SessionTranscriptReader:
         """Transcript format and home dir differ per engine, so the reader is

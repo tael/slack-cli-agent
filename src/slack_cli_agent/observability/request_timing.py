@@ -92,6 +92,26 @@ class RequestTiming:
     """Wall elapsed minus monotonic elapsed. Large means the machine slept or
     the process was stopped, not that any item above was slow."""
     transcript: bool = False
+    tool_round_trips: int | None = None
+    """Distinct model responses that carried a tool call, main thread only.
+    None when the transcript cannot say (no transcript, or a reader without
+    message ids). Reported as a top-level audit field, not in time_breakdown."""
+    tool_calls: int | None = None
+    """tool_use blocks in those responses. None under the same conditions."""
+
+    @property
+    def tools_per_round_trip(self) -> float | None:
+        if not self.tool_round_trips or self.tool_calls is None:
+            return None
+        return round(self.tool_calls / self.tool_round_trips, 2)
+
+    def tool_audit_fields(self) -> dict[str, Any]:
+        """The three top-level request-row fields; values None when uncounted."""
+        return {
+            "tool_round_trips": self.tool_round_trips,
+            "tool_calls": self.tool_calls,
+            "tools_per_round_trip": self.tools_per_round_trip,
+        }
 
     @property
     def parts_sum(self) -> float:
@@ -191,13 +211,39 @@ def attribute(
     buckets.add("other_sec", end - engine_end)
 
     totals = buckets.totals
+    try:
+        round_trips, calls = count_tool_round_trips(window)
+    except Exception:  # noqa: BLE001 -- counting must never lose the audit row
+        log.warning("툴콜 왕복 수를 세지 못했다", exc_info=True)
+        round_trips = calls = None
     return RequestTiming(
+        tool_round_trips=round_trips,
+        tool_calls=calls,
         elapsed_sec=elapsed,
         queue_wait_sec=queue_wait_sec,
         finish_review_blocks=blocks,
         wall_minus_mono_sec=(max(0.0, elapsed - mono_elapsed) if mono_elapsed is not None else None),
         transcript=bool(window),
         **{key: max(0.0, totals[key]) for key in PART_KEYS},
+    )
+
+
+def count_tool_round_trips(window: Sequence[TimingEvent]) -> tuple[int | None, int | None]:
+    """(round trips, tool calls) in an event window, or (None, None).
+
+    A round trip is one distinct message id among lines that open a tool call:
+    the CLI splits one response's tool_use blocks over several lines with the
+    same id (claude-code #81918), so counting lines would overcount parallel
+    calls. A tool line without an id makes the count unreliable, hence None.
+    """
+    tool_events = [event for event in window if event.kind == "tool_use"]
+    if not window:
+        return None, None
+    if any(not event.message_id for event in tool_events):
+        return None, None
+    return (
+        len({event.message_id for event in tool_events}),
+        sum(len(event.tool_uses) for event in tool_events),
     )
 
 
@@ -266,5 +312,6 @@ __all__ = [
     "RequestTiming",
     "RequestTimingCalculator",
     "attribute",
+    "count_tool_round_trips",
     "tool_category",
 ]

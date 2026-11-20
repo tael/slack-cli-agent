@@ -40,7 +40,7 @@ markers = [
     "real_cli: 실제 엔진 CLI 를 부른다. 로그인 상태와 요금에 의존하므로 기본 실행에서 제외한다",
 ]
 # real_cli 는 명시적으로 지정해야 돈다: pytest tests/real_cli -m real_cli
-addopts = "-n 4 -m 'not real_cli'"
+addopts = "-n 12 -m 'not real_cli'"
 
 [tool.ruff]
 # 120 은 이 환경의 공통값이다. 이전 값 100 은 강제된 적이 없었다 - 넘는 줄이

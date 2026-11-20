@@ -58,6 +58,21 @@ owner 와 trusted 파일이 같은 항목을 들고 있어 손으로 맞춰야 �
 그대로다(docs/패키징-경계.md). 그래서 이미 도는 봇에 돌려도 손으로 고친 내용이
 사라지지 않는다.
 
+**그 대가로 본보기를 고쳐도 도는 봇에는 안 들어간다.** 2026-11-09 에 공통 파일의
+`Read(~/.claude/**)` 를 덧씌움으로 옮겼지만 신지 운영물에는 11-18 까지 남아,
+소유자 턴이 자기 memory 와 세션 기록을 못 읽었다. 그래서 차이를 출력하는 점검을 둔다.
+
+    tools/install-settings.py <봇이름> --check
+
+- 보고 대상: 본보기에 있는데 운영물에 없는 파일과 deny 항목, 본보기에서 뺐는데
+  운영물에 남은 항목. 운영물이 더 넓은 패턴(`Read(~/.config/**)`)으로 이미 막는
+  항목은 보고하지 않는다
+- 운영물에만 있는 그 밖의 항목은 조직이 더한 것과 구분이 안 되므로 보고하지
+  않는다. 그래서 본보기에서 deny 를 뺄 때는 `install-settings.py` 의 `RETIRED`
+  표에 그 항목을 함께 적는다
+- `tools/manifest-audit.sh` 가 하루 한 번 프로필이 있는 봇 전부를 대조하고, 차이가
+  있으면 소유자에게 DM 을 보낸다. 결과는 어긋남이 없어도 그 로그에 남는다
+
 `tools/new-bot.sh` 는 claude 봇을 만들 때 이 명령을 부른다. 다른 엔진은 아직
 본보기가 없다.
 
@@ -67,9 +82,12 @@ owner 와 trusted 파일이 같은 항목을 들고 있어 손으로 맞춰야 �
 
 ## 본보기가 막는 것
 
-공통 파일은 읽기만 막는다 — `~/.ssh`, `~/.aws`, `~/.config`,
-`~/.claude/.credentials.json`, `~/.claude/session-env`, `~/Library`,
-`~/.mcp.json`, 자격 파일 이름 패턴, `.env*`. 여기에 그 봇 자신의
+공통 파일은 읽기만 막는다 — `~/.ssh`, `~/.aws`, `~/.config` 의 gcloud·gh·op,
+`~/.claude/.credentials.json`, `~/.claude/session-env`, `~/Library` 의
+Keychains·Cookies·Application Support·Mail·Messages·Safari·Containers·
+Group Containers, `~/.mcp.json`, 자격 파일 이름 패턴, `.env*`.
+`~/.config`·`~/Library` 전체를 막으면 `~/Library/Caches/ms-playwright`,
+`~/.config/pw-session` 같은 작업 경로까지 거부돼 이 목록으로 좁혔다. 여기에 그 봇 자신의
 `credentials.json` 과 `engine/` 아래(엔진 자격과 이 settings 파일들)를 읽기·
 쓰기·고치기로 막고, `state.db` 와 `audit.jsonl` 은 쓰기·고치기만 막는다.
 

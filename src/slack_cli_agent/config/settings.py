@@ -158,6 +158,10 @@ class RuntimeSettings:
     #: 지시 : 봇마다 답 안 보내는 메시지가 다르다, 다른 안내를 줘야 한다).
     dm_off_notice: str = ""
 
+    #: Langfuse 로 턴을 보내는 훅 실행 파일 경로. 빈 값이면 꺼짐이고 settings 에
+    #: 아무것도 붙지 않는다. 값이 있고 파일이 있으면 Stop·SessionEnd 에 붙는다.
+    langfuse_hook: str = ""
+
     progress_tick_sec: float = 3
     progress_idle_sec: float = 45
 
@@ -217,6 +221,16 @@ class RuntimeSettings:
     learning_batch_interval_sec: float = 600
     # KST hour learning starts; before this, that day's records aren't all in yet.
     learning_run_hour: int = 22
+    # A channel-day with fewer recorded requests than this is not sent to the
+    # analyzer; its record is carried over and analyzed with the next day's.
+    # Measured over 2026-09-15..11-15: channel-days with 1-2 requests yielded
+    # 1.2 learned lines each (9 of 23 yielded none), 3 or more yielded 4-5.
+    # A correction in the day's questions overrides this. 1 or less turns the
+    # gate off.
+    learning_min_entries: int = 3
+    # Longest a carried-over record waits before analysis is forced, whatever
+    # the volume. Must be 1 or more.
+    learning_max_defer_days: int = 7
     # Empty delegates to the running engine's own configured model. A shared
     # literal here was invalid on codex/gemini profiles (sca-dyb.10).
     learning_model: str = ""
@@ -295,6 +309,33 @@ class RuntimeSettings:
     # 켠다. 0 이하는 두 훅만 끈다. 엔진에는 PLAN_GATE 로 넘어간다. 2026-11-11
     # 부터 거부하지 않으므로 값의 크기는 쓰지 않는다.
     plan_gate_responses: int = 3
+    # True 면 계획 호출이 요청 해석·추정한 인풋·ack·확인 기준도 계획 파일에
+    # 적고 request 행에 남긴다. 기록 전용이라 모델 입력은 그대로다.
+    # 엔진에는 SCA_PLAN_INTAKE 로 넘어간다.
+    plan_intake: bool = False
+    # 계획 앞 입력 정제. "" 꺼짐, "separate" 계획 앞에 도구 없는 호출 한 번,
+    # "combined" 계획 호출이 먼저 정제. 엔진에는 SCA_PLAN_REFINE 로 넘어간다.
+    plan_refine: str = ""
+    # True 면 plan_intake 와 함께일 때 계획 주입에 기대 결과·가정·확인 기준도
+    # 싣는다(짧은 계획 포함). 모델 입력이 바뀐다. SCA_PLAN_INTAKE_INJECT 로 넘어간다.
+    plan_intake_inject: bool = False
+    # True 면 Stop 훅이 계획의 확인 기준(checks)과 이번 턴 결과를 대조한다. plan_intake 가 켜져
+    # 있어야 효과가 있다. 엔진에는 SCA_PLAN_INTAKE_CHECK 로 넘어간다.
+    plan_intake_check: bool = False
+    # 2 면 계획 호출이 assumed/missing/expected_output/checks 대신 inputs(kind 분류)와
+    # output(형태·항목)을 적는다. plan_intake 가 켜져 있어야 효과가 있다. 엔진에는
+    # SCA_PLAN_INTAKE_SCHEMA=2 로 넘어간다. 1 이면 넘기지 않는다.
+    plan_intake_schema: int = 1
+    # v2 계획(output 있음)의 기대 결과와 답을 Stop 훅이 대조한다. "" 꺼짐, "record" 분리
+    # 프로세스가 판정해 기록만(Stop 지연 0), "block" 인라인 판정 후 1회 차단. plan_intake 가
+    # 켜져 있어야 한다. 엔진에는 SCA_PLAN_OUTPUT_CHECK 로 넘어간다.
+    plan_output_check: str = ""
+    # True 면 엔진이 도는 중 계획의 ack 를 스레드에 한 번 게시한다. 게시 기준은
+    # 계획의 type 예측이 아니라 요청 시작 후 경과 시간이다. plan_intake 가
+    # 켜져 있어야 동작한다. 기본 0초 = 계획이 도착하면 바로 게시. 짧은 답과
+    # 메시지가 2개 떠도 된다는 11-19 소유자 판단(12초 안은 짧은 답에 ack 생략).
+    intake_ack: bool = False
+    intake_ack_after_sec: float = 0
 
     #: The restart supervisor writes an apply-request itself when the install
     #: checkout's HEAD moves on main with a clean tree. 2026-11-12: bots share
@@ -308,6 +349,11 @@ class RuntimeSettings:
     #: 600 s covers most turns (p90 about 5 min) and keeps the window where
     #: hook scripts run new code beside an old worker short.
     restart_idle_max_wait_sec: float = 600
+
+    #: workflow 레지스트리(registry/)를 요청 처리에 쓰는가. 로더와 검증기는
+    #: 있으나 파이프라인 연결 전이라 이 값을 읽는 곳이 아직 없다. 연결할 때도
+    #: 이 값이 False 면 동작이 지금과 같아야 한다.
+    workflows_enabled: bool = False
 
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """Overrides only the fields present in `values`; unknown keys are

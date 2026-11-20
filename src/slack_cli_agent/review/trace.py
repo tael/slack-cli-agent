@@ -40,8 +40,10 @@ class DebugTraceTask(ReviewTask):
                 if question
                 else ""
             )
-            + f"{self._owner_display_name}이 {self._bot_display_name}가 낸 아래 답변의 디버깅 흐름을 보고 싶어한다.\n"
-            "잘못됐다는 지적이 아니다. 무엇을 입력받아 무엇을 판단해 무엇을 냈는지 궁금한 것이다.\n\n"
+            + f"{self._owner_display_name}이 {self._bot_display_name}가 낸 아래 답변에 "
+            "어느 지침과 어느 코드 경로가 적용됐는지 보고 싶어한다.\n"
+            "잘못됐다는 지적이 아니다. 어떤 입력에 어떤 규칙이 걸려 이 출력이 나갔는지를 "
+            "지침 파일과 코드로 확인하려는 것이다.\n\n"
             "===== 지목한 답변 =====\n\n"
             f"{flagged}\n\n"
             "===== 답변 끝 =====\n\n"
@@ -49,8 +51,8 @@ class DebugTraceTask(ReviewTask):
             "여기서 형식을 새로 정하지 않는다.\n\n"
             f"{self._bot_display_name}의 코드는 {self._code_dir} 에, "
             f"지침은 {self._persona_dir} 에 있다.\n"
-            "어느 지침과 어느 판단이 이 답을 만들었는지는 그 파일을 실제로 열어 확인하고 "
-            "파일 이름과 함수 이름을 짚는다."
+            "이 출력에 걸린 지침 절과 코드 분기는 그 파일을 실제로 열어 확인하고 "
+            "파일 이름과 함수 이름을 짚는다. 파일에서 확인되지 않는 내용은 적지 않는다."
         )
 
     def header_title(self, target: ReviewTarget) -> str:

@@ -12,7 +12,7 @@ from ..auth.principal import Principal, TrustLevel, TurnTier
 from .code_terms import CODE_TERM_NOTE
 
 if TYPE_CHECKING:
-    from ..config.profile import PeerProfile
+    from ..config.profile import PeerProfile, Profile
     from .knowledge import KnowledgeLoader
     from .library import PromptLibrary
 
@@ -124,6 +124,10 @@ class CompositionContext:
     #: tools that act, empty when the selection is unrestricted.
     turn_reads_only: bool = False
     turn_acting_tools: tuple[str, ...] = ()
+    #: This turn's tool list names Agent or Task, so the profile's subagents
+    #: (lookup, analyst) can be called (ToolSelection.can_delegate). Drives the
+    #: delegation lines of FlowSection; part of the instruction fingerprint.
+    delegation: bool = False
     chat_level: str = "normal"
     silent_mark: str = SILENT_MARK
     library: PromptLibrary | None = None
@@ -357,6 +361,110 @@ OWNER_SELF_RESOLVE = (
     "- 모든 경로가 막혔을 때만 시도한 경로마다 오류 문구를 적고, 무엇이 바뀌면 풀리는지 "
     "한 줄로 적는다. 이때도 소유자 손에 명령을 쥐여 주는 것으로 끝내지 않는다"
 )
+
+
+class SelfConfigSection(PromptSection):
+    """Tells the owner's turn where this bot's own settings live.
+
+    2026-11-16 asuka: the owner said "아스카 모델을 하이쿠로 변경". The turn
+    searched the state dir, found only engine/settings-claude*.json (Read is
+    denied there by design) and asked the owner which file to edit. The model
+    is in the profile file, which sits outside the state dir and was never
+    named in the prompt, so the turn could not find it. The restart that a
+    profile edit needs goes through the apply-request marker (restart_guard).
+
+    Not shown on aside turns (postmortem, debug trace, format review): those
+    carry no act tools, so the locations would only invite a write that fails.
+    """
+
+    def __init__(self, profile: Profile) -> None:
+        self._profile = profile
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return ctx.is_owner and not ctx.aside
+
+    def render(self, ctx: CompositionContext) -> str:
+        profile = self._profile
+        paths = profile.paths
+        marker, _running = paths.apply_requests
+        source = (
+            str(profile.source_file)
+            if profile.source_file is not None
+            else f"프로필 {profile.name}.json (slack-cli-agent --profile-dir 가 가리키는 디렉터리)"
+        )
+        lines = [
+            "\n\n# 이 봇 자신의 설정 위치\n",
+            "소유자가 이 봇의 모델, 채널 설정, 페르소나를 바꾸라고 하면 아래 파일을 직접 고친다.",
+            "위치를 소유자에게 되묻지 않는다.\n",
+            (
+                f"- 봇 전체 모델 : {source} 의 primary_engine.model 과 model_owner."
+                f" 지금 값은 {profile.primary_engine.model or '미지정'} 이다. 재기동해야 반영된다"
+            ),
+            (
+                f"- 채널별 모델과 추론 강도 : {paths.channels} 의 채널 항목 model, effort."
+                " 턴마다 다시 읽으므로 재기동이 필요 없다"
+            ),
+            f"- 채널 설정 : {paths.channels}",
+            f"- 페르소나 : {paths.persona}",
+            f"- 프롬프트 덮어쓰기 : {paths.prompts}",
+            (
+                f"- {paths.root / 'engine'} 아래는 엔진 권한 설정이라 읽기와 쓰기가 막혀 있다."
+                " 모델 설정은 거기 없다"
+            ),
+            (
+                "- 재기동 : launchctl 로 자기 서비스를 내리지 않는다 (지금 턴이 끝나길 기다리며 교착된다)."
+                f" printf '%s\\n%s\\n%s\\n' \"$(date +%s)\" \"$TURN_ID\" \"<변경 요약>\" > {marker}"
+                " 로 apply-request 마커를 쓰고 턴을 끝낸다. 감독(supervisor)이 턴이 끝난 뒤"
+                " 점검하고 재기동한 다음 결과를 DM 으로 보낸다"
+            ),
+        ]
+        if profile.primary_engine.type == "claude":
+            lines.append(
+                "- 모델 값은 claude --model 이 받는 전체 ID 로 쓴다. 고치기 전에"
+                " claude -p --model <ID> 로 한 번 불러 ID 가 유효한지 확인한다"
+            )
+        return "\n".join(lines)
+
+
+class MemoryPathSection(PromptSection):
+    """Names the path a memory file is written to.
+
+    2026-11-19 신지: told to remember something, the turn called Write on
+    `~/.claude/projects/<slug>/memory/...` — the path Claude Code's own prompt
+    gives — which Write and Bash refuse in dontAsk mode on any `.claude`
+    component (실측 2026-09-19). The turn then reported the refusal as a
+    permission problem. StatePaths.memory holds the same files (the engine-side
+    path is a symlink to it, engine/claude.py prepare()), so the writable path
+    is named here rather than left in one bot's persona file.
+
+    Owner turns only: a general turn carries no write tools, so the path would
+    only invite a write that fails. Aside turns (postmortem, debug trace,
+    format review) carry none either.
+    """
+
+    def __init__(self, profile: Profile) -> None:
+        self._profile = profile
+
+    def applies_to(self, ctx: CompositionContext) -> bool:
+        return ctx.is_owner and not ctx.aside
+
+    def render(self, ctx: CompositionContext) -> str:
+        paths = self._profile.paths
+        return "\n".join([
+            "\n\n# 메모리 쓰기 경로\n",
+            (
+                f"기억해 둘 것은 {paths.memory} 아래에 파일로 쓴다."
+                f" 색인은 {paths.memory_index} 다.\n"
+            ),
+            (
+                "- 경로에 `.claude` 가 들어가는 메모리 경로로 쓰지 않는다. 그 경로는"
+                " Write 와 Bash 가 거부한다. 거부를 권한 문제로 보고하지 않는다"
+            ),
+            (
+                f"- 엔진 쪽 메모리 경로는 {paths.memory} 를 가리키는 symlink 라 내용은 같다."
+                " 읽기도 이 경로를 쓴다"
+            ),
+        ])
 
 
 class PeerRecoverySection(PromptSection):
@@ -766,10 +874,11 @@ class WorkStyleSection(PromptSection):
         return ctx._library_or_raise().text("WORK_STYLE_NOTE") + "\n\n" + CODE_TERM_NOTE
 
 
-#: Tiers whose turn holds the Agent tool: the owner, a channel operator, and a
+#: Tiers the default flow applies to: the owner, a channel operator, and a
 #: delegated turn, which gets the operator's tool set (ToolPolicy
-#: operator_level). FlowSection and the plan_gate hook apply only here; a
-#: flow that tells the model to delegate a branch is no use without Agent.
+#: operator_level). FlowSection and the plan_gate hook apply only here. Whether
+#: the turn may delegate a branch to Agent is a separate question, decided per
+#: turn from its tool list (CompositionContext.delegation, AGENT_DELEGATION).
 FLOW_TIERS: frozenset[str] = frozenset({
     TurnTier.OWNER_TRUSTED,
     TurnTier.OWNER,
@@ -790,14 +899,20 @@ def flow_applies(tier: str, *, chat: bool, aside: bool = False) -> bool:
     return tier in FLOW_TIERS and not chat and not aside
 
 
+#: Slot in flow_note.md where the delegation lines go (flow_delegation_note.md).
+FLOW_DELEGATION_SLOT = "FLOW_DELEGATION"
+
+
 class FlowSection(PromptSection):
     """FLOW_NOTE: analyse, plan, run branches in parallel, refine.
 
     2026-11-06..10 guchipachi: of 43 sessions with 30+ tool calls, 3 used a
     lookup subagent. The note tells the model to follow the `[작업 순서]`
     plan the engine makes (guard/plan_start) and plan_gate injects, and hands
-    a branch of 3+ calls to Agent(subagent_type="lookup"|"analyst"). The
-    pipeline turns both hooks on with the same flow_applies.
+    a branch of 3+ calls to Agent(subagent_type="lookup"|"analyst") -- the
+    delegation lines (flow_delegation_note.md) only on a turn whose tool list
+    has Agent or Task (ctx.delegation). The pipeline turns both hooks on with
+    the same flow_applies.
     `enabled` comes from the profile setting `plan_flow`.
     """
 
@@ -810,7 +925,12 @@ class FlowSection(PromptSection):
         )
 
     def render(self, ctx: CompositionContext) -> str:
-        return ctx._library_or_raise().text("FLOW_NOTE")
+        library = ctx._library_or_raise()
+        note = library.text("FLOW_NOTE")
+        # The slot takes its whole line. A state-dir flow_note.md without the
+        # slot keeps its own text.
+        lines = library.text("FLOW_DELEGATION_NOTE").rstrip("\n") + "\n" if ctx.delegation else ""
+        return note.replace(f"<<{FLOW_DELEGATION_SLOT}>>\n", lines)
 
 
 class AttachmentSection(PromptSection):

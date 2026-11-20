@@ -58,8 +58,11 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
-from slack_cli_agent.core.markers import ASK_TAG
+from slack_cli_agent.core.markers import ASK_TAG, strip_control_tags
+from slack_cli_agent.guard.plan_start import result_event
+from slack_cli_agent.guard.pretool.plan_gate import intake_view
 
 #: Absolute path to this file. A real wiring (see module docstring) invokes
 #: this module as a standalone script the same way
@@ -274,8 +277,12 @@ def _input_blob(input_mapping: Mapping[str, object]) -> str:
 # --------------------------------------------------------------------------
 
 _OFFER_RE = re.compile(
-    r"(원하시면|필요하시면|필요하면|말씀 주시면|말씀해 주시면)[^\n]*?"
-    r"(볼게요|드릴게요|할게요|하겠습니다|드리겠습니다|보겠습니다|이어서|확인해|조사해|파볼|말씀해\s*주세요|말씀\s*주세요)"
+    # 2026-11-20: "궁금하면 그 부분만 조회해서 답함" ended a reply by asking the
+    # owner to re-request a lookup this turn could have run. "궁금하면"/"원하면"
+    # and the 요약체 endings ("답함", "조회함") were both missing here.
+    r"(원하시면|원하면|필요하시면|필요하면|궁금하면|궁금하시면|말씀 주시면|말씀해 주시면|알려주시면|알려주면)[^\n]*?"
+    r"(볼게요|드릴게요|할게요|하겠습니다|드리겠습니다|보겠습니다|이어서|확인해|조사해|파볼"
+    r"|말씀해\s*주세요|말씀\s*주세요|답함|답하겠|조회함|조회해|확인함|알려드림|정리함)"
     r"|(더|이어서|추가로|바로)[^\n]{0,20}?(확인|조사|살펴|파|찾아|조회)\S*\s*(볼까요|드릴까요|할까요)"
     r"|(돌려|집계해|확인해|조회해|찾아|살펴|분석해|대조해|재\s?볼|모으면|모아\s?보면)"
     r"[^\n]{0,6}?(볼\s?수\s?있어요|볼\s?수\s?있습니다|잴\s?수도\s?있어요|잴\s?수\s?있어요"
@@ -383,7 +390,24 @@ def handoff(turn: Turn) -> str | None:
 
 #: gave_up blocks a turn at most this many times; see gave_up().
 GAVE_UP_MAX_BLOCKS = 1
-_GAVE_UP_RE = re.compile(r"(조회|확인|열람)(하지 못|할 수 없었|\s?불가)[^\n]{0,20}")
+#: 2026-11-20: the summary-style endings the persona asks for ("확인 못 함",
+#: "조회하지 않아 확인 못 함") never matched the "하지 못" form, so a reply that
+#: skipped four lookups it could have run went out unflagged. The owner's
+#: reading: "확인해 봐 -> 확인 못 했다" hands the lookup back to the asker.
+#: "안 함"/"않아" are included because not trying reads the same to the asker
+#: as trying and failing.
+#: The 못 함/안 함/불가 forms take a particle when they name an earlier state
+#: instead of declaring one now ("확인 못 함으로 넘겼던 두 건을 조회했고"). Those
+#: are reports of a lookup already done — without this exclusion the judgment
+#: fires on the very answer that went back and ran the lookup.
+_GAVE_UP_RE = re.compile(
+    r"(조회|확인|열람)"
+    r"(하지\s?못|하지\s?않아|할 수 없었"
+    r"|\s?못\s?함(?![으을은이에과와])"
+    r"|\s?안\s?함(?![으을은이에과와])"
+    r"|\s?불가(?![으을은이에과와]))"
+    r"[^\n]{0,20}"
+)
 
 
 def gave_up(turn: Turn) -> str | None:
@@ -790,6 +814,17 @@ _NUM_RE = re.compile(r"(?<![\w.])\d(?:[\d,]*\d)?(?:\.\d+)?")
 #: mametchi raised this 200 -> 400 after the median reply time tripled from
 #: block-then-rewrite loops on short answers.
 VERIFY_MIN_LEN = 400
+#: Length is the wrong gate for one shape of claim: a self-assessment ratio
+#: ("준수율이 아직 100%가 아님", "정확도 24/24") fits in one short line and is
+#: exactly the sentence no tool result backs. 2026-11-20 a 300-char reply
+#: asserted an unmeasured compliance rate and cited an unrelated benchmark as
+#: its evidence; needs_verification() skipped it on length alone. Answers
+#: matching this run the check regardless of length.
+_SELF_RATE_RE = re.compile(
+    r"(?:준수율|정확도|성공률|품질\s*점수|재현율|일치율)"
+    r"|(?<![\w.])\d{1,3}(?:\.\d+)?\s*(?:%|퍼센트)"
+    r"|(?<![\w.])\d{1,4}\s*/\s*\d{1,4}(?![\w.])"
+)
 #: The verify judgment blocks a turn at most this many times before the
 #: `prior_flagged` filter starts. 2026-11-06:
 #: with 1, the rewrite after the first block was never checked, and
@@ -846,7 +881,17 @@ def needs_verification(answer: str) -> bool:
     if "[[침묵]]" in (answer or ""):
         return False
     body = "\n".join(line for line in (answer or "").splitlines() if not _TAG_LINE.match(line))
-    return len(body.strip()) >= VERIFY_MIN_LEN and bool(_CLAIM_MARK_RE.search(body))
+    stripped = body.strip()
+    if not stripped:
+        return False
+    # The publisher's footer (slack/publisher.py) is quoted lines carrying its
+    # own numbers ("캐시 적중률 : 64퍼센트", "토큰 : 127,230개"). Those are
+    # measured by the publisher, not claimed by the model, so a quoted line
+    # never triggers the self-assessment gate.
+    prose = "\n".join(line for line in stripped.splitlines() if not line.lstrip().startswith(">"))
+    if _SELF_RATE_RE.search(prose):
+        return True
+    return len(stripped) >= VERIFY_MIN_LEN and bool(_CLAIM_MARK_RE.search(body))
 
 
 #: `answer, evidence text -> unsupported sentences`. The engine's Stop hook
@@ -1691,3 +1736,334 @@ def verify_claim_keys(decision: StopDecision) -> set[str]:
         if f.name == "verify":
             keys |= {claim_key(part) for part in f.detail.split(" | ") if part.strip()}
     return keys
+
+
+# --------------------------------------------------------------------------
+# N6: the turn's result against the plan's own checks
+# --------------------------------------------------------------------------
+
+#: Switch set by the pipeline only with plan_intake on (core/pipeline._plan_gate_env).
+PLAN_CHECK_ENV = "SCA_PLAN_INTAKE_CHECK"
+PLAN_CHECK_MAX_BLOCKS_ENV = "SCA_PLAN_CHECK_MAX_BLOCKS"
+#: Own cap, never shared with verify's: a shared cap leaves no recheck after
+#: the block, so "unmet, then met" could not be measured.
+PLAN_CHECK_MAX_BLOCKS = 1
+PLAN_CHECK_TIMEOUT = 90
+VERDICT_MET, VERDICT_UNMET, VERDICT_UNKNOWN = "충족", "미충족", "확인불가"
+
+_PLAN_CHECK_PROMPT = (
+    "아래 [확인 기준] 은 이 요청을 시작할 때 세운 계획이 답하기 전에 만족해야 한다고 적은 조건이다. "
+    "[근거] 는 봇이 이번 턴에 실행한 조회 결과와 사용자 입력, [답] 은 게시하려는 답이다.\n"
+    "기준마다 판정한다. 일반적인 답변 품질은 보지 않고 그 기준만 본다.\n"
+    "- 충족: [근거] 나 [답] 으로 기준이 이루어졌음이 확인된다.\n"
+    "- 미충족: 해야 할 일을 하지 않았거나 [근거] 가 기준과 어긋난다.\n"
+    "- 확인불가: [근거] 만으로는 이루어졌는지 알 수 없다.\n"
+    "기준이 요청에서 대상·값이 특정되었는지를 묻는데 요청에 그것이 없고, [답] 이 그 항목을 사용자에게 되묻는 답이면 "
+    "그 기준은 충족이다(되묻는 것이 이 턴의 올바른 처리다). 되묻지 않고 추정으로 진행한 답은 이 예외가 아니다.\n"
+    "basis 는 판정 근거 한 문장이다. marked_unconfirmed 는 [답] 이 그 기준을 미확인이라고 이미 밝혔을 때만 true 다.\n"
+    "what 은 기준 문구를 그대로 쓴다.\n\n"
+)
+_PLAN_CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {"results": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "what": {"type": "string"},
+            "verdict": {"type": "string", "enum": [VERDICT_MET, VERDICT_UNMET, VERDICT_UNKNOWN]},
+            "basis": {"type": "string"},
+            "marked_unconfirmed": {"type": "boolean"},
+        },
+        "required": ["what", "verdict", "basis", "marked_unconfirmed"],
+    }}},
+    "required": ["results"],
+}
+
+
+def plan_check_enabled(env: Mapping[str, str]) -> bool:
+    return (env.get(PLAN_CHECK_ENV) or "").strip() not in ("", "0")
+
+
+def resolve_plan_check_max_blocks(env: Mapping[str, str]) -> int:
+    try:
+        value = int((env.get(PLAN_CHECK_MAX_BLOCKS_ENV) or "").strip())
+    except ValueError:
+        return PLAN_CHECK_MAX_BLOCKS
+    return value if value >= 0 else PLAN_CHECK_MAX_BLOCKS
+
+
+def plan_checks(plan: object) -> list[dict[str, str]]:
+    """The non-empty `checks` of an ok plan record, as {what, how}."""
+    if not isinstance(plan, Mapping) or plan.get("status") != "ok":
+        return []
+    found = []
+    for item in intake_view(dict(plan)).checks or []:
+        if isinstance(item, Mapping) and str(item.get("what") or "").strip():
+            found.append({"what": str(item["what"]).strip(), "how": str(item.get("how") or "").strip()})
+    return found
+
+
+class PlanCheckJudge:
+    """Judges each plan check against this turn's evidence with a separate
+    nested tool-less claude call. Returns the per-check results, or None on
+    any failure (reason in `status`); a failed judge never blocks."""
+
+    def __init__(
+        self,
+        *,
+        model: str = VERIFY_DEFAULT_MODEL,
+        timeout: float = PLAN_CHECK_TIMEOUT,
+        runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+        executable: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
+        self.model = model
+        self.timeout = timeout
+        self._runner = runner or _run_killable
+        self._executable = executable
+        self._env = dict(os.environ if env is None else env)
+        self.status = "not_run"
+        self.elapsed: float | None = None
+
+    def __call__(self, checks: Sequence[Mapping[str, str]], answer: str, evidence: str) -> list[dict[str, Any]] | None:
+        if self._env.get(VERIFY_NESTED_ENV):
+            self.status = "skip_nested"
+            return None
+        exe = self._executable or shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+        listed = "\n".join(f"- {c['what']} (확인 방법: {c.get('how') or '없음'})" for c in checks)
+        prompt = f"{_PLAN_CHECK_PROMPT}[확인 기준]\n{listed}\n\n[근거]\n{evidence}\n\n[답]\n{answer or ''}"
+        started = time.monotonic()
+        try:
+            proc = self._runner(
+                [exe, "-p", "--model", self.model, "--tools", "", "--strict-mcp-config",
+                 "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "",
+                 "--output-format", "json", "--json-schema", json.dumps(_PLAN_CHECK_SCHEMA)],
+                input=prompt, capture_output=True, text=True, timeout=self.timeout,
+                env={**self._env, VERIFY_NESTED_ENV: "1"},
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed judge never blocks
+            self.status = "error:" + type(exc).__name__
+            self.elapsed = round(time.monotonic() - started, 1)
+            return None
+        self.elapsed = round(time.monotonic() - started, 1)
+        out = proc.stdout or ""
+        outer = result_event(out)
+        if outer is None:
+            self.status = "error:no_json" if "{" not in out else "error:bad_json"
+            return None
+        try:
+            payload: Any = outer.get("structured_output") if "structured_output" in outer else outer
+            items = payload["results"]
+            if not isinstance(items, list):
+                raise TypeError("results")
+        except (ValueError, AttributeError, KeyError, TypeError):
+            self.status = "error:bad_json"
+            return None
+        results = [
+            {
+                "what": str(x.get("what") or "").strip(),
+                "verdict": x["verdict"],
+                "basis": str(x.get("basis") or "")[:200],
+                "marked_unconfirmed": bool(x.get("marked_unconfirmed")),
+            }
+            for x in items
+            if isinstance(x, Mapping) and x.get("verdict") in (VERDICT_MET, VERDICT_UNMET, VERDICT_UNKNOWN)
+            and str(x.get("what") or "").strip()
+        ]
+        self.status = "ok"
+        return results
+
+
+@dataclass(frozen=True)
+class PlanCheckOutcome:
+    reason: str | None
+    keys: frozenset[str] = frozenset()
+
+
+def plan_check_outcome(
+    results: Sequence[Mapping[str, Any]], *, prior_keys: frozenset[str], block_count: int, cap: int,
+) -> PlanCheckOutcome:
+    """Block reason for unmet checks and for unknown ones the answer has not
+    marked 미확인. Past the cap, or for a check text already blocked on, no
+    block (repeat suppression is keyed by the check text)."""
+    if block_count >= cap:
+        return PlanCheckOutcome(None)
+    unmet = [r["what"] for r in results if r["verdict"] == VERDICT_UNMET and r["what"] not in prior_keys]
+    unknown = [
+        r["what"] for r in results
+        if r["verdict"] == VERDICT_UNKNOWN and not r.get("marked_unconfirmed") and r["what"] not in prior_keys
+    ]
+    if not (unmet or unknown):
+        return PlanCheckOutcome(None)
+    parts = []
+    if unmet:
+        parts.append("계획에서 정한 확인 기준을 아직 채우지 못했다: " + " / ".join(unmet) + ". 빠진 작업을 하고 답한다")
+    if unknown:
+        parts.append("이번 턴 결과로 확인되지 않은 기준은 답에 \"미확인\" 이라고 밝힌다: " + " / ".join(unknown))
+    return PlanCheckOutcome("; ".join(parts), frozenset(unmet + unknown))
+
+
+# --------------------------------------------------------------------------
+# v2: the answer against the plan's `output` (docs/입출력-절차-v2-설계.md (c))
+# --------------------------------------------------------------------------
+
+#: "" off, "record" judge in a detached process and only record, "block" judge
+#: inline and block once. Set by the pipeline only with plan_intake on.
+PLAN_OUTPUT_CHECK_ENV = "SCA_PLAN_OUTPUT_CHECK"
+PLAN_OUTPUT_MODES = ("record", "block", "block_form")
+#: Forms whose violation block_form blocks. 문단 answers in the owner's bullet style are not a fault (11-20 check).
+FORM_BLOCK_FORMS = ("한두줄",)
+OUTPUT_CHECK_DEFAULT_MODEL = "haiku"
+OUTPUT_FORMS = ("한두줄", "문단", "목록", "표", "긴글")
+OUTPUT_TAIL_NOTE = "도구 결과가 기대 결과와 맞지 않으면 요청을 따르고 사유를 한 문장으로 적는다"
+_OUTPUT_LIST_LINE_RE = re.compile(r"^[ \t]*(?:[-*•]|\d+[.)])[ \t]+\S")
+_OUTPUT_FORM_MAX_LINES = {"한두줄": 2, "문단": 6}
+
+_OUTPUT_CHECK_PROMPT = (
+    "아래 [기대 결과] 는 이 요청을 시작할 때 세운 답의 형태와 담을 항목이고, [추정한 값] 은 사용자가 말하지 않아 "
+    "계획이 가정한 값이다. [답] 은 게시하려는 답이다. 도구 결과는 보지 않고 [답] 만으로 판정한다.\n"
+    "- missing_items: [기대 결과] 항목 중 [답] 에 없는 것(뜻이 같으면 있는 것이다)\n"
+    "- unconfirmed_items: [답] 이 \"확인 못 함\"·\"미확인\"·\"모름\" 으로 남긴 값 중 조회하지 않았다고 적은 것"
+    "(조회 안 함·열지 않음·이번 턴에 확인 안 함). [기대 결과] 항목이 아니어도 넣는다. 검색했지만 안 나왔다거나 "
+    "외부 심사·가입·다음 턴 결과처럼 닿을 수 없는 이유를 적은 것은 넣지 않는다\n"
+    "- extra: [기대 결과] 에 없는데 [답] 에 덧붙은 내용 한 줄 요약(최대 3개). 항목을 밝히는 데 쓴 근거 표시와 "
+    "추정값 공개 문장은 덧붙임이 아니다\n"
+    "- undisclosed: [추정한 값] 중 [답] 이 추정이라고 밝히지 않은 것의 이름. 값이 답에 기준·범위로 적혀 있으면 "
+    "밝힌 것이다\n"
+    "해당이 없으면 빈 배열이다.\n\n"
+)
+_OUTPUT_CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "missing_items": {"type": "array", "items": {"type": "string"}},
+        "unconfirmed_items": {"type": "array", "items": {"type": "string"}},
+        "extra": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+        "undisclosed": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["missing_items", "unconfirmed_items", "extra", "undisclosed"],
+}
+_OUTPUT_VERDICT_KEYS = ("missing_items", "unconfirmed_items", "extra", "undisclosed")
+
+
+def plan_output_mode(env: Mapping[str, str]) -> str:
+    value = (env.get(PLAN_OUTPUT_CHECK_ENV) or "").strip()
+    return value if value in PLAN_OUTPUT_MODES else ""
+
+
+def plan_output_spec(plan: object) -> dict[str, Any] | None:
+    """{form, items, guesses} of an ok v2 plan, or None when this plan is not
+    checked: v1 (no `output`), status not ok, or any input of kind ask."""
+    if not isinstance(plan, Mapping) or plan.get("status") != "ok":
+        return None
+    output = plan.get("output")
+    if not isinstance(output, Mapping) or output.get("form") not in OUTPUT_FORMS:
+        return None
+    inputs = [x for x in plan.get("inputs") or [] if isinstance(x, Mapping)]
+    if any(x.get("kind") == "ask" for x in inputs):
+        return None
+    items = [str(x).strip() for x in output.get("items") or [] if str(x).strip()]
+    guesses = [
+        {"name": str(x.get("name") or "").strip(), "value": str(x.get("value") or "").strip()}
+        for x in inputs if x.get("kind") == "guess" and str(x.get("name") or "").strip()
+    ]
+    return {"form": output["form"], "items": items, "guesses": guesses}
+
+
+def form_violation(form: str, answer: str) -> str | None:
+    """`form` when the answer breaks it, for 한두줄 and 문단 only: a bullet or
+    numbered line, or too many non-blank lines. Marker and WATCH lines are
+    not content."""
+    limit = _OUTPUT_FORM_MAX_LINES.get(form)
+    if limit is None:
+        return None
+    body, _ = strip_control_tags(answer or "")
+    lines = [line for line in body.split("\n") if line.strip()]
+    if any(_OUTPUT_LIST_LINE_RE.match(line) for line in lines):
+        return form
+    return form if len(lines) > limit else None
+
+
+class OutputCheckJudge:
+    """Judges the answer against the plan's output with a separate nested
+    tool-less claude call. Returns the verdict dict, or None on any failure
+    (reason in `status`); a failed judge never blocks."""
+
+    def __init__(
+        self,
+        *,
+        model: str = OUTPUT_CHECK_DEFAULT_MODEL,
+        timeout: float = PLAN_CHECK_TIMEOUT,
+        runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+        executable: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
+        self.model = model
+        self.timeout = timeout
+        self._runner = runner or _run_killable
+        self._executable = executable
+        self._env = dict(os.environ if env is None else env)
+        self.status = "not_run"
+        self.elapsed: float | None = None
+
+    def __call__(self, spec: Mapping[str, Any], answer: str) -> dict[str, list[str]] | None:
+        if self._env.get(VERIFY_NESTED_ENV):
+            self.status = "skip_nested"
+            return None
+        exe = self._executable or shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+        items = "\n".join(f"- {item}" for item in spec.get("items") or []) or "- (없음)"
+        guesses = "\n".join(f"- {g['name']}: {g['value']}" for g in spec.get("guesses") or []) or "- (없음)"
+        prompt = (
+            f"{_OUTPUT_CHECK_PROMPT}[기대 결과]\n형태: {spec.get('form')}\n항목:\n{items}\n\n"
+            f"[추정한 값]\n{guesses}\n\n[답]\n{answer or ''}"
+        )
+        started = time.monotonic()
+        try:
+            proc = self._runner(
+                [exe, "-p", "--model", self.model, "--tools", "", "--strict-mcp-config",
+                 "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "",
+                 "--output-format", "json", "--json-schema", json.dumps(_OUTPUT_CHECK_SCHEMA)],
+                input=prompt, capture_output=True, text=True, timeout=self.timeout,
+                env={**self._env, VERIFY_NESTED_ENV: "1"},
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed judge never blocks
+            self.status = "error:" + type(exc).__name__
+            self.elapsed = round(time.monotonic() - started, 1)
+            return None
+        self.elapsed = round(time.monotonic() - started, 1)
+        out = proc.stdout or ""
+        outer = result_event(out)
+        if outer is None:
+            self.status = "error:no_json" if "{" not in out else "error:bad_json"
+            return None
+        try:
+            payload: Any = outer.get("structured_output") if "structured_output" in outer else outer
+            if any(not isinstance(payload[key], list) for key in _OUTPUT_VERDICT_KEYS):
+                raise TypeError("not a list")
+            verdict = {key: [str(x).strip() for x in payload[key] if str(x).strip()] for key in _OUTPUT_VERDICT_KEYS}
+        except (ValueError, AttributeError, KeyError, TypeError):
+            self.status = "error:bad_json"
+            return None
+        verdict["extra"] = verdict["extra"][:3]
+        if not spec.get("guesses"):
+            verdict["undisclosed"] = []
+        self.status = "ok"
+        return verdict
+
+
+def plan_output_outcome(
+    verdict: Mapping[str, Sequence[str]] | None, form_issue: str | None, form: str, *, block_count: int, cap: int,
+) -> PlanCheckOutcome:
+    """Block reason lines for an output mismatch (design (c)). `verdict` None
+    (judge failed) still blocks on a form issue alone. Past the cap, no block."""
+    if block_count >= cap:
+        return PlanCheckOutcome(None)
+    verdict = verdict or {}
+    # missing_items, extra and undisclosed stay in the record only: on the 11-19 replay and the 11-20 hand check
+    # of 25 real turns they were mostly false (undisclosed 0/14).
+    parts = []
+    if verdict.get("unconfirmed_items"):
+        parts.append("미확인으로 남긴 항목은 도구로 찾아 채운다: " + ", ".join(verdict["unconfirmed_items"]))
+    if form_issue:
+        parts.append(f"형태는 {form} 이다")
+    if not parts:
+        return PlanCheckOutcome(None)
+    return PlanCheckOutcome("; ".join(parts) + ". " + OUTPUT_TAIL_NOTE)

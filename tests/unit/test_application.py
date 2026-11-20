@@ -1787,6 +1787,25 @@ class Test폴백엔진연결:
         일정 = app.learning_schedule()
         assert cast(Any, 일정._is_waiting).__self__ is app._learning_progress_store()
 
+    def test_학습_배치가_분석_게이트와_이월_저장소를_받는다(self, app: Application) -> None:
+        """부품을 만든 것과 조립이 그것을 넘기는 것은 다르다. 안 넘기면 게이트가
+        꺼진 채로 매일 모든 채널을 분석한다."""
+        배치 = app.learning_batch()
+        assert 배치._gate is not None
+        assert 배치._carry is not None
+        # 제안 디렉터리에는 두지 않는다. ProposalStore.latest() 가 그곳을 훑는다.
+        assert 배치._carry._path.parent == app._learning_progress_store().directory
+        assert 배치._carry._path.parent != app.profile.paths.proposals
+
+    def test_이월_상한_설정이_범위_밖이면_기본값으로_돌린다(
+        self, tmp_path: Path, client: FakeSlackClient
+    ) -> None:
+        """0일이면 게이트 생성이 예외를 내 워커가 못 뜬다."""
+        application = Application(write_profile(tmp_path, settings={"learning_max_defer_days": 0}), client)
+        정책 = application._learning_gate_policy()
+        assert 정책.max_defer_days == RuntimeSettings().learning_max_defer_days
+        assert 정책.min_entries == RuntimeSettings().learning_min_entries
+
     def test_학습_배치가_진행_상태_저장소를_받는다(self, app: Application) -> None:
         """부품을 만든 것과 조립이 그것을 넘기는 것은 다르다. 안 넘기면 채널별
         재시도가 전부 안 돌고 배치는 매번 처음부터 분석한다(sca-b4o).
