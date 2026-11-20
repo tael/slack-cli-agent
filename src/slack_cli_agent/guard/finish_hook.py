@@ -132,6 +132,18 @@ def _count_path(state_dir: Path, key: str) -> Path:
     return state_dir / f"finish-hook-{key}.count"
 
 
+def _verify_count_path(state_dir: Path, key: str) -> Path:
+    return state_dir / f"finish-hook-{key}.verify.count"
+
+
+def _record_verify_block(path: Path | None, decision: StopDecision, verify_count: int) -> None:
+    """Counts the blocks the model verify made, apart from other judgments'."""
+    if path is None or decision.action != "block":
+        return
+    if any(f.name == "verify" for f in decision.findings):
+        _write_count(path, verify_count + 1)
+
+
 def _flagged_path(state_dir: Path, key: str) -> Path:
     return state_dir / f"finish-hook-{key}.flagged.json"
 
@@ -465,7 +477,9 @@ def main(argv: list[str]) -> int:
 
         state_dir = _state_dir(payload)
         block_count = 0
+        verify_block_count = 0
         count_path: Path | None = None
+        verify_count_path: Path | None = None
         flagged_path: Path | None = None
         drafts_path: Path | None = None
         if state_dir is not None:
@@ -474,6 +488,8 @@ def main(argv: list[str]) -> int:
             flagged_path = _flagged_path(state_dir, key)
             drafts_path = _drafts_path(state_dir, key)
             block_count = _read_count(count_path)
+            verify_count_path = _verify_count_path(state_dir, key)
+            verify_block_count = _read_count(verify_count_path)
         prior_flagged = _read_flagged(flagged_path)
         prior_drafts = _read_drafts(drafts_path)
 
@@ -492,7 +508,7 @@ def main(argv: list[str]) -> int:
             turn, block_count=block_count, seconds_left=seconds_left, claim_verifier=verifier,
             prior_flagged=prior_flagged,
             verify_hard_max_blocks=resolve_verify_max_blocks(os.environ),
-            prior_drafts=prior_drafts,
+            prior_drafts=prior_drafts, verify_block_count=verify_block_count,
         )
         elapsed = round(time.monotonic() - started, 1)
         final = decision
@@ -525,6 +541,7 @@ def main(argv: list[str]) -> int:
             }, name="finish-hook-figurative.jsonl")
         if decision.action == "block" and count_path is not None:
             _write_count(count_path, block_count + 1)
+            _record_verify_block(verify_count_path, decision, verify_block_count)
             if flagged_path is not None:
                 _write_flagged(flagged_path, prior_flagged | verify_claim_keys(decision))
             if drafts_path is not None:
@@ -544,6 +561,7 @@ def main(argv: list[str]) -> int:
                 "knowledge_chars": len(turn.knowledge),
                 "findings": [f.detail for f in decision.findings if f.name == "verify"],
                 "block_count": block_count,
+                "verify_block_count": verify_block_count,
             })
 
         result = final.to_hook_json()

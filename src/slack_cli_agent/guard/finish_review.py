@@ -1642,6 +1642,7 @@ def decide(
     prior_flagged: frozenset[str] = frozenset(),
     verify_hard_max_blocks: int = VERIFY_HARD_MAX_BLOCKS,
     prior_drafts: Sequence[str] = (),
+    verify_block_count: int | None = None,
 ) -> StopDecision:
     """The Stop-hook decision for one turn.
 
@@ -1663,7 +1664,14 @@ def decide(
     `prior_drafts` are the answers this turn already had blocked. Past
     VERIFY_MAX_BLOCKS the check blocks only on sentences that are not in any
     of them (`carried_over`).
+
+    `verify_block_count` is how many of those blocks the model verify made.
+    The verify caps count only these: 2026-11-20 a gave_up block spent the
+    owner turn's single verify slot and the rewrite shipped a wrong claim
+    unchecked. None means every prior block was a verify block.
     """
+    if verify_block_count is None:
+        verify_block_count = block_count
     if not turn.has_transcript:
         return StopDecision(action="allow")
     active_registry = default_registry if registry is None else registry
@@ -1677,9 +1685,9 @@ def decide(
         # flagged the turn, at most VERIFY_MAX_BLOCKS blocks per request, and
         # never so close to the deadline that the rewrite can't land.
         budget_ok = seconds_left is None or seconds_left > release_sec + VERIFY_TIMEOUT
-        if not findings and budget_ok and block_count < verify_hard_max_blocks:
+        if not findings and budget_ok and verify_block_count < verify_hard_max_blocks:
             claims = unsupported_claims(turn, verifier=claim_verifier)
-            if block_count >= VERIFY_MAX_BLOCKS:
+            if verify_block_count >= VERIFY_MAX_BLOCKS:
                 claims = [
                     c for c in claims
                     if claim_key(c) not in prior_flagged and not carried_over(c, prior_drafts)
@@ -1692,7 +1700,7 @@ def decide(
     if seconds_left is not None and seconds_left < release_sec:
         return StopDecision(action="release", findings=findings)
     only_verify = all(f.name == "verify" for f in findings)
-    if block_count >= max_blocks and not (only_verify and block_count < verify_hard_max_blocks):
+    if block_count >= max_blocks and not (only_verify and verify_block_count < verify_hard_max_blocks):
         return StopDecision(action="release", findings=findings)
     return StopDecision(action="block", findings=findings)
 

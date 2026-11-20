@@ -58,3 +58,21 @@ def test_hook_keeps_blocked_draft_check_for_the_rewrite(monkeypatch, tmp_path):
     out = _run_hook(monkeypatch, tmp_path, "block", {"changed": False})
     assert not out.exists()
     assert list((tmp_path / "fig.json.d").glob("*.json"))
+
+
+def test_verify_count_moves_only_on_verify_blocks(tmp_path):
+    # 2026-11-20: a gave_up block must not use up the owner turn's verify slot.
+    from slack_cli_agent.guard.finish_review import Finding, StopDecision
+
+    gave_up = StopDecision(action="block", findings=(Finding("gave_up", "x", "g"),))
+    verify = StopDecision(action="block", findings=(Finding("verify", "x", "g"),))
+    released = StopDecision(action="release", findings=(Finding("verify", "x", "g"),))
+    path = finish_hook._verify_count_path(tmp_path, "s-3")
+
+    finish_hook._record_verify_block(path, gave_up, 0)
+    assert finish_hook._read_count(path) == 0
+    finish_hook._record_verify_block(path, released, 0)
+    assert finish_hook._read_count(path) == 0
+    finish_hook._record_verify_block(path, verify, 0)
+    assert finish_hook._read_count(path) == 1
+    assert path != finish_hook._count_path(tmp_path, "s-3")

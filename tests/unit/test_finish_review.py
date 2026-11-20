@@ -1097,3 +1097,22 @@ def test_hard_cap_one_lets_the_rewrite_through_without_a_check():
     assert first.action == "block" and second.action == "allow"
     assert len(calls) == 1
     assert finish_review.resolve_verify_max_blocks({"SCA_FINISH_VERIFY_MAX_BLOCKS": "1"}) == 1
+
+
+def test_owner_cap_counts_only_verify_blocks():
+    # 2026-11-20 신지 "재발방지" 턴: gave_up 이 한 번 막아 count 가 1 이 되자,
+    # 오너 턴 한도 1 이 소진된 것으로 읽혀 재작성 답이 검증 없이 게시됐다.
+    calls: list[str] = []
+
+    def verifier(answer, evidence):
+        calls.append(answer)
+        return ["intake ack 지연 기본은 12초 (설정값 미조회)"]
+
+    answer = "조회 결과 정산 건수는 1,234건이고 원인은 배치 지연이다. " * 12
+    turn = _turn(answer, tool_calls=(ToolCall(name="Bash", input={"command": "grep"}, result="ok"),))
+    d = finish_review.decide(
+        turn, claim_verifier=verifier, block_count=1, verify_block_count=0, verify_hard_max_blocks=1)
+    assert calls and d.action == "block" and d.findings[0].name == "verify"
+    spent = finish_review.decide(
+        turn, claim_verifier=verifier, block_count=2, verify_block_count=1, verify_hard_max_blocks=1)
+    assert spent.action == "allow" and len(calls) == 1
