@@ -42,6 +42,8 @@ class OwnerOnlyChannelAudit:
         is_bot: Callable[[str], bool],
         notify: Callable[[str], object] | None = None,
         controller_user_ids: Iterable[str] = (),
+        user_name: Callable[[str], str] | None = None,
+        channel_name: Callable[[str], str] | None = None,
     ) -> None:
         self._channels = tuple(channels)
         self._owner_user_id = owner_user_id
@@ -53,6 +55,8 @@ class OwnerOnlyChannelAudit:
         self._list_members = list_members
         self._is_bot = is_bot
         self._notify = notify
+        self._user_name = user_name
+        self._channel_name = channel_name
         self._last: tuple[OwnerOnlyFinding, ...] | None = None
 
     def findings(self) -> list[OwnerOnlyFinding]:
@@ -71,6 +75,20 @@ class OwnerOnlyChannelAudit:
                 found.append(OwnerOnlyFinding(channel=channel, outsiders=outsiders))
         return found
 
+    @staticmethod
+    def _label(resolve: Callable[[str], str] | None, ident: str) -> str:
+        """사람이 알아볼 수 있게 이름(ID) 로 쓴다. 이름을 못 찾으면 ID 만 단독으로
+        쓰지 않고 이름 미확인으로 밝힌다. 조회 실패가 알림을 막으면 안 된다."""
+        name = ""
+        if resolve is not None:
+            try:
+                name = (resolve(ident) or "").strip()
+            except Exception as exc:  # noqa: BLE001 — 이름 조회 실패가 알림을 막으면 안 된다
+                log.warning("소유자 전용 채널 점검 이름 조회 실패 %s : %s", ident, exc)
+        if not name or name == ident:
+            name = "이름 미확인"
+        return f"{name}({ident})"
+
     def check(self) -> None:
         """한 번 돈다. 같은 상태가 이어지면 다시 알리지 않는다 — 주기마다 같은
         경고를 보내면 읽히지 않는다. 해소도 한 번 알린다."""
@@ -86,13 +104,14 @@ class OwnerOnlyChannelAudit:
         for finding in current:
             if finding.error:
                 self._report(
-                    f"소유자 전용 채널 점검: {finding.channel} 의 멤버를 조회하지 "
+                    f"소유자 전용 채널 점검: {self._label(self._channel_name, finding.channel)} 의 멤버를 조회하지 "
                     f"못했습니다 ({finding.error}). 위반 여부는 판정 불가입니다"
                 )
                 continue
+            people = ", ".join(self._label(self._user_name, u) for u in finding.outsiders)
             self._report(
-                f"소유자 전용으로 선언된 {finding.channel} 에 소유자와 봇이 아닌 "
-                f"사람이 있습니다: {', '.join(finding.outsiders)}. "
+                f"소유자 전용으로 선언된 {self._label(self._channel_name, finding.channel)} 에 "
+                f"소유자와 봇이 아닌 사람이 있습니다: {people}. "
                 "이 채널로 나가는 보고가 그 사람에게도 갑니다"
             )
 

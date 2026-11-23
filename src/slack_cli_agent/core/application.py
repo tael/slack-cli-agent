@@ -2611,6 +2611,8 @@ class Application:
             # is_bot 으로만 갈린다.
             is_bot=self._is_bot_user,
             notify=self._notify_owner if self._profile.owner_user_id else None,
+            user_name=self._names.resolve,
+            channel_name=self._channel_names().resolve,
         )
         return PeriodicRunner(
             audit.check,

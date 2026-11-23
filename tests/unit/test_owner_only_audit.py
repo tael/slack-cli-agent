@@ -141,3 +141,29 @@ class Test알림:
             self._감사({"C1": [OWNER, "U-남"]}).check()
         기록 = [r.getMessage() for r in caplog.records]
         assert any("C1" in m for m in 기록)
+
+    def test_채널과_사용자를_이름_ID_로_쓴다(self) -> None:
+        보낸것: list[str] = []
+        감사 = OwnerOnlyChannelAudit(
+            channels=("C1",), owner_user_id=OWNER,
+            list_members=lambda channel: [OWNER, "U-남", "U-모름"], is_bot=_봇여부,
+            notify=보낸것.append,
+            user_name=lambda u: {"U-남": "홍길동"}.get(u, ""),
+            channel_name=lambda c: "agent-admin",
+        )
+        감사.check()
+        assert "agent-admin(C1)" in 보낸것[0]
+        assert "홍길동(U-남)" in 보낸것[0]
+        assert "이름 미확인(U-모름)" in 보낸것[0]
+
+    def test_이름_조회가_실패해도_알림은_나간다(self) -> None:
+        def 실패(_: str) -> str:
+            raise RuntimeError("x")
+        보낸것: list[str] = []
+        감사 = OwnerOnlyChannelAudit(
+            channels=("C1",), owner_user_id=OWNER,
+            list_members=lambda channel: [OWNER, "U-남"], is_bot=_봇여부,
+            notify=보낸것.append, user_name=실패, channel_name=실패,
+        )
+        감사.check()
+        assert "이름 미확인(U-남)" in 보낸것[0]
