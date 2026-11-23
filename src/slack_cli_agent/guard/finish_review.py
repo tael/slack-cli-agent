@@ -342,6 +342,47 @@ def named_turn(turn: Turn, env: Mapping[str, str] | None = None) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# retired_name — the answer names a retired bot nobody asked about
+# ---------------------------------------------------------------------------
+#: 2026-11-23 private-taeil 오너 지시 "데이전트는 폐기됨. 자꾸 언급하지 않도록".
+#: 폐기 직후 묻지 않은 답에 "## 데이전트 상태" 절이 붙었다. 이름 목록은
+#: 프로필 데이터라 코드에 박지 않고 봇 상태 디렉터리의 retired_names.txt
+#: (한 줄에 하나, # 주석) 에서 읽는다. 상태 디렉터리는 SCA_STATE_DIR.
+RETIRED_NAMES_FILE = "retired_names.txt"
+STATE_DIR_ENV = "SCA_STATE_DIR"
+
+
+def _retired_names(env: Mapping[str, str]) -> tuple[str, ...]:
+    state = (env.get(STATE_DIR_ENV) or "").strip()
+    if not state:
+        return ()
+    try:
+        raw = (Path(state) / RETIRED_NAMES_FILE).read_text(encoding="utf-8")
+    except OSError:
+        return ()
+    return tuple(
+        s for s in (line.split("#", 1)[0].strip() for line in raw.splitlines()) if s
+    )
+
+
+def retired_name(turn: Turn, env: Mapping[str, str] | None = None) -> str | None:
+    """The first retired name in the answer that the current request didn't name."""
+    answer = turn.answer
+    if not answer:
+        return None
+    names = _retired_names(os.environ if env is None else env)
+    if not names:
+        return None
+    asked = _current_request(turn.user_prompt).casefold()
+    body = "\n".join(l for l in answer.splitlines() if not _TAG_LINE.match(l)).casefold()
+    for name in names:
+        key = name.casefold()
+        if key in body and key not in asked:
+            return name
+    return None
+
+
 # --------------------------------------------------------------------------
 # handoff — handed off to a person without a real permission wall
 # --------------------------------------------------------------------------
@@ -1204,6 +1245,13 @@ def _offer_guidance(hit: str) -> str:
     )
 
 
+def _retired_name_guidance(hit: str) -> str:
+    return (
+        f'답에 폐기된 봇 이름 "{hit}" 을 썼다. 이번 요청은 그 봇을 묻지 않았다. '
+        "그 이름이 든 문장, 불릿, 절을 빼고 답을 다시 쓴다. 상태 점검, 이력, 비교로도 넣지 않는다."
+    )
+
+
 def _named_turn_guidance(hit: str) -> str:
     return (
         f'답에 "{hit}" 처럼 턴의 주체를 사람 이름으로 특정했다. 턴은 역할로 쓴다. '
@@ -1524,6 +1572,7 @@ def _build_common_registry() -> JudgmentRegistry:
     # 판정 함수(advisor_skipped)는 남겨 두고 종료 검수에서만 뺀다.
     common.register("code_first", code_first_doc_only, _code_first_guidance)
     common.register("named_turn", named_turn, _named_turn_guidance)
+    common.register("retired_name", retired_name, _retired_name_guidance)
     common.register("verify", _unsupported_claims_check, _verify_guidance)
     common.register("causal_chain", causal_chain, _causal_chain_guidance)
     return common

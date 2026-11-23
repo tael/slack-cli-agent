@@ -230,6 +230,9 @@ class EngineEnvironmentPolicy(ABC):
         except OSError:
             _log.warning("봇 tmp 생성 실패: %s", self.tmp_dir, exc_info=True)
         env = {"TMPDIR": str(self.tmp_dir)}
+        # finish_review.retired_name 이 <state_dir>/retired_names.txt 를 읽는다
+        # (2026-11-23 폐기 봇 언급 차단). 경로일 뿐 자격증명이 아니다.
+        env["SCA_STATE_DIR"] = str(self.tmp_dir.parent)
         if claude:
             env["CLAUDE_CODE_TMPDIR"] = str(self.tmp_dir)
         return env
