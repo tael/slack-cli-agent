@@ -1015,6 +1015,7 @@ class TestExtensionPoint:
             "redundant_approval",
             "handoff",
             "denied_unretried",
+            "fix_unverified",
             "code_first",
             "named_turn",
             "retired_name",

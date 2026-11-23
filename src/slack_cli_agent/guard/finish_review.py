@@ -384,6 +384,80 @@ def retired_name(turn: Turn, env: Mapping[str, str] | None = None) -> str | None
 
 
 # --------------------------------------------------------------------------
+# fix_unverified — "재발방지/해결" claimed without proof the fix holds
+# --------------------------------------------------------------------------
+# 2026-11-23 private-taeil 오너 지시 "재발방지를 제대로 못하는 문제를 재발방지해".
+# 15:39 MB-peteam ssh 거부 건을 "해결함" 으로 보고했다. 실제로 한 일은 지식 파일
+# 한 줄 추가뿐이었고, 고친 뒤 원래 거부된 호출 형태(주소 직접 지정)를 다시 실행하지
+# 않았다. 15:43 재시험에서 같은 호출이 그대로 거부됐다. 세 가지를 막는다.
+#   doc_only    : 고친 대상이 지침·지식·메모리 파일뿐인데 재발방지·막았다고 씀
+#   no_recheck  : 마지막 수정 뒤에 다시 실행한 확인 호출이 없음
+#   target_miss : 요청에 적힌 실패 대상(호스트, IP, 식별자)을 수정 뒤 호출에 넣지 않음
+
+_FIX_CLAIM_RE = re.compile(
+    r"재발\s?방지(?!\s?(?:를|가)?\s?(?:못|안|않|되지|하지|없))"
+    r"|재발[^.\n]{0,6}(?:막|차단|안 ?나)"
+    r"|해결(?:함|됨|했|되었|됐)"
+    r"|(?:막았|차단했|차단함|막음)"
+)
+_FIX_NEGATED_RE = re.compile(r"(?:막혀|막지|해결되지|해결 ?안|해결하지)\s?(?:있지 ?않|못|않|안)")
+_WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+_BASH_WRITE_RE = re.compile(
+    r"(?<![<>&\d])>{1,2}(?!&)\s*[^\s&|;]+|\btee\b|\bsed\s+-i|\bcp\s|\bmv\s|\bchmod\s|\bln\s+-s|"
+    r"launchctl\s+(?:load|bootstrap)"
+)
+_DOC_PATH_RE = re.compile(r"/persona/|/knowledge/|/memory/|/prompts/|/wiki/|\.md\b")
+_FAIL_TARGET_RE = re.compile(
+    r"\b\d{1,3}(?:\.\d{1,3}){3}\b|[A-Za-z][A-Za-z0-9]*(?:[-_.][A-Za-z0-9]+)+"
+)
+_FAIL_WORD_RE = re.compile(r"denied|거부|실패|error|에러|오류|timeout|타임아웃|안 ?됨|불가|막힘", re.IGNORECASE)
+
+
+def _write_target(call: ToolCall) -> str | None:
+    """The path/command a write touched, or None when the call only reads."""
+    if call.name in _WRITE_TOOLS:
+        return str(call.input.get("file_path") or call.input.get("notebook_path") or "?")
+    if call.name == "Bash":
+        cmd = str(call.input.get("command") or "")
+        cmd = re.sub(r"\d?>\s*/dev/null|2>&1", "", cmd)
+        # 게시·적용 예약은 고친 것이 아니라 내보낸 것이다. 그 뒤 재시험을 요구하지 않는다
+        if "apply-request" in cmd or re.search(r"\bgit\s+(?:commit|push)|\bgh\s+pr\b|apply\.sh", cmd):
+            return None
+        # /tmp 스크래치 파일 쓰기는 고친 것이 아니다
+        cmd = re.sub(r">{1,2}\s*['\"]?(?:/tmp|/private/tmp|\$TMPDIR)/\S*", "", cmd)
+        if _BASH_WRITE_RE.search(cmd) or re.search(r"\.write(?:_text)?\(|open\([^)]*['\"][wa]['\"]", cmd):
+            return cmd
+    return None
+
+
+def fix_unverified(turn: Turn) -> str | None:
+    answer = "\n".join(ln for ln in turn.answer.splitlines() if not _TAG_LINE.match(ln))
+    claim = _FIX_CLAIM_RE.search(answer)
+    if not claim or _FIX_NEGATED_RE.search(answer[max(0, claim.start() - 12): claim.end() + 12]):
+        return None
+    calls = turn.tool_calls
+    writes = [(i, t) for i, c in enumerate(calls) if (t := _write_target(c)) is not None]
+    if not writes:
+        return None  # 이 턴에 고친 것이 없으면 이 판정 대상이 아니다
+    if all(_DOC_PATH_RE.search(t) and "\n" not in t and len(t) < 300 for _, t in writes):
+        return f'doc_only:"{claim.group(0)}"'
+    last = writes[-1][0]
+    after = [c for c in calls[last + 1:] if c.name == "Bash" or c.name.startswith("mcp__")]
+    if not after:
+        return f'no_recheck:"{claim.group(0)}"'
+    request = _current_request(turn.user_prompt)
+    if _FAIL_WORD_RE.search(request):
+        targets = {m.group(0) for m in _FAIL_TARGET_RE.finditer(request)}
+        # 호스트, IP, 파일처럼 점이 든 대상만 본다. 티켓 번호 같은 식별자는 재현 대상이 아니다
+        targets = {t for t in targets if "." in t}
+        blob = "\n".join(_input_blob(c.input) for c in after)
+        missed = sorted(t for t in targets if t not in blob)
+        if missed:
+            return f'target_miss:{",".join(missed[:5])}'
+    return None
+
+
+# --------------------------------------------------------------------------
 # handoff — handed off to a person without a real permission wall
 # --------------------------------------------------------------------------
 
@@ -1252,6 +1326,20 @@ def _retired_name_guidance(hit: str) -> str:
     )
 
 
+def _fix_unverified_guidance(hit: str) -> str:
+    kind = hit.split(":", 1)[0]
+    why = {
+        "doc_only": "고친 것이 지침·지식·메모리 파일뿐이다. 지침은 실행을 막는 장치가 아니다",
+        "no_recheck": "마지막 수정 뒤에 다시 실행한 확인 호출이 없다",
+        "target_miss": f"요청에 적힌 실패 대상 {hit.split(':', 1)[-1]} 을 수정 뒤 호출에 넣어 재현하지 않았다",
+    }.get(kind, hit)
+    return (
+        f"답이 해결·재발방지를 주장하지만 {why}. 처음 실패한 호출을 그 형태 그대로(같은 대상, 같은 명령, "
+        "우회 옵션 없이) 고친 뒤 다시 실행하고, 결과가 바뀌었는지로 판정한다. 실행 장치(코드, 설정, 훅, 래퍼)가 "
+        "없으면 재발방지라고 쓰지 않고 지침을 추가했다고 쓴다. 재실행이 실패하면 해결로 쓰지 않는다."
+    )
+
+
 def _named_turn_guidance(hit: str) -> str:
     return (
         f'답에 "{hit}" 처럼 턴의 주체를 사람 이름으로 특정했다. 턴은 역할로 쓴다. '
@@ -1573,6 +1661,7 @@ def _build_common_registry() -> JudgmentRegistry:
     common.register("code_first", code_first_doc_only, _code_first_guidance)
     common.register("named_turn", named_turn, _named_turn_guidance)
     common.register("retired_name", retired_name, _retired_name_guidance)
+    common.register("fix_unverified", fix_unverified, _fix_unverified_guidance)
     common.register("verify", _unsupported_claims_check, _verify_guidance)
     common.register("causal_chain", causal_chain, _causal_chain_guidance)
     return common
