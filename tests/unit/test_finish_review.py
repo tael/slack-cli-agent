@@ -1017,6 +1017,7 @@ class TestExtensionPoint:
             "denied_unretried",
             "code_first",
             "named_turn",
+            "retired_name",
             "unable_unlooked",
             "verify",
             "causal_chain",
