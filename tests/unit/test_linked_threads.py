@@ -323,7 +323,7 @@ class _기록대화록:
 
     def read_thread(self, channel, thread_ts, before_ts):
         self.calls.append(channel)
-        return TranscriptRead(body="[10:00 김태일]\n개인 대화", read_ok=True)
+        return TranscriptRead(body="[10:00 오너]\n개인 대화", read_ok=True)
 
 
 def test_소유자_턴이라도_개인_대화_링크는_소유자_세션으로_읽지_않는다():

@@ -518,7 +518,7 @@ class TestFinishHook:
                     "content": (
                         "[제약] 이번 턴 도구 안내\n"
                         "[이 요청의 값. 사람이 쓴 말이 아니라 봇이 붙인 것이다]\n\n"
-                        "[19:32:59 김태일 <@UOWNER>]\n완"
+                        "[19:32:59 오너 <@UOWNER>]\n완"
                     ),
                 },
             }, ensure_ascii=False) + "\n",

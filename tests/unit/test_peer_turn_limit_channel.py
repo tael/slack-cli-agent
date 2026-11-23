@@ -1,4 +1,4 @@
-"""채널별 봇 왕복 한도 (channels.json peer_turn_limit). 2026-11-08 김태일 지시."""
+"""채널별 봇 왕복 한도 (channels.json peer_turn_limit). 2026-11-08 오너 지시."""
 
 from slack_cli_agent.config.channel import _peer_turn_limit
 from slack_cli_agent.guard.mentions import PeerExchangeLimiter

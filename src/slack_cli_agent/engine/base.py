@@ -310,7 +310,7 @@ def acts_for_owner(request: EngineRequest) -> bool:
 
     The owner, and a delegated turn: the ledger row is written only in the
     owner's own turn (auth/delegation.py), so the work it vouches for is the
-    owner's. 2026-11-08 김태일 "스노플레이크 쓰기말고 또 뭐가있어? 내가
+    owner's. 2026-11-08 오너 "스노플레이크 쓰기말고 또 뭐가있어? 내가
     답답해하는걸 해결해라" -- delegated turns ran on operator_tools and lacked
     Snowflake writes, Notion, Metabase, Slack, Sheets and more. Trust stays
     GENERAL: full_authority, the owner's input mark and ledger writes stay

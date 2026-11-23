@@ -45,7 +45,7 @@ HEAVY = 30
 KST = dt.timezone(dt.timedelta(hours=9))
 DENY_MARK = "[연속 단건 조회]"
 HISTORY_END = "여기까지가 지난 대화다 ====="
-PERSON_TURN = re.compile(r"\[\d\d:\d\d:\d\d 김태일")
+PERSON_TURN = re.compile(r"\[\d\d:\d\d:\d\d [^\]]*<@U0ACANBHY3U>")
 PLAN_MARK = "[계획]"
 PLAN_UPDATE_MARK = "[계획 갱신]"
 AGENT_TOOLS = {"Agent", "Task"}

@@ -168,7 +168,7 @@ class AccessPolicy:
         bot.py). An advisor channel runs on its executor model, then the
         channel's model, then the engine default. The owner is not forced to
         the owner model any more: that ran chat channels on the big model and
-        kept a channel's model from reaching the owner (김태일, 2026-10-22).
+        kept a channel's model from reaching the owner (오너, 2026-10-22).
         Reviews pick their own model (review/engine_adapter.py)."""
         config = self._channels.get(principal.channel)
         default = self._profile.primary_engine.model
@@ -263,7 +263,7 @@ class AccessPolicy:
         # the channel's operator_full. 2026-11-08 test-weather-simul : the
         # ledger vouched for 12:39 마메치 위임 (tier=delegated) but the channel
         # had no operator_full, bare Bash was held back and the turn answered
-        # "don't ask mode" twice. 김태일 지시로 위임 턴은 셸을 연다.
+        # "don't ask mode" twice. 오너 지시로 위임 턴은 셸을 연다.
         if principal.delegated:
             return OPERATOR_FULL
         return OPERATOR_FULL if config and config.operator_full else OPERATOR

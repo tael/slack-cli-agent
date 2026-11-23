@@ -1036,7 +1036,7 @@ class TestCodexEngineBuildCommand:
 
     def test_위임_턴은_소유자처럼_샌드박스를_내리지_않는다(self, tmp_path: Path) -> None:
         """위임 턴은 소유자 턴에서 시작된 일이라 대체 엔진에서도 소유자와 같은
-        샌드박스로 돈다 (2026-11-08 김태일 지시). 읽기 전용 안내도 붙지 않는다."""
+        샌드박스로 돈다 (2026-11-08 오너 지시). 읽기 전용 안내도 붙지 않는다."""
         engine = self._위임_codex(tmp_path)
         for resume in (False, True):
             cmd = engine.build_command(request(
@@ -2165,7 +2165,7 @@ class TestFallbackEngine:
         assert len(secondary.parsed) == 0
 
     def test_1차가_한도_소진이면_자동_승인하고_이번_턴부터_2차로_답한다(self, tmp_path: Path) -> None:
-        """한도는 승인을 기다릴 일이 아니다 (2026-11-06 김태일 지시).
+        """한도는 승인을 기다릴 일이 아니다 (2026-11-06 오너 지시).
         2차가 확인 요청에 답하면 바로 승인하고 한도를 만난 이 턴을 2차로 답한다."""
         limit_response = EngineResponse(
             ok=False, body="한도 소진", session_id=None, model_actual=None,

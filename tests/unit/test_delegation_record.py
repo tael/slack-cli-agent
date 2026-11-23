@@ -128,7 +128,7 @@ class Test파이프라인_배선:
         return ctx, deps
 
     def test_위임받은_턴이_위임자에게_돌려준_답은_reply_로_남는다(self, tmp_path: Path) -> None:
-        # 2026-11-08 김태일 "마메치 턴도 권한이 있어야해". 위임자는 이 줄과
+        # 2026-11-08 오너 "마메치 턴도 권한이 있어야해". 위임자는 이 줄과
         # 자기 원장의 원 위임을 함께 보고 회신 글 하나에만 실행 권한을 연다.
         ctx, deps = self._run_delegated(tmp_path, "끝냈습니다.\n[[RECIPIENT:ASKER]]")
         got = rows(tmp_path)

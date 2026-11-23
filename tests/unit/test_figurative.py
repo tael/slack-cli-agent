@@ -290,7 +290,7 @@ class Test미리계산:
     def test_멘션만_바뀐_본문은_같은_본문으로_본다(self) -> None:
         corrector = FakeCorrector({"changed": False})
         long_body = WORK_BODY * 4
-        pre = self._pre(long_body + " 김태일", {"changed": False})
+        pre = self._pre(long_body + " 오너", {"changed": False})
         _guard(corrector).apply(long_body + " <@U1>", GuardContext(channel="C1", figurative_precomputed=pre))
         assert corrector.calls == []
 

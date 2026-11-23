@@ -2185,7 +2185,7 @@ class Test학습배치:
         assert app.learning_batch()._archives is app.response_archive()
 
     def test_admin_채널로_알린다(self, app: Application) -> None:
-        # 2026-11-13 김태일 지시 : 학습 보고는 admin 채널(troubleshoot_channel)로 보낸다
+        # 2026-11-13 오너 지시 : 학습 보고는 admin 채널(troubleshoot_channel)로 보낸다
         assert app.learning_batch()._notify == app._notify_admin
 
     def test_발송_실패는_False_로_돌려준다(self, app: Application) -> None:
@@ -3236,7 +3236,7 @@ class Test프롬프트캐시배치:
 
 
 class Test운영_보고_admin_채널:
-    """2026-11-13 김태일 지시 : 학습, DM 일일 점검, 재기동 결과 보고는
+    """2026-11-13 오너 지시 : 학습, DM 일일 점검, 재기동 결과 보고는
     admin 채널(troubleshoot_channel)로 보낸다. 비었으면 소유자 DM 으로 보낸다."""
 
     def test_troubleshoot_channel_로_보낸다(
@@ -3264,7 +3264,7 @@ class Test운영_보고_admin_채널:
     def test_모든_소유자_알림이_admin_채널로_간다(
         self, tmp_path: Path, client: FakeSlackClient
     ) -> None:
-        # 2026-11-13 김태일 지시 : 오너 DM 으로 가던 알림도 모두 admin 채널로
+        # 2026-11-13 오너 지시 : 오너 DM 으로 가던 알림도 모두 admin 채널로
         app = Application(write_profile(tmp_path, owner_dm="D_FIXED"), client=client)
 
         assert app._notify_owner("엔진 전환") is True

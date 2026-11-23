@@ -77,7 +77,7 @@ class EventListener:
         # (channel, ts); None marks nothing.
         mark_silent: Callable[[str, str], None] | None = None,
         # Called once per run of denials when a thread first goes past the
-        # peer cap (2026-11-08 김태일 지시 : 봇끼리 핑퐁이 한도에 걸려 멈추면
+        # peer cap (2026-11-08 오너 지시 : 봇끼리 핑퐁이 한도에 걸려 멈추면
         # 어드민 채널에 알린다). Gets the event and the cap. None posts nothing.
         peer_limit_notice: Callable[[Mapping[str, Any], int], None] | None = None,
     ) -> None:

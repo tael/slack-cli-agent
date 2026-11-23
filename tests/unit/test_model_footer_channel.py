@@ -1,4 +1,4 @@
-"""채널별 모델 푸터 끄기 (channels.json model_footer). 2026-11-17 김태일 지시."""
+"""채널별 모델 푸터 끄기 (channels.json model_footer). 2026-11-17 오너 지시."""
 
 from slack_cli_agent.config.channel import ChannelConfig
 

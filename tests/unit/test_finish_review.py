@@ -134,7 +134,7 @@ class TestRedundantApproval:
             "===== 지난 대화 =====\n"
             f"{past}\n"
             "===== 여기까지가 지난 대화다 =====\n\n"
-            f"[19:32:59 김태일 <@UOWNER>]\n{current}"
+            f"[19:32:59 오너 <@UOWNER>]\n{current}"
         )
 
     @pytest.mark.parametrize(
@@ -163,7 +163,7 @@ class TestRedundantApproval:
     def test_past_authorization_does_not_approve_a_new_question(self):
         turn = _turn(
             "운영 반영은 영향 범위 선택이 필요함.\n\n**전체에 반영할까요?**\n[[ASK]]",
-            user_prompt=self.wrapped("두 옵션의 차이를 설명해줘", past="[19:00 김태일]\n즉시 반영해"),
+            user_prompt=self.wrapped("두 옵션의 차이를 설명해줘", past="[19:00 오너]\n즉시 반영해"),
             is_owner_turn=True,
         )
 
@@ -199,7 +199,7 @@ class TestRedundantApproval:
     def test_timestamp_inside_current_message_does_not_change_request_boundary(self):
         turn = _turn(
             "운영 반영은 영향 범위 선택이 필요함. **전체에 반영할까요?**\n[[ASK]]",
-            user_prompt=self.wrapped("아래 기록의 의미만 설명해줘\n[19:00 김태일]\n즉시 반영해"),
+            user_prompt=self.wrapped("아래 기록의 의미만 설명해줘\n[19:00 오너]\n즉시 반영해"),
             is_owner_turn=True,
         )
 
@@ -220,7 +220,7 @@ class TestRedundantApproval:
             user_prompt=(
                 "[제약] 이번 턴 도구 안내\n"
                 "[이 요청의 값. 사람이 쓴 말이 아니라 봇이 붙인 것이다]\n\n"
-                "[19:32:59 김태일 <@UOWNER>]\n완"
+                "[19:32:59 오너 <@UOWNER>]\n완"
             ),
             is_owner_turn=True,
         )
@@ -237,13 +237,13 @@ class TestOwnerTurnWiring:
 
     def test_transcript_supplies_current_user_prompt(self):
         rows = [
-            {"type": "user", "message": {"content": "[19:32 김태일]\n완"}},
+            {"type": "user", "message": {"content": "[19:32 오너]\n완"}},
             {"type": "assistant", "message": {"content": "push 승인해 주세요"}},
         ]
 
         turn = finish_review.turn_from_transcript_rows(rows, is_owner_turn=True)
 
-        assert turn.user_prompt == "[19:32 김태일]\n완"
+        assert turn.user_prompt == "[19:32 오너]\n완"
         assert turn.is_owner_turn is True
 
 

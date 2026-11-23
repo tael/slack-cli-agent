@@ -253,7 +253,7 @@ OWNER_TOP_LEVEL_SILENCE_NOTE = (
 )
 
 
-#: 2026-11-10 14:10 김태일이 마메치와 대화하던 스레드에서 구치파치를 멘션해 "조사해서 원인분석"
+#: 2026-11-10 14:10 오너가 마메치와 대화하던 스레드에서 구치파치를 멘션해 "조사해서 원인분석"
 #: 을 지시했는데 [[침묵]] 으로 끝났다. 14:18 "포카요케". 사람이 이 봇을 직접 멘션한 말은 이
 #: 봇에게 온 말이다. 침묵하면 같은 세션으로 한 번 다시 돌린다.
 MENTIONED_SILENCE_NOTE = (
@@ -595,7 +595,7 @@ class RequestPipeline:
         A controller bot (profile controller_user_ids) is treated like an
         ordinary user of the channel: the same operators list, "*" included,
         the same tools and tier a person gets there. Only other bots stay on
-        the read-only bot tier. 2026-11-10 김태일 지시 "구치파치가 마메치와
+        the read-only bot tier. 2026-11-10 오너 지시 "구치파치가 마메치와
         데이전트를 어디서든 통제할 수 있어야 함, 일반 유저와 동일하게".
         A delegated turn is decided before this and keeps its own tier.
         """
@@ -1236,7 +1236,7 @@ class RequestPipeline:
             # controller_user_ids are GENERAL (A7) and never get the owner's
             # session, and a non-owner turn would carry a private
             # conversation only the owner can see into its answer (D5).
-            # 공동 소유자도 오너 세션을 쓴다. 오너 세션은 PEAGENT 계정으로 옮길 예정 (2026-11-20 김태일 지시)
+            # 공동 소유자도 오너 세션을 쓴다. 오너 세션은 PEAGENT 계정으로 옮길 예정 (2026-11-20 오너 지시)
             as_owner = ctx.user in self._owner_ids
             return self._linked_threads(
                 ctx.text, ctx.channel, ctx.unfurl_attachments, as_owner
@@ -1863,7 +1863,7 @@ class RequestPipeline:
             # A delegated turn handing its result back to the bot that
             # delegated it. Recorded as kind=reply with origin_ts = the
             # delegating message, so the delegator can open execution tools
-            # for this one result message only (2026-11-08 김태일 "마메치
+            # for this one result message only (2026-11-08 오너 "마메치
             # 턴도 권한이 있어야해"). Any delegated turn writes this row,
             # including the delegator's own reply turn. It opens nothing by
             # itself: a plain receiver ignores kind=reply rows, and the
@@ -2067,7 +2067,7 @@ class RequestPipeline:
                 ctx.channel, ctx.thread_ts, description,
                 msg_ts=ctx.ts, trust=principal.trust,
                 # 확인 턴을 등록한 사람 ID 로 돌리려고 남긴다. 공동 소유자의 감시가
-                # 주 소유자 ID 로 돌던 것을 막는다 (2026-11-20 김태일 지시)
+                # 주 소유자 ID 로 돌던 것을 막는다 (2026-11-20 오너 지시)
                 extra={"user": ctx.user} if ctx.user else None,
                 # Pinned here rather than recomputed at check time: the channel
                 # config can change in between, and the result of the work sits

@@ -439,7 +439,7 @@ PLANNER_PROMPT = planner_prompt(False)
 
 #: Root-cause requests are never "short". On 2026-11-13 haiku planned a
 #: "서버 부하 관점으로 5why" request as short with no branches, so no plan was
-#: injected and the turn ran without workers (김태일 지시 "5why를 short 단답형
+#: injected and the turn ran without workers (오너 지시 "5why를 short 단답형
 #: 으로 간주하면 안됨"). The prompt rule above asks for it; this pattern is the
 #: final check: a short verdict on such a request gets one more planner call.
 RCA_PATTERN = re.compile(

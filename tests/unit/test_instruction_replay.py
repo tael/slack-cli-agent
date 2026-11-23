@@ -21,7 +21,7 @@ from slack_cli_agent.engine.instruction_replay import InstructionLedger, split_b
 페르소나 = "# 페르소나\n\n" + "건조체로 답한다. " * 300 + "\n\n"
 
 
-def 지침(질문자: str = "김태일") -> str:
+def 지침(질문자: str = "오너") -> str:
     return 페르소나 + 지식 + f"# 이번 요청\n\n질문자 : {질문자}\n\n"
 
 
@@ -39,7 +39,7 @@ def 첫턴(sid: str = "T1"):
     return request(resume=False, session_id=sid, system_prompt=지침(), model="m")
 
 
-def 재개(sid: str = "T1", 질문자: str = "김태일"):
+def 재개(sid: str = "T1", 질문자: str = "오너"):
     return request(resume=True, session_id=sid, system_prompt=지침(질문자), model="m")
 
 
@@ -57,7 +57,7 @@ class Test원장:
 
     def test_같은_큰_블록만_참조로_바꾼다(self) -> None:
         원장 = InstructionLedger()
-        원장.record("T1", 지침("김태일"))
+        원장.record("T1", 지침("오너"))
         줄인것 = 원장.reduce("T1", 지침("정희윤"))
         assert "정산 마감은" not in 줄인것
         assert "「# 이 채널의 지식」" in 줄인것
@@ -90,7 +90,7 @@ class Test코덱스_재개턴:
         assert 다음.total_bytes * 3 <= 첫.total_bytes
         prompt = 엔진.build_command(재개())[-1]
         assert utf8_bytes(prompt) * 3 <= 첫.total_bytes
-        assert "질문자 : 김태일" in prompt
+        assert "질문자 : 오너" in prompt
 
     def test_실패한_턴은_기록하지_않는다(self, tmp_path: Path) -> None:
         엔진 = CodexEngine(codex_profile(tmp_path), SETTINGS)
@@ -121,7 +121,7 @@ class Test제미나이_재개턴:
         cmd = 엔진.build_command(다음턴)
         prompt = cmd[cmd.index("-p") + 1]
         assert "정산 마감은" not in prompt
-        assert "질문자 : 김태일" in prompt
+        assert "질문자 : 오너" in prompt
 
     def test_엔진이_발급한_대화_id로_기록한다(self, tmp_path: Path) -> None:
         """첫 턴의 session_id 는 자리표시자이고 실제 id 는 응답에서 온다."""
@@ -172,7 +172,7 @@ class Test실행기가_기록한다:
 def 경계지침(소유자: bool) -> str:
     """프롬프트 라이브러리 섹션에는 `# ` 제목이 없어 소유자 안내가 앞 블록에 붙는다."""
     안내 = "지금 말을 건 사람은 소유자 본인이다." if 소유자 else "지금 말을 건 사람은 소유자가 아니다."
-    명단 = "# 계정 핸들과 사람 이름\n\n" + "- U0000 : 김태일\n" * 120 + "\n" + 안내 + "\n\n"
+    명단 = "# 계정 핸들과 사람 이름\n\n" + "- U0000 : 오너\n" * 120 + "\n" + 안내 + "\n\n"
     return 페르소나 + 지식 + 명단
 
 

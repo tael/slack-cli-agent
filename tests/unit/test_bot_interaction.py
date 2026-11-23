@@ -523,7 +523,7 @@ class TestC19_배선_봇왕복_한도:
         assert listener.from_app_mention(event) is None  # 한도 초과 → 침묵
 
     def test_한도를_처음_넘을_때_한_번만_어드민_알림을_보낸다(self) -> None:
-        """2026-11-08 김태일 지시 : 핑퐁 한도에서 멈추면 어드민 채널에 알린다."""
+        """2026-11-08 오너 지시 : 핑퐁 한도에서 멈추면 어드민 채널에 알린다."""
         limiter = PeerExchangeLimiter(limit=1)
         sent: list[tuple[str, int]] = []
         listener = EventListener(

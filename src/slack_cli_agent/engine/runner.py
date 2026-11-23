@@ -928,7 +928,7 @@ class FallbackEngine(Engine):
         response = self.runner.run(self.primary, self._fit(self.primary, request))
         limit = self.primary.detect_usage_limit(response)
         if limit is not None:
-            # 한도는 승인을 기다릴 일이 아니다 (2026-10-25, 2026-11-06 김태일 지시).
+            # 한도는 승인을 기다릴 일이 아니다 (2026-10-25, 2026-11-06 오너 지시).
             # 2차가 확인 요청에 답하면 바로 승인하고, 한도를 만난 이 턴부터
             # 2차로 답한다. 2차도 답하지 않을 때만 안내문을 낸다.
             state = self._begin_switch(request, EngineSwitcher.USAGE_LIMIT, limit.detail,
@@ -938,7 +938,7 @@ class FallbackEngine(Engine):
             return self._announce_switch(response)
         auth_failure = self.primary.detect_auth_failure(response)
         if auth_failure is not None:
-            # 로그인 만료도 한도와 같이 바로 2차로 답한다 (2026-11-07 김태일 지시).
+            # 로그인 만료도 한도와 같이 바로 2차로 답한다 (2026-11-07 오너 지시).
             # 승인 대기로 두면 2026-11-07 07:49-15:44 처럼 2차가 확인 요청에 답하는데도
             # 모든 요청이 안내문으로 끝난다. 다시 로그인하는 일은 소유자 DM 이 알린다.
             state = self._begin_switch(request, EngineSwitcher.AUTH_FAILURE, auth_failure,
@@ -1024,7 +1024,7 @@ class FallbackEngine(Engine):
         new one. Model naming also differs per engine, so a channel's model
         can't carry over; every requester gets the secondary's default model.
         The owner is not raised to the secondary's owner model any more: the
-        primary picks one model for every requester (A13, 김태일 2026-10-22),
+        primary picks one model for every requester (A13, 오너 2026-10-22),
         and raising only here split the grades again (supersedes sca-14h).
         """
         self._active = self.secondary

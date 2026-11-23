@@ -94,7 +94,7 @@ _RESERVED_ALIAS_NAMES = frozenset({
 
 _log = logging.getLogger(__name__)
 
-#: 2026-11-15 김태일 지시, /tmp 대신 봇 전용 tmp (#228 심링크 경로 불일치 후속).
+#: 2026-11-15 오너 지시, /tmp 대신 봇 전용 tmp (#228 심링크 경로 불일치 후속).
 #: Files older than this under the bot's own tmp are pruned. mtime based.
 TMP_MAX_AGE_SEC = 7 * 24 * 3600
 #: Prune runs at most once a day; this file's mtime is the last run.
@@ -218,7 +218,7 @@ class EngineEnvironmentPolicy(ABC):
     def _tmp_env(self, *, claude: bool = False) -> dict[str, str]:
         """TMPDIR (and CLAUDE_CODE_TMPDIR for claude) pointing at the bot's tmp.
 
-        2026-11-15 김태일 지시, /tmp 대신 봇 전용 tmp (#228 심링크 경로 불일치
+        2026-11-15 오너 지시, /tmp 대신 봇 전용 tmp (#228 심링크 경로 불일치
         후속). claude ignores TMPDIR alone and writes background-task output
         under CLAUDE_CODE_TMPDIR/claude-<uid>/<cwd slug>/<session>/tasks/
         (measured 2026-11-15). Creating and pruning are best effort."""

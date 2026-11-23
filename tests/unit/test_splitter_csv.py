@@ -1,7 +1,7 @@
 """csv 코드블록 -> BOM 포함 파일 변환, `<<<SPLIT>>>` 다중 게시 분할 시험.
 
 마메치 bot.py:6279-6296 ("csv 는 길이와 무관하게 항상 파일로 올린다", 2026-10-18
-김태일 지시)과, bot.py:5975-6115 의 `SPLIT_MARKER` 분할을 `render.splitter` 로
+오너 지시)과, bot.py:5975-6115 의 `SPLIT_MARKER` 분할을 `render.splitter` 로
 옮긴다. 실제 슬랙 업로드(slack/publisher.py, B1 비소유)는 다루지 않는다 --
 여기서는 순수 변환 결과(파일명/BOM 바이트/본문에 남는 안내문)만 검증한다.
 """

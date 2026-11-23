@@ -1,6 +1,6 @@
 """소유자 턴을 MCP 서버 env 로 주입하는 공통 골격을 본다 (H19/H20 소유자 축).
 
-마메치는 렌더 MCP 서버(mermaid)에 MAMETCHI_POST_ANY 를 소유자(김태일) 턴에만 "1"
+마메치는 렌더 MCP 서버(mermaid)에 MAMETCHI_POST_ANY 를 소유자(오너) 턴에만 "1"
 로 넣어, 채널별 렌더 가드를 소유자 턴에서만 풀었다(bot.py:3225
 `env["MAMETCHI_POST_ANY"] = "1" if is_owner else ""`, 서버는 mermaid_render.py:224
 에서 `== "1"` 일 때만 다른 채널 게시를 허용). 앞선 채널 축(turn_env `channel`)은

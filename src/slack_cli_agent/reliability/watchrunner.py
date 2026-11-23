@@ -494,7 +494,7 @@ class WatchJobChecker:
                          message_ts=job.msg_ts, dropped_chars=len(body))
             return
 
-        # 2026-11-11 김태일 지적 "시간측정을 말안하고": 감시 보고만 stats_footer
+        # 2026-11-11 오너 지적 "시간측정을 말안하고": 감시 보고만 stats_footer
         # 를 거치지 않아 걸린 시간·모델·토큰 줄이 빠졌다. 본 답과 같은 푸터를 단다.
         body = self._with_stats_footer(job, body, response)
 

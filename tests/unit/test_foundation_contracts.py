@@ -207,7 +207,7 @@ class Test채널설정키가정식필드다:
 
     def test_mention_only는별도키가아니라extra에만남는다(self) -> None:
         """I82 — mametchi `mention_only` 는 대체 키가 아니다. 값이 와도 extra 에만
-        남고 응답 판정을 바꾸지 않는다. 2026-11-17 김태일 지시로
+        남고 응답 판정을 바꾸지 않는다. 2026-11-17 오너 지시로
         answer_unaddressed 기본값이 켜졌으므로(스레드 답글은 멘션 없이도 답한다)
         멘션에만 답할 채널은 answer_unaddressed: false 를 명시한다. 최상위
         멘션 없는 글은 여전히 닫혀 있다."""

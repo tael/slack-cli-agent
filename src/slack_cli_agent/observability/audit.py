@@ -166,7 +166,7 @@ class IncidentKind(StrEnum):
     DM_REPORT = "dm_report"
     #: A colleague's DM that went unanswered because `dm_reply` is off.
     #: `user` and `question` are kept so the daily report can show the
-    #: attempt (2026-11-11 김태일 지시 "DM 시도시 기록해두고 일일 리포트").
+    #: attempt (2026-11-11 오너 지시 "DM 시도시 기록해두고 일일 리포트").
     DM_ATTEMPT = "dm_attempt"
 
     #: Plain-text `@name` mentions turned into real ones (mametchi

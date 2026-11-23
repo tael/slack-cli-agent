@@ -154,7 +154,7 @@ class RuntimeSettings:
     dm_attempt_log: bool = True
     #: With `dm_reply` off, the line posted back to a colleague's DM so the
     #: refusal is not silent. Empty posts nothing. Each bot sends people to a
-    #: different place, so the text comes from the profile (2026-11-13 김태일
+    #: different place, so the text comes from the profile (2026-11-13 오너
     #: 지시 : 봇마다 답 안 보내는 메시지가 다르다, 다른 안내를 줘야 한다).
     dm_off_notice: str = ""
 

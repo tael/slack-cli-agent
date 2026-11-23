@@ -131,14 +131,14 @@ class ChannelConfig:
     in the channel file, not in the installed package (sca-ww4)."""
     answer_unaddressed: bool = True
     """Answers a mention-less *thread reply* in this channel. On by default
-    (2026-11-17 김태일 "스레드에서 멘션없이 답하는걸 기본값으로 해줘"): a
+    (2026-11-17 오너 "스레드에서 멘션없이 답하는걸 기본값으로 해줘"): a
     thread the bot already speaks in reads as a conversation, so requiring a
     mention on every follow-up dropped plain replies. A channel that must
     answer only when named sets it to false explicitly. Top-level mention-less
     messages stay closed; `answer_top_level` is the separate key for those."""
     peer_turn_limit: int | None = None
     """Bot-to-bot exchange cap for this channel's threads. None keeps the
-    process default, 0 turns the cap off (2026-11-08 김태일 "무제한턴 방지를
+    process default, 0 turns the cap off (2026-11-08 오너 "무제한턴 방지를
     끄는 옵션을 채널별로 두어야겠네")."""
     answer_top_level: bool = False
     """Answers a mention-less *top-level* message (not a thread reply) in this
@@ -150,7 +150,7 @@ class ChannelConfig:
     model_footer: bool = True
     """Ends a rich reply with the short "실행 모델" line. False drops it, and
     stats_footer is ignored too, since that footer also names the model
-    (2026-11-17 김태일 지시, ask-vroong-data-agent 푸터 제거)."""
+    (2026-11-17 오너 지시, ask-vroong-data-agent 푸터 제거)."""
     stats_footer: bool = False
     """Ends each reply with elapsed time, model, effort, token count and cache
     hit rate instead of the short elapsed/model line."""
@@ -191,7 +191,7 @@ class ChannelConfig:
     operator_bots: frozenset[str] = frozenset()
     """Bot accounts that act here as operators, named one by one ("*" is not
     honored for bots). Standing, unlike the delegation ledger's 30 minutes,
-    so it is meant for an owner-only channel. 2026-11-10 김태일 지시로
+    so it is meant for an owner-only channel. 2026-11-10 오너 지시로
     private-taeil 에서 구치파치가 마메치·데이전트 설정을 바꿀 수 있게 했다."""
     airflow_admins: frozenset[str] = frozenset()
     """Users who get the profile's airflow_ctl wrapper as a scoped Bash grant."""

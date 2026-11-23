@@ -133,7 +133,7 @@ def test_위임_판정에_요청_메시지_ts_가_넘어가고_엔진_요청에_
     assert call.delegated is True
     assert call.trust_level is TrustLevel.GENERAL
     # Write 는 operator_full 채널에서만 열린다
-    # 위임 턴은 소유자 도구를 받는다 (2026-11-08 김태일 지시)
+    # 위임 턴은 소유자 도구를 받는다 (2026-11-08 오너 지시)
     assert call.tools.names == ("Read", "Write", "mcp__jira__*")
 
 
@@ -174,7 +174,7 @@ def _controller_access(delegated: bool = False):
 
 
 def test_컨트롤러_봇은_위임_없이도_일반_사용자와_같은_도구를_받는다() -> None:
-    """2026-11-10 김태일 지시 : 구치파치가 마메치·데이전트를 어디서든 일반 사용자와
+    """2026-11-10 오너 지시 : 구치파치가 마메치·데이전트를 어디서든 일반 사용자와
     같게 부를 수 있어야 한다. 원장 없는 컨트롤러 멘션도 사람과 같은 도구와 operator 판정."""
     policy = ToolPolicy(
         base_tools=("Read",),

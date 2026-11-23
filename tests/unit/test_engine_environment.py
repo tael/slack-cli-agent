@@ -493,7 +493,7 @@ class TestNonInteractiveEnv:
 
 
 class TestBotTmp:
-    """2026-11-15 김태일 지시, /tmp 대신 봇 전용 tmp (#228 심링크 경로 불일치 후속)."""
+    """2026-11-15 오너 지시, /tmp 대신 봇 전용 tmp (#228 심링크 경로 불일치 후속)."""
 
     def _policy(self, cls, tmp_path):
         policy = cls(profile_name="봇A")

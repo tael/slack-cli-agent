@@ -50,4 +50,4 @@ class Test재요청_지시문:
     def test_조직_고정값을_담지_않는다(self) -> None:
         # 공통 골격이다. 특정 사람 이름이나 특정 봇 ID 를 박아 두지 않는다.
         prompt = missing_recipient_prompt()
-        assert "김태일" not in prompt
+        assert "오너" not in prompt

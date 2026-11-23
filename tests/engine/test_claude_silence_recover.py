@@ -85,7 +85,7 @@ def test_사건_transcript_단일_dict_출력에서_위임_답을_채택한다(
 
     assert response.ok
     assert "[[RECIPIENT:BOT:U0BS6LBPHJ6]]" in response.body
-    assert response.body.startswith("<@U0BS6LBPHJ6> 김태일님 휴가신청 상신 부탁드림.")
+    assert response.body.startswith("<@U0BS6LBPHJ6> 오너 휴가신청 상신 부탁드림.")
     assert "[[침묵]]" not in response.body
     assert response.raw[SILENCE_RECOVERED_RAW_KEY] is True
     assert "silence_recovered" in caplog.text

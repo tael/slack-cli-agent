@@ -1,4 +1,4 @@
-"""재기동 결과 보고(supervisor)를 admin 채널로 보낸다. 2026-11-13 김태일 지시."""
+"""재기동 결과 보고(supervisor)를 admin 채널로 보낸다. 2026-11-13 오너 지시."""
 
 from __future__ import annotations
 

@@ -799,7 +799,7 @@ def _owner_dm_sender(profile: Profile) -> Callable[[str], object]:
 def _admin_sender(profile: Profile) -> Callable[[str], object]:
     """Posts the restart report to the admin channel (troubleshoot_channel),
     falling back to the owner DM when it is unset or the post fails.
-    2026-11-13 김태일 지시 : 재기동 결과 보고는 admin 채널로 보낸다."""
+    2026-11-13 오너 지시 : 재기동 결과 보고는 admin 채널로 보낸다."""
     owner = _owner_dm_sender(profile)
 
     def send(text: str) -> None:

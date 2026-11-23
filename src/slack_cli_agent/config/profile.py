@@ -441,7 +441,7 @@ class Profile:
     #: Bot accounts whose requests this bot accepts. Acceptance only: their
     #: turns are GENERAL unless delegation_ledger vouches for the message.
     controller_user_ids: frozenset[str] = frozenset()
-    #: 2026-11-18 김태일 지시 : 소유자를 이관하지 않고 추가한다. 여기 든 사람도
+    #: 2026-11-18 오너 지시 : 소유자를 이관하지 않고 추가한다. 여기 든 사람도
     #: 채널과 무관하게 OWNER 다. 소유자 DM, 알림, 소유자 슬랙 세션처럼 한 사람에게만
     #: 가야 하는 것은 계속 owner_user_id 하나가 받는다.
     co_owner_user_ids: frozenset[str] = frozenset()

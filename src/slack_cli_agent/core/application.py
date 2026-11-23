@@ -873,7 +873,7 @@ class Application:
         if self._progress is None:
             self._progress = ProgressCoordinator(
                 settings=self._settings,
-                # 2026-11-07 김태일 지시 : 진행 카드 대신 마메치처럼 "앱이 작업 중"
+                # 2026-11-07 오너 지시 : 진행 카드 대신 마메치처럼 "앱이 작업 중"
                 # 상태 표시만 쓴다. 상태가 거부되면 카드, 카드도 거부되면 줄 표시로 내려간다.
                 sink_factory=lambda channel, thread_ts, _user: FallbackProgressSink(
                     lambda: SlackAgentStatusProgressSink(self._client, channel, thread_ts),
@@ -1420,7 +1420,7 @@ class Application:
         if self._pending_report is None:
             self._pending_report = PendingReportStore(
                 path=self._profile.state_dir / "pending_report.json",
-                # 2026-11-13 김태일 지시 : 소유자 알림은 admin 채널 우선
+                # 2026-11-13 오너 지시 : 소유자 알림은 admin 채널 우선
                 sender=self._post_admin_or_owner,
             )
         return self._pending_report
@@ -1460,7 +1460,7 @@ class Application:
         the owner DM when it is unset or the post fails. Raises only when
         both fail.
 
-        2026-11-13 김태일 지시 : 소유자 DM 으로 가던 알림은 모두 admin 채널로 보낸다.
+        2026-11-13 오너 지시 : 소유자 DM 으로 가던 알림은 모두 admin 채널로 보낸다.
         """
         channel = self._profile.troubleshoot_channel
         if channel:
@@ -2062,7 +2062,7 @@ class Application:
         """Posts one line to the troubleshoot channel when a thread's
         bot-to-bot exchange first goes past the cap and this bot stops answering.
 
-        2026-11-08 김태일 지시 : 핑퐁 한도에서 멈추는 것은 괜찮지만 아무도 모르게
+        2026-11-08 오너 지시 : 핑퐁 한도에서 멈추는 것은 괜찮지만 아무도 모르게
         버려지면 안 된다. 어드민 채널(troubleshoot_channel)에 알린다.
         """
         target = self._profile.troubleshoot_channel
@@ -2419,7 +2419,7 @@ class Application:
             profile=self._profile,
             workdir=self._profile.work_root,
             system_prompt=system_prompt,
-            # 2026-11-07 김태일 "권한막힌게 왜이렇게 많니". 부검 지시는 코드를 열어 보라는데
+            # 2026-11-07 오너 "권한막힌게 왜이렇게 많니". 부검 지시는 코드를 열어 보라는데
             # 코드 위치를 work_root 로 알려 주고 실제 코드 폴더는 읽기 경로에 없어 Read 가 거부됐다.
             scoped=scoped,
             owner_tools=owner_format_tools if format_review else None,

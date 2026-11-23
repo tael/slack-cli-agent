@@ -129,7 +129,7 @@ class TestControllerPrincipal:
         assert pol.model_for(p) == "s"
         got = tools(pol).tool_list_for(p, asker_is_bot=True)
         # 위임 턴은 소유자 턴에서 시작된 일이라 소유자 도구를 그대로 받는다
-        # (2026-11-08 김태일 "스노플레이크 쓰기말고 또 뭐가있어? 답답해하는걸 해결해라")
+        # (2026-11-08 오너 "스노플레이크 쓰기말고 또 뭐가있어? 답답해하는걸 해결해라")
         assert "mcp__jira__*" in got and "mcp__gmail__*" in got and "WebFetch" in got
         # 위임 턴은 operator_full 이 없는 채널에서도 맨 실행 도구를 받는다
         # (2026-11-08 test-weather-simul 위임 턴이 셸 없이 끝난 건)

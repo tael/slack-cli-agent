@@ -35,7 +35,7 @@ def write(path: Path, lines: list[str]) -> str:
 
 def small_session(tmp_path: Path) -> str:
     return write(tmp_path / "aaaaaaaa-1.jsonl", [
-        line("user", "2026-11-08T01:00:00Z", "[01:00:00 김태일 <@U1>] 1,2,3 지역을 각각 비교해"),
+        line("user", "2026-11-08T01:00:00Z", "[01:00:00 오너 <@U1>] 1,2,3 지역을 각각 비교해"),
         # one response = one message.id, written as two lines
         line("assistant", "2026-11-08T01:00:01Z", [use("Bash", command="ls")], "m1"),
         line("assistant", "2026-11-08T01:00:01Z", [use("Read", file_path="/a/b/c/d/e.py")], "m1"),
@@ -114,10 +114,10 @@ def test_since_filter_and_manual_table(tmp_path: Path) -> None:
 
 def test_human_request_and_classify(tmp_path: Path) -> None:
     wrapped = (
-        "[이 요청의 값]\n설명\n[09:00:00 김태일 <@U1>] 앞 말\n"
-        "===== 여기까지가 지난 대화다 =====\n[10:00:00 김태일 <@U1>] 진짜 요청"
+        "[이 요청의 값]\n설명\n[09:00:00 오너 <@U1>] 앞 말\n"
+        "===== 여기까지가 지난 대화다 =====\n[10:00:00 오너 <@U1>] 진짜 요청"
     )
-    assert replay.human_request(wrapped) == "[10:00:00 김태일 <@U1>] 진짜 요청"
+    assert replay.human_request(wrapped) == "[10:00:00 오너 <@U1>] 진짜 요청"
     session = replay.parse_session(small_session(tmp_path))
     assert session is not None
     # fewer than four responses is a short answer whatever the prompt says

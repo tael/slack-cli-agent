@@ -39,7 +39,7 @@ SCOPE_MAX = 500
 #: The delegator can only write the row after chat.postMessage returns the
 #: ts, so the receiving bot's event can arrive first. 2026-11-08 15:36:57 the
 #: delegation for #test-bw-sop was looked up at 15:36:59.8 and written at
-#: 15:37:01.6; the turn ran read-only and gave up (김태일 "권한없다고 포기").
+#: 15:37:01.6; the turn ran read-only and gave up (오너 "권한없다고 포기").
 WRITE_GRACE_SEC = 20.0
 #: Poll step while waiting inside the grace window.
 WRITE_POLL_SEC = 0.5
@@ -201,7 +201,7 @@ class DelegationRecorder:
         """Appends the rows and returns how many were written.
 
         `kind="reply"` marks a row a delegated turn wrote for its result
-        message back to the delegator (2026-11-08 김태일 "마메치 턴도 권한이
+        message back to the delegator (2026-11-08 오너 "마메치 턴도 권한이
         있어야해"). The delegator opens execution tools only for that one
         message and only after matching `origin_ts` against its own ledger.
         """

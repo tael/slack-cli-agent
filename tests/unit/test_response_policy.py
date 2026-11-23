@@ -37,7 +37,7 @@ class TestConsiders:
         assert policy.considers(채널(answer_unaddressed=True)) is True
 
     def test_값이_없으면_켜진_것으로_본다(self, policy: ResponsePolicy) -> None:
-        """2026-11-17 김태일 지시로 기본값이 켜졌다. 멘션에만 답할 채널은
+        """2026-11-17 오너 지시로 기본값이 켜졌다. 멘션에만 답할 채널은
         answer_unaddressed: false 를 명시한다."""
         assert policy.considers(채널()) is True
 

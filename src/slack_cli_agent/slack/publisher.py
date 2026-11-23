@@ -148,7 +148,7 @@ class MessagePublisher:
     def apply_stats_footer(self, body: str, model: str, rich: bool, *, elapsed, effort, usage) -> str:
         """Mametchi 와 같은 푸터: 걸린 시간, 실행 모델 · effort, 토큰, 캐시 적중률.
 
-        2026-11-08 김태일 지시 "응답에 마메치처럼 모델과 시간등을 표기해라. 똑같이".
+        2026-11-08 오너 지시 "응답에 마메치처럼 모델과 시간등을 표기해라. 똑같이".
         모델이 흉내 낸 줄은 먼저 지운다. 값은 실행기가 잰 것만 쓴다.
         """
         if not rich or not model:
