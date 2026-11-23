@@ -64,3 +64,27 @@ def test_커밋과_적용예약은_수정으로_치지_않는다() -> None:
 
 def test_공통_규칙에_등록돼_있다() -> None:
     assert "fix_unverified" in default_registry.names()
+
+
+def test_우회_옵션을_붙여서만_재현하면_막는다() -> None:
+    turn = Turn(answer="해결함. 두 주소 모두 접속됨", user_prompt=REQ,
+                tool_calls=(_edit("/x/ssh/config"),
+                            _bash("ssh -F /x/ssh/config peagent@MB-peteam.local true && "
+                                  "ssh -i /x/k peagent@10.5.201.183 true")))
+    hit = fix_unverified(turn) or ""
+    assert hit.startswith("target_bypass") and "10.5.201.183" in hit
+
+
+def test_우회와_원래_형태를_함께_돌렸으면_통과() -> None:
+    turn = Turn(answer="해결함. 두 주소 모두 접속됨", user_prompt=REQ,
+                tool_calls=(_edit("/x/ssh/config"),
+                            _bash("ssh -F /x/c peagent@MB-peteam.local true; ssh peagent@MB-peteam.local true; "
+                                  "ssh peagent@10.5.201.183 true")))
+    assert fix_unverified(turn) is None
+
+
+def test_grep_i_는_우회가_아니다() -> None:
+    turn = Turn(answer="해결함.", user_prompt=REQ,
+                tool_calls=(_edit("/x/ssh/config"),
+                            _bash("ssh peagent@MB-peteam.local true; grep -i 10.5.201.183 /x/known_hosts")))
+    assert fix_unverified(turn) is None

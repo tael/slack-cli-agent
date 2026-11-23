@@ -671,19 +671,20 @@ class TestFinishHook:
 
 
 class TestClaudeEngineWiring:
-    def test_guard_hook_settings_에_bash_가드_5개와_stop_훅이_있다(self) -> None:
+    def test_guard_hook_settings_에_bash_가드_6개와_stop_훅이_있다(self) -> None:
         from slack_cli_agent.engine.claude import guard_hook_settings
 
         settings = guard_hook_settings()
         pretool_groups = settings["hooks"]["PreToolUse"]
         bash_group = next(g for g in pretool_groups if g["matcher"] == "Bash")
         commands = [h["command"] for h in bash_group["hooks"]]
-        assert len(commands) == 5
+        assert len(commands) == 6
         assert any("turn_budget.py" in c for c in commands)
         assert any("restart_guard.py" in c for c in commands)
         assert any("install_guard.py" in c for c in commands)
         assert any("scan_guard.py" in c for c in commands)
         assert any("sleep_poll_guard.py" in c for c in commands)
+        assert any("wrapper_bypass_guard.py" in c for c in commands)
         assert all(c.startswith(sys.executable) for c in commands)
 
         stop_groups = settings["hooks"]["Stop"]
@@ -734,7 +735,7 @@ class TestClaudeEngineWiring:
         assert "*" in matchers  # progress 훅
         assert "Bash" in matchers  # 가드 3종
         bash_group = next(g for g in pretool_groups if g["matcher"] == "Bash")
-        assert len(bash_group["hooks"]) == 5
+        assert len(bash_group["hooks"]) == 6
         assert settings["hooks"]["Stop"][0]["matcher"] == "*"
 
 
