@@ -393,6 +393,9 @@ def retired_name(turn: Turn, env: Mapping[str, str] | None = None) -> str | None
 #   doc_only    : 고친 대상이 지침·지식·메모리 파일뿐인데 재발방지·막았다고 씀
 #   no_recheck  : 마지막 수정 뒤에 다시 실행한 확인 호출이 없음
 #   target_miss : 요청에 적힌 실패 대상(호스트, IP, 식별자)을 수정 뒤 호출에 넣지 않음
+#   target_bypass : 대상은 넣었지만 처음 실패한 형태가 아니라 우회 옵션(-F, -i, -S,
+#                   -o IdentityFile)을 붙여서만 다시 돌림. 2026-11-23 "끝까지 해결해" 로
+#                   15:53 답이 남긴 공백을 막는다. 우회로 붙으면 원래 형태는 여전히 거부된다
 
 _FIX_CLAIM_RE = re.compile(
     r"재발\s?방지(?!\s?(?:를|가)?\s?(?:못|안|않|되지|하지|없))"
@@ -410,6 +413,10 @@ _DOC_PATH_RE = re.compile(r"/persona/|/knowledge/|/memory/|/prompts/|/wiki/|\.md
 _FAIL_TARGET_RE = re.compile(
     r"\b\d{1,3}(?:\.\d{1,3}){3}\b|[A-Za-z][A-Za-z0-9]*(?:[-_.][A-Za-z0-9]+)+"
 )
+_BYPASS_OPT_RE = re.compile(
+    r"\b(?:ssh|scp|sftp|rsync)\b[^;&|\n]*?(?:\s-[FiS]\s?\S|\s-o\s*['\"]?Identit|\s-e\s*['\"]?ssh\s[^'\"]*-[Fi]\s)"
+)
+_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;\n|]")
 _FAIL_WORD_RE = re.compile(r"denied|거부|실패|error|에러|오류|timeout|타임아웃|안 ?됨|불가|막힘", re.IGNORECASE)
 
 
@@ -454,6 +461,13 @@ def fix_unverified(turn: Turn) -> str | None:
         missed = sorted(t for t in targets if t not in blob)
         if missed:
             return f'target_miss:{",".join(missed[:5])}'
+        segments = [seg for c in after for seg in _SEGMENT_SPLIT_RE.split(_input_blob(c.input))]
+        bypassed = sorted(
+            t for t in targets
+            if not any(t in seg and not _BYPASS_OPT_RE.search(seg) for seg in segments)
+        )
+        if bypassed:
+            return f'target_bypass:{",".join(bypassed[:5])}'
     return None
 
 
@@ -1332,6 +1346,8 @@ def _fix_unverified_guidance(hit: str) -> str:
         "doc_only": "고친 것이 지침·지식·메모리 파일뿐이다. 지침은 실행을 막는 장치가 아니다",
         "no_recheck": "마지막 수정 뒤에 다시 실행한 확인 호출이 없다",
         "target_miss": f"요청에 적힌 실패 대상 {hit.split(':', 1)[-1]} 을 수정 뒤 호출에 넣어 재현하지 않았다",
+        "target_bypass": f"실패 대상 {hit.split(':', 1)[-1]} 을 우회 옵션(-F, -i, -S, -o IdentityFile)을 붙여서만 "
+                         "다시 돌렸다. 원래 형태는 여전히 실패할 수 있다",
     }.get(kind, hit)
     return (
         f"답이 해결·재발방지를 주장하지만 {why}. 처음 실패한 호출을 그 형태 그대로(같은 대상, 같은 명령, "

@@ -62,6 +62,7 @@ from ..guard.pretool import (
     serial_read_guard,
     sleep_poll_guard,
     turn_budget,
+    wrapper_bypass_guard,
 )
 from ..observability.progress_hook import HOOK_SCRIPT
 from ..prompt.sections import is_silent
@@ -375,6 +376,8 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
                     {"type": "command", "command": _hook_command(install_guard.HOOK_SCRIPT)},
                     {"type": "command", "command": _hook_command(scan_guard.HOOK_SCRIPT)},
                     {"type": "command", "command": _hook_command(sleep_poll_guard.HOOK_SCRIPT)},
+                    # 2026-11-23 절대경로로 PATH 래퍼를 건너뛰면 래퍼가 막던 실패가 재발한다
+                    {"type": "command", "command": _hook_command(wrapper_bypass_guard.HOOK_SCRIPT)},
                 ],
             },
             # Every tool: denies a read-only call after a run of responses that
