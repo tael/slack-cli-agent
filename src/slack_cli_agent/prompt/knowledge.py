@@ -248,7 +248,15 @@ class KnowledgeLoader:
             for common in sorted(directory.glob("_*.md")):
                 if common.name in skip_names:
                     continue
-                text = common.read_text(encoding="utf-8")
+                text = _read_or_none(common)
+                if text is None:
+                    # An iCloud symlink target that is not downloaded yet raises
+                    # OSError 11, and raising here stopped every request in the
+                    # bot until the file came back (2026-11-24 11:15-11:17,
+                    # 요청 3건 실패). One unreadable knowledge file is a gap in
+                    # the prompt, not a reason to answer nothing.
+                    skipped.append(common)
+                    continue
                 triggers = self._triggers(text)
                 always = common.stem.lstrip("_") in always_skills
                 if triggers is not None and not always and not any(t in low for t in triggers):
