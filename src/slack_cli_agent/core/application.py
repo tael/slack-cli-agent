@@ -815,6 +815,18 @@ class Application:
                 # since only this process holds the socket.
                 epoch_recorder=self.connection_epochs(),
             )
+            if self._settings.secure_input and self._profile.owner_user_id:
+                from ..slack.secure_input import SecureInput
+
+                gateway = self._gateway
+                self._gateway.set_interactive_handler(
+                    SecureInput(
+                        self._client,
+                        self._profile.owner_user_id,
+                        on_saved=lambda event: gateway.dispatch("app_mention", event),
+                        bot_user_id=lambda: self.identity.user_id,
+                    ).handle
+                )
         return self._gateway
 
     def restart_guard_env(self) -> dict[str, str]:

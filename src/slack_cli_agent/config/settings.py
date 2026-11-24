@@ -355,6 +355,11 @@ class RuntimeSettings:
     #: 이 값이 False 면 동작이 지금과 같아야 한다.
     workflows_enabled: bool = False
 
+    #: 보안 입력(slack/secure_input.py). True 면 interactive 요청(버튼·모달)을
+    #: 받아 소유자가 모달에 입력한 값을 채팅에 남기지 않고 키체인에 저장한다.
+    #: 기본은 끔이다. 프로필에서 켠다. 2026-11-24 소유자 지시로 신지만 켠다.
+    secure_input: bool = False
+
     def override(self, values: Mapping[str, Any]) -> RuntimeSettings:
         """Overrides only the fields present in `values`; unknown keys are
         ignored. Set-typed fields get converted, since JSON has no set

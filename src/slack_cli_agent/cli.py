@@ -251,6 +251,39 @@ class ChannelsCommand(ProfileAwareCommand):
         return 0
 
 
+class SecureInputCommand(ProfileAwareCommand):
+    name: ClassVar[str] = "secure-input"
+    help: ClassVar[str] = "소유자에게 보안 입력 버튼을 올린다. 입력 값은 키체인 shinji/<대상> 에 저장된다"
+
+    def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("target", help="키체인 항목 이름(shinji/<대상>). 영문·숫자·점·밑줄·하이픈")
+        parser.add_argument("--channel", default="", help="버튼을 올릴 채널. 비우면 소유자 DM")
+        parser.add_argument("--thread", default="", help="스레드 ts")
+
+    def execute_with_profile(
+        self, profile: Profile, args: argparse.Namespace, stdout: TextIO
+    ) -> int:
+        from slack_sdk import WebClient  # lazy import, like the application
+
+        from .config.settings import RuntimeSettings
+        from .slack.secure_input import post_request, valid_target
+
+        if not RuntimeSettings().override(profile.settings_override).secure_input:
+            raise ConfigError("이 프로필은 secure_input 이 꺼져 있다")
+        if not valid_target(args.target):
+            raise ConfigError("대상 이름은 영문·숫자·점·밑줄·하이픈 64자 이하")
+        client = WebClient(token=resolver_for(profile).bot_token())
+        channel = args.channel
+        if not channel:
+            opened = client.conversations_open(users=profile.owner_user_id)
+            channel = str((opened.get("channel") or {}).get("id") or "")
+        if not channel:
+            raise AgentError("소유자 DM 방을 찾지 못했다")
+        ts = post_request(client, channel, args.thread, args.target)
+        print(f"요청 게시 : channel={channel} ts={ts} target={args.target}", file=stdout)
+        return 0
+
+
 def default_work_root(name: str) -> Path:
     """Where the engine runs, outside $HOME.
 
@@ -930,6 +963,7 @@ DEFAULT_COMMANDS: tuple[CliCommand, ...] = (
     PreflightCommand(),
     MigrateCommand(),
     ChannelsCommand(),
+    SecureInputCommand(),
     IngressCommand(),
     WorkerCommand(),
     LearnCommand(),

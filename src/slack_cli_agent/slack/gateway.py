@@ -63,6 +63,7 @@ class SlackGateway:
         self._handlers: dict[str, list[Callable[[Mapping[str, Any]], None]]] = {}
         self._epoch_recorder = epoch_recorder
         self._edges = ConnectionEdgeDetector()
+        self._interactive_handler: Callable[[Mapping[str, Any]], dict[str, Any] | None] | None = None
 
     def observe_connection(self, connected: bool) -> None:
         """Feeds one socket-state observation to the log and the epoch ledger.
@@ -136,6 +137,34 @@ class SlackGateway:
         except Exception:
             log.exception("이벤트 처리 실패: %s", event_type)
 
+    def set_interactive_handler(
+        self, handler: Callable[[Mapping[str, Any]], dict[str, Any] | None]
+    ) -> None:
+        """Takes over `interactive` requests (button clicks, modal submissions).
+
+        Without a handler they are acked and dropped, as before. Setting one
+        also pins the slack_sdk loggers to INFO: at DEBUG the SDK prints every
+        received message, and a modal submission's message holds the typed value.
+        """
+        self._interactive_handler = handler
+        for name in ("slack_sdk", "slack_sdk.socket_mode"):
+            logging.getLogger(name).setLevel(logging.INFO)
+
+    def has_interactive_handler(self) -> bool:
+        return self._interactive_handler is not None
+
+    def handle_interactive(self, payload: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Runs the interactive handler. The payload is never logged here: a
+        view_submission carries the submitted value. Exceptions are caught so
+        one bad request does not drop the socket."""
+        if self._interactive_handler is None:
+            return None
+        try:
+            return self._interactive_handler(payload)
+        except Exception:
+            log.exception("interactive 처리 실패 : type=%s", payload.get("type"))
+            return None
+
     def log_connected(self, *, reconnect: bool = False) -> None:
         """Logs one line for an actual Socket Mode connection, not just the
         process having started. `auth_test` failing doesn't block the log —
@@ -182,6 +211,19 @@ def _socket_mode_connect(gateway: SlackGateway, app_token: str) -> None:
     socket = SocketModeClient(app_token=app_token, web_client=gateway.client)
 
     def on_request(client: Any, request: Any) -> None:
+        if request.type == "interactive" and gateway.has_interactive_handler():
+            payload = request.payload or {}
+            if payload.get("type") == "view_submission":
+                # The ack carries the answer (validation errors keep the modal
+                # open), so it follows the handler. Slack allows 3 seconds.
+                answer = gateway.handle_interactive(payload)
+                client.send_socket_mode_response(
+                    SocketModeResponse(envelope_id=request.envelope_id, payload=answer)
+                )
+                return
+            client.send_socket_mode_response(SocketModeResponse(envelope_id=request.envelope_id))
+            gateway.handle_interactive(payload)
+            return
         # Ack first. Slack retries any request it doesn't hear back
         # from within 3 seconds, so acking after processing would
         # duplicate slow requests.
