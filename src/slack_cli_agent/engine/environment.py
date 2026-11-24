@@ -203,6 +203,13 @@ class EngineEnvironmentPolicy(ABC):
     #: goes. Empty means the engine keeps credentials elsewhere.
     CREDENTIAL_FILES: tuple[tuple[str, str], ...] = ()
 
+    #: Login files the engine may keep inside its home but can do without,
+    #: because it also reads the same login from the OS keychain. Same pair
+    #: shape as CREDENTIAL_FILES. Absence is not a boot failure; a file that
+    #: is there is still checked for its permissions, since a copy readable
+    #: by others is a leak whether the engine needs it or not.
+    OPTIONAL_CREDENTIAL_FILES: tuple[tuple[str, str], ...] = ()
+
     def __init__(self, profile_name: str, home_dir: Path | None = None) -> None:
         if home_dir is not None and self.HOME_ENV_VAR is None:
             raise ConfigError(
@@ -286,7 +293,15 @@ class GeminiEnvironmentPolicy(EngineEnvironmentPolicy):
 
     HOME_ENV_VAR = "HOME"
     _AGY_TOKEN = ".gemini/antigravity-cli/antigravity-oauth-token"
-    CREDENTIAL_FILES = ((_AGY_TOKEN, _AGY_TOKEN),)
+    #: Optional, not required: agy falls back to the macOS keychain
+    #: ("Antigravity Safe Storage") when the file is absent, and the keychain
+    #: is per-login-user so overwriting HOME does not cut it off. Measured
+    #: 2026-11-24: 레이 answered 11:17-11:24 with no such file in its home and
+    #: none in ~/.gemini either, its engine log reading "keyringAuth: loaded
+    #: token ... ChainedAuth: authenticated via keyring". Requiring the file
+    #: made preflight exit 78 on the next restart and left the bot down with
+    #: an instruction to copy a file that does not exist anywhere.
+    OPTIONAL_CREDENTIAL_FILES = ((_AGY_TOKEN, _AGY_TOKEN),)
 
     def _base_env(self, source_env: Mapping[str, str]) -> dict[str, str]:
         return _with_turn_id({

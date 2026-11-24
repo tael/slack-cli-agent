@@ -510,17 +510,33 @@ class EngineHomeCredentialCheck(PreflightCheck):
                 bad.append(f"{label} 엔진 : {exc}")
                 continue
             bad.extend(self._missing(label, spec.home_dir, policy.CREDENTIAL_FILES))
+            bad.extend(
+                self._missing(
+                    label, spec.home_dir, policy.OPTIONAL_CREDENTIAL_FILES, required=False
+                )
+            )
         if bad:
             return CheckResult(ok=False, detail="; ".join(bad))
         return CheckResult(ok=True, detail="엔진 홈 자격 점검 통과")
 
     @staticmethod
-    def _missing(label: str, home_dir: Path, credentials: tuple[tuple[str, str], ...]) -> list[str]:
+    def _missing(
+        label: str,
+        home_dir: Path,
+        credentials: tuple[tuple[str, str], ...],
+        *,
+        required: bool = True,
+    ) -> list[str]:
         bad: list[str] = []
         for relative, source in credentials:
             path = home_dir / relative
             if not path.is_file():
-                bad.append(f"{label} 엔진 홈에 자격 파일이 없다 : {path} (~/{source} 를 복사한다)")
+                # An optional credential lives in the keychain too, so its
+                # absence says nothing about whether the engine can log in.
+                if required:
+                    bad.append(
+                        f"{label} 엔진 홈에 자격 파일이 없다 : {path} (~/{source} 를 복사한다)"
+                    )
                 continue
             mode = path.stat().st_mode
             if mode & _SHARED_BITS:

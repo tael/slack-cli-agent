@@ -17,7 +17,7 @@ import pytest
 from slack_cli_agent.config.profile import KNOWN_KEYS as PROFILE_KNOWN_KEYS
 from slack_cli_agent.config.profile import Profile
 from slack_cli_agent.core.errors import ConfigError
-from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy
+from slack_cli_agent.engine.environment import ClaudeEnvironmentPolicy, GeminiEnvironmentPolicy
 from slack_cli_agent.preflight.check import CheckResult, PreflightCheck, PreflightContext
 from slack_cli_agent.preflight.checks import (
     ChannelSettingsReadableCheck,
@@ -592,14 +592,33 @@ class TestEngineHomeCredentialCheck:
         assert not 결과.ok
         assert "권한" in 결과.detail
 
-    def test_제미나이는_다른_파일을_본다(self, tmp_path: Path) -> None:
+    def test_제미나이_토큰_파일이_없어도_통과한다(self, tmp_path: Path) -> None:
+        """agy 는 같은 로그인을 macOS 키체인에서도 읽는다. 파일이 없다고 막으면
+        키체인으로 답하던 봇이 다음 재기동에서 78 로 안 뜬다 (2026-11-24 레이).
+        """
         홈 = tmp_path / "gemini-home"
         홈.mkdir()
         결과 = EngineHomeCredentialCheck().run(
             PreflightContext(self._프로필(tmp_path, "gemini", 홈))
         )
+        assert 결과.ok
+
+    def test_제미나이_토큰_파일이_있으면_권한을_본다(self, tmp_path: Path) -> None:
+        """없어도 되는 자격이지만 둔 사본이 남에게 읽히는 것은 그대로 유출이다."""
+        홈 = tmp_path / "gemini-home"
+        자격 = 홈 / GeminiEnvironmentPolicy.OPTIONAL_CREDENTIAL_FILES[0][0]
+        자격.parent.mkdir(parents=True)
+        자격.write_text("t", encoding="utf-8")
+        자격.chmod(0o604)
+        결과 = EngineHomeCredentialCheck().run(
+            PreflightContext(self._프로필(tmp_path, "gemini", 홈))
+        )
         assert not 결과.ok
-        assert "antigravity-oauth-token" in 결과.detail
+        assert "권한" in 결과.detail
+        자격.chmod(0o600)
+        assert EngineHomeCredentialCheck().run(
+            PreflightContext(self._프로필(tmp_path, "gemini", 홈))
+        ).ok
 
     def test_소유자가_못_읽는_파일도_막는다(self, tmp_path: Path) -> None:
         """000 과 100 은 group/other 비트가 없어 권한 검사를 빠져나간다."""
