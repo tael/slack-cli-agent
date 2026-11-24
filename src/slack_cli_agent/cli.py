@@ -259,6 +259,7 @@ class SecureInputCommand(ProfileAwareCommand):
         parser.add_argument("target", help="키체인 항목 이름(shinji/<대상>). 영문·숫자·점·밑줄·하이픈")
         parser.add_argument("--channel", default="", help="버튼을 올릴 채널. 비우면 소유자 DM")
         parser.add_argument("--thread", default="", help="스레드 ts")
+        parser.add_argument("--prompt", default="", help="버튼 위에 보일 안내 문구")
 
     def execute_with_profile(
         self, profile: Profile, args: argparse.Namespace, stdout: TextIO
@@ -279,7 +280,7 @@ class SecureInputCommand(ProfileAwareCommand):
             channel = str((opened.get("channel") or {}).get("id") or "")
         if not channel:
             raise AgentError("소유자 DM 방을 찾지 못했다")
-        ts = post_request(client, channel, args.thread, args.target)
+        ts = post_request(client, channel, args.thread, args.target, prompt=args.prompt)
         print(f"요청 게시 : channel={channel} ts={ts} target={args.target}", file=stdout)
         return 0
 

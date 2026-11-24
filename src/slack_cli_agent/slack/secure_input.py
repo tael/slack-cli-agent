@@ -92,13 +92,14 @@ def read_from_keychain(target: str) -> str:
     raise RuntimeError("키체인 항목에 값이 없다")
 
 
-def request_blocks(target: str, expires_at: float) -> list[dict[str, Any]]:
+def request_blocks(target: str, expires_at: float, prompt: str = "") -> list[dict[str, Any]]:
+    body = prompt or "버튼을 누르면 입력창이 열림. 입력 값은 채팅에 남지 않음"
     return [
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*보안 입력 요청* : `{target}`\n버튼을 누르면 입력창이 열림. 입력 값은 채팅에 남지 않음",
+                "text": f"*보안 입력 요청* : `{target}`\n{body}",
             },
         },
         {
@@ -124,6 +125,7 @@ def post_request(
     *,
     now: Callable[[], float] = time.time,
     ttl_sec: int = DEFAULT_TTL_SEC,
+    prompt: str = "",
 ) -> str:
     """Posts the button message and returns its ts."""
     if not valid_target(target):
@@ -132,7 +134,7 @@ def post_request(
     kwargs: dict[str, Any] = {
         "channel": channel,
         "text": f"보안 입력 요청 : {target}",
-        "blocks": request_blocks(target, expires_at),
+        "blocks": request_blocks(target, expires_at, prompt),
     }
     if thread_ts:
         kwargs["thread_ts"] = thread_ts

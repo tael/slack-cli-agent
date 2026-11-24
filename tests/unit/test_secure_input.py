@@ -193,3 +193,9 @@ def test_게이트웨이는_핸들러_예외를_삼키고_로거를_INFO_로_고
 def test_기능은_기본으로_꺼져_있다() -> None:
     assert RuntimeSettings().secure_input is False
     assert RuntimeSettings().override({"secure_input": True}).secure_input is True
+
+
+def test_요청_문구를_바꿀_수_있다() -> None:
+    blocks = si.request_blocks("otp", 1600.0, prompt="인증문자를 확인하고 입력해 주세요")
+    assert "인증문자를 확인하고 입력해 주세요" in blocks[0]["text"]["text"]
+    assert "otp" in blocks[0]["text"]["text"]
