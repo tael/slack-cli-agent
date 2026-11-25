@@ -333,12 +333,17 @@ class TranscriptBuilder:
         tagged = self.tag_current(current)
         if not transcript:
             return tagged
+        # "맥락을 잡는 데만 쓴다" demoted the thread to background, so a bot called
+        # mid-thread read a short question literally (2026-11-25, A/B 0-3/6 vs 6/6).
+        # The hint sits right before the current message and stays conditional so
+        # topic-switching questions are not dragged back.
         return (
-            "아래는 이 대화에서 지금까지 오간 말이다. 맥락을 잡는 데만 쓴다.\n"
-            "이미 지나간 말이므로 여기에 다시 답하지 않는다.\n"
+            "아래는 이 대화에서 지금까지 오간 말이다. 지난 말에는 다시 답하지 않고 지금 질문에만 답한다.\n"
             "대괄호 안이 시각과 그 말을 한 사람이다.\n\n"
             "===== 지난 대화 =====\n\n"
             f"{transcript}\n\n"
             "===== 여기까지가 지난 대화다 =====\n\n"
+            "지금 질문이 짧거나 대상이 생략돼 있으면 먼저 위 대화에서 직전에 논의하던 주제에서 뜻을 찾는다. "
+            "해석이 둘로 갈리면 둘 다에 짧게 답한다.\n\n"
             f"{tagged}"
         )
