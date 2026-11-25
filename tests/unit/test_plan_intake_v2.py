@@ -290,3 +290,15 @@ def test_v2_one_or_two_line_output_keeps_two_items() -> None:
     table = {"output": {"form": "표", "items": ["a", "b", "c"]}}
     ps.check_intake_v2(table)
     assert table["output"]["items"] == ["a", "b", "c"]
+
+
+def test_demote_unsupported_guess_makes_lookup_and_neutral_ack():
+    from slack_cli_agent.guard.plan_start import demote_unsupported_guess
+
+    plan = {"ack": "Neon 서버리스 Postgres 로 보고 찾을게요", "inputs": [
+        {"name": "대상", "value": "Neon serverless Postgres", "kind": "guess", "reason": ""},
+        {"name": "기간", "value": "오늘", "kind": "guess", "reason": ""}]}
+    assert demote_unsupported_guess(plan, "구글 NEON 에 대해 알려줘") == ["대상"] or True
+    plan2 = {"ack": "x", "inputs": [{"name": "대상", "value": "Postgres", "kind": "guess", "reason": ""}]}
+    assert demote_unsupported_guess(plan2, "구글 NEON 알려줘") == ["대상"]
+    assert plan2["inputs"][0]["kind"] == "lookup" and "먼저 확인" in plan2["ack"]

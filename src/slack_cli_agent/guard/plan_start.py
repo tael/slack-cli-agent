@@ -360,7 +360,7 @@ _INTAKE_SECTION = (
     "공감·위로·상담 문구와 요청에 없는 내용은 넣지 않는다. ack 에는 질문을 넣지 않는다. 되물을 것은 ask 에만 적는다. "
     "예: \"X 기준으로 Y 를 확인해볼게요\"\n"
     "ack 는 이 단계에서 확인한 사실이 없다. 추정을 사실로 쓰지 않고 \"X 는 Y 가 아니다\", \"X 는 없다\" 처럼 대상의 존재·소속을 부정하지 않는다. "
-    "제품·모델·서비스·회사 이름의 정체를 모르면 \"X 가 무엇인지 웹에서 먼저 확인할게요\" 로 쓴다. 학습 시점 이후에 나온 것일 수 있다\n"
+    "제품·모델·서비스·회사 이름의 정체를 모르면 \"X 가 무엇인지 먼저 확인할게요\" 로 쓴다. 학습 시점 이후에 나온 것일 수 있다\n"
     "- checks : 답하기 전에 만족해야 할 조건 목록. what 은 조건, how 는 확인할 도구나 원천이다. "
     "도구 결과로 확인되는 조건만 적고 의견은 적지 않는다\n"
     + _WORK_FIELD_LINE
@@ -384,7 +384,7 @@ _INTAKE_SECTION_V2 = (
     "짧은 명사구로 적는다. 한두줄이면 2개 이하, 그 밖은 최대 6개다. "
     "'있으면' 같은 조건부 항목과 추정 공개는 넣지 않는다\n"
     "- ack : 사용자에게 바로 보낼 한두 문장. \"X 기준으로 Y 를 찾아볼게요\" 꼴로 추정한 값(guess)을 밝힌다. "
-    "추정을 사실로 쓰지 않고 대상의 존재·소속을 부정하지 않는다(\"X 는 Y 가 아니라서\" 금지). 정체를 모르는 이름은 \"X 가 무엇인지 웹에서 먼저 확인할게요\" 로 쓴다. "
+    "추정을 사실로 쓰지 않고 대상의 존재·소속을 부정하지 않는다(\"X 는 Y 가 아니라서\" 금지). 정체를 모르는 이름은 \"X 가 무엇인지 먼저 확인할게요\" 로 쓴다. "
     "질문은 넣지 않는다. 공감·위로·상담 문구와 요청에 없는 내용은 넣지 않는다\n"
     + _WORK_FIELD_LINE
 )
@@ -894,6 +894,28 @@ def check_intake_v2(plan: dict[str, Any]) -> tuple[list[str], list[str]]:
     return dropped, fixed
 
 
+_LATIN_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9.+-]{2,}")
+NEUTRAL_ACK_TEXT = "요청에 적힌 이름이 무엇인지 먼저 확인할게요"
+
+
+def demote_unsupported_guess(plan: dict[str, Any], request: str) -> list[str]:
+    """The planner has no tools. A guess input that names a product the request
+    never mentioned is a memory claim: make it lookup and use a neutral ack.
+    Returns the demoted input names."""
+    haystack = request.lower()
+    demoted = []
+    for item in plan.get("inputs") or []:
+        if item.get("kind") != "guess":
+            continue
+        tokens = _LATIN_TOKEN_RE.findall(f"{item.get('value', '')} {item.get('reason', '')}")
+        if any(t.lower() not in haystack for t in tokens):
+            item["kind"] = "lookup"
+            demoted.append(item["name"])
+    if demoted and isinstance(plan.get("ack"), str):
+        plan["ack"] = NEUTRAL_ACK_TEXT
+    return demoted
+
+
 def check_intake(plan: dict[str, Any], enabled: bool, version: int = 1) -> list[str]:
     """Keep the intake fields only where they are well formed; return the
     names dropped. Off removes all of them. Nothing here touches the rest of
@@ -963,6 +985,9 @@ def run(
                 record["workflow_error"] = "invalid"
             if intake and intake_schema() == 2:
                 dropped, fixed = check_intake_v2(plan)
+                demoted = demote_unsupported_guess(plan, request)
+                if demoted:
+                    record["guess_demoted"] = demoted
                 if fixed:
                     record["intake_fixed"] = fixed
             else:

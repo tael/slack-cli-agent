@@ -68,7 +68,7 @@ def read_plan(path: Path | None) -> dict[str, Any] | None:
 #: The planner has no tools, so an ack that denies a named product's existence or ownership is a guess stated as fact.
 _DENIAL_RE = re.compile(r"(제품|서비스|모델|회사|앱|이름)[은는이가]?\s*(아니|아닌|없|존재하지)")
 #: Posted in place of such an ack, so the user still gets a first message.
-NEUTRAL_ACK = "요청에 적힌 이름이 무엇인지 웹에서 먼저 확인할게요"
+NEUTRAL_ACK = "요청에 적힌 이름이 무엇인지 먼저 확인할게요"
 
 
 def judge_plan(plan: dict[str, Any] | None, *, start: float) -> tuple[str, str]:
