@@ -84,6 +84,20 @@ def judge_plan(plan: dict[str, Any] | None, *, start: float) -> tuple[str, str]:
     return ack.strip()[:ACK_LIMIT], ""
 
 
+def _ts_of(result: object) -> tuple[str, ...]:
+    """The posted message ts from whatever ``post`` returned (receipt, ts, list)."""
+    if result is None:
+        return ()
+    message_ts = getattr(result, "message_ts", None)
+    if message_ts is not None:
+        return tuple(str(t) for t in message_ts if t)
+    if isinstance(result, str):
+        return (result,) if result else ()
+    if isinstance(result, (list, tuple)):
+        return tuple(str(t) for t in result if t)
+    return ()
+
+
 class IntakeAck:
     """Context manager entered beside the engine call; one per request."""
 
@@ -96,8 +110,18 @@ class IntakeAck:
         start: float,
         now: Callable[[], float] = time.time,
         poll_sec: float = 1.0,
+        alive: Callable[[], bool | None] | None = None,
     ) -> None:
         self._resolve_plan = resolve_plan
+        # 2026-11-25 private-taeil: the asker deleted the question mid-turn.
+        # The final answer was withheld (origin_deleted) but the ack had
+        # already gone up, and with its parent gone it stood alone in the
+        # channel. ``alive`` is checked right before the ack posts; only a
+        # definite deletion (False) skips, an unknown (None) still posts.
+        self._alive = alive
+        #: ts of each message the ack put up, so a later origin_deleted can
+        #: take it back (see ``retract``).
+        self.posted_ts: tuple[str, ...] = ()
         self._post = post
         self._after = after_sec
         self._start = start
@@ -147,17 +171,49 @@ class IntakeAck:
         with self._lock:
             if self._stop.is_set():
                 return False
+            if self._origin_gone():
+                self._posted = AckOutcome(posted=False, reason="origin_deleted")
+                return True
             posted_at = self._now()
             try:
-                self._post(text)
+                result = self._post(text)
             except Exception as exc:  # a failed ack must not fail the request
                 log.warning("ack 게시 실패", exc_info=True)
                 self._posted = AckOutcome(posted=False, reason=f"post_failed:{type(exc).__name__}")
                 return True
+            self.posted_ts = _ts_of(result)
             self._posted = AckOutcome(
                 posted=True, posted_at=posted_at, latency_sec=round(posted_at - self._start, 3),
             )
             return True
+
+    def _origin_gone(self) -> bool:
+        if self._alive is None:
+            return False
+        try:
+            return self._alive() is False
+        except Exception:  # noqa: BLE001 -- an unknown stays unknown, the ack still posts
+            log.warning("ack 전 물음 생존 확인 실패", exc_info=True)
+            return False
+
+    def retract(self, delete: Callable[[str], object]) -> int:
+        """Deletes the ack messages already posted; returns how many went.
+
+        Called when the question turned out deleted at answer time: the
+        answer is withheld, and an ack left behind is a reply with no
+        question (2026-11-25). A failed delete is logged, never raised.
+        """
+        with self._lock:
+            self._stop.set()
+            targets, self.posted_ts = self.posted_ts, ()
+        gone = 0
+        for ts in targets:
+            try:
+                delete(ts)
+                gone += 1
+            except Exception:  # noqa: BLE001 -- cleanup must not fail the request
+                log.warning("ack 회수 실패 ts=%s", ts, exc_info=True)
+        return gone
 
     def _finish(self) -> None:
         path = self._safe_resolve()

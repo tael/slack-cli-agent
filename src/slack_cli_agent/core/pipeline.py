@@ -634,13 +634,29 @@ class RequestPipeline:
         ):
             return nullcontext()
         scope = _REQUEST_SCOPE.get()
+        checker = self._origin_alive
         ack = IntakeAck(
             resolve_plan=plan_path, post=post, after_sec=self._intake_ack_after_sec, start=start,
             now=self._now, poll_sec=self._intake_ack_poll_sec,
+            alive=(lambda: checker.alive(ctx.channel, ctx.ts)) if checker is not None else None,
         )
         if scope is not None:
             scope.ack = ack
         return ack
+
+    def _retract_ack(self, ctx: RequestContext) -> int:
+        """Deletes the intake ack when the question is gone; returns how many.
+
+        2026-11-25 private-taeil: the question was deleted, the answer was
+        withheld, and the ack ("...찾아본 뒤 설명드릴게요") stayed as a lone
+        message with nothing to answer. A deleted question leaves no reply.
+        """
+        scope = _REQUEST_SCOPE.get()
+        ack = scope.ack if scope is not None else None
+        delete = getattr(self._publisher, "delete", None)
+        if not isinstance(ack, IntakeAck) or delete is None or not ack.posted_ts:
+            return 0
+        return ack.retract(lambda ts: delete(ctx.channel, ts))
 
     def _progress_session(self, ctx: RequestContext, log_path: Path | None) -> AbstractContextManager[None]:
         """The progress display for this request, or a pass-through when it has none."""
@@ -820,7 +836,7 @@ class RequestPipeline:
         # would read as the request having finished.
         ack_session = self._intake_ack_session(
             ctx, config, tier, start=start,
-            post=lambda text: self._publisher.post(ctx.channel, ctx.thread_ts, text, rich, flat=flat),
+            post=lambda text: self._publisher.post_receipt(ctx.channel, ctx.thread_ts, text, rich, flat=flat),
             plan_path=lambda: (
                 self._plan_file(self._engine.serving_name(), request.session_id or "", workdir)
                 if self._plan_file is not None and request.session_id else None
@@ -1020,6 +1036,7 @@ class RequestPipeline:
             self._audit.record(
                 IncidentKind.ORIGIN_DELETED.value, channel=ctx.channel,
                 thread_ts=ctx.thread_ts, snippet=body[:300],
+                ack_retracted=self._retract_ack(ctx),
             )
             self._record(
                 ctx, decision, model, effort, elapsed, ok=True, usage=response.usage,

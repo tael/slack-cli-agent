@@ -211,6 +211,10 @@ class FakePublisher:
         self._message_ts = message_ts
         self.posted: list[dict[str, Any]] = []
         self.updated: list[dict[str, Any]] = []
+        self.deleted: list[tuple[str, str]] = []
+
+    def delete(self, channel: str, ts: str) -> None:
+        self.deleted.append((channel, ts))
 
     def apply_elapsed_model_line(self, body: str, model: str, rich: bool) -> str:
         return body
