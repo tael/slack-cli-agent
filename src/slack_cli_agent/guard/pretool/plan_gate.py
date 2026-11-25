@@ -100,7 +100,8 @@ KIND_GUESS = "guess"
 KIND_ASK = "ask"
 INJECT_LOOKUP = "- lookup 입력은 도구로 찾아 채우고 '미확인' 으로 남기지 않는다"
 INJECT_GUESS = (
-    "- guess 값은 사용자에게 이미 안내됐다. 도구 결과가 다르면 바꾸고 바꾼 점을 답에 한 문장으로 밝힌다"
+    "- guess 값은 사용자에게 이미 안내됐다. 도구 결과가 다르면 바꾸고 바꾼 점을 답에 한 문장으로 밝힌다. "
+    "guess 가 제품·모델·서비스·회사·앱 이름의 정체이면 답하기 전에 볼트 지식 색인과 메모리 색인을 보고, 없으면 웹검색으로 확인한다"
 )
 INJECT_OUTPUT = "- 답은 기대 결과의 형태와 항목대로 쓰고 그 밖의 내용은 덧붙이지 않는다"
 #: Written to the once-only flag file when the intake text is on.

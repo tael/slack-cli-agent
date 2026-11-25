@@ -8,6 +8,7 @@ final answer. Failures never reach the request; they end up in the outcome.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import threading
 import time
@@ -64,6 +65,10 @@ def read_plan(path: Path | None) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+#: The planner has no tools, so an ack that denies a name's existence or ownership is a guess stated as fact.
+_DENIAL_RE = re.compile(r"(아니라서|아니므로|아닌 것으로|이 아니라|확인되지 않|존재하지 않|없는 제품)")
+
+
 def judge_plan(plan: dict[str, Any] | None, *, start: float) -> tuple[str, str]:
     """(ack text, "") when postable, else ("", reason)."""
     if plan is None:
@@ -81,6 +86,8 @@ def judge_plan(plan: dict[str, Any] | None, *, start: float) -> tuple[str, str]:
     ack = plan.get("ack")
     if not isinstance(ack, str) or not ack.strip():
         return "", "no_ack"
+    if _DENIAL_RE.search(ack):
+        return "", "ack_denial"
     return ack.strip()[:ACK_LIMIT], ""
 
 

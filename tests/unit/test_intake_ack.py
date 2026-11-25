@@ -390,3 +390,12 @@ class Test물음삭제:
         pipeline.handle(make_ctx(user="UOWNER"))
         pub = deps["publisher"]
         assert len(pub.posted) == 2 and pub.posted[0]["text"] == ACK and pub.deleted == []
+
+
+def test_judge_plan_drops_ack_that_denies_a_name():
+    from slack_cli_agent.core.intake_ack import judge_plan
+
+    plan = {"status": "ok", "work": "x", "ack": "구글 제품이 아니라서 Neon DB 로 보고 찾아볼게요", "finished_at": 10**12}
+    assert judge_plan(plan, start=0) == ("", "ack_denial")
+    plan["ack"] = "구글 NEON 이 무엇인지 웹에서 먼저 확인할게요"
+    assert judge_plan(plan, start=0)[1] == ""
