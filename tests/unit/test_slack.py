@@ -1538,6 +1538,20 @@ class TestTranscriptBuilder:
         assert out.endswith("지금 말")
         assert out.splitlines()[-2].startswith("[")
 
+    def test_with_history는_짧은_질문을_직전_주제에서_해석하라고_현재_발언_바로_앞에_적는다(
+        self, settings: RuntimeSettings, notices: NoticeCatalog
+    ) -> None:
+        # 2026-11-25: called mid-thread, "구치파치는 켜져있니?" was read as a liveness
+        # check although the thread was about the system_prompt_split option.
+        out = self._builder(settings, notices).with_history(
+            "[10:00 김철수]\n옵션을 켜자",
+            CurrentMessage(ts="1700000000.000001", user="U1", raw_text="켜져있니?", body="켜져있니?"),
+        )
+        hint_at = out.index("직전에 논의하던 주제")
+        assert out.index("===== 여기까지가 지난 대화다 =====") < hint_at < out.rindex("[")
+        assert "맥락을 잡는 데만 쓴다" not in out
+        assert "지난 말에는 다시 답하지 않고 지금 질문에만 답한다" in out
+
     def test_현재_발언_머리는_대화록_줄과_같은_형식이다(
         self, settings: RuntimeSettings, notices: NoticeCatalog
     ) -> None:
