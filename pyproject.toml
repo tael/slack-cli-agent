@@ -34,7 +34,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]  # tests.* 교차 import 용. 단독 pytest 는 cwd 를 sys.path 에 넣지 않는다
 markers = [
     "integration: 실제 프로세스를 SIGKILL 로 죽이는 등 느린 통합 시험",
     "real_cli: 실제 엔진 CLI 를 부른다. 로그인 상태와 요금에 의존하므로 기본 실행에서 제외한다",
