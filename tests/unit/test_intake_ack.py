@@ -321,3 +321,72 @@ class TestPlanFilePath:
         base = app._plan_file_path(fake, "claude", "sid", None)
         assert base == app._plan_file_path(fake, "claude", "sid", tmp_path / "root")
         assert str(base.parent).endswith("-root")
+
+
+class _Alive:
+    """첫 n 번은 살아 있고 그 뒤로 지워졌다고 답한다."""
+
+    def __init__(self, live_calls: int) -> None:
+        self.live_calls = live_calls
+        self.calls = 0
+
+    def alive(self, channel: str, ts: str) -> bool | None:
+        self.calls += 1
+        return self.calls <= self.live_calls
+
+
+class Test물음삭제:
+    """2026-11-25 private-taeil: 물음을 지운 뒤 ack 만 혼자 채널에 남았다."""
+
+    def test_ack_직전에_물음이_지워졌으면_게시하지_않는다(self, tmp_path: Path) -> None:
+        plan_file, poster = tmp_path / "t.plan.json", Poster()
+        _write(plan_file, _plan())
+        ack = IntakeAck(
+            resolve_plan=lambda: plan_file, post=poster, after_sec=0.05,
+            start=time.time(), poll_sec=0.01, alive=lambda: False,
+        )
+        with ack:
+            _hold(0.3)
+        assert poster.texts == []
+        assert not ack.outcome.posted and ack.outcome.reason == "origin_deleted"
+
+    def test_생존_확인이_모름이면_평소대로_게시한다(self, tmp_path: Path) -> None:
+        plan_file, poster = tmp_path / "t.plan.json", Poster()
+        _write(plan_file, _plan())
+        ack = IntakeAck(
+            resolve_plan=lambda: plan_file, post=poster, after_sec=0.05,
+            start=time.time(), poll_sec=0.01, alive=lambda: None,
+        )
+        with ack:
+            _hold(0.3)
+        assert poster.texts == [ACK]
+
+    def test_retract_는_게시한_ack_를_지운다(self, tmp_path: Path) -> None:
+        plan_file = tmp_path / "t.plan.json"
+        _write(plan_file, _plan())
+        ack = IntakeAck(
+            resolve_plan=lambda: plan_file, post=lambda text: ("111.1", "111.2"),
+            after_sec=0.05, start=time.time(), poll_sec=0.01,
+        )
+        with ack:
+            _hold(0.3)
+        deleted: list[str] = []
+        assert ack.retract(deleted.append) == 2
+        assert deleted == ["111.1", "111.2"] and ack.posted_ts == ()
+
+    def test_파이프라인_답_시점에_지워졌으면_답도_ack_도_남기지_않는다(self, tmp_path: Path) -> None:
+        pipeline, deps, _, _ = TestPipeline()._pipeline(tmp_path, on=True, plan=_plan())
+        pipeline._origin_alive = _Alive(live_calls=1)  # ack 때는 살아 있고 답 때는 지워짐
+        pipeline.handle(make_ctx(user="UOWNER"))
+        pub = deps["publisher"]
+        assert [p["text"] for p in pub.posted] == [ACK]
+        assert pub.deleted == [("C1", "1700000000.000900")]
+        inc = [i for i in deps["audit"].incidents if i["kind"] == "origin_deleted"]
+        assert inc and inc[0]["ack_retracted"] == 1
+
+    def test_파이프라인_살아_있으면_ack_와_답_모두_남는다(self, tmp_path: Path) -> None:
+        pipeline, deps, _, _ = TestPipeline()._pipeline(tmp_path, on=True, plan=_plan())
+        pipeline._origin_alive = _Alive(live_calls=99)
+        pipeline.handle(make_ctx(user="UOWNER"))
+        pub = deps["publisher"]
+        assert len(pub.posted) == 2 and pub.posted[0]["text"] == ACK and pub.deleted == []

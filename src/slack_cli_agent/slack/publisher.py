@@ -538,6 +538,10 @@ class MessagePublisher:
         local estimate did, so the next try aims well under what it just was."""
         return split_by_block_budget(part, max(1, block_cost(part) // 2))
 
+    def delete(self, channel: str, ts: str) -> None:
+        """Deletes one of this bot's own messages (an ack left without its question)."""
+        self._client.chat_delete(channel=channel, ts=ts)
+
     def update(self, channel: str, ts: str, text: str, rich: bool) -> list[str]:
         """Rewrites one already-posted message, using the channel's mode.
 
