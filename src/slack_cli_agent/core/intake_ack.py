@@ -8,8 +8,8 @@ final answer. Failures never reach the request; they end up in the outcome.
 from __future__ import annotations
 
 import json
-import re
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -65,8 +65,10 @@ def read_plan(path: Path | None) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-#: The planner has no tools, so an ack that denies a name's existence or ownership is a guess stated as fact.
-_DENIAL_RE = re.compile(r"(아니라서|아니므로|아닌 것으로|이 아니라|확인되지 않|존재하지 않|없는 제품)")
+#: The planner has no tools, so an ack that denies a named product's existence or ownership is a guess stated as fact.
+_DENIAL_RE = re.compile(r"(제품|서비스|모델|회사|앱|이름)[은는이가]?\s*(아니|아닌|없|존재하지)")
+#: Posted in place of such an ack, so the user still gets a first message.
+NEUTRAL_ACK = "요청에 적힌 이름이 무엇인지 웹에서 먼저 확인할게요"
 
 
 def judge_plan(plan: dict[str, Any] | None, *, start: float) -> tuple[str, str]:
@@ -87,7 +89,7 @@ def judge_plan(plan: dict[str, Any] | None, *, start: float) -> tuple[str, str]:
     if not isinstance(ack, str) or not ack.strip():
         return "", "no_ack"
     if _DENIAL_RE.search(ack):
-        return "", "ack_denial"
+        return NEUTRAL_ACK, ""
     return ack.strip()[:ACK_LIMIT], ""
 
 

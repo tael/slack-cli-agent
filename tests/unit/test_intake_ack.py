@@ -392,10 +392,11 @@ class Test물음삭제:
         assert len(pub.posted) == 2 and pub.posted[0]["text"] == ACK and pub.deleted == []
 
 
-def test_judge_plan_drops_ack_that_denies_a_name():
-    from slack_cli_agent.core.intake_ack import judge_plan
+def test_judge_plan_replaces_ack_that_denies_a_name():
+    from slack_cli_agent.core.intake_ack import NEUTRAL_ACK, judge_plan
 
     plan = {"status": "ok", "work": "x", "ack": "구글 제품이 아니라서 Neon DB 로 보고 찾아볼게요", "finished_at": 10**12}
-    assert judge_plan(plan, start=0) == ("", "ack_denial")
-    plan["ack"] = "구글 NEON 이 무엇인지 웹에서 먼저 확인할게요"
-    assert judge_plan(plan, start=0)[1] == ""
+    assert judge_plan(plan, start=0) == (NEUTRAL_ACK, "")
+    for ok in ("구글 NEON 이 무엇인지 웹에서 먼저 확인할게요", "운영이 아니라 스테이징 DB 기준으로 조회할게요", "확인되지 않은 항목은 미확인으로 표시할게요"):
+        plan["ack"] = ok
+        assert judge_plan(plan, start=0) == (ok, "")
