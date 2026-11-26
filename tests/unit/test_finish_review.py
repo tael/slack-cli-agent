@@ -34,6 +34,21 @@ class TestOffer:
 
         assert finish_review.offer(turn) is None
 
+    def test_blocks_approval_request_ending(self):
+        turn = _turn("노트 두 개를 확인했다.\n1번부터 진행해도 되는지 확인 필요함.")
+
+        assert finish_review.offer(turn) is not None
+
+    def test_blocks_deferral_to_next_turn(self):
+        turn = _turn("역링크를 달았다.\n남은 정리는 다음 턴에 이어서 진행함.")
+
+        assert finish_review.offer(turn) is not None
+
+    def test_allows_approval_request_with_ask_tag(self):
+        turn = _turn("삭제는 되돌릴 수 없다.\n진행해도 되는지 확인 필요함.\n[[ASK]]")
+
+        assert finish_review.offer(turn) is None
+
     def test_allows_when_offer_phrase_is_only_inside_a_quote(self):
         turn = _turn('지난 턴 금지 문구 "원하시면 이어서 볼게요" 를 다시 쓰지 않았다는 보고다.')
 
