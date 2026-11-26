@@ -61,6 +61,7 @@ from pathlib import Path
 from typing import Any
 
 from slack_cli_agent.core.markers import ASK_TAG, strip_control_tags
+from slack_cli_agent.guard import pending_ledger as _ledger
 from slack_cli_agent.guard.plan_start import result_event
 from slack_cli_agent.guard.pretool.plan_gate import intake_view
 
@@ -133,6 +134,11 @@ class Turn:
     #: without it the check flagged those sentences as unsupported
     #: (2026-11-10: dispatch_policy 4 = LEGACY_AI, status 4 = 배송완료).
     knowledge: str = ""
+    #: TURN_TIER owner_trusted: the owner's DM or a full_authority channel.
+    is_full_authority: bool = False
+    #: What the previous allowed answer in this session left open
+    #: (guard/pending_ledger). Only `ledger_unworked` reads it.
+    pending_ledger: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -507,7 +513,9 @@ def handoff(turn: Turn) -> str | None:
     answer = turn.answer
     if not answer:
         return None
-    if any(_DENIED_RE.search(call.result) for call in turn.tool_calls):
+    # 2026-11-26: on a full-authority turn a guard denial is the cue to find
+    # another path in the same turn, not a reason to hand the call back.
+    if not turn.is_full_authority and any(_DENIED_RE.search(call.result) for call in turn.tool_calls):
         return None
     lines = [line for line in answer.splitlines() if line.strip() and not _TAG_LINE.match(line)]
     text = _QUOTED.sub("", " ".join(line.strip() for line in lines))
@@ -516,6 +524,45 @@ def handoff(turn: Turn) -> str | None:
         if _HANDOFF_ASK_RE.search(window):
             return window.strip()[:140]
     return None
+
+
+# --------------------------------------------------------------------------
+# left_pending / ledger_unworked — work left open on an owner turn
+# (2026-11-26 shinji: "정해 주면 진행함", "남은 일 3건임" passed every judgment
+# and each owner push moved the bot one step; see guard/pending_ledger)
+# --------------------------------------------------------------------------
+
+
+def left_pending(turn: Turn) -> str | None:
+    """The phrase, if an owner turn's answer leaves work open or hands a
+    reversible decision back without an `[[ASK]]` approval wait."""
+    if not turn.is_owner_turn or not turn.answer or _ledger.has_ask(turn.answer):
+        return None
+    return _ledger.left_hit(turn.answer)
+
+
+_READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
+
+
+def _is_work(call: ToolCall) -> bool:
+    """False for a call that only writes or rereads a rule, note or memory file."""
+    if call.name in _WRITE_TOOLS or call.name in _READ_TOOLS:
+        target = str(call.input.get("file_path") or call.input.get("notebook_path") or call.input.get("path") or "")
+        return not _DOC_PATH_RE.search(target)
+    if call.name == "Bash":
+        return not _DOC_PATH_RE.search(str(call.input.get("command") or ""))
+    return True
+
+
+def ledger_unworked(turn: Turn) -> str | None:
+    """The open items, if the previous answer left work open and this owner
+    turn ends without doing any of it (no tool call besides rule or note
+    files: the 2026-11-26 "다짐" turn wrote a rule file and stopped)."""
+    if not turn.is_owner_turn or not turn.pending_ledger or _ledger.has_ask(turn.answer):
+        return None
+    if any(_is_work(call) for call in turn.tool_calls):
+        return None
+    return " | ".join(turn.pending_ledger)[:400]
 
 
 # --------------------------------------------------------------------------
@@ -1376,6 +1423,22 @@ def _handoff_guidance(hit: str) -> str:
     )
 
 
+def _left_pending_guidance(hit: str) -> str:
+    return (
+        f'답이 "{hit}" 로 일을 남기거나 되돌릴 수 있는 결정을 소유자에게 넘겼다. 남은 일은 지금 처리하고 '
+        "결정은 봇이 판단해 실행한 뒤, 그 결과로 답을 다시 쓴다. 삭제, 외부 발송, 비용, 운영 반영처럼 "
+        "승인이 필요한 것만 이유와 함께 남기고 [[ASK]] 를 붙인다."
+    )
+
+
+def _ledger_unworked_guidance(hit: str) -> str:
+    return (
+        f"직전 답이 남긴 일({hit})을 이번 턴에 하나도 처리하지 않고 끝내려 했다. 규칙이나 메모만 적는 것은 "
+        "처리가 아니다. 남은 일을 지금 실행하고 결과로 답을 다시 쓴다. 소유자가 다른 일을 시켰거나 중단을 "
+        "지시했으면 그 사실을 한 줄로 적고, 승인이 필요한 항목은 이유와 함께 [[ASK]] 로 남긴다."
+    )
+
+
 def _gave_up_guidance(hit: str) -> str:
     return (
         f'"{hit}" 로 조회 실패를 답에 썼는데 같은 대상을 다시 조회하지 않았다. '
@@ -1676,6 +1739,8 @@ def _build_common_registry() -> JudgmentRegistry:
     common.register("absence_unopened", absence_unopened, _absence_unopened_guidance)
     common.register("offer", offer, _offer_guidance)
     common.register("handoff", handoff, _handoff_guidance)
+    common.register("left_pending", left_pending, _left_pending_guidance)
+    common.register("ledger_unworked", ledger_unworked, _ledger_unworked_guidance)
     common.register("denied_unretried", denied_unretried, _denied_unretried_guidance)
     # advisor_skipped 는 등록하지 않는다. 2026-11-10 오너 지시 "조언자 강제 훅을 제거하세요".
     # 판정 함수(advisor_skipped)는 남겨 두고 종료 검수에서만 뺀다.
@@ -1785,8 +1850,12 @@ def _drop_spent_gave_up(findings: tuple[Finding, ...], block_count: int) -> tupl
     """gave_up blocks once; after that it is dropped before the verify gate,
     so the rewrite still gets the model verify instead of skipping it."""
     if block_count >= GAVE_UP_MAX_BLOCKS:
-        return tuple(f for f in findings if f.name != "gave_up")
+        return tuple(f for f in findings if f.name not in _ONCE_ONLY)
     return findings
+
+
+#: Judgments that block a turn at most once (GAVE_UP_MAX_BLOCKS).
+_ONCE_ONLY = frozenset({"gave_up", "ledger_unworked"})
 
 
 def decide(

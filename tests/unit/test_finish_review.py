@@ -1029,6 +1029,8 @@ class TestExtensionPoint:
             "offer",
             "redundant_approval",
             "handoff",
+            "left_pending",
+            "ledger_unworked",
             "denied_unretried",
             "fix_unverified",
             "code_first",

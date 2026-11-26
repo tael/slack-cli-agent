@@ -39,12 +39,16 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import replace
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from slack_cli_agent.core.markers import missing_recipient_prompt, strip_control_tags
+from slack_cli_agent.guard import pending_ledger
+from slack_cli_agent.guard.figurative import Precompute
 from slack_cli_agent.guard.finish_review import (
+    FORM_BLOCK_FORMS,
     PLAN_CHECK_TIMEOUT,
     Finding,
     ModelClaimVerifier,
@@ -56,7 +60,6 @@ from slack_cli_agent.guard.finish_review import (
     _turn_evidence,
     decide,
     draft_key,
-    FORM_BLOCK_FORMS,
     form_violation,
     needs_verification,
     plan_check_enabled,
@@ -77,9 +80,7 @@ from slack_cli_agent.guard.finish_review import (
     turn_from_transcript_rows,
     verify_claim_keys,
 )
-from slack_cli_agent.core.markers import missing_recipient_prompt, strip_control_tags
 from slack_cli_agent.guard.pretool.plan_gate import injected_path as plan_gate_injected_path
-from slack_cli_agent.guard.figurative import Precompute
 
 #: Absolute path to this file, for the engine adapter that builds the hook
 #: command (same pattern as observability/progress_hook.py's HOOK_SCRIPT).
@@ -422,6 +423,14 @@ def _judge_output_job(job: Path) -> int:
     return 0
 
 
+def _record_ledger(state_dir: Path | None, session_id: object, answer: str) -> None:
+    """The shipped answer's open items become the next turn's ledger. An
+    `[[ASK]]` answer waits on an approval the owner gives, so it leaves none."""
+    with contextlib.suppress(Exception):
+        items = () if pending_ledger.has_ask(answer) else pending_ledger.extract(answer)
+        pending_ledger.write(state_dir, session_id, items)
+
+
 def _is_recipient_retry_turn(rows: Sequence[Mapping[str, Any]]) -> bool:
     """True when the latest non-meta text input is the missing-recipient
     reprompt. That rerun runs with every tool forbidden and only its tag is
@@ -476,6 +485,11 @@ def main(argv: list[str]) -> int:
             turn = replace(turn, knowledge=knowledge)
 
         state_dir = _state_dir(payload)
+        turn = replace(
+            turn,
+            is_full_authority=(os.environ.get("TURN_TIER") or "").strip() == "owner_trusted",
+            pending_ledger=pending_ledger.read(state_dir, session_id) if turn.is_owner_turn else (),
+        )
         block_count = 0
         verify_block_count = 0
         count_path: Path | None = None
@@ -564,6 +578,8 @@ def main(argv: list[str]) -> int:
                 "verify_block_count": verify_block_count,
             })
 
+        if final.action != "block" and turn.is_owner_turn and turn.has_transcript:
+            _record_ledger(state_dir, session_id, payload.get("last_assistant_message") or turn.answer or "")
         result = final.to_hook_json()
         if result:
             print(json.dumps(result, ensure_ascii=False))

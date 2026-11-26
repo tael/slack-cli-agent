@@ -1017,13 +1017,31 @@ def main(argv: list[str]) -> int:
         return 0
     with contextlib.suppress(Exception):  # never fail the prompt
         data = json.load(sys.stdin)
-        if start(data) == "sync":
-            context = _gate_context(data["transcript_path"])
-            if context:
-                print(json.dumps({
-                    "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context},
-                }, ensure_ascii=False))
+        parts = [_ledger_context(data)]
+        with contextlib.suppress(Exception):
+            if start(data) == "sync":
+                parts.append(_gate_context(data["transcript_path"]) or "")
+        context = "\n\n".join(p for p in parts if p)
+        if context:
+            print(json.dumps({
+                "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context},
+            }, ensure_ascii=False))
     return 0
+
+
+def _ledger_context(data: dict[str, Any]) -> str:
+    """The previous answer's open items on an owner turn (guard/pending_ledger)."""
+    if (os.environ.get("TURN_TIER") or "").strip() not in {"owner", "owner_trusted"}:
+        return ""
+    if os.environ.get(PLAN_NESTED_ENV) or os.environ.get(VERIFY_NESTED_ENV):
+        return ""
+    with contextlib.suppress(Exception):
+        from slack_cli_agent.guard import pending_ledger
+
+        return pending_ledger.context_text(
+            pending_ledger.read(pending_ledger.state_dir(data), data.get("session_id"))
+        )
+    return ""
 
 
 if __name__ == "__main__":
