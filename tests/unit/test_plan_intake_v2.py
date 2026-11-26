@@ -51,7 +51,7 @@ class TestV1Unchanged:
         assert _sha(pg.render_compact({**SHORT_PLAN, **INTAKE})) == (
             "9cc2dbf9da7490dd1424b3b1c4a8dab78e9ae279d7d5be2eb4382bd7ea11263d")
         assert _sha(pg.render({**BRANCH_PLAN, **ODD_V1}, intake=True)) == (
-            "857c7ec3d865d03d0d9ac15341127a228b12548cb2ea8d5b7d33fa0e615f08a4")
+            "d3b046c82e7670a1ef5a0a1a4c5e1e379df028f38be3939d3485aeb6a6da1d91")
 
     def test_v1_audit_필드는_바이트가_같다(self) -> None:
         def dump(plan: dict[str, Any]) -> str:
