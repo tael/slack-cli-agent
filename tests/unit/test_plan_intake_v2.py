@@ -47,7 +47,7 @@ ODD_V1: dict[str, Any] = {
 class TestV1Unchanged:
     def test_v1_주입문은_바이트가_같다(self) -> None:
         assert _sha(pg.render({**BRANCH_PLAN, **INTAKE}, intake=True)) == (
-            "0163170e9a5c6f2ba9b2a4455e762152302dc5b3ae7311b863d34a51ce5ff18b")
+            "dbb0bd197b3be522e4a07737ad40cb4f53fc29728e02526395042d4aa0f11577")
         assert _sha(pg.render_compact({**SHORT_PLAN, **INTAKE})) == (
             "3012279b2ba742308cf9fe1c1885741e13f86c209146ef14f414159f5fa1796a")
         assert _sha(pg.render({**BRANCH_PLAN, **ODD_V1}, intake=True)) == (

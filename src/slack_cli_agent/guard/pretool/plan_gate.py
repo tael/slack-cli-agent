@@ -88,7 +88,7 @@ INJECT_TAIL = INJECT_TAIL_HEAD + INJECT_TAIL_END
 INTAKE_INJECT_ENV = "SCA_PLAN_INTAKE_INJECT"
 INJECT_HEAD_COMPACT = "[작업 기준] 이 요청은 아래 기준으로 답한다."
 INJECT_ASSUMED = "- 가정을 답변에 밝혀 사용자가 고칠 수 있게 한다"
-INJECT_CHECKS = "- 답변은 이 기준으로 점검된다. 확인하지 못한 기준은 답변에 \"미확인\" 으로 표시한다"
+INJECT_CHECKS = "- 답변은 이 기준으로 점검된다. 확인하지 못한 기준은 답하기 전에 다른 도구, 명령, 출처로 조회해 확정한다. 모든 경로가 막힌 기준만 시도한 경로와 오류를 적는다"
 #: v2 intake (SCA_PLAN_INTAKE_SCHEMA=2): input kinds, output forms and caps.
 #: guard/plan_start keeps its own copies (a test pins them equal).
 INPUT_KINDS = ("given", "derived", "lookup", "guess", "ask")
