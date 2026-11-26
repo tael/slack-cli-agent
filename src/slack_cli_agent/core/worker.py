@@ -506,6 +506,16 @@ class Worker:
                 # and write the marker again (restart loop). Its reply is
                 # already out; it only waited on the restart (mametchi bot.py
                 # drop_restart_dropped).
+                #
+                # "Already out" only holds when the turn ended after writing
+                # the marker. One still mid-answer is dropped here with no
+                # reply and no retry (2026-11-26 12:41, C0CJP8MR2G0), which
+                # used to leave no trace at all, so it is logged by turn id.
+                log.warning(
+                    "재기동 요청 턴을 답 게시 확인 없이 종료 처리한다 : %s (유예 %.0f초)",
+                    job.context.key,
+                    self._requester_grace_sec,
+                )
                 if self._queue.complete(job.id, True, "", lease=job.lease):
                     self._markers.clear_processing(job.context.channel, job.context.ts)
                     self._markers.mark_done(job.context.channel, job.context.ts)

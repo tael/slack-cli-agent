@@ -590,6 +590,29 @@ class Test재기동요청_워커_유예:
         assert discount == 1
         assert pending == []
 
+    def test_요청자_턴을_끊을_때_기록을_남긴다(self, database, caplog) -> None:
+        """끊긴 요청자 턴은 답이 게시되지 않고 큐로도 돌아오지 않는다.
+        기록이 없으면 답이 유실된 것을 나중에 알 수 없다 (2026-11-26 12:41)."""
+        import logging
+
+        from slack_cli_agent.reliability.restart import ApplyRequest
+
+        with caplog.at_level(logging.WARNING):
+            discount, pending = self._요청자_판정(
+                database, ApplyRequest(requested_at=_지금() + 10, turn_id="C1:7.0")
+            )
+        assert discount == 1
+        assert pending == []
+        assert "답 게시 확인 없이 종료 처리한다" in caplog.text
+
+    def test_요청자_유예는_종료_유예보다_짧고_답을_쓸_만큼_길다(self) -> None:
+        """마커는 답이 게시되기 전에 쓰인다. 유예가 짧으면 보고를 쓰던 턴이 끊긴다."""
+        from slack_cli_agent.config.settings import RuntimeSettings
+        from slack_cli_agent.reliability.restart import APPLY_REQUESTER_GRACE_SEC
+
+        assert APPLY_REQUESTER_GRACE_SEC >= 120
+        assert APPLY_REQUESTER_GRACE_SEC < RuntimeSettings().shutdown_grace_sec
+
     def test_메인_스레드가_잠금을_쥔_채_신호를_받아도_차감_판정이_멈추지_않는다(self, database) -> None:
         """TERM 처리기는 메인 스레드에서 돈다. 메인 스레드가 holding_claims 등으로
         워커 잠금을 쥔 구간에 신호가 오면 처리기가 같은 잠금을 다시 잡는다.

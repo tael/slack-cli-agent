@@ -78,7 +78,7 @@ class TestOn:
         assert "1. 목표 : a" in text
         assert "기대 결과 : 한 줄 요약" in text
         assert "가정 : 오늘 기준 / 서울" in text and "가정을 답변에 밝혀" in text
-        assert "1. 기온 수치가 있다 (확인 : 웹 조회)" in text and "미확인" in text
+        assert "1. 기온 수치가 있다 (확인 : 웹 조회)" in text and "조회해 확정한다" in text
         assert text.endswith(pg.INJECT_TAIL_END)
 
     def test_짧은_계획도_checks_가_있으면_간략_주입한다(self, tmp_path: Path, on: None) -> None:
@@ -86,7 +86,7 @@ class TestOn:
         _write(call, **SHORT, **INTAKE)
         verdict, text = pg.decide(call)
         assert verdict == "inject"
-        assert "기대 결과 : 한 줄 요약" in text and "미확인" in text
+        assert "기대 결과 : 한 줄 요약" in text and "조회해 확정한다" in text
         assert "목표 :" not in text and pg.INJECT_HEAD not in text
         assert text.endswith(pg.INJECT_TAIL_END)
         assert pg.decide(call) == ("already", "")

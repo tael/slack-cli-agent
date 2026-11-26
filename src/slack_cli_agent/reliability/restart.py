@@ -48,7 +48,13 @@ APPLY_HOLD_MAX_SEC = 180.0
 #: marker. That turn is meant to end right after writing it; waiting longer
 #: turns into the deadlock the marker exists to avoid. mametchi bot.py
 #: APPLY_REQUESTER_GRACE_SEC, after 2026-10-16 15:21 burned the full 330s.
-APPLY_REQUESTER_GRACE_SEC = 30.0
+#:
+#: Raised 30 -> 240 on 2026-11-26: a turn's answer is posted only after its
+#: engine returns, so the marker is always written before the reply goes out.
+#: At 30s the 12:40 turn (C0CJP8MR2G0) was killed 54s in, while still writing
+#: its report, and shutdown recorded it done -- no reply, no retry. Stays
+#: under shutdown_grace_sec (330), so the restart is still bounded.
+APPLY_REQUESTER_GRACE_SEC = 240.0
 
 
 @dataclass(frozen=True)
