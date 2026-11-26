@@ -301,7 +301,7 @@ def render(
             line += f" / 위임 : {delegate}"
         lines.append(line)
     if done_when:
-        lines.append("- 답하기 전에 완료 조건을 하나씩 대조한다. 충족을 확인하지 못한 조건은 답에 \"미확인\" 으로 적는다")
+        lines.append("- 답하기 전에 완료 조건을 하나씩 대조한다. 충족을 확인하지 못한 조건은 답하기 전에 다른 도구, 명령, 출처로 조회해 확정한다. 모든 경로가 막힌 조건만 시도한 경로와 오류를 적는다")
     if plan.get("type") == "explore":
         lines.append("- explore 유형이다. 첫 갈래 결과를 보고 다음 조회를 정한다")
     if intake:

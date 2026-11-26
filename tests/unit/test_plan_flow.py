@@ -513,7 +513,7 @@ class TestDoneWhen:
 
         text = plan_gate.render({"type": "branch", "done_when": ["수치 확인", "원천 표기"], "branches": []})
         assert "완료 조건 : 수치 확인 / 원천 표기" in text
-        assert "미확인" in text
+        assert "조회해 확정한다" in text
 
     def test_완료_조건이_없으면_안내가_바뀌지_않는다(self) -> None:
         from slack_cli_agent.guard.pretool import plan_gate
