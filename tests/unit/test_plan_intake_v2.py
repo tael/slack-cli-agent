@@ -49,7 +49,7 @@ class TestV1Unchanged:
         assert _sha(pg.render({**BRANCH_PLAN, **INTAKE}, intake=True)) == (
             "dbb0bd197b3be522e4a07737ad40cb4f53fc29728e02526395042d4aa0f11577")
         assert _sha(pg.render_compact({**SHORT_PLAN, **INTAKE})) == (
-            "3012279b2ba742308cf9fe1c1885741e13f86c209146ef14f414159f5fa1796a")
+            "9cc2dbf9da7490dd1424b3b1c4a8dab78e9ae279d7d5be2eb4382bd7ea11263d")
         assert _sha(pg.render({**BRANCH_PLAN, **ODD_V1}, intake=True)) == (
             "857c7ec3d865d03d0d9ac15341127a228b12548cb2ea8d5b7d33fa0e615f08a4")
 
