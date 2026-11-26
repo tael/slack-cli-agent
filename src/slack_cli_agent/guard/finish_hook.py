@@ -431,6 +431,46 @@ def _record_ledger(state_dir: Path | None, session_id: object, answer: str) -> N
         pending_ledger.write(state_dir, session_id, items)
 
 
+def _spawn_left_judge(state_dir: Path | None, session_id: object, answer: str, model: str) -> None:
+    """Detached model judge for an owner turn the in-line verify skipped:
+    no Stop latency, its finding reaches the next turn through the ledger."""
+    if state_dir is None or not answer.strip():
+        return
+    with contextlib.suppress(Exception):
+        job = state_dir / f"pending-judge-{time.time_ns()}.json"
+        job.write_text(json.dumps({
+            "state_dir": str(state_dir), "session": str(session_id or ""), "answer": answer, "model": model,
+        }, ensure_ascii=False), encoding="utf-8")
+        subprocess.Popen(
+            [sys.executable, str(HOOK_SCRIPT), "--judge-left", str(job)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+
+def _judge_left_job(job: Path, *, verifier: Any = None) -> int:
+    """Entry of the detached left-work judge: merges its finding into the ledger."""
+    try:
+        data = json.loads(job.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    finally:
+        job.unlink(missing_ok=True)
+    with contextlib.suppress(Exception):
+        state_dir = Path(data["state_dir"])
+        session = data.get("session")
+        judge = verifier or ModelClaimVerifier(model=str(data.get("model") or "sonnet"), left_only=True)
+        judge(str(data.get("answer") or ""), "")
+        _log_verify(state_dir, {
+            "t": time.strftime("%Y-%m-%d %H:%M:%S"), "session": str(session or ""), "status": judge.status,
+            "left": judge.left, "elapsed_sec": judge.elapsed,
+        }, name="finish-hook-left-judge.jsonl")
+        if judge.left:
+            merged = tuple(dict.fromkeys((*pending_ledger.read(state_dir, session), *judge.left)))
+            pending_ledger.write(state_dir, session, merged[: pending_ledger.MAX_ITEMS])
+    return 0
+
+
 def _is_recipient_retry_turn(rows: Sequence[Mapping[str, Any]]) -> bool:
     """True when the latest non-meta text input is the missing-recipient
     reprompt. That rerun runs with every tool forbidden and only its tag is
@@ -459,6 +499,8 @@ def _is_recipient_retry_turn(rows: Sequence[Mapping[str, Any]]) -> bool:
 def main(argv: list[str]) -> int:
     if len(argv) >= 3 and argv[1] == "--judge-output":
         return _judge_output_job(Path(argv[2]))
+    if len(argv) >= 3 and argv[1] == "--judge-left":
+        return _judge_left_job(Path(argv[2]))
     try:
         payload = json.load(sys.stdin)
     except Exception:  # noqa: BLE001 - never block the turn through failure
@@ -509,7 +551,7 @@ def main(argv: list[str]) -> int:
 
         seconds_left = time_left(os.environ)
         verify_on, verify_model = resolve_verify_settings(os.environ)
-        verifier = ModelClaimVerifier(model=verify_model) if verify_on else None
+        verifier = ModelClaimVerifier(model=verify_model, ask_left=turn.is_owner_turn) if verify_on else None
         # The figurative corrector runs on this same draft while decide()
         # (mostly the model verify) runs; see guard/figurative.Precompute.
         figurative = None
@@ -579,7 +621,10 @@ def main(argv: list[str]) -> int:
             })
 
         if final.action != "block" and turn.is_owner_turn and turn.has_transcript:
-            _record_ledger(state_dir, session_id, payload.get("last_assistant_message") or turn.answer or "")
+            shipped = payload.get("last_assistant_message") or turn.answer or ""
+            _record_ledger(state_dir, session_id, shipped)
+            if (verifier is None or verifier.status != "ok") and not pending_ledger.has_ask(shipped):
+                _spawn_left_judge(state_dir, session_id, shipped, verify_model)
         result = final.to_hook_json()
         if result:
             print(json.dumps(result, ensure_ascii=False))

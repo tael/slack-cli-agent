@@ -165,3 +165,52 @@ class TestPlanStartInjection:
         )
         plan_start.main(["plan_start"])
         assert capsys.readouterr().out == ""
+
+
+def _runner(payload: dict):
+    import subprocess
+
+    calls: list[str] = []
+
+    def run(cmd, *, input, capture_output, text, timeout, env):  # noqa: A002
+        calls.append(input)
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload, ensure_ascii=False), "")
+
+    return run, calls
+
+
+class TestOnlineLeftJudge:
+    def test_verify_call_carries_left_question_and_parses_it(self):
+        run, calls = _runner({"unsupported": [], "left": [{"sentence": "정해 주면 진행함.", "why": "넘김"}]})
+        v = finish_review.ModelClaimVerifier(runner=run, executable="claude", env={}, ask_left=True)
+        assert v("답", "근거") == []
+        assert v.left == ["정해 주면 진행함."]
+        assert '"left"' in calls[0]
+
+    def test_plain_verify_ignores_left(self):
+        run, calls = _runner({"unsupported": [], "left": [{"sentence": "x", "why": "y"}]})
+        v = finish_review.ModelClaimVerifier(runner=run, executable="claude", env={})
+        v("답", "근거")
+        assert v.left == [] and '"left"' not in calls[0]
+
+    def test_decide_blocks_once_on_model_left(self):
+        run, _ = _runner({"unsupported": [], "left": [{"sentence": "링크 정리는 다음에 함.", "why": "남김"}]})
+        answer = "단방향 링크 37개를 고쳤고 인접 목록을 다시 만들었으며 시험 236개가 통과함. " * 12
+        answer += "링크 정리는 다음에 함."
+        turn = _owner(answer, tool_calls=(ToolCall(name="Bash", input={"command": "pytest"}, result="236 passed"),))
+        make = lambda: finish_review.ModelClaimVerifier(runner=run, executable="claude", env={}, ask_left=True)  # noqa: E731
+        first = finish_review.decide(turn, claim_verifier=make())
+        assert first.action == "block" and any(f.name == "left_model" for f in first.findings)
+        assert finish_review.decide(turn, claim_verifier=make(), block_count=1).action == "allow"
+
+    def test_detached_job_merges_into_ledger(self, tmp_path):
+        from slack_cli_agent.guard import finish_hook
+
+        run, calls = _runner({"left": [{"sentence": "시범 검증은 아직임.", "why": "남김"}]})
+        pending_ledger.write(tmp_path, "s-5", ("남은 일 1건",))
+        job = tmp_path / "job.json"
+        job.write_text(json.dumps({"state_dir": str(tmp_path), "session": "s-5", "answer": "a", "model": "sonnet"}))
+        judge = finish_review.ModelClaimVerifier(runner=run, executable="claude", env={}, left_only=True)
+        finish_hook._judge_left_job(job, verifier=judge)
+        assert pending_ledger.read(tmp_path, "s-5") == ("남은 일 1건", "시범 검증은 아직임.")
+        assert not job.exists() and "[근거]" not in calls[0]

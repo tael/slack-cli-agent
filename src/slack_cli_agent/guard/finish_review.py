@@ -1224,6 +1224,25 @@ _VERIFY_PROMPT = (
     "없으면 빈 배열.\n\n"
 )
 
+#: 2026-11-26: the same nested call also judges work left open on an owner
+#: turn, so the online check adds output lines, not a second call.
+_LEFT_QUESTION = (
+    "[답] 이 소유자의 실행 지시에 대한 답이라고 보고 한 가지를 더 본다. 봇이 이번 턴에 스스로 할 수 있었는데 "
+    "남겨 둔 일, 또는 봇이 판단해 실행할 수 있는 되돌릴 수 있는 결정을 소유자에게 넘긴 문장을 가려낸다. "
+    "'남은 일 N건', '정해 주면 진행', '아직 안 함', 할 일 목록만 나열하고 끝내는 것이 그 예다. "
+    "삭제, 외부 발송, 비용 발생, 운영 반영처럼 승인이 필요한 일을 이유와 함께 묻는 문장, 이미 끝낸 일을 보고하는 "
+    "문장, 기능이나 개념을 설명하는 문장은 제외한다. 최대 3개.\n"
+)
+_VERIFY_PROMPT_WITH_LEFT = _VERIFY_PROMPT.replace(
+    'JSON 한 개만 답한다. 형식 {"unsupported": [{"sentence": "답의 문장 그대로", "why": "한 문장"}]}. ',
+    _LEFT_QUESTION + 'JSON 한 개만 답한다. 형식 {"unsupported": [{"sentence": "답의 문장 그대로", "why": "한 문장"}], '
+    '"left": [{"sentence": "답의 문장 그대로", "why": "한 문장"}]}. ',
+)
+_LEFT_ONLY_PROMPT = (
+    "아래 [답] 은 한 봇이 소유자의 실행 지시에 게시한 답이다.\n" + _LEFT_QUESTION
+    + 'JSON 한 개만 답한다. 형식 {"left": [{"sentence": "답의 문장 그대로", "why": "한 문장"}]}. 없으면 빈 배열.\n\n'
+)
+
 
 class ModelClaimVerifier:
     """A `ClaimVerifier` backed by a separate model reading the evidence.
@@ -1243,6 +1262,8 @@ class ModelClaimVerifier:
         runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
         executable: str | None = None,
         env: Mapping[str, str] | None = None,
+        ask_left: bool = False,
+        left_only: bool = False,
     ) -> None:
         self.model = model
         self.timeout = timeout
@@ -1253,13 +1274,22 @@ class ModelClaimVerifier:
         #: Seconds the nested claude call took, so a slow Stop hook can be
         #: split into the model call and everything else.
         self.elapsed: float | None = None
+        #: `ask_left`: the same call also returns work left open (`left`).
+        #: `left_only`: only that question, no evidence (the detached judge).
+        self.ask_left = ask_left or left_only
+        self.left_only = left_only
+        self.left: list[str] = []
 
     def __call__(self, answer: str, evidence: str) -> list[str]:
         if self._env.get(VERIFY_NESTED_ENV):
             self.status = "skip_nested"
             return []
         exe = self._executable or shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
-        prompt = _VERIFY_PROMPT + "[근거]\n" + evidence + "\n\n[답]\n" + (answer or "")
+        if self.left_only:
+            prompt = _LEFT_ONLY_PROMPT + "[답]\n" + (answer or "")
+        else:
+            head = _VERIFY_PROMPT_WITH_LEFT if self.ask_left else _VERIFY_PROMPT
+            prompt = head + "[근거]\n" + evidence + "\n\n[답]\n" + (answer or "")
         started = time.monotonic()
         try:
             proc = self._runner(
@@ -1279,7 +1309,9 @@ class ModelClaimVerifier:
             self.status = "error:no_json"
             return []
         try:
-            items = json.loads(out[start : end + 1]).get("unsupported") or []
+            data = json.loads(out[start : end + 1])
+            items = data.get("unsupported") or []
+            left = data.get("left") or [] if self.ask_left else []
         except (ValueError, AttributeError):
             self.status = "error:bad_json"
             return []
@@ -1288,6 +1320,11 @@ class ModelClaimVerifier:
             for x in items
             if isinstance(x, dict) and (x.get("sentence") or "").strip()
         ]
+        self.left = [
+            (x.get("sentence") or "").strip()[:160]
+            for x in left
+            if isinstance(x, dict) and (x.get("sentence") or "").strip()
+        ][:3]
         self.status = "ok"
         return found[:3]
 
@@ -1923,6 +1960,12 @@ def decide(
             if claims:
                 hit = " | ".join(claims)
                 findings = (Finding(name="verify", detail=hit, guidance=_verify_guidance(hit)),)
+            left = list(getattr(claim_verifier, "left", None) or [])
+            # Offline 2026-11-26: the model flagged 25 of 45 owner answers, so
+            # it blocks a turn once only; the ledger carries what is left.
+            if left and block_count == 0 and turn.is_owner_turn and not _ledger.has_ask(turn.answer):
+                hit = " | ".join(left)
+                findings = (*findings, Finding(name="left_model", detail=hit, guidance=_left_pending_guidance(hit)))
     if not findings:
         return StopDecision(action="allow")
     if seconds_left is not None and seconds_left < release_sec:
