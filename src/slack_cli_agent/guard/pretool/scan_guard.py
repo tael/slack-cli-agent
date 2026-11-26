@@ -71,6 +71,14 @@ LIB_SAFE = ("LaunchAgents", "Logs", "Caches", "Preferences", "Python", "pnpm", "
 # legitimate, and it's not one of the directories macOS gates.
 TCC_HOME_DIRS = ("Desktop", "Documents", "Pictures", "Movies", "Music", ".Trash")
 
+# Directories the owner explicitly allows commands to open directly (ls, cat,
+# brctl, ...). Recursive scans rooted here are still judged by risk(). The
+# Obsidian vault is the owner's knowledge base; its iCloud files must be
+# downloadable with `brctl download` (2026-11-26 owner instruction).
+DIRECT_OPEN_ALLOWED = (
+    f"{HOME}/Library/Mobile Documents/iCloud~md~obsidian/Documents/tael",
+)
+
 
 def _log_path(argv: list[str]) -> Path | None:
     if len(argv) >= 2 and argv[1]:
@@ -96,6 +104,9 @@ def norm(path: str) -> str:
 def protected(path: str) -> bool:
     """True when any command opening this path directly can pop a dialog."""
     p = norm(path)
+    for allowed in DIRECT_OPEN_ALLOWED:
+        if p == allowed or p.startswith(allowed + "/"):
+            return False
     for d in TCC_HOME_DIRS:
         if p == f"{HOME}/{d}" or p.startswith(f"{HOME}/{d}/"):
             return True
