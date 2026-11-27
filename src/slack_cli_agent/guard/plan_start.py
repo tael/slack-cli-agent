@@ -459,6 +459,24 @@ def is_rca(prompt: str) -> bool:
     return bool(RCA_PATTERN.search(prompt))
 
 
+#: prompt/sections.REQUEST_HEADER_TITLE. Copied, not imported: this file also
+#: runs as a script by path.
+REQUEST_HEADER_TITLE = "[이 요청의 값. 사람이 쓴 말이 아니라 봇이 붙인 것이다]"
+#: First conversation line after the header, "[13:52:28 이름 ...]".
+_CONVERSATION_LINE = re.compile(r"^\[(?:\d{4}-\d{2}-\d{2} )?\d{1,2}:\d{2}(?::\d{2})? ", re.MULTILINE)
+
+
+def strip_request_header(prompt: str) -> str:
+    """The prompt without the bot-added request header. On 2026-11-27 the
+    planner read the watch note's example ("첫째_검사 | tail -40") as the
+    request and posted that reading as the ack. Kept as is when there is no
+    header or no conversation line after it."""
+    if not prompt.lstrip().startswith(REQUEST_HEADER_TITLE):
+        return prompt
+    match = _CONVERSATION_LINE.search(prompt)
+    return prompt[match.start():] if match else prompt
+
+
 def plan_path(transcript_path: str) -> Path:
     return Path(transcript_path + ".plan.json")
 
@@ -602,6 +620,7 @@ def start(data: dict[str, Any], *, spawn: Any = subprocess.Popen, runner: Any = 
     for stale in (plan_path(transcript), injected_path(transcript), context_path(transcript)):
         stale.unlink(missing_ok=True)
     Path(transcript).parent.mkdir(parents=True, exist_ok=True)
+    prompt = strip_request_header(prompt)
     prompt_path(transcript).write_text(prompt[-PROMPT_TAIL_CHARS:], encoding="utf-8")
     if workflow_candidates() or refine_mode() or intake_enabled():  # context readers only
         context = recent_context(transcript, prompt)
