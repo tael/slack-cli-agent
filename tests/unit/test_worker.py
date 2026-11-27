@@ -954,7 +954,10 @@ class Test동시처리상한:
         return lambda: handler.완료 >= 건수 or time.monotonic() > 마감
 
     def test_상한만큼_동시에_처리한다(self, database) -> None:
-        handler = 동시계측핸들러(expected=3)
+        # 먼저 든 두 건이 5초 기본 대기로 풀려 나가면 셋째가 늦게 든 느린
+        # 러너에서 동시최대가 2로 끝났다 (2026-11-23, 11-25 CI). 통과 경로는
+        # 셋이 모이는 순간 풀리므로 대기 상한을 시험 마감과 맞춘다.
+        handler = 동시계측핸들러(expected=3, timeout=self._마감초)
         settings = RuntimeSettings(heartbeat_interval_sec=0.01, max_concurrent=3)
         worker, queue, _client = make_worker(
             database=database, handler=handler, settings=settings
