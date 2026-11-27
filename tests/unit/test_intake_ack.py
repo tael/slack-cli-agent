@@ -409,3 +409,17 @@ def test_judge_plan_replaces_ack_that_denies_a_name():
     for ok in ("구글 NEON 이 무엇인지 웹에서 먼저 확인할게요", "운영이 아니라 스테이징 DB 기준으로 조회할게요", "확인되지 않은 항목은 미확인으로 표시할게요"):
         plan["ack"] = ok
         assert judge_plan(plan, start=0) == (ok, "")
+
+
+def test_judge_plan_drops_capability_denial_sentence():
+    from slack_cli_agent.core.intake_ack import NEUTRAL_WORK_ACK, judge_plan
+
+    plan = {"status": "ok", "work": "x", "finished_at": 10**12,
+            "ack": "직전 대화의 Tableau 셧다운 작업 현황을 1시간마다 보고하는 요청으로 보고 있어요. 주기 자동 실행은 이 턴에서 설정할 수 없어요."}
+    assert judge_plan(plan, start=0) == ("직전 대화의 Tableau 셧다운 작업 현황을 1시간마다 보고하는 요청으로 보고 있어요.", "")
+    for only in ("이 턴에서는 삭제할 수 없어요.", "권한 밖이라 처리가 불가해요.", "지금은 못 해요."):
+        plan["ack"] = only
+        assert judge_plan(plan, start=0) == (NEUTRAL_WORK_ACK, "")
+    for ok in ("수없이 많은 행 중 최근 것만 볼게요", "불가리아 지점 기준으로 찾아볼게요"):
+        plan["ack"] = ok
+        assert judge_plan(plan, start=0) == (ok, "")

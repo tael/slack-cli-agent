@@ -69,6 +69,21 @@ def read_plan(path: Path | None) -> dict[str, Any] | None:
 _DENIAL_RE = re.compile(r"(제품|서비스|모델|회사|앱|이름)[은는이가]?\s*(아니|아닌|없|존재하지)")
 #: Posted in place of such an ack, so the user still gets a first message.
 NEUTRAL_ACK = "요청에 적힌 이름이 무엇인지 먼저 확인할게요"
+#: 2026-11-27 rnd-pe팀-private: the planner (no tools) wrote "주기 자동 실행은 이
+#: 턴에서 설정할 수 없어요" while the turn itself went on to arm the hourly
+#: report. A first message cannot know what the turn can do, so a sentence that
+#: claims inability or a permission limit is dropped from the ack.
+_CAPABILITY_DENIAL_RE = re.compile(
+    r"수\s*없(어|습|다|음|는)|불가(능|해|하|합|입|예)|못\s*(해|하|합|드)|권한\s*(밖|이\s*없)"
+)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+#: Posted when every sentence of the ack was such a claim.
+NEUTRAL_WORK_ACK = "요청 내용을 확인하고 진행할게요"
+
+
+def _drop_capability_denials(ack: str) -> str:
+    kept = [s for s in _SENTENCE_SPLIT_RE.split(ack.strip()) if s and not _CAPABILITY_DENIAL_RE.search(s)]
+    return " ".join(kept) if kept else NEUTRAL_WORK_ACK
 
 
 def judge_plan(plan: dict[str, Any] | None, *, start: float) -> tuple[str, str]:
@@ -90,7 +105,7 @@ def judge_plan(plan: dict[str, Any] | None, *, start: float) -> tuple[str, str]:
         return "", "no_ack"
     if _DENIAL_RE.search(ack):
         return NEUTRAL_ACK, ""
-    return ack.strip()[:ACK_LIMIT], ""
+    return _drop_capability_denials(ack)[:ACK_LIMIT], ""
 
 
 def _ts_of(result: object) -> tuple[str, ...]:
