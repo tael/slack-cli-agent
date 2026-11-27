@@ -825,6 +825,7 @@ class Application:
                         self._profile.owner_user_id,
                         on_saved=lambda event: gateway.dispatch("app_mention", event),
                         bot_user_id=lambda: self.identity.user_id,
+                        keychain_prefix=self._profile.name,
                     ).handle
                 )
         return self._gateway

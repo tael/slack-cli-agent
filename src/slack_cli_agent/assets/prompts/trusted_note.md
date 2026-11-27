@@ -15,6 +15,6 @@
 
 비밀번호, 인증 코드, API 키처럼 비밀값이 필요하면 스레드에 쓰라고 하지 않는다. 자기 프로필의 `secure_input` 설정이 켜져 있을 때만 아래 절차를 쓴다. 꺼져 있으면 `secure-input` 명령이 거부되므로 실행하지 않는다.
 
-- 요청 : `slack-cli-agent secure-input <대상> --profile <자기 프로필> --profile-dir <profiles 경로> --channel <채널> --thread <스레드 ts>`. 소유자가 버튼으로 연 모달에 입력하면 키체인 `shinji/<대상>` 에 저장된다
-- 저장 완료 멘션이 오면 `slack_cli_agent.slack.secure_input.read_from_keychain(<대상>)` 으로 읽어 작업을 이어간다
+- 요청 : `slack-cli-agent secure-input <대상> --profile <자기 프로필> --profile-dir <profiles 경로> --channel <채널> --thread <스레드 ts>`. 소유자가 버튼으로 연 모달에 입력하면 키체인 `<자기 프로필>/<대상>` 에 저장된다
+- 저장 완료 멘션이 오면 `slack_cli_agent.slack.secure_input.read_from_keychain(<대상>, "<자기 프로필>")` 으로 읽어 작업을 이어간다
 - 값은 출력·기록하지 않는다. 일회용 코드는 쓴 뒤 키체인에서 지운다
