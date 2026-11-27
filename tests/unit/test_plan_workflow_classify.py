@@ -381,10 +381,11 @@ class TestRegistryCandidates:
 #: 2026-11-16 owner-* : 소유자 턴에 SelfConfigSection(자기 설정 위치) 추가.
 #: 2026-11-20 owner-* : 소유자 턴에 MemoryPathSection(메모리 쓰기 경로) 추가.
 #: 2026-11-20 owner-work : flow_note 에 완료 조건 문구 추가.
+#: 2026-11-27 전부 : RECIPIENT_RULE 에 침묵 사유 단어 안내 추가.
 GOLDEN = {
-    "owner-chat": "8e90ef32bfe1494aa92a8569750de0ce5ae676deca9319f867da39fba0dc1888",
-    "owner-work": "24e680332de3baa07a5534f2c304a49c702a983927b8924443b31eba92101370",
-    "read-work": "2aaab553af324844854d87c096978ce5eeab4733e8f9c00d2b794c0c3af64f55",
+    "owner-chat": "8feea194da19bd705c659b2e3e6eb67d665d88c0496981f4132c13fb9298bda0",
+    "owner-work": "5fa3e2672d3c9cc8cb4cf5f599ab54f9c75212f1ad534a8062b18451ca3da51a",
+    "read-work": "ef86116284ac7eec0a03cf88dd25b5ff52086cfaa864c71101a818066a213b3b",
 }
 
 

@@ -28,7 +28,20 @@ from slack_cli_agent.guard.watch import WATCH_MARK_EMOJI
 log = logging.getLogger(__name__)
 
 SILENT_MARK_EMOJI = "zipper_mouth_face"
-DONE_EMOJI = frozenset({"white_check_mark", SILENT_MARK_EMOJI})
+# Silence reason -> emoji (2026-11-27 owner request). A closed set so every
+# silent mark can be listed in DONE_EMOJI; anything else falls back to zipper.
+SILENT_REASON_EMOJI: Mapping[str, str] = {
+    "감사": "bow",
+    "동의": "+1",
+    "확인": "ok_hand",
+    "타인": "speak_no_evil",
+    "마무리": "wave",
+}
+DONE_EMOJI = frozenset({"white_check_mark", SILENT_MARK_EMOJI, *SILENT_REASON_EMOJI.values()})
+
+
+def silent_emoji(reason: str) -> str:
+    return SILENT_REASON_EMOJI.get(reason, SILENT_MARK_EMOJI)
 UNFINISHED_EMOJI = frozenset({"eyes", "hourglass", "x"})
 """Same value as the original bot.py:618; the parity test pins it. Recovery
 does not read this — catchup.already_handled goes by DONE_EMOJI."""
@@ -118,9 +131,9 @@ class ReactionMarker:
     def mark_failed(self, channel: str, ts: str) -> None:
         self._settle(channel, ts, "x")
 
-    def mark_silent(self, channel: str, ts: str) -> None:
+    def mark_silent(self, channel: str, ts: str, reason: str = "") -> None:
         """Not answering is still a resolution — leave a trace of it."""
-        self._settle(channel, ts, SILENT_MARK_EMOJI)
+        self._settle(channel, ts, silent_emoji(reason))
 
     def mark_skipped(self, channel: str, ts: str) -> None:
         """A message skipped before any eyes went on: one add, no clearing.
