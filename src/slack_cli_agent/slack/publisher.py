@@ -32,6 +32,7 @@ from slack_cli_agent.core.markers import (
 from slack_cli_agent.core.secrets import count_outbound_secrets, redact_outbound
 from slack_cli_agent.observability.audit import IncidentKind
 from slack_cli_agent.render.blocks import BlockBuilder
+from slack_cli_agent.render.bold import fix_bold_flanking
 from slack_cli_agent.render.file_links import strip_file_permalinks
 from slack_cli_agent.render.markdown import MarkdownConverter
 from slack_cli_agent.render.notion_links import fix_notion_links
@@ -182,6 +183,7 @@ class MessagePublisher:
         note = ""
         if split_note:
             part, note = self._blocks.split_context(part)
+        part = fix_bold_flanking(part)
         blocks: list[dict[str, Any]] = []
         markdown_blocks: list[dict[str, Any]] = []
         converted = False
