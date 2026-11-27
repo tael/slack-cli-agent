@@ -209,7 +209,16 @@ class TestPipeline:
         original = runner.run
         order: list[str] = []
 
+        # ack 가 게시돼야 하는 조합이면 엔진이 ack 게시를 기다린 뒤 끝난다.
+        # 고정 0.3초만 잡으면 느린 CI 러너에서 ack 스레드가 그 안에 못 돌아
+        # 답이 먼저 나가 시험이 깨졌다 (2026-11-27 main #249, unit 3.11).
+        wait_ack = on and plan is not None and after < engine_delay
+
         def slow(engine: Any, request: Any) -> Any:
+            if wait_ack:
+                deadline = time.monotonic() + 5.0
+                while ACK not in order and time.monotonic() < deadline:
+                    _hold(0.01)
             _hold(engine_delay)
             order.append("engine_done")
             return original(engine, request)
