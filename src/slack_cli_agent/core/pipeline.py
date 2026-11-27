@@ -84,6 +84,7 @@ from ..prompt.sections import (
     TurnTierSection,
     flow_applies,
     is_silent,
+    silent_reason,
 )
 from ..reliability.restart import TURN_ID_ENV
 from ..reliability.watchjobs import WatchJobPort
@@ -947,7 +948,7 @@ class RequestPipeline:
                      context_reset_reason=context_reset_reason, tier=tier,
                      timing=timing)
             self._audit.record(IncidentKind.SILENT.value, channel=ctx.channel, thread_ts=ctx.thread_ts)
-            return HandleOutcome(ok=True, silent=True)
+            return HandleOutcome(ok=True, silent=True, silent_reason=silent_reason(response.body))
 
         # Every engine call that may have run tools for this answer: the render
         # check reads them together, since a rerun can post what the first

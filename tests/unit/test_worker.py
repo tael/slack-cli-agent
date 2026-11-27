@@ -1167,3 +1167,16 @@ class Test캐치업도_관리_명령_판정을_거친다:
         )
         worker.catch_up(["C1"])
         assert [job.context.ts for job in queue.pending()] == ["1.3"]
+
+
+class TestRunOnceSilentReason:
+    def test_침묵_사유가_있으면_그_이모지를_단다(self, database) -> None:
+        handler = FakeHandler(outcome=HandleOutcome(ok=True, silent=True, silent_reason="감사"))
+        worker, queue, client = make_worker(database=database, handler=handler)
+        queue.enqueue(ctx("1.1"))
+
+        worker.run_once()
+
+        assert queue.counts() == {"COMPLETED": 1}
+        assert ("add", "C1", "1.1", "bow") in client.calls
+        assert ("add", "C1", "1.1", "zipper_mouth_face") not in client.calls

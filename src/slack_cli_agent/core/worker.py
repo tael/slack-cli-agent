@@ -367,7 +367,12 @@ class Worker:
         back up (codex review).
         """
         if outcome.silent:
-            return self._markers.mark_silent, self._markers.mark_silent
+            reason = outcome.silent_reason
+
+            def silent(channel: str, ts: str) -> None:
+                self._markers.mark_silent(channel, ts, reason)
+
+            return silent, silent
         if outcome.watching:
             return self._markers.mark_watch, self._markers.mark_done
         return self._markers.mark_done, self._markers.mark_done

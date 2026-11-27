@@ -24,6 +24,7 @@ from ..slack.identity import BotIdentity
 from ..slack.mentions import SelfMentionStripper
 from ..slack.message_kind import HUMAN_SUBTYPES, MessageKind
 from ..slack.policy import addresses_someone_else
+from ..slack.reactions import SILENT_REASON_EMOJI
 from .ports import HistoryReader
 
 _UNKNOWN_IDENTITY_REASON = "봇 신원을 몰라 부름 판정 불가"
@@ -31,6 +32,9 @@ _UNKNOWN_IDENTITY_REASON = "봇 신원을 몰라 부름 판정 불가"
 # Marks the bot puts on a message once it's answered or decided not to.
 SILENT_MARK_EMOJI = "zipper_mouth_face"
 DONE_EMOJI: frozenset[str] = frozenset({"white_check_mark", SILENT_MARK_EMOJI})
+# Reason emojis (+1, ok_hand ...) are common human reactions, so they count as
+# done only when this bot put them there.
+SILENT_REASON_MARKS: frozenset[str] = frozenset(SILENT_REASON_EMOJI.values())
 
 # Retry backoff (seconds). History reads returning empty is usually transient,
 # so retries start fast and back off.
@@ -44,11 +48,18 @@ def reactions_on(msg: Mapping[str, Any]) -> set[str]:
     return {r.get("name") for r in (msg.get("reactions") or []) if r.get("name")}
 
 
-def already_handled(msg: Mapping[str, Any]) -> bool:
+def already_handled(msg: Mapping[str, Any], bot_user_id: str = "") -> bool:
     # eyes/hourglass can be left behind by a process that died mid-handling,
     # so they don't count as done. A human manually adding white_check_mark
     # also counts, since that's the only way to manually wave off a message.
-    return bool(reactions_on(msg) & DONE_EMOJI)
+    if reactions_on(msg) & DONE_EMOJI:
+        return True
+    if not bot_user_id:
+        return False
+    return any(
+        r.get("name") in SILENT_REASON_MARKS and bot_user_id in (r.get("users") or [])
+        for r in (msg.get("reactions") or [])
+    )
 
 
 def unanswered(
@@ -306,7 +317,7 @@ class CatchupService:
                 mts = float(m.get("ts", 0))
                 if mts >= self._started_at and mts > now - self._settings.catchup_grace_sec:
                     continue
-                if already_handled(m):
+                if already_handled(m, self._identity.user_id):
                     continue
                 asked.append(m)
 

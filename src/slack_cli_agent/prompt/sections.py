@@ -23,6 +23,9 @@ SILENT_MARK = "[[침묵]]"
 #: Pre-2026-10-19 spelling. Still accepted so an older session or a model
 #: that hasn't adapted yet doesn't slip through unflagged.
 SILENT_MARK_LEGACY = "[침묵]"
+#: Words the model may put after the silent mark (2026-11-27). The emoji for
+#: each lives in slack.reactions.SILENT_REASON_EMOJI; a test keeps them equal.
+SILENT_REASONS: tuple[str, ...] = ("감사", "동의", "확인", "타인", "마무리")
 
 
 def is_silent(body: str) -> bool:
@@ -50,9 +53,33 @@ def is_silent(body: str) -> bool:
         if bare.startswith("```"):
             in_fence = not in_fence
             continue
-        if not in_fence and bare in marks:
+        if not in_fence and (bare in marks or _mark_with_reason(bare)):
             return True
     return False
+
+
+def _mark_with_reason(line: str) -> bool:
+    # A mid-body "[[침묵]] 감사" line must count as silence like a bare mark
+    # does, or the whole body posts (2026-10-02 incident class).
+    if not line.startswith(SILENT_MARK):
+        return False
+    rest = line[len(SILENT_MARK):].split()
+    return len(rest) == 1 and rest[0] in SILENT_REASONS
+
+
+def silent_reason(body: str) -> str:
+    """The reason word written right after the silent mark on its line, or "".
+
+    2026-11-27: the reaction emoji follows the reason (slack.reactions
+    silent_emoji). The word stays on the mark's line so is_silent's prefix
+    match and the literal "[[침묵]]" checks in the finish hooks still hold.
+    """
+    for line in (body or "").splitlines():
+        bare = line.strip()
+        if bare.startswith(SILENT_MARK):
+            rest = bare[len(SILENT_MARK):].split()
+            return rest[0] if rest else ""
+    return ""
 
 
 @dataclass(frozen=True)
@@ -577,7 +604,8 @@ RECIPIENT_RULE = (
     "BOT 은 봇 계정에만 쓴다. 사람에게 하는 답에 BOT 을 쓰지 않는다.\n"
     "두 수신자를 한 답변에 섞지 않는다. [[TO:...]] 같은 다른 형식은 인식되지 않는다. "
     "이 표식은 게시 전에 지워진다.\n"
-    "답할 말이 없으면 수신자 표식 없이 [[침묵]] 한 줄만 쓴다. 설명 문장도 붙이지 않는다."
+    "답할 말이 없으면 수신자 표식 없이 [[침묵]] 한 줄만 쓴다. 설명 문장도 붙이지 않는다.\n"
+    "사유가 감사·동의·확인·타인·마무리면 [[침묵]] 뒤에 그 단어를 붙인다."
 )
 
 

@@ -31,7 +31,7 @@ sys.path.insert(0, str(REPO / "src"))
 
 from slack_cli_agent.guard.watch import WATCH_MARK_EMOJI  # noqa: E402
 from slack_cli_agent.slack.app_registry import read_bot_token  # noqa: E402
-from slack_cli_agent.slack.reactions import SILENT_MARK_EMOJI  # noqa: E402
+from slack_cli_agent.slack.reactions import SILENT_MARK_EMOJI, SILENT_REASON_EMOJI  # noqa: E402
 
 API = "https://slack.com/api/"
 
@@ -49,6 +49,7 @@ OUTCOMES: tuple[tuple[str, str], ...] = (
     ("x", FAILED),
     ("white_check_mark", DONE),
     (SILENT_MARK_EMOJI, SILENT),
+    *((name, SILENT) for name in SILENT_REASON_EMOJI.values()),
     (WATCH_MARK_EMOJI, WATCHING),
     ("hourglass", WAITING),
     ("eyes", RUNNING),
