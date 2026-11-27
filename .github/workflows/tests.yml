@@ -25,6 +25,10 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.14"]
+    env:
+      # Matrix jobs can share one workspace; a per-version env dir avoids the
+      # ".venv: File exists" race seen on 2026-11-27.
+      UV_PROJECT_ENVIRONMENT: .venv-${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
 
