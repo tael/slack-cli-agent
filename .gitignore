@@ -34,3 +34,5 @@ venv/
 .beads/proxieddb/
 # 프로필 백업본. 원본 profiles/*.json 과 같은 조직 고유값을 담는다
 profiles/*.bak*
+.venv
+.venv-*
