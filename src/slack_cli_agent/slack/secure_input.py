@@ -293,15 +293,23 @@ class SecureInput:
         thread_ts = str(meta.get("thread_ts") or "")
         posted_ts = ""
         try:
+            # 버튼 메시지를 "입력 받음" 으로 바꾸면 그것이 알림이다. 새 글을 또 올리면
+            # 같은 문구가 두 번 보였다 (2026-11-27 김태일 지적 "두번이나 뜨네").
+            # 새 글은 버튼 메시지를 못 바꿨을 때만 올린다.
             if meta.get("ts"):
-                self._client.chat_update(
-                    channel=channel, ts=meta["ts"], text=text,
-                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+                try:
+                    self._client.chat_update(
+                        channel=channel, ts=meta["ts"], text=text,
+                        blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+                    )
+                    posted_ts = str(meta["ts"])
+                except Exception:
+                    log.exception("보안 입력 버튼 메시지 갱신 실패 : target=%s", target)
+            if not posted_ts:
+                response = self._client.chat_postMessage(
+                    channel=channel, thread_ts=thread_ts or None, text=text
                 )
-            response = self._client.chat_postMessage(
-                channel=channel, thread_ts=thread_ts or None, text=text
-            )
-            posted_ts = str(response.get("ts") or "")
+                posted_ts = str(response.get("ts") or "")
         except Exception:
             log.exception("보안 입력 완료 알림 실패 : target=%s", target)
         if self._on_saved is not None and posted_ts:

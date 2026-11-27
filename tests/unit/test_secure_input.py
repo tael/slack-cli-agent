@@ -88,7 +88,7 @@ def test_제출_값은_저장소로만_가고_알림에_없다() -> None:
     assert service.handle(submit()) is None
     assert saved == [("otp", SECRET)]
     assert SECRET not in json.dumps(client.calls)
-    assert client.named("chat_update") and client.named("chat_postMessage")
+    assert client.named("chat_update") and not client.named("chat_postMessage")
 
 
 def test_소유자_아닌_제출은_저장하지_않는다() -> None:
@@ -135,7 +135,7 @@ def test_저장_뒤_소유자_명의_멘션_이벤트로_봇을_깨운다() -> N
     assert done.wait(2)
     event = got[0]
     assert event["type"] == "app_mention" and event["user"] == OWNER
-    assert event["channel"] == "D1" and event["thread_ts"] == "4.4" and event["ts"] == "1.1"
+    assert event["channel"] == "D1" and event["thread_ts"] == "4.4" and event["ts"] == "5.5"
     assert "<@UBOT>" in event["text"] and SECRET not in json.dumps(event)
     assert "bot_id" not in event
 
@@ -217,3 +217,14 @@ def test_클릭_수신과_모달_열림을_로그에_남긴다(caplog) -> None:
     with caplog.at_level(logging.INFO, logger="slack_cli_agent.slack.secure_input"):
         service.handle(click())
     assert "보안 입력 버튼 클릭" in caplog.text and "보안 입력 모달 열림 : target=otp" in caplog.text
+
+
+def test_버튼_메시지를_못_바꾸면_새_글로_알린다() -> None:
+    class UpdateFails(FakeClient):
+        def chat_update(self, **kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError("x")
+
+    client = UpdateFails()
+    service = si.SecureInput(client, OWNER, save=lambda t, v: None, now=lambda: 1000.0)
+    service.handle(submit())
+    assert len(client.named("chat_postMessage")) == 1
