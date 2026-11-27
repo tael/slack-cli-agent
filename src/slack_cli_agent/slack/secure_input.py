@@ -199,6 +199,9 @@ class SecureInput:
         )
         if action is None:
             return
+        # 클릭 수신을 남긴다. 성공 경로에 기록이 없어 "눌러도 무응답" 을 재기동 공백과
+        # 처리 실패 중 무엇인지 가를 수 없었다 (2026-11-27 김태일 지적)
+        log.info("보안 입력 버튼 클릭 : value=%s", action.get("value"))
         if not self._is_owner(payload):
             log.info("보안 입력 버튼 : 소유자 아님 user=%s", (payload.get("user") or {}).get("id"))
             return
@@ -207,6 +210,7 @@ class SecureInput:
         message = payload.get("message") or {}
         user = str((payload.get("user") or {}).get("id") or "")
         if not valid_target(target) or not expires.isdigit() or self._now() > int(expires):
+            log.info("보안 입력 버튼 만료 : value=%s", action.get("value"))
             if channel and user:
                 self._client.chat_postEphemeral(
                     channel=channel, user=user,
@@ -251,6 +255,7 @@ class SecureInput:
                 ],
             },
         )
+        log.info("보안 입력 모달 열림 : target=%s", target)
 
     def _submit(self, payload: Mapping[str, Any]) -> dict[str, Any] | None:
         view = payload.get("view") or {}
