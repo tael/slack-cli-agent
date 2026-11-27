@@ -210,3 +210,10 @@ def test_키체인_이름과_알림은_프로필_이름을_쓴다() -> None:
     service.handle(submit())
     texts = json.dumps(client.calls, ensure_ascii=False)
     assert "guchipachi/otp" in texts and "shinji" not in texts
+
+
+def test_클릭_수신과_모달_열림을_로그에_남긴다(caplog) -> None:
+    service, _, _ = make()
+    with caplog.at_level(logging.INFO, logger="slack_cli_agent.slack.secure_input"):
+        service.handle(click())
+    assert "보안 입력 버튼 클릭" in caplog.text and "보안 입력 모달 열림 : target=otp" in caplog.text
