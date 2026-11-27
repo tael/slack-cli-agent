@@ -54,6 +54,7 @@ from ..core.markers import RECIPIENT_TAG_ANY
 from ..guard import finish_hook, plan_start
 from ..guard.posttool import parallel_nudge
 from ..guard.pretool import (
+    browser_route_guard,
     install_guard,
     plan_gate,
     repeat_guard,
@@ -394,6 +395,8 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
                     # Denies a call after the previous responses each made an
                     # essentially-same call (guard/pretool/repeat_guard).
                     {"type": "command", "command": _hook_command(repeat_guard.HOOK_SCRIPT)},
+                    # 2026-11-27 다른 수단이 정해진 호스트를 브라우저 MCP 로 열면 막는다
+                    {"type": "command", "command": _hook_command(browser_route_guard.HOOK_SCRIPT)},
                 ],
             },
         ],
