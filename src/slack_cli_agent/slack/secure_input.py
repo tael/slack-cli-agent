@@ -28,6 +28,9 @@ CALLBACK_ID = "secure_input_submit"
 BLOCK_ID = "secure_input_block"
 INPUT_ACTION_ID = "secure_input_value"
 KEYCHAIN_ACCOUNT = "value"
+#: 키체인 서비스 이름 앞부분. 봇 프로필 이름을 넘긴다. 예전에는 한 봇 이름으로 고정돼
+#: 다른 봇의 슬랙 알림에도 그 이름이 보였다 (2026-11-27 김태일 지적).
+DEFAULT_PREFIX = "slack-cli-agent"
 DEFAULT_TTL_SEC = 600
 
 _SECURITY = "/usr/bin/security"
@@ -38,12 +41,12 @@ def valid_target(target: str) -> bool:
     return bool(_TARGET_RE.match(target))
 
 
-def keychain_service(target: str) -> str:
-    return f"shinji/{target}"
+def keychain_service(target: str, prefix: str = DEFAULT_PREFIX) -> str:
+    return f"{prefix or DEFAULT_PREFIX}/{target}"
 
 
-def save_to_keychain(target: str, value: str) -> None:
-    """Stores `value` as the keychain item shinji/<target>.
+def save_to_keychain(target: str, value: str, prefix: str = DEFAULT_PREFIX) -> None:
+    """Stores `value` as the keychain item <prefix>/<target>.
 
     The value is sent on the stdin of `security -i`, so it is in no process
     argument list (`ps` shows arguments). `-X` (hex) would hide it from the
@@ -54,7 +57,7 @@ def save_to_keychain(target: str, value: str) -> None:
         raise ValueError("대상 이름 형식이 맞지 않는다")
     quoted = '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
     command = (
-        f"add-generic-password -s {keychain_service(target)} -a {KEYCHAIN_ACCOUNT} "
+        f"add-generic-password -s {keychain_service(target, prefix)} -a {KEYCHAIN_ACCOUNT} "
         f"-w {quoted} -U\n"
     )
     done = subprocess.run(
@@ -66,8 +69,8 @@ def save_to_keychain(target: str, value: str) -> None:
         raise RuntimeError("키체인 저장 실패")
 
 
-def read_from_keychain(target: str) -> str:
-    """Reads shinji/<target> back as it was typed.
+def read_from_keychain(target: str, prefix: str = DEFAULT_PREFIX) -> str:
+    """Reads <prefix>/<target> back as it was typed.
 
     `find-generic-password -w` prints data that is not ASCII as hex, and a
     plain value such as "123456" looks the same as hex, so `-w` cannot tell
@@ -77,7 +80,7 @@ def read_from_keychain(target: str) -> str:
     if not valid_target(target):
         raise ValueError("대상 이름 형식이 맞지 않는다")
     done = subprocess.run(
-        [_SECURITY, "find-generic-password", "-s", keychain_service(target),
+        [_SECURITY, "find-generic-password", "-s", keychain_service(target, prefix),
          "-a", KEYCHAIN_ACCOUNT, "-g"],
         capture_output=True, text=True, timeout=15,
     )
@@ -148,14 +151,16 @@ class SecureInput:
         client: Any,
         owner_user_id: str,
         *,
-        save: Callable[[str, str], None] = save_to_keychain,
+        save: Callable[[str, str], None] | None = None,
         now: Callable[[], float] = time.time,
         on_saved: Callable[[dict[str, Any]], None] | None = None,
         bot_user_id: Callable[[], str] = lambda: "",
+        keychain_prefix: str = DEFAULT_PREFIX,
     ) -> None:
         self._client = client
         self._owner = owner_user_id
-        self._save = save
+        self._prefix = keychain_prefix or DEFAULT_PREFIX
+        self._save = save or (lambda t, v: save_to_keychain(t, v, self._prefix))
         self._now = now
         # Called with a synthetic app_mention event (the owner asking the bot
         # to carry on) once a value is saved. Without it the bot stays silent
@@ -279,7 +284,7 @@ class SecureInput:
         channel = str(meta.get("channel") or "")
         if not channel:
             return
-        text = f"입력 받음 : `{target}` (키체인 {keychain_service(target)})"
+        text = f"입력 받음 : `{target}` (키체인 {keychain_service(target, self._prefix)})"
         thread_ts = str(meta.get("thread_ts") or "")
         posted_ts = ""
         try:
@@ -304,7 +309,7 @@ class SecureInput:
                 "thread_ts": thread_ts or posted_ts,
                 "text": (
                     f"<@{self._bot_user_id()}> 보안 입력 `{target}` 저장 완료. "
-                    f"키체인 {keychain_service(target)} 값을 확인하고 하던 작업을 이어서 진행. "
+                    f"키체인 {keychain_service(target, self._prefix)} 값을 확인하고 하던 작업을 이어서 진행. "
                     "값은 출력하지 않음"
                 ),
             }

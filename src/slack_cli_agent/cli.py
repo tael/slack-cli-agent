@@ -253,10 +253,10 @@ class ChannelsCommand(ProfileAwareCommand):
 
 class SecureInputCommand(ProfileAwareCommand):
     name: ClassVar[str] = "secure-input"
-    help: ClassVar[str] = "소유자에게 보안 입력 버튼을 올린다. 입력 값은 키체인 shinji/<대상> 에 저장된다"
+    help: ClassVar[str] = "소유자에게 보안 입력 버튼을 올린다. 입력 값은 키체인 <프로필 이름>/<대상> 에 저장된다"
 
     def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("target", help="키체인 항목 이름(shinji/<대상>). 영문·숫자·점·밑줄·하이픈")
+        parser.add_argument("target", help="키체인 항목 이름(<프로필 이름>/<대상>). 영문·숫자·점·밑줄·하이픈")
         parser.add_argument("--channel", default="", help="버튼을 올릴 채널. 비우면 소유자 DM")
         parser.add_argument("--thread", default="", help="스레드 ts")
         parser.add_argument("--prompt", default="", help="버튼 위에 보일 안내 문구")

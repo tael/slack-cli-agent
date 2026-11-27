@@ -199,3 +199,14 @@ def test_요청_문구를_바꿀_수_있다() -> None:
     blocks = si.request_blocks("otp", 1600.0, prompt="인증문자를 확인하고 입력해 주세요")
     assert "인증문자를 확인하고 입력해 주세요" in blocks[0]["text"]["text"]
     assert "otp" in blocks[0]["text"]["text"]
+
+
+def test_키체인_이름과_알림은_프로필_이름을_쓴다() -> None:
+    assert si.keychain_service("otp", "guchipachi") == "guchipachi/otp"
+    client = FakeClient()
+    service = si.SecureInput(
+        client, OWNER, save=lambda t, v: None, now=lambda: 1000.0, keychain_prefix="guchipachi"
+    )
+    service.handle(submit())
+    texts = json.dumps(client.calls, ensure_ascii=False)
+    assert "guchipachi/otp" in texts and "shinji" not in texts
