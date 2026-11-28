@@ -169,3 +169,21 @@ def test_승인_턴에서_approve_전_executor_호출은_막는다(tmp_path: Pat
     assert plan_steps.gate(lookup, later) == ""
     assert plan_steps.run_command(path, ["approve"], later)[0] == 0
     assert plan_steps.gate(call, later) == ""
+
+
+def test_승인_대기_단계는_첫_응답_전에_알린다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _ledger(tmp_path, turn="C1:1.0")
+    for n in ("1", "2"):
+        plan_steps.run_command(path, ["start", n])
+        plan_steps.run_command(path, ["done", n])
+    transcript = str(path).removesuffix(".plan.steps.json")
+    monkeypatch.setenv("SCA_PLAN_STEPS", "1")
+    monkeypatch.setenv("TURN_TIER", "owner")
+    monkeypatch.setenv("TURN_ID", "C1:2.0")
+    text = plan_start._waiting_context({"transcript_path": transcript})
+    assert "3. 결제하기 클릭" in text and "approve" in text
+    monkeypatch.setenv("TURN_ID", "C1:1.0")
+    assert plan_start._waiting_context({"transcript_path": transcript}) == ""
+    monkeypatch.setenv("TURN_ID", "C1:2.0")
+    monkeypatch.setenv("TURN_TIER", "member")
+    assert plan_start._waiting_context({"transcript_path": transcript}) == ""
