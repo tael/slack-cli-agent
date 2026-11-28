@@ -79,7 +79,10 @@ class WriteRecordingClient:
         self.bot: dict[str, Any] = {}
 
     def _probe_thread(self, params: dict[str, Any]) -> FakeResponse | None:
-        if not self.thread_ts or str(params.get("ts", "")) != self.thread_ts:
+        # The pre-post check reads replies by the question's own ts, which on a
+        # later turn is a reply, not the root (pipeline origin_alive).
+        asked = str(params.get("ts", ""))
+        if not self.thread_ts or (asked != self.thread_ts and all(m.get("ts") != asked for m in self.messages)):
             return None
         return FakeResponse(ok=True, messages=list(self.messages), has_more=False)
 
