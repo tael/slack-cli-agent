@@ -1052,6 +1052,7 @@ class Application:
                 require_recipient=self._settings.require_recipient,
                 # S2: 요청 종류로 붙일 MCP 서버를 고른다. 없으면 전부.
                 mcp_routing=self._settings.mcp_routing,
+                turn_token_warn=self._settings.turn_token_warn,
                 # W4 plan_gate: 0 when the profile turned the flow off.
                 plan_gate_responses=(
                     self._settings.plan_gate_responses if self._settings.plan_flow else 0

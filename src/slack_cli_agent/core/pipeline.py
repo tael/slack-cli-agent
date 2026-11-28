@@ -432,6 +432,9 @@ class RequestPipeline:
         delegation_recorder: DelegationRecorder | None = None,
         # S2: settings.mcp_routing. None 이면 MCP 서버를 고르지 않는다 (전부).
         mcp_routing: Mapping[str, Any] | None = None,
+        # settings.turn_token_warn. 이 턴의 토큰 합이 이 값 이상이면 로그에
+        # 경고를 남긴다. 0 이하는 끈다. 답은 막지 않는다.
+        turn_token_warn: int = 0,
         # settings.figurative_after_post: the figurative check runs after the
         # post and fixes the message in place. None keeps it in the guards.
         post_corrector: FigurativeGuard | None = None,
@@ -446,6 +449,7 @@ class RequestPipeline:
         self._figurative_env = figurative_env
         self._spawn = spawn or _spawn_daemon
         self._mcp_routing = mcp_routing
+        self._turn_token_warn = turn_token_warn
         self._access = access_policy
         self._transcript = transcript_builder
         self._composer = prompt_composer
@@ -942,6 +946,10 @@ class RequestPipeline:
             )
         except Exception:  # noqa: BLE001 -- 기록 실패가 답을 막으면 안 된다
             log.warning("세션 컨텍스트 기록 실패", exc_info=True)
+
+        warning = turn_token_warning(response, self._turn_token_warn)
+        if warning:
+            log.warning("%s (채널 %s)", warning, ctx.channel)
 
         response = self._rerun_owner_top_level_silence(ctx, principal, request, decision, response)
         response = self._rerun_mentioned_silence(ctx, request, decision, response)
@@ -2437,6 +2445,28 @@ _SYSTEM_PROMPT_RESET_NOTE = (
     "대화이고, 앞선 답도 그 안에 있습니다. 앞선 답은 바뀌기 전 지침으로 쓴 것이니 "
     "이번 답은 지금 지침을 따릅니다.]"
 )
+
+
+def turn_token_warning(response: EngineResponse, warn_at: int) -> str:
+    """이 턴의 토큰 합이 임계 이상이면 경고 문장을, 아니면 빈 문자열을 낸다.
+
+    턴당 토큰에는 상한도 경보도 없어, 호출이 10회 넘는 턴이 사후 집계로만
+    드러났다 (2026-11-29 점검). 답을 막지 않고 로그에 남기는 것은 상한으로
+    끊으면 그 턴의 답이 사라지기 때문이다.
+    """
+    usage = response.usage
+    if warn_at <= 0 or usage is None:
+        return ""
+    total = (
+        int(usage.input_tokens or 0)
+        + int(usage.cache_read_tokens or 0)
+        + int(usage.cache_creation_tokens or 0)
+        + int(usage.output_tokens or 0)
+    )
+    if total < warn_at:
+        return ""
+    calls = response.turns if isinstance(response.turns, int) and response.turns > 0 else 1
+    return f"턴 토큰 {total} 이 임계 {warn_at} 을 넘었다 (엔진 호출 {calls}회)"
 
 
 def _per_call_context_tokens(response: EngineResponse) -> int:

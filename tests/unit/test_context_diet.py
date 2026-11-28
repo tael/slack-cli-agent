@@ -7,6 +7,7 @@ from dataclasses import replace
 from test_pipeline import build_pipeline, make_ctx, ok_response
 
 from slack_cli_agent.config.settings import RuntimeSettings
+from slack_cli_agent.core.pipeline import turn_token_warning
 from slack_cli_agent.core.mcp_routing import (
     decode_servers,
     encode_servers,
@@ -201,3 +202,33 @@ class Test파이프라인:
         # 첫 턴 기록에는 리셋이 없다.
         assert parts["audit"].records[0]["context_reset"] is False
         assert "context_reset_reason" not in parts["audit"].records[0]
+
+
+class Test턴토큰경고:
+    """턴당 토큰에는 상한도 경보도 없었다. 답을 끊지 않고 로그로만 알린다."""
+
+    def test_임계를_넘으면_합계와_호출수를_적는다(self) -> None:
+        warning = turn_token_warning(_big(), 300000)
+        assert "300014" in warning
+        assert "엔진 호출 2회" in warning
+
+    def test_임계_아래는_경고하지_않는다(self) -> None:
+        assert turn_token_warning(_big(), 400000) == ""
+
+    def test_0_이하는_끈다(self) -> None:
+        assert turn_token_warning(_big(), 0) == ""
+        assert turn_token_warning(_big(), -1) == ""
+
+    def test_usage_가_없으면_경고하지_않는다(self) -> None:
+        assert turn_token_warning(replace(_big(), usage=None), 1) == ""
+
+    def test_파이프라인이_턴_끝에_경고를_남긴다(self, caplog) -> None:
+        pipeline, _ = build_pipeline(responses=[_big("session-1")])
+        pipeline._turn_token_warn = 300000
+        with caplog.at_level("WARNING"):
+            pipeline.handle(make_ctx(user="UOWNER", ts="1.1", thread_ts="1.1"))
+        assert any("턴 토큰 300014" in r.getMessage() for r in caplog.records)
+
+    def test_끈_상태에서는_로그가_없다(self) -> None:
+        pipeline, _ = build_pipeline(responses=[_big("session-1")])
+        assert pipeline._turn_token_warn == 0

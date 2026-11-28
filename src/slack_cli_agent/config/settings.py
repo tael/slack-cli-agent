@@ -306,6 +306,11 @@ class RuntimeSettings:
     # 이어 가야 할 턴이 모두 새 세션이 된다. 프로필에서 켠다.
     context_reset_tokens: int = 0
 
+    # 턴 토큰 경고. 한 턴의 토큰 합(input + cache_read + cache_creation +
+    # output)이 이 값 이상이면 로그에 경고를 남긴다. 0 이하는 끈다. 답을
+    # 끊지는 않는다 (2026-11-29 토큰 점검).
+    turn_token_warn: int = 0
+
     # 기본 처리 흐름 (W4, 2026-11-10). True 면 Agent 가 열린 티어(소유자,
     # 운영자, 위임)의 작업 턴에 FLOW_NOTE 를 넣고 plan_gate 훅을 켠다.
     # 프로필에서 false 로 두면 지침과 훅이 함께 꺼진다.
