@@ -187,3 +187,33 @@ def test_승인_대기_단계는_첫_응답_전에_알린다(tmp_path: Path, mon
     monkeypatch.setenv("TURN_ID", "C1:2.0")
     monkeypatch.setenv("TURN_TIER", "member")
     assert plan_start._waiting_context({"transcript_path": transcript}) == ""
+
+
+def test_start_없는_done_은_거부된다(tmp_path: Path) -> None:
+    path = _ledger(tmp_path)
+    code, out = plan_steps.run_command(path, ["done", "1"])
+    assert code == 3 and "start 1" in out
+
+
+def test_승인_단계는_done_으로_건너뛸_수_없다(tmp_path: Path) -> None:
+    path = _ledger(tmp_path)
+    for n in ("1", "2"):
+        plan_steps.run_command(path, ["start", n])
+        plan_steps.run_command(path, ["done", n])
+    assert plan_steps.run_command(path, ["done", "3"])[0] == 3
+    ledger = plan_steps.read(path)
+    assert ledger is not None and ledger["status"] == "active"
+
+
+def test_장부가_있으면_브라우저를_직접_다루는_코드를_막는다(tmp_path: Path) -> None:
+    path = _ledger(tmp_path)
+    transcript = str(path).removesuffix(".plan.steps.json")
+    env = {"TURN_ID": "C1:9.0"}
+    direct = {"transcript_path": transcript, "tool_name": "Bash",
+              "tool_input": {"command": "node -e \"require('playwright').chromium.connectOverCDP('http://127.0.0.1:9333')\""}}
+    write = {"transcript_path": transcript, "tool_name": "Write",
+             "tool_input": {"file_path": "/tmp/x.cjs", "content": "const { chromium } = require('playwright')"}}
+    skill = {"transcript_path": transcript, "tool_name": "Bash", "tool_input": {"command": "$B click e3"}}
+    assert "browser.mjs" in plan_steps.gate(direct, env)
+    assert "browser.mjs" in plan_steps.gate(write, env)
+    assert plan_steps.gate(skill, env) == ""
