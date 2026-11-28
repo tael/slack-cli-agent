@@ -480,11 +480,26 @@ def _step_bash_ok(command: str) -> bool:
     return True
 
 
+def _script_text(command: str) -> str:
+    """Contents of script files the command names, so a script written in one
+    call and run in the next is still read."""
+    out = []
+    for word in command.split():
+        word = word.strip("\"';")
+        if word.endswith((".mjs", ".cjs", ".js", ".py", ".ts")) and not word.endswith("browser.mjs"):
+            with contextlib.suppress(OSError):
+                out.append(Path(word).read_text(encoding="utf-8", errors="replace")[:200_000])
+    return " ".join(out)
+
+
 def _direct_browser(tool: str, tool_input: dict[str, Any], command: str) -> bool:
     if tool == "Bash":
-        if not _runs_script(command):
+        # 파일로 저장만 하는 명령(cat > x.mjs <<EOF)도 본다. 저장과 실행을 나눠 부르면
+        # 실행 명령에는 표식이 없다. 실행 명령은 가리키는 스크립트 파일 내용까지 읽는다.
+        writes_file = ">" in command
+        if not _runs_script(command) and not writes_file:
             return False
-        text = command
+        text = command + " " + _script_text(command)
     elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         target = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
         if any(home in target for home in CODE_HOMES):
