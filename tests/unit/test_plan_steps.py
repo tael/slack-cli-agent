@@ -154,3 +154,18 @@ def test_승인_대기_장부는_스킬_없는_새_계획에도_남는다(tmp_pa
 def test_executor_는_승인_단계_앞까지_한_번에_넘긴다() -> None:
     assert "한 번에 모두 넘긴다" in plan_gate.STEPS_EXECUTOR
     assert "한 번에 모두 넘긴다" in plan_gate.STEPS_EXECUTOR_RESUME
+
+
+def test_승인_턴에서_approve_전_executor_호출은_막는다(tmp_path: Path) -> None:
+    path = _ledger(tmp_path, turn="C1:1.0")
+    for n in ("1", "2"):
+        plan_steps.run_command(path, ["start", n])
+        plan_steps.run_command(path, ["done", n])
+    transcript = str(path).removesuffix(".plan.steps.json")
+    call = {"transcript_path": transcript, "tool_name": "Agent", "tool_input": {"subagent_type": "executor"}}
+    later = {"TURN_ID": "C1:2.0", "TURN_TIER": "owner"}
+    assert "approve" in plan_steps.gate(call, later)
+    lookup = {**call, "tool_input": {"subagent_type": "lookup"}}
+    assert plan_steps.gate(lookup, later) == ""
+    assert plan_steps.run_command(path, ["approve"], later)[0] == 0
+    assert plan_steps.gate(call, later) == ""
