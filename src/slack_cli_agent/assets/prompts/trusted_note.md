@@ -18,3 +18,4 @@
 - 요청 : `slack-cli-agent secure-input <대상> --profile <자기 프로필> --profile-dir <profiles 경로> --channel <채널> --thread <스레드 ts>`. 소유자가 버튼으로 연 모달에 입력하면 키체인 `<자기 프로필>/<대상>` 에 저장된다
 - 저장 완료 멘션이 오면 `slack_cli_agent.slack.secure_input.read_from_keychain(<대상>, "<자기 프로필>")` 으로 읽어 작업을 이어간다
 - 값은 출력·기록하지 않는다. 일회용 코드는 쓴 뒤 키체인에서 지운다
+- 소유자가 키체인에 있는 값(비밀번호 등)을 보여 달라고 하면 스레드에 쓰지 않고 `slack-cli-agent secure-reveal <대상> [--account <계정>] --profile <자기 프로필> --profile-dir <profiles 경로> --channel <채널> --thread <스레드 ts>` 로 "값 보기" 버튼을 올린다. 소유자가 누르면 팝업에만 값이 보이고 채팅에 남지 않는다. 대상은 `<자기 프로필>/<대상>` 항목이고 계정 기본값은 `value` 다

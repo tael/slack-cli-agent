@@ -228,3 +228,46 @@ def test_버튼_메시지를_못_바꾸면_새_글로_알린다() -> None:
     service = si.SecureInput(client, OWNER, save=lambda t, v: None, now=lambda: 1000.0)
     service.handle(submit())
     assert len(client.named("chat_postMessage")) == 1
+
+
+def reveal_click(user: str = OWNER, value: str = "login|a@b.c|1600") -> dict[str, Any]:
+    return {
+        "type": "block_actions",
+        "user": {"id": user},
+        "trigger_id": "T1",
+        "channel": {"id": "D1"},
+        "message": {"ts": "5.5", "thread_ts": "4.4"},
+        "actions": [{"action_id": si.ACTION_REVEAL, "value": value}],
+    }
+
+
+def test_값_보기는_모달에만_값을_싣고_채팅과_로그에는_남기지_않는다(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(si, "read_from_keychain", lambda t, p, a: SECRET)
+    service, client, _ = make()
+    with caplog.at_level(logging.DEBUG):
+        service.handle(reveal_click())
+    view = client.named("views_open")[0]["view"]
+    assert SECRET in json.dumps(view, ensure_ascii=False)
+    assert SECRET not in caplog.text
+    assert all(SECRET not in json.dumps(kw, ensure_ascii=False) for n, kw in client.calls if n != "views_open")
+    assert client.named("chat_update")
+
+
+def test_값_보기는_소유자만_열고_만료되면_열지_않는다(monkeypatch) -> None:
+    monkeypatch.setattr(si, "read_from_keychain", lambda t, p, a: SECRET)
+    service, client, _ = make()
+    service.handle(reveal_click(user="U_OTHER"))
+    assert not client.named("views_open")
+    service, client, _ = make(now=2000.0)
+    service.handle(reveal_click())
+    assert not client.named("views_open")
+    assert client.named("chat_postEphemeral")
+
+
+def test_값_보기_닫기는_저장을_하지_않는다() -> None:
+    service, _, saved = make()
+    ack = service.handle({
+        "type": "view_submission", "user": {"id": OWNER},
+        "view": {"callback_id": si.REVEAL_CALLBACK_ID},
+    })
+    assert ack is None and saved == []

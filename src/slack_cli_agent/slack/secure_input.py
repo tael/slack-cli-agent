@@ -24,7 +24,11 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 ACTION_OPEN = "secure_input_open"
+ACTION_REVEAL = "secure_reveal_open"
 CALLBACK_ID = "secure_input_submit"
+REVEAL_CALLBACK_ID = "secure_reveal_close"
+REVEAL_BLOCK_ID = "secure_reveal_block"
+REVEAL_INPUT_ACTION_ID = "secure_reveal_value"
 BLOCK_ID = "secure_input_block"
 INPUT_ACTION_ID = "secure_input_value"
 KEYCHAIN_ACCOUNT = "value"
@@ -35,10 +39,15 @@ DEFAULT_TTL_SEC = 600
 
 _SECURITY = "/usr/bin/security"
 _TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_ACCOUNT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]{0,127}$")
 
 
 def valid_target(target: str) -> bool:
     return bool(_TARGET_RE.match(target))
+
+
+def valid_account(account: str) -> bool:
+    return bool(_ACCOUNT_RE.match(account))
 
 
 def keychain_service(target: str, prefix: str = DEFAULT_PREFIX) -> str:
@@ -69,7 +78,9 @@ def save_to_keychain(target: str, value: str, prefix: str = DEFAULT_PREFIX) -> N
         raise RuntimeError("키체인 저장 실패")
 
 
-def read_from_keychain(target: str, prefix: str = DEFAULT_PREFIX) -> str:
+def read_from_keychain(
+    target: str, prefix: str = DEFAULT_PREFIX, account: str = KEYCHAIN_ACCOUNT
+) -> str:
     """Reads <prefix>/<target> back as it was typed.
 
     `find-generic-password -w` prints data that is not ASCII as hex, and a
@@ -77,11 +88,11 @@ def read_from_keychain(target: str, prefix: str = DEFAULT_PREFIX) -> str:
     them apart. `-g` prints `password: 0x<hex>  "<text>"` for non-ASCII data
     and `password: "<text>"` otherwise; that form is parsed here.
     """
-    if not valid_target(target):
+    if not valid_target(target) or not valid_account(account):
         raise ValueError("대상 이름 형식이 맞지 않는다")
     done = subprocess.run(
         [_SECURITY, "find-generic-password", "-s", keychain_service(target, prefix),
-         "-a", KEYCHAIN_ACCOUNT, "-g"],
+         "-a", account, "-g"],
         capture_output=True, text=True, timeout=15,
     )
     if done.returncode != 0:
@@ -118,6 +129,59 @@ def request_blocks(target: str, expires_at: float, prompt: str = "") -> list[dic
             ],
         },
     ]
+
+
+def reveal_blocks(
+    target: str, account: str, expires_at: float, prompt: str = ""
+) -> list[dict[str, Any]]:
+    body = prompt or "버튼을 누르면 창이 열려 값을 복사할 수 있음. 값은 채팅에 남지 않음"
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*값 보기 요청* : `{target}`\n{body}",
+            },
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "action_id": ACTION_REVEAL,
+                    "text": {"type": "plain_text", "text": "값 보기"},
+                    "style": "primary",
+                    "value": f"{target}|{account}|{int(expires_at)}",
+                }
+            ],
+        },
+    ]
+
+
+def post_reveal(
+    client: Any,
+    channel: str,
+    thread_ts: str,
+    target: str,
+    *,
+    account: str = KEYCHAIN_ACCOUNT,
+    now: Callable[[], float] = time.time,
+    ttl_sec: int = DEFAULT_TTL_SEC,
+    prompt: str = "",
+) -> str:
+    """Posts the reveal button for keychain item <profile>/<target> and returns its ts."""
+    if not valid_target(target) or not valid_account(account):
+        raise ValueError("대상 이름 또는 계정 이름 형식이 맞지 않는다")
+    expires_at = now() + ttl_sec
+    kwargs: dict[str, Any] = {
+        "channel": channel,
+        "text": f"값 보기 요청 : {target}",
+        "blocks": reveal_blocks(target, account, expires_at, prompt),
+    }
+    if thread_ts:
+        kwargs["thread_ts"] = thread_ts
+    response = client.chat_postMessage(**kwargs)
+    return str(response.get("ts") or "")
 
 
 def post_request(
@@ -175,9 +239,14 @@ class SecureInput:
         kind = str(payload.get("type") or "")
         try:
             if kind == "block_actions":
-                self._open_modal(payload)
+                if any(a.get("action_id") == ACTION_REVEAL for a in payload.get("actions") or []):
+                    self._open_reveal(payload)
+                else:
+                    self._open_modal(payload)
                 return None
             if kind == "view_submission":
+                if (payload.get("view") or {}).get("callback_id") == REVEAL_CALLBACK_ID:
+                    return None
                 return self._submit(payload)
         except Exception:
             log.exception("보안 입력 처리 실패 : type=%s", kind)
@@ -256,6 +325,77 @@ class SecureInput:
             },
         )
         log.info("보안 입력 모달 열림 : target=%s", target)
+
+    def _open_reveal(self, payload: Mapping[str, Any]) -> None:
+        """Shows the stored value in a modal so the owner can copy it. The value
+        goes to the modal only: it is never posted, logged or audited."""
+        action = next(
+            (a for a in payload.get("actions") or [] if a.get("action_id") == ACTION_REVEAL), None
+        )
+        if action is None:
+            return
+        log.info("값 보기 버튼 클릭 : value=%s", action.get("value"))
+        if not self._is_owner(payload):
+            log.info("값 보기 버튼 : 소유자 아님 user=%s", (payload.get("user") or {}).get("id"))
+            return
+        target, _, rest = str(action.get("value") or "").partition("|")
+        account, _, expires = rest.partition("|")
+        channel = str((payload.get("channel") or {}).get("id") or "")
+        message = payload.get("message") or {}
+        user = str((payload.get("user") or {}).get("id") or "")
+        if (not valid_target(target) or not valid_account(account)
+                or not expires.isdigit() or self._now() > int(expires)):
+            log.info("값 보기 버튼 만료 : value=%s", action.get("value"))
+            if channel and user:
+                self._client.chat_postEphemeral(
+                    channel=channel, user=user, text="값 보기 요청이 만료됐음. 새로 요청 필요",
+                )
+            return
+        value = read_from_keychain(target, self._prefix, account)
+        try:
+            self._client.views_open(
+                trigger_id=payload.get("trigger_id"),
+                view={
+                    "type": "modal",
+                    "callback_id": REVEAL_CALLBACK_ID,
+                    "title": {"type": "plain_text", "text": "값 보기"},
+                    "submit": {"type": "plain_text", "text": "닫기"},
+                    "close": {"type": "plain_text", "text": "취소"},
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"대상 : `{target}`\n칸을 눌러 전체 선택 후 복사. 채팅에는 남지 않음",
+                            },
+                        },
+                        {
+                            "type": "input",
+                            "block_id": REVEAL_BLOCK_ID,
+                            "optional": True,
+                            "label": {"type": "plain_text", "text": "값"},
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": REVEAL_INPUT_ACTION_ID,
+                                "initial_value": value,
+                            },
+                        },
+                    ],
+                },
+            )
+        finally:
+            value = ""
+        log.info("값 보기 모달 열림 : target=%s", target)
+        ts = str(message.get("ts") or "")
+        if channel and ts:
+            text = f"값 표시함 : `{target}` (채팅에는 남지 않음)"
+            try:
+                self._client.chat_update(
+                    channel=channel, ts=ts, text=text,
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+                )
+            except Exception:
+                log.exception("값 보기 버튼 메시지 갱신 실패 : target=%s", target)
 
     def _submit(self, payload: Mapping[str, Any]) -> dict[str, Any] | None:
         view = payload.get("view") or {}

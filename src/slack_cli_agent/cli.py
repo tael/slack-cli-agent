@@ -285,6 +285,43 @@ class SecureInputCommand(ProfileAwareCommand):
         return 0
 
 
+class SecureRevealCommand(ProfileAwareCommand):
+    name: ClassVar[str] = "secure-reveal"
+    help: ClassVar[str] = "소유자에게 키체인 값 보기 버튼을 올린다. 값은 팝업에만 보이고 채팅에 남지 않는다"
+
+    def add_command_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("target", help="키체인 항목 이름(<프로필 이름>/<대상>)")
+        parser.add_argument("--account", default="value", help="키체인 계정 이름. 기본 value")
+        parser.add_argument("--channel", default="", help="버튼을 올릴 채널. 비우면 소유자 DM")
+        parser.add_argument("--thread", default="", help="스레드 ts")
+        parser.add_argument("--prompt", default="", help="버튼 위에 보일 안내 문구")
+
+    def execute_with_profile(
+        self, profile: Profile, args: argparse.Namespace, stdout: TextIO
+    ) -> int:
+        from slack_sdk import WebClient
+
+        from .config.settings import RuntimeSettings
+        from .slack.secure_input import post_reveal, valid_account, valid_target
+
+        if not RuntimeSettings().override(profile.settings_override).secure_input:
+            raise ConfigError("이 프로필은 secure_input 이 꺼져 있다")
+        if not valid_target(args.target) or not valid_account(args.account):
+            raise ConfigError("대상 또는 계정 이름 형식이 맞지 않는다")
+        client = WebClient(token=resolver_for(profile).bot_token())
+        channel = args.channel
+        if not channel:
+            opened = client.conversations_open(users=profile.owner_user_id)
+            channel = str((opened.get("channel") or {}).get("id") or "")
+        if not channel:
+            raise AgentError("소유자 DM 방을 찾지 못했다")
+        ts = post_reveal(
+            client, channel, args.thread, args.target, account=args.account, prompt=args.prompt
+        )
+        print(f"요청 게시 : channel={channel} ts={ts} target={args.target}", file=stdout)
+        return 0
+
+
 def default_work_root(name: str) -> Path:
     """Where the engine runs, outside $HOME.
 
@@ -965,6 +1002,7 @@ DEFAULT_COMMANDS: tuple[CliCommand, ...] = (
     MigrateCommand(),
     ChannelsCommand(),
     SecureInputCommand(),
+    SecureRevealCommand(),
     IngressCommand(),
     WorkerCommand(),
     LearnCommand(),
