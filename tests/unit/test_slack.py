@@ -899,6 +899,31 @@ class TestSlackGatewayConnection:
         assert len(기록) == 1
         assert "C1" in 기록[0].getMessage() and "1.0" in 기록[0].getMessage()
 
+    def test_소유자_message_는_본문_없이_payload_구조만_INFO_로_남긴다(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        gateway = SlackGateway(client=FakeWebClient())
+        event = {
+            "type": "message", "channel": "C1", "ts": "3.0", "user": "U07CEJAV8",
+            "text": "비밀 본문", "client_msg_id": "abc-1", "team": "T1",
+            "blocks": [{"type": "rich_text"}],
+        }
+        with caplog.at_level(logging.INFO):
+            gateway.handle_events_api({"event": event, "type": "events_api"})
+        기록 = [r.getMessage() for r in caplog.records if "소유자 이벤트 구조" in r.getMessage()]
+        assert len(기록) == 1
+        assert "client_msg_id=abc-1" in 기록[0] and "team=있음" in 기록[0]
+        assert "user_profile=없음" in 기록[0] and "rich_text" in 기록[0]
+        assert "비밀 본문" not in 기록[0]
+
+    def test_다른_사용자_message_는_구조_로그를_남기지_않는다(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        gateway = SlackGateway(client=FakeWebClient())
+        with caplog.at_level(logging.INFO):
+            gateway.handle_events_api({"event": {"type": "message", "channel": "C1", "user": "U1"}})
+        assert not [r for r in caplog.records if "소유자 이벤트 구조" in r.getMessage()]
+
     def test_봇_명의_message_는_INFO_사람_message_는_INFO_로_남기지_않는다(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

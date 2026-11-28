@@ -16,6 +16,24 @@ from ..reliability.connection import ConnectionEpochRecorder, ConnectionKind
 
 log = logging.getLogger(__name__)
 
+# 기기(모바일·PC) 판별용 payload 구조 로깅 대상. 본문은 남기지 않는다.
+OWNER_USER_ID = "U07CEJAV8"
+
+
+def describe_event_shape(payload: Mapping[str, Any], event: Mapping[str, Any]) -> str:
+    """Summarises the payload structure of one event without any message text."""
+    blocks = event.get("blocks") or []
+    block_types = [b.get("type") for b in blocks if isinstance(b, Mapping)]
+    files = [f.get("name") for f in (event.get("files") or []) if isinstance(f, Mapping)]
+    return (
+        f"envelope_keys={sorted(payload.keys())} event_keys={sorted(event.keys())} "
+        f"team={'있음' if event.get('team') else '없음'} "
+        f"user_team={'있음' if event.get('user_team') else '없음'} "
+        f"source_team={'있음' if event.get('source_team') else '없음'} "
+        f"user_profile={'있음' if event.get('user_profile') else '없음'} "
+        f"client_msg_id={event.get('client_msg_id')} blocks={block_types} files={files}"
+    )
+
 Connector = Callable[["SlackGateway", str], Any]
 
 # How often the background watch checks whether the socket is actually up.
@@ -132,6 +150,8 @@ class SlackGateway:
             )
         else:
             log.debug("이벤트 수신 : type=%s channel=%s ts=%s", event_type, event.get("channel"), event.get("ts"))
+        if event_type in ("message", "app_mention") and not bot_id and event.get("user") == OWNER_USER_ID:
+            log.info("소유자 이벤트 구조 : %s", describe_event_shape(payload, event))
         try:
             self.dispatch(event_type, event)
         except Exception:
