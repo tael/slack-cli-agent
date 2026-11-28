@@ -81,9 +81,13 @@ def test_실패하면_재계획하고_상한에서_멈춘다(tmp_path: Path) -> 
     assert ledger is not None
     fresh = lambda _prompt: plan_steps.clean_steps([{"do": "다른 경로로 열기", "tool": "browser", "approval": False}])  # noqa: E731
     for _ in range(plan_steps.MAX_REPLANS):
-        out = plan_steps.cmd_fail(ledger, plan_steps.next_step(ledger)["n"], "404", replanner=fresh)
+        step = plan_steps.next_step(ledger)
+        assert step is not None
+        out = plan_steps.cmd_fail(ledger, step["n"], "404", replanner=fresh)
         assert "다시 계획" in out and ledger["status"] == "active"
-    out = plan_steps.cmd_fail(ledger, plan_steps.next_step(ledger)["n"], "404", replanner=fresh)
+    step = plan_steps.next_step(ledger)
+    assert step is not None
+    out = plan_steps.cmd_fail(ledger, step["n"], "404", replanner=fresh)
     assert "상한" in out and ledger["status"] == "halted"
 
 
@@ -108,7 +112,8 @@ def test_계획_파일의_steps_가_장부가_되고_주입된다(tmp_path: Path
     assert record["status"] == "ok" and record["steps_ledger"] == "created:3"
     verdict, context = plan_gate.decide({"transcript_path": transcript})
     assert verdict == "inject"
-    assert plan_gate.STEPS_HEAD in context and "[승인 필요]" in context and "start N" in context and "--ledger" in context
+    assert plan_gate.STEPS_HEAD in context and "[승인 필요]" in context
+    assert "start N" in context and "--ledger" in context
 
 
 def test_진행_표시는_실행_중_단계를_보여_준다(tmp_path: Path) -> None:
