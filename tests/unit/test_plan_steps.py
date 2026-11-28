@@ -297,3 +297,19 @@ def test_승인_대기_중_다른_요청_턴은_허용_목록을_걸지_않는�
     data = {"transcript_path": transcript, "tool_name": "Bash", "tool_input": {"command": "git status"}}
     assert plan_steps.gate(data, {"TURN_ID": "C1:1.0"})
     assert plan_steps.gate(data, {"TURN_ID": "C1:2.0"}) == ""
+
+
+def test_저장과_실행을_나눈_직접_스크립트도_막는다(tmp_path: Path) -> None:
+    transcript = str(tmp_path / "s.jsonl")
+    env = {"TURN_ID": "C1:1.0"}
+    script = tmp_path / "run.mjs"
+    body = "const { chromium } = require('playwright'); await chromium.connectOverCDP('http://127.0.0.1:9333')"
+    save = {"transcript_path": transcript, "tool_name": "Bash",
+            "tool_input": {"command": f"cat > {script} <<'EOF'\n{body}\nEOF"}}
+    assert plan_steps.gate(save, env)
+    script.write_text(body, encoding="utf-8")
+    run = {"transcript_path": transcript, "tool_name": "Bash", "tool_input": {"command": f"node {script}"}}
+    assert plan_steps.gate(run, env)
+    plain = tmp_path / "ok.py"
+    plain.write_text("print(1)", encoding="utf-8")
+    assert plan_steps.gate({**run, "tool_input": {"command": f"python3 {plain}"}}, env) == ""
