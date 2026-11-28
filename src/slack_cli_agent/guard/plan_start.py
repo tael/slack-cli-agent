@@ -1093,7 +1093,8 @@ def _write_ledger(transcript: str, raw_steps: Any, request: str) -> str:
     # 요청에만 쓴다. 조회와 개발 요청에 단계 장부를 붙이면 느려지고, 소유자가
     # 직접 시킨 일에도 확인 단계가 끼어들었다.
     names = {s["name"] for s in skills}
-    uses_skill = any(step.get("tool") in names for step in steps)
+    # The planner writes "vault, browser" or "browser 스킬" too.
+    uses_skill = any(name in str(step.get("tool") or "") for step in steps for name in names)
     if not steps or not uses_skill:
         if current and module.waiting_approval(current):
             return "kept_waiting"
