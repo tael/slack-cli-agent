@@ -58,6 +58,10 @@ REPLAN_TIMEOUT_SEC = 30.0
 OWNER_TIERS = frozenset({"owner", "owner_trusted"})
 READ_TOOLS = frozenset({"Read", "Grep", "Glob", "WebSearch", "WebFetch", "TodoWrite", "ToolSearch"})
 APPROVED_FLAG = "--approved"
+#: 2026-11-28 실제 사이트 시험 : 메인이 Playwright 스크립트를 직접 짜 browser 스킬의 승인
+#: 검사와 장부를 건너뛰고 주문을 완료했다. 장부가 살아 있는 동안 브라우저를 직접 다루는
+#: 코드는 막는다. 브라우저 동작은 browser 스킬 명령으로만 한다.
+DIRECT_BROWSER_MARKERS = ("playwright", "puppeteer", "connectovercdp", "chromium.connect", "9333", "devtools")
 
 PENDING, RUNNING, DONE, FAILED, SKIPPED = "pending", "running", "done", "failed", "skipped"
 FINISHED = frozenset({DONE, SKIPPED})
@@ -254,6 +258,9 @@ def cmd_start(ledger: dict[str, Any], n: int) -> str:
 
 def cmd_done(ledger: dict[str, Any], n: int, note: str) -> str:
     step = _step(ledger, n)
+    # 2026-11-28 실제 사이트 시험 : start 없이 done 을 몰아 불러 승인 단계가 승인 없이 완료됐다.
+    if step.get("status") != RUNNING:
+        raise StepError(f"{n}단계는 시작되지 않았다. start {n} 을 먼저 부른다")
     step["status"] = DONE
     step["note"] = note[:200]
     step["finished_at"] = time.time()
@@ -403,6 +410,17 @@ def _is_ledger_command(command: str) -> bool:
     return str(HOOK_SCRIPT) in command or "plan_steps.py" in command
 
 
+def _direct_browser(tool: str, tool_input: dict[str, Any], command: str) -> bool:
+    if tool == "Bash":
+        text = command
+    elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        text = " ".join(str(tool_input.get(k) or "") for k in ("content", "new_string", "new_source", "edits"))
+    else:
+        return False
+    lowered = text.lower()
+    return any(marker in lowered for marker in DIRECT_BROWSER_MARKERS)
+
+
 def gate(data: dict[str, Any], env: dict[str, str] | os._Environ[str] | None = None) -> str:
     """The deny reason, or "" to let the call through."""
     env = env if env is not None else os.environ
@@ -418,6 +436,11 @@ def gate(data: dict[str, Any], env: dict[str, str] | os._Environ[str] | None = N
     command = str(tool_input.get("command") or "") if tool == "Bash" else ""
     if command and _is_ledger_command(command):
         return ""
+    if ledger.get("status") == "active" and _direct_browser(tool, tool_input, command):
+        return (
+            "단계 실행 중에는 브라우저를 직접 다루는 스크립트를 쓰거나 실행하지 않는다. browser 스킬 명령"
+            "(browser.mjs)으로 한 동작씩 하고, 막히면 fail 로 기록해 재계획을 받는다"
+        )
     if command and APPROVED_FLAG in command.split() and not any_approved(ledger):
         return (
             "승인된 단계가 없어 --approved 를 쓸 수 없다. 결제·발송·삭제는 소유자가 다음 말로 승인한 뒤 "
