@@ -157,9 +157,11 @@ class Test링크된스레드읽기:
         assert reader.of(MSG, self_channel="C099", attachments=att)[0].body == "실시간 본문"
 
 
-def 안내(bodies: dict[str, str], *, max_links: int = 3) -> LinkedThreadNote:
+def 안내(
+    bodies: dict[str, str], *, max_links: int = 3, max_chars: int = 0
+) -> LinkedThreadNote:
     reader, _ = 리더(bodies, max_links=max_links)
-    return LinkedThreadNote(reader)
+    return LinkedThreadNote(reader, max_chars=max_chars)
 
 
 class Test링크된스레드안내:
@@ -183,6 +185,28 @@ class Test링크된스레드안내:
         note = 안내({"C0EXAMPLE01": ""}).of(MSG, self_channel="C099")
         assert "읽지 못했다" not in note
         assert "옮길 메시지가 없다" in note
+
+    def test_노트_합계가_상한을_넘으면_자르고_잘린_사실을_적는다(self):
+        """링크 하나의 본문만 잘리고 합계는 무제한이라 링크 여러 개가 걸린 턴은
+        노트만으로 수만 자가 들어갔다 (2026-11-29 토큰 점검)."""
+        bodies = {f"C{i:010d}": "가" * 5000 for i in range(3)}
+        text = " ".join(
+            f"https://example.slack.com/archives/C{i:010d}/p178825354440804{i}" for i in range(3)
+        )
+        note = 안내(bodies, max_chars=4000).of(text, self_channel="C099")
+        assert len(note) < 4500
+        assert "여기서 잘렸다" in note
+        assert "아는 것처럼 쓰지 않는다" in note
+
+    def test_상한_안이면_자르지_않는다(self):
+        note = 안내({"C0EXAMPLE01": "짧은 본문"}, max_chars=4000).of(MSG, self_channel="C099")
+        assert "여기서 잘렸다" not in note
+        assert "짧은 본문" in note
+
+    def test_상한이_0_이면_끈다(self):
+        note = 안내({"C0EXAMPLE01": "가" * 5000}, max_chars=0).of(MSG, self_channel="C099")
+        assert "여기서 잘렸다" not in note
+        assert len(note) > 5000
 
     def test_실시간_실패해도_언퍼얼_첨부_본문을_안내에_싣는다(self):
         """C39: 못 읽은 링크라도 붙인 사람의 미리보기 본문을 그대로 근거로 쓴다."""

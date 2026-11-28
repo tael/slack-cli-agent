@@ -980,7 +980,8 @@ class Application:
                 max_links=self._settings.linked_thread_max,
                 owner_transcript=owner_transcript,
                 owner_channel_name=owner_names,
-            )
+            ),
+            max_chars=self._settings.linked_thread_note_max_chars,
         )
 
     def _channel_display_name(self, channel: str) -> str:

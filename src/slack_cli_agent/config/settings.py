@@ -50,6 +50,11 @@ class RuntimeSettings:
     #: cap off. Where the default comes from: docs/지침-예산.md.
     system_prompt_budget_bytes: int = DEFAULT_SYSTEM_PROMPT_BUDGET_BYTES
     linked_thread_max: int = 3
+    #: 링크된 스레드 노트 전체의 글자 상한. 링크 하나의 본문은
+    #: history_max_chars(12000) 로 잘리지만 노트 합계에는 상한이 없어
+    #: linked_thread_max 개까지 그대로 붙었다 (2026-11-29 토큰 점검).
+    #: 0 이하는 끈다.
+    linked_thread_note_max_chars: int = 12000
 
     # 0 reconnects in 4h35m of normal operation; 128 in 22 minutes during an outage.
     socket_reconnect_limit: int = 4
