@@ -103,6 +103,7 @@ def test_계획_파일의_steps_가_장부가_되고_주입된다(tmp_path: Path
     monkeypatch.setenv("SCA_PLAN_STEPS", "1")
     monkeypatch.setenv("PLAN_GATE", "3")
     monkeypatch.setenv("TURN_ID", "C1:1.0")
+    monkeypatch.setenv("SCA_PLAN_SKILLS", json.dumps([{"name": "browser", "description": "브라우저"}]))
     plan_start.prompt_path(transcript).write_text("상품권 2장 구매", encoding="utf-8")
 
     class Proc:
@@ -123,3 +124,33 @@ def test_진행_표시는_실행_중_단계를_보여_준다(tmp_path: Path) -> 
     transcript = str(path).removesuffix(".plan.steps.json")
     progress_hook.record(log, json.dumps({"tool_name": "Bash", "transcript_path": transcript}))
     assert ProgressLogReader().read_new_labels(log) == ["1/3 상품 페이지 열기"]
+
+
+def test_스킬_단계가_없는_계획은_장부를_만들지_않는다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    transcript = str(tmp_path / "s.jsonl")
+    monkeypatch.setenv("SCA_PLAN_SKILLS", json.dumps([{"name": "browser", "description": "브라우저"}]))
+    monkeypatch.setenv("TURN_ID", "C1:1.0")
+    raw = [
+        {"do": "pytest 실행", "tool": "Bash", "approval": False},
+        {"do": "결과 보고", "tool": "확인 필요", "approval": False},
+    ]
+    assert plan_start._write_ledger(transcript, raw, "시험 돌려 줘") == "none:no_skill"
+    assert not plan_steps.ledger_path(transcript).exists()
+    assert plan_start._write_ledger(transcript, RAW, "상품권 2장 구매") == "created:3"
+
+
+def test_승인_대기_장부는_스킬_없는_새_계획에도_남는다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _ledger(tmp_path)
+    for n in ("1", "2"):
+        plan_steps.run_command(path, ["start", n])
+        plan_steps.run_command(path, ["done", n])
+    transcript = str(path).removesuffix(".plan.steps.json")
+    monkeypatch.setenv("SCA_PLAN_SKILLS", json.dumps([{"name": "browser", "description": "브라우저"}]))
+    raw = [{"do": "승인 기록", "tool": "Bash", "approval": False}]
+    assert plan_start._write_ledger(transcript, raw, "승인") == "kept_waiting"
+    assert path.exists()
+
+
+def test_executor_는_승인_단계_앞까지_한_번에_넘긴다() -> None:
+    assert "한 번에 모두 넘긴다" in plan_gate.STEPS_EXECUTOR
+    assert "한 번에 모두 넘긴다" in plan_gate.STEPS_EXECUTOR_RESUME

@@ -1079,13 +1079,19 @@ def _write_ledger(transcript: str, raw_steps: Any, request: str) -> str:
     path = module.ledger_path(transcript)
     steps = module.clean_steps(raw_steps)
     current = module.read(path)
-    if not steps:
+    skills = skills_from_env()
+    # 2026-11-28 소유자 결정 : 단계 실행은 스킬(browser, vault 등) 단계가 있는
+    # 요청에만 쓴다. 조회와 개발 요청에 단계 장부를 붙이면 느려지고, 소유자가
+    # 직접 시킨 일에도 확인 단계가 끼어들었다.
+    names = {s["name"] for s in skills}
+    uses_skill = any(step.get("tool") in names for step in steps)
+    if not steps or not uses_skill:
         if current and module.waiting_approval(current):
             return "kept_waiting"
         path.unlink(missing_ok=True)
-        return "none"
+        return "none" if not steps else "none:no_skill"
     module.create(
-        path, steps, request=request, turn=os.environ.get("TURN_ID", ""), skills=skills_from_env(),
+        path, steps, request=request, turn=os.environ.get("TURN_ID", ""), skills=skills,
     )
     return f"created:{len(steps)}"
 
