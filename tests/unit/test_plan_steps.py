@@ -56,7 +56,7 @@ def test_계획한_턴과_비소유자_턴은_승인할_수_없다(tmp_path: Pat
 def test_게이트는_계획한_턴에서_승인_단계_앞의_쓰기_도구를_막는다(tmp_path: Path) -> None:
     path = _ledger(tmp_path, turn="C1:1.0")
     transcript = str(path).removesuffix(".plan.steps.json")
-    data = {"transcript_path": transcript, "tool_name": "Bash", "tool_input": {"command": "node b.mjs click e1"}}
+    data = {"transcript_path": transcript, "tool_name": "Bash", "tool_input": {"command": "node browser.mjs click e1"}}
     env = {"TURN_ID": "C1:1.0"}
     assert plan_steps.gate(data, env) == ""  # step 1 does not need approval
     for n in ("1", "2"):
@@ -268,3 +268,32 @@ def test_장부가_없어도_직접_조작은_막고_조회와_코드_수정은_
     assert plan_steps.gate(run, env)
     assert plan_steps.gate(grep, env) == ""
     assert plan_steps.gate(edit, env) == ""
+
+
+def test_장부가_도는_동안_허용_목록_밖의_명령은_막는다(tmp_path: Path) -> None:
+    path = _ledger(tmp_path)
+    transcript = str(path).removesuffix(".plan.steps.json")
+    env = {"TURN_ID": "C1:1.0"}
+
+    def call(command: str) -> str:
+        data = {"transcript_path": transcript, "tool_name": "Bash", "tool_input": {"command": command}}
+        return plan_steps.gate(data, env)
+
+    assert call("curl -s -X POST https://httpbin.org/post --form-string custname=x")
+    assert call("python3 -c 'import requests'")
+    assert call("B=/Users/x/.asuka/skills/installed/browser/scripts/browser.mjs; $B click e3") == ""
+    assert call("/Users/x/.asuka/skills/installed/vault/scripts/vault.sh has asuka/pw; echo rc=$?") == ""
+    assert call("$B snapshot | head -20") == ""
+    write = {"transcript_path": transcript, "tool_name": "Write",
+             "tool_input": {"file_path": "/tmp/a.sh", "content": "x"}}
+    assert plan_steps.gate(write, env)
+    agent = {"transcript_path": transcript, "tool_name": "Agent", "tool_input": {"subagent_type": "executor"}}
+    assert plan_steps.gate(agent, env) == ""
+
+
+def test_승인_대기_중_다른_요청_턴은_허용_목록을_걸지_않는다(tmp_path: Path) -> None:
+    path = _ledger(tmp_path, turn="C1:1.0")
+    transcript = str(path).removesuffix(".plan.steps.json")
+    data = {"transcript_path": transcript, "tool_name": "Bash", "tool_input": {"command": "git status"}}
+    assert plan_steps.gate(data, {"TURN_ID": "C1:1.0"})
+    assert plan_steps.gate(data, {"TURN_ID": "C1:2.0"}) == ""

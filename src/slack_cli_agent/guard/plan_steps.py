@@ -456,6 +456,30 @@ def _runs_script(command: str) -> bool:
     return False
 
 
+#: 단계 실행 중 Bash 에 허용하는 명령 머리. 스킬 명령, 장부 명령, 읽기만 하는 명령이다.
+#: 2026-11-28 httpbin 신청 시험 : 장부를 건너뛰고 curl POST 로 바로 제출했다. 위험
+#: 동작을 하나씩 막는 대신, 장부가 도는 동안은 허용 목록 밖을 막는다.
+STEP_BASH_HEADS = frozenset({
+    "browser.mjs", "vault.sh", "$B", "$V", "ls", "cat", "head", "tail", "grep", "rg", "wc", "echo",
+    "printf", "date", "pwd", "true", "test", "[",
+})
+
+
+def _step_bash_ok(command: str) -> bool:
+    for segment in re.split(r"[;&|\n]+", command):
+        words = segment.split()
+        while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+            words = words[1:]  # B=/path/browser.mjs
+        if not words:
+            continue
+        head = words[0].strip("\"'")
+        if head.rsplit("/", 1)[-1] == "node" and len(words) > 1 and words[1].endswith("browser.mjs"):
+            continue
+        if head.rsplit("/", 1)[-1] not in STEP_BASH_HEADS and head not in STEP_BASH_HEADS:
+            return False
+    return True
+
+
 def _direct_browser(tool: str, tool_input: dict[str, Any], command: str) -> bool:
     if tool == "Bash":
         if not _runs_script(command):
@@ -470,6 +494,14 @@ def _direct_browser(tool: str, tool_input: dict[str, Any], command: str) -> bool
         return False
     lowered = text.lower()
     return any(marker in lowered for marker in DIRECT_BROWSER_MARKERS)
+
+
+def _step_tool_ok(tool: str, tool_input: dict[str, Any], command: str) -> bool:
+    if tool == "Bash":
+        return _step_bash_ok(command)
+    if tool == "Agent":
+        return tool_input.get("subagent_type") == "executor"
+    return False
 
 
 def gate(data: dict[str, Any], env: dict[str, str] | os._Environ[str] | None = None) -> str:
@@ -505,6 +537,15 @@ def gate(data: dict[str, Any], env: dict[str, str] | os._Environ[str] | None = N
         return (
             "승인된 단계가 없어 --approved 를 쓸 수 없다. 결제·발송·삭제는 소유자가 다음 말로 승인한 뒤 "
             "approve 를 기록하고 진행한다. 지금은 멈추고 승인을 구한다"
+        )
+    turn = (env.get("TURN_ID") or "").strip()
+    # 단계를 실행하는 턴 : 계획을 세운 턴과 승인을 기록한 턴. 승인을 기다리는 동안 들어온
+    # 다른 요청 턴은 막지 않는다.
+    running = not turn or turn in (ledger.get("turn"), ledger.get("approved_turn"))
+    if running and tool not in READ_TOOLS and not _step_tool_ok(tool, tool_input, command):
+        return (
+            "단계 실행 중에는 장부 명령, browser·vault 스킬 명령, 읽기 도구, executor 만 쓴다. "
+            "curl, 직접 스크립트, 다른 명령으로 단계를 대신하지 않는다. 스킬로 안 되면 fail 로 기록한다"
         )
     step = waiting_approval(ledger)
     if step is None or tool in READ_TOOLS:
