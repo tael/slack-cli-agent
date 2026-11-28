@@ -36,6 +36,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -428,14 +429,42 @@ def run_command(path: Path, argv: list[str], env: dict[str, str] | os._Environ[s
 # ---- PreToolUse gate ------------------------------------------------------
 
 
+def _approved_click(command: str) -> bool:
+    """The browser skill's approved flag on a browser command, not the word in a commit message."""
+    return APPROVED_FLAG in command.split() and ("browser" in command or "$B" in command)
+
+
 def _is_ledger_command(command: str) -> bool:
     return str(HOOK_SCRIPT) in command or "plan_steps.py" in command
 
 
+#: 스크립트를 실행하는 명령. 이것 없이 낱말만 들어간 grep 같은 조회는 막지 않는다.
+INTERPRETERS = ("node", "python", "python3", "npx", "deno", "bun", "tsx")
+#: 이 아래 파일은 스킬과 봇 코드다. 고치는 일은 막지 않는다.
+CODE_HOMES = ("/skills/installed/", "/slack-cli-agent/")
+
+
+def _runs_script(command: str) -> bool:
+    """An interpreter, or a script file run as the command of a segment."""
+    for segment in re.split(r"[;&|\n]+", command):
+        words = segment.split()
+        if not words:
+            continue
+        head = words[0].rsplit("/", 1)[-1]
+        if head in INTERPRETERS or head.endswith((".mjs", ".cjs", ".js", ".py")):
+            return True
+    return False
+
+
 def _direct_browser(tool: str, tool_input: dict[str, Any], command: str) -> bool:
     if tool == "Bash":
+        if not _runs_script(command):
+            return False
         text = command
     elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        target = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+        if any(home in target for home in CODE_HOMES):
+            return False
         text = " ".join(str(tool_input.get(k) or "") for k in ("content", "new_string", "new_source", "edits"))
     else:
         return False
@@ -457,20 +486,22 @@ def gate(data: dict[str, Any], env: dict[str, str] | os._Environ[str] | None = N
     command = str(tool_input.get("command") or "") if tool == "Bash" else ""
     if command and _is_ledger_command(command):
         return ""
-    if ledger is None:
-        if command and APPROVED_FLAG in command.split():
+    # 2026-11-28 saucedemo 3차 시험 : 재계획 상한으로 장부가 halted 가 되자 가드가 꺼졌고,
+    # 봇이 Playwright 스크립트를 직접 돌렸다. 직접 조작 차단은 장부 상태와 무관하게 건다.
+    if _direct_browser(tool, tool_input, command):
+        return (
+            "브라우저를 직접 다루는 스크립트는 쓰거나 실행하지 않는다. browser 스킬 명령(browser.mjs)으로 "
+            "한 동작씩 한다. 스킬로 안 되면 멈추고 막힌 동작과 화면을 보고한다"
+        )
+    if ledger is None or ledger.get("status") != "active":
+        if command and _approved_click(command):
             return (
                 "승인된 단계가 없어 --approved 를 쓸 수 없다. 결제·주문 확정·발송·삭제는 소유자 승인 뒤에만 한다. "
                 f"`{command_prefix(path)} hold <무엇을 얼마에 어디로>` 로 승인 단계를 만들고, "
                 "지금 멈춰 승인할 내용을 적어 답한 뒤 [[ASK]] 를 붙인다"
             )
         return ""
-    if ledger.get("status") == "active" and _direct_browser(tool, tool_input, command):
-        return (
-            "단계 실행 중에는 브라우저를 직접 다루는 스크립트를 쓰거나 실행하지 않는다. browser 스킬 명령"
-            "(browser.mjs)으로 한 동작씩 하고, 막히면 fail 로 기록해 재계획을 받는다"
-        )
-    if command and APPROVED_FLAG in command.split() and not any_approved(ledger):
+    if command and _approved_click(command) and not any_approved(ledger):
         return (
             "승인된 단계가 없어 --approved 를 쓸 수 없다. 결제·발송·삭제는 소유자가 다음 말로 승인한 뒤 "
             "approve 를 기록하고 진행한다. 지금은 멈추고 승인을 구한다"

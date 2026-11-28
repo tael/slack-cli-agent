@@ -238,3 +238,33 @@ def test_도구_이름에_스킬이_섞여_있어도_장부를_만든다(tmp_pat
     monkeypatch.setenv("SCA_PLAN_SKILLS", json.dumps([{"name": "browser", "description": "브라우저"}]))
     raw = [{"do": "로그인", "tool": "vault, browser", "approval": False}]
     assert plan_start._write_ledger(transcript, raw, "로그인") == "created:1"
+
+
+def test_장부가_멈춰도_직접_조작과_approved_는_막는다(tmp_path: Path) -> None:
+    path = _ledger(tmp_path)
+    ledger = plan_steps.read(path)
+    assert ledger is not None
+    ledger["status"] = "halted"
+    plan_steps._write(path, ledger)
+    transcript = str(path).removesuffix(".plan.steps.json")
+    env = {"TURN_ID": "C1:9.0"}
+    run = {"transcript_path": transcript, "tool_name": "Bash",
+           "tool_input": {"command": "node /tmp/x/run.mjs  # chromium.connectOverCDP('http://127.0.0.1:9333')"}}
+    approved = {"transcript_path": transcript, "tool_name": "Bash", "tool_input": {"command": "$B click e5 --approved"}}
+    assert "browser.mjs" in plan_steps.gate(run, env)
+    assert "hold" in plan_steps.gate(approved, env)
+
+
+def test_장부가_없어도_직접_조작은_막고_조회와_코드_수정은_둔다(tmp_path: Path) -> None:
+    transcript = str(tmp_path / "s.jsonl")
+    env = {"TURN_ID": "C1:1.0"}
+    run = {"transcript_path": transcript, "tool_name": "Bash",
+           "tool_input": {"command": "cat > /tmp/a.mjs <<EOF\nimport playwright\nEOF\nnode /tmp/a.mjs"}}
+    grep = {"transcript_path": transcript, "tool_name": "Bash",
+            "tool_input": {"command": "grep -n playwright browser.mjs"}}
+    edit = {"transcript_path": transcript, "tool_name": "Edit",
+            "tool_input": {"file_path": "/Users/x/.asuka/skills/installed/browser/scripts/browser.mjs",
+                           "new_string": "const { chromium } = require('playwright')"}}
+    assert plan_steps.gate(run, env)
+    assert plan_steps.gate(grep, env) == ""
+    assert plan_steps.gate(edit, env) == ""
