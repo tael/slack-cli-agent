@@ -113,6 +113,63 @@ KIND_COMPACT = "compact"
 
 _TYPE_LABEL = {"branch": "branch", "explore": "explore"}
 
+#: guard/plan_steps.py, loaded by path: both files run as scripts.
+PLAN_STEPS_SCRIPT = HOOK_SCRIPT.parent.parent / "plan_steps.py"
+STEPS_HEAD = "[단계 실행] 이 요청은 아래 단계로 나눠 차례로 실행한다."
+STEPS_WAITING_HEAD = "[승인 대기 단계] 이 스레드에 소유자 승인을 기다리는 단계가 있다."
+STEPS_EXECUTOR = (
+    "- 단계 실행은 Agent(subagent_type=\"executor\")에 맡긴다. "
+    "지시문에 단계 목록, 장부 명령, 단계별 스킬 이름을 그대로 넣는다. "
+    "메인은 실행 결과를 받아 답만 쓴다\n"
+)
+
+
+def _steps_module() -> Any:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_plan_steps_gate", PLAN_STEPS_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def steps_text(transcript: str, plan: dict[str, Any] | None, delegation: bool = False) -> str:
+    """The step block to inject: this request's new ledger, or a ledger from an
+    earlier turn that waits for approval. "" when there is neither."""
+    try:
+        module = _steps_module()
+        path = module.ledger_path(transcript)
+        ledger = module.read(path)
+    except Exception:  # noqa: BLE001 - no step text is the safe answer
+        return ""
+    if ledger is None or ledger.get("status") != "active":
+        return ""
+    cmd = module.command_prefix(path)
+    created = str((plan or {}).get("steps_ledger") or "").startswith("created")
+    waiting = module.waiting_approval(ledger)
+    if waiting and not created and ledger.get("turn") != os.environ.get("TURN_ID"):
+        return (
+            f"{STEPS_WAITING_HEAD}\n{module.render(ledger)}\n"
+            f"- 이번 말이 소유자의 승인이면 `{cmd} approve` 를 부른 뒤 남은 단계를 이어서 실행한다\n"
+            f"- 취소면 `{cmd} cancel` 을 부른다. 다른 요청이면 장부를 그대로 두고 그 요청을 처리한다\n"
+            "- 이 안내는 내부 작업 순서다. 답변에 이 안내, 장부, 훅을 언급하지 않는다"
+        )
+    if not created:
+        return ""
+    return (
+        f"{STEPS_HEAD}\n{module.render(ledger)}\n"
+        f"- 장부 명령 : `{cmd}` 뒤에 start N, done N 메모, fail N 사유, show 중 하나를 붙여 Bash 로 부른다\n"
+        "- 단계마다 start 로 시작하고 끝나면 done 을 부른다. 한 단계에 행동 하나만 한다. "
+        "스킬이 적힌 단계는 그 스킬의 SKILL.md 를 먼저 읽는다\n"
+        "- 실패하면 fail 을 부르고 출력된 새 단계를 따른다. "
+        "상한에 닿았다는 출력이면 멈추고 실패 단계와 사유를 보고한다\n"
+        + (STEPS_EXECUTOR if delegation else "")
+        + "- [승인 필요] 단계에 닿으면 그 앞에서 멈춘다. "
+        "한 단계와 승인할 내용을 적어 답하고 답 끝에 [[ASK]] 를 붙인다\n"
+        "- 이 안내는 내부 작업 순서다. 답변에 이 안내, 장부, 훅을 언급하지 않는다"
+    )
+
 
 def plan_path(transcript_path: str) -> Path:
     return Path(transcript_path + ".plan.json")
@@ -343,11 +400,18 @@ def decide(data: dict[str, Any], now: float | None = None) -> tuple[str, str]:
     status = plan.get("status")
     if status == "pending":
         return "pending", ""
+    delegation = delegation_from_env()
+    steps = steps_text(transcript, plan if status == "ok" else None, delegation)
     if status != "ok":
+        if steps and _claim_flag(transcript, ""):
+            return "inject", steps
         return "plan_failed", ""
     intake = intake_inject_from_env()
     compact = plan.get("type") == "short" or not plan.get("branches")
-    if compact and not (intake and has_compact_intake(plan)):
+    show_compact = intake and has_compact_intake(plan)
+    if compact and not show_compact:
+        if steps and _claim_flag(transcript, ""):
+            return "inject", steps
         return "short", ""
     try:
         # O_EXCL: parallel calls of one response run this hook at once.
@@ -363,9 +427,24 @@ def decide(data: dict[str, Any], now: float | None = None) -> tuple[str, str]:
         pass
     finally:
         os.close(fd)
-    if compact:
-        return "inject", render_compact(plan)
-    return "inject", render(plan, delegation_from_env(), force_parallel_from_env(), intake)
+    body = render_compact(plan) if compact else render(plan, delegation, force_parallel_from_env(), intake)
+    return "inject", "\n\n".join(part for part in (body, steps) if part)
+
+
+def _claim_flag(transcript: str, kind: str) -> bool:
+    """Create the once-per-request flag; False when it exists or fails."""
+    try:
+        fd = os.open(injected_path(transcript), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError:
+        return False
+    try:
+        if kind:
+            os.write(fd, kind.encode())
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+    return True
 
 
 def main(argv: list[str]) -> int:

@@ -330,6 +330,10 @@ class RuntimeSettings:
     # 프로세스가 판정해 기록만(Stop 지연 0), "block" 인라인 판정 후 1회 차단. plan_intake 가
     # 켜져 있어야 한다. 엔진에는 SCA_PLAN_OUTPUT_CHECK 로 넘어간다.
     plan_output_check: str = ""
+    # True 면 계획 호출이 스킬·도구 목록을 받아 작고 순서 있는 단계(steps)를 세우고 단계 장부
+    # (guard/plan_steps)에 쓴다. 승인 필요 단계는 다음 소유자 턴의 승인 전까지 막힌다.
+    # 엔진에는 SCA_PLAN_STEPS, SCA_PLAN_SKILLS 로 넘어간다. 2026-11-28 소유자 지시.
+    plan_steps: bool = False
     # True 면 엔진이 도는 중 계획의 ack 를 스레드에 한 번 게시한다. 게시 기준은
     # 계획의 type 예측이 아니라 요청 시작 후 경과 시간이다. plan_intake 가
     # 켜져 있어야 동작한다. 기본 0초 = 계획이 도착하면 바로 게시. 짧은 답과

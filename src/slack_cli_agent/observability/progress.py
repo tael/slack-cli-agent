@@ -180,10 +180,13 @@ class ProgressLogReader:
             if not line.strip():
                 continue
             try:
-                tool_name = json.loads(line).get("tool") or ""
+                entry = json.loads(line)
+                tool_name = entry.get("tool") or ""
+                step = entry.get("step") or ""
             except (json.JSONDecodeError, AttributeError):
                 continue
-            label = self._mapper.label_for(tool_name)
+            # A running ledger step (guard/plan_steps) names the work better than the tool.
+            label = str(step) if step else self._mapper.label_for(tool_name)
             previous = out[-1] if out else self._last_label
             if label and label != previous:
                 out.append(label)

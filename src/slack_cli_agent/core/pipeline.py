@@ -66,6 +66,9 @@ from ..guard.plan_start import INTAKE_SCHEMA_ENV as PLAN_INTAKE_SCHEMA_ENV
 from ..guard.plan_start import REFINE_ENV as PLAN_REFINE_ENV
 from ..guard.plan_start import REFINE_MODES as PLAN_REFINE_MODES
 from ..guard.plan_start import SOURCES_ENV as PLAN_SOURCES_ENV
+from ..guard.plan_steps import SKILLS_ENV as PLAN_SKILLS_ENV
+from ..guard.plan_steps import STEPS_ENV as PLAN_STEPS_ENV
+from ..guard.plan_steps import scan_skills
 from ..guard.plan_start import WORKFLOWS_ENV as PLAN_WORKFLOWS_ENV
 from ..guard.pretool.plan_gate import AGENT_DELEGATION_ENV, INTAKE_INJECT_ENV, PLAN_GATE_ENV, intake_view
 from ..guard.rewrite import RewriteLossGuard
@@ -347,6 +350,10 @@ class RequestPipeline:
         plan_refine: str = "",
         plan_intake_inject: bool = False,
         plan_intake_check: bool = False,
+        # True asks the planner for ordered steps and writes the step ledger (SCA_PLAN_STEPS).
+        plan_steps: bool = False,
+        # Where the bot's skills live; scanned per turn for SCA_PLAN_SKILLS.
+        plan_skills_dir: Path | None = None,
         plan_intake_schema: int = 1,
         plan_output_check: str = "",
         # (engine name, session id) -> the planner's plan file content or None.
@@ -469,6 +476,8 @@ class RequestPipeline:
         self._plan_intake = plan_intake
         self._plan_refine = plan_refine
         self._plan_intake_inject = plan_intake_inject
+        self._plan_steps = plan_steps
+        self._plan_skills_dir = plan_skills_dir
         self._plan_intake_check = plan_intake_check
         self._plan_intake_schema = plan_intake_schema
         self._plan_output_check = plan_output_check
@@ -1474,6 +1483,14 @@ class RequestPipeline:
                 env[PLAN_OUTPUT_CHECK_ENV] = self._plan_output_check
         if self._plan_refine in PLAN_REFINE_MODES:
             env[PLAN_REFINE_ENV] = self._plan_refine
+        if self._plan_steps:
+            env[PLAN_STEPS_ENV] = "1"
+            skills = scan_skills(self._plan_skills_dir) if self._plan_skills_dir is not None else []
+            env[PLAN_SKILLS_ENV] = json.dumps(
+                [{"name": s["name"], "description": s["description"]} for s in skills], ensure_ascii=False,
+            )
+            if tools is not None and tools.names:
+                env[PLAN_SOURCES_ENV] = json.dumps(list(tools.names), ensure_ascii=False)
         return env
 
     def _delegation_env(self, tools: ToolSelection) -> dict[str, str]:
