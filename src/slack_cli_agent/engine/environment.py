@@ -409,6 +409,10 @@ class ClaudeEnvironmentPolicy(EngineEnvironmentPolicy):
         # planning; SCA_PLAN_SOURCES is the JSON list of tool names this turn has.
         "SCA_PLAN_REFINE",
         "SCA_PLAN_SOURCES",
+        # guard/plan_start and guard/plan_steps: "1" asks for ordered steps; the
+        # JSON list of skill names and descriptions the steps may name.
+        "SCA_PLAN_STEPS",
+        "SCA_PLAN_SKILLS",
         # guard/pretool/plan_gate: "1" adds expected output, assumptions and
         # checks to the one-time plan injection.
         "SCA_PLAN_INTAKE_INJECT",

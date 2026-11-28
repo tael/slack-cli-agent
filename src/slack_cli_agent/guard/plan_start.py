@@ -108,6 +108,14 @@ REFINE_TIMEOUT_SEC = 15.0
 SOURCES_ENV = "SCA_PLAN_SOURCES"
 SOURCES_MAX = 60
 SOURCE_NAME_CHARS = 80
+#: Set by the pipeline to "1" when the profile's plan_steps is on: the plan
+#: also lists small ordered steps with a tool each, written to the step ledger
+#: (guard/plan_steps). SCA_PLAN_SKILLS is the JSON list of the bot's skills.
+STEPS_ENV = "SCA_PLAN_STEPS"
+SKILLS_ENV = "SCA_PLAN_SKILLS"
+STEPS_MAX = 12
+#: guard/plan_steps.py, loaded by path: both files run as scripts.
+PLAN_STEPS_SCRIPT = Path(__file__).resolve().parent / "plan_steps.py"
 KST = timezone(timedelta(hours=9), "KST")
 WEEKDAYS = "월화수목금토일"
 #: The fallback workflow when the planner is not confident.
@@ -233,12 +241,25 @@ def _intake_properties_v2() -> dict[str, Any]:
 
 def schema(
     delegation: bool = False, workflows: Any = None, intake: bool = False, refine: str = "",
-    intake_version: int = 1,
+    intake_version: int = 1, steps: bool = False,
 ) -> dict[str, Any]:
     """The planner's JSON schema. Workers are enum values only with delegation.
     Workflow fields are there only when candidate ids are given, intake fields
-    only with intake, refine fields only in combined mode."""
+    only with intake, refine fields only in combined mode, steps only with steps."""
     result = _base_schema(delegation)
+    if steps:
+        result["properties"]["steps"] = {
+            "type": "array",
+            "maxItems": STEPS_MAX,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "do": {"type": "string"}, "tool": {"type": "string"}, "approval": {"type": "boolean"},
+                },
+                "required": ["do", "tool", "approval"],
+            },
+        }
+        result["required"] = [*result["required"], "steps"]
     if refine == "combined":
         result["properties"].update(_refine_properties())
         result["required"] = [*result["required"], *REFINE_FIELDS]
@@ -413,9 +434,53 @@ def sources_section(sources: list[str]) -> str:
     )
 
 
+def steps_enabled(env: dict[str, str] | os._Environ[str] | None = None) -> bool:
+    raw = (env if env is not None else os.environ).get(STEPS_ENV, "")
+    return str(raw).strip() not in ("", "0")
+
+
+def skills_from_env(env: dict[str, str] | os._Environ[str] | None = None) -> list[dict[str, str]]:
+    raw = (env if env is not None else os.environ).get(SKILLS_ENV, "")
+    try:
+        value = json.loads(raw) if str(raw).strip() else []
+    except ValueError:
+        return []
+    return [
+        {"name": i["name"], "description": str(i.get("description") or "")}
+        for i in (value if isinstance(value, list) else [])
+        if isinstance(i, dict) and isinstance(i.get("name"), str) and i["name"].strip()
+    ]
+
+
+_STEPS_SECTION = (
+    "[단계 계획] steps 에 이 요청을 실행할 작고 순서 있는 단계를 적는다\n"
+    "- do : 한 단계에 행동 하나. 예: 로그인 페이지 열기, 사번 입력, 수량 2 입력, 결제하기 클릭\n"
+    "- tool : 그 단계에 쓸 도구나 스킬 이름. 아래 [쓸 수 있는 도구]에서 고른다. 없으면 '확인 필요'\n"
+    "- approval : 결제·구매 확정·송금, 제3자에게 가는 발송(메일, 다른 채널 메시지), 파일·데이터 삭제 단계만 true 다. "
+    "조회, 입력, 페이지 이동, 로그인, git 커밋과 push 는 false 다\n"
+    "- 조회 1-2회로 끝나는 질문, 인사, 확인 답은 steps 를 빈 배열로 둔다\n"
+)
+
+
+def steps_section(skills: list[dict[str, str]], tools: list[str], waiting: str = "") -> str:
+    lines = [_STEPS_SECTION, "[쓸 수 있는 도구]\n"]
+    lines += [f"- 스킬 {s['name']} : {s['description']}\n" for s in skills]
+    if tools:
+        lines.append("- 도구 : " + ", ".join(tools) + "\n")
+    if not skills and not tools:
+        lines.append("- 확인 필요\n")
+    if waiting:
+        lines.append(
+            f"[승인 대기 중인 단계] {waiting}\n"
+            "- 이번 요청이 이 단계의 승인·진행·취소에 대한 답이면 steps 는 빈 배열이다\n"
+        )
+    return "".join(lines)
+
+
 def planner_prompt(
     delegation: bool = False, workflows: dict[str, str] | None = None, intake: bool = False,
     sources: list[str] | None = None, refine: str = "", intake_version: int = 1,
+    steps: str = "",
 ) -> str:
     """The instruction placed before the request. The workflow section goes
     after item 3 and before the [요청] marker, then the intake section (with
@@ -423,6 +488,9 @@ def planner_prompt(
     the text exactly as it was. Sources count only with intake."""
     tail = _PLANNER_TAIL
     combined = refine == "combined"
+    if steps:
+        head, sep, rest = tail.partition("\n[요청]\n")
+        tail = head + steps + sep + rest
     if workflows or intake or combined:
         marker = "\n[요청]\n"
         head, _, rest = tail.partition(marker)
@@ -626,6 +694,8 @@ def start(data: dict[str, Any], *, spawn: Any = subprocess.Popen, runner: Any = 
         context = recent_context(transcript, prompt)
         if context:
             context_path(transcript).write_text(context, encoding="utf-8")
+    if steps_enabled():
+        _drop_finished_ledger(transcript)
     _write_json(plan_path(transcript), {"status": "pending", "started_at": time.time()})
     if sync_enabled():
         (runner or run)(transcript, timeout=SYNC_TIMEOUT_SEC)
@@ -665,8 +735,11 @@ def _call_planner(prompt: str, model: str, timeout: float) -> subprocess.Complet
     intake = intake_enabled()
     refine = refine_mode()
     version = intake_schema()
-    text = planner_prompt(delegation, workflows, intake, sources_list(), refine, version) + prompt
-    return _call_claude(text, model, timeout, schema(delegation, workflows, intake, refine, version))
+    steps = steps_enabled()
+    waiting = os.environ.get("_SCA_STEPS_WAITING", "")
+    section = steps_section(skills_from_env(), sources_list(), waiting) if steps else ""
+    text = planner_prompt(delegation, workflows, intake, sources_list(), refine, version, section) + prompt
+    return _call_claude(text, model, timeout, schema(delegation, workflows, intake, refine, version, steps))
 
 
 def _call_refiner(prompt: str, model: str, timeout: float) -> subprocess.CompletedProcess[str]:
@@ -966,6 +1039,57 @@ def check_refine(plan: dict[str, Any], mode: str) -> dict[str, Any] | None:
     return {"mode": "combined", "status": "ok", **cleaned}
 
 
+def _steps_module() -> Any:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_plan_steps", PLAN_STEPS_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def waiting_text(transcript: str) -> str:
+    """The step waiting for approval in this session's ledger, or ""."""
+    with contextlib.suppress(Exception):
+        module = _steps_module()
+        ledger = module.read(module.ledger_path(transcript))
+        step = module.waiting_approval(ledger) if ledger else None
+        if step:
+            return f"{step['n']}. {step['do']}"
+    return ""
+
+
+def _drop_finished_ledger(transcript: str) -> None:
+    """A new request starts without the previous request's steps unless one
+    of them waits for approval."""
+    with contextlib.suppress(Exception):
+        module = _steps_module()
+        path = module.ledger_path(transcript)
+        ledger = module.read(path)
+        if ledger is None or not module.waiting_approval(ledger):
+            path.unlink(missing_ok=True)
+
+
+def _write_ledger(transcript: str, raw_steps: Any, request: str) -> str:
+    """Write the step ledger from the plan's steps; returns what it did.
+    A ledger waiting for approval is kept when the new plan has no steps, so
+    a short "승인" reply does not erase the step it answers."""
+    module = _steps_module()
+    path = module.ledger_path(transcript)
+    steps = module.clean_steps(raw_steps)
+    current = module.read(path)
+    if not steps:
+        if current and module.waiting_approval(current):
+            return "kept_waiting"
+        path.unlink(missing_ok=True)
+        return "none"
+    module.create(
+        path, steps, request=request, turn=os.environ.get("TURN_ID", ""), skills=skills_from_env(),
+    )
+    return f"created:{len(steps)}"
+
+
 def run(
     transcript: str, *, caller: Any = _call_planner, timeout: float = TIMEOUT_SEC,
     refiner: Any = _call_refiner, now: datetime | None = None,
@@ -989,6 +1113,8 @@ def run(
             record["refine"] = refine_request(request, context, model, refiner=refiner, now=now)
             if record["refine"]["status"] == "ok":
                 prompt = refined_planner_input(prompt, record["refine"])
+        if steps_enabled():
+            os.environ["_SCA_STEPS_WAITING"] = waiting_text(transcript)
         proc = caller(prompt, model, timeout)
         status, plan = parse(proc.stdout or "")
         if plan is not None and plan.get("type") == "short" and is_rca(request):
@@ -1013,6 +1139,10 @@ def run(
                 dropped = check_intake(plan, intake)
             if dropped:
                 record["intake_dropped"] = dropped
+            if steps_enabled():
+                record["steps_ledger"] = _write_ledger(transcript, plan.pop("steps", None), request)
+            else:
+                plan.pop("steps", None)
             record.update(plan)
     except subprocess.TimeoutExpired:
         status = "timeout"

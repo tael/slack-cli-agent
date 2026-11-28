@@ -51,7 +51,7 @@ from ..auth.policy import OPERATOR_TOOLS
 from ..auth.principal import TrustLevel
 from ..config.profile import EngineSpec, McpServerSpec
 from ..core.markers import RECIPIENT_TAG_ANY
-from ..guard import finish_hook, plan_start
+from ..guard import finish_hook, plan_start, plan_steps
 from ..guard.posttool import parallel_nudge
 from ..guard.pretool import (
     install_guard,
@@ -391,6 +391,9 @@ _GUARD_HOOK_SETTINGS: dict[str, Any] = {
                     # additionalContext; never denies. Only on turns the
                     # pipeline set PLAN_GATE for (guard/pretool/plan_gate).
                     {"type": "command", "command": _hook_command(plan_gate.HOOK_SCRIPT)},
+                    # Step ledger approval gate (guard/plan_steps): denies tools past an
+                    # unapproved approval step and the browser's --approved flag.
+                    {"type": "command", "command": _hook_command(plan_steps.HOOK_SCRIPT) + " --gate"},
                     # Denies a call after the previous responses each made an
                     # essentially-same call (guard/pretool/repeat_guard).
                     {"type": "command", "command": _hook_command(repeat_guard.HOOK_SCRIPT)},

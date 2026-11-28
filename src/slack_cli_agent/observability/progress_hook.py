@@ -48,13 +48,43 @@ def append_tool(log_path: Path, tool_name: str) -> None:
         return
 
 
-def record(log_path: Path, payload: str) -> None:
-    """Appends one tool name from a hook payload. Silent on anything unreadable."""
+def step_label(transcript_path: str) -> str:
+    """"2/5 로그인 버튼 클릭" for the step ledger's running step
+    (guard/plan_steps ``<transcript>.plan.steps.json``), else ""."""
+    if not transcript_path:
+        return ""
     try:
-        tool_name = json.loads(payload or "{}").get("tool_name") or ""
+        ledger = json.loads(Path(transcript_path + ".plan.steps.json").read_text(encoding="utf-8"))
+        steps = [s for s in ledger.get("steps") or [] if isinstance(s, dict)]
+    except (OSError, ValueError, AttributeError):
+        return ""
+    if ledger.get("status") != "active":
+        return ""
+    for step in steps:
+        if step.get("status") == "running":
+            return f"{step.get('n')}/{len(steps)} {step.get('do', '')}"[:120]
+    return ""
+
+
+def record(log_path: Path, payload: str) -> None:
+    """Appends one tool name from a hook payload, with the running step's
+    label when a step ledger has one. Silent on anything unreadable."""
+    try:
+        data = json.loads(payload or "{}")
+        tool_name = data.get("tool_name") or ""
+        step = step_label(str(data.get("transcript_path") or ""))
     except (json.JSONDecodeError, AttributeError, TypeError):
         return
-    append_tool(log_path, tool_name)
+    if not tool_name:
+        return
+    if not step:
+        append_tool(log_path, tool_name)
+        return
+    try:
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"tool": tool_name, "step": step}, ensure_ascii=False) + "\n")
+    except OSError:
+        return
 
 
 def main(argv: list[str]) -> int:
