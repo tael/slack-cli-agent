@@ -217,3 +217,24 @@ def test_장부가_있으면_브라우저를_직접_다루는_코드를_막는�
     assert "browser.mjs" in plan_steps.gate(direct, env)
     assert "browser.mjs" in plan_steps.gate(write, env)
     assert plan_steps.gate(skill, env) == ""
+
+
+def test_장부가_없어도_approved_는_막고_hold_로_승인을_받는다(tmp_path: Path) -> None:
+    transcript = str(tmp_path / "s.jsonl")
+    path = plan_steps.ledger_path(transcript)
+    click = {"transcript_path": transcript, "tool_name": "Bash", "tool_input": {"command": "$B click e5 --approved"}}
+    assert "hold" in plan_steps.gate(click, {"TURN_ID": "C1:1.0"})
+    assert plan_steps.gate({**click, "tool_input": {"command": "$B click e5"}}, {"TURN_ID": "C1:1.0"}) == ""
+    code, _ = plan_steps.run_command(path, ["hold", "Finish", "클릭(주문", "확정,", "$32.39)"], {"TURN_ID": "C1:1.0"})
+    assert code == 0
+    assert "승인" in plan_steps.gate(click, {"TURN_ID": "C1:1.0"})
+    assert plan_steps.run_command(path, ["approve"], {"TURN_ID": "C1:1.0", "TURN_TIER": "owner"})[0] == 3
+    assert plan_steps.run_command(path, ["approve"], {"TURN_ID": "C1:2.0", "TURN_TIER": "owner"})[0] == 0
+    assert plan_steps.gate(click, {"TURN_ID": "C1:2.0"}) == ""
+
+
+def test_도구_이름에_스킬이_섞여_있어도_장부를_만든다(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    transcript = str(tmp_path / "s.jsonl")
+    monkeypatch.setenv("SCA_PLAN_SKILLS", json.dumps([{"name": "browser", "description": "브라우저"}]))
+    raw = [{"do": "로그인", "tool": "vault, browser", "approval": False}]
+    assert plan_start._write_ledger(transcript, raw, "로그인") == "created:1"

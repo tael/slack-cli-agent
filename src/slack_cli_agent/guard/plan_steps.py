@@ -372,8 +372,30 @@ def cmd_fail(ledger: dict[str, Any], n: int, reason: str, *, replanner: Any = _c
     return f"{n}단계 실패. 남은 단계를 다시 계획했다 ({ledger['replans']}/{MAX_REPLANS})\n" + render(ledger)
 
 
+def cmd_hold(path: Path, what: str, env: dict[str, str] | os._Environ[str]) -> tuple[int, str]:
+    """A one-step approval ledger for a risky click the plan did not foresee.
+
+    2026-11-28 실제 사이트 시험 : 계획에 장부가 없자 봇이 --approved 를 스스로 붙여
+    주문을 완료했다. 이제 --approved 는 승인된 장부 단계가 있어야 통하고, 장부가 없으면
+    이 명령으로 승인 단계를 만든 뒤 답을 끝내 다음 소유자 말에서 승인받는다.
+    """
+    current = read(path)
+    if current is not None and current.get("status") == "active":
+        return 3, "거부 : 진행 중인 장부가 있다. show 로 보고 그 장부의 승인 단계를 따른다"
+    if not what.strip():
+        return 3, "거부 : 사용법 : hold <승인받을 동작. 무엇을 얼마에 어디로>"
+    steps = clean_steps([{"do": what, "tool": "browser", "approval": True}])
+    create(path, steps, request=what, turn=(env.get("TURN_ID") or "").strip(), skills=[])
+    return 0, (
+        f"승인 대기 단계를 만들었다 : 1. {steps[0]['do']}. "
+        "지금 멈추고 승인할 내용을 적어 답하고 [[ASK]] 를 붙인다"
+    )
+
+
 def run_command(path: Path, argv: list[str], env: dict[str, str] | os._Environ[str] | None = None) -> tuple[int, str]:
     env = env if env is not None else os.environ
+    if argv and argv[0] == "hold":
+        return cmd_hold(path, " ".join(argv[1:]), env)
     ledger = read(path)
     if ledger is None:
         return 1, "단계 장부가 없다"
@@ -427,14 +449,21 @@ def gate(data: dict[str, Any], env: dict[str, str] | os._Environ[str] | None = N
     transcript = data.get("transcript_path")
     if not transcript:
         return ""
-    ledger = read(ledger_path(transcript))
-    if ledger is None:
-        return ""
+    path = ledger_path(transcript)
+    ledger = read(path)
     tool = str(data.get("tool_name") or "")
     raw_input = data.get("tool_input")
     tool_input: dict[str, Any] = raw_input if isinstance(raw_input, dict) else {}
     command = str(tool_input.get("command") or "") if tool == "Bash" else ""
     if command and _is_ledger_command(command):
+        return ""
+    if ledger is None:
+        if command and APPROVED_FLAG in command.split():
+            return (
+                "승인된 단계가 없어 --approved 를 쓸 수 없다. 결제·주문 확정·발송·삭제는 소유자 승인 뒤에만 한다. "
+                f"`{command_prefix(path)} hold <무엇을 얼마에 어디로>` 로 승인 단계를 만들고, "
+                "지금 멈춰 승인할 내용을 적어 답한 뒤 [[ASK]] 를 붙인다"
+            )
         return ""
     if ledger.get("status") == "active" and _direct_browser(tool, tool_input, command):
         return (
