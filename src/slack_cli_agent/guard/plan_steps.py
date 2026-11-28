@@ -427,6 +427,14 @@ def gate(data: dict[str, Any], env: dict[str, str] | os._Environ[str] | None = N
     if step is None or tool in READ_TOOLS:
         return ""
     if (env.get("TURN_ID") or "").strip() and env.get("TURN_ID") != ledger.get("turn"):
+        # 2026-11-28 두 턴 시험 : 승인 턴에서 approve 전에 executor 를 불러, executor 가
+        # 장부 거부를 받고 빈손으로 돌아왔다. 승인 기록이 먼저다.
+        if tool == "Agent" and tool_input.get("subagent_type") == "executor":
+            return (
+                f"{step['n']}단계 '{step['do']}' 의 승인이 아직 장부에 없다. 소유자의 이번 말이 승인이면 "
+                "장부 명령 approve 를 먼저 부르고 '승인 기록' 출력을 확인한 뒤 executor 를 부른다. "
+                "승인이 아니면 executor 를 부르지 않는다"
+            )
         return ""
     return (
         f"{step['n']}단계 '{step['do']}' 는 소유자 승인이 필요하다. 이 턴에서는 더 진행하지 않는다. "

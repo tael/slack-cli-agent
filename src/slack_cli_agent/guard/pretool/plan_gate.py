@@ -161,7 +161,8 @@ def steps_text(transcript: str, plan: dict[str, Any] | None, delegation: bool = 
     if waiting and not created and ledger.get("turn") != os.environ.get("TURN_ID"):
         return (
             f"{STEPS_WAITING_HEAD}\n{module.render(ledger)}\n"
-            f"- 이번 말이 소유자의 승인이면 `{cmd} approve` 를 부른 뒤 남은 단계를 이어서 실행한다\n"
+            f"- 이번 말이 소유자의 승인이면 다른 일보다 먼저 `{cmd} approve` 를 부르고, "
+            "'승인 기록' 출력을 확인한 뒤 남은 단계를 이어서 실행한다\n"
             + (STEPS_EXECUTOR_RESUME if delegation else "")
             + f"- 취소면 `{cmd} cancel` 을 부른다. 다른 요청이면 장부를 그대로 두고 그 요청을 처리한다\n"
             "- 이 안내는 내부 작업 순서다. 답변에 이 안내, 장부, 훅을 언급하지 않는다"
