@@ -31,8 +31,10 @@ from slack_cli_agent.core.secrets import contains_secret, redact
 from slack_cli_agent.slack.credentials import (
     APP_TOKEN_ENV,
     BOT_TOKEN_ENV,
+    USER_KEYCHAIN_ENV,
     CredentialResolver,
     SlackCredentials,
+    read_keychain_item,
     resolver_for,
 )
 from slack_cli_agent.web.editor import ProfileEditor
@@ -53,6 +55,71 @@ def _해석기(
         configured_path=None,
         env=env or {},
     )
+
+
+class Test키체인폴백:
+    """소유자 세션 토큰은 키체인이 원천이다. 자격 파일에 없어 소유자 세션이
+    꺼진 채 돌던 것을 막는다 (2026-11-28 12:03 ~ 11-29 01:19 로그)."""
+
+    def _키체인(self, tmp_path: Path, service: str = "shinji/tael-slack") -> CredentialResolver:
+        읽은값 = {("shinji/tael-slack", "xoxc"): "xoxc-키체인", ("shinji/tael-slack", "xoxd"): "xoxd-키체인"}
+        return CredentialResolver(
+            default_path=tmp_path / "credentials.json",
+            configured_path=None,
+            env={USER_KEYCHAIN_ENV: service} if service else {},
+            keychain_reader=lambda s, a: 읽은값.get((s, a), ""),
+        )
+
+    def test_자격_파일에_없으면_키체인에서_읽는다(self, tmp_path: Path) -> None:
+        해석기 = self._키체인(tmp_path)
+        assert 해석기.user_token() == "xoxc-키체인"
+        assert 해석기.user_cookie() == "xoxd-키체인"
+
+    def test_자격_파일_값이_키체인보다_앞이다(self, tmp_path: Path) -> None:
+        _자격파일(tmp_path / "credentials.json", user_token="파일값")
+        해석기 = CredentialResolver(
+            default_path=tmp_path / "credentials.json",
+            configured_path=None,
+            env={USER_KEYCHAIN_ENV: "shinji/tael-slack"},
+            keychain_reader=lambda s, a: "키체인값",
+        )
+        assert 해석기.user_token() == "파일값"
+
+    def test_서비스명이_없으면_키체인을_보지_않는다(self, tmp_path: Path) -> None:
+        불림 = []
+        해석기 = CredentialResolver(
+            default_path=tmp_path / "credentials.json",
+            configured_path=None,
+            env={},
+            keychain_reader=lambda s, a: 불림.append((s, a)) or "키체인값",
+        )
+        assert 해석기.user_token() == ""
+        assert 불림 == []
+
+    def test_봇_토큰은_키체인에서_읽지_않는다(self, tmp_path: Path) -> None:
+        해석기 = CredentialResolver(
+            default_path=tmp_path / "credentials.json",
+            configured_path=None,
+            env={USER_KEYCHAIN_ENV: "shinji/tael-slack"},
+            keychain_reader=lambda s, a: "키체인값",
+        )
+        assert 해석기.bot_token() == ""
+        assert 해석기.app_token() == ""
+
+    def test_키체인_읽기가_터져도_빈_값으로_넘어간다(self, tmp_path: Path) -> None:
+        def 터진다(service: str, account: str) -> str:
+            raise RuntimeError("키체인 잠김")
+
+        해석기 = CredentialResolver(
+            default_path=tmp_path / "credentials.json",
+            configured_path=None,
+            env={USER_KEYCHAIN_ENV: "shinji/tael-slack"},
+            keychain_reader=터진다,
+        )
+        assert 해석기.user_token() == ""
+
+    def test_없는_항목은_빈_문자열이다(self) -> None:
+        assert read_keychain_item("shinji/없는서비스-테스트", "없는계정") == ""
 
 
 class Test우선순위:

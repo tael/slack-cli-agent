@@ -15,7 +15,8 @@ import json
 import logging
 import os
 import stat
-from collections.abc import Mapping
+import subprocess
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -37,6 +38,13 @@ USER_TOKEN_ENV = "SLACK_USER_TOKEN"
 # 브라우저 세션 토큰(xoxc)은 d 쿠키(xoxd)가 함께 가야 통한다. 소유자 턴의
 # 링크 선읽기가 쓴다(D5). xoxp 토큰이면 비워 둔다.
 USER_COOKIE_ENV = "SLACK_USER_COOKIE"
+# 소유자 세션 토큰의 보관 원천은 macOS 키체인이다. 자격 파일과 환경이 비면
+# 여기서 읽는다. 이 값이 빈 문자열이면 키체인을 보지 않는다. 2026-11-28 12:03
+# 부터 11-29 01:19 까지 자격 파일에 user_token 이 없어 소유자 세션이 꺼진 채
+# 돌았고, 키체인에는 값이 있었다.
+USER_KEYCHAIN_ENV = "SLACK_USER_KEYCHAIN_SERVICE"
+#: 키체인 서비스 하나에 계정 이름으로 두 값이 들어 있다.
+KEYCHAIN_ACCOUNTS = {"user_token": "xoxc", "user_cookie": "xoxd"}
 
 _ALLOWED_KEYS = frozenset({"bot_token", "app_token", "user_token", "user_cookie"})
 # Anything readable by group or other. An 0400 file is stricter than 0600 and
@@ -54,6 +62,23 @@ class SlackCredentials:
     user_cookie: str = ""
 
 
+def read_keychain_item(service: str, account: str) -> str:
+    """macOS 키체인의 한 항목 값. 없으면 빈 문자열이다.
+
+    값은 반환만 하고 로그에 남기지 않는다. 실패도 종료 코드로만 본다.
+    """
+    try:
+        done = subprocess.run(  # noqa: S603 -- 인자가 고정된 security 명령이다
+            ["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if done.returncode != 0:
+        return ""
+    return done.stdout.strip()
+
+
 class CredentialResolver:
     """Resolves each token from arguments, the environment, then the file.
 
@@ -67,6 +92,9 @@ class CredentialResolver:
         default_path: Path,
         configured_path: Path | None,
         env: Mapping[str, str] | None = None,
+        # 키체인에서 한 항목을 읽는다. (서비스, 계정) 을 받아 값이나 빈
+        # 문자열을 낸다. 테스트가 security 명령 없이 돌게 주입으로 둔다.
+        keychain_reader: Callable[[str, str], str] | None = None,
     ) -> None:
         if configured_path is not None and not configured_path.is_absolute():
             raise ConfigError(
@@ -76,6 +104,7 @@ class CredentialResolver:
         self._configured_path = configured_path
         self._env = os.environ if env is None else env
         self._loaded: SlackCredentials | None = None
+        self._keychain_reader = keychain_reader or read_keychain_item
 
     def bot_token(self, given: str | None = None) -> str:
         return self._resolve(given, BOT_TOKEN_ENV, "bot_token")
@@ -98,7 +127,26 @@ class CredentialResolver:
         from_env = self._env.get(env_name, "")
         if from_env:
             return from_env
-        return str(getattr(self._load(), field))
+        from_file = str(getattr(self._load(), field))
+        if from_file:
+            return from_file
+        return self._from_keychain(field)
+
+    def _from_keychain(self, field: str) -> str:
+        """자격 파일과 환경이 비었을 때 키체인에서 소유자 세션 값을 읽는다.
+
+        봇 토큰과 앱 토큰은 대상이 아니다. 그 둘은 자격 파일에 있고, 없으면
+        기동 자체가 실패해 누락이 곧바로 드러난다.
+        """
+        account = KEYCHAIN_ACCOUNTS.get(field, "")
+        service = self._env.get(USER_KEYCHAIN_ENV, "")
+        if not account or not service:
+            return ""
+        try:
+            return self._keychain_reader(service, account)
+        except Exception:  # noqa: BLE001 -- 키체인이 막혀도 턴을 멈추지 않는다
+            log.warning("키체인에서 소유자 세션 값을 읽지 못했다 (계정 %s)", account)
+            return ""
 
     def _load(self) -> SlackCredentials:
         if self._loaded is None:
