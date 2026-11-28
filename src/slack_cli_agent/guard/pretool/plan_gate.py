@@ -88,7 +88,10 @@ INJECT_TAIL = INJECT_TAIL_HEAD + INJECT_TAIL_END
 INTAKE_INJECT_ENV = "SCA_PLAN_INTAKE_INJECT"
 INJECT_HEAD_COMPACT = "[작업 기준] 이 요청은 아래 기준으로 답한다."
 INJECT_ASSUMED = "- 가정을 답변에 밝혀 사용자가 고칠 수 있게 한다"
-INJECT_CHECKS = "- 답변은 이 기준으로 점검된다. 확인하지 못한 기준은 답하기 전에 다른 도구, 명령, 출처로 조회해 확정한다. 모든 경로가 막힌 기준만 시도한 경로와 오류를 적는다"
+INJECT_CHECKS = (
+    "- 답변은 이 기준으로 점검된다. 확인하지 못한 기준은 답하기 전에 다른 도구, 명령, 출처로 조회해 확정한다. "
+    "모든 경로가 막힌 기준만 시도한 경로와 오류를 적는다"
+)
 #: v2 intake (SCA_PLAN_INTAKE_SCHEMA=2): input kinds, output forms and caps.
 #: guard/plan_start keeps its own copies (a test pins them equal).
 INPUT_KINDS = ("given", "derived", "lookup", "guess", "ask")
@@ -104,7 +107,8 @@ INJECT_LOOKUP = (
 )
 INJECT_GUESS = (
     "- guess 값은 사용자에게 안내됐을 수 있다. 도구 결과가 다르면 바꾸고 바꾼 점을 답에 한 문장으로 밝힌다. "
-    "guess 가 제품·모델·서비스·회사·앱 이름의 정체이면 답하기 전에 볼트 지식 색인과 메모리 색인을 보고, 없으면 웹검색으로 확인한다"
+    "guess 가 제품·모델·서비스·회사·앱 이름의 정체이면 답하기 전에 볼트 지식 색인과 메모리 색인을 보고, 없으면 "
+    "웹검색으로 확인한다"
 )
 INJECT_OUTPUT = "- 답은 기대 결과의 형태와 항목대로 쓰고 그 밖의 내용은 덧붙이지 않는다"
 #: Written to the once-only flag file when the intake text is on.
@@ -365,7 +369,10 @@ def render(
             line += f" / 위임 : {delegate}"
         lines.append(line)
     if done_when:
-        lines.append("- 답하기 전에 완료 조건을 하나씩 대조한다. 충족을 확인하지 못한 조건은 답하기 전에 다른 도구, 명령, 출처로 조회해 확정한다. 모든 경로가 막힌 조건만 시도한 경로와 오류를 적는다")
+        lines.append(
+            "- 답하기 전에 완료 조건을 하나씩 대조한다. 충족을 확인하지 못한 조건은 답하기 전에 다른 도구, 명령, "
+            "출처로 조회해 확정한다. 모든 경로가 막힌 조건만 시도한 경로와 오류를 적는다"
+        )
     if plan.get("type") == "explore":
         lines.append("- explore 유형이다. 첫 갈래 결과를 보고 다음 조회를 정한다")
     if intake:
