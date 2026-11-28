@@ -676,6 +676,7 @@ def _gate_context(transcript: str) -> str:
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("_plan_gate_sync", PLAN_GATE_SCRIPT)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     verdict, context = module.decide({"transcript_path": transcript})
@@ -1180,7 +1181,7 @@ def main(argv: list[str]) -> int:
         return 0
     with contextlib.suppress(Exception):  # never fail the prompt
         data = json.load(sys.stdin)
-        parts = [_ledger_context(data)]
+        parts = [_ledger_context(data), _waiting_context(data)]
         with contextlib.suppress(Exception):
             if start(data) == "sync":
                 parts.append(_gate_context(data["transcript_path"]) or "")
@@ -1190,6 +1191,29 @@ def main(argv: list[str]) -> int:
                 "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context},
             }, ensure_ascii=False))
     return 0
+
+
+def _waiting_context(data: dict[str, Any]) -> str:
+    """A step from an earlier turn that waits for approval, told before the
+    first model response. The PreToolUse notice arrives with the first tool
+    call, too late: the 2026-11-28 two-turn probe called executor first and
+    the gate had to deny it."""
+    if not steps_enabled() or (os.environ.get("TURN_TIER") or "").strip() not in {"owner", "owner_trusted"}:
+        return ""
+    with contextlib.suppress(Exception):
+        module = _steps_module()
+        path = module.ledger_path(data["transcript_path"])
+        ledger = module.read(path)
+        step = module.waiting_approval(ledger) if ledger else None
+        if step and ledger.get("turn") != os.environ.get("TURN_ID"):
+            cmd = module.command_prefix(path)
+            return (
+                f"[승인 대기 단계] 이 스레드에 소유자 승인을 기다리는 단계가 있다 : {step['n']}. {step['do']}\n"
+                f"- 이번 말이 승인이면 첫 도구 호출로 `{cmd} approve` 를 부른다. "
+                "'승인 기록' 출력을 본 뒤에 executor 를 부른다\n"
+                "- 이 안내는 내부 작업 순서다. 답변에 이 안내, 장부, 훅을 언급하지 않는다"
+            )
+    return ""
 
 
 def _ledger_context(data: dict[str, Any]) -> str:
