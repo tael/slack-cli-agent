@@ -2,6 +2,11 @@
 """소유자 턴 하나를 슬랙에 글을 남기지 않고 실제 파이프라인으로 돌린다.
 
     ~/.<봇>/venv/bin/python tools/owner-turn-probe.py <봇이름> <본문>
+    ~/.<봇>/venv/bin/python tools/owner-turn-probe.py <봇이름> <본문> --thread /tmp/t.json
+
+--thread 파일을 주면 그 파일에 스레드(질문과 봇 답)를 남기고, 다음 실행에서 같은
+파일을 주면 같은 스레드의 다음 턴으로 이어 돌린다. 승인을 기다리는 단계에
+"승인" 으로 답하는 두 턴 시험에 쓴다.
 
 test-channel-probe.py 는 다른 봇 토큰으로 멘션하므로 그 턴은 일반 사용자
 턴이다. 소유자 턴에만 붙는 지침(OWNER_NOTE, SelfConfigSection)과 도구는 그
@@ -22,6 +27,7 @@ RequestPipeline.handle 을 부른다. 채널은 프로필의 troubleshoot_channe
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import re
@@ -66,20 +72,28 @@ class WriteRecordingClient:
         self.writes: list[tuple[str, dict[str, Any]]] = []
         self.write_times: list[float] = []
         self._seq = 0
-        # The probe question does not exist on Slack. Thread reads for its ts
-        # return it, or the pre-post check reads it as deleted and withholds.
-        self.question: dict[str, Any] | None = None
+        # The probe thread does not exist on Slack. Thread reads for its root
+        # return it, or the pre-post check reads the question as deleted and withholds.
+        self.thread_ts = ""
+        self.messages: list[dict[str, Any]] = []
+        self.bot: dict[str, Any] = {}
 
     def _probe_thread(self, params: dict[str, Any]) -> FakeResponse | None:
-        if self.question is None or str(params.get("ts", "")) != self.question["ts"]:
+        if not self.thread_ts or str(params.get("ts", "")) != self.thread_ts:
             return None
-        return FakeResponse(ok=True, messages=[self.question], has_more=False)
+        return FakeResponse(ok=True, messages=list(self.messages), has_more=False)
 
     def _fake(self, method: str, params: dict[str, Any]) -> FakeResponse:
         self.writes.append((method, params))
         self.write_times.append(time.time())
         self._seq += 1
         ts = f"{time.time():.6f}"
+        if method in ("chat_postMessage", "chat.postMessage") and params.get("thread_ts") == self.thread_ts:
+            self.messages.append({"ts": ts, "text": params.get("text", ""), "thread_ts": self.thread_ts, **self.bot})
+        if method in ("chat_update", "chat.update"):
+            for message in self.messages:
+                if message.get("ts") == params.get("ts"):
+                    message["text"] = params.get("text", message.get("text", ""))
         return FakeResponse(ok=True, ts=ts, channel=params.get("channel", ""), message={"ts": ts})
 
     def api_call(self, api_method: str, *args: Any, **kwargs: Any) -> Any:
@@ -125,6 +139,8 @@ def main() -> int:
     ap.add_argument("text")
     ap.add_argument("--set", dest="overrides", action="append", default=[], metavar="KEY=VALUE",
                     help="프로필 settings 키를 이번 실행에만 덮어쓴다. 값은 JSON, 아니면 문자열. 반복 가능")
+    ap.add_argument("--thread", type=Path, default=None,
+                    help="스레드 기록 파일. 있으면 그 스레드의 다음 턴으로 돌리고, 끝나면 갱신한다")
     a = ap.parse_args()
     if not NAME_PATTERN.match(a.bot):
         raise SystemExit(f"봇 이름이 아니다 : {a.bot!r}")
@@ -141,12 +157,23 @@ def main() -> int:
     app = Application.from_profile(profile, client=client, resolver=resolver)
     # Must parse as a float: the pipeline compares thread timestamps numerically.
     ts = f"{time.time():.6f}"
-    client.question = {"ts": ts, "user": profile.owner_user_id, "text": a.text}
+    saved: dict[str, Any] = {}
+    if a.thread is not None and a.thread.exists():
+        saved = json.loads(a.thread.read_text(encoding="utf-8"))
+    client.thread_ts = str(saved.get("thread_ts") or ts)
+    client.messages = list(saved.get("messages") or [])
+    with contextlib.suppress(Exception):
+        auth = client.auth_test()
+        client.bot = {"user": auth.get("user_id", ""), "bot_id": auth.get("bot_id", "")}
+    question = {"ts": ts, "user": profile.owner_user_id, "text": a.text}
+    if client.thread_ts != ts:
+        question["thread_ts"] = client.thread_ts
+    client.messages.append(question)
     ctx = RequestContext(
         channel=profile.troubleshoot_channel,
         user=profile.owner_user_id,
         ts=ts,
-        thread_ts=ts,
+        thread_ts=client.thread_ts,
         text=a.text,
     )
     started = time.time()
@@ -155,7 +182,12 @@ def main() -> int:
     finally:
         app.close()
     print(f"결과 : {outcome!r}  ({time.time() - started:.0f}초)")
-    print(f"질문 ts : {ts}")
+    print(f"질문 ts : {ts}  스레드 : {client.thread_ts}")
+    if a.thread is not None:
+        a.thread.write_text(
+            json.dumps({"thread_ts": client.thread_ts, "messages": client.messages}, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
     for (method, params), at in zip(client.writes, client.write_times, strict=True):
         body = params.get("text") or params.get("name") or ""
         if not body and params.get("blocks"):

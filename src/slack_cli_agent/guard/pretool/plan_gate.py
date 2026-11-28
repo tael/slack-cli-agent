@@ -117,10 +117,16 @@ _TYPE_LABEL = {"branch": "branch", "explore": "explore"}
 PLAN_STEPS_SCRIPT = HOOK_SCRIPT.parent.parent / "plan_steps.py"
 STEPS_HEAD = "[단계 실행] 이 요청은 아래 단계로 나눠 차례로 실행한다."
 STEPS_WAITING_HEAD = "[승인 대기 단계] 이 스레드에 소유자 승인을 기다리는 단계가 있다."
+#: 2026-11-28 시험에서 화면 동작 3번에 executor 를 3번 불러 72초가 걸렸다.
 STEPS_EXECUTOR = (
     "- 단계 실행은 Agent(subagent_type=\"executor\")에 맡긴다. "
+    "[승인 필요] 단계 앞까지(없으면 끝까지)의 단계를 Agent 호출 한 번에 모두 넘긴다. 단계마다 따로 부르지 않는다. "
     "지시문에 단계 목록, 장부 명령, 단계별 스킬 이름을 그대로 넣는다. "
     "메인은 실행 결과를 받아 답만 쓴다\n"
+)
+STEPS_EXECUTOR_RESUME = (
+    "- 승인 뒤 남은 단계도 Agent(subagent_type=\"executor\") 호출 한 번에 모두 넘긴다. "
+    "지시문에 남은 단계 목록, 장부 명령, 승인된 단계에 --approved 를 쓴다는 것을 적는다\n"
 )
 
 
@@ -152,7 +158,8 @@ def steps_text(transcript: str, plan: dict[str, Any] | None, delegation: bool = 
         return (
             f"{STEPS_WAITING_HEAD}\n{module.render(ledger)}\n"
             f"- 이번 말이 소유자의 승인이면 `{cmd} approve` 를 부른 뒤 남은 단계를 이어서 실행한다\n"
-            f"- 취소면 `{cmd} cancel` 을 부른다. 다른 요청이면 장부를 그대로 두고 그 요청을 처리한다\n"
+            + (STEPS_EXECUTOR_RESUME if delegation else "")
+            + f"- 취소면 `{cmd} cancel` 을 부른다. 다른 요청이면 장부를 그대로 두고 그 요청을 처리한다\n"
             "- 이 안내는 내부 작업 순서다. 답변에 이 안내, 장부, 훅을 언급하지 않는다"
         )
     if not created:
